@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub async fn api_version() -> AppResult<Value> {
-    Ok(json!({ "version": "1.0.1", "name": "Ratspeak" }))
+    Ok(json!({ "version": "1.0.2", "name": "Ratspeak" }))
 }
 
 #[tauri::command]
