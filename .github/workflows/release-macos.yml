@@ -131,6 +131,9 @@ jobs:
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
 
+          rm -rf target/aarch64-apple-darwin/release/bundle
+          rm -rf target/x86_64-apple-darwin/release/bundle
+
           if [ "$MACOS_NOTARIZE" = "true" ]; then
             for name in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
               if [ -z "${!name:-}" ]; then
@@ -141,9 +144,17 @@ jobs:
             cargo tauri build --target aarch64-apple-darwin --bundles dmg
             cargo tauri build --target x86_64-apple-darwin --bundles dmg
           else
-            echo "Building unsigned release-profile macOS DMGs. Gatekeeper will warn until Developer ID notarization is enabled."
-            cargo tauri build --target aarch64-apple-darwin --bundles dmg --no-sign
-            cargo tauri build --target x86_64-apple-darwin --bundles dmg --no-sign
+            echo "Building ad-hoc signed release-profile macOS DMGs. Gatekeeper will warn until Developer ID notarization is enabled."
+            unset APPLE_SIGNING_IDENTITY
+            unset APPLE_ID
+            unset APPLE_PASSWORD
+            unset APPLE_TEAM_ID
+            unset APPLE_API_KEY
+            unset APPLE_API_ISSUER
+            unset APPLE_API_KEY_PATH
+            ad_hoc_signing_config='{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+            cargo tauri build --target aarch64-apple-darwin --bundles dmg --config "$ad_hoc_signing_config"
+            cargo tauri build --target x86_64-apple-darwin --bundles dmg --config "$ad_hoc_signing_config"
           fi
 
       - name: Stage macOS release artifacts
@@ -155,48 +166,28 @@ jobs:
           rm -rf "$out_dir"
           mkdir -p "$out_dir"
 
-          verify_dmg_layout() {
-            local dmg_path="$1"
-            local mount_dir
-            mount_dir="$(mktemp -d)"
-
-            hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg_path" >/dev/null
-
-            if [ ! -f "$mount_dir/.DS_Store" ]; then
-              echo "Missing Finder .DS_Store layout metadata in $dmg_path" >&2
-              hdiutil detach "$mount_dir" >/dev/null
-              return 1
-            fi
-
-            if [ ! -f "$mount_dir/.background/dmg-background.png" ]; then
-              echo "Missing DMG background image in $dmg_path" >&2
-              hdiutil detach "$mount_dir" >/dev/null
-              return 1
-            fi
-
-            if ! strings "$mount_dir/.DS_Store" | grep -q "dmg-background.png"; then
-              echo "Finder metadata in $dmg_path does not reference dmg-background.png" >&2
-              hdiutil detach "$mount_dir" >/dev/null
-              return 1
-            fi
-
-            hdiutil detach "$mount_dir" >/dev/null
-            rmdir "$mount_dir"
-          }
-
           stage_dmg() {
             local target="$1"
             local name="$2"
+            local expected_arch="$3"
+            local dmg_candidates=()
             local dmg
-            dmg="$(find "src-tauri/target/$target/release/bundle/dmg" -maxdepth 1 -name '*.dmg' -type f | sort | sed -n '1p')"
-            test -n "$dmg"
+            while IFS= read -r -d '' candidate; do
+              dmg_candidates+=("$candidate")
+            done < <(find "src-tauri/target/$target/release/bundle/dmg" -maxdepth 1 -name '*.dmg' -type f -print0)
+            if [ "${#dmg_candidates[@]}" -ne 1 ]; then
+              echo "Expected exactly one DMG for $target, found ${#dmg_candidates[@]}" >&2
+              printf '%s\n' "${dmg_candidates[@]}" >&2
+              exit 1
+            fi
+            dmg="${dmg_candidates[0]}"
             cp "$dmg" "$out_dir/$name"
             hdiutil verify "$out_dir/$name"
-            verify_dmg_layout "$out_dir/$name"
+            bash scripts/release/verify-macos-dmg.sh "$out_dir/$name" "$expected_arch"
           }
 
-          stage_dmg aarch64-apple-darwin Ratspeak-macos-arm64.dmg
-          stage_dmg x86_64-apple-darwin Ratspeak-macos-x64.dmg
+          stage_dmg aarch64-apple-darwin Ratspeak-macos-arm64.dmg arm64
+          stage_dmg x86_64-apple-darwin Ratspeak-macos-x64.dmg x86_64
 
       - name: Check for bundled dev URLs
         shell: bash
