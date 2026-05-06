@@ -122,7 +122,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
-          TAURI_BUNDLER_DMG_IGNORE_CI: "1"
+          # Tauri checks this for the literal string "true"; any other value
+          # keeps --skip-jenkins enabled, which skips the Finder .DS_Store layout.
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
         run: |
           set -euo pipefail
 
