@@ -7,10 +7,10 @@
 Ratspeak is a native desktop and mobile client for E2EE conversations over
 Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/image sharing, LoRa capability, WiFi, BLE, TCP, offline messaging, turn-based games, and more.
 
-[Download](https://ratspeak.org/download.html) |
 [Docs](https://ratspeak.org/docs.html) |
 [Build from source](https://ratspeak.org/docs.html#getting-started/building-from-source) |
-[Reticulum](https://reticulum.network/)
+[rsReticulum](https://github.com/ratspeak/rsReticulum) |
+[rsLXMF](https://github.com/ratspeak/rsLXMF)
 
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
