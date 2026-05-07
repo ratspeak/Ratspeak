@@ -260,13 +260,15 @@ function renderModalInterfaceSection(containerId, interfaces, ifaceType) {
 
 function getIfaceDetailText(iface, ifaceType) {
     if (ifaceType === 'rnode') {
-        var freqMhz = iface.frequency ? (iface.frequency / 1000000).toFixed(1) : '?';
+        var freqMhz = iface.frequency ? _rnodeFormatMhz(iface.frequency) : '?';
+        var bwKhz = iface.bandwidth ? ((parseInt(iface.bandwidth, 10) || 0) / 1000).toFixed(0) : '?';
         var portInfo = iface.port || '?';
         if (typeof portInfo === 'string' && portInfo.indexOf('ble://') === 0) {
             var bleTarget = portInfo.substring(6);
             portInfo = 'BLE: ' + (bleTarget || 'auto');
         }
-        return freqMhz + ' MHz | SF' + (iface.spreadingfactor || '?') + ' | ' + portInfo;
+        return freqMhz + ' MHz | BW ' + bwKhz + 'k | SF' + (iface.spreadingfactor || '?') +
+            ' | CR' + (iface.codingrate || '?') + ' | ' + portInfo;
     }
     if (ifaceType === 'auto') {
         return 'WiFi / LAN auto-discovery';
@@ -332,6 +334,8 @@ var _rnodeEditContext = null;
 var _connectEditContext = null;
 var _hostEditContext = null;
 var _backboneHostEditContext = null;
+var _RNODE_CUSTOM_REGION_KEY = 'custom';
+var _RNODE_CUSTOM_PRESET_KEY = 'custom';
 
 function _ifaceString(iface, key, fallback) {
     var v = iface && iface[key];
@@ -349,21 +353,258 @@ function _ifaceBool(iface, key) {
     return v === 'true' || v === 'yes' || v === '1';
 }
 
+function _rnodeFormatScaledValue(value, divisor, maxDecimals, minDecimals) {
+    var scaled = (parseInt(value, 10) || 0) / divisor;
+    var parts = scaled.toFixed(maxDecimals).split('.');
+    var frac = (parts[1] || '').replace(/0+$/, '');
+    while (frac.length < minDecimals) frac += '0';
+    return frac ? parts[0] + '.' + frac : parts[0];
+}
+
+function _rnodeFormatMhz(freq) {
+    return _rnodeFormatScaledValue(freq, 1000000, 6, 3);
+}
+
+function _rnodeFormatKhz(bw) {
+    return _rnodeFormatScaledValue(bw, 1000, 3, 0);
+}
+
+function _rnodeParseScaledInput(raw, decimalUnit, integerThreshold, multiplier) {
+    var text = String(raw || '').trim().toLowerCase().replace(/[, _]/g, '');
+    if (!text) return null;
+    var explicitDecimalUnit = text.endsWith(decimalUnit);
+    var explicitHz = text.endsWith('hz') && !explicitDecimalUnit;
+    if (explicitDecimalUnit) text = text.slice(0, -decimalUnit.length);
+    else if (explicitHz) text = text.slice(0, -2);
+    var value = Number(text);
+    if (!isFinite(value) || value <= 0) return null;
+    if (explicitDecimalUnit || (!explicitHz && value < integerThreshold)) {
+        return Math.round(value * multiplier);
+    }
+    return Math.round(value);
+}
+
+function _rnodeParseFrequencyHz(raw) {
+    return _rnodeParseScaledInput(raw, 'mhz', 10000, 1000000);
+}
+
+function _rnodeParseBandwidthHz(raw) {
+    return _rnodeParseScaledInput(raw, 'khz', 10000, 1000);
+}
+
+function _rnodeRegionContainsFrequency(regionKey, freq) {
+    var region = _rnodeRegions && _rnodeRegions[regionKey];
+    return !!region && region.min <= freq && freq <= region.max;
+}
+
 function _rnodeRegionForFrequency(freq) {
     var keys = Object.keys(_rnodeRegions || {});
     for (var i = 0; i < keys.length; i++) {
         if (_rnodeRegions[keys[i]].freq === freq) return keys[i];
     }
-    return _rnodeCatalogDefaults.region || 'americas';
+    for (var j = 0; j < keys.length; j++) {
+        if (_rnodeRegionContainsFrequency(keys[j], freq)) return keys[j];
+    }
+    return _RNODE_CUSTOM_REGION_KEY;
+}
+
+function _rnodeRegionForInterface(iface, freq) {
+    var key = _ifaceString(iface, 'ratspeak_region', '');
+    if (key && _rnodeRegionContainsFrequency(key, freq)) return key;
+    return _rnodeRegionForFrequency(freq);
+}
+
+function _rnodePresetMatchesParams(presetKey, bw, sf, cr, tx) {
+    var p = _rnodePresets && _rnodePresets[presetKey];
+    return !!p && p.bw === bw && p.sf === sf && p.cr === cr && p.tx === tx;
 }
 
 function _rnodePresetForParams(bw, sf, cr, tx) {
     var keys = Object.keys(_rnodePresets || {});
     for (var i = 0; i < keys.length; i++) {
-        var p = _rnodePresets[keys[i]];
-        if (p.bw === bw && p.sf === sf && p.cr === cr && p.tx === tx) return keys[i];
+        if (_rnodePresetMatchesParams(keys[i], bw, sf, cr, tx)) return keys[i];
     }
-    return _rnodeCatalogDefaults.preset || 'medium_fast';
+    return _RNODE_CUSTOM_PRESET_KEY;
+}
+
+function _rnodePresetForInterface(iface, bw, sf, cr, tx) {
+    var key = _ifaceString(iface, 'ratspeak_preset', '');
+    if (key && _rnodePresetMatchesParams(key, bw, sf, cr, tx)) return key;
+    return _rnodePresetForParams(bw, sf, cr, tx);
+}
+
+function _rnodeSetFrequency(freq) {
+    var input = document.getElementById('rnode-frequency');
+    if (input) input.value = _rnodeFormatMhz(freq);
+}
+
+function _rnodeSetAdvancedParams(bw, sf, cr, tx) {
+    var bwInput = document.getElementById('rnode-bandwidth');
+    var sfInput = document.getElementById('rnode-spreading-factor');
+    var crInput = document.getElementById('rnode-coding-rate');
+    var txInput = document.getElementById('rnode-tx-power');
+    if (bwInput) bwInput.value = _rnodeFormatKhz(bw);
+    if (sfInput) sfInput.value = String(sf);
+    if (crInput) crInput.value = String(cr);
+    if (txInput) txInput.value = String(tx);
+}
+
+function _rnodeApplyPresetToAdvanced(presetKey) {
+    var preset = _rnodePresets && _rnodePresets[presetKey];
+    if (!preset) return;
+    _rnodeSetAdvancedParams(preset.bw, preset.sf, preset.cr, preset.tx);
+    _rnodeUpdateRadioHints();
+}
+
+function _rnodeApplyRegionToFrequency(regionKey) {
+    var region = _rnodeRegions && _rnodeRegions[regionKey];
+    if (!region) return;
+    _rnodeSetFrequency(region.freq);
+    _rnodeUpdateRadioHints();
+}
+
+function _rnodeSelectedRegionKey() {
+    var select = document.getElementById('rnode-region');
+    return select ? select.value : (_rnodeCatalogDefaults.region || 'americas');
+}
+
+function _rnodeSelectedPresetKey() {
+    var select = document.getElementById('rnode-preset');
+    return select ? select.value : (_rnodeCatalogDefaults.preset || 'medium_fast');
+}
+
+function _rnodeReadRadioSettings() {
+    var freq = _rnodeParseFrequencyHz(document.getElementById('rnode-frequency').value);
+    var bw = _rnodeParseBandwidthHz(document.getElementById('rnode-bandwidth').value);
+    var sf = parseInt(document.getElementById('rnode-spreading-factor').value, 10);
+    var cr = parseInt(document.getElementById('rnode-coding-rate').value, 10);
+    var tx = parseInt(document.getElementById('rnode-tx-power').value, 10);
+    var limits = _rnodeRadioLimits || {};
+    if (!freq || freq < limits.frequencyMin || freq > limits.frequencyMax) {
+        return { error: 'Frequency must be between ' + _rnodeFormatMhz(limits.frequencyMin) + ' and ' + _rnodeFormatMhz(limits.frequencyMax) + ' MHz' };
+    }
+    if (!bw || bw < limits.bandwidthMin || bw > limits.bandwidthMax) {
+        return { error: 'Bandwidth must be between ' + _rnodeFormatKhz(limits.bandwidthMin) + ' and ' + _rnodeFormatKhz(limits.bandwidthMax) + ' kHz' };
+    }
+    if (isNaN(sf) || sf < limits.sfMin || sf > limits.sfMax) {
+        return { error: 'Spreading factor must be between ' + limits.sfMin + ' and ' + limits.sfMax };
+    }
+    if (isNaN(cr) || cr < limits.crMin || cr > limits.crMax) {
+        return { error: 'Coding rate must be between ' + limits.crMin + ' and ' + limits.crMax };
+    }
+    if (isNaN(tx) || tx < limits.txMin || tx > limits.txMax) {
+        return { error: 'TX power must be between ' + limits.txMin + ' and ' + limits.txMax + ' dBm' };
+    }
+
+    var regionKey = _rnodeSelectedRegionKey();
+    var presetKey = _rnodeSelectedPresetKey();
+    var region = _rnodeRegions[regionKey];
+    var preset = _rnodePresets[presetKey];
+    var customParams = !region || !preset || freq !== region.freq ||
+        !_rnodePresetMatchesParams(presetKey, bw, sf, cr, tx);
+
+    return {
+        regionKey: regionKey,
+        presetKey: presetKey,
+        frequency: freq,
+        bandwidth: bw,
+        spreadingFactor: sf,
+        codingRate: cr,
+        txPower: tx,
+        customParams: customParams,
+    };
+}
+
+function _rnodeUpdateRadioHints() {
+    var freq = _rnodeParseFrequencyHz(document.getElementById('rnode-frequency').value);
+    var regionKey = _rnodeSelectedRegionKey();
+    var presetKey = _rnodeSelectedPresetKey();
+    var region = _rnodeRegions && _rnodeRegions[regionKey];
+    var preset = _rnodePresets && _rnodePresets[presetKey];
+    var freqHint = document.getElementById('rnode-frequency-hint');
+    var warn = document.getElementById('rnode-frequency-warning');
+    var presetHint = document.getElementById('rnode-preset-hint');
+
+    if (freqHint) {
+        freqHint.textContent = region
+            ? 'Default ' + _rnodeFormatMhz(region.freq) + ' MHz. Config is written as ' + (freq || region.freq) + ' Hz.'
+            : 'Custom center frequency. Config is written in Hz.';
+    }
+    if (warn) {
+        if (freq && region && !_rnodeRegionContainsFrequency(regionKey, freq)) {
+            warn.textContent = 'This frequency is outside the selected band range of ' +
+                _rnodeFormatMhz(region.min) + '-' + _rnodeFormatMhz(region.max) +
+                ' MHz. Check hardware support and local regulations before transmitting.';
+            warn.style.display = '';
+        } else {
+            warn.style.display = 'none';
+            warn.textContent = '';
+        }
+    }
+    if (presetHint) {
+        presetHint.textContent = preset
+            ? 'SF' + preset.sf + ', BW ' + _rnodeFormatKhz(preset.bw) + ' kHz, CR ' + preset.cr + ', TX ' + preset.tx + ' dBm.'
+            : 'Custom radio parameters.';
+    }
+}
+
+function _rnodeRefreshRegionFromFrequency() {
+    var freq = _rnodeParseFrequencyHz(document.getElementById('rnode-frequency').value);
+    var select = document.getElementById('rnode-region');
+    if (!freq || !select) {
+        _rnodeUpdateRadioHints();
+        return;
+    }
+    var current = select.value;
+    if (current !== _RNODE_CUSTOM_REGION_KEY && _rnodeRegionContainsFrequency(current, freq)) {
+        _rnodeUpdateRadioHints();
+        return;
+    }
+    select.value = _rnodeRegionForFrequency(freq);
+    _rnodeUpdateRadioHints();
+}
+
+function _rnodeRefreshPresetFromAdvanced() {
+    var bw = _rnodeParseBandwidthHz(document.getElementById('rnode-bandwidth').value);
+    var sf = parseInt(document.getElementById('rnode-spreading-factor').value, 10);
+    var cr = parseInt(document.getElementById('rnode-coding-rate').value, 10);
+    var tx = parseInt(document.getElementById('rnode-tx-power').value, 10);
+    var select = document.getElementById('rnode-preset');
+    if (!bw || isNaN(sf) || isNaN(cr) || isNaN(tx) || !select) {
+        _rnodeUpdateRadioHints();
+        return;
+    }
+    select.value = _rnodePresetForParams(bw, sf, cr, tx);
+    _rnodeUpdateRadioHints();
+}
+
+function _rnodeApplyRadioControls(regionKey, presetKey, freq, bw, sf, cr, tx, openAdvanced) {
+    var regionSelect = document.getElementById('rnode-region');
+    var presetSelect = document.getElementById('rnode-preset');
+    var advanced = document.getElementById('rnode-advanced');
+    if (regionSelect) regionSelect.value = regionKey || _rnodeCatalogDefaults.region || 'americas';
+    if (presetSelect) presetSelect.value = presetKey || _rnodeCatalogDefaults.preset || 'medium_fast';
+    _rnodeSetFrequency(freq);
+    _rnodeSetAdvancedParams(bw, sf, cr, tx);
+    if (advanced) advanced.open = !!openAdvanced;
+    _rnodeUpdateRadioHints();
+}
+
+function _rnodeApplyDefaultRadioControls() {
+    var regionKey = _rnodeCatalogDefaults.region || 'americas';
+    var presetKey = _rnodeCatalogDefaults.preset || 'medium_fast';
+    var region = _rnodeRegions && _rnodeRegions[regionKey];
+    var preset = _rnodePresets && _rnodePresets[presetKey];
+    _rnodeApplyRadioControls(
+        regionKey,
+        presetKey,
+        region ? region.freq : 915000000,
+        preset ? preset.bw : 250000,
+        preset ? preset.sf : 9,
+        preset ? preset.cr : 5,
+        preset ? preset.tx : 17,
+        false
+    );
 }
 
 function _rnodeModeForPort(port) {
@@ -399,9 +640,8 @@ function openRnodeModal(mode, editIface) {
     var titleEl = document.querySelector('#rnode-modal .bottom-sheet-title');
     if (titleEl) titleEl.textContent = editIface ? 'Edit LoRa Device' : 'Add LoRa Device';
     document.getElementById('rnode-iface-name').value = '';
-    loadRnodePresetCatalog();
-    document.getElementById('rnode-region').value = _rnodeCatalogDefaults.region || 'americas';
-    document.getElementById('rnode-preset').value = _rnodeCatalogDefaults.preset || 'medium_fast';
+    var catalogReady = loadRnodePresetCatalog();
+    _rnodeApplyDefaultRadioControls();
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
 
@@ -459,11 +699,21 @@ function openRnodeModal(mode, editIface) {
         var tx = _ifaceInt(editIface, 'txpower', 17);
         document.getElementById('rnode-iface-name').value = editIface.name || '';
         var applyRadioSelection = function() {
-            document.getElementById('rnode-region').value = _rnodeRegionForFrequency(freq);
-            document.getElementById('rnode-preset').value = _rnodePresetForParams(bw, sf, cr, tx);
+            var regionKey = _rnodeRegionForInterface(editIface, freq);
+            var presetKey = _rnodePresetForInterface(editIface, bw, sf, cr, tx);
+            _rnodeApplyRadioControls(
+                regionKey,
+                presetKey,
+                freq,
+                bw,
+                sf,
+                cr,
+                tx,
+                regionKey === _RNODE_CUSTOM_REGION_KEY || presetKey === _RNODE_CUSTOM_PRESET_KEY
+            );
         };
         applyRadioSelection();
-        loadRnodePresetCatalog().then(applyRadioSelection).catch(function() {});
+        catalogReady.then(applyRadioSelection).catch(function() {});
         var summary = document.getElementById('rnode-device-summary');
         if (summary) summary.textContent = port || 'LoRa radio';
         if (step1) step1.style.display = 'none';
@@ -474,6 +724,7 @@ function openRnodeModal(mode, editIface) {
     } else {
         var submitBtn = document.getElementById('rnode-submit-btn');
         if (submitBtn) submitBtn.textContent = 'Add Radio';
+        catalogReady.then(_rnodeApplyDefaultRadioControls).catch(function() {});
     }
 
     var modal = document.getElementById('rnode-modal');
@@ -678,6 +929,18 @@ function refreshAndroidUsbDevices() {
 var _rnodePresets = {};
 var _rnodeRegions = {};
 var _rnodeCatalogDefaults = { region: 'americas', preset: 'medium_fast' };
+var _rnodeRadioLimits = {
+    frequencyMin: 137000000,
+    frequencyMax: 3000000000,
+    bandwidthMin: 7800,
+    bandwidthMax: 1625000,
+    sfMin: 5,
+    sfMax: 12,
+    crMin: 5,
+    crMax: 8,
+    txMin: 0,
+    txMax: 37,
+};
 var _rnodeCatalogPromise = null;
 
 function _catalogArray(value) {
@@ -694,13 +957,19 @@ function _populateRnodeSelect(selectId, entries, defaultKey) {
     var select = document.getElementById(selectId);
     if (!select) return;
     var previous = select.value || defaultKey || '';
-    select.innerHTML = entries.map(function(entry) {
+    var choices = entries.slice();
+    if (selectId === 'rnode-region') {
+        choices.push({ key: _RNODE_CUSTOM_REGION_KEY, label: 'Custom frequency' });
+    } else if (selectId === 'rnode-preset') {
+        choices.push({ key: _RNODE_CUSTOM_PRESET_KEY, label: 'Custom radio parameters' });
+    }
+    select.innerHTML = choices.map(function(entry) {
         return '<option value="' + escapeHtml(entry.key) + '">' +
             escapeHtml(entry.label || entry.key) + '</option>';
     }).join('');
-    select.value = entries.some(function(entry) { return entry.key === previous; })
+    select.value = choices.some(function(entry) { return entry.key === previous; })
         ? previous
-        : (defaultKey || (entries[0] && entries[0].key) || '');
+        : (defaultKey || (choices[0] && choices[0].key) || '');
 }
 
 function _applyRnodePresetCatalog(data) {
@@ -711,6 +980,7 @@ function _applyRnodePresetCatalog(data) {
     presets.forEach(function(preset) {
         presetMap[preset.key] = {
             label: preset.label || preset.key,
+            description: preset.description || '',
             sf: parseInt(preset.spreading_factor, 10),
             bw: parseInt(preset.bandwidth, 10),
             cr: parseInt(preset.coding_rate, 10),
@@ -721,6 +991,8 @@ function _applyRnodePresetCatalog(data) {
         regionMap[region.key] = {
             label: region.label || region.key,
             freq: parseInt(region.frequency || region.default, 10),
+            min: parseInt(region.min, 10),
+            max: parseInt(region.max, 10),
         };
     });
     if (presets.length > 0) _rnodePresets = presetMap;
@@ -729,8 +1001,21 @@ function _applyRnodePresetCatalog(data) {
         region: (data && data.default_region) || _rnodeCatalogDefaults.region,
         preset: (data && data.default_preset) || _rnodeCatalogDefaults.preset,
     };
+    _rnodeRadioLimits = {
+        frequencyMin: parseInt(data && data.frequency_min, 10) || _rnodeRadioLimits.frequencyMin,
+        frequencyMax: parseInt(data && data.frequency_max, 10) || _rnodeRadioLimits.frequencyMax,
+        bandwidthMin: parseInt(data && data.bandwidth_min, 10) || _rnodeRadioLimits.bandwidthMin,
+        bandwidthMax: parseInt(data && data.bandwidth_max, 10) || _rnodeRadioLimits.bandwidthMax,
+        sfMin: parseInt(data && data.spreading_factor_min, 10) || _rnodeRadioLimits.sfMin,
+        sfMax: parseInt(data && data.spreading_factor_max, 10) || _rnodeRadioLimits.sfMax,
+        crMin: parseInt(data && data.coding_rate_min, 10) || _rnodeRadioLimits.crMin,
+        crMax: parseInt(data && data.coding_rate_max, 10) || _rnodeRadioLimits.crMax,
+        txMin: parseInt(data && data.tx_power_min, 10) || _rnodeRadioLimits.txMin,
+        txMax: parseInt(data && data.tx_power_max, 10) || _rnodeRadioLimits.txMax,
+    };
     _populateRnodeSelect('rnode-region', regions, _rnodeCatalogDefaults.region);
     _populateRnodeSelect('rnode-preset', presets, _rnodeCatalogDefaults.preset);
+    _rnodeUpdateRadioHints();
 }
 
 function loadRnodePresetCatalog() {
@@ -924,12 +1209,9 @@ function submitRnodeInterface() {
         return;
     }
 
-    var presetKey = document.getElementById('rnode-preset').value;
-    var regionKey = document.getElementById('rnode-region').value;
-    var preset = _rnodePresets[presetKey];
-    var region = _rnodeRegions[regionKey];
-    if (!preset || !region) {
-        showPreConditionToast('Radio presets are still loading');
+    var radioSettings = _rnodeReadRadioSettings();
+    if (radioSettings.error) {
+        showPreConditionToast(radioSettings.error);
         return;
     }
 
@@ -969,9 +1251,15 @@ function submitRnodeInterface() {
             var loraArgs = {
                 name: name,
                 port: port,
-                region_key: regionKey,
-                preset_key: presetKey,
+                frequency: radioSettings.frequency,
+                bandwidth: radioSettings.bandwidth,
+                spreading_factor: radioSettings.spreadingFactor,
+                coding_rate: radioSettings.codingRate,
+                tx_power: radioSettings.txPower,
             };
+            if (radioSettings.regionKey !== _RNODE_CUSTOM_REGION_KEY) loraArgs.region_key = radioSettings.regionKey;
+            if (radioSettings.presetKey !== _RNODE_CUSTOM_PRESET_KEY) loraArgs.preset_key = radioSettings.presetKey;
+            if (radioSettings.customParams) loraArgs.custom_params = true;
             if (isEdit) loraArgs.old_name = _rnodeEditContext.oldName;
             var loraRequest = RS.invoke(loraCommand, { args: loraArgs });
 
@@ -1852,6 +2140,27 @@ document.getElementById('rnode-port').addEventListener('change', function() {
         _selectedSerialPort = null;
     }
     rnodeUpdateNextBtn();
+});
+
+var rnodeRegionSelect = document.getElementById('rnode-region');
+if (rnodeRegionSelect) rnodeRegionSelect.addEventListener('change', function() {
+    if (this.value !== _RNODE_CUSTOM_REGION_KEY) _rnodeApplyRegionToFrequency(this.value);
+    else _rnodeUpdateRadioHints();
+});
+var rnodePresetSelect = document.getElementById('rnode-preset');
+if (rnodePresetSelect) rnodePresetSelect.addEventListener('change', function() {
+    if (this.value !== _RNODE_CUSTOM_PRESET_KEY) _rnodeApplyPresetToAdvanced(this.value);
+    else {
+        var advanced = document.getElementById('rnode-advanced');
+        if (advanced) advanced.open = true;
+        _rnodeUpdateRadioHints();
+    }
+});
+var rnodeFrequencyInput = document.getElementById('rnode-frequency');
+if (rnodeFrequencyInput) rnodeFrequencyInput.addEventListener('input', _rnodeRefreshRegionFromFrequency);
+['rnode-bandwidth', 'rnode-spreading-factor', 'rnode-coding-rate', 'rnode-tx-power'].forEach(function(id) {
+    var input = document.getElementById(id);
+    if (input) input.addEventListener('input', _rnodeRefreshPresetFromAdvanced);
 });
 
 var rnodeToggleSerial = document.getElementById('rnode-toggle-serial');

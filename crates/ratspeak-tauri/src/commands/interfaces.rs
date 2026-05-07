@@ -724,6 +724,8 @@ pub struct AddLoraArgs {
     pub region_key: Option<String>,
     #[serde(default)]
     pub preset_key: Option<String>,
+    #[serde(default)]
+    pub custom_params: bool,
     #[serde(default = "default_frequency")]
     pub frequency: u64,
     #[serde(default = "default_bandwidth")]
@@ -766,6 +768,18 @@ struct ResolvedLoraRadio {
     preset_key: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LoraRadioArgs<'a> {
+    region_key: Option<&'a str>,
+    preset_key: Option<&'a str>,
+    custom_params: bool,
+    frequency: u64,
+    bandwidth: u64,
+    spreading_factor: u8,
+    coding_rate: u8,
+    tx_power: i8,
+}
+
 fn non_empty_key(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -777,34 +791,125 @@ fn validate_lora_radio_params(
     coding_rate: u8,
     tx_power: i8,
 ) -> AppResult<()> {
-    if frequency == 0 || bandwidth == 0 {
-        return Err(AppError::bad_request(
-            "Invalid radio frequency or bandwidth",
-        ));
+    if !(ratspeak_core::radio::RNODE_FREQUENCY_MIN_HZ
+        ..=ratspeak_core::radio::RNODE_FREQUENCY_MAX_HZ)
+        .contains(&frequency)
+    {
+        return Err(AppError::bad_request("Invalid radio frequency"));
     }
-    if !(5..=12).contains(&spreading_factor) {
+    if !(ratspeak_core::radio::RNODE_BANDWIDTH_MIN_HZ
+        ..=ratspeak_core::radio::RNODE_BANDWIDTH_MAX_HZ)
+        .contains(&bandwidth)
+    {
+        return Err(AppError::bad_request("Invalid radio bandwidth"));
+    }
+    if !(ratspeak_core::radio::RNODE_SPREADING_FACTOR_MIN
+        ..=ratspeak_core::radio::RNODE_SPREADING_FACTOR_MAX)
+        .contains(&spreading_factor)
+    {
         return Err(AppError::bad_request("Invalid LoRa spreading factor"));
     }
-    if !(5..=8).contains(&coding_rate) {
+    if !(ratspeak_core::radio::RNODE_CODING_RATE_MIN..=ratspeak_core::radio::RNODE_CODING_RATE_MAX)
+        .contains(&coding_rate)
+    {
         return Err(AppError::bad_request("Invalid LoRa coding rate"));
     }
-    if !(0..=37).contains(&tx_power) {
+    if !(ratspeak_core::radio::RNODE_TX_POWER_MIN_DBM
+        ..=ratspeak_core::radio::RNODE_TX_POWER_MAX_DBM)
+        .contains(&tx_power)
+    {
         return Err(AppError::bad_request("Invalid LoRa TX power"));
     }
     Ok(())
 }
 
-fn resolve_lora_radio_args(
-    region_key: Option<&str>,
-    preset_key: Option<&str>,
-    frequency: u64,
+fn rnode_preset_matches_params(
+    preset: &ratspeak_core::radio::RnodePreset,
     bandwidth: u64,
     spreading_factor: u8,
     coding_rate: u8,
     tx_power: i8,
-) -> AppResult<ResolvedLoraRadio> {
+) -> bool {
+    preset.bandwidth == bandwidth
+        && preset.spreading_factor == spreading_factor
+        && preset.coding_rate == coding_rate
+        && preset.tx_power == tx_power
+}
+
+fn resolve_lora_radio_args(args: LoraRadioArgs<'_>) -> AppResult<ResolvedLoraRadio> {
+    let LoraRadioArgs {
+        region_key,
+        preset_key,
+        custom_params,
+        frequency,
+        bandwidth,
+        spreading_factor,
+        coding_rate,
+        tx_power,
+    } = args;
     let region_key = non_empty_key(region_key);
     let preset_key = non_empty_key(preset_key);
+    if custom_params {
+        validate_lora_radio_params(
+            frequency,
+            bandwidth,
+            spreading_factor,
+            coding_rate,
+            tx_power,
+        )?;
+
+        let resolved_region_key = match region_key {
+            Some(key) => {
+                let region = ratspeak_core::radio::rnode_region(key)
+                    .ok_or_else(|| AppError::bad_request("Invalid radio region"))?;
+                if region.min <= frequency && frequency <= region.max {
+                    Some(region.key)
+                } else {
+                    ratspeak_core::radio::infer_rnode_region(frequency)
+                }
+            }
+            None => ratspeak_core::radio::infer_rnode_region(frequency),
+        };
+        let resolved_preset_key = match preset_key {
+            Some(key) => {
+                let preset = ratspeak_core::radio::rnode_preset(key)
+                    .ok_or_else(|| AppError::bad_request("Invalid radio preset"))?;
+                if rnode_preset_matches_params(
+                    preset,
+                    bandwidth,
+                    spreading_factor,
+                    coding_rate,
+                    tx_power,
+                ) {
+                    Some(preset.key)
+                } else {
+                    ratspeak_core::radio::infer_rnode_preset(
+                        bandwidth,
+                        spreading_factor,
+                        coding_rate,
+                        tx_power,
+                    )
+                }
+            }
+            None => ratspeak_core::radio::infer_rnode_preset(
+                bandwidth,
+                spreading_factor,
+                coding_rate,
+                tx_power,
+            ),
+        };
+
+        return Ok(ResolvedLoraRadio {
+            frequency,
+            bandwidth,
+            spreading_factor,
+            coding_rate,
+            tx_power,
+            region_key: resolved_region_key,
+            preset_key: resolved_preset_key,
+        });
+    }
+
     if region_key.is_some() || preset_key.is_some() {
         let region_key = region_key.unwrap_or(ratspeak_core::radio::DEFAULT_RNODE_REGION_KEY);
         let preset_key = preset_key.unwrap_or(ratspeak_core::radio::DEFAULT_RNODE_PRESET_KEY);
@@ -1381,15 +1486,16 @@ pub async fn add_lora_interface(
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let name = sanitize_text(&args.name, 64);
     let port = sanitize_text(&args.port, 256);
-    let radio = resolve_lora_radio_args(
-        args.region_key.as_deref(),
-        args.preset_key.as_deref(),
-        args.frequency,
-        args.bandwidth,
-        args.spreading_factor,
-        args.coding_rate,
-        args.tx_power,
-    )?;
+    let radio = resolve_lora_radio_args(LoraRadioArgs {
+        region_key: args.region_key.as_deref(),
+        preset_key: args.preset_key.as_deref(),
+        custom_params: args.custom_params,
+        frequency: args.frequency,
+        bandwidth: args.bandwidth,
+        spreading_factor: args.spreading_factor,
+        coding_rate: args.coding_rate,
+        tx_power: args.tx_power,
+    })?;
 
     let config_dir = state_arc.config.rns_config_dir.clone();
     emit_op_status_broadcast(
@@ -1797,6 +1903,8 @@ pub struct UpdateLoraArgs {
     pub region_key: Option<String>,
     #[serde(default)]
     pub preset_key: Option<String>,
+    #[serde(default)]
+    pub custom_params: bool,
     #[serde(default = "default_frequency")]
     pub frequency: u64,
     #[serde(default = "default_bandwidth")]
@@ -1829,15 +1937,16 @@ pub async fn update_lora_interface(
         );
         return Err(AppError::bad_request("Name and device required"));
     }
-    let radio = resolve_lora_radio_args(
-        args.region_key.as_deref(),
-        args.preset_key.as_deref(),
-        args.frequency,
-        args.bandwidth,
-        args.spreading_factor,
-        args.coding_rate,
-        args.tx_power,
-    )?;
+    let radio = resolve_lora_radio_args(LoraRadioArgs {
+        region_key: args.region_key.as_deref(),
+        preset_key: args.preset_key.as_deref(),
+        custom_params: args.custom_params,
+        frequency: args.frequency,
+        bandwidth: args.bandwidth,
+        spreading_factor: args.spreading_factor,
+        coding_rate: args.coding_rate,
+        tx_power: args.tx_power,
+    })?;
 
     let config_dir = state_arc.config.rns_config_dir.clone();
     let old_entry = find_config_interface(&config_dir, "rnode", &old_name)
@@ -3740,12 +3849,33 @@ mod backbone_args_tests {
                 .and_then(Value::as_str),
             Some(ratspeak_core::radio::DEFAULT_RNODE_PRESET_KEY)
         );
+        assert_eq!(
+            value.get("frequency_min").and_then(Value::as_u64),
+            Some(ratspeak_core::radio::RNODE_FREQUENCY_MIN_HZ)
+        );
+        assert!(
+            value
+                .get("regions")
+                .and_then(Value::as_array)
+                .is_some_and(|regions| regions
+                    .iter()
+                    .any(|region| region.get("key").and_then(Value::as_str) == Some("uhf_433")))
+        );
     }
 
     #[test]
     fn keyed_lora_args_resolve_and_validate_server_side() {
-        let radio = resolve_lora_radio_args(Some("europe"), Some("long_moderate"), 1, 1, 5, 5, 0)
-            .expect("keyed catalog params");
+        let radio = resolve_lora_radio_args(LoraRadioArgs {
+            region_key: Some("europe"),
+            preset_key: Some("long_moderate"),
+            custom_params: false,
+            frequency: 1,
+            bandwidth: 1,
+            spreading_factor: 5,
+            coding_rate: 5,
+            tx_power: 0,
+        })
+        .expect("keyed catalog params");
 
         assert_eq!(radio.frequency, 868_000_000);
         assert_eq!(radio.bandwidth, 125_000);
@@ -3756,9 +3886,89 @@ mod backbone_args_tests {
         assert_eq!(radio.preset_key, Some("long_moderate"));
 
         assert!(
-            resolve_lora_radio_args(Some("invalid"), Some("medium_fast"), 1, 1, 5, 5, 0).is_err()
+            resolve_lora_radio_args(LoraRadioArgs {
+                region_key: Some("invalid"),
+                preset_key: Some("medium_fast"),
+                custom_params: false,
+                frequency: 1,
+                bandwidth: 1,
+                spreading_factor: 5,
+                coding_rate: 5,
+                tx_power: 0,
+            })
+            .is_err()
         );
-        assert!(resolve_lora_radio_args(None, None, 0, 250_000, 9, 5, 17).is_err());
-        assert!(resolve_lora_radio_args(None, None, 915_000_000, 250_000, 13, 5, 17).is_err());
+        assert!(
+            resolve_lora_radio_args(LoraRadioArgs {
+                region_key: None,
+                preset_key: None,
+                custom_params: false,
+                frequency: 0,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+            })
+            .is_err()
+        );
+        assert!(
+            resolve_lora_radio_args(LoraRadioArgs {
+                region_key: None,
+                preset_key: None,
+                custom_params: false,
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 13,
+                coding_rate: 5,
+                tx_power: 17,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn custom_lora_args_preserve_numeric_radio_params() {
+        let radio = resolve_lora_radio_args(LoraRadioArgs {
+            region_key: Some("americas"),
+            preset_key: Some("long_fast"),
+            custom_params: true,
+            frequency: 915_250_000,
+            bandwidth: 250_000,
+            spreading_factor: 11,
+            coding_rate: 5,
+            tx_power: 22,
+        })
+        .expect("custom frequency with catalog preset");
+
+        assert_eq!(radio.frequency, 915_250_000);
+        assert_eq!(radio.bandwidth, 250_000);
+        assert_eq!(radio.spreading_factor, 11);
+        assert_eq!(radio.coding_rate, 5);
+        assert_eq!(radio.tx_power, 22);
+        assert_eq!(radio.region_key, Some("americas"));
+        assert_eq!(radio.preset_key, Some("long_fast"));
+    }
+
+    #[test]
+    fn custom_lora_args_support_433_band_and_advanced_params() {
+        let radio = resolve_lora_radio_args(LoraRadioArgs {
+            region_key: Some("uhf_433"),
+            preset_key: Some("medium_fast"),
+            custom_params: true,
+            frequency: 433_000_000,
+            bandwidth: 125_000,
+            spreading_factor: 10,
+            coding_rate: 6,
+            tx_power: 17,
+        })
+        .expect("433 MHz custom params");
+
+        assert_eq!(radio.frequency, 433_000_000);
+        assert_eq!(radio.bandwidth, 125_000);
+        assert_eq!(radio.spreading_factor, 10);
+        assert_eq!(radio.coding_rate, 6);
+        assert_eq!(radio.tx_power, 17);
+        assert_eq!(radio.region_key, Some("uhf_433"));
+        assert_eq!(radio.preset_key, None);
     }
 }

@@ -1018,10 +1018,10 @@
 </div>
 
 <div class="bottom-sheet-overlay" id="rnode-modal-overlay"></div>
-<div class="bottom-sheet" id="rnode-modal">
+<div class="bottom-sheet" id="rnode-modal" role="dialog" aria-labelledby="rnode-modal-title">
     <div class="bottom-sheet-handle"></div>
     <div class="bottom-sheet-header">
-        <div class="bottom-sheet-title">Add LoRa Device</div>
+        <div class="bottom-sheet-title" id="rnode-modal-title">Add LoRa Device</div>
         <button class="bottom-sheet-close" id="rnode-modal-close" aria-label="Close dialog">&times;</button>
     </div>
     <div class="bottom-sheet-body">
@@ -1072,13 +1072,52 @@
                     <input type="text" id="rnode-iface-name" class="modal-input" placeholder="My LoRa Radio" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
                 </div>
                 <div class="modal-field">
-                    <label>Region</label>
+                    <label>Band / Region</label>
                     <select id="rnode-region" class="nr-select"></select>
+                </div>
+                <div class="modal-field">
+                    <label>Frequency</label>
+                    <div class="rnode-frequency-row">
+                        <input type="text" id="rnode-frequency" class="modal-input flex-1" inputmode="decimal" placeholder="915.000" autocorrect="off" autocapitalize="none" spellcheck="false">
+                        <span class="rnode-frequency-unit">MHz</span>
+                    </div>
+                    <span class="inline-hint-sm" id="rnode-frequency-hint"></span>
+                    <div class="rnode-radio-warning" id="rnode-frequency-warning" style="display:none"></div>
                 </div>
                 <div class="modal-field">
                     <label>Preset</label>
                     <select id="rnode-preset" class="nr-select"></select>
+                    <span class="inline-hint-sm" id="rnode-preset-hint"></span>
                 </div>
+
+                <details id="rnode-advanced" class="rnode-advanced-details">
+                    <summary class="rs-dialog-advanced-summary">Advanced radio parameters</summary>
+                    <div class="rnode-advanced-grid">
+                        <div class="modal-field">
+                            <label>Bandwidth</label>
+                            <div class="rnode-frequency-row">
+                                <input type="text" id="rnode-bandwidth" class="modal-input flex-1" inputmode="decimal" placeholder="250" autocorrect="off" autocapitalize="none" spellcheck="false">
+                                <span class="rnode-frequency-unit">kHz</span>
+                            </div>
+                        </div>
+                        <div class="modal-field">
+                            <label>Spreading Factor</label>
+                            <input type="number" id="rnode-spreading-factor" class="modal-input" min="5" max="12" step="1" inputmode="numeric" placeholder="9">
+                        </div>
+                        <div class="modal-field">
+                            <label>Coding Rate</label>
+                            <input type="number" id="rnode-coding-rate" class="modal-input" min="5" max="8" step="1" inputmode="numeric" placeholder="5">
+                        </div>
+                        <div class="modal-field">
+                            <label>TX Power</label>
+                            <div class="rnode-frequency-row">
+                                <input type="number" id="rnode-tx-power" class="modal-input flex-1" min="0" max="37" step="1" inputmode="numeric" placeholder="17">
+                                <span class="rnode-frequency-unit">dBm</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="inline-hint-sm rnode-advanced-hint">Use custom values only when every node on the link will use the same frequency, bandwidth, spreading factor, and coding rate.</div>
+                </details>
 
                 <div class="u-flex gap-4 mt-7">
                     <button type="button" class="nr-btn nr-btn-ghost" id="rnode-back-btn">Back</button>

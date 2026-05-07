@@ -1090,4 +1090,34 @@ mod tests {
         assert!(content.contains("ratspeak_region = americas"));
         assert!(!content.contains("ratspeak_preset = short_fast"));
     }
+
+    #[test]
+    fn rnode_interface_writes_custom_433_radio_parameters() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(add_rnode_interface(
+            &dir,
+            RnodeInterfaceArgs {
+                name: "UHF Radio",
+                port: "/dev/ttyUSB0",
+                frequency: 433_000_000,
+                bandwidth: 125_000,
+                spreading_factor: 10,
+                coding_rate: 6,
+                tx_power: 17,
+                region_key: Some("uhf_433"),
+                preset_key: None,
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("frequency = 433000000"));
+        assert!(content.contains("bandwidth = 125000"));
+        assert!(content.contains("spreadingfactor = 10"));
+        assert!(content.contains("codingrate = 6"));
+        assert!(content.contains("txpower = 17"));
+        assert!(content.contains("ratspeak_region = uhf_433"));
+        assert!(!content.contains("ratspeak_preset ="));
+    }
 }

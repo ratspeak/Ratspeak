@@ -285,9 +285,19 @@ fn rnode_radio_catalog_has_single_runtime_source() {
 
     assert!(core_radio.contains("pub const RNODE_PRESETS"));
     assert!(core_radio.contains("pub const RNODE_REGIONS"));
+    assert!(core_radio.contains("uhf_433"));
     assert!(modals_js.contains("RS.invoke('api_rnode_presets')"));
-    assert!(modals_js.contains("region_key: regionKey"));
-    assert!(modals_js.contains("preset_key: presetKey"));
+    assert!(modals_js.contains("function _rnodeParseFrequencyHz"));
+    assert!(modals_js.contains("function _rnodeFormatScaledValue"));
+    assert!(modals_js.contains("return _rnodeFormatScaledValue(freq, 1000000, 6, 3);"));
+    assert!(modals_js.contains("return _rnodeFormatScaledValue(bw, 1000, 3, 0);"));
+    assert!(
+        modals_js.contains("loraArgs.frequency = radioSettings.frequency")
+            || modals_js.contains("frequency: radioSettings.frequency")
+    );
+    assert!(modals_js.contains("loraArgs.custom_params = true"));
+    assert!(index.contains(r#"id="rnode-frequency""#));
+    assert!(index.contains(r#"id="rnode-advanced""#));
     assert!(!modals_js.contains("var RNODE_PRESETS = {"));
     assert!(!modals_js.contains("var RNODE_REGIONS = {"));
     assert!(!index.contains("<option value=\"americas\""));
