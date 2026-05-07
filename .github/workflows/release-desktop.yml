@@ -21,8 +21,28 @@ permissions:
 
 jobs:
   build:
-    name: Linux
-    runs-on: ubuntu-22.04
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+            bundles: deb appimage rpm
+            artifact_name: ratspeak-linux-amd64
+            deb_name: Ratspeak-amd64.deb
+            deb_arch: amd64
+            appimage_name: Ratspeak-x86_64.AppImage
+            rpm_name: Ratspeak-x86_64.rpm
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            bundles: deb
+            artifact_name: ratspeak-linux-arm64
+            deb_name: Ratspeak-arm64.deb
+            deb_arch: arm64
+            appimage_name: ""
+            rpm_name: ""
     steps:
       - name: Checkout Ratspeak
         uses: actions/checkout@v4
@@ -101,12 +121,76 @@ jobs:
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri build --bundles deb appimage rpm
+          cargo tauri build --bundles ${{ matrix.bundles }}
 
       - name: Check for bundled dev URLs
         shell: bash
         working-directory: Ratspeak
         run: bash scripts/release/assert-no-tauri-dev-url.sh src-tauri/target/release/bundle
+
+      - name: Stage Linux release artifacts
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          DEB_NAME: ${{ matrix.deb_name }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          APPIMAGE_NAME: ${{ matrix.appimage_name }}
+          RPM_NAME: ${{ matrix.rpm_name }}
+        run: |
+          set -euo pipefail
+          out_dir="dist/linux"
+          rm -rf "$out_dir"
+          mkdir -p "$out_dir"
+
+          mapfile -t debs < <(find src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' | sort)
+          deb="${debs[0]:-}"
+          test -n "$deb"
+
+          cp "$deb" "$out_dir/$DEB_NAME"
+          dpkg-deb --info "$out_dir/$DEB_NAME" >/dev/null
+          actual_arch="$(dpkg-deb --field "$out_dir/$DEB_NAME" Architecture)"
+          if [ "$actual_arch" != "$DEB_ARCH" ]; then
+            echo "Expected $DEB_NAME architecture $DEB_ARCH, got $actual_arch"
+            exit 1
+          fi
+
+          if [ -n "$APPIMAGE_NAME" ]; then
+            mapfile -t appimages < <(find src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | sort)
+            appimage="${appimages[0]:-}"
+            test -n "$appimage"
+            cp "$appimage" "$out_dir/$APPIMAGE_NAME"
+            chmod +x "$out_dir/$APPIMAGE_NAME"
+            file "$out_dir/$APPIMAGE_NAME"
+          fi
+
+          if [ -n "$RPM_NAME" ]; then
+            mapfile -t rpms < <(find src-tauri/target/release/bundle/rpm -maxdepth 1 -type f -name '*.rpm' | sort || true)
+            rpm="${rpms[0]:-}"
+            if [ -n "$rpm" ]; then
+              cp "$rpm" "$out_dir/$RPM_NAME"
+            fi
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            Ratspeak/dist/linux/*
+          if-no-files-found: error
+          retention-days: 30
+
+  package:
+    name: Linux package
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ratspeak-linux-*
+          path: Ratspeak/dist/linux
+          merge-multiple: true
 
       - name: Validate manual release tag
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_github_release && inputs.release_tag == '' }}
@@ -115,39 +199,23 @@ jobs:
           echo "release_tag is required when publishing a GitHub Release from workflow_dispatch."
           exit 1
 
-      - name: Stage Linux release artifacts
+      - name: Validate Linux release artifacts
         shell: bash
-        working-directory: Ratspeak
         run: |
-          out_dir="dist/linux"
-          rm -rf "$out_dir"
-          mkdir -p "$out_dir"
-
-          mapfile -t appimages < <(find src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | sort)
-          mapfile -t debs < <(find src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' | sort)
-          mapfile -t rpms < <(find src-tauri/target/release/bundle/rpm -maxdepth 1 -type f -name '*.rpm' | sort || true)
-
-          appimage="${appimages[0]:-}"
-          deb="${debs[0]:-}"
-          rpm="${rpms[0]:-}"
-
-          test -n "$appimage"
-          test -n "$deb"
-
-          cp "$appimage" "$out_dir/Ratspeak-x86_64.AppImage"
-          cp "$deb" "$out_dir/Ratspeak-amd64.deb"
-          if [ -n "$rpm" ]; then
-            cp "$rpm" "$out_dir/Ratspeak-x86_64.rpm"
-          fi
-
-          chmod +x "$out_dir/Ratspeak-x86_64.AppImage"
-          dpkg-deb --info "$out_dir/Ratspeak-amd64.deb" >/dev/null
-          file "$out_dir/Ratspeak-x86_64.AppImage"
+          set -euo pipefail
+          test -f Ratspeak/dist/linux/Ratspeak-amd64.deb
+          test -f Ratspeak/dist/linux/Ratspeak-arm64.deb
+          amd64_arch="$(dpkg-deb --field Ratspeak/dist/linux/Ratspeak-amd64.deb Architecture)"
+          arm64_arch="$(dpkg-deb --field Ratspeak/dist/linux/Ratspeak-arm64.deb Architecture)"
+          test "$amd64_arch" = "amd64"
+          test "$arm64_arch" = "arm64"
+          find Ratspeak/dist/linux -maxdepth 1 -type f -print | sort
 
       - name: Write Linux checksums
         shell: bash
         working-directory: Ratspeak
         run: |
+          set -euo pipefail
           checksum_file="checksums-linux.txt"
           : > "$checksum_file"
           find dist/linux -type f -print0 |
@@ -157,7 +225,7 @@ jobs:
             done
           test -s "$checksum_file"
 
-      - name: Upload artifacts
+      - name: Upload combined artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ratspeak-linux

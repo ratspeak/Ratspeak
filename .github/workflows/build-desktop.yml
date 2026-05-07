@@ -21,13 +21,20 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-            artifact_name: ratspeak-linux
+            artifact_name: ratspeak-linux-amd64
+            build_command: cargo tauri build --bundles deb appimage rpm
             artifact_path: |
               Ratspeak/src-tauri/target/release/bundle/deb/*.deb
               Ratspeak/src-tauri/target/release/bundle/appimage/*.AppImage
               Ratspeak/src-tauri/target/release/bundle/rpm/*.rpm
+          - os: ubuntu-22.04-arm
+            artifact_name: ratspeak-linux-arm64
+            build_command: cargo tauri build --bundles deb
+            artifact_path: |
+              Ratspeak/src-tauri/target/release/bundle/deb/*.deb
           - os: windows-latest
             artifact_name: ratspeak-windows
+            build_command: cargo tauri build
             artifact_path: |
               Ratspeak/src-tauri/target/release/bundle/msi/*.msi
               Ratspeak/src-tauri/target/release/bundle/nsis/*.exe
@@ -68,7 +75,7 @@ jobs:
             Ratspeak/src-tauri
 
       - name: Install Linux system deps
-        if: matrix.os == 'ubuntu-22.04'
+        if: startsWith(matrix.os, 'ubuntu-')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -79,7 +86,10 @@ jobs:
             librsvg2-dev \
             libudev-dev \
             pkg-config \
-            patchelf
+            patchelf \
+            libfuse2 \
+            rpm \
+            file
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2.0" --locked
@@ -91,7 +101,7 @@ jobs:
 
       - name: Build Tauri desktop app
         working-directory: Ratspeak/src-tauri
-        run: cargo tauri build
+        run: ${{ matrix.build_command }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
