@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
-          ref: v0.9.1
+          ref: v0.9.2
           path: rsReticulum
 
       - name: Checkout rsLXMF
