@@ -483,6 +483,16 @@ RS.gestures = RS.gestures || {};
 
     // attachPullToRefresh — async onRefresh hook (sync or Promise).
     // Idempotent via `el._ptrAttached`.
+    //
+    // State machine:
+    //   idle → (touchstart on scrollTop===0) pulling → (touchend ≥ threshold)
+    //   refreshing → (settle chain done) idle.
+    //
+    // All exits route through `_reset()` so a single reset path handles
+    // touchcancel, watchdog timeouts, and detach. The watchdog catches the
+    // case where an in-flight refresh's setTimeouts get throttled (background
+    // tab) or the `onRefresh` promise leaks — without it, `refreshing=true`
+    // can pin and block every subsequent pull until reload.
     G.attachPullToRefresh = function(el, opts) {
         opts = opts || {};
         if (!isMobile()) return function() {};
@@ -495,6 +505,9 @@ RS.gestures = RS.gestures || {};
         var hapticAt = opts.hapticAt || {};
         var onRefresh = opts.onRefresh || function() {};
         var skipIf = opts.skipIf || null;
+        // Watchdog grace = expected total settle time + 2s slack. Anything
+        // longer than this is a stuck state and we forcibly reset.
+        var WATCHDOG_GRACE_MS = 2000;
 
         var indicator = document.createElement('div');
         indicator.className = 'ptr-indicator';
@@ -507,6 +520,36 @@ RS.gestures = RS.gestures || {};
         var arrowSvg = indicator.querySelector('.ptr-arrow svg');
 
         var startY = 0, pulling = false, refreshing = false;
+        // All in-flight setTimeouts are tracked so `_reset()` can cancel them
+        // atomically. Without this, a stale `setTimeout` fires after reset
+        // and re-pollutes the indicator state.
+        var settleTimers = [];
+        var watchdogTimer = null;
+
+        function _trackTimer(id) {
+            settleTimers.push(id);
+            return id;
+        }
+
+        function _clearTimers() {
+            for (var i = 0; i < settleTimers.length; i++) {
+                clearTimeout(settleTimers[i]);
+            }
+            settleTimers = [];
+            if (watchdogTimer) {
+                clearTimeout(watchdogTimer);
+                watchdogTimer = null;
+            }
+        }
+
+        function _reset() {
+            _clearTimers();
+            pulling = false;
+            refreshing = false;
+            indicator.classList.remove('dragging', 'pulling', 'refreshing', 'success');
+            indicator.style.top = '';
+            if (arrowSvg) arrowSvg.style.transform = '';
+        }
 
         function _onTouchStart(e) {
             if (skipIf && skipIf(e)) return;
@@ -535,14 +578,18 @@ RS.gestures = RS.gestures || {};
             indicator.classList.remove('refreshing');
             indicator.classList.add('success');
             if (hapticAt.success) _hapticByName(hapticAt.success);
-            setTimeout(function() {
+            _trackTimer(setTimeout(function() {
                 indicator.classList.remove('success');
                 indicator.style.top = '-40px';
-                setTimeout(function() {
+                _trackTimer(setTimeout(function() {
                     refreshing = false;
                     indicator.style.top = '';
-                }, 350);
-            }, successMs);
+                    if (watchdogTimer) {
+                        clearTimeout(watchdogTimer);
+                        watchdogTimer = null;
+                    }
+                }, 350));
+            }, successMs));
         }
 
         function _onTouchEnd() {
@@ -557,11 +604,11 @@ RS.gestures = RS.gestures || {};
                 indicator.style.top = '12px';
                 if (hapticAt.trigger) _hapticByName(hapticAt.trigger);
 
-                setTimeout(function() {
+                _trackTimer(setTimeout(function() {
                     indicator.classList.remove('pulling');
                     indicator.classList.add('refreshing');
                     arrowSvg.style.transform = '';
-                }, 50);
+                }, 50));
 
                 // Wait for refresh promise + minimum-visible-duration.
                 var refreshStarted = performance.now();
@@ -571,26 +618,72 @@ RS.gestures = RS.gestures || {};
                     ? refreshResult.catch(function() {})
                     : Promise.resolve();
                 refreshDone.then(function() {
+                    if (!refreshing) return;       // _reset() raced us
                     var elapsed = performance.now() - refreshStarted;
                     var remaining = Math.max(0, minRefreshMs - elapsed);
-                    setTimeout(_settleRefreshState, remaining);
+                    _trackTimer(setTimeout(_settleRefreshState, remaining));
                 });
+
+                // Watchdog: forcibly reset if the settle chain hasn't completed
+                // within the expected total + 2s slack. Defends against:
+                //   - browser timer throttling when the tab is backgrounded
+                //   - `onRefresh` returning a Promise that never resolves
+                //   - any code path that leaves `refreshing=true` orphaned
+                var watchdogBudget = minRefreshMs + successMs + 350 + WATCHDOG_GRACE_MS;
+                watchdogTimer = setTimeout(function() {
+                    if (refreshing) {
+                        if (window.RS && typeof window.RS.diag === 'function') {
+                            window.RS.diag('warn', '[gestures] PTR watchdog firing — forcing reset');
+                        }
+                        _reset();
+                    }
+                }, watchdogBudget);
             } else {
                 indicator.style.top = '-40px';
                 arrowSvg.style.transform = '';
-                setTimeout(function() { indicator.style.top = ''; }, 350);
+                _trackTimer(setTimeout(function() { indicator.style.top = ''; }, 350));
+            }
+        }
+
+        function _onTouchCancel() {
+            // System gesture arbitration, modal opening, or app backgrounding
+            // can cancel the touch sequence without dispatching touchend. If
+            // we were mid-pull, fully reset so the indicator does not get
+            // pinned at a stale top value. If we were already refreshing,
+            // touchcancel can't fire (no active touch) — but if it somehow
+            // does, leave the in-flight settle chain + watchdog to handle it.
+            if (pulling) _reset();
+        }
+
+        function _onVisibilityChange() {
+            // Coming back from background: a settle chain that crossed the
+            // visibility transition may have been throttled. The watchdog
+            // already covers this, but eagerly resetting on visibility
+            // restore avoids the user seeing a still-spinning indicator
+            // for the full watchdog grace window.
+            if (!document.hidden && refreshing) {
+                // Give the settle chain ~250ms to complete naturally before
+                // we force-reset, in case timers fire on the next tick.
+                setTimeout(function() {
+                    if (!document.hidden && refreshing) _reset();
+                }, 250);
             }
         }
 
         el.addEventListener('touchstart', _onTouchStart, { passive: true });
         el.addEventListener('touchmove', _onTouchMove, { passive: false });
         el.addEventListener('touchend', _onTouchEnd, { passive: true });
+        el.addEventListener('touchcancel', _onTouchCancel, { passive: true });
+        document.addEventListener('visibilitychange', _onVisibilityChange);
         el._ptrAttached = true;
 
         return function detach() {
+            _reset();
             el.removeEventListener('touchstart', _onTouchStart);
             el.removeEventListener('touchmove', _onTouchMove);
             el.removeEventListener('touchend', _onTouchEnd);
+            el.removeEventListener('touchcancel', _onTouchCancel);
+            document.removeEventListener('visibilitychange', _onVisibilityChange);
             if (indicator.parentNode) indicator.parentNode.removeChild(indicator);
             el._ptrAttached = false;
         };
