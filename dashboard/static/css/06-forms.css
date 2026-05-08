@@ -318,6 +318,9 @@
     background: var(--bg-elevated, transparent);
     overflow: hidden;
 }
+.system-subsection--cache {
+    border-left: 3px solid rgba(var(--accent-rgb), 0.4);
+}
 .system-subsection--destructive {
     border-left: 3px solid rgba(var(--status-error-rgb), 0.4);
 }
