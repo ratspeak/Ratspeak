@@ -20,8 +20,8 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: v0.9.3-autoif.2
-  RATSPEAK_RSLXMF_REF: v0.9.1-autoif.1
+  RATSPEAK_RSRETICULUM_REF: v0.9.3
+  RATSPEAK_RSLXMF_REF: v0.9.1
 
 jobs:
   build:

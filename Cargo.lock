@@ -2616,7 +2616,7 @@ dependencies = [
 
 [[package]]
 name = "lxmf-core"
-version = "0.9.1-autoif.1"
+version = "0.9.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3744,7 +3744,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-core"
-version = "1.0.10-autoif.2"
+version = "1.0.10"
 dependencies = [
  "chrono",
  "serde",
@@ -3755,7 +3755,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-db"
-version = "1.0.10-autoif.2"
+version = "1.0.10"
 dependencies = [
  "hex",
  "lrgp",
@@ -3772,7 +3772,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-runtime"
-version = "1.0.10-autoif.2"
+version = "1.0.10"
 dependencies = [
  "base64 0.22.1",
  "btleplug",
@@ -3813,7 +3813,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-tauri"
-version = "1.0.10-autoif.2"
+version = "1.0.10"
 dependencies = [
  "base64 0.22.1",
  "btleplug",
@@ -3996,7 +3996,7 @@ dependencies = [
 
 [[package]]
 name = "rns-crypto"
-version = "0.9.3-autoif.2"
+version = "0.9.3"
 dependencies = [
  "aes",
  "cbc",
@@ -4014,7 +4014,7 @@ dependencies = [
 
 [[package]]
 name = "rns-identity"
-version = "0.9.3-autoif.2"
+version = "0.9.3"
 dependencies = [
  "hex",
  "rand 0.8.5",
@@ -4030,7 +4030,7 @@ dependencies = [
 
 [[package]]
 name = "rns-interface"
-version = "0.9.3-autoif.2"
+version = "0.9.3"
 dependencies = [
  "bluer",
  "btleplug",
@@ -4060,7 +4060,7 @@ dependencies = [
 
 [[package]]
 name = "rns-link"
-version = "0.9.3-autoif.2"
+version = "0.9.3"
 dependencies = [
  "hex",
  "rand 0.8.5",
@@ -4075,7 +4075,7 @@ dependencies = [
 
 [[package]]
 name = "rns-protocol"
-version = "0.9.3-autoif.2"
+version = "0.9.3"
 dependencies = [
  "bzip2",
  "hex",
@@ -4091,7 +4091,7 @@ dependencies = [
 
 [[package]]
 name = "rns-runtime"
-version = "0.9.3-autoif.2"
+version = "0.9.3"
 dependencies = [
  "bytes",
  "hex",
@@ -4116,7 +4116,7 @@ dependencies = [
 
 [[package]]
 name = "rns-transport"
-version = "0.9.3-autoif.2"
+version = "0.9.3"
 dependencies = [
  "bytes",
  "hex",
@@ -4135,7 +4135,7 @@ dependencies = [
 
 [[package]]
 name = "rns-wire"
-version = "0.9.3-autoif.2"
+version = "0.9.3"
 dependencies = [
  "rns-crypto",
  "sha2",
