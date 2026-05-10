@@ -1542,6 +1542,8 @@ pub async fn add_lora_interface(
         );
         (existing_rnode_port, config_written)
     });
+    #[cfg(not(any(feature = "ble", target_os = "android")))]
+    let _ = &existing_rnode_port;
 
     if !config_written {
         emit_op_status_broadcast(

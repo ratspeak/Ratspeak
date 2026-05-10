@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
 
+env:
+  RATSPEAK_RSRETICULUM_REF: v0.9.3-autoif.1
+  RATSPEAK_RSLXMF_REF: v0.9.1-autoif.1
+
 jobs:
   build:
     name: Linux ${{ matrix.arch }}
@@ -53,14 +57,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
-          ref: v0.9.2
+          ref: ${{ env.RATSPEAK_RSRETICULUM_REF }}
           path: rsReticulum
 
       - name: Checkout rsLXMF
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/rsLXMF
-          ref: v0.9.0
+          ref: ${{ env.RATSPEAK_RSLXMF_REF }}
           path: rsLXMF
 
       - name: Checkout lrgp-rs
@@ -240,6 +244,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name, '-') }}
           files: |
             Ratspeak/dist/linux/*
             Ratspeak/checksums-linux.txt
