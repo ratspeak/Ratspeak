@@ -203,85 +203,12 @@ function renderSettingsIfaceSection(parent, title, interfaces, ifaceType) {
     section.appendChild(titleEl);
 
     interfaces.forEach(function(iface) {
-        var row = document.createElement('div');
-        row.className = 'hub-iface-row';
-
-        var statusDot = document.createElement('span');
-        statusDot.className = 'hub-iface-status';
-        statusDot.dataset.ifaceName = iface.name;
-        var liveData = getInterfaceLiveStatus(iface.name);
-        if (liveData) {
-            statusDot.classList.add(liveData.online ? 'up' : 'down');
-            statusDot.title = liveData.online ? 'Connected' : 'Disconnected';
-        } else {
-            statusDot.classList.add('unknown');
-            statusDot.title = 'Waiting for status...';
+        if (RS.ui && typeof RS.ui.createInterfaceRow === 'function') {
+            section.appendChild(RS.ui.createInterfaceRow(iface, ifaceType, {
+                editable: true,
+                disconnectBle: true
+            }));
         }
-
-        var nameSpan = document.createElement('span');
-        nameSpan.className = 'hub-iface-name';
-        nameSpan.textContent = iface.name;
-        nameSpan.title = iface.name;
-
-        var detailSpan = document.createElement('span');
-        detailSpan.className = 'hub-iface-detail';
-        detailSpan.textContent = getIfaceDetailText(iface, ifaceType);
-
-        var actions = document.createElement('span');
-        actions.style.display = 'flex';
-        actions.style.gap = '4px';
-        actions.style.flexShrink = '0';
-
-        var isBleRnode = ifaceType === 'rnode' && (iface.port || '').indexOf('ble://') === 0;
-        var isDisconnectable = isBleRnode;
-
-        if (typeof isEditableInterfaceType === 'function' && isEditableInterfaceType(ifaceType)) {
-            var editBtn = document.createElement('button');
-            editBtn.className = 'nr-btn-sm nr-btn-muted';
-            editBtn.textContent = 'Edit';
-            editBtn.title = ifaceType === 'rnode' ? 'Edit radio settings' : 'Edit interface';
-            editBtn.addEventListener('click', function() {
-                if (typeof openInterfaceEditModal === 'function') {
-                    openInterfaceEditModal(ifaceType, iface.name, iface);
-                }
-            });
-            actions.appendChild(editBtn);
-        }
-
-        var removeBtn = document.createElement('button');
-        removeBtn.className = 'danger-btn-sm';
-        removeBtn.textContent = isDisconnectable ? 'Disconnect' : 'Remove';
-        removeBtn.title = isDisconnectable ? 'Disconnect this device' : 'Remove this interface';
-        removeBtn.addEventListener('click', function() {
-            var msg, confirmText, evtType;
-            if (isBleRnode) {
-                msg = 'Disconnect BLE LoRa radio "' + iface.name + '"?';
-                confirmText = 'Disconnect';
-                evtType = 'ble_rnode';
-            } else {
-                msg = 'Remove "' + iface.name + '"?';
-                confirmText = 'Remove';
-                evtType = ifaceType;
-            }
-            rsConfirm({ message: msg, danger: true, confirmText: confirmText }).then(function(ok) {
-                if (ok) {
-                    if (evtType === 'ble_rnode') {
-                        RS.invoke('disconnect_ble_rnode', { name: iface.name }).catch(function(err) {
-                            showToast((err && err.message) || 'Failed to disconnect BLE LoRa radio', 'toast-red', 8000);
-                        });
-                    } else {
-                        removeHubInterface(ifaceType, iface.name);
-                    }
-                }
-            });
-        });
-        actions.appendChild(removeBtn);
-
-        row.appendChild(statusDot);
-        row.appendChild(nameSpan);
-        row.appendChild(detailSpan);
-        row.appendChild(actions);
-        section.appendChild(row);
     });
 
     parent.appendChild(section);
@@ -445,52 +372,28 @@ RS.listen('lxmf_identity', function(data) {
     }
 });
 
-var _transportLabels = { auto: 'AUTO', on: 'ON', off: 'OFF' };
-
 function applyTransportModePayload(data) {
-    var mode = (data && data.mode) || 'off';
-    var badge = document.getElementById('transport-mode-select');
-    if (badge) {
-        badge.textContent = _transportLabels[mode] || mode.toUpperCase();
-        badge.setAttribute('data-value', mode);
-    }
-    if (data && data.suppressed) {
-        showToast('Transport Mode is handled by the shared instance on this device.', 'toast-yellow', 5000);
+    if (RS.ui && typeof RS.ui.applyTransportModePayload === 'function') {
+        RS.ui.applyTransportModePayload('transport-mode-select', data, { toastSuppressed: true });
     }
 }
 
 var _settingsTransportBadge = document.getElementById('transport-mode-select');
 if (_settingsTransportBadge) {
     function _openTransportChoice() {
-        rsChoice({
-            title: 'Transport Mode',
-            message: 'Relay packets for other nodes on the network.',
-            choices: [
-                { label: 'AUTO', value: 'auto', hint: 'Enables only on suitable non-LoRa interfaces.' },
-                { label: 'ON', value: 'on', hint: 'Always relay packets.' },
-                { label: 'OFF', value: 'off', hint: 'Never relay packets.' }
-            ]
-        }).then(function(mode) {
-            if (!mode) return;
-            _settingsTransportBadge.textContent = _transportLabels[mode] || mode;
-            _settingsTransportBadge.setAttribute('data-value', mode);
-
-            var networkType = 'unknown';
-            if (navigator.connection && navigator.connection.type) {
-                networkType = navigator.connection.type;
-            } else if (navigator.connection && navigator.connection.effectiveType) {
-                networkType = navigator.connection.effectiveType;
-            }
-            RS.invoke('set_transport_mode', { args: { mode: mode, network_type: networkType } }).catch(function(err) {
-                showToast((err && err.message) || 'Failed to update transport mode', 'toast-red', 8000);
-            });
-        });
+        if (RS.ui && typeof RS.ui.openTransportModeChoice === 'function') {
+            RS.ui.openTransportModeChoice(_settingsTransportBadge);
+        }
     }
 
-    _settingsTransportBadge.addEventListener('click', _openTransportChoice);
-    _settingsTransportBadge.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openTransportChoice(); }
-    });
+    if (RS.ui && typeof RS.ui.bindTransportChoice === 'function') {
+        RS.ui.bindTransportChoice(_settingsTransportBadge);
+    } else {
+        _settingsTransportBadge.addEventListener('click', _openTransportChoice);
+        _settingsTransportBadge.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openTransportChoice(); }
+        });
+    }
 }
 
 // Network-change detection is native (NetworkCallback / NWPathMonitor invoking

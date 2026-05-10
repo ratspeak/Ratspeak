@@ -53,19 +53,11 @@ function openNodeModal(nodeId) {
 
     loadHubInterfaces();
 
-    var modal = document.getElementById('node-modal');
-    var overlay = document.getElementById('node-modal-overlay');
-    modal.classList.add('open');
-    if (overlay) overlay.classList.add('active');
-    _trapFocus(modal);
+    RS.ui.openExistingSheet('node-modal', 'node-modal-overlay');
 }
 
 function closeNodeModal() {
-    var modal = document.getElementById('node-modal');
-    var overlay = document.getElementById('node-modal-overlay');
-    _releaseFocus(modal);
-    modal.classList.remove('open');
-    if (overlay) overlay.classList.remove('active');
+    RS.ui.closeExistingSheet('node-modal', 'node-modal-overlay');
     currentModalNode = null;
 }
 
@@ -85,49 +77,28 @@ document.getElementById('modal-name').addEventListener('input', function() {
 
 });
 
-var _modalTransportLabels = { auto: 'AUTO', on: 'ON', off: 'OFF' };
-
 function applyModalTransportModePayload(data) {
-    var mode = (data && data.mode) || 'off';
-    var badge = document.getElementById('modal-transport-select');
-    if (badge) {
-        badge.textContent = _modalTransportLabels[mode] || mode.toUpperCase();
-        badge.setAttribute('data-value', mode);
+    if (RS.ui && typeof RS.ui.applyTransportModePayload === 'function') {
+        RS.ui.applyTransportModePayload('modal-transport-select', data);
     }
 }
 
 var _modalTransportBadge = document.getElementById('modal-transport-select');
 if (_modalTransportBadge) {
     function _openModalTransportChoice() {
-        rsChoice({
-            title: 'Transport Mode',
-            message: 'Relay packets for other nodes on the network.',
-            choices: [
-                { label: 'AUTO', value: 'auto', hint: 'Enables only on suitable non-LoRa interfaces.' },
-                { label: 'ON', value: 'on', hint: 'Always relay packets.' },
-                { label: 'OFF', value: 'off', hint: 'Never relay packets.' }
-            ]
-        }).then(function(mode) {
-            if (!mode) return;
-            _modalTransportBadge.textContent = _modalTransportLabels[mode] || mode;
-            _modalTransportBadge.setAttribute('data-value', mode);
-
-            var networkType = 'unknown';
-            if (navigator.connection && navigator.connection.type) {
-                networkType = navigator.connection.type;
-            } else if (navigator.connection && navigator.connection.effectiveType) {
-                networkType = navigator.connection.effectiveType;
-            }
-            RS.invoke('set_transport_mode', { args: { mode: mode, network_type: networkType } }).catch(function(err) {
-                showToast((err && err.message) || 'Failed to update transport mode', 'toast-red', 8000);
-            });
-        });
+        if (RS.ui && typeof RS.ui.openTransportModeChoice === 'function') {
+            RS.ui.openTransportModeChoice(_modalTransportBadge);
+        }
     }
 
-    _modalTransportBadge.addEventListener('click', _openModalTransportChoice);
-    _modalTransportBadge.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openModalTransportChoice(); }
-    });
+    if (RS.ui && typeof RS.ui.bindTransportChoice === 'function') {
+        RS.ui.bindTransportChoice(_modalTransportBadge);
+    } else {
+        _modalTransportBadge.addEventListener('click', _openModalTransportChoice);
+        _modalTransportBadge.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openModalTransportChoice(); }
+        });
+    }
 }
 
 RS.listen('transport_mode_updated', function(data) {
@@ -216,45 +187,9 @@ function renderModalInterfaceSection(containerId, interfaces, ifaceType) {
 
     container.innerHTML = '';
     interfaces.forEach(function(iface) {
-        var row = document.createElement('div');
-        row.className = 'hub-iface-row';
-
-        var statusDot = document.createElement('span');
-        statusDot.className = 'hub-iface-status';
-        statusDot.dataset.ifaceName = iface.name;
-        var liveData = getInterfaceLiveStatus(iface.name);
-        if (liveData) {
-            statusDot.classList.add(liveData.online ? 'up' : 'down');
-            statusDot.title = liveData.online ? 'Connected' : 'Disconnected';
-        } else {
-            statusDot.classList.add('unknown');
-            statusDot.title = 'Waiting for status...';
+        if (RS.ui && typeof RS.ui.createInterfaceRow === 'function') {
+            container.appendChild(RS.ui.createInterfaceRow(iface, ifaceType));
         }
-
-        var nameSpan = document.createElement('span');
-        nameSpan.className = 'hub-iface-name';
-        nameSpan.textContent = iface.name;
-        nameSpan.title = iface.name;
-
-        var detailSpan = document.createElement('span');
-        detailSpan.className = 'hub-iface-detail';
-        detailSpan.textContent = getIfaceDetailText(iface, ifaceType);
-
-        var removeBtn = document.createElement('button');
-        removeBtn.className = 'danger-btn-sm';
-        removeBtn.textContent = 'Remove';
-        removeBtn.title = 'Remove this interface';
-        removeBtn.addEventListener('click', function() {
-            rsConfirm({ message: 'Remove "' + iface.name + '"?', danger: true, confirmText: 'Remove' }).then(function(ok) {
-                if (ok) removeHubInterface(ifaceType, iface.name);
-            });
-        });
-
-        row.appendChild(statusDot);
-        row.appendChild(nameSpan);
-        row.appendChild(detailSpan);
-        row.appendChild(removeBtn);
-        container.appendChild(row);
     });
 }
 
@@ -727,19 +662,11 @@ function openRnodeModal(mode, editIface) {
         catalogReady.then(_rnodeApplyDefaultRadioControls).catch(function() {});
     }
 
-    var modal = document.getElementById('rnode-modal');
-    var overlay = document.getElementById('rnode-modal-overlay');
-    modal.classList.add('open');
-    if (overlay) overlay.classList.add('active');
-    _trapFocus(modal);
+    RS.ui.openExistingSheet('rnode-modal', 'rnode-modal-overlay');
 }
 
 function closeRnodeModal() {
-    var modal = document.getElementById('rnode-modal');
-    var overlay = document.getElementById('rnode-modal-overlay');
-    _releaseFocus(modal);
-    modal.classList.remove('open');
-    if (overlay) overlay.classList.remove('active');
+    RS.ui.closeExistingSheet('rnode-modal', 'rnode-modal-overlay');
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
     _androidUsbSelectedDevice = null;
@@ -1344,11 +1271,7 @@ function openConnectModal(editContext) {
         bbRow.style.display = (isDesktop || isBackboneEdit) ? '' : 'none';
     }
     loadConnectionHistory();
-    var modal = document.getElementById('connect-modal');
-    var overlay = document.getElementById('connect-modal-overlay');
-    modal.classList.add('open');
-    if (overlay) overlay.classList.add('active');
-    _trapFocus(modal);
+    RS.ui.openExistingSheet('connect-modal', 'connect-modal-overlay');
 }
 
 function loadConnectionHistory() {
@@ -1404,11 +1327,7 @@ function loadConnectionHistory() {
 }
 
 function closeConnectModal() {
-    var modal = document.getElementById('connect-modal');
-    var overlay = document.getElementById('connect-modal-overlay');
-    _releaseFocus(modal);
-    modal.classList.remove('open');
-    if (overlay) overlay.classList.remove('active');
+    RS.ui.closeExistingSheet('connect-modal', 'connect-modal-overlay');
     var submitBtn = document.getElementById('connect-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = 'Connect';
@@ -1570,19 +1489,11 @@ function openHostModal(editContext) {
         submitBtn.className = 'nr-btn';
         submitBtn.disabled = false;
     }
-    var modal = document.getElementById('host-modal');
-    var overlay = document.getElementById('host-modal-overlay');
-    modal.classList.add('open');
-    if (overlay) overlay.classList.add('active');
-    _trapFocus(modal);
+    RS.ui.openExistingSheet('host-modal', 'host-modal-overlay');
 }
 
 function closeHostModal() {
-    var modal = document.getElementById('host-modal');
-    var overlay = document.getElementById('host-modal-overlay');
-    _releaseFocus(modal);
-    modal.classList.remove('open');
-    if (overlay) overlay.classList.remove('active');
+    RS.ui.closeExistingSheet('host-modal', 'host-modal-overlay');
     var submitBtn = document.getElementById('host-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = 'Start Hosting';
@@ -1642,19 +1553,11 @@ function openBackboneHostModal(editContext) {
         submitBtn.className = 'nr-btn';
         submitBtn.disabled = false;
     }
-    var modal = document.getElementById('backbone-host-modal');
-    var overlay = document.getElementById('backbone-host-modal-overlay');
-    modal.classList.add('open');
-    if (overlay) overlay.classList.add('active');
-    _trapFocus(modal);
+    RS.ui.openExistingSheet('backbone-host-modal', 'backbone-host-modal-overlay');
 }
 
 function closeBackboneHostModal() {
-    var modal = document.getElementById('backbone-host-modal');
-    var overlay = document.getElementById('backbone-host-modal-overlay');
-    _releaseFocus(modal);
-    modal.classList.remove('open');
-    if (overlay) overlay.classList.remove('active');
+    RS.ui.closeExistingSheet('backbone-host-modal', 'backbone-host-modal-overlay');
     var submitBtn = document.getElementById('backbone-host-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = 'Start Hosting';

@@ -2626,76 +2626,60 @@ function closeFabContactPicker() {
     });
 })();
 
-function openChatHeaderDropdown() {
+function openChatHeaderDropdown(triggerEl) {
     if (!lxmfActiveContact) return;
 
     var chatHeader = document.getElementById('lxmf-chat-header');
     if (!chatHeader) return;
 
-    // Toggle: second open closes the dropdown.
-    var existing = document.querySelector('.chat-header-dropdown');
-    if (existing) { existing.remove(); return; }
-
     var contact = lxmfContacts.find(function(c) { return c.hash === lxmfActiveContact; });
-    var dd = document.createElement('div');
-    dd.className = 'chat-header-dropdown';
-
-    var renameItem = document.createElement('div');
-    renameItem.className = 'hash-dropdown-item';
-    renameItem.textContent = contact ? 'Rename Contact' : 'Add Contact';
-    renameItem.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        dd.remove();
-        var currentName = contact ? contact.display_name : '';
-        rsPrompt({ message: contact ? 'New name:' : 'Contact name:', defaultValue: currentName || '', placeholder: 'Display name' }).then(function(newName) {
-            if (newName !== null) {
-                RS.invoke('add_contact', { args: { hash: lxmfActiveContact, display_name: newName.trim() || null } }).catch(function() {});
+    var menuTrigger = triggerEl || document.getElementById('chat-header-menu-btn') || chatHeader;
+    var currentName = contact ? contact.display_name : '';
+    var items = [
+        {
+            label: contact ? 'Rename Contact' : 'Add Contact',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+            onSelect: function() {
+                rsPrompt({ message: contact ? 'New name:' : 'Contact name:', defaultValue: currentName || '', placeholder: 'Display name' }).then(function(newName) {
+                    if (newName !== null) {
+                        RS.invoke('add_contact', { args: { hash: lxmfActiveContact, display_name: newName.trim() || null } }).catch(function() {});
+                    }
+                });
             }
-        });
-    });
-    dd.appendChild(renameItem);
+        },
+        {
+            label: 'About',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
+            onSelect: function() { showContactAbout(lxmfActiveContact); }
+        },
+        {
+            label: 'Copy LXMF Hash',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+            onSelect: function() {
+                if (!lxmfActiveContact) return;
+                navigator.clipboard.writeText(lxmfActiveContact).then(function() {
+                    showCopyConfirmationToast('Hash');
+                }).catch(function() {
+                    showToast('Could not copy', 'toast-orange', 1500);
+                });
+            }
+        },
+        {
+            label: 'Delete Conversation',
+            danger: true,
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>',
+            onSelect: function() {
+                var name = _conversationNameInfo(lxmfActiveContact, null, false).name;
+                showConversationDeleteDialog(lxmfActiveContact, name);
+            }
+        }
+    ];
 
-    var aboutItem = document.createElement('div');
-    aboutItem.className = 'hash-dropdown-item';
-    aboutItem.textContent = 'About';
-    aboutItem.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        dd.remove();
-        showContactAbout(lxmfActiveContact);
-    });
-    dd.appendChild(aboutItem);
-
-    var copyItem = document.createElement('div');
-    copyItem.className = 'hash-dropdown-item';
-    copyItem.textContent = 'Copy LXMF Hash';
-    copyItem.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        dd.remove();
-        if (!lxmfActiveContact) return;
-        navigator.clipboard.writeText(lxmfActiveContact).then(function() {
-            showCopyConfirmationToast('Hash');
-        }).catch(function() {
-            showToast('Could not copy', 'toast-orange', 1500);
-        });
-    });
-    dd.appendChild(copyItem);
-
-    var sep = document.createElement('div');
-    sep.className = 'hash-dropdown-separator';
-    dd.appendChild(sep);
-
-    var deleteItem = document.createElement('div');
-    deleteItem.className = 'hash-dropdown-item hash-dropdown-item-danger';
-    deleteItem.textContent = 'Delete Conversation';
-    deleteItem.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        dd.remove();
-        var name = _conversationNameInfo(lxmfActiveContact, null, false).name;
-        showConversationDeleteDialog(lxmfActiveContact, name);
-    });
-    dd.appendChild(deleteItem);
-
-    chatHeader.appendChild(dd);
+    if (RS.ui && typeof RS.ui.openActionMenu === 'function') {
+        RS.ui.openActionMenu(menuTrigger, items, { title: 'Conversation' });
+    } else if (typeof actionPopover === 'function') {
+        actionPopover(menuTrigger, items);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -3053,7 +3037,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (chatHeaderMenuBtn) {
         chatHeaderMenuBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            openChatHeaderDropdown();
+            openChatHeaderDropdown(e.currentTarget);
         });
     }
 
@@ -3062,23 +3046,16 @@ document.addEventListener('DOMContentLoaded', function() {
     if (contactAvatar) {
         contactAvatar.addEventListener('click', function(e) {
             e.stopPropagation();
-            openChatHeaderDropdown();
+            openChatHeaderDropdown(e.currentTarget);
         });
     }
     var headerInfo = chatHeader ? chatHeader.querySelector('.lxmf-chat-header-info') : null;
     if (headerInfo) {
         headerInfo.addEventListener('click', function(e) {
             e.stopPropagation();
-            openChatHeaderDropdown();
+            openChatHeaderDropdown(e.currentTarget);
         });
     }
-
-    document.addEventListener('click', function(e) {
-        if (!e.target.closest('.lxmf-chat-header')) {
-            var dropdown = document.querySelector('.chat-header-dropdown');
-            if (dropdown) dropdown.remove();
-        }
-    });
 
     if (lxmfContacts.length > 0) {
         RS.invoke('check_contact_status').catch(function() {});

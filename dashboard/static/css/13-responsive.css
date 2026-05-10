@@ -2269,12 +2269,6 @@
         flex: 1;
         min-height: 44px;
     }
-    .games-delete-sheet-body {
-        padding: 0 var(--space-8) var(--space-2);
-        color: var(--text-secondary);
-        font-size: var(--text-base);
-        line-height: 1.4;
-    }
 }
 
 @media (max-width: 768px) {

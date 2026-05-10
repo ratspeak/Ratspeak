@@ -1086,9 +1086,13 @@ function showIdentityModal(title, bodyHtml, onConfirm, confirmClass) {
         }
     };
 
-    var overlay = document.getElementById('identity-modal-overlay');
-    modal.classList.add('open');
-    if (overlay) overlay.classList.add('active');
+    if (RS.ui && typeof RS.ui.openExistingSheet === 'function') {
+        RS.ui.openExistingSheet('identity-modal', 'identity-modal-overlay');
+    } else {
+        var overlay = document.getElementById('identity-modal-overlay');
+        modal.classList.add('open');
+        if (overlay) overlay.classList.add('active');
+    }
 
     modal.onkeydown = function(e) {
         if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
@@ -1111,8 +1115,12 @@ function closeIdentityModal() {
     if (title && title.textContent.indexOf('Import') !== -1) {
         resetPendingIdentityImport();
     }
-    if (modal) modal.classList.remove('open');
-    if (overlay) overlay.classList.remove('active');
+    if (RS.ui && typeof RS.ui.closeExistingSheet === 'function') {
+        RS.ui.closeExistingSheet('identity-modal', 'identity-modal-overlay');
+    } else {
+        if (modal) modal.classList.remove('open');
+        if (overlay) overlay.classList.remove('active');
+    }
     var confirmBtn = document.getElementById('identity-modal-confirm');
     if (confirmBtn) {
         confirmBtn.disabled = false;

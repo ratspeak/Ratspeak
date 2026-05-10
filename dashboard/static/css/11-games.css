@@ -1098,24 +1098,6 @@
     background: transparent;
     color: var(--text-secondary);
 }
-.games-sheet-danger-btn {
-    border-color: var(--status-error);
-    background: var(--status-error);
-    color: var(--on-accent);
-}
-#games-delete-sheet .games-sheet-send-btn,
-#games-delete-sheet .games-sheet-cancel-btn {
-    width: 100%;
-}
-#games-delete-sheet .games-sheet-cancel-btn {
-    margin-top: var(--space-2);
-}
-.games-delete-sheet-body {
-    color: var(--text-secondary);
-    font-size: var(--text-sm);
-    line-height: 1.45;
-}
-
 .ttt-board-wrap {
     display: flex;
     flex-direction: column;

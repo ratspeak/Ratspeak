@@ -835,20 +835,6 @@
     cursor: pointer;
     position: relative;
 }
-.chat-header-dropdown {
-    position: absolute;
-    top: 100%;
-    left: 40px;
-    z-index: var(--z-dropdown);
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-xl);
-    min-width: 160px;
-    padding: var(--space-2) 0;
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-}
 
 .emoji-btn {
     background: var(--surface-elevation-2);

@@ -325,55 +325,17 @@
 
     function _showDeleteSheet(sessionId) {
         if (typeof haptic === 'function') haptic(10);
-        var existing = document.getElementById('games-delete-sheet-overlay');
-        if (existing) existing.remove();
-        existing = document.getElementById('games-delete-sheet');
-        if (existing) existing.remove();
-
-        var overlayHtml = '<div class="bottom-sheet-overlay" id="games-delete-sheet-overlay"></div>';
-        var sheetHtml = '<div class="bottom-sheet" id="games-delete-sheet">' +
-            '<div class="bottom-sheet-handle"></div>' +
-            '<div class="bottom-sheet-body">' +
-                '<div class="games-sheet-header">Remove game?</div>' +
-                '<div class="games-delete-sheet-body">Remove this game from your history? This only affects your local list — the other player keeps their copy.</div>' +
-                '<button class="games-sheet-send-btn games-sheet-danger-btn" id="games-delete-sheet-confirm">Remove</button>' +
-                '<button class="games-sheet-cancel-btn" id="games-delete-sheet-cancel">Cancel</button>' +
-            '</div>' +
-        '</div>';
-
-        document.body.insertAdjacentHTML('beforeend', overlayHtml);
-        document.body.insertAdjacentHTML('beforeend', sheetHtml);
-
-        var overlay = document.getElementById('games-delete-sheet-overlay');
-        var sheet = document.getElementById('games-delete-sheet');
-
-        requestAnimationFrame(function() {
-            overlay.classList.add('active');
-            sheet.classList.add('open');
-        });
-
-        function close() {
-            overlay.classList.remove('active');
-            sheet.classList.remove('open');
-            setTimeout(function() {
-                if (overlay) overlay.remove();
-                if (sheet) sheet.remove();
-            }, 300);
-        }
-
-        overlay.addEventListener('click', close);
-        var cancelBtn = document.getElementById('games-delete-sheet-cancel');
-        if (cancelBtn) cancelBtn.addEventListener('click', close);
-        var confirmBtn = document.getElementById('games-delete-sheet-confirm');
-        if (confirmBtn) confirmBtn.addEventListener('click', function() {
+        if (typeof rsConfirm !== 'function') return;
+        rsConfirm({
+            title: 'Remove game?',
+            message: 'Remove this game from your history? This only affects your local list.',
+            confirmText: 'Remove',
+            danger: true
+        }).then(function(ok) {
+            if (!ok) return;
             if (typeof haptic === 'function') haptic(15);
-            close();
             _deleteSession(sessionId);
         });
-
-        if (typeof initSheetSwipeDismiss === 'function') {
-            initSheetSwipeDismiss('games-delete-sheet', 'games-delete-sheet-overlay', close);
-        }
     }
 
     function _deleteSession(sessionId) {
