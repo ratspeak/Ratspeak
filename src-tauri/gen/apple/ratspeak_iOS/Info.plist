@@ -51,13 +51,14 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Ratspeak accesses your photo library so you can attach existing photos or videos to a message.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Ratspeak uses your microphone when recording videos to send in a message.</string>
+	<string>Ratspeak uses your microphone for voice calls and when recording videos to send in a message.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_reticulum._udp</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>audio</string>
 		<string>bluetooth-central</string>
 		<string>bluetooth-peripheral</string>
 	</array>

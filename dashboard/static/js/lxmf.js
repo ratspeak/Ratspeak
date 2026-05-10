@@ -28,6 +28,274 @@ var lxmfLimits = {
     default_propagation_limit_kb: 256,
     propagation_transfer_limit_kb: null,
 };
+var lxstVoiceState = {
+    available: false,
+    running: false,
+    active: null,
+    incoming: null,
+    audioRunning: false,
+    audioMicrophone: false,
+    audioSpeaker: false,
+    lastAudioWarningKey: null,
+    lastDialHash: null,
+    lastError: null
+};
+
+function _voiceStatusLabel(status) {
+    switch (status) {
+        case 'calling': return 'Calling';
+        case 'available': return 'Ringing';
+        case 'ringing': return 'Ringing';
+        case 'connecting': return 'Connecting';
+        case 'established': return 'In call';
+        case 'busy': return 'Busy';
+        case 'rejected': return 'Rejected';
+        default: return status ? String(status) : 'Call';
+    }
+}
+
+function _voicePeerName(hash) {
+    if (!hash) return 'Unknown caller';
+    if (typeof _conversationNameInfo === 'function') {
+        var info = _conversationNameInfo(hash, null, false);
+        if (info && info.name) return info.name;
+    }
+    return hash.length > 12 ? hash.slice(0, 6) + '..' + hash.slice(-6) : hash;
+}
+
+function _voiceActiveMatchesContact() {
+    var active = lxstVoiceState.active;
+    if (!active || !lxmfActiveContact) return false;
+    return active.remote_identity === lxmfActiveContact || lxstVoiceState.lastDialHash === lxmfActiveContact;
+}
+
+function _voiceIncomingMatchesContact() {
+    var incoming = lxstVoiceState.incoming;
+    if (!incoming || !lxmfActiveContact) return false;
+    return incoming.remote_identity === lxmfActiveContact;
+}
+
+function _voiceNotify(message, className) {
+    if (typeof showToast === 'function') {
+        showToast(message, className || 'toast-orange', 2500);
+    }
+}
+
+function _voiceRestoreHeaderStatus() {
+    var statusEl = document.getElementById('lxmf-chat-header-status');
+    if (!statusEl || !lxmfActiveContact) return;
+    var peer = (typeof _peerInfo === 'function') ? _peerInfo(lxmfActiveContact) : null;
+    var statusText = (typeof _peerHeaderStatus === 'function') ? _peerHeaderStatus(peer) : '';
+    var statusOnline = !!(peer && peer.route_state && peer.route_state !== 'none');
+    statusEl.textContent = statusText;
+    statusEl.style.display = statusText ? '' : 'none';
+    statusEl.className = 'lxmf-chat-header-status' + (statusOnline ? ' is-online' : '');
+}
+
+function _voiceStartCall(hash) {
+    if (!lxstVoiceState.available || !hash) return Promise.resolve();
+    lxstVoiceState.lastDialHash = hash;
+    renderVoiceUi();
+    return RS.invoke('voice_call', { args: { hash: hash } }).then(function(result) {
+        if (result && result.requested_hash) lxstVoiceState.lastDialHash = result.requested_hash;
+        renderVoiceUi();
+    }).catch(function(err) {
+        lxstVoiceState.lastDialHash = null;
+        _voiceNotify((err && err.message) || 'Could not start call');
+        renderVoiceUi();
+    });
+}
+
+function _voiceAnswerCall() {
+    return RS.invoke('voice_answer').then(function() {
+        lxstVoiceState.incoming = null;
+        renderVoiceUi();
+    }).catch(function(err) {
+        _voiceNotify((err && err.message) || 'Could not answer call');
+    });
+}
+
+function _voiceRejectCall() {
+    return RS.invoke('voice_reject').catch(function() {}).then(function() {
+        lxstVoiceState.incoming = null;
+        renderVoiceUi();
+    });
+}
+
+function _voiceHangupCall() {
+    return RS.invoke('voice_hangup').catch(function(err) {
+        _voiceNotify((err && err.message) || 'Could not hang up call');
+    }).then(function() {
+        lxstVoiceState.active = null;
+        lxstVoiceState.incoming = null;
+        lxstVoiceState.audioRunning = false;
+        lxstVoiceState.audioMicrophone = false;
+        lxstVoiceState.audioSpeaker = false;
+        lxstVoiceState.lastDialHash = null;
+        renderVoiceUi();
+    });
+}
+
+function renderVoiceUi() {
+    var callBtn = document.getElementById('lxst-call-btn');
+    var active = lxstVoiceState.active;
+    var incoming = lxstVoiceState.incoming;
+    var activeMatches = _voiceActiveMatchesContact();
+    var incomingMatches = _voiceIncomingMatchesContact();
+
+    if (callBtn) {
+        var canShow = lxstVoiceState.available && !!lxmfActiveContact;
+        var isConnecting = !!(activeMatches && active && active.status !== 'established');
+        callBtn.style.display = canShow ? '' : 'none';
+        callBtn.classList.toggle('is-active', !!activeMatches);
+        callBtn.classList.toggle('is-connecting', isConnecting);
+        callBtn.classList.toggle('is-hangup', !!activeMatches && active && active.status === 'established');
+        callBtn.disabled = !!active && !activeMatches;
+        callBtn.title = activeMatches ? 'Hang up' : 'Start call';
+        callBtn.setAttribute('aria-label', callBtn.title);
+    }
+
+    var statusEl = document.getElementById('lxmf-chat-header-status');
+    if (statusEl && activeMatches) {
+        statusEl.textContent = _voiceStatusLabel(active.status);
+        statusEl.style.display = '';
+        statusEl.className = 'lxmf-chat-header-status is-online';
+    } else if (statusEl && incomingMatches) {
+        statusEl.textContent = 'Incoming call';
+        statusEl.style.display = '';
+        statusEl.className = 'lxmf-chat-header-status is-online';
+    } else {
+        _voiceRestoreHeaderStatus();
+    }
+
+    var strip = document.getElementById('lxst-call-strip');
+    if (strip) {
+        var stripTitle = document.getElementById('lxst-call-strip-title');
+        var stripStatus = document.getElementById('lxst-call-strip-status');
+        var answerBtn = document.getElementById('lxst-call-answer-btn');
+        var rejectBtn = document.getElementById('lxst-call-reject-btn');
+        var hangupBtn = document.getElementById('lxst-call-hangup-btn');
+        var stripPeer = active || incoming;
+        strip.hidden = !stripPeer;
+        if (stripPeer) {
+            if (stripTitle) stripTitle.textContent = _voicePeerName(stripPeer.remote_identity);
+            if (stripStatus) {
+                var status = active ? _voiceStatusLabel(active.status) : 'Incoming call';
+                if (active && lxstVoiceState.audioRunning) {
+                    var audioParts = [];
+                    if (lxstVoiceState.audioMicrophone) audioParts.push('mic');
+                    if (lxstVoiceState.audioSpeaker) audioParts.push('speaker');
+                    status += ' - ' + (audioParts.length ? audioParts.join(' and ') : 'audio') + ' active';
+                }
+                stripStatus.textContent = status;
+            }
+            var showIncomingActions = !!incoming && !active;
+            if (answerBtn) answerBtn.style.display = showIncomingActions ? '' : 'none';
+            if (rejectBtn) rejectBtn.style.display = showIncomingActions ? '' : 'none';
+            if (hangupBtn) hangupBtn.style.display = active ? '' : 'none';
+        }
+    }
+
+    renderVoiceIncomingSheet();
+}
+
+function renderVoiceIncomingSheet() {
+    var incoming = lxstVoiceState.incoming;
+    var existing = document.getElementById('lxst-incoming-call-overlay');
+    if (!incoming) {
+        if (existing) existing.remove();
+        return;
+    }
+    if (!existing) {
+        existing = document.createElement('div');
+        existing.id = 'lxst-incoming-call-overlay';
+        existing.className = 'lxst-incoming-call-overlay';
+        existing.innerHTML =
+            '<div class="lxst-incoming-call-sheet" role="dialog" aria-modal="true">' +
+                '<div class="lxst-incoming-call-peer">' +
+                    '<div class="lxst-incoming-call-avatar" id="lxst-incoming-call-avatar"></div>' +
+                    '<div>' +
+                        '<span class="lxst-incoming-call-title">Incoming call</span>' +
+                        '<span class="lxst-incoming-call-name" id="lxst-incoming-call-name"></span>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="lxst-incoming-call-actions">' +
+                    '<button class="lxst-call-action lxst-incoming-call-reject" id="lxst-incoming-call-reject" type="button">Reject</button>' +
+                    '<button class="lxst-call-action lxst-call-action-answer" id="lxst-incoming-call-answer" type="button">Answer</button>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(existing);
+        var answer = document.getElementById('lxst-incoming-call-answer');
+        var reject = document.getElementById('lxst-incoming-call-reject');
+        if (answer) answer.addEventListener('click', _voiceAnswerCall);
+        if (reject) reject.addEventListener('click', _voiceRejectCall);
+    }
+    var avatar = document.getElementById('lxst-incoming-call-avatar');
+    var name = document.getElementById('lxst-incoming-call-name');
+    if (avatar && typeof identityAvatar === 'function') {
+        avatar.innerHTML = identityAvatar(incoming.remote_identity, 44);
+    }
+    if (name) name.textContent = _voicePeerName(incoming.remote_identity);
+}
+
+function _voiceHandleUpdate(data) {
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'service') {
+        lxstVoiceState.available = true;
+        lxstVoiceState.running = !!data.running;
+    } else if (data.type === 'incoming') {
+        lxstVoiceState.incoming = {
+            link_id: data.link_id,
+            remote_identity: data.remote_identity,
+            status: 'ringing'
+        };
+    } else if (data.type === 'outgoing') {
+        lxstVoiceState.active = {
+            link_id: data.link_id,
+            remote_identity: data.remote_identity,
+            role: 'outgoing',
+            status: 'calling'
+        };
+    } else if (data.type === 'snapshot') {
+        lxstVoiceState.active = data.active_call || null;
+        if (data.active_call && data.active_call.status === 'established') {
+            lxstVoiceState.incoming = null;
+        }
+        lxstVoiceState.audioRunning = !!(data.audio && data.audio.running);
+        lxstVoiceState.audioMicrophone = !!(data.audio && data.audio.microphone);
+        lxstVoiceState.audioSpeaker = !!(data.audio && data.audio.speaker);
+    } else if (data.type === 'audio') {
+        lxstVoiceState.audioRunning = data.state === 'started' && !!data.running;
+        lxstVoiceState.audioMicrophone = !!data.microphone;
+        lxstVoiceState.audioSpeaker = !!data.speaker;
+        if (Array.isArray(data.warnings) && data.warnings.length) {
+            var warningKey = data.warnings.join('|');
+            if (warningKey !== lxstVoiceState.lastAudioWarningKey) {
+                lxstVoiceState.lastAudioWarningKey = warningKey;
+                window.RS.diag('warn', '[lxst] audio warning:', data.warnings);
+                if (!lxstVoiceState.audioMicrophone && lxstVoiceState.audioSpeaker) {
+                    _voiceNotify('Microphone unavailable; speaker audio active');
+                } else if (lxstVoiceState.audioMicrophone && !lxstVoiceState.audioSpeaker) {
+                    _voiceNotify('Speaker unavailable; microphone active');
+                } else {
+                    _voiceNotify('Voice audio warning');
+                }
+            }
+        }
+    } else if (data.type === 'terminated') {
+        lxstVoiceState.active = null;
+        lxstVoiceState.incoming = null;
+        lxstVoiceState.audioRunning = false;
+        lxstVoiceState.audioMicrophone = false;
+        lxstVoiceState.audioSpeaker = false;
+        lxstVoiceState.lastAudioWarningKey = null;
+        lxstVoiceState.lastDialHash = null;
+    } else if (data.type === 'error') {
+        lxstVoiceState.lastError = data.message || 'Voice call error';
+        _voiceNotify(lxstVoiceState.lastError);
+    }
+    renderVoiceUi();
+}
 
 function normalizeContactRecord(c) {
     if (!c || typeof c !== 'object') return null;
@@ -1342,6 +1610,7 @@ function renderConversation(options) {
             header.style.display = 'none';
         }
     }
+    renderVoiceUi();
 
     if (!lxmfActiveContact) {
         container.innerHTML = '<div class="lxmf-empty">' +
@@ -2258,6 +2527,11 @@ RS.listen('lxmf_step', function(data) {
     }
 });
 
+RS.listen('voice_call_update', _voiceHandleUpdate);
+RS.listen('voice_incoming_call', function(data) {
+    _voiceHandleUpdate(Object.assign({ type: 'incoming' }, data || {}));
+});
+
 RS.listen('contact_added', function(data) {
     showToast('Contact added: ' + data.display_name, 'toast-green', 3000);
     lxmfActiveContact = data.hash;
@@ -2640,6 +2914,18 @@ function openChatHeaderDropdown() {
     var dd = document.createElement('div');
     dd.className = 'chat-header-dropdown';
 
+    if (lxstVoiceState.available) {
+        var callItem = document.createElement('div');
+        callItem.className = 'hash-dropdown-item';
+        callItem.textContent = 'Call';
+        callItem.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            dd.remove();
+            _voiceStartCall(lxmfActiveContact);
+        });
+        dd.appendChild(callItem);
+    }
+
     var renameItem = document.createElement('div');
     renameItem.className = 'hash-dropdown-item';
     renameItem.textContent = contact ? 'Rename Contact' : 'Add Contact';
@@ -2712,6 +2998,31 @@ document.addEventListener('DOMContentLoaded', function() {
     if (photosInput) photosInput.addEventListener('change', function() { handleFileSelected(this); });
     var cameraInput = document.getElementById('lxmf-camera-input');
     if (cameraInput) cameraInput.addEventListener('change', function() { handleFileSelected(this); });
+
+    var lxstCallBtn = document.getElementById('lxst-call-btn');
+    if (lxstCallBtn) {
+        lxstCallBtn.addEventListener('click', function() {
+            if (lxstVoiceState.active && _voiceActiveMatchesContact()) {
+                _voiceHangupCall();
+            } else if (lxmfActiveContact) {
+                _voiceStartCall(lxmfActiveContact);
+            }
+        });
+    }
+    var lxstAnswerBtn = document.getElementById('lxst-call-answer-btn');
+    if (lxstAnswerBtn) lxstAnswerBtn.addEventListener('click', _voiceAnswerCall);
+    var lxstRejectBtn = document.getElementById('lxst-call-reject-btn');
+    if (lxstRejectBtn) lxstRejectBtn.addEventListener('click', _voiceRejectCall);
+    var lxstHangupBtn = document.getElementById('lxst-call-hangup-btn');
+    if (lxstHangupBtn) lxstHangupBtn.addEventListener('click', _voiceHangupCall);
+    RS.invoke('voice_status').then(function(status) {
+        lxstVoiceState.available = true;
+        lxstVoiceState.running = !!(status && status.running);
+        renderVoiceUi();
+    }).catch(function() {
+        lxstVoiceState.available = false;
+        renderVoiceUi();
+    });
 
     var msgContainer = document.getElementById('lxmf-messages');
     if (msgContainer) _wireLxmfMessageScroll(msgContainer);

@@ -12,3 +12,5 @@ pub mod network;
 pub mod peers;
 pub mod shared;
 pub mod system;
+#[cfg(feature = "lxst-voice")]
+pub mod voice;

@@ -28,6 +28,11 @@ rns-runtime = { path = "../rsReticulum/crates/rns-runtime" }
 # --- From rsLXMF (sibling directory) ---
 lxmf-core = { path = "../rsLXMF/crates/lxmf-core" }
 
+# --- From rsLXST (sibling directory) ---
+lxst-core = { path = "../rsLXST/crates/lxst-core" }
+lxst-rns = { path = "../rsLXST/crates/lxst-rns" }
+lxst-telephony = { path = "../rsLXST/crates/lxst-telephony" }
+
 # --- Internal crates ---
 # lrgp lives in the sibling lrgp-rs/ repo until we adopt crates.io publishing.
 lrgp = { path = "../lrgp-rs" }
@@ -57,6 +62,9 @@ serde_json = "1"
 # Async
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
+
+# Audio
+cpal = { version = "0.15", features = ["oboe-shared-stdcxx"] }
 
 # Serial
 serialport = "4"

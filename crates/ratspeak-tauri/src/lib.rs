@@ -21,6 +21,8 @@ pub use ratspeak_db::static_nodes;
 pub use ratspeak_runtime::platform_ios;
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub use ratspeak_runtime::shutdown_ble_peer_for_exit;
+#[cfg(feature = "lxst-voice")]
+pub use ratspeak_runtime::voice;
 pub use ratspeak_runtime::{
     announce_handlers, helpers, identity_prune, lxmf, propagation, rns, rns_config, state,
 };

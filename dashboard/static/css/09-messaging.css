@@ -421,6 +421,14 @@
     min-width: 0;
     flex: 1;
 }
+.lxmf-chat-header-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-left: auto;
+    flex-shrink: 0;
+}
 .lxmf-chat-header-name {
     font-size: var(--text-lg);
     font-weight: 600;
@@ -436,7 +444,9 @@
 .lxmf-chat-header-status.is-online {
     color: var(--status-online);
 }
-.chat-header-menu-btn {
+.chat-header-menu-btn,
+.game-challenge-btn,
+.lxst-call-btn {
     width: 34px;
     height: 34px;
     border-radius: var(--radius-full);
@@ -450,9 +460,143 @@
     flex-shrink: 0;
     transition: background var(--transition-fast), color var(--transition-fast);
 }
-.chat-header-menu-btn:hover {
+.chat-header-menu-btn:hover,
+.game-challenge-btn:hover,
+.lxst-call-btn:hover {
     color: var(--text-primary);
     background: var(--surface-row-hover);
+}
+.lxst-call-btn.is-active {
+    color: var(--status-online);
+    background: rgba(var(--status-online-rgb), 0.12);
+}
+.lxst-call-btn.is-connecting {
+    color: var(--status-info);
+    background: rgba(var(--status-info-rgb), 0.10);
+}
+.lxst-call-btn.is-hangup {
+    color: var(--status-error);
+    background: rgba(var(--status-error-rgb), 0.10);
+}
+.lxst-call-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+.lxst-call-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-3) var(--space-7);
+    border-bottom: 1px solid var(--border-row);
+    background: var(--surface-elevation-1);
+    flex-shrink: 0;
+}
+.lxst-call-strip[hidden] {
+    display: none;
+}
+.lxst-call-strip-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.lxst-call-strip-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.lxst-call-strip-status {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+}
+.lxst-call-strip-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-shrink: 0;
+}
+.lxst-call-action {
+    border: 1px solid var(--border);
+    background: var(--surface-elevation-2);
+    color: var(--text-secondary);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3) var(--space-5);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.lxst-call-action:hover {
+    color: var(--text-primary);
+    border-color: var(--border-light);
+}
+.lxst-call-action-answer {
+    color: var(--status-online);
+    border-color: rgba(var(--status-online-rgb), 0.45);
+}
+.lxst-call-action-hangup,
+.lxst-incoming-call-reject {
+    color: var(--status-error);
+    border-color: rgba(var(--status-error-rgb), 0.45);
+}
+.lxst-incoming-call-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: var(--space-7);
+    background: rgba(0, 0, 0, 0.32);
+}
+.lxst-incoming-call-sheet {
+    width: min(420px, 100%);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-xl);
+    background: var(--surface-panel);
+    box-shadow: var(--shadow-xl);
+    padding: var(--space-6);
+    display: grid;
+    gap: var(--space-5);
+}
+.lxst-incoming-call-peer {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: var(--space-4);
+    align-items: center;
+}
+.lxst-incoming-call-avatar {
+    width: 44px;
+    height: 44px;
+}
+.lxst-incoming-call-avatar svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: var(--radius-full);
+}
+.lxst-incoming-call-title {
+    display: block;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+}
+.lxst-incoming-call-name {
+    display: block;
+    color: var(--text-primary);
+    font-size: var(--text-base);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.lxst-incoming-call-actions {
+    display: flex;
+    gap: var(--space-3);
+    justify-content: flex-end;
 }
 .lxmf-msg.inbound .lxmf-msg-meta {
     color: var(--text-muted);
@@ -1052,16 +1196,7 @@
 }
 
 .game-challenge-btn {
-    background: transparent;
-    border: none;
     padding: var(--space-3);
-    margin-left: auto;
-    cursor: pointer;
-    color: var(--text-muted);
-    transition: color var(--transition-fast), transform 0.1s ease;
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
 }
 .game-challenge-btn:hover {
     color: var(--accent);

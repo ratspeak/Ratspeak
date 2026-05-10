@@ -37,6 +37,8 @@ pub struct AppState {
     pub alerts: Mutex<Vec<serde_json::Value>>,
     pub rns: RwLock<Option<RnsManager>>,
     pub lxmf: Mutex<Option<LxmfManager>>,
+    #[cfg(feature = "lxst-voice")]
+    pub lxst_voice: Mutex<Option<crate::voice::LxstVoiceServiceHandle>>,
     pub known_path_hashes: Mutex<std::collections::HashSet<String>>,
     pub lrgp_router: lrgp::router::LrgpRouter,
     pub message_send_times: Mutex<HashMap<String, f64>>,
@@ -140,6 +142,8 @@ impl AppState {
             alerts: Mutex::new(Vec::new()),
             rns: RwLock::new(None),
             lxmf: Mutex::new(None),
+            #[cfg(feature = "lxst-voice")]
+            lxst_voice: Mutex::new(None),
             known_path_hashes: Mutex::new(std::collections::HashSet::new()),
             lrgp_router,
             message_send_times: Mutex::new(HashMap::new()),

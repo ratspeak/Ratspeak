@@ -11,6 +11,8 @@ serial = ["dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
 ble = ["dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
 # Background-throttle gate for mobile builds.
 mobile-throttle = ["rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
+# Native LXST call signalling and Opus audio bridge.
+lxst-voice = ["dep:cpal", "dep:lxst-core", "dep:lxst-rns", "dep:lxst-telephony"]
 
 [dependencies]
 ratspeak-core = { workspace = true }
@@ -32,6 +34,10 @@ rns-interface = { workspace = true }
 rns-runtime = { workspace = true }
 lxmf-core = { workspace = true }
 lrgp = { workspace = true }
+lxst-core = { workspace = true, optional = true }
+lxst-rns = { workspace = true, optional = true }
+lxst-telephony = { workspace = true, optional = true }
+cpal = { workspace = true, optional = true }
 
 # Async + serialization
 tokio = { workspace = true }

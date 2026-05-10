@@ -16,6 +16,8 @@ pub mod propagation;
 pub mod rns;
 pub mod rns_config;
 pub mod state;
+#[cfg(feature = "lxst-voice")]
+pub mod voice;
 
 #[cfg(target_os = "ios")]
 pub mod platform_ios;
@@ -232,6 +234,8 @@ fn seed_identity_rns_config_from_app_private(
 /// Soft-shutdown: stop RNS/LXMF tasks without re-init. App stays open.
 pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
     state.emit_to_all("system_status", json!({"status": "stopping"}));
+    #[cfg(feature = "lxst-voice")]
+    voice::shutdown_voice_service(state).await;
     if let Ok(sig) = state.session_shutdown.read() {
         sig.trigger();
     }
@@ -932,6 +936,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             let transport_tx_for_handler = rns_mgr.handle.transport_tx.clone();
             state.set_rns(rns_mgr);
             tracing::info!("RNS runtime initialized");
+            #[cfg(feature = "lxst-voice")]
+            if let Err(e) = voice::start_voice_service(&state).await {
+                tracing::warn!(error = %e, "LXST voice service did not start");
+            }
 
             // LXMF router tick — drains the outbound queue and fires the
             // encrypt/sign pipeline.

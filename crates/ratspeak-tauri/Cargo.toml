@@ -11,6 +11,7 @@ default = ["serial"]
 serial = ["ratspeak-runtime/serial", "dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
 ble = ["ratspeak-runtime/ble", "dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
 mobile-throttle = ["ratspeak-runtime/mobile-throttle", "rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
+lxst-voice = ["ratspeak-runtime/lxst-voice"]
 
 [dependencies]
 # Database

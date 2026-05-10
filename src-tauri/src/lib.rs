@@ -313,6 +313,20 @@ pub fn run() {
             ratspeak_tauri::commands::ble::disconnect_ble_rnode,
             ratspeak_tauri::commands::ble::submit_ble_rnode_passkey,
             ratspeak_tauri::commands::ble::cancel_ble_rnode_pairing,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_start_service,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_stop_service,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_status,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_call,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_answer,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_reject,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_hangup,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
