@@ -641,7 +641,7 @@
         font-size: var(--text-2xs);
         font-family: var(--font-sans);
         font-weight: 500;
-        letter-spacing: 0.2px;
+        letter-spacing: 0;
         position: relative;
         min-height: 44px;
         text-decoration: none;
@@ -1670,7 +1670,7 @@
         font-size: var(--text-xs);
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 1.5px;
+        letter-spacing: 0;
         color: var(--status-error);
         margin-bottom: var(--space-6);
         cursor: pointer;
@@ -1980,7 +1980,7 @@
     .conn-group-header {
         font-size: var(--text-base);
         padding: var(--space-5) var(--space-7) var(--space-3);
-        letter-spacing: 0.08em;
+        letter-spacing: 0;
     }
 
     .bento-grid-dashboard { grid-template-columns: 1fr 1fr; display: none; }

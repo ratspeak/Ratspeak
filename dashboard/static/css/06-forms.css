@@ -83,7 +83,7 @@
     outline: none;
     transition: border-color var(--transition-base), box-shadow var(--transition-base);
     box-sizing: border-box;
-    line-height: 1.3;
+    line-height: 1.35;
     min-height: var(--control-height-md);
     flex: none;
 }
@@ -132,7 +132,7 @@
     padding: var(--space-3) var(--space-7);
     font-size: var(--type-control-size);
     font-weight: var(--type-control-weight);
-    line-height: 1;
+    line-height: 1.2;
     cursor: pointer;
     font-family: var(--font-sans);
     transition: background var(--transition-base), border-color var(--transition-base),
@@ -204,7 +204,7 @@
     --button-bg-hover-current: var(--surface-control-hover);
     --button-border-current: var(--border-control);
     --button-border-hover-current: var(--border-surface-strong);
-    --button-color-current: var(--text-muted);
+    --button-color-current: var(--text-secondary);
     --button-shadow-hover-current: none;
 }
 
@@ -698,5 +698,5 @@ button:disabled, .nr-btn:disabled, .danger-btn:disabled, .toolbar-btn:disabled {
 }
 .settings-row-desc {
     font-size: var(--type-row-detail-size);
-    color: var(--text-muted);
+    color: var(--text-secondary);
 }

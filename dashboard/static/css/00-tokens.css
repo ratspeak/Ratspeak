@@ -11,24 +11,25 @@
     --border-subtle: #E6DDD2;
     --border-card:   #E1D5C6;
 
-    --text-primary:  #2A2522;
-    --text-secondary:#6F675F;
-    --text-muted:    #9A9086;
+    --text-primary:  #241F1C;
+    --text-secondary:#5D554E;
+    --text-muted:    #746B62;
+    --text-disabled: #A79D94;
 
-    --accent:        #D2693B;
-    --accent-dim:    #B85829;
-    --accent-dark:   #B85829;
+    --accent:        #B14F24;
+    --accent-dim:    #963F1C;
+    --accent-dark:   #7E3115;
     --accent-light:  #FBEFE6;
-    --accent-rgb:    210, 105, 59;
+    --accent-rgb:    177, 79, 36;
     --on-accent:     #FFFFFF;
-    --accent-a05:    rgba(210, 105, 59, 0.05);
-    --accent-a12:    rgba(210, 105, 59, 0.12);
-    --accent-a15:    rgba(210, 105, 59, 0.15);
-    --accent-a18:    rgba(210, 105, 59, 0.18);
-    --accent-a20:    rgba(210, 105, 59, 0.20);
-    --accent-a25:    rgba(210, 105, 59, 0.25);
-    --accent-a40:    rgba(210, 105, 59, 0.40);
-    --accent-a45:    rgba(210, 105, 59, 0.45);
+    --accent-a05:    rgba(var(--accent-rgb), 0.05);
+    --accent-a12:    rgba(var(--accent-rgb), 0.12);
+    --accent-a15:    rgba(var(--accent-rgb), 0.15);
+    --accent-a18:    rgba(var(--accent-rgb), 0.18);
+    --accent-a20:    rgba(var(--accent-rgb), 0.20);
+    --accent-a25:    rgba(var(--accent-rgb), 0.25);
+    --accent-a40:    rgba(var(--accent-rgb), 0.40);
+    --accent-a45:    rgba(var(--accent-rgb), 0.45);
 
     --status-online: #2E8B57;
     --status-error:  #CF222E;
@@ -86,13 +87,13 @@
     --border-control:       var(--border);
     --bg-elevated:          var(--surface-panel);
 
-    --control-height-xs:    24px;
-    --control-height-sm:    28px;
-    --control-height-md:    34px;
-    --control-height-lg:    42px;
+    --control-height-xs:    28px;
+    --control-height-sm:    34px;
+    --control-height-md:    40px;
+    --control-height-lg:    46px;
     --touch-target:         44px;
-    --row-height-compact:   32px;
-    --row-height-default:   38px;
+    --row-height-compact:   38px;
+    --row-height-default:   44px;
 
     --button-bg:            var(--accent-bg);
     --button-bg-hover:      var(--accent-bg-strong);
@@ -114,9 +115,9 @@
 
     --badge-neutral-bg:    rgba(42, 37, 34, 0.06);
 
-    --accent-bg:           rgba(210, 105, 59, 0.08);
-    --accent-bg-strong:    rgba(210, 105, 59, 0.12);
-    --accent-border:       rgba(210, 105, 59, 0.2);
+    --accent-bg:           rgba(var(--accent-rgb), 0.08);
+    --accent-bg-strong:    rgba(var(--accent-rgb), 0.12);
+    --accent-border:       rgba(var(--accent-rgb), 0.2);
 
     --status-online-bg:        rgba(46, 139, 87, 0.08);
     --status-online-bg-strong: rgba(46, 139, 87, 0.12);
@@ -185,13 +186,13 @@
     --modal-width-md: 380px;
     --modal-width-lg: 400px;
 
-    --text-2xs: clamp(9px,  calc(9px  + 1 * ((100vw - 360px) / 408)), 10px);
-    --text-xs:  clamp(10px, calc(10px + 1 * ((100vw - 360px) / 408)), 11px);
-    --text-sm:  clamp(11px, calc(11px + 1 * ((100vw - 360px) / 408)), 12px);
-    --text-base:clamp(12px, calc(12px + 2 * ((100vw - 360px) / 408)), 14px);
-    --text-lg:  clamp(14px, calc(14px + 3 * ((100vw - 360px) / 408)), 17px);
-    --text-xl:  clamp(16px, calc(16px + 4 * ((100vw - 360px) / 408)), 20px);
-    --text-2xl: clamp(18px, calc(18px + 6 * ((100vw - 360px) / 408)), 24px);
+    --text-2xs: 11px;
+    --text-xs:  12px;
+    --text-sm:  13px;
+    --text-base:15px;
+    --text-lg:  17px;
+    --text-xl:  20px;
+    --text-2xl: 24px;
 
     /* iOS env() reports real insets (contentInsetAdjustmentBehavior=.never);
        Android injects --sat/--sab via evaluateJavascript; desktop falls back to 0. */
@@ -220,11 +221,11 @@
 
     --surface-game-gradient: #F3EFEA;
 
-    --tracking-tight:   0.2px;
-    --tracking-normal:  0.3px;
-    --tracking-wide:    0.5px;
-    --tracking-wider:   0.8px;
-    --tracking-widest:  1.2px;
+    --tracking-tight:   0;
+    --tracking-normal:  0;
+    --tracking-wide:    0;
+    --tracking-wider:   0;
+    --tracking-widest:  0;
 
     --type-weight-regular:  400;
     --type-weight-medium:   500;
@@ -237,11 +238,11 @@
 
     --type-app-title-size:      var(--text-base);
     --type-app-title-weight:    var(--type-weight-bold);
-    --type-app-title-tracking:  var(--tracking-widest);
+    --type-app-title-tracking:  var(--tracking-wide);
 
-    --type-panel-title-size:     var(--text-sm);
-    --type-panel-title-weight:   var(--type-weight-bold);
-    --type-panel-title-tracking: var(--tracking-wider);
+    --type-panel-title-size:     var(--text-base);
+    --type-panel-title-weight:   var(--type-weight-semibold);
+    --type-panel-title-tracking: 0;
 
     --type-section-label-size:     var(--text-2xs);
     --type-section-label-weight:   var(--type-weight-semibold);
@@ -254,20 +255,20 @@
 
     --type-control-size:     var(--text-sm);
     --type-control-weight:   var(--type-weight-semibold);
-    --type-control-tracking: var(--tracking-normal);
+    --type-control-tracking: 0;
 
     --type-empty-title-size:   var(--text-base);
     --type-empty-title-weight: var(--type-weight-semibold);
-    --type-empty-title-color:  var(--text-muted);
+    --type-empty-title-color:  var(--text-secondary);
     --type-empty-hint-size:    var(--text-sm);
-    --type-empty-hint-color:   var(--text-muted);
+    --type-empty-hint-color:   var(--text-secondary);
 
     --type-hint-size:    var(--text-xs);
     --type-hint-sm-size: var(--text-2xs);
 
     --type-id-size:    var(--text-xs);
     --type-id-sm-size: var(--text-2xs);
-    --type-id-color:   var(--text-muted);
+    --type-id-color:   var(--text-secondary);
 
     --type-badge-size:     var(--text-2xs);
     --type-badge-weight:   var(--type-weight-semibold);
@@ -294,8 +295,8 @@
 
 @media (min-width: 769px) {
     :root {
-        --text-2xs: 10px; --text-xs: 11px; --text-sm: 12px; --text-base: 13px;
-        --text-lg: 15px; --text-xl: 18px; --text-2xl: 22px;
+        --text-2xs: 12px; --text-xs: 13px; --text-sm: 14px; --text-base: 15px;
+        --text-lg: 17px; --text-xl: 20px; --text-2xl: 24px;
     }
 }
 
@@ -312,24 +313,25 @@
     --border-subtle: #2a2629;
     --border-card:   #2a2629;
 
-    --text-primary:  #e8e4e0;
-    --text-secondary:#a89f96;
-    --text-muted:    #7a7068;
+    --text-primary:  #F2EEEA;
+    --text-secondary:#C6BDB5;
+    --text-muted:    #9C928C;
+    --text-disabled: #6F6661;
 
-    --accent:        #D2693B;
-    --accent-dim:    #B85829;
-    --accent-dark:   #B85829;
+    --accent:        #E07A4A;
+    --accent-dim:    #F09A70;
+    --accent-dark:   #FFB18A;
     --accent-light:  #2a1f18;
-    --accent-rgb:    210, 105, 59;
-    --on-accent:     #FFFFFF;
-    --accent-a05:    rgba(210, 105, 59, 0.05);
-    --accent-a12:    rgba(210, 105, 59, 0.12);
-    --accent-a15:    rgba(210, 105, 59, 0.15);
-    --accent-a18:    rgba(210, 105, 59, 0.18);
-    --accent-a20:    rgba(210, 105, 59, 0.20);
-    --accent-a25:    rgba(210, 105, 59, 0.25);
-    --accent-a40:    rgba(210, 105, 59, 0.40);
-    --accent-a45:    rgba(210, 105, 59, 0.45);
+    --accent-rgb:    224, 122, 74;
+    --on-accent:     #18171a;
+    --accent-a05:    rgba(var(--accent-rgb), 0.05);
+    --accent-a12:    rgba(var(--accent-rgb), 0.12);
+    --accent-a15:    rgba(var(--accent-rgb), 0.15);
+    --accent-a18:    rgba(var(--accent-rgb), 0.18);
+    --accent-a20:    rgba(var(--accent-rgb), 0.20);
+    --accent-a25:    rgba(var(--accent-rgb), 0.25);
+    --accent-a40:    rgba(var(--accent-rgb), 0.40);
+    --accent-a45:    rgba(var(--accent-rgb), 0.45);
 
     --status-online: #4ade80;
     --status-error:  #e5534b;
@@ -389,9 +391,9 @@
 
     --badge-neutral-bg:    rgba(232, 228, 224, 0.08);
 
-    --accent-bg:           rgba(210, 105, 59, 0.08);
-    --accent-bg-strong:    rgba(210, 105, 59, 0.12);
-    --accent-border:       rgba(210, 105, 59, 0.2);
+    --accent-bg:           rgba(var(--accent-rgb), 0.08);
+    --accent-bg-strong:    rgba(var(--accent-rgb), 0.12);
+    --accent-border:       rgba(var(--accent-rgb), 0.2);
 
     --status-online-bg:        rgba(74, 222, 128, 0.08);
     --status-online-bg-strong: rgba(74, 222, 128, 0.12);
@@ -480,24 +482,25 @@
         --border-subtle: #2a2629;
         --border-card:   #2a2629;
 
-        --text-primary:  #e8e4e0;
-        --text-secondary:#a89f96;
-        --text-muted:    #7a7068;
+        --text-primary:  #F2EEEA;
+        --text-secondary:#C6BDB5;
+        --text-muted:    #9C928C;
+        --text-disabled: #6F6661;
 
-        --accent:        #D2693B;
-        --accent-dim:    #B85829;
-        --accent-dark:   #B85829;
+        --accent:        #E07A4A;
+        --accent-dim:    #F09A70;
+        --accent-dark:   #FFB18A;
         --accent-light:  #2a1f18;
-        --accent-rgb:    210, 105, 59;
-        --on-accent:     #FFFFFF;
-        --accent-a05:    rgba(210, 105, 59, 0.05);
-        --accent-a12:    rgba(210, 105, 59, 0.12);
-        --accent-a15:    rgba(210, 105, 59, 0.15);
-        --accent-a18:    rgba(210, 105, 59, 0.18);
-        --accent-a20:    rgba(210, 105, 59, 0.20);
-        --accent-a25:    rgba(210, 105, 59, 0.25);
-        --accent-a40:    rgba(210, 105, 59, 0.40);
-        --accent-a45:    rgba(210, 105, 59, 0.45);
+        --accent-rgb:    224, 122, 74;
+        --on-accent:     #18171a;
+        --accent-a05:    rgba(var(--accent-rgb), 0.05);
+        --accent-a12:    rgba(var(--accent-rgb), 0.12);
+        --accent-a15:    rgba(var(--accent-rgb), 0.15);
+        --accent-a18:    rgba(var(--accent-rgb), 0.18);
+        --accent-a20:    rgba(var(--accent-rgb), 0.20);
+        --accent-a25:    rgba(var(--accent-rgb), 0.25);
+        --accent-a40:    rgba(var(--accent-rgb), 0.40);
+        --accent-a45:    rgba(var(--accent-rgb), 0.45);
 
         --status-online: #4ade80;
         --status-error:  #e5534b;
@@ -557,9 +560,9 @@
 
         --badge-neutral-bg:    rgba(232, 228, 224, 0.08);
 
-        --accent-bg:           rgba(210, 105, 59, 0.08);
-        --accent-bg-strong:    rgba(210, 105, 59, 0.12);
-        --accent-border:       rgba(210, 105, 59, 0.2);
+        --accent-bg:           rgba(var(--accent-rgb), 0.08);
+        --accent-bg-strong:    rgba(var(--accent-rgb), 0.12);
+        --accent-border:       rgba(var(--accent-rgb), 0.2);
 
         --status-online-bg:        rgba(74, 222, 128, 0.08);
         --status-online-bg-strong: rgba(74, 222, 128, 0.12);

@@ -29,7 +29,7 @@
 .bento-card-label {
     font-size: var(--text-2xs);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0;
     color: var(--text-muted);
     margin-top: var(--space-3);
 }
@@ -120,8 +120,8 @@
     border-bottom: 1px solid var(--border-surface-strong);
     font-size: var(--type-panel-title-size);
     font-weight: var(--type-panel-title-weight);
-    color: var(--text-secondary);
-    text-transform: uppercase;
+    color: var(--text-primary);
+    text-transform: none;
     letter-spacing: var(--type-panel-title-tracking);
     flex-shrink: 0;
     gap: var(--space-6);
@@ -130,7 +130,7 @@
 .panel-header .count {
     font-size: var(--type-row-meta-size);
     font-weight: var(--type-weight-regular);
-    color: var(--text-muted);
+    color: var(--text-secondary);
     text-transform: none;
     letter-spacing: 0;
 }
@@ -144,11 +144,13 @@
 .panel-header-actions button {
     background: transparent;
     border: none;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     cursor: pointer;
     padding: var(--space-1) var(--space-3);
     border-radius: var(--radius-sm);
     font-size: var(--text-base);
+    min-width: 32px;
+    min-height: 32px;
     line-height: 1;
     transition: color var(--transition-fast), background var(--transition-fast);
 }

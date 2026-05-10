@@ -201,8 +201,8 @@
 }
 
 .sidebar {
-    width: 200px;
-    min-width: 200px;
+    width: 216px;
+    min-width: 216px;
     background: var(--surface-shell);
     border-right: 1px solid var(--border-surface-soft);
     display: flex;
@@ -223,11 +223,11 @@
     display: flex;
     align-items: center;
     gap: var(--space-5);
-    height: 42px;
+    height: 46px;
     padding: 0 var(--space-7);
     margin: 0 var(--space-5);
     border-radius: var(--radius-lg-plus);
-    color: var(--text-muted);
+    color: var(--text-secondary);
     text-decoration: none;
     transition: all 0.25s ease-out;
     position: relative;
@@ -281,15 +281,15 @@
 }
 
 .nav-icon {
-    width: 18px;
-    height: 18px;
+    width: 19px;
+    height: 19px;
     flex-shrink: 0;
-    opacity: 0.6;
+    opacity: 0.86;
     transition: opacity 0.25s ease-out;
 }
 
 .nav-item:hover .nav-icon {
-    opacity: 0.8;
+    opacity: 0.94;
 }
 
 .nav-item.active .nav-icon {

@@ -262,7 +262,7 @@
     border-radius: var(--chip-radius);
     margin-left: var(--space-3);
     text-transform: uppercase;
-    letter-spacing: 0.3px;
+    letter-spacing: 0;
     vertical-align: middle;
 }
 
@@ -1038,7 +1038,7 @@
     border-bottom: 1px solid var(--border);
     text-transform: uppercase;
     font-size: var(--text-2xs);
-    letter-spacing: 0.5px;
+    letter-spacing: 0;
 }
 .path-table td {
     padding: var(--space-2) var(--space-4);

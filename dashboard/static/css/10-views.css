@@ -962,7 +962,7 @@
     font-size: var(--text-xs);
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0;
     color: var(--text-secondary);
 }
 .system-drops-summary {
@@ -1296,7 +1296,7 @@
 }
 .traffic-rate-badge.idle {
     background: var(--chip-bg);
-    color: var(--text-muted);
+    color: var(--text-secondary);
 }
 
 .settings-page {
@@ -1421,7 +1421,7 @@
     flex-shrink: 0;
     min-width: 55px;
     text-align: center;
-    letter-spacing: 0.3px;
+    letter-spacing: 0;
 }
 
 .log-badge.announce  { background: var(--status-purple-bg); color: var(--status-purple); }
@@ -1880,7 +1880,7 @@ body.setup-active .bottom-bar {
     font-weight: 700;
     color: var(--text-primary);
     margin: 0 0 var(--space-2);
-    letter-spacing: 1px;
+    letter-spacing: 0;
     text-transform: uppercase;
 }
 .setup-subtitle {
@@ -1950,7 +1950,7 @@ body.setup-active .bottom-bar {
     color: #fff;
     border: none;
     font-weight: 700;
-    letter-spacing: 0.5px;
+    letter-spacing: 0;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
     transition: filter 0.15s, transform 0.1s;
 }
@@ -1978,7 +1978,7 @@ body.setup-active .bottom-bar {
     overflow: hidden;
     line-height: 1.6;
     word-break: break-all;
-    letter-spacing: 1.5px;
+    letter-spacing: 0;
     margin-bottom: var(--space-8);
 }
 
@@ -2884,11 +2884,11 @@ body.setup-active .bottom-bar {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 34px;
-    height: 30px;
+    width: 40px;
+    height: 38px;
     border: none;
     background: transparent;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     border-radius: var(--radius-md);
     cursor: pointer;
     transition: background var(--transition-fast), color var(--transition-fast);
