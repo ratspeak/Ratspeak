@@ -5,12 +5,13 @@
 # Ratspeak
 
 Ratspeak is a native desktop and mobile client for E2EE conversations over
-Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/image sharing, LoRa capability, WiFi, BLE, TCP, offline messaging, turn-based games, and more.
+Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/image sharing, voice calls (experimental), LoRa capability, WiFi, BLE, TCP, offline messaging, turn-based games, and more.
 
 [Docs](https://ratspeak.org/docs.html) |
 [Build from source](https://ratspeak.org/docs.html#getting-started/building-from-source) |
 [rsReticulum](https://github.com/ratspeak/rsReticulum) |
-[rsLXMF](https://github.com/ratspeak/rsLXMF)
+[rsLXMF](https://github.com/ratspeak/rsLXMF) |
+[rsLXST](https://github.com/ratspeak/rsLXST)
 
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
@@ -51,6 +52,8 @@ released. iOS does not have a public download yet; and macOS is unsigned, with W
 - Local Network, TCP, RNode/LoRa support, Bluetooth Peering, and more.
 - Contacts, discovered peers, path requests, interface status, propagation
   status, and transport health in the app.
+- Experimental peer-to-peer voice calls over [LXST](https://github.com/ratspeak/rsLXST)
+  (contacts-only, 0-hop, native microphone/speaker).
 - Chess and Tic-Tac-Toe.
 - I'm tired boss, this whole README is going to get a revamp.
 
@@ -80,6 +83,7 @@ cd ratspeak-src
 git clone https://github.com/ratspeak/rsReticulum
 git clone https://github.com/ratspeak/rsLXMF
 git clone https://github.com/ratspeak/lrgp-rs
+git clone https://github.com/ratspeak/rsLXST   # experimental voice; skip with --no-default-features
 git clone https://github.com/ratspeak/Ratspeak
 
 cd Ratspeak
@@ -91,12 +95,36 @@ cargo tauri dev
 For a release bundle, run `cargo tauri build` from `Ratspeak/src-tauri`.
 Desktop bundles land under `Ratspeak/src-tauri/target/release/bundle/`.
 
+To build without the experimental voice stack and skip the rsLXST sibling,
+pass `--no-default-features` to `cargo tauri dev` or `cargo tauri build`.
+
+## Voice (experimental)
+
+Voice calls run on [LXST](https://github.com/ratspeak/rsLXST) over Reticulum
+links — no servers, no relays. The stack is new and intentionally narrow:
+
+- Microphone and speaker access goes through the OS: `RECORD_AUDIO` and
+  `MODIFY_AUDIO_SETTINGS` on Android, `NSMicrophoneUsageDescription` on
+  macOS/iOS, the default audio device on Linux/Windows.
+- Incoming calls are restricted to contacts on a cached 0-hop path. Calls
+  from non-contacts are dropped before any audio path opens.
+- Persistently rejected callers are blackholed (rate-limit reason) so they
+  cannot keep ringing the device.
+- The `lxst-voice` Cargo feature is on by default. Disable it with
+  `cargo tauri dev --no-default-features` if you want to build Ratspeak
+  without the voice stack.
+
+Voice is experimental — expect rough edges. Codec quality, call setup,
+ringtones, and platform audio routing are all subject to change.
+
 ## Platform Notes
 
 - iOS does not support general USB serial. Local Network, multicast, notifications, and
   background behavior depend on Apple permissions as well, and currently don't have support at this time.
 - Windows Bluetooth Peer advertiser support needs the future signed MSIX lane.
 - Linux Bluetooth Peer depends on BlueZ GATT server and LE advertising support.
+- Voice calls require microphone permission per platform; the prompt is
+  triggered the first time you place or answer a call.
 
 ## License
 
