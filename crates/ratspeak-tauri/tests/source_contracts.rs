@@ -602,6 +602,8 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(ringtone_js.contains("var INCOMING_GROUPS = [2, 2]"));
     assert!(ringtone_js.contains("var OUTGOING_ROOT = 622.25"));
     assert!(ringtone_js.contains("var INCOMING_ROOT = 622.25"));
+    assert!(ringtone_js.contains("var OUTGOING_VOLUME = 0.17"));
+    assert!(ringtone_js.contains("var INCOMING_VOLUME = 0.22"));
     assert!(ringtone_js.contains("var OUTGOING_FINAL_PAUSE_MS = 1536"));
     assert!(ringtone_js.contains("var INCOMING_FINAL_PAUSE_MS = 1536"));
     assert!(ringtone_js.contains("var OUTGOING_TIMEOUT_MS = 25000"));

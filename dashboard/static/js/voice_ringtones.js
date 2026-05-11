@@ -13,6 +13,8 @@
     var INCOMING_FINAL_PAUSE_MS = 1536;
     var OUTGOING_ROOT = 622.25;
     var INCOMING_ROOT = 622.25;
+    var OUTGOING_VOLUME = 0.17;
+    var INCOMING_VOLUME = 0.22;
     var NO_ANSWER_ROOT = 440.0;
     var OUTGOING_TIMEOUT_MS = 25000;
     var activeMode = null;
@@ -140,7 +142,7 @@
             finalPauseMs: incoming ? INCOMING_FINAL_PAUSE_MS : OUTGOING_FINAL_PAUSE_MS,
             root: incoming ? INCOMING_ROOT : OUTGOING_ROOT,
             phrase: [1, 1.25992],
-            volume: 0.22,
+            volume: incoming ? INCOMING_VOLUME : OUTGOING_VOLUME,
             filterHz: 2350,
             overtone: 1.498,
             drift: 1.006,

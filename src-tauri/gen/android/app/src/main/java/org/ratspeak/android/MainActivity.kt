@@ -67,6 +67,8 @@ class MainActivity : TauriActivity() {
         private const val CALL_RINGTONE_INCOMING_GROUP_PAUSE_MS = 720L
         private const val CALL_RINGTONE_OUTGOING_FINAL_PAUSE_MS = 1536L
         private const val CALL_RINGTONE_INCOMING_FINAL_PAUSE_MS = 1536L
+        private const val CALL_RINGTONE_OUTGOING_VOLUME = 0.25
+        private const val CALL_RINGTONE_INCOMING_VOLUME = 0.32
         // Standard Bluetooth MAC-48 address format: 6 hex octets separated
         // by colons. Used to guard the BLE connect bridge methods before we
         // hand the string to BluetoothAdapter.getRemoteDevice, which throws
@@ -559,7 +561,7 @@ class MainActivity : TauriActivity() {
     private fun playNativeCallDoot(mode: String, groupIndex: Int, noteIndex: Int, generation: Int) {
         val incoming = mode == "incoming"
         val durationMs = if (incoming) CALL_RINGTONE_INCOMING_DOOT_MS else CALL_RINGTONE_OUTGOING_DOOT_MS
-        val volume = 0.32
+        val volume = if (incoming) CALL_RINGTONE_INCOMING_VOLUME else CALL_RINGTONE_OUTGOING_VOLUME
         val pcm = buildNativeCallTonePcm(
             nativeCallDootFrequency(groupIndex, noteIndex),
             durationMs,
