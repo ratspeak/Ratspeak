@@ -90,6 +90,9 @@ class MainActivity : TauriActivity() {
         // the embedded HTTP backend at http://127.0.0.1:<port>. Without this,
         // Android WebView blocks the request as mixed content (default on API 21+).
         webView.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        // Incoming call ringtones are app audio, not microphone capture. Allow
+        // Web Audio playback after startup notification permission handling.
+        webView.settings.mediaPlaybackRequiresUserGesture = false
         webViewRef = webView
         // Expose BLE permission bridge to JavaScript
         webView.addJavascriptInterface(BlePermissionBridge(), "RatspeakAndroid")

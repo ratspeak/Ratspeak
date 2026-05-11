@@ -11,6 +11,9 @@ function showConnectionSummary() {
 
 // One-shot bootstrap; subsequent updates arrive via push events.
 function _rsBootstrapOnLoad() {
+    if (window.RS && RS.audioPlayback && typeof RS.audioPlayback.ensure === 'function') {
+        RS.audioPlayback.ensure({ installUnlock: true }).catch(function() {});
+    }
     RS.invoke('api_announces').then(function(data) {
         if (Array.isArray(data)) {
             announceCache = data;

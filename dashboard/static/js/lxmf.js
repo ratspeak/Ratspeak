@@ -43,6 +43,8 @@ var lxstVoiceState = {
     establishedLinkId: null
 };
 var _voiceElapsedTimer = null;
+var _voiceRingtoneTimeoutInFlight = false;
+var _voiceSuppressNoAnswerCueUntil = 0;
 
 function _voiceStatusLabel(status) {
     switch (status) {
@@ -151,6 +153,59 @@ function _voiceEnsureMicrophonePermission() {
     });
 }
 
+function _voiceEnsurePlaybackReady() {
+    if (!window.RS || !RS.audioPlayback || typeof RS.audioPlayback.ensure !== 'function') {
+        return Promise.resolve(true);
+    }
+    return RS.audioPlayback.ensure({ installUnlock: true }).then(function() {
+        return true;
+    }).catch(function() {
+        return true;
+    });
+}
+
+function _voiceSyncRingtone() {
+    if (!window.RS || !RS.ringtones || typeof RS.ringtones.sync !== 'function') return;
+    RS.ringtones.sync(lxstVoiceState);
+}
+
+function _voiceStopRingtone() {
+    if (!window.RS || !RS.ringtones || typeof RS.ringtones.stop !== 'function') return;
+    RS.ringtones.stop();
+}
+
+function _voicePlayNoAnswerCue() {
+    if (!window.RS || !RS.ringtones || typeof RS.ringtones.playTimeoutCue !== 'function') return;
+    RS.ringtones.playTimeoutCue();
+}
+
+function _voiceHandleRingtoneTimeout() {
+    var active = lxstVoiceState.active;
+    if (_voiceRingtoneTimeoutInFlight || !active || active.role !== 'outgoing' || active.status === 'established') return;
+    _voiceRingtoneTimeoutInFlight = true;
+    _voiceSuppressNoAnswerCueUntil = Date.now() + 2000;
+    RS.invoke('voice_hangup').catch(function(err) {
+        window.RS.diag('warn', '[lxst] outgoing ringtone timeout hangup failed:', err);
+    }).then(function() {
+        _voiceRingtoneTimeoutInFlight = false;
+        if (!lxstVoiceState.active || lxstVoiceState.active.status === 'established') return;
+        lxstVoiceState.active = null;
+        lxstVoiceState.incoming = null;
+        lxstVoiceState.audioRunning = false;
+        lxstVoiceState.audioMicrophone = false;
+        lxstVoiceState.audioSpeaker = false;
+        lxstVoiceState.lastDialHash = null;
+        lxstVoiceState.establishedAtMs = null;
+        lxstVoiceState.establishedLinkId = null;
+        _voiceTrackEstablished(null);
+        renderVoiceUi();
+    });
+}
+
+if (window.RS && RS.ringtones && typeof RS.ringtones.setHandlers === 'function') {
+    RS.ringtones.setHandlers({ onOutgoingTimeout: _voiceHandleRingtoneTimeout });
+}
+
 function _voiceActiveConversationHash() {
     var call = lxstVoiceState.active || lxstVoiceState.incoming;
     if (!call) return null;
@@ -245,7 +300,7 @@ function _voiceRestoreHeaderStatus() {
 
 function _voiceStartCall(hash) {
     if (!lxstVoiceState.available || !hash) return Promise.resolve();
-    return _voiceEnsureMicrophonePermission().then(function() {
+    return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function() {
         lxstVoiceState.lastDialHash = hash;
         renderVoiceUi();
         return RS.invoke('voice_call', { args: { hash: hash } }).then(function(result) {
@@ -260,7 +315,8 @@ function _voiceStartCall(hash) {
 }
 
 function _voiceAnswerCall() {
-    return _voiceEnsureMicrophonePermission().then(function() {
+    _voiceStopRingtone();
+    return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function() {
         return RS.invoke('voice_answer').then(function() {
             lxstVoiceState.incoming = null;
             renderVoiceUi();
@@ -271,6 +327,8 @@ function _voiceAnswerCall() {
 }
 
 function _voiceRejectCall() {
+    _voiceStopRingtone();
+    _voiceSuppressNoAnswerCueUntil = Date.now() + 2000;
     return RS.invoke('voice_reject').catch(function() {}).then(function() {
         lxstVoiceState.incoming = null;
         renderVoiceUi();
@@ -278,6 +336,8 @@ function _voiceRejectCall() {
 }
 
 function _voiceHangupCall() {
+    _voiceStopRingtone();
+    _voiceSuppressNoAnswerCueUntil = Date.now() + 2000;
     return RS.invoke('voice_hangup').catch(function(err) {
         _voiceNotify((err && err.message) || 'Could not hang up call');
     }).then(function() {
@@ -345,6 +405,7 @@ function renderVoiceUi() {
 
     renderVoiceIncomingSheet();
     _voiceSyncElapsedTimer();
+    _voiceSyncRingtone();
 }
 
 function renderVoiceIncomingSheet() {
@@ -412,6 +473,8 @@ function renderVoiceIncomingSheet() {
 
 function _voiceHandleUpdate(data) {
     if (!data || typeof data !== 'object') return;
+    var previousActive = lxstVoiceState.active;
+    var shouldPlayNoAnswerCue = false;
     if (data.type === 'service') {
         lxstVoiceState.available = true;
         lxstVoiceState.running = !!data.running;
@@ -457,6 +520,11 @@ function _voiceHandleUpdate(data) {
             }
         }
     } else if (data.type === 'terminated') {
+        shouldPlayNoAnswerCue = !!(previousActive
+            && previousActive.role === 'outgoing'
+            && previousActive.status !== 'established'
+            && !data.reason
+            && Date.now() > _voiceSuppressNoAnswerCueUntil);
         lxstVoiceState.active = null;
         lxstVoiceState.incoming = null;
         lxstVoiceState.audioRunning = false;
@@ -472,6 +540,7 @@ function _voiceHandleUpdate(data) {
         _voiceNotify(lxstVoiceState.lastError);
     }
     renderVoiceUi();
+    if (shouldPlayNoAnswerCue) _voicePlayNoAnswerCue();
 }
 
 function normalizeContactRecord(c) {

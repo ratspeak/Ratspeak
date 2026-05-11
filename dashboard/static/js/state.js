@@ -159,6 +159,91 @@ window.RS.mediaPermissions = {
     }
 };
 
+var _rsAudioPlaybackContext = null;
+var _rsAudioPlaybackUnlockInstalled = false;
+var _rsAudioPlaybackUnlocked = false;
+
+function _rsAudioPlaybackCtor() {
+    return window.AudioContext || window.webkitAudioContext || null;
+}
+
+function _rsGetAudioPlaybackContext() {
+    var ctor = _rsAudioPlaybackCtor();
+    if (!ctor) return null;
+    if (_rsAudioPlaybackContext) return _rsAudioPlaybackContext;
+    try {
+        _rsAudioPlaybackContext = new ctor();
+    } catch (err) {
+        window.RS.diag('warn', '[audio] playback context unavailable:', err);
+        return null;
+    }
+    return _rsAudioPlaybackContext;
+}
+
+function _rsPrimeAudioPlayback(ctx) {
+    if (!ctx) return;
+    try {
+        var gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.00001, ctx.currentTime);
+        gain.connect(ctx.destination);
+        var osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(220, ctx.currentTime);
+        osc.connect(gain);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.025);
+        osc.onended = function() {
+            try { gain.disconnect(); } catch (_) {}
+        };
+    } catch (err) {
+        window.RS.diag('warn', '[audio] playback priming failed:', err);
+    }
+}
+
+function _rsInstallAudioPlaybackUnlock() {
+    if (_rsAudioPlaybackUnlockInstalled) return;
+    _rsAudioPlaybackUnlockInstalled = true;
+    var events = ['pointerdown', 'touchend', 'mousedown', 'keydown'];
+    var unlock = function() {
+        window.RS.audioPlayback.ensure({ installUnlock: false }).then(function(ok) {
+            if (!ok) return;
+            events.forEach(function(eventName) {
+                document.removeEventListener(eventName, unlock, true);
+            });
+        });
+    };
+    events.forEach(function(eventName) {
+        document.addEventListener(eventName, unlock, true);
+    });
+}
+
+function _rsEnsureAudioPlayback(opts) {
+    opts = opts || {};
+    var ctx = _rsGetAudioPlaybackContext();
+    if (!ctx) return Promise.resolve(false);
+    if (opts.installUnlock !== false) _rsInstallAudioPlaybackUnlock();
+    var resume = (ctx.state === 'suspended' && typeof ctx.resume === 'function')
+        ? ctx.resume()
+        : Promise.resolve();
+    return Promise.resolve(resume).then(function() {
+        _rsPrimeAudioPlayback(ctx);
+        _rsAudioPlaybackUnlocked = ctx.state === 'running' || ctx.state === 'interrupted';
+        return _rsAudioPlaybackUnlocked || ctx.state !== 'suspended';
+    }).catch(function(err) {
+        window.RS.diag('warn', '[audio] playback permission/unlock failed:', err);
+        return false;
+    });
+}
+
+window.RS.audioPlayback = {
+    ensure: _rsEnsureAudioPlayback,
+    context: _rsGetAudioPlaybackContext,
+    isReady: function() {
+        var ctx = _rsAudioPlaybackContext;
+        return !!(_rsAudioPlaybackUnlocked || (ctx && ctx.state !== 'suspended'));
+    }
+};
+
 function pathCountSummary(stats) {
     stats = stats || {};
     var visible = Array.isArray(stats.path_table) ? stats.path_table.length : 0;

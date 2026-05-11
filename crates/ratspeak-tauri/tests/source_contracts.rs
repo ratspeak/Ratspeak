@@ -575,17 +575,38 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         "fun requestMediaPermissions(audio: Boolean, camera: Boolean, requestId: String)"
     ));
     assert!(activity.contains("window._onAndroidMediaPermissionResult"));
+    assert!(activity.contains("mediaPlaybackRequiresUserGesture = false"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("window.RS.mediaPermissions"));
+    assert!(state_js.contains("window.RS.audioPlayback"));
     assert!(state_js.contains("window.RatspeakAndroid.requestMediaPermissions"));
     assert!(state_js.contains("navigator.mediaDevices.getUserMedia"));
 
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf.contains("function _voiceEnsureMicrophonePermission()"));
-    assert!(lxmf.contains("return _voiceEnsureMicrophonePermission().then(function()"));
+    assert!(lxmf.contains("function _voiceEnsurePlaybackReady()"));
+    assert!(lxmf.contains(
+        "return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function()"
+    ));
+    assert!(lxmf.contains("RS.ringtones.sync(lxstVoiceState)"));
+    assert!(lxmf.contains("RS.ringtones.setHandlers({ onOutgoingTimeout"));
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true })"));
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true, audio: true })"));
+
+    let ringtone_js =
+        read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");
+    assert!(ringtone_js.contains("var GROUPS = [4, 4, 3, 2, 1, 1, 1]"));
+    assert!(ringtone_js.contains("var OUTGOING_ROOT = 392.0"));
+    assert!(ringtone_js.contains("var INCOMING_ROOT = 440.0"));
+    assert!(ringtone_js.contains("playTimeoutCue();"));
+
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let ringtone_pos = index
+        .find("/static/js/voice_ringtones.js")
+        .expect("ringtone script");
+    let lxmf_pos = index.find("/static/js/lxmf.js").expect("lxmf script");
+    assert!(ringtone_pos < lxmf_pos);
 }
 
 #[test]
