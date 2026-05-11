@@ -69,7 +69,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -124,7 +124,7 @@ jobs:
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri android build --target aarch64 armv7 i686 x86_64 --apk --split-per-abi
+          cargo tauri android build --target aarch64 armv7 x86_64 --apk --split-per-abi
 
       - name: Build signed Android AAB
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_play }}
@@ -133,7 +133,7 @@ jobs:
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri android build --target aarch64 armv7 i686 x86_64 --aab
+          cargo tauri android build --target aarch64 armv7 x86_64 --aab
 
       - name: Check for bundled dev URLs
         shell: bash
@@ -156,7 +156,6 @@ jobs:
           mkdir -p "$out_dir"
           cp src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk "$out_dir/Ratspeak-arm64.apk"
           cp src-tauri/gen/android/app/build/outputs/apk/arm/release/app-arm-release.apk "$out_dir/Ratspeak-armv7.apk"
-          cp src-tauri/gen/android/app/build/outputs/apk/x86/release/app-x86-release.apk "$out_dir/Ratspeak-x86.apk"
           cp src-tauri/gen/android/app/build/outputs/apk/x86_64/release/app-x86_64-release.apk "$out_dir/Ratspeak-x86_64.apk"
 
       - name: Write APK checksums
