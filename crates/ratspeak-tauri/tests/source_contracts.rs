@@ -594,8 +594,16 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(lxmf.contains("RS.ringtones.sync(lxstVoiceState)"));
     assert!(lxmf.contains("RS.ringtones.setHandlers({ onOutgoingTimeout"));
     assert!(lxmf.contains("function _voicePeerLookupHash(call)"));
+    assert!(
+        lxmf.contains("if (call.role === 'outgoing' && lxstVoiceState.lastDialHash) return lxstVoiceState.lastDialHash;")
+    );
+    assert!(lxmf.contains("function _voicePeerSurfaceTitle(call)"));
     assert!(lxmf.contains("remote_lxmf_destination"));
     assert!(lxmf.contains("lxst-incoming-call-address"));
+    assert!(lxmf.contains("case 'available': return 'Calling';"));
+    assert!(lxmf.contains(
+        "var canShow = lxstVoiceState.available && !!lxmfActiveContact && !activeMatches && !incomingMatches;"
+    ));
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true })"));
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true, audio: true })"));
 
@@ -626,6 +634,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(ringtone_js.contains("playCallRingtone"));
     assert!(ringtone_js.contains("stopCallRingtone"));
     assert!(ringtone_js.contains("playTimeoutCue();"));
+    assert!(ringtone_js.contains("return active.status === 'ringing';"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     let ringtone_pos = index
@@ -640,6 +649,9 @@ fn active_call_surface_is_navigable_and_shows_elapsed_duration() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf.contains("function _voiceElapsedLabel()"));
+    assert!(lxmf.contains("function _voiceGlobalStatusLabel(active)"));
+    assert!(lxmf.contains("return 'Active call' + (elapsed ? ' - ' + elapsed : '');"));
+    assert!(lxmf.contains("if (audioIssue) return audioIssue;"));
     assert!(lxmf.contains("Math.max(1"));
     assert!(lxmf.contains("minutes + ':' + (seconds < 10 ? '0' : '') + seconds"));
     assert!(lxmf.contains("function _voiceWireCallSurfaceNavigation(id)"));
@@ -650,6 +662,8 @@ fn active_call_surface_is_navigable_and_shows_elapsed_duration() {
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
     assert!(messaging_css.contains("cursor: pointer;"));
+    assert!(messaging_css.contains(".lxst-call-strip-title"));
+    assert!(messaging_css.contains("overflow-wrap: anywhere;"));
     assert!(messaging_css.contains(".lxst-incoming-call-address"));
     assert!(messaging_css.contains("word-break: break-all;"));
 }

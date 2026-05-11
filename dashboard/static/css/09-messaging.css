@@ -532,9 +532,9 @@
     font-size: var(--text-sm);
     font-weight: 600;
     color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    line-height: 1.25;
 }
 .lxst-call-strip-status {
     font-size: var(--text-xs);
