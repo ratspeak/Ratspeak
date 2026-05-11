@@ -10,6 +10,7 @@ use lxst_telephony::{
     ActiveCallSnapshot, TelephonyControl, TelephonyRnsEndpoint, TelephonyRuntimeCore,
     TelephonyRuntimeSnapshot, TelephonyService, TelephonyServiceEvent,
 };
+use rns_identity::destination::Destination;
 use rns_identity::identity::Identity;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -32,6 +33,7 @@ const VOICE_PROFILE_DOWNGRADE_COOLDOWN: Duration = Duration::from_secs(20);
 const VOICE_PROFILE_UPGRADE_LOCKOUT_AFTER_DOWNGRADE: Duration = Duration::from_secs(60);
 const VOICE_PROFILE_DROPPED_FRAME_THRESHOLD: usize = 4;
 const VOICE_INITIAL_PROFILE: Profile = Profile::QualityMedium;
+const LXMF_DELIVERY_DESTINATION_NAME: &str = "lxmf.delivery";
 
 pub type VoiceResult<T> = Result<T, String>;
 
@@ -182,6 +184,7 @@ pub async fn call_identity(state: &Arc<AppState>, remote_identity: [u8; 16]) -> 
     Ok(json!({
         "ok": true,
         "remote_identity": hex::encode(remote_identity),
+        "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
         "profile": profile_key(VOICE_INITIAL_PROFILE),
     }))
 }
@@ -282,6 +285,7 @@ async fn drive_voice_events(
                     "type": "incoming",
                     "link_id": hex::encode(link_id),
                     "remote_identity": hex::encode(remote_identity),
+                    "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
                 });
                 state.emit_to_all("voice_incoming_call", payload.clone());
                 state.emit_to_all("voice_call_update", payload);
@@ -296,6 +300,7 @@ async fn drive_voice_events(
                         "type": "outgoing",
                         "link_id": hex::encode(link_id),
                         "remote_identity": hex::encode(remote_identity),
+                        "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
                     }),
                 );
             }
@@ -607,11 +612,19 @@ fn active_call_payload(active: &ActiveCallSnapshot) -> Value {
     json!({
         "link_id": hex::encode(active.link_id),
         "remote_identity": hex::encode(active.remote_identity),
+        "remote_lxmf_destination": lxmf_destination_for_identity(active.remote_identity),
         "role": role_key(active.role),
         "status": status_key(active.status),
         "profile": active.profile.map(profile_key),
         "answered": active.answered,
     })
+}
+
+fn lxmf_destination_for_identity(identity_hash: [u8; 16]) -> String {
+    hex::encode(Destination::hash_from_name_and_identity(
+        LXMF_DELIVERY_DESTINATION_NAME,
+        Some(&identity_hash),
+    ))
 }
 
 fn emit_media_state(

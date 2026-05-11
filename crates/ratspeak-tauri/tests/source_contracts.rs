@@ -593,8 +593,16 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     ));
     assert!(lxmf.contains("RS.ringtones.sync(lxstVoiceState)"));
     assert!(lxmf.contains("RS.ringtones.setHandlers({ onOutgoingTimeout"));
+    assert!(lxmf.contains("function _voicePeerLookupHash(call)"));
+    assert!(lxmf.contains("remote_lxmf_destination"));
+    assert!(lxmf.contains("lxst-incoming-call-address"));
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true })"));
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true, audio: true })"));
+
+    let voice_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice rs");
+    assert!(voice_rs.contains("remote_lxmf_destination"));
+    assert!(voice_rs.contains("fn lxmf_destination_for_identity(identity_hash: [u8; 16])"));
 
     let ringtone_js =
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");
@@ -634,6 +642,8 @@ fn active_call_surface_is_navigable_and_shows_elapsed_duration() {
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
     assert!(messaging_css.contains("cursor: pointer;"));
+    assert!(messaging_css.contains(".lxst-incoming-call-address"));
+    assert!(messaging_css.contains("word-break: break-all;"));
 }
 
 #[test]
@@ -679,8 +689,9 @@ fn lxmf_conversation_rows_use_peer_display_names_when_available() {
     assert!(lxmf.contains("function _conversationPayloadForHash(hash)"));
     assert!(lxmf.contains("var announceName = _lookupAnnounceName(hash);"));
     assert!(lxmf.contains("return { name: _hashFallbackName(hash), isHash: true };"));
-    assert!(lxmf.contains("PeersCache.subscribe(_refreshRenderedConversationNames);"));
+    assert!(lxmf.contains("PeersCache.subscribe(function()"));
     assert!(lxmf.contains("_refreshRenderedConversationNames();"));
+    assert!(lxmf.contains("renderVoiceUi();"));
     assert!(lxmf.contains("var payload = _conversationPayloadForHash(hash);"));
     assert!(lxmf.contains("_conversationNameInfo(c.hash, c.display_name, c.is_contact);"));
     assert!(lxmf.contains("_conversationNameInfo(lxmfActiveContact, null, false);"));

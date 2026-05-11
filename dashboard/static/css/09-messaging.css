@@ -607,6 +607,9 @@
     gap: var(--space-4);
     align-items: center;
 }
+.lxst-incoming-call-peer-meta {
+    min-width: 0;
+}
 .lxst-incoming-call-avatar {
     width: 52px;
     height: 52px;
@@ -627,9 +630,18 @@
     color: var(--text-primary);
     font-size: var(--text-base);
     font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+.lxst-incoming-call-address {
+    display: block;
+    margin-top: var(--space-1);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-all;
 }
 .lxst-incoming-call-actions {
     display: flex;

@@ -206,10 +206,51 @@ if (window.RS && RS.ringtones && typeof RS.ringtones.setHandlers === 'function')
     RS.ringtones.setHandlers({ onOutgoingTimeout: _voiceHandleRingtoneTimeout });
 }
 
+function _voicePeerLookupHash(call) {
+    if (!call) return '';
+    if (typeof call === 'string') return call;
+    return call.remote_lxmf_destination || call.remote_lxmf_hash || call.contact_hash || call.requested_hash || call.remote_identity || '';
+}
+
+function _voicePeerAddress(call) {
+    if (!call) return '';
+    if (typeof call === 'string') return call;
+    return _voicePeerLookupHash(call) || call.remote_identity || '';
+}
+
+function _voicePeerDisplayInfo(call) {
+    var lookupHash = _voicePeerLookupHash(call);
+    var address = _voicePeerAddress(call);
+    var avatarHash = lookupHash || address;
+    if (lookupHash && typeof _conversationNameInfo === 'function') {
+        var info = _conversationNameInfo(lookupHash, null, false);
+        if (info && info.name && !info.isHash) {
+            return {
+                name: info.name,
+                address: address || lookupHash,
+                avatarHash: avatarHash,
+                hasName: true
+            };
+        }
+    }
+    return {
+        name: 'Unknown caller',
+        address: address || lookupHash,
+        avatarHash: avatarHash,
+        hasName: false
+    };
+}
+
+function _voicePeerName(call) {
+    var info = _voicePeerDisplayInfo(call);
+    if (info.hasName) return info.name;
+    return info.address ? _hashFallbackName(info.address) : 'Unknown caller';
+}
+
 function _voiceActiveConversationHash() {
     var call = lxstVoiceState.active || lxstVoiceState.incoming;
     if (!call) return null;
-    return lxstVoiceState.lastDialHash || call.remote_identity || null;
+    return lxstVoiceState.lastDialHash || _voicePeerLookupHash(call) || null;
 }
 
 function _voiceOpenActiveConversation() {
@@ -246,7 +287,7 @@ function _voiceRenderCallSurface(ids) {
     surface.classList.toggle('is-connecting', !!(active && active.status !== 'established'));
     if (!peer) return;
 
-    if (titleEl) titleEl.textContent = _voicePeerName(peer.remote_identity);
+    if (titleEl) titleEl.textContent = _voicePeerName(peer);
     if (statusEl) {
         var status = active ? _voiceActiveStatusLabel(active) : 'Incoming call';
         var audioLabel = active ? _voiceAudioLabel() : '';
@@ -260,25 +301,19 @@ function _voiceRenderCallSurface(ids) {
     if (hangupBtn) hangupBtn.style.display = active ? '' : 'none';
 }
 
-function _voicePeerName(hash) {
-    if (!hash) return 'Unknown caller';
-    if (typeof _conversationNameInfo === 'function') {
-        var info = _conversationNameInfo(hash, null, false);
-        if (info && info.name) return info.name;
-    }
-    return hash.length > 12 ? hash.slice(0, 6) + '..' + hash.slice(-6) : hash;
-}
-
 function _voiceActiveMatchesContact() {
     var active = lxstVoiceState.active;
     if (!active || !lxmfActiveContact) return false;
-    return active.remote_identity === lxmfActiveContact || lxstVoiceState.lastDialHash === lxmfActiveContact;
+    return _voicePeerLookupHash(active) === lxmfActiveContact ||
+        active.remote_identity === lxmfActiveContact ||
+        lxstVoiceState.lastDialHash === lxmfActiveContact;
 }
 
 function _voiceIncomingMatchesContact() {
     var incoming = lxstVoiceState.incoming;
     if (!incoming || !lxmfActiveContact) return false;
-    return incoming.remote_identity === lxmfActiveContact;
+    return _voicePeerLookupHash(incoming) === lxmfActiveContact ||
+        incoming.remote_identity === lxmfActiveContact;
 }
 
 function _voiceNotify(message, className) {
@@ -437,9 +472,10 @@ function renderVoiceIncomingSheet() {
             '<div class="bottom-sheet-body lxst-incoming-call-body">' +
                 '<div class="lxst-incoming-call-peer">' +
                     '<div class="lxst-incoming-call-avatar" id="lxst-incoming-call-avatar"></div>' +
-                    '<div>' +
+                    '<div class="lxst-incoming-call-peer-meta">' +
                         '<span class="lxst-incoming-call-label">Ringing</span>' +
                         '<span class="lxst-incoming-call-name" id="lxst-incoming-call-name"></span>' +
+                        '<span class="lxst-incoming-call-address" id="lxst-incoming-call-address"></span>' +
                     '</div>' +
                 '</div>' +
             '</div>' +
@@ -462,10 +498,16 @@ function renderVoiceIncomingSheet() {
     }
     var avatar = document.getElementById('lxst-incoming-call-avatar');
     var name = document.getElementById('lxst-incoming-call-name');
+    var address = document.getElementById('lxst-incoming-call-address');
+    var peerInfo = _voicePeerDisplayInfo(incoming);
     if (avatar && typeof identityAvatar === 'function') {
-        avatar.innerHTML = identityAvatar(incoming.remote_identity, 44);
+        avatar.innerHTML = identityAvatar(peerInfo.avatarHash || incoming.remote_identity, 44);
     }
-    if (name) name.textContent = _voicePeerName(incoming.remote_identity);
+    if (name) name.textContent = peerInfo.name;
+    if (address) {
+        address.textContent = peerInfo.address || incoming.remote_identity || '';
+        address.title = address.textContent;
+    }
     if (sheet && typeof sheet.focus === 'function') {
         sheet.setAttribute('tabindex', '-1');
     }
@@ -482,12 +524,14 @@ function _voiceHandleUpdate(data) {
         lxstVoiceState.incoming = {
             link_id: data.link_id,
             remote_identity: data.remote_identity,
+            remote_lxmf_destination: data.remote_lxmf_destination || null,
             status: 'ringing'
         };
     } else if (data.type === 'outgoing') {
         lxstVoiceState.active = {
             link_id: data.link_id,
             remote_identity: data.remote_identity,
+            remote_lxmf_destination: data.remote_lxmf_destination || null,
             role: 'outgoing',
             status: 'calling'
         };
@@ -2685,7 +2729,10 @@ RS.listen('conversations_update', function(data) {
 });
 
 if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.subscribe === 'function') {
-    PeersCache.subscribe(_refreshRenderedConversationNames);
+    PeersCache.subscribe(function() {
+        _refreshRenderedConversationNames();
+        renderVoiceUi();
+    });
 }
 
 RS.listen('contacts_update', function(data) {
@@ -2694,6 +2741,7 @@ RS.listen('contacts_update', function(data) {
     renderContactList();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
     _refreshRenderedConversationNames();
+    renderVoiceUi();
 });
 
 RS.listen('contact_blocked', function(data) {
