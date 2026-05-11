@@ -59,13 +59,13 @@ class MainActivity : TauriActivity() {
         private const val USB_PERMISSION_ACTION = "org.ratspeak.android.USB_PERMISSION"
         private const val MAX_IDENTITY_IMPORT_BYTES = 1024 * 1024
         private const val CALL_RINGTONE_SAMPLE_RATE = 44100
-        private const val CALL_RINGTONE_OUTGOING_DOOT_MS = 185L
+        private const val CALL_RINGTONE_OUTGOING_DOOT_MS = 145L
         private const val CALL_RINGTONE_INCOMING_DOOT_MS = 145L
-        private const val CALL_RINGTONE_OUTGOING_SPACING_MS = 292L
+        private const val CALL_RINGTONE_OUTGOING_SPACING_MS = 225L
         private const val CALL_RINGTONE_INCOMING_SPACING_MS = 225L
-        private const val CALL_RINGTONE_OUTGOING_GROUP_PAUSE_MS = 1780L
+        private const val CALL_RINGTONE_OUTGOING_GROUP_PAUSE_MS = 720L
         private const val CALL_RINGTONE_INCOMING_GROUP_PAUSE_MS = 720L
-        private const val CALL_RINGTONE_OUTGOING_FINAL_PAUSE_MS = 1040L
+        private const val CALL_RINGTONE_OUTGOING_FINAL_PAUSE_MS = 1280L
         private const val CALL_RINGTONE_INCOMING_FINAL_PAUSE_MS = 1280L
         // Standard Bluetooth MAC-48 address format: 6 hex octets separated
         // by colons. Used to guard the BLE connect bridge methods before we
@@ -511,7 +511,7 @@ class MainActivity : TauriActivity() {
 
     private fun scheduleNativeCallRingtoneSequence(mode: String, generation: Int, baseDelayMs: Long) {
         val incoming = mode == "incoming"
-        val groups = if (incoming) intArrayOf(2, 2) else intArrayOf(4, 4, 3, 2, 1, 1, 1)
+        val groups = intArrayOf(2, 2)
         val dootMs = if (incoming) CALL_RINGTONE_INCOMING_DOOT_MS else CALL_RINGTONE_OUTGOING_DOOT_MS
         val spacingMs = if (incoming) CALL_RINGTONE_INCOMING_SPACING_MS else CALL_RINGTONE_OUTGOING_SPACING_MS
         val groupPauseMs = if (incoming) {
@@ -542,23 +542,16 @@ class MainActivity : TauriActivity() {
             }
         }
 
-        if (mode == "incoming") {
-            handler.postDelayed({
-                if (callRingtoneGeneration == generation && callRingtoneMode == mode) {
-                    scheduleNativeCallRingtoneSequence(mode, generation, 0L)
-                }
-            }, cursorMs)
-        }
+        handler.postDelayed({
+            if (callRingtoneGeneration == generation && callRingtoneMode == mode) {
+                scheduleNativeCallRingtoneSequence(mode, generation, 0L)
+            }
+        }, cursorMs)
     }
 
-    private fun nativeCallDootFrequency(mode: String, groupIndex: Int, noteIndex: Int): Double {
-        val incoming = mode == "incoming"
-        val root = if (incoming) 587.33 else 523.25
-        val phrase = if (incoming) {
-            doubleArrayOf(1.0, 1.25992)
-        } else {
-            doubleArrayOf(1.0, 1.12246, 1.25992, 1.12246)
-        }
+    private fun nativeCallDootFrequency(groupIndex: Int, noteIndex: Int): Double {
+        val root = 587.33
+        val phrase = doubleArrayOf(1.0, 1.25992)
         val taperLift = maxOf(0, groupIndex - 2) * 0.004
         return root * phrase[noteIndex % phrase.size] * (1.0 + taperLift)
     }
@@ -566,14 +559,14 @@ class MainActivity : TauriActivity() {
     private fun playNativeCallDoot(mode: String, groupIndex: Int, noteIndex: Int, generation: Int) {
         val incoming = mode == "incoming"
         val durationMs = if (incoming) CALL_RINGTONE_INCOMING_DOOT_MS else CALL_RINGTONE_OUTGOING_DOOT_MS
-        val volume = if (incoming) 0.25 else 0.18
+        val volume = 0.25
         val pcm = buildNativeCallTonePcm(
-            nativeCallDootFrequency(mode, groupIndex, noteIndex),
+            nativeCallDootFrequency(groupIndex, noteIndex),
             durationMs,
             volume,
-            if (incoming) 1.006 else 1.001,
-            if (incoming) 10L else 20L,
-            if (incoming) 0.18 else 0.13
+            1.006,
+            10L,
+            0.18
         )
         val track = try {
             AudioTrack.Builder()

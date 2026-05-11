@@ -1,19 +1,20 @@
 (function() {
     window.RS = window.RS || {};
 
-    var OUTGOING_GROUPS = [4, 4, 3, 2, 1, 1, 1];
+    var OUTGOING_GROUPS = [2, 2];
     var INCOMING_GROUPS = [2, 2];
-    var OUTGOING_DOOT_MS = 185;
+    var OUTGOING_DOOT_MS = 145;
     var INCOMING_DOOT_MS = 145;
-    var OUTGOING_SPACING_MS = 292;
+    var OUTGOING_SPACING_MS = 225;
     var INCOMING_SPACING_MS = 225;
-    var OUTGOING_GROUP_PAUSE_MS = 1780;
+    var OUTGOING_GROUP_PAUSE_MS = 720;
     var INCOMING_GROUP_PAUSE_MS = 720;
-    var OUTGOING_FINAL_PAUSE_MS = 1040;
+    var OUTGOING_FINAL_PAUSE_MS = 1280;
     var INCOMING_FINAL_PAUSE_MS = 1280;
-    var OUTGOING_ROOT = 523.25;
+    var OUTGOING_ROOT = 587.33;
     var INCOMING_ROOT = 587.33;
     var NO_ANSWER_ROOT = 440.0;
+    var OUTGOING_TIMEOUT_MS = 25000;
     var activeMode = null;
     var activeToken = null;
     var timedOutToken = null;
@@ -76,7 +77,11 @@
     }
 
     function _schedule(fn, ms) {
-        timers.push(setTimeout(fn, ms));
+        var timer = setTimeout(function() {
+            timers = timers.filter(function(t) { return t !== timer; });
+            fn();
+        }, ms);
+        timers.push(timer);
     }
 
     function _callToken(mode, call) {
@@ -134,13 +139,13 @@
             groupPauseMs: incoming ? INCOMING_GROUP_PAUSE_MS : OUTGOING_GROUP_PAUSE_MS,
             finalPauseMs: incoming ? INCOMING_FINAL_PAUSE_MS : OUTGOING_FINAL_PAUSE_MS,
             root: incoming ? INCOMING_ROOT : OUTGOING_ROOT,
-            phrase: incoming ? [1, 1.25992] : [1, 1.12246, 1.25992, 1.12246],
-            volume: incoming ? 0.17 : 0.115,
-            filterHz: incoming ? 2350 : 2100,
+            phrase: [1, 1.25992],
+            volume: 0.17,
+            filterHz: 2350,
             overtone: 1.498,
-            drift: incoming ? 1.006 : 1.001,
-            attackMs: incoming ? 10 : 20,
-            airGain: incoming ? 0.30 : 0.24
+            drift: 1.006,
+            attackMs: 10,
+            airGain: 0.30
         };
     }
 
@@ -232,11 +237,6 @@
 
     function _handleOutgoingTimeout(mode, token, id) {
         if (sequenceId !== id || activeToken !== token || activeMode !== mode) return;
-        if (mode === 'incoming') {
-            _clearTimers();
-            _scheduleSequence(mode, token, id);
-            return;
-        }
         timedOutToken = token;
         activeMode = null;
         activeToken = null;
@@ -246,6 +246,11 @@
         if (typeof handlers.onOutgoingTimeout === 'function') {
             try { handlers.onOutgoingTimeout(); } catch (err) { window.RS.diag('warn', '[ringtone] timeout handler failed:', err); }
         }
+    }
+
+    function _handleSequenceComplete(mode, token, id) {
+        if (sequenceId !== id || activeToken !== token || activeMode !== mode) return;
+        _scheduleSequence(mode, token, id);
     }
 
     function _sequenceLengthMs(mode) {
@@ -274,7 +279,7 @@
             cursor += groupIndex === cfg.groups.length - 1 ? cfg.finalPauseMs : cfg.groupPauseMs;
         });
 
-        _schedule(function() { _handleOutgoingTimeout(mode, token, id); }, cursor);
+        _schedule(function() { _handleSequenceComplete(mode, token, id); }, cursor);
     }
 
     function start(mode, call) {
@@ -286,10 +291,10 @@
         activeToken = token;
         sequenceId++;
         var id = sequenceId;
+        if (mode === 'outgoing') {
+            _schedule(function() { _handleOutgoingTimeout(mode, token, id); }, OUTGOING_TIMEOUT_MS);
+        }
         if (_startNativeRingtone(mode)) {
-            if (mode === 'outgoing') {
-                _schedule(function() { _handleOutgoingTimeout(mode, token, id); }, _sequenceLengthMs(mode));
-            }
             return;
         }
         _ensureAudio().then(function(ok) {
