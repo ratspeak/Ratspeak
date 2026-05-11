@@ -9,10 +9,10 @@
     var INCOMING_SPACING_MS = 225;
     var OUTGOING_GROUP_PAUSE_MS = 720;
     var INCOMING_GROUP_PAUSE_MS = 720;
-    var OUTGOING_FINAL_PAUSE_MS = 1280;
-    var INCOMING_FINAL_PAUSE_MS = 1280;
-    var OUTGOING_ROOT = 587.33;
-    var INCOMING_ROOT = 587.33;
+    var OUTGOING_FINAL_PAUSE_MS = 1536;
+    var INCOMING_FINAL_PAUSE_MS = 1536;
+    var OUTGOING_ROOT = 622.25;
+    var INCOMING_ROOT = 622.25;
     var NO_ANSWER_ROOT = 440.0;
     var OUTGOING_TIMEOUT_MS = 25000;
     var activeMode = null;
@@ -140,7 +140,7 @@
             finalPauseMs: incoming ? INCOMING_FINAL_PAUSE_MS : OUTGOING_FINAL_PAUSE_MS,
             root: incoming ? INCOMING_ROOT : OUTGOING_ROOT,
             phrase: [1, 1.25992],
-            volume: 0.17,
+            volume: 0.22,
             filterHz: 2350,
             overtone: 1.498,
             drift: 1.006,

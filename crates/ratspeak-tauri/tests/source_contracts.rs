@@ -600,8 +600,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");
     assert!(ringtone_js.contains("var OUTGOING_GROUPS = [2, 2]"));
     assert!(ringtone_js.contains("var INCOMING_GROUPS = [2, 2]"));
-    assert!(ringtone_js.contains("var OUTGOING_ROOT = 587.33"));
-    assert!(ringtone_js.contains("var INCOMING_ROOT = 587.33"));
+    assert!(ringtone_js.contains("var OUTGOING_ROOT = 622.25"));
+    assert!(ringtone_js.contains("var INCOMING_ROOT = 622.25"));
+    assert!(ringtone_js.contains("var OUTGOING_FINAL_PAUSE_MS = 1536"));
+    assert!(ringtone_js.contains("var INCOMING_FINAL_PAUSE_MS = 1536"));
     assert!(ringtone_js.contains("var OUTGOING_TIMEOUT_MS = 25000"));
     assert!(ringtone_js.contains("playCallRingtone"));
     assert!(ringtone_js.contains("stopCallRingtone"));
