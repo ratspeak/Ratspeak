@@ -1068,8 +1068,7 @@ pub async fn refresh_paths(state: &Arc<AppState>, ignore_throttle: bool) -> Refr
     let mut candidates: Vec<[u8; 16]> = select_static_probe_candidates(state, static_kind, now);
     let static_candidates = candidates.clone();
 
-    if !ignore_throttle
-        && !(mode == PropagationMode::Auto && favor_static)
+    if !(ignore_throttle || mode == PropagationMode::Auto && favor_static)
         && let Ok(reg) = state.discovered_propagation_nodes.lock()
     {
         let static_set = static_nodes::hash_set();
