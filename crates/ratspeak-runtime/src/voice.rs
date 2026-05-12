@@ -36,6 +36,7 @@ const VOICE_PROFILE_DOWNGRADE_COOLDOWN: Duration = Duration::from_secs(20);
 const VOICE_PROFILE_UPGRADE_LOCKOUT_AFTER_DOWNGRADE: Duration = Duration::from_secs(60);
 const VOICE_PROFILE_DROPPED_FRAME_THRESHOLD: usize = 4;
 const VOICE_AUDIO_FADE_IN_MS: usize = 20;
+const VOICE_AUDIO_OUTPUT_PREBUFFER_MS: usize = 120;
 const VOICE_INITIAL_PROFILE: Profile = Profile::QualityHigh;
 const LXMF_DELIVERY_DESTINATION_NAME: &str = "lxmf.delivery";
 const VOICE_CONTACTS_ONLY_NOTICE: &str = "I'm only accepting calls from contacts.";
@@ -1483,14 +1484,17 @@ async fn start_speaker_side(
 
     let output_channels = usize::from(output_config.channels());
     let output_sample_rate = output_config.sample_rate().0;
-    let output_queue = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(
-        output_channels * output_sample_rate as usize / 2,
+    let max_queue_samples = output_channels * output_sample_rate as usize;
+    let prebuffer_samples =
+        output_channels * output_sample_rate as usize * VOICE_AUDIO_OUTPUT_PREBUFFER_MS / 1000;
+    let output_queue = Arc::new(Mutex::new(AudioOutputQueue::new(
+        max_queue_samples,
+        prebuffer_samples,
     )));
     let output_stream =
         build_output_stream(&output_device, &output_config, Arc::clone(&output_queue))?;
 
     let sink_task = tokio::spawn(async move {
-        let max_queue_samples = output_channels * output_sample_rate as usize;
         let mut fade_samples_remaining = fade_sample_count(output_sample_rate, output_channels);
         let fade_samples_total = fade_samples_remaining;
         while let Some(frame) = speaker_rx.recv().await {
@@ -1506,13 +1510,7 @@ async fn start_speaker_side(
                 fade_samples_total,
             );
             if let Ok(mut queue) = output_queue.lock() {
-                let projected = queue.len().saturating_add(converted.len());
-                if projected > max_queue_samples {
-                    let drop_count = projected - max_queue_samples;
-                    let queue_len = queue.len();
-                    queue.drain(..drop_count.min(queue_len));
-                }
-                queue.extend(converted);
+                queue.push_samples(converted);
             }
         }
     });
@@ -1918,7 +1916,7 @@ fn sample_format_penalty(format: cpal::SampleFormat) -> u8 {
 fn build_output_stream(
     device: &cpal::Device,
     supported: &cpal::SupportedStreamConfig,
-    output_queue: Arc<Mutex<VecDeque<f32>>>,
+    output_queue: Arc<Mutex<AudioOutputQueue>>,
 ) -> VoiceResult<cpal::Stream> {
     let config = supported.config();
     match supported.sample_format() {
@@ -1963,20 +1961,60 @@ fn push_input_samples(
     }
 }
 
-fn fill_output_f32(data: &mut [f32], output_queue: &Arc<Mutex<VecDeque<f32>>>) {
-    if let Ok(mut queue) = output_queue.try_lock() {
+struct AudioOutputQueue {
+    samples: VecDeque<f32>,
+    max_samples: usize,
+    prebuffer_samples_remaining: usize,
+}
+
+impl AudioOutputQueue {
+    fn new(max_samples: usize, prebuffer_samples: usize) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(max_samples.min(prebuffer_samples).max(1)),
+            max_samples: max_samples.max(1),
+            prebuffer_samples_remaining: prebuffer_samples,
+        }
+    }
+
+    fn push_samples(&mut self, samples: Vec<f32>) {
+        if samples.len() >= self.max_samples {
+            let keep_from = samples.len() - self.max_samples;
+            self.samples.clear();
+            self.samples.extend(samples.into_iter().skip(keep_from));
+            return;
+        }
+
+        let projected = self.samples.len().saturating_add(samples.len());
+        if projected > self.max_samples {
+            let drop_count = projected - self.max_samples;
+            self.samples.drain(..drop_count.min(self.samples.len()));
+        }
+        self.samples.extend(samples);
+    }
+
+    fn pop_sample(&mut self) -> f32 {
+        if self.prebuffer_samples_remaining > 0 {
+            self.prebuffer_samples_remaining -= 1;
+            return 0.0;
+        }
+        self.samples.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0)
+    }
+}
+
+fn fill_output_f32(data: &mut [f32], output_queue: &Arc<Mutex<AudioOutputQueue>>) {
+    if let Ok(mut queue) = output_queue.lock() {
         for sample in data {
-            *sample = queue.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0);
+            *sample = queue.pop_sample();
         }
     } else {
         data.fill(0.0);
     }
 }
 
-fn fill_output_i16(data: &mut [i16], output_queue: &Arc<Mutex<VecDeque<f32>>>) {
-    if let Ok(mut queue) = output_queue.try_lock() {
+fn fill_output_i16(data: &mut [i16], output_queue: &Arc<Mutex<AudioOutputQueue>>) {
+    if let Ok(mut queue) = output_queue.lock() {
         for sample in data {
-            let value = queue.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0);
+            let value = queue.pop_sample();
             *sample = (value * i16::MAX as f32) as i16;
         }
     } else {
@@ -1984,10 +2022,10 @@ fn fill_output_i16(data: &mut [i16], output_queue: &Arc<Mutex<VecDeque<f32>>>) {
     }
 }
 
-fn fill_output_u16(data: &mut [u16], output_queue: &Arc<Mutex<VecDeque<f32>>>) {
-    if let Ok(mut queue) = output_queue.try_lock() {
+fn fill_output_u16(data: &mut [u16], output_queue: &Arc<Mutex<AudioOutputQueue>>) {
+    if let Ok(mut queue) = output_queue.lock() {
         for sample in data {
-            let value = queue.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0);
+            let value = queue.pop_sample();
             *sample = ((value * 0.5 + 0.5) * u16::MAX as f32) as u16;
         }
     } else {
@@ -2142,5 +2180,42 @@ mod tests {
 
         apply_fade_in(&mut samples, &mut remaining, 4);
         assert_eq!(samples, vec![0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn audio_output_queue_primes_with_silence_before_playback() {
+        let mut queue = AudioOutputQueue::new(8, 3);
+        queue.push_samples(vec![0.25, 0.5]);
+
+        assert_eq!(queue.pop_sample(), 0.0);
+        assert_eq!(queue.pop_sample(), 0.0);
+        assert_eq!(queue.pop_sample(), 0.0);
+        assert_eq!(queue.pop_sample(), 0.25);
+        assert_eq!(queue.pop_sample(), 0.5);
+        assert_eq!(queue.pop_sample(), 0.0);
+    }
+
+    #[test]
+    fn audio_output_queue_caps_oldest_samples() {
+        let mut queue = AudioOutputQueue::new(4, 0);
+        queue.push_samples(vec![0.1, 0.2, 0.3]);
+        queue.push_samples(vec![0.4, 0.5, 0.6]);
+
+        assert_eq!(queue.pop_sample(), 0.3);
+        assert_eq!(queue.pop_sample(), 0.4);
+        assert_eq!(queue.pop_sample(), 0.5);
+        assert_eq!(queue.pop_sample(), 0.6);
+        assert_eq!(queue.pop_sample(), 0.0);
+    }
+
+    #[test]
+    fn audio_output_queue_caps_single_large_batch() {
+        let mut queue = AudioOutputQueue::new(3, 0);
+        queue.push_samples(vec![0.1, 0.2, 0.3, 0.4, 0.5]);
+
+        assert_eq!(queue.pop_sample(), 0.3);
+        assert_eq!(queue.pop_sample(), 0.4);
+        assert_eq!(queue.pop_sample(), 0.5);
+        assert_eq!(queue.pop_sample(), 0.0);
     }
 }
