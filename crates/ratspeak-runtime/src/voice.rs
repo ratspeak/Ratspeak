@@ -30,12 +30,13 @@ const VOICE_AGC_ATTACK: f32 = 0.20;
 const VOICE_AGC_RELEASE: f32 = 0.04;
 const VOICE_HIGHPASS_HZ: f32 = 250.0;
 const VOICE_LOWPASS_HZ: f32 = 8_500.0;
-const VOICE_PROFILE_UPGRADE_AFTER: Duration = Duration::from_secs(8);
+const VOICE_PROFILE_UPGRADE_AFTER: Duration = Duration::ZERO;
 const VOICE_PROFILE_SWITCH_COOLDOWN: Duration = Duration::from_secs(12);
 const VOICE_PROFILE_DOWNGRADE_COOLDOWN: Duration = Duration::from_secs(20);
 const VOICE_PROFILE_UPGRADE_LOCKOUT_AFTER_DOWNGRADE: Duration = Duration::from_secs(60);
 const VOICE_PROFILE_DROPPED_FRAME_THRESHOLD: usize = 4;
-const VOICE_INITIAL_PROFILE: Profile = Profile::QualityMedium;
+const VOICE_AUDIO_FADE_IN_MS: usize = 20;
+const VOICE_INITIAL_PROFILE: Profile = Profile::QualityHigh;
 const LXMF_DELIVERY_DESTINATION_NAME: &str = "lxmf.delivery";
 const VOICE_CONTACTS_ONLY_NOTICE: &str = "I'm only accepting calls from contacts.";
 const VOICE_REJECTED_CALL_BLACKHOLE_THRESHOLD: u32 = 10;
@@ -788,16 +789,21 @@ async fn drive_voice_events(
                     continue;
                 }
                 latest_snapshot = Some(snapshot.clone());
-                reconcile_audio_session(
-                    &state,
-                    &control_tx,
-                    &snapshot,
-                    &mut audio_session,
-                    &mut audio_failure,
-                )
-                .await;
                 maybe_adapt_voice_profile(&state, &control_tx, &snapshot, &mut profile_adaptation)
                     .await;
+                if profile_switch_pending(&profile_adaptation, &snapshot) {
+                    stop_audio_session(audio_session.take(), &control_tx).await;
+                    audio_failure = None;
+                } else {
+                    reconcile_audio_session(
+                        &state,
+                        &control_tx,
+                        &snapshot,
+                        &mut audio_session,
+                        &mut audio_failure,
+                    )
+                    .await;
+                }
                 emit_snapshot(&state, &snapshot, audio_session.as_ref());
             }
             TelephonyServiceEvent::OpusTransmitStreamStarted { link_id, profile } => {
@@ -997,20 +1003,20 @@ async fn maybe_adapt_voice_profile(
     control_tx: &mpsc::Sender<TelephonyControl>,
     snapshot: &TelephonyRuntimeSnapshot,
     adaptation: &mut VoiceProfileAdaptation,
-) {
+) -> bool {
     let Some(active) = snapshot.active_call.as_ref() else {
         adaptation.reset();
-        return;
+        return false;
     };
 
     if active.status != SignallingStatus::Established {
         adaptation.reset_for_link(active.link_id);
-        return;
+        return false;
     }
 
     let current = active.profile.unwrap_or(Profile::DEFAULT);
     let Some(next) = adaptation.next_profile(active.link_id, current) else {
-        return;
+        return false;
     };
 
     if control_tx
@@ -1034,7 +1040,21 @@ async fn maybe_adapt_voice_profile(
                 "to": profile_key(next),
             }),
         );
+        true
+    } else {
+        false
     }
+}
+
+fn profile_switch_pending(
+    adaptation: &VoiceProfileAdaptation,
+    snapshot: &TelephonyRuntimeSnapshot,
+) -> bool {
+    snapshot.active_call.as_ref().is_some_and(|active| {
+        let current = active.profile.unwrap_or(Profile::DEFAULT);
+        active.status == SignallingStatus::Established
+            && adaptation.pending_switch(active.link_id, current)
+    })
 }
 
 async fn stop_audio_session(
@@ -1180,6 +1200,13 @@ impl VoiceProfileAdaptation {
         if self.link_id == Some(link_id) {
             self.dropped_since_switch = self.dropped_since_switch.saturating_add(dropped);
         }
+    }
+
+    fn pending_switch(&self, link_id: [u8; 16], current: Profile) -> bool {
+        self.link_id == Some(link_id)
+            && self
+                .requested_profile
+                .is_some_and(|requested| requested != current)
     }
 
     fn next_profile(&mut self, link_id: [u8; 16], current: Profile) -> Option<Profile> {
@@ -1464,12 +1491,19 @@ async fn start_speaker_side(
 
     let sink_task = tokio::spawn(async move {
         let max_queue_samples = output_channels * output_sample_rate as usize;
+        let mut fade_samples_remaining = fade_sample_count(output_sample_rate, output_channels);
+        let fade_samples_total = fade_samples_remaining;
         while let Some(frame) = speaker_rx.recv().await {
-            let converted = resample_output_frame(
+            let mut converted = resample_output_frame(
                 &frame,
                 target_sample_rate,
                 output_sample_rate,
                 output_channels,
+            );
+            apply_fade_in(
+                &mut converted,
+                &mut fade_samples_remaining,
+                fade_samples_total,
             );
             if let Ok(mut queue) = output_queue.lock() {
                 let projected = queue.len().saturating_add(converted.len());
@@ -1517,6 +1551,8 @@ struct InputFrameBuilder {
     source_cursor: f64,
     pending_frame: Vec<f32>,
     processor: VoiceInputProcessor,
+    fade_samples_remaining: usize,
+    fade_samples_total: usize,
 }
 
 impl InputFrameBuilder {
@@ -1527,16 +1563,21 @@ impl InputFrameBuilder {
         target_sample_rate: u32,
         target_frames: usize,
     ) -> Self {
+        let target_channels = target_channels.max(1);
+        let target_sample_rate = target_sample_rate.max(1);
+        let fade_samples_total = fade_sample_count(target_sample_rate, target_channels);
         Self {
             source_channels: source_channels.max(1),
             source_sample_rate: source_sample_rate.max(1),
-            target_channels: target_channels.max(1),
-            target_sample_rate: target_sample_rate.max(1),
-            target_samples_per_frame: target_frames * target_channels.max(1),
-            source_samples: Vec::with_capacity(target_frames * target_channels.max(1) * 2),
+            target_channels,
+            target_sample_rate,
+            target_samples_per_frame: target_frames * target_channels,
+            source_samples: Vec::with_capacity(target_frames * target_channels * 2),
             source_cursor: 0.0,
-            pending_frame: Vec::with_capacity(target_frames * target_channels.max(1)),
-            processor: VoiceInputProcessor::new(target_channels.max(1), target_sample_rate.max(1)),
+            pending_frame: Vec::with_capacity(target_frames * target_channels),
+            processor: VoiceInputProcessor::new(target_channels, target_sample_rate),
+            fade_samples_remaining: fade_samples_total,
+            fade_samples_total,
         }
     }
 
@@ -1577,6 +1618,11 @@ impl InputFrameBuilder {
                     .drain(..self.target_samples_per_frame)
                     .collect::<Vec<_>>();
                 self.processor.process(&mut samples);
+                apply_fade_in(
+                    &mut samples,
+                    &mut self.fade_samples_remaining,
+                    self.fade_samples_total,
+                );
                 if let Ok(frame) = RawAudioFrame::new(self.target_channels as u8, samples) {
                     frames.push(frame);
                 }
@@ -1996,6 +2042,25 @@ fn resample_output_frame(
     out
 }
 
+fn fade_sample_count(sample_rate: u32, channels: usize) -> usize {
+    (sample_rate.max(1) as usize * VOICE_AUDIO_FADE_IN_MS / 1000) * channels.max(1)
+}
+
+fn apply_fade_in(samples: &mut [f32], remaining: &mut usize, total: usize) {
+    if samples.is_empty() || *remaining == 0 || total == 0 {
+        return;
+    }
+
+    let already_faded = total.saturating_sub(*remaining);
+    let count = samples.len().min(*remaining);
+    for (index, sample) in samples.iter_mut().take(count).enumerate() {
+        let position = already_faded + index + 1;
+        let gain = (position as f32 / total as f32).clamp(0.0, 1.0);
+        *sample *= gain;
+    }
+    *remaining -= count;
+}
+
 fn channel_sample(source: &[f32], target_channel: usize, target_channels: usize) -> f32 {
     if source.is_empty() {
         return 0.0;
@@ -2041,5 +2106,41 @@ mod tests {
         let converted = resample_output_frame(&frame, 24_000, 48_000, 2);
 
         assert_eq!(converted.len(), 2_880 * 2);
+    }
+
+    #[test]
+    fn profile_adaptation_prefers_high_quality_immediately() {
+        let link_id = [0x42; 16];
+        let mut adaptation = VoiceProfileAdaptation::new();
+
+        assert_eq!(
+            adaptation.next_profile(link_id, Profile::QualityMedium),
+            Some(Profile::QualityHigh)
+        );
+        adaptation.mark_switch(Profile::QualityHigh);
+        assert!(adaptation.pending_switch(link_id, Profile::QualityMedium));
+
+        assert_eq!(
+            adaptation.next_profile(link_id, Profile::QualityMedium),
+            None
+        );
+        assert!(adaptation.pending_switch(link_id, Profile::QualityMedium));
+
+        assert_eq!(adaptation.next_profile(link_id, Profile::QualityHigh), None);
+        assert!(!adaptation.pending_switch(link_id, Profile::QualityHigh));
+    }
+
+    #[test]
+    fn fade_in_ramps_once_without_changing_length() {
+        let mut samples = vec![1.0; 4];
+        let mut remaining = 4;
+
+        apply_fade_in(&mut samples, &mut remaining, 4);
+
+        assert_eq!(samples, vec![0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(remaining, 0);
+
+        apply_fade_in(&mut samples, &mut remaining, 4);
+        assert_eq!(samples, vec![0.25, 0.5, 0.75, 1.0]);
     }
 }
