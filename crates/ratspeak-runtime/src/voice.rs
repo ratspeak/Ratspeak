@@ -142,6 +142,7 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
             "running": true,
         }),
     );
+    emit_lxst_activity(state, "LXST voice service started", "", "standard");
     Ok(())
 }
 
@@ -164,6 +165,7 @@ pub async fn shutdown_voice_service(state: &Arc<AppState>) {
             "running": false,
         }),
     );
+    emit_lxst_activity(state, "LXST voice service stopped", "", "standard");
 }
 
 pub fn voice_status(state: &AppState) -> Value {
@@ -686,6 +688,28 @@ async fn drive_voice_events(
                 });
                 state.emit_to_all("voice_incoming_call", payload.clone());
                 state.emit_to_all("voice_call_update", payload);
+                emit_lxst_activity(
+                    &state,
+                    "Incoming LXST call",
+                    &voice_remote_detail(remote_identity, Some(link_id)),
+                    "standard",
+                );
+            }
+            TelephonyServiceEvent::OutgoingCallPending { remote_identity } => {
+                state.emit_to_all(
+                    "voice_call_update",
+                    json!({
+                        "type": "outgoing_pending",
+                        "remote_identity": hex::encode(remote_identity),
+                        "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
+                    }),
+                );
+                emit_lxst_activity(
+                    &state,
+                    "Resolving LXST call path",
+                    &voice_remote_detail(remote_identity, None),
+                    "standard",
+                );
             }
             TelephonyServiceEvent::OutgoingCallStarted {
                 link_id,
@@ -699,6 +723,32 @@ async fn drive_voice_events(
                         "remote_identity": hex::encode(remote_identity),
                         "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
                     }),
+                );
+                emit_lxst_activity(
+                    &state,
+                    "LXST call link requested",
+                    &voice_remote_detail(remote_identity, Some(link_id)),
+                    "standard",
+                );
+            }
+            TelephonyServiceEvent::OutgoingCallFailed {
+                remote_identity,
+                message,
+            } => {
+                state.emit_to_all(
+                    "voice_call_update",
+                    json!({
+                        "type": "outgoing_failed",
+                        "remote_identity": hex::encode(remote_identity),
+                        "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
+                        "message": message.clone(),
+                    }),
+                );
+                emit_lxst_activity(
+                    &state,
+                    "LXST call failed",
+                    &format!("{} {}", voice_remote_detail(remote_identity, None), message),
+                    "standard",
                 );
             }
             TelephonyServiceEvent::CallTerminated { link_id, reason } => {
@@ -716,6 +766,16 @@ async fn drive_voice_events(
                         "link_id": hex::encode(link_id),
                         "reason": reason.map(status_key),
                     }),
+                );
+                emit_lxst_activity(
+                    &state,
+                    "LXST call ended",
+                    &format!(
+                        "link={} reason={}",
+                        hex::encode(link_id),
+                        reason.map(status_key).unwrap_or("none")
+                    ),
+                    "standard",
                 );
             }
             TelephonyServiceEvent::Snapshot(snapshot) => {
@@ -804,9 +864,10 @@ async fn drive_voice_events(
                     "voice_call_update",
                     json!({
                         "type": "error",
-                        "message": message,
+                        "message": message.clone(),
                     }),
                 );
+                emit_lxst_activity(&state, "LXST voice error", &message, "standard");
             }
             TelephonyServiceEvent::MediaSent { .. } => {
                 if let Some(snapshot) = latest_snapshot.as_ref() {
@@ -1026,6 +1087,23 @@ fn active_call_payload(active: &ActiveCallSnapshot) -> Value {
         "profile": active.profile.map(profile_key),
         "answered": active.answered,
     })
+}
+
+fn emit_lxst_activity(state: &AppState, message: &str, detail: &str, level: &str) {
+    state.emit_network_event("lxst", message, detail, level);
+}
+
+fn voice_remote_detail(remote_identity: [u8; 16], link_id: Option<[u8; 16]>) -> String {
+    let mut detail = format!(
+        "identity={} lxmf={}",
+        hex::encode(remote_identity),
+        lxmf_destination_for_identity(remote_identity)
+    );
+    if let Some(link_id) = link_id {
+        detail.push_str(" link=");
+        detail.push_str(&hex::encode(link_id));
+    }
+    detail
 }
 
 fn lxmf_destination_for_identity(identity_hash: [u8; 16]) -> String {

@@ -600,6 +600,8 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(lxmf.contains("function _voicePeerSurfaceTitle(call)"));
     assert!(lxmf.contains("remote_lxmf_destination"));
     assert!(lxmf.contains("lxst-incoming-call-address"));
+    assert!(lxmf.contains("data.type === 'outgoing_pending'"));
+    assert!(lxmf.contains("data.type === 'outgoing_failed'"));
     assert!(lxmf.contains("case 'available': return 'Calling';"));
     assert!(lxmf.contains(
         "var canShow = lxstVoiceState.available && !!lxmfActiveContact && !activeMatches && !incomingMatches;"
@@ -621,6 +623,9 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_rs.contains("send_ephemeral_opportunistic_message"));
     assert!(voice_rs.contains("pub async fn announce_if_running(state: &AppState)"));
     assert!(voice_rs.contains("TelephonyControl::Announce"));
+    assert!(voice_rs.contains("TelephonyServiceEvent::OutgoingCallPending"));
+    assert!(voice_rs.contains("TelephonyServiceEvent::OutgoingCallFailed"));
+    assert!(voice_rs.contains("state.emit_network_event(\"lxst\""));
 
     let runtime_rs =
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
@@ -649,6 +654,11 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         .expect("ringtone script");
     let lxmf_pos = index.find("/static/js/lxmf.js").expect("lxmf script");
     assert!(ringtone_pos < lxmf_pos);
+
+    let activity_js =
+        read_source(root.join("dashboard/static/js/activity.js")).expect("activity js");
+    assert!(activity_js.contains("lxst: true"));
+    assert!(activity_js.contains("lxst: 'LXST'"));
 }
 
 #[test]

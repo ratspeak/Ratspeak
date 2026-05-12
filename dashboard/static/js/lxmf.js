@@ -593,6 +593,17 @@ function _voiceHandleUpdate(data) {
             remote_lxmf_destination: data.remote_lxmf_destination || null,
             status: 'ringing'
         };
+    } else if (data.type === 'outgoing_pending') {
+        lxstVoiceState.active = {
+            link_id: data.link_id || null,
+            remote_identity: data.remote_identity,
+            remote_lxmf_destination: data.remote_lxmf_destination || null,
+            role: 'outgoing',
+            status: 'calling'
+        };
+        lxstVoiceState.incoming = null;
+        lxstVoiceState.lastError = null;
+        _voiceTrackEstablished(lxstVoiceState.active);
     } else if (data.type === 'outgoing') {
         lxstVoiceState.active = {
             link_id: data.link_id,
@@ -621,6 +632,22 @@ function _voiceHandleUpdate(data) {
         lxstVoiceState.audioRunning = !!(data.audio && data.audio.running);
         lxstVoiceState.audioMicrophone = !!(data.audio && data.audio.microphone);
         lxstVoiceState.audioSpeaker = !!(data.audio && data.audio.speaker);
+    } else if (data.type === 'outgoing_failed') {
+        var failedMessage = data.message || 'Call could not be connected';
+        lxstVoiceState.active = null;
+        lxstVoiceState.incoming = null;
+        lxstVoiceState.audioRunning = false;
+        lxstVoiceState.audioMicrophone = false;
+        lxstVoiceState.audioSpeaker = false;
+        lxstVoiceState.lastAudioWarningKey = null;
+        lxstVoiceState.lastDialHash = null;
+        lxstVoiceState.establishedAtMs = null;
+        lxstVoiceState.establishedLinkId = null;
+        _voiceTrackEstablished(null);
+        if (failedMessage !== 'cancelled') {
+            lxstVoiceState.lastError = failedMessage;
+            _voiceNotify(failedMessage);
+        }
     } else if (data.type === 'audio') {
         lxstVoiceState.audioRunning = data.state === 'started' && !!data.running;
         lxstVoiceState.audioMicrophone = !!data.microphone;

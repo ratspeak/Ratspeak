@@ -1215,6 +1215,7 @@
 .activity-entry[data-type="announce"]  { border-left-color: var(--accent); }
 .activity-entry[data-type="path"]      { border-left-color: var(--status-info); }
 .activity-entry[data-type="message"]   { border-left-color: var(--status-online); }
+.activity-entry[data-type="lxst"]      { border-left-color: var(--status-purple); }
 .activity-entry[data-type="interface"] { border-left-color: var(--status-warning); }
 .activity-entry[data-type="link"]      { border-left-color: var(--status-purple); }
 .activity-entry[data-type="error"]     { border-left-color: var(--status-error); }

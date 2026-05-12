@@ -6,6 +6,7 @@ var activityFilters = {
     announce: true,
     path: true,
     message: true,
+    lxst: true,
     interface: true,
     link: true,
     error: true
@@ -22,6 +23,7 @@ var ACTIVITY_FILTER_LABELS = {
     announce: 'Announces',
     path: 'Paths',
     message: 'Messages',
+    lxst: 'LXST',
     interface: 'Interfaces',
     link: 'Links',
     error: 'Errors'
@@ -32,8 +34,8 @@ var LEVEL_HIERARCHY = { essential: 0, standard: 1, detailed: 2 };
 
 var LEVEL_TYPES = {
     essential: ['error'],
-    standard: ['error', 'message', 'interface', 'link'],
-    detailed: ['error', 'message', 'interface', 'link', 'announce', 'path']
+    standard: ['error', 'message', 'lxst', 'interface', 'link'],
+    detailed: ['error', 'message', 'lxst', 'interface', 'link', 'announce', 'path']
 };
 
 function initActivity() {
@@ -166,7 +168,7 @@ function renderActivityFilters() {
     if (!container) return;
 
     var html = '';
-    var types = ['all', 'announce', 'path', 'message', 'interface', 'link', 'error'];
+    var types = ['all', 'announce', 'path', 'message', 'lxst', 'interface', 'link', 'error'];
     for (var i = 0; i < types.length; i++) {
         var type = types[i];
         var label = ACTIVITY_FILTER_LABELS[type];
@@ -192,7 +194,7 @@ function toggleActivityFilter(type) {
     } else {
         activityFilters[type] = !activityFilters[type];
         var allSelected = true;
-        var filterKeys = ['announce', 'path', 'message', 'interface', 'link', 'error'];
+        var filterKeys = ['announce', 'path', 'message', 'lxst', 'interface', 'link', 'error'];
         for (var i = 0; i < filterKeys.length; i++) {
             if (!activityFilters[filterKeys[i]]) { allSelected = false; break; }
         }
