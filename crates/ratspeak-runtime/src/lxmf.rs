@@ -176,6 +176,7 @@ pub struct LxmfManager {
     pub propagation_dest_hash: [u8; 16],
     pub router: LxmRouter,
     pub data_dir: PathBuf,
+    pub lxmf_storage_dir: PathBuf,
     pub display_name: String,
     pub ratchet_ring: RatchetRing,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
@@ -296,7 +297,14 @@ impl LxmfManager {
             &lxmf_hash[..16],
         );
 
-        let router = LxmRouter::new(RouterConfig::default());
+        let mut router = LxmRouter::new(RouterConfig::default());
+        if let Err(e) = router.load_state(&lxmf_storage) {
+            tracing::warn!(
+                path = %lxmf_storage.display(),
+                error = %e,
+                "failed to load LXMF router state"
+            );
+        }
 
         let ratchet_dir = id_dir.join("ratchets");
         std::fs::create_dir_all(&ratchet_dir)?;
@@ -375,6 +383,7 @@ impl LxmfManager {
             propagation_dest_hash,
             router,
             data_dir: ratspeak_dir,
+            lxmf_storage_dir: lxmf_storage,
             display_name: String::new(),
             ratchet_ring,
             received_ratchets,
@@ -429,9 +438,22 @@ impl LxmfManager {
         self.propagation_dest_hash =
             Destination::hash_from_name_and_identity("lxmf.propagation", Some(&self.identity.hash));
 
+        let id_dir = self.data_dir.join("identities").join(hash_hex);
+
         // Preserve transport_tx across router replacement; re-register dest.
         let old_transport_tx = self.router.transport_tx.take();
-        self.router = LxmRouter::new(RouterConfig::default());
+        let lxmf_storage = id_dir.join("lxmf");
+        std::fs::create_dir_all(&lxmf_storage).ok();
+        let mut router = LxmRouter::new(RouterConfig::default());
+        if let Err(e) = router.load_state(&lxmf_storage) {
+            tracing::warn!(
+                path = %lxmf_storage.display(),
+                error = %e,
+                "failed to load LXMF router state after identity switch"
+            );
+        }
+        self.router = router;
+        self.lxmf_storage_dir = lxmf_storage;
         if let Some(tx) = old_transport_tx {
             self.router.set_transport(tx.clone());
 
@@ -451,7 +473,6 @@ impl LxmfManager {
             }
         }
 
-        let id_dir = self.data_dir.join("identities").join(hash_hex);
         let ratchet_dir = id_dir.join("ratchets");
         std::fs::create_dir_all(&ratchet_dir).ok();
 
@@ -1654,6 +1675,14 @@ impl LxmfManager {
         if let Err(e) = rns_identity::persistence::atomic_write(&ki_path, &data) {
             tracing::warn!("Failed to save known identities: {e}");
         }
+
+        if let Err(e) = self.router.save_state(&self.lxmf_storage_dir) {
+            tracing::warn!(
+                path = %self.lxmf_storage_dir.display(),
+                error = %e,
+                "Failed to save LXMF router state"
+            );
+        }
     }
 
     pub fn update_remote_crypto(
@@ -1674,20 +1703,25 @@ impl LxmfManager {
         dest_hash: [u8; 16],
         name_hash: [u8; 10],
         app_data: Option<&[u8]>,
-    ) {
+    ) -> bool {
         let Some(app_data) = app_data else {
-            return;
+            return false;
         };
 
         if name_hash == rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME) {
             if let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(app_data) {
+                let changed = self.router.get_stamp_cost(&dest_hash) != Some(pn.stamp_cost);
                 self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
+                return changed;
             }
         } else if name_hash == rns_identity::name_hash::name_hash(LXMF_APP_NAME)
             && let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(app_data)
         {
+            let changed = self.router.get_stamp_cost(&dest_hash) != Some(cost);
             self.router.set_stamp_cost(dest_hash, cost);
+            return changed;
         }
+        false
     }
 
     /// Prefers ratchet pubkey, falls back to identity pubkey.
@@ -1737,6 +1771,11 @@ impl LxmfManager {
 
     pub fn is_destination_known(&self, dest_hash_hex: &str) -> bool {
         self.known_identities.contains_key(dest_hash_hex)
+    }
+
+    pub fn propagation_node_ready_for_send(&self, prop_hash: &[u8; 16]) -> bool {
+        self.known_identities.contains_key(&hex::encode(prop_hash))
+            && self.router.get_stamp_cost(prop_hash).is_some()
     }
 
     pub fn verify_inbound_signature(&self, msg: &mut LxMessage) -> Option<bool> {
@@ -2796,29 +2835,57 @@ mod tests {
         let unrelated_dest = [0x33; 16];
 
         let delivery_data = lxmf_core::handlers::get_announce_app_data(Some("peer"), Some(7));
-        mgr.update_lxmf_announce_app_data(
+        assert!(mgr.update_lxmf_announce_app_data(
             delivery_dest,
             rns_identity::name_hash::name_hash("lxmf.delivery"),
             Some(&delivery_data),
-        );
+        ));
         assert_eq!(mgr.router.get_stamp_cost(&delivery_dest), Some(7));
+        assert!(!mgr.update_lxmf_announce_app_data(
+            delivery_dest,
+            rns_identity::name_hash::name_hash("lxmf.delivery"),
+            Some(&delivery_data),
+        ));
 
         let pn_data =
             lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 1024, 1024, 23, 3, 0);
         let pn_app_data = lxmf_core::handlers::get_propagation_node_app_data(&pn_data);
-        mgr.update_lxmf_announce_app_data(
+        assert!(mgr.update_lxmf_announce_app_data(
             propagation_dest,
             rns_identity::name_hash::name_hash("lxmf.propagation"),
             Some(&pn_app_data),
-        );
+        ));
         assert_eq!(mgr.router.get_stamp_cost(&propagation_dest), Some(23));
 
-        mgr.update_lxmf_announce_app_data(
+        assert!(!mgr.update_lxmf_announce_app_data(
             unrelated_dest,
             rns_identity::name_hash::name_hash("nomadnetwork.node"),
             Some(&delivery_data),
-        );
+        ));
         assert_eq!(mgr.router.get_stamp_cost(&unrelated_dest), None);
+    }
+
+    #[test]
+    fn load_or_create_restores_lxmf_router_state() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-router-state-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut mgr = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let identity_hash = mgr.identity_hash.clone();
+        let propagation_node = [0x66; 16];
+
+        mgr.router.set_stamp_cost(propagation_node, 19);
+        mgr.save_crypto_state();
+        drop(mgr);
+
+        let restored = LxmfManager::load_or_create(&tmp, Some(&identity_hash)).unwrap();
+        assert_eq!(restored.router.get_stamp_cost(&propagation_node), Some(19));
     }
 
     #[test]

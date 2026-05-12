@@ -2602,6 +2602,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                     && let Some(mgr) = lxmf.as_mut()
                 {
                     let mut changed = false;
+                    let mut router_changed = false;
                     for a in &announces {
                         let dest_hex = hex::encode(a.dest_hash);
                         tracing::debug!(
@@ -2637,18 +2638,21 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 changed = true;
                             }
                         }
-                        mgr.update_lxmf_announce_app_data(
+                        router_changed |= mgr.update_lxmf_announce_app_data(
                             a.dest_hash,
                             a.name_hash,
                             a.app_data.as_deref(),
                         );
                     }
-                    if changed {
-                        // Persistence is deferred to the periodic tick save;
-                        // saving here would fsync per-announce on busy hubs.
+                    if changed || router_changed {
+                        // Coalesce announce-derived cache persistence to one
+                        // write per poll batch instead of one write per
+                        // announce on busy hubs.
+                        mgr.save_crypto_state();
                         tracing::debug!(
                             known_identities = mgr.known_identities.len(),
-                            "crypto state updated (persist deferred to periodic save)"
+                            router_state_changed = router_changed,
+                            "announce-derived crypto/router state persisted"
                         );
                     }
                 }

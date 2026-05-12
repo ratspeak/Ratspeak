@@ -467,6 +467,29 @@ pub fn mark_relay_path_success(state: &AppState, hash: [u8; 16]) {
         obj.insert("last_failure_reason".to_string(), serde_json::Value::Null);
         if is_static {
             obj.insert("static".to_string(), json!(true));
+            let node_state_usable = matches!(
+                obj.get("node_state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown"),
+                "enabled" | "known"
+            );
+            let node_state_disabled = obj
+                .get("node_state")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "disabled");
+            if !node_state_usable && !node_state_disabled {
+                obj.insert("node_state".to_string(), json!("known"));
+            }
+            if let Some(node) = static_nodes::node_for(&hash) {
+                obj.entry("display_name".to_string())
+                    .or_insert_with(|| json!(node.display_name.clone()));
+                obj.entry("region".to_string())
+                    .or_insert_with(|| json!(node.region.clone()));
+                obj.entry("role".to_string())
+                    .or_insert_with(|| json!(node.role.clone()));
+                obj.entry("priority".to_string())
+                    .or_insert(json!(node.priority));
+            }
         }
     }
 }
@@ -762,6 +785,31 @@ async fn request_relay_path(state: &Arc<AppState>, hash: [u8; 16]) {
     }
 }
 
+fn relay_send_metadata_ready(state: &AppState, hash: &[u8; 16]) -> bool {
+    state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| {
+            lxmf.as_ref()
+                .map(|mgr| mgr.propagation_node_ready_for_send(hash))
+        })
+        .unwrap_or(false)
+}
+
+async fn relay_send_ready_or_waiting(state: &Arc<AppState>, hash: [u8; 16]) -> RelayReadiness {
+    if relay_send_metadata_ready(state, &hash) {
+        RelayReadiness::Ready
+    } else {
+        request_relay_path(state, hash).await;
+        tracing::info!(
+            node = %hex::encode(hash),
+            "Offline Inbox path is reachable, waiting for LXMF propagation identity/stamp metadata"
+        );
+        RelayReadiness::Waiting
+    }
+}
+
 /// Re-run selection after a propagation announce; switch only if Auto mode
 /// and the winner changed.
 pub async fn maybe_reselect_on_announce(state: &Arc<AppState>) {
@@ -837,13 +885,51 @@ fn configured_client_relay(state: &AppState) -> Option<[u8; 16]> {
     })
 }
 
+fn promote_static_live_paths(state: &AppState, live_paths: &HashSet<[u8; 16]>) {
+    if live_paths.is_empty() {
+        return;
+    }
+    let static_set = static_nodes::hash_set();
+    for hash in live_paths {
+        if static_set.contains(hash) {
+            mark_relay_path_success(state, *hash);
+        }
+    }
+}
+
 async fn apply_best_live_auto_selection(
     state: &Arc<AppState>,
     live_paths: &HashSet<[u8; 16]>,
 ) -> Option<[u8; 16]> {
+    promote_static_live_paths(state, live_paths);
     let winner = auto_select_node_with_live_paths(state, live_paths)?;
     apply_auto_selection(state, winner).await;
     Some(winner)
+}
+
+async fn reselect_from_live_paths_after_probe(state: &Arc<AppState>) {
+    let (mode, _) = read_settings(state);
+    if mode != PropagationMode::Auto {
+        emit_propagation_update(state);
+        return;
+    }
+
+    let snapshot = relay_path_snapshot(state).await;
+    if snapshot.state != RelayPathState::Reachable {
+        emit_propagation_update(state);
+        return;
+    }
+
+    promote_static_live_paths(state, &snapshot.live_paths);
+    let current = state.auto_active_node.read().ok().and_then(|g| *g);
+    if let Some(winner) = auto_select_node_with_live_paths(state, &snapshot.live_paths)
+        && current != Some(winner)
+    {
+        apply_auto_selection(state, winner).await;
+        return;
+    }
+
+    emit_propagation_update(state);
 }
 
 pub async fn ensure_relay_ready_for_send(state: &Arc<AppState>) -> RelayReadiness {
@@ -858,7 +944,9 @@ pub async fn ensure_relay_ready_for_send(state: &Arc<AppState>) -> RelayReadines
             match snapshot.state {
                 RelayPathState::Offline => RelayReadiness::Offline,
                 RelayPathState::TransportUnavailable => RelayReadiness::Waiting,
-                _ if snapshot.live_paths.contains(&node) => RelayReadiness::Ready,
+                _ if snapshot.live_paths.contains(&node) => {
+                    relay_send_ready_or_waiting(state, node).await
+                }
                 _ => {
                     request_relay_path(state, node).await;
                     RelayReadiness::Waiting
@@ -872,11 +960,21 @@ pub async fn ensure_relay_ready_for_send(state: &Arc<AppState>) -> RelayReadines
                 RelayPathState::TransportUnavailable => return RelayReadiness::Waiting,
                 RelayPathState::Reachable => {}
             }
+            promote_static_live_paths(state, &snapshot.live_paths);
 
-            if let Some(active) = state.auto_active_node.read().ok().and_then(|g| *g) {
+            let active = state.auto_active_node.read().ok().and_then(|g| *g);
+            if let Some(winner) = auto_select_node_with_live_paths(state, &snapshot.live_paths)
+                && active != Some(winner)
+            {
+                apply_auto_selection(state, winner).await;
+                mark_relay_path_success(state, winner);
+                return relay_send_ready_or_waiting(state, winner).await;
+            }
+
+            if let Some(active) = active {
                 if snapshot.live_paths.contains(&active) {
                     mark_relay_path_success(state, active);
-                    return RelayReadiness::Ready;
+                    return relay_send_ready_or_waiting(state, active).await;
                 }
                 mark_relay_failure(state, active, "active_relay_path_missing");
                 request_relay_path(state, active).await;
@@ -885,7 +983,7 @@ pub async fn ensure_relay_ready_for_send(state: &Arc<AppState>) -> RelayReadines
             if let Some(winner) = apply_best_live_auto_selection(state, &snapshot.live_paths).await
             {
                 mark_relay_path_success(state, winner);
-                RelayReadiness::Ready
+                relay_send_ready_or_waiting(state, winner).await
             } else {
                 clear_auto_selection(state).await;
                 RelayReadiness::Waiting
@@ -908,6 +1006,14 @@ pub async fn reconcile_active_auto_node(state: &Arc<AppState>) {
     match snapshot.state {
         RelayPathState::Offline | RelayPathState::TransportUnavailable => return,
         RelayPathState::Reachable => {}
+    }
+    promote_static_live_paths(state, &snapshot.live_paths);
+
+    if let Some(winner) = auto_select_node_with_live_paths(state, &snapshot.live_paths)
+        && active != winner
+    {
+        apply_auto_selection(state, winner).await;
+        return;
     }
 
     if snapshot.live_paths.contains(&active) {
@@ -1013,7 +1119,7 @@ pub async fn refresh_paths(state: &Arc<AppState>, ignore_throttle: bool) -> Refr
     let st = state.clone();
     tokio::spawn(async move {
         tokio::time::sleep(REFRESH_FOLLOWUP_DELAY).await;
-        emit_propagation_update(&st);
+        reselect_from_live_paths_after_probe(&st).await;
     });
 
     RefreshOutcome::Sent { count }
@@ -1066,6 +1172,12 @@ pub async fn probe_static_nodes_background(state: &Arc<AppState>) {
             })
             .await;
     }
+
+    let st = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(REFRESH_FOLLOWUP_DELAY).await;
+        reselect_from_live_paths_after_probe(&st).await;
+    });
 }
 
 /// Reactive `request_path` for the active node + 3-strikes/30-min counter.
@@ -1276,6 +1388,7 @@ mod tests {
     use super::*;
     use crate::config::DashboardConfig;
     use r2d2_sqlite::SqliteConnectionManager;
+    use rns_identity::identity::Identity;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1535,6 +1648,55 @@ mod tests {
             Some([0xBB; 16]),
             "static preference must not override live path evidence"
         );
+    }
+
+    #[test]
+    fn live_path_promotes_static_bootstrap_node_for_auto_selection() {
+        let state = make_state();
+        let now = now_f64();
+        let sync_hub = sync_hub_hash();
+        seed_static_node(&state, sync_hub, None, 0.0, "bootstrap", "unknown");
+        seed_node(&state, [0xBB; 16], 1, now);
+
+        let mut live = HashSet::new();
+        live.insert(sync_hub);
+        live.insert([0xBB; 16]);
+
+        assert_eq!(
+            auto_select_node_with_live_paths(&state, &live),
+            Some([0xBB; 16]),
+            "pathless bootstrap metadata alone must not win"
+        );
+
+        promote_static_live_paths(&state, &live);
+
+        assert_eq!(
+            auto_select_node_with_live_paths(&state, &live),
+            Some(sync_hub),
+            "a live path to the bundled sync hub must promote it above fallback nodes"
+        );
+    }
+
+    #[test]
+    fn relay_send_metadata_requires_identity_and_stamp_cost() {
+        let state = make_state();
+        let node = sync_hub_hash();
+        let node_hex = hex::encode(node);
+        let remote = Identity::new();
+        let mut mgr =
+            crate::lxmf::LxmfManager::load_or_create(&state.config.data_root, None).unwrap();
+
+        assert!(!relay_send_metadata_ready(&state, &node));
+
+        mgr.known_identities
+            .insert(node_hex, remote.get_public_key());
+        assert!(!mgr.propagation_node_ready_for_send(&node));
+
+        mgr.router.set_stamp_cost(node, 0);
+        assert!(mgr.propagation_node_ready_for_send(&node));
+
+        *state.lxmf.lock().unwrap() = Some(mgr);
+        assert!(relay_send_metadata_ready(&state, &node));
     }
 
     #[test]
