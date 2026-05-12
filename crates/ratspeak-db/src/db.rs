@@ -8,7 +8,10 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 28;
+const SCHEMA_VERSION: i64 = 29;
+
+pub const PEER_SERVICE_LXMF_DELIVERY: &str = "lxmf.delivery";
+pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
 
 const POOL_MAX_SIZE: u32 = 32;
 
@@ -305,11 +308,13 @@ CREATE TABLE IF NOT EXISTS app_actions (
 -- `identity_activity.display_name`.
 CREATE TABLE IF NOT EXISTS identity_activity (
     dest_hash      TEXT PRIMARY KEY,
+    identity_hash  TEXT NOT NULL DEFAULT '',
     last_seen      REAL NOT NULL,
     first_seen     REAL NOT NULL,
     announce_count INTEGER NOT NULL DEFAULT 1,
     display_name   TEXT NOT NULL DEFAULT '',
-    last_interface TEXT NOT NULL DEFAULT ''
+    last_interface TEXT NOT NULL DEFAULT '',
+    services       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
 
@@ -896,6 +901,36 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         tracing::info!("Migrated to schema version 28 (pending_blackholes)");
     }
 
+    if from_version < 29 {
+        if table_exists(conn, "identity_activity")? {
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "identity_hash") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
+                        ADD COLUMN identity_hash TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+            if !cols.iter().any(|c| c == "services") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
+                        ADD COLUMN services TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+            conn.execute_batch(
+                "UPDATE identity_activity
+                    SET services = 'lxmf.delivery'
+                  WHERE services = ''
+                    AND (
+                        dest_hash IN (SELECT source FROM messages WHERE source != '')
+                        OR dest_hash IN (SELECT destination FROM messages WHERE destination != '')
+                        OR dest_hash IN (SELECT dest_hash FROM contacts)
+                    );",
+            )?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 29;")?;
+        tracing::info!("Migrated to schema version 29 (peer service aspects)");
+    }
+
     Ok(())
 }
 
@@ -906,6 +941,15 @@ fn get_column_names(conn: &Connection, table: &str) -> Result<Vec<String>, rusql
         .filter_map(|r| r.ok())
         .collect();
     Ok(cols)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, rusqlite::Error> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        params![table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
 }
 
 pub fn get_active_identity(pool: &DbPool) -> Option<serde_json::Value> {
@@ -1797,7 +1841,22 @@ pub fn touch_identity_activity(
     pool: &DbPool,
     rows: &[(String, f64, Option<String>, Option<String>)],
 ) -> usize {
+    touch_identity_activity_for_service(pool, rows, None, PEER_SERVICE_LXMF_DELIVERY)
+}
+
+/// Same as `touch_identity_activity`, but records the service aspect that made
+/// the destination actionable for Ratspeak.
+pub fn touch_identity_activity_for_service(
+    pool: &DbPool,
+    rows: &[(String, f64, Option<String>, Option<String>)],
+    identity_hash: Option<&str>,
+    service: &str,
+) -> usize {
     if rows.is_empty() {
+        return 0;
+    }
+    let service = service.trim();
+    if service.is_empty() {
         return 0;
     }
     let mut conn = match pool.get() {
@@ -1810,52 +1869,41 @@ pub fn touch_identity_activity(
     };
     let mut touched = 0usize;
     {
-        // Four prepared statements over (name?, iface?) presence combos to
-        // avoid needless name self-writes that would bump the WAL.
-        let mut both = match tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count, display_name, last_interface)
-             VALUES (?1, ?2, ?2, 1, ?3, ?4)
+        let mut stmt = match tx.prepare_cached(
+            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, last_interface, services)
+             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), ?6)
              ON CONFLICT(dest_hash) DO UPDATE SET
                  last_seen = MAX(excluded.last_seen, last_seen),
                  announce_count = announce_count + 1,
-                 display_name = excluded.display_name,
-                 last_interface = excluded.last_interface",
-        ) { Ok(s) => s, Err(_) => return 0 };
-        let mut name_only = match tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count, display_name)
-             VALUES (?1, ?2, ?2, 1, ?3)
-             ON CONFLICT(dest_hash) DO UPDATE SET
-                 last_seen = MAX(excluded.last_seen, last_seen),
-                 announce_count = announce_count + 1,
-                 display_name = excluded.display_name",
-        ) { Ok(s) => s, Err(_) => return 0 };
-        let mut iface_only = match tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count, last_interface)
-             VALUES (?1, ?2, ?2, 1, ?3)
-             ON CONFLICT(dest_hash) DO UPDATE SET
-                 last_seen = MAX(excluded.last_seen, last_seen),
-                 announce_count = announce_count + 1,
-                 last_interface = excluded.last_interface",
-        ) { Ok(s) => s, Err(_) => return 0 };
-        let mut bare = match tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
-             VALUES (?1, ?2, ?2, 1)
-             ON CONFLICT(dest_hash) DO UPDATE SET
-                 last_seen = MAX(excluded.last_seen, last_seen),
-                 announce_count = announce_count + 1",
+                 identity_hash = CASE
+                     WHEN excluded.identity_hash != '' THEN excluded.identity_hash
+                     ELSE identity_hash
+                 END,
+                 display_name = CASE
+                     WHEN excluded.display_name != '' THEN excluded.display_name
+                     ELSE display_name
+                 END,
+                 last_interface = CASE
+                     WHEN excluded.last_interface != '' THEN excluded.last_interface
+                     ELSE last_interface
+                 END,
+                 services = CASE
+                     WHEN excluded.services = '' THEN services
+                     WHEN services = '' THEN excluded.services
+                     WHEN instr(',' || services || ',', ',' || excluded.services || ',') > 0 THEN services
+                     ELSE services || ',' || excluded.services
+                 END",
         ) {
             Ok(s) => s,
             Err(_) => return 0,
         };
+        let identity_hash = identity_hash.unwrap_or("").trim();
         for (hash, ts, name, iface) in rows {
             let n = name.as_deref().filter(|s| !s.is_empty());
             let i = iface.as_deref().filter(|s| !s.is_empty());
-            let ok = match (n, i) {
-                (Some(n), Some(i)) => both.execute(params![hash, ts, n, i]).is_ok(),
-                (Some(n), None) => name_only.execute(params![hash, ts, n]).is_ok(),
-                (None, Some(i)) => iface_only.execute(params![hash, ts, i]).is_ok(),
-                (None, None) => bare.execute(params![hash, ts]).is_ok(),
-            };
+            let ok = stmt
+                .execute(params![hash, identity_hash, ts, n, i, service])
+                .is_ok();
             if ok {
                 touched += 1;
             }
@@ -1871,11 +1919,16 @@ pub fn touch_identity_last_heard(pool: &DbPool, dest_hash: &str, timestamp: f64)
         Err(_) => return false,
     };
     conn.execute(
-        "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
-         VALUES (?1, ?2, ?2, 0)
+        "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count, services)
+         VALUES (?1, ?2, ?2, 0, ?3)
          ON CONFLICT(dest_hash) DO UPDATE SET
-             last_seen = MAX(excluded.last_seen, last_seen)",
-        params![dest_hash, timestamp],
+             last_seen = MAX(excluded.last_seen, last_seen),
+             services = CASE
+                 WHEN services = '' THEN excluded.services
+                 WHEN instr(',' || services || ',', ',' || excluded.services || ',') > 0 THEN services
+                 ELSE services || ',' || excluded.services
+             END",
+        params![dest_hash, timestamp, PEER_SERVICE_LXMF_DELIVERY],
     )
     .map(|n| n > 0)
     .unwrap_or(false)
@@ -1894,6 +1947,7 @@ pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) 
     let mut out = Vec::with_capacity(hashes.len());
     for chunk in hashes.chunks(500) {
         let placeholders: Vec<String> = (0..chunk.len()).map(|i| format!("?{}", i + 2)).collect();
+        let service_filter = peer_service_filter_sql("ia.services");
         let sql = format!(
             "SELECT
                 ia.dest_hash,
@@ -1901,12 +1955,19 @@ pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) 
                 ia.first_seen,
                 COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
                 CASE WHEN c.dest_hash IS NOT NULL THEN 1 ELSE 0 END AS is_contact,
-                ia.last_interface
+                ia.last_interface,
+                ia.identity_hash,
+                CASE
+                    WHEN c.dest_hash IS NOT NULL AND COALESCE(ia.services, '') = '' THEN '{lxmf}'
+                    ELSE COALESCE(ia.services, '')
+                END AS services
              FROM identity_activity ia
              LEFT JOIN contacts c ON c.dest_hash = ia.dest_hash AND c.identity_id = ?1
              WHERE ia.dest_hash IN ({})
+               AND (c.dest_hash IS NOT NULL OR {service_filter})
                AND ia.dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts WHERE identity_id = ?1)",
-            placeholders.join(",")
+            placeholders.join(","),
+            lxmf = PEER_SERVICE_LXMF_DELIVERY
         );
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
@@ -1925,11 +1986,13 @@ pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) 
                 |row| {
                     Ok(PeerRow {
                         hash: row.get::<_, String>(0)?,
+                        identity_hash: row.get::<_, String>(6)?,
                         last_seen: row.get::<_, Option<f64>>(1)?,
                         first_seen: row.get::<_, Option<f64>>(2)?,
                         display_name: row.get::<_, String>(3)?,
                         is_contact: row.get::<_, i64>(4)? != 0,
                         last_interface: row.get::<_, String>(5)?,
+                        services: parse_peer_services(row.get::<_, String>(7)?),
                     })
                 },
             )
@@ -1942,6 +2005,23 @@ pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) 
 
 pub use ratspeak_core::types::PeerRow;
 
+fn parse_peer_services(raw: String) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn peer_service_filter_sql(column: &str) -> String {
+    format!(
+        "(instr(',' || COALESCE({column}, '') || ',', ',{lxmf},') > 0 \
+          OR instr(',' || COALESCE({column}, '') || ',', ',{lxst},') > 0)",
+        lxmf = PEER_SERVICE_LXMF_DELIVERY,
+        lxst = PEER_SERVICE_LXST_TELEPHONY
+    )
+}
+
 /// Active peers (within cutoff) UNION every contact. Display-name precedence:
 /// `contacts.display_name` over `identity_activity.display_name`.
 pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) -> Vec<PeerRow> {
@@ -1949,18 +2029,22 @@ pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) ->
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    let mut stmt = match conn.prepare(
+    let service_filter = peer_service_filter_sql("ia.services");
+    let sql = format!(
         "SELECT
             ia.dest_hash,
             ia.last_seen,
             ia.first_seen,
             COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
             CASE WHEN c.dest_hash IS NOT NULL THEN 1 ELSE 0 END AS is_contact,
-            ia.last_interface
+            ia.last_interface,
+            ia.identity_hash,
+            COALESCE(ia.services, '') AS services
          FROM identity_activity ia
          LEFT JOIN contacts c ON c.dest_hash = ia.dest_hash AND c.identity_id = ?2
          WHERE ia.last_seen >= ?1
            AND c.dest_hash IS NULL
+           AND {service_filter}
            AND ia.dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts WHERE identity_id = ?2)
          UNION ALL
          SELECT
@@ -1969,12 +2053,19 @@ pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) ->
             ia.first_seen,
             COALESCE(NULLIF(c.display_name, ''), ia.display_name, '') AS display_name,
             1 AS is_contact,
-            COALESCE(ia.last_interface, '') AS last_interface
+            COALESCE(ia.last_interface, '') AS last_interface,
+            COALESCE(ia.identity_hash, '') AS identity_hash,
+            CASE
+                WHEN COALESCE(ia.services, '') = '' THEN '{lxmf}'
+                ELSE ia.services
+            END AS services
          FROM contacts c
          LEFT JOIN identity_activity ia ON ia.dest_hash = c.dest_hash
          WHERE c.identity_id = ?2
            AND c.dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts WHERE identity_id = ?2)",
-    ) {
+        lxmf = PEER_SERVICE_LXMF_DELIVERY
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "get_peers_snapshot: prepare failed");
@@ -1985,11 +2076,13 @@ pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) ->
     stmt.query_map(params![cutoff_unix, identity_id], |row| {
         Ok(PeerRow {
             hash: row.get::<_, String>(0)?,
+            identity_hash: row.get::<_, String>(6)?,
             last_seen: row.get::<_, Option<f64>>(1)?,
             first_seen: row.get::<_, Option<f64>>(2)?,
             display_name: row.get::<_, String>(3)?,
             is_contact: row.get::<_, i64>(4)? != 0,
             last_interface: row.get::<_, String>(5)?,
+            services: parse_peer_services(row.get::<_, String>(7)?),
         })
     })
     .map(|it| it.filter_map(|r| r.ok()).collect())
@@ -3400,8 +3493,37 @@ mod peers_snapshot_tests {
         assert_eq!(alice.display_name, "Alice");
         assert_eq!(alice.last_seen, Some(100.0));
         assert!(!alice.is_contact);
+        assert_eq!(alice.services, vec![PEER_SERVICE_LXMF_DELIVERY]);
         assert_eq!(bob.display_name, "");
         assert!(!bob.is_contact);
+    }
+
+    #[test]
+    fn snapshot_excludes_non_actionable_service_announces() {
+        let pool = test_pool();
+        let rows = vec![("node".to_string(), 100.0, Some("Node".to_string()), None)];
+        touch_identity_activity_for_service(&pool, &rows, None, "nomadnetwork.node");
+
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn snapshot_includes_lxst_telephony_peers() {
+        let pool = test_pool();
+        let rows = vec![("voice-peer".to_string(), 100.0, None, None)];
+        touch_identity_activity_for_service(
+            &pool,
+            &rows,
+            Some("identity-peer"),
+            PEER_SERVICE_LXST_TELEPHONY,
+        );
+
+        let rows = get_peers_snapshot(&pool, 0.0, "me");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].hash, "voice-peer");
+        assert_eq!(rows[0].identity_hash, "identity-peer");
+        assert_eq!(rows[0].services, vec![PEER_SERVICE_LXST_TELEPHONY]);
     }
 
     #[test]

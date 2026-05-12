@@ -34,11 +34,13 @@ pub async fn api_get_peers_snapshot(state: State<'_, Arc<AppState>>) -> AppResul
         .map(|r| {
             json!({
                 "hash": r.hash,
+                "identity_hash": r.identity_hash,
                 "last_seen": r.last_seen,
                 "first_seen": r.first_seen,
                 "display_name": r.display_name,
                 "is_contact": r.is_contact,
                 "last_interface": r.last_interface,
+                "services": r.services,
             })
         })
         .collect();

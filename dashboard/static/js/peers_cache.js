@@ -22,6 +22,38 @@ var PeersCache = (function() {
     var _enrichedPathTable = null;
     var _enrichedPathIndex = null;
 
+    function _isSuppressedPeerDisplayName(displayName) {
+        if (typeof displayName !== 'string') return false;
+        var name = displayName.trim();
+        if (!name) return false;
+        return /meshtastic/i.test(name) || /^![a-f0-9]{8}$/i.test(name);
+    }
+
+    function _normalizeServices(services) {
+        if (!Array.isArray(services)) return [];
+        var out = [];
+        for (var i = 0; i < services.length; i++) {
+            if (typeof services[i] !== 'string') continue;
+            var s = services[i].trim();
+            if (s && out.indexOf(s) === -1) out.push(s);
+        }
+        return out;
+    }
+
+    function _hasSupportedPeerService(entry) {
+        if (!entry) return false;
+        if (entry.is_contact) return true;
+        var services = Array.isArray(entry.services) ? entry.services : [];
+        return services.indexOf('lxmf.delivery') !== -1 || services.indexOf('lxst.telephony') !== -1;
+    }
+
+    function _isSuppressedPeerEntry(entry) {
+        return !!entry && (
+            _isSuppressedPeerDisplayName(entry.display_name) ||
+            !_hasSupportedPeerService(entry)
+        );
+    }
+
     function _notify() {
         _enrichedCache = null;
         for (var i = 0; i < _subs.length; i++) {
@@ -33,11 +65,13 @@ var PeersCache = (function() {
         if (!r || !r.hash) return null;
         return {
             hash: r.hash,
+            identity_hash: typeof r.identity_hash === 'string' ? r.identity_hash : '',
             last_seen: (r.last_seen === undefined || r.last_seen === null) ? null : r.last_seen,
             first_seen: (r.first_seen === undefined || r.first_seen === null) ? null : r.first_seen,
             display_name: typeof r.display_name === 'string' ? r.display_name : '',
             is_contact: !!r.is_contact,
             last_interface: typeof r.last_interface === 'string' ? r.last_interface : '',
+            services: _normalizeServices(r.services),
         };
     }
 
@@ -87,6 +121,8 @@ var PeersCache = (function() {
             if (payload.last_interface !== undefined && n.last_interface) {
                 existing.last_interface = n.last_interface;
             }
+            if (payload.identity_hash !== undefined) existing.identity_hash = n.identity_hash;
+            if (payload.services !== undefined) existing.services = n.services;
         } else {
             _cache[n.hash] = n;
         }
@@ -126,13 +162,16 @@ var PeersCache = (function() {
     }
 
     function get(hash) {
-        return _cache[hash] || null;
+        var entry = _cache[hash] || null;
+        return _isSuppressedPeerEntry(entry) ? null : entry;
     }
 
     function getAll() {
         var out = [];
         for (var h in _cache) {
-            if (Object.prototype.hasOwnProperty.call(_cache, h)) out.push(_cache[h]);
+            if (!Object.prototype.hasOwnProperty.call(_cache, h)) continue;
+            if (_isSuppressedPeerEntry(_cache[h])) continue;
+            out.push(_cache[h]);
         }
         return out;
     }
@@ -140,7 +179,9 @@ var PeersCache = (function() {
     function size() {
         var n = 0;
         for (var h in _cache) {
-            if (Object.prototype.hasOwnProperty.call(_cache, h)) n++;
+            if (!Object.prototype.hasOwnProperty.call(_cache, h)) continue;
+            if (_isSuppressedPeerEntry(_cache[h])) continue;
+            n++;
         }
         return n;
     }
@@ -224,8 +265,11 @@ var PeersCache = (function() {
             var iface = liveIface || (entry.last_interface || null);
             out[j] = {
                 hash: entry.hash,
+                identity_hash: entry.identity_hash || '',
                 display_name: entry.display_name || '',
                 is_contact: !!entry.is_contact,
+                services: Array.isArray(entry.services) ? entry.services.slice() : [],
+                supports_lxst_call: Array.isArray(entry.services) && entry.services.indexOf('lxst.telephony') !== -1,
                 last_seen: entry.last_seen,
                 first_seen: entry.first_seen,
                 last_interface: entry.last_interface || '',
@@ -259,6 +303,7 @@ var PeersCache = (function() {
         size: size,
         subscribe: subscribe,
         computeStatus: computeStatus,
+        isSuppressedPeerDisplayName: _isSuppressedPeerDisplayName,
         enriched: enriched,
         isInitialized: isInitialized,
     };

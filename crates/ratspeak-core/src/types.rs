@@ -16,6 +16,9 @@ pub struct LrgpMsgMeta {
 #[derive(Debug, Clone)]
 pub struct PeerRow {
     pub hash: String,
+    /// Reticulum identity hash when recovered from a validated announce.
+    /// Empty when the row was created from message history or a manual contact.
+    pub identity_hash: String,
     /// `None` for contacts with no activity row.
     pub last_seen: Option<f64>,
     /// `None` for contacts with no activity row.
@@ -24,6 +27,8 @@ pub struct PeerRow {
     pub is_contact: bool,
     /// Empty for never-seen contacts.
     pub last_interface: String,
+    /// Service aspects that make this row actionable in Ratspeak.
+    pub services: Vec<String>,
 }
 
 pub const MAX_DISCOVERED_PROPAGATION_NODES: usize = 512;

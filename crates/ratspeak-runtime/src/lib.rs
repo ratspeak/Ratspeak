@@ -1270,6 +1270,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 .await;
                 announce_handlers::spawn_lxmf_propagation_handler(
                     state.clone(),
+                    transport_tx_for_handler.clone(),
+                    shutdown.clone(),
+                )
+                .await;
+                announce_handlers::spawn_lxst_telephony_handler(
+                    state.clone(),
                     transport_tx_for_handler,
                     shutdown,
                 )
@@ -3028,11 +3034,13 @@ pub(crate) fn emit_peers_batch(state: &AppState, rows: &[db::PeerRow]) {
         .map(|r| {
             json!({
                 "hash": r.hash,
+                "identity_hash": r.identity_hash,
                 "last_seen": r.last_seen,
                 "first_seen": r.first_seen,
                 "display_name": r.display_name,
                 "is_contact": r.is_contact,
                 "last_interface": r.last_interface,
+                "services": r.services,
             })
         })
         .collect();

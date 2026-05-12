@@ -1140,6 +1140,45 @@ fn peer_reachability_uses_uncapped_path_index() {
 }
 
 #[test]
+fn peer_spammer_names_are_ui_suppressed_not_user_blocked() {
+    let root = repo_root();
+    let peers = read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache");
+    assert!(peers.contains("function _isSuppressedPeerDisplayName(displayName)"));
+    assert!(peers.contains("/meshtastic/i.test(name)"));
+    assert!(peers.contains("/^![a-f0-9]{8}$/i.test(name)"));
+    assert!(peers.contains("if (_isSuppressedPeerEntry(_cache[h])) continue;"));
+    assert!(peers.contains("return _isSuppressedPeerEntry(entry) ? null : entry;"));
+
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    assert!(
+        !settings.contains("_isSuppressedPeerDisplayName"),
+        "automatic spammer suppression must not appear in the user block list"
+    );
+}
+
+#[test]
+fn peers_are_filtered_to_ratspeak_actionable_services() {
+    let root = repo_root();
+    let peers = read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache");
+    assert!(peers.contains("function _hasSupportedPeerService(entry)"));
+    assert!(peers.contains("services.indexOf('lxmf.delivery') !== -1"));
+    assert!(peers.contains("services.indexOf('lxst.telephony') !== -1"));
+    assert!(peers.contains("supports_lxst_call"));
+
+    let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db");
+    assert!(db.contains("pub const PEER_SERVICE_LXMF_DELIVERY: &str = \"lxmf.delivery\";"));
+    assert!(db.contains("pub const PEER_SERVICE_LXST_TELEPHONY: &str = \"lxst.telephony\";"));
+    assert!(db.contains("fn peer_service_filter_sql(column: &str) -> String"));
+
+    let handlers = read_source(root.join("crates/ratspeak-runtime/src/announce_handlers.rs"))
+        .expect("handlers");
+    assert!(handlers.contains("pub async fn spawn_lxst_telephony_handler"));
+    assert!(handlers.contains("const LXST_TELEPHONY_ASPECT: &str = \"lxst.telephony\";"));
+    assert!(handlers.contains("Destination::hash_from_name_and_identity(\"lxmf.delivery\""));
+    assert!(handlers.contains("db::PEER_SERVICE_LXST_TELEPHONY"));
+}
+
+#[test]
 fn network_view_hides_shared_instance_internal_interfaces() {
     let health = read_source(repo_root().join("dashboard/static/js/health.js")).expect("health js");
     assert!(health.contains(

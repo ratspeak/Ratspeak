@@ -124,11 +124,13 @@ async fn emit_peer_delta_for(state: &Arc<AppState>, dest_hash: &str) {
             json!({
                 "peers": [{
                     "hash": row.hash,
+                    "identity_hash": row.identity_hash,
                     "last_seen": row.last_seen,
                     "first_seen": row.first_seen,
                     "display_name": row.display_name,
                     "is_contact": row.is_contact,
                     "last_interface": row.last_interface,
+                    "services": row.services,
                 }]
             }),
         );

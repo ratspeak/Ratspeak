@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rns_identity::destination::Destination;
 use rns_runtime::lifecycle::ShutdownSignal;
 use rns_transport::messages::{AnnounceHandlerEvent, TransportMessage};
 use serde_json::json;
@@ -15,6 +16,7 @@ use crate::state::AppState;
 const HANDLER_CHANNEL_CAP: usize = 64;
 const REGISTER_ATTEMPTS: u32 = 3;
 const REGISTER_RETRY_DELAY: Duration = Duration::from_millis(500);
+const LXST_TELEPHONY_ASPECT: &str = "lxst.telephony";
 
 /// Register the lxmf.delivery handler and spawn the per-event processor.
 pub async fn spawn_lxmf_delivery_handler(
@@ -68,6 +70,42 @@ pub async fn spawn_lxmf_propagation_handler(
                 ev = hrx.recv() => match ev {
                     Some(event) => {
                         process_propagation_announce(&state, event).await;
+                        state.request_poll_now();
+                    }
+                    None => break,
+                },
+            }
+        }
+    });
+}
+
+/// Register the lxst.telephony handler and map announces onto their associated
+/// LXMF peer rows. This keeps the visible peers list service-aware without
+/// inserting standalone NomadNet or propagation-node destinations.
+pub async fn spawn_lxst_telephony_handler(
+    state: Arc<AppState>,
+    transport_tx: mpsc::Sender<TransportMessage>,
+    shutdown: ShutdownSignal,
+) {
+    let (htx, mut hrx) = mpsc::channel::<AnnounceHandlerEvent>(HANDLER_CHANNEL_CAP);
+    if !register_with_retry(
+        &transport_tx,
+        Some(LXST_TELEPHONY_ASPECT.to_string()),
+        true,
+        htx,
+    )
+    .await
+    {
+        return;
+    }
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown.wait() => break,
+                ev = hrx.recv() => match ev {
+                    Some(event) => {
+                        process_lxst_telephony_announce(&state, event).await;
                         state.request_poll_now();
                     }
                     None => break,
@@ -148,18 +186,73 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
 
     let iface = lookup_path_iface(state, event.destination_hash).await;
 
+    let identity_hash_hex = event.identity_hash.map(hex::encode);
     let activity = vec![(hash_hex.clone(), now_f64(), display_name, iface)];
 
     let pool = state.db.clone();
     let activity_owned = activity.clone();
+    let identity_hash_for_db = identity_hash_hex.as_deref().map(str::to_owned);
     db::spawn_db(pool, move |p| {
-        db::touch_identity_activity(&p, &activity_owned);
+        db::touch_identity_activity_for_service(
+            &p,
+            &activity_owned,
+            identity_hash_for_db.as_deref(),
+            db::PEER_SERVICE_LXMF_DELIVERY,
+        );
     })
     .await
     .expect("db task panicked");
 
     let pool = state.db.clone();
     let hashes = vec![hash_hex];
+    let identity_id = crate::helpers::active_identity_id(state);
+    let resolved = db::spawn_db(pool, move |p| {
+        db::get_peers_by_hashes(&p, &hashes, &identity_id)
+    })
+    .await
+    .unwrap_or_default();
+    crate::emit_peers_batch(state, &resolved);
+}
+
+/// `lxst.telephony` announces carry an identity-level voice destination. The
+/// Peers UI is LXMF-address centric, so mirror NomadNet's classification
+/// approach and derive the associated `lxmf.delivery` hash from the announced
+/// identity.
+async fn process_lxst_telephony_announce(state: &Arc<AppState>, event: AnnounceHandlerEvent) {
+    let identity_hash = event.identity_hash.or_else(|| {
+        event
+            .public_key
+            .map(|public_key| rns_crypto::sha::truncated_hash(&public_key))
+    });
+    let Some(identity_hash) = identity_hash else {
+        tracing::debug!(
+            dest = %hex::encode(event.destination_hash),
+            "lxst.telephony announce dropped: no identity hash"
+        );
+        return;
+    };
+
+    let lxmf_dest = Destination::hash_from_name_and_identity("lxmf.delivery", Some(&identity_hash));
+    let lxmf_dest_hex = hex::encode(lxmf_dest);
+    let identity_hash_hex = hex::encode(identity_hash);
+    let iface = lookup_path_iface(state, event.destination_hash).await;
+    let activity = vec![(lxmf_dest_hex.clone(), now_f64(), None, iface)];
+
+    let pool = state.db.clone();
+    let identity_hash_for_db = identity_hash_hex.clone();
+    db::spawn_db(pool, move |p| {
+        db::touch_identity_activity_for_service(
+            &p,
+            &activity,
+            Some(&identity_hash_for_db),
+            db::PEER_SERVICE_LXST_TELEPHONY,
+        );
+    })
+    .await
+    .expect("db task panicked");
+
+    let pool = state.db.clone();
+    let hashes = vec![lxmf_dest_hex];
     let identity_id = crate::helpers::active_identity_id(state);
     let resolved = db::spawn_db(pool, move |p| {
         db::get_peers_by_hashes(&p, &hashes, &identity_id)
@@ -308,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn lxmf_handler_registration_opts_into_path_responses() {
-        for aspect in ["lxmf.delivery", "lxmf.propagation"] {
+        for aspect in ["lxmf.delivery", "lxmf.propagation", LXST_TELEPHONY_ASPECT] {
             let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(1);
             let (callback_tx, _callback_rx) = mpsc::channel::<AnnounceHandlerEvent>(1);
 
