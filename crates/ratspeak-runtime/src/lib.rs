@@ -41,6 +41,12 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 // ~150 bytes/entry → ~750 KB ceiling for hub bootstrap bursts.
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 
+fn inbound_packet_targets_destination(raw: &[u8], destination_hash: [u8; 16]) -> bool {
+    rns_wire::header::PacketHeader::unpack(raw)
+        .map(|(header, _)| header.destination_hash == destination_hash)
+        .unwrap_or(false)
+}
+
 pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfManager) {
     let enforce = state
         .enforce_stamps
@@ -550,11 +556,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 ..
                             } => {
                                 // Our-dest = opportunistic delivery; else = link packet.
-                                let is_our_dest = raw.len() >= 19 && {
-                                    let mut pkt_dest = [0u8; 16];
-                                    pkt_dest.copy_from_slice(&raw[2..18]);
-                                    pkt_dest == dispatch_dest_hash
-                                };
+                                let is_our_dest =
+                                    inbound_packet_targets_destination(raw, dispatch_dest_hash);
                                 if is_our_dest {
                                     let _ = pkt_tx.send(event).await;
                                 } else {
@@ -3302,6 +3305,75 @@ fn try_handle_inbound_lrgp(
     );
 
     true
+}
+
+#[cfg(test)]
+mod packet_dispatch_tests {
+    use super::*;
+
+    fn raw_packet(
+        header_type: rns_wire::flags::HeaderType,
+        transport_id: Option<[u8; 16]>,
+        destination_hash: [u8; 16],
+    ) -> Vec<u8> {
+        let header = rns_wire::header::PacketHeader {
+            flags: rns_wire::flags::PacketFlags {
+                header_type,
+                context_flag: false,
+                transport_type: match header_type {
+                    rns_wire::flags::HeaderType::Header1 => {
+                        rns_wire::flags::TransportType::Broadcast
+                    }
+                    rns_wire::flags::HeaderType::Header2 => {
+                        rns_wire::flags::TransportType::Transport
+                    }
+                },
+                destination_type: rns_wire::flags::DestinationType::Single,
+                packet_type: rns_wire::flags::PacketType::Data,
+            },
+            hops: 0,
+            transport_id,
+            destination_hash,
+            context: rns_wire::context::PacketContext::None,
+        };
+        let mut raw = header.pack();
+        raw.extend_from_slice(b"payload");
+        raw
+    }
+
+    #[test]
+    fn inbound_packet_targets_header1_destination() {
+        let destination_hash = [0x11; 16];
+        let raw = raw_packet(rns_wire::flags::HeaderType::Header1, None, destination_hash);
+
+        assert!(inbound_packet_targets_destination(&raw, destination_hash));
+    }
+
+    #[test]
+    fn inbound_packet_targets_header2_final_destination() {
+        let transport_id = [0x22; 16];
+        let destination_hash = [0x33; 16];
+        let raw = raw_packet(
+            rns_wire::flags::HeaderType::Header2,
+            Some(transport_id),
+            destination_hash,
+        );
+
+        assert!(inbound_packet_targets_destination(&raw, destination_hash));
+    }
+
+    #[test]
+    fn inbound_packet_does_not_match_header2_transport_id_as_destination() {
+        let transport_id = [0x44; 16];
+        let destination_hash = [0x55; 16];
+        let raw = raw_packet(
+            rns_wire::flags::HeaderType::Header2,
+            Some(transport_id),
+            destination_hash,
+        );
+
+        assert!(!inbound_packet_targets_destination(&raw, transport_id));
+    }
 }
 
 #[cfg(test)]
