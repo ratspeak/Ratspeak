@@ -116,9 +116,9 @@
                 switch (session.delivery_state) {
                     case 'sending':          return 'Sending…';
                     case 'sent':
-                    case 'routing':
-                    case 'propagating':      return 'Sent';
-                    case 'propagated':       return 'Stored';
+                    case 'routing':          return 'Sent';
+                    case 'propagating':      return 'Storing in Offline Inbox…';
+                    case 'propagated':       return 'Stored in Offline Inbox';
                     case 'delivered':        return 'Waiting...';
                     case 'failed':           return 'Failed — tap Resend';
                     default:                 return 'Waiting...';
@@ -411,6 +411,8 @@
         }
 
         if (session.delivery_state === 'sending') chips.push('Sending');
+        if (session.delivery_state === 'propagating') chips.push('Offline Inbox');
+        if (session.delivery_state === 'propagated') chips.push('Stored');
         if (session.delivery_state === 'failed') chips.push('Retry needed');
 
         if (chips.length === 0) return '';

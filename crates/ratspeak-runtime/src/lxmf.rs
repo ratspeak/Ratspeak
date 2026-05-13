@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use serde_json::{Value, json};
@@ -157,6 +157,12 @@ pub struct ReactionSendRequest<'a> {
 /// Matches the JS PeersCache "recent" tier. This is intentionally a
 /// last-heard heuristic, not a claim that a peer is online now.
 pub const RECENT_PEER_SECS: f64 = 2.0 * 60.0 * 60.0;
+const AUTO_DIRECT_FALLBACK_SECS: u64 = 30;
+
+#[derive(Debug, Clone, Copy)]
+struct AutoDirectFallback {
+    profile: DeliveryProfile,
+}
 
 pub fn peer_last_seen(db_pool: &DbPool, dest_hash_hex: &str) -> Option<f64> {
     let conn = db_pool.get().ok()?;
@@ -198,6 +204,8 @@ pub struct LxmfManager {
     /// (`propagated` for deposit, `delivered` for direct) and attribute relay
     /// health back to the selected propagation node.
     in_flight_propagation: std::collections::HashMap<[u8; 32], [u8; 16]>,
+    auto_direct_fallback: HashMap<[u8; 32], AutoDirectFallback>,
+    auto_direct_fallback_after: Duration,
     completed_propagation_deposits: Vec<[u8; 16]>,
     failed_propagation_deposits: Vec<([u8; 16], String)>,
     completed_propagation_syncs: Vec<[u8; 16]>,
@@ -401,6 +409,8 @@ impl LxmfManager {
                 .as_secs_f64(),
             received_ratchets_dir: received_dir,
             in_flight_propagation: std::collections::HashMap::new(),
+            auto_direct_fallback: HashMap::new(),
+            auto_direct_fallback_after: Duration::from_secs(AUTO_DIRECT_FALLBACK_SECS),
             completed_propagation_deposits: Vec::new(),
             failed_propagation_deposits: Vec::new(),
             completed_propagation_syncs: Vec::new(),
@@ -707,6 +717,77 @@ impl LxmfManager {
         }
     }
 
+    fn track_auto_direct_fallback(
+        &mut self,
+        msg: &LxMessage,
+        preference: DeliveryPreference,
+        profile: DeliveryProfile,
+    ) {
+        if preference != DeliveryPreference::Auto
+            || msg.method != DeliveryMethod::Direct
+            || !self.client_propagation_enabled
+            || !matches!(profile, DeliveryProfile::Message | DeliveryProfile::Lrgp)
+        {
+            return;
+        }
+
+        if let Some(hash) = msg.hash {
+            self.auto_direct_fallback
+                .insert(hash, AutoDirectFallback { profile });
+        }
+    }
+
+    fn fallback_stalled_auto_direct(&mut self, results: &mut Vec<(String, &'static str)>) {
+        if self.auto_direct_fallback.is_empty() {
+            return;
+        }
+        if !self.client_propagation_enabled {
+            self.auto_direct_fallback.clear();
+            return;
+        }
+        let Some(prop_hash) = self.router.outbound_propagation_node else {
+            return;
+        };
+        let prop_hex = hex::encode(prop_hash);
+        if !self.known_identities.contains_key(&prop_hex)
+            || self.router.get_stamp_cost(&prop_hash).is_none()
+        {
+            return;
+        }
+
+        let hashes: Vec<[u8; 32]> = self.auto_direct_fallback.keys().copied().collect();
+        let mut extracted = Vec::new();
+        if let Some(ref mut ld) = self.link_delivery {
+            for hash in hashes {
+                let Some(candidate) = self.auto_direct_fallback.get(&hash).copied() else {
+                    continue;
+                };
+                if let Some(delivery) =
+                    ld.take_stalled_establishing_by_hash(&hash, self.auto_direct_fallback_after)
+                {
+                    extracted.push((hash, candidate, delivery));
+                }
+            }
+        }
+
+        for (hash, candidate, extracted_delivery) in extracted {
+            self.auto_direct_fallback.remove(&hash);
+            let mut message = extracted_delivery.message;
+            message.method = DeliveryMethod::Propagated;
+            message.delivery_attempts = 0;
+            message.last_delivery_attempt = 0.0;
+
+            tracing::info!(
+                msg_id = %hex::encode(hash),
+                dest = %hex::encode(message.destination_hash),
+                prop = %prop_hex,
+                profile = ?candidate.profile,
+                "auto direct link did not establish quickly; rerouting through propagation"
+            );
+            self.start_propagation_delivery(message, prop_hash, results);
+        }
+    }
+
     /// `Opportunistic` is the entry-level method; the lxmf-core router escalates
     /// to `Direct` when the packed payload exceeds a single RNS packet.
     /// `Propagated` forces the propagation-node path once the recipient identity
@@ -800,13 +881,14 @@ impl LxmfManager {
             request.preference,
             request.profile,
         );
-        self.send_message_with_method(
+        self.send_message_with_method_internal(
             request.dest_hash_hex,
             request.content,
             request.title,
             request.db_pool,
             request.identity_id,
             method,
+            Some((request.preference, request.profile)),
         )
     }
 
@@ -820,6 +902,27 @@ impl LxmfManager {
         identity_id: &str,
         delivery_method: DeliveryMethod,
     ) -> Option<String> {
+        self.send_message_with_method_internal(
+            dest_hash_hex,
+            content,
+            title,
+            db_pool,
+            identity_id,
+            delivery_method,
+            None,
+        )
+    }
+
+    fn send_message_with_method_internal(
+        &mut self,
+        dest_hash_hex: &str,
+        content: &str,
+        title: &str,
+        db_pool: &DbPool,
+        identity_id: &str,
+        delivery_method: DeliveryMethod,
+        auto_fallback: Option<(DeliveryPreference, DeliveryProfile)>,
+    ) -> Option<String> {
         let mut msg = self.create_message(dest_hash_hex, content, title, delivery_method)?;
         normalize_protocol_delivery_method(&mut msg);
         if !message_within_resource_limit(&msg) {
@@ -830,6 +933,12 @@ impl LxmfManager {
             .hash
             .map(hex::encode)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let display_timestamp = db::next_conversation_observed_timestamp(
+            db_pool,
+            dest_hash_hex,
+            identity_id,
+            msg.timestamp,
+        );
 
         db::save_message(
             db_pool,
@@ -838,7 +947,7 @@ impl LxmfManager {
             dest_hash_hex,
             content,
             title,
-            msg.timestamp,
+            display_timestamp,
             "sending",
             "outbound",
             identity_id,
@@ -851,6 +960,9 @@ impl LxmfManager {
             Some(delivery_method_name(msg.method)),
         );
 
+        if let Some((preference, profile)) = auto_fallback {
+            self.track_auto_direct_fallback(&msg, preference, profile);
+        }
         self.router.send(msg);
 
         Some(msg_id)
@@ -965,6 +1077,12 @@ impl LxmfManager {
             .hash
             .map(hex::encode)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let display_timestamp = db::next_conversation_observed_timestamp(
+            db_pool,
+            dest_hash_hex,
+            identity_id,
+            msg.timestamp,
+        );
 
         // Persist the blob; columns are needed for history rehydration.
         let stored_name = self.save_attachment(file_name, file_bytes);
@@ -982,7 +1100,7 @@ impl LxmfManager {
             dest_hash_hex,
             content,
             title,
-            msg.timestamp,
+            display_timestamp,
             "sending",
             "outbound",
             identity_id,
@@ -1104,6 +1222,7 @@ impl LxmfManager {
         // LRGP payloads not persisted to messages; game session is the surface.
         let _ = (db_pool, identity_id, fallback_text);
 
+        self.track_auto_direct_fallback(&msg, preference, DeliveryProfile::Lrgp);
         self.router.send(msg);
         let msg_id_short: String = msg_id.chars().take(8).collect();
         tracing::info!(
@@ -1855,6 +1974,11 @@ impl LxmfManager {
 
         if let Some(ref mut ld) = self.link_delivery {
             ld.drain_events(&self.known_identities);
+        }
+
+        self.fallback_stalled_auto_direct(&mut results);
+
+        if let Some(ref mut ld) = self.link_delivery {
             let delivery_results = ld.tick();
             for result in delivery_results {
                 match result {
@@ -1863,6 +1987,7 @@ impl LxmfManager {
                             if self.ephemeral_outbound.remove(&hash) {
                                 continue;
                             }
+                            self.auto_direct_fallback.remove(&hash);
                             // Propagation deposit confirms node-storage, not
                             // recipient delivery — render as `propagated`.
                             // Direct link delivery is end-to-end, so we still
@@ -1885,6 +2010,7 @@ impl LxmfManager {
                             if self.ephemeral_outbound.remove(&hash) {
                                 continue;
                             }
+                            self.auto_direct_fallback.remove(&hash);
                             if let Some(prop_hash) = self.in_flight_propagation.remove(&hash) {
                                 self.failed_propagation_deposits
                                     .push((prop_hash, reason.clone()));
@@ -2209,7 +2335,12 @@ impl LxmfManager {
                     self.start_propagation_delivery(message, prop_hash, &mut results);
                     continue;
                 }
-                OutboundAction::Failed(_) | OutboundAction::Expired(_) => continue,
+                OutboundAction::Failed(message) | OutboundAction::Expired(message) => {
+                    if let Some(hash) = message.hash {
+                        self.auto_direct_fallback.remove(&hash);
+                    }
+                    continue;
+                }
             };
             self.ensure_message_stamp(&mut message);
 
@@ -2711,6 +2842,139 @@ mod tests {
             ),
             DeliveryMethod::Propagated,
             "Auto should let the send preflight select a live relay instead of silently falling back to direct"
+        );
+    }
+
+    #[test]
+    fn auto_chat_falls_back_to_propagation_when_direct_link_stalls() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let identity_id = mgr.identity_hash.clone();
+        let recipient_dest = [0xBC; 16];
+        let recipient_hex = hex::encode(recipient_dest);
+        let propagation_node = [0x44; 16];
+        let prop_hex = hex::encode(propagation_node);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        db::touch_identity_activity(&pool, &[(recipient_hex.clone(), now, None, None)]);
+        mgr.client_propagation_enabled = true;
+        mgr.auto_direct_fallback_after = Duration::ZERO;
+        mgr.known_identities
+            .insert(recipient_hex.clone(), Identity::new().get_public_key());
+        mgr.known_identities
+            .insert(prop_hex, Identity::new().get_public_key());
+        mgr.router
+            .set_outbound_propagation_node(Some(propagation_node));
+        mgr.router.set_stamp_cost(propagation_node, 0);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(16);
+        mgr.router.set_transport(tx);
+
+        let msg_id = mgr
+            .send_message_with_preference(MessageSendRequest {
+                dest_hash_hex: &recipient_hex,
+                content: "fallback",
+                title: "",
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Auto,
+                profile: DeliveryProfile::Message,
+            })
+            .expect("message queued");
+        assert_eq!(
+            db::get_message_delivery_method(&pool, &msg_id).as_deref(),
+            Some("direct")
+        );
+        assert_eq!(mgr.auto_direct_fallback.len(), 1);
+
+        let states = mgr.tick();
+
+        assert!(
+            states
+                .iter()
+                .any(|(id, state)| { id == &msg_id && *state == "sending_via_link" })
+        );
+        assert!(
+            states
+                .iter()
+                .any(|(id, state)| id == &msg_id && *state == "propagating")
+        );
+        assert!(mgr.auto_direct_fallback.is_empty());
+        let msg_hash: [u8; 32] = hex::decode(&msg_id).unwrap().try_into().unwrap();
+        assert_eq!(
+            mgr.in_flight_propagation.get(&msg_hash),
+            Some(&propagation_node)
+        );
+
+        let mut saw_deregister = false;
+        while let Ok(message) = rx.try_recv() {
+            if matches!(message, TransportMessage::DeregisterDestination { .. }) {
+                saw_deregister = true;
+                break;
+            }
+        }
+        assert!(
+            saw_deregister,
+            "fallback should deregister the abandoned direct link"
+        );
+    }
+
+    #[test]
+    fn auto_lrgp_falls_back_to_propagation_when_direct_link_stalls() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let identity_id = mgr.identity_hash.clone();
+        let recipient_dest = [0xBD; 16];
+        let recipient_hex = hex::encode(recipient_dest);
+        let propagation_node = [0x45; 16];
+        let prop_hex = hex::encode(propagation_node);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        db::touch_identity_activity(&pool, &[(recipient_hex.clone(), now, None, None)]);
+        mgr.client_propagation_enabled = true;
+        mgr.auto_direct_fallback_after = Duration::ZERO;
+        mgr.known_identities
+            .insert(recipient_hex.clone(), Identity::new().get_public_key());
+        mgr.known_identities
+            .insert(prop_hex, Identity::new().get_public_key());
+        mgr.router
+            .set_outbound_propagation_node(Some(propagation_node));
+        mgr.router.set_stamp_cost(propagation_node, 0);
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TransportMessage>(16);
+        mgr.router.set_transport(tx);
+
+        let lrgp_fields = std::collections::HashMap::new();
+        let msg_id = mgr
+            .send_message_with_lrgp_fields_preference(
+                &recipient_hex,
+                "[LRGP]",
+                &lrgp_fields,
+                &pool,
+                &identity_id,
+                DeliveryPreference::Auto,
+            )
+            .expect("lrgp message queued");
+        assert_eq!(mgr.auto_direct_fallback.len(), 1);
+
+        let states = mgr.tick();
+
+        assert!(
+            states
+                .iter()
+                .any(|(id, state)| id == &msg_id && *state == "propagating")
+        );
+        assert!(mgr.auto_direct_fallback.is_empty());
+        let msg_hash: [u8; 32] = hex::decode(&msg_id).unwrap().try_into().unwrap();
+        assert_eq!(
+            mgr.in_flight_propagation.get(&msg_hash),
+            Some(&propagation_node)
         );
     }
 

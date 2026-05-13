@@ -670,7 +670,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 }
 
 #[test]
-fn active_call_surface_is_navigable_and_shows_elapsed_duration() {
+fn active_call_surface_is_passive_and_shows_elapsed_duration() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf.contains("function _voiceElapsedLabel()"));
@@ -679,18 +679,58 @@ fn active_call_surface_is_navigable_and_shows_elapsed_duration() {
     assert!(lxmf.contains("if (audioIssue) return audioIssue;"));
     assert!(lxmf.contains("Math.max(1"));
     assert!(lxmf.contains("minutes + ':' + (seconds < 10 ? '0' : '') + seconds"));
-    assert!(lxmf.contains("function _voiceWireCallSurfaceNavigation(id)"));
-    assert!(lxmf.contains("_voiceOpenActiveConversation();"));
-    assert!(lxmf.contains("_voiceWireCallSurfaceNavigation('lxst-call-strip')"));
-    assert!(lxmf.contains("_voiceWireCallSurfaceNavigation('lxst-call-global')"));
+    assert!(lxmf.contains("function _voiceCallSurfaceAvatarHtml(call, size)"));
+    assert!(lxmf.contains("identityAvatar(info.avatarHash || info.address || '', size)"));
+    assert!(lxmf.contains("function _voiceWireHangupProximity(surfaceId, hangupId)"));
+    assert!(
+        lxmf.contains(
+            "_voiceWireHangupProximity('lxst-call-global', 'lxst-call-global-hangup-btn')"
+        )
+    );
+    assert!(!lxmf.contains("function _voiceWireCallSurfaceNavigation(id)"));
+    assert!(!lxmf.contains("_voiceOpenActiveConversation();"));
 
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
-    assert!(messaging_css.contains("cursor: pointer;"));
+    assert!(messaging_css.contains("cursor: default;"));
+    assert!(messaging_css.contains("min-height: 80px;"));
+    assert!(messaging_css.contains(".lxst-call-action::before"));
     assert!(messaging_css.contains(".lxst-call-strip-title"));
     assert!(messaging_css.contains("overflow-wrap: anywhere;"));
     assert!(messaging_css.contains(".lxst-incoming-call-address"));
     assert!(messaging_css.contains("word-break: break-all;"));
+}
+
+#[test]
+fn settings_version_display_uses_package_version_api() {
+    let root = repo_root();
+    let system_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
+    assert!(system_rs.contains("env!(\"CARGO_PKG_VERSION\")"));
+    assert!(!system_rs.contains("\"version\": \"1.0.11\""));
+
+    let index = read_source(root.join("dashboard/index.html")).expect("index");
+    assert!(index.contains("id=\"settings-version-sidebar\""));
+    assert!(index.contains("id=\"settings-version-system\""));
+
+    let settings_js = read_source(root.join("dashboard/static/js/settings.js")).expect("settings");
+    assert!(settings_js.contains("function renderSettingsVersion()"));
+    assert!(settings_js.contains("RS.invoke('api_version')"));
+    assert!(settings_js.contains("name + ' v.' + version"));
+
+    let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav");
+    assert!(nav_js.contains("id=\"about-modal-version\""));
+    assert!(nav_js.contains("RS.invoke('api_version')"));
+    assert!(!nav_js.contains("v1.0.7"));
+
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    assert!(views_css.contains(".settings-sidebar-version"));
+    assert!(views_css.contains(".settings-version-system"));
+
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    assert!(responsive_css.contains(".settings-version-system"));
+    assert!(responsive_css.contains("text-align: center;"));
 }
 
 #[test]
@@ -831,7 +871,7 @@ fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
     let start = nav.find("function initTabSwipe()").expect("initTabSwipe");
     let tail = &nav[start..];
     let end = tail
-        .find("\n}\n\nvar _firstRunDismiss")
+        .find("\n}\n\nvar FIRST_RUN_ANNOUNCE_HINT_KEY")
         .expect("initTabSwipe end");
     let init_tab_swipe = &tail[..end];
     assert!(init_tab_swipe.contains("MOBILE_TAB_SLOTS.indexOf(_mobileTabSlot(currentView))"));
@@ -845,6 +885,50 @@ fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
         !init_tab_swipe.contains("TAB_VIEWS[nextIdx]"),
         "More destinations must collapse to the More bottom-bar slot for swipe math"
     );
+}
+
+#[test]
+fn first_run_announce_hint_waits_for_online_mobile_interface() {
+    let root = repo_root();
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let events = read_source(root.join("dashboard/static/js/tauri_events.js")).expect("events js");
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let system =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime rs");
+    let rns_config =
+        read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
+    let animations =
+        read_source(root.join("dashboard/static/css/12-animations.css")).expect("animations css");
+
+    assert!(nav.contains("Tap and hold to announce"));
+    assert!(nav.contains("first-run-hint-svg"));
+    assert!(nav.contains("<rect x=\"4\" y=\"16\" width=\"16\" height=\"4.5\" rx=\"2.25\"/>"));
+    assert!(!nav.contains("<path d=\"M2 12 7 2l5 10-5 10z\""));
+    assert!(nav.contains("function _firstRunMobileEligible()"));
+    assert!(nav.contains("if (window.__RATSPEAK_DESKTOP__) return false;"));
+    assert!(nav.contains("window.__RATSPEAK_MOBILE__ === true"));
+    assert!(nav.contains("function updateFirstRunInterfaceHintGate(data)"));
+    assert!(nav.contains("_firstRunConfiguredInterfaceCount(data) > 0"));
+    assert!(nav.contains("_firstRunHasConfiguredInterface !== true"));
+    assert!(nav.contains("_anyInterfaceOnline !== true"));
+    assert!(nav.contains("if (opts.persist) _setFirstRunHintDone();"));
+    assert!(nav.contains("if (opts.auto) _firstRunHintAutoHiddenThisSession = true;"));
+    assert!(nav.contains("scheduleFirstRunTooltip(2000);"));
+    assert!(
+        events
+            .contains("if (_anyInterfaceOnline && typeof scheduleFirstRunTooltip === 'function')")
+    );
+    assert!(events.contains("updateFirstRunInterfaceHintGate(data)"));
+    assert!(settings.contains("clearFirstRunAnnounceHintDone"));
+    assert!(system.contains("app_private_rns_config_dir"));
+    assert!(system.contains("remove app-private Reticulum config"));
+    assert!(runtime.contains("strip_legacy_default_auto_interface(&source_content)"));
+    assert!(rns_config.contains("pub fn strip_legacy_default_auto_interface"));
+    assert!(animations.contains("bottom: calc(56px + var(--sab, 0px) + 20px);"));
+    assert!(animations.contains("background: var(--surface-sheet);"));
+    assert!(animations.contains(".first-run-hint-icon"));
+    assert!(animations.contains("background: var(--accent-a12);"));
 }
 
 #[test]

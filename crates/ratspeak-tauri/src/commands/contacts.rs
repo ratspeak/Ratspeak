@@ -8,7 +8,7 @@ use tauri::State;
 
 use crate::commands::shared::{
     broadcast_blackhole_update, filter_blackholed_dests, format_contacts_list, hex_to_array16,
-    resolve_identity_hash, snapshot_blackhole, transport_query,
+    resolve_contact_identity_hash, snapshot_blackhole, transport_query,
 };
 use crate::db;
 use crate::error::{AppError, AppResult};
@@ -66,7 +66,42 @@ pub async fn api_blocked_contacts(state: State<'_, Arc<AppState>>) -> AppResult<
         })
         .collect();
     // Active blackholes for these dests (transport composes dest→identity→table).
-    let active_set = filter_blackholed_dests(&state, dest_bytes_list).await;
+    let mut active_set = filter_blackholed_dests(&state, dest_bytes_list).await;
+
+    // Fallback for persisted blackholes after path/announce cache loss. Once a
+    // peer is blackholed, future announces from that identity are dropped, and
+    // a restart can leave only the SQLite identity_activity map plus the
+    // transport blackhole table. The block-list shield still needs to surface
+    // that network-level block so unblock can lift it.
+    let blocked_hashes: Vec<String> = blocked
+        .iter()
+        .filter_map(|r| r.get("hash").and_then(|h| h.as_str()).map(str::to_string))
+        .collect();
+    let identity_by_dest = {
+        let hashes = blocked_hashes.clone();
+        db::spawn_db(state.db.clone(), move |p| {
+            db::identity_hashes_for_dests(&p, &hashes)
+        })
+        .await
+        .unwrap_or_default()
+    };
+    if !identity_by_dest.is_empty() {
+        let blackholed_ids: std::collections::HashSet<String> = snapshot_blackhole(&state)
+            .await
+            .into_iter()
+            .filter_map(|entry| {
+                entry
+                    .get("hash")
+                    .and_then(|h| h.as_str())
+                    .map(str::to_string)
+            })
+            .collect();
+        for (dest, identity_hash) in identity_by_dest {
+            if blackholed_ids.contains(&identity_hash) {
+                active_set.insert(dest);
+            }
+        }
+    }
 
     // Pending escalations (queued but waiting on first announce).
     let id_for_pending = identity_id.clone();
@@ -279,7 +314,9 @@ pub async fn block_contact(
         && let Some(input_bytes) = hex_to_array16(&dest_hash)
     {
         use rns_transport::messages::{TransportQuery, TransportQueryResponse};
-        if let Some(identity_hash) = resolve_identity_hash(&state, input_bytes).await {
+        if let Some(identity_hash) =
+            resolve_contact_identity_hash(&state, &dest_hash, input_bytes).await
+        {
             let resp = transport_query(
                 &state,
                 TransportQuery::BlackholeIdentity {
@@ -388,7 +425,9 @@ pub async fn unblock_contact(
         .await
         .unwrap_or(false);
 
-        if let Some(identity_hash) = resolve_identity_hash(&state, input_bytes).await {
+        if let Some(identity_hash) =
+            resolve_contact_identity_hash(&state, &dest_hash, input_bytes).await
+        {
             let resp = transport_query(
                 &state,
                 TransportQuery::UnblackholeIdentity {
@@ -402,11 +441,13 @@ pub async fn unblock_contact(
         // Legacy cleanup: pre-fix builds stored the LXMF dest-hash bytes as if
         // they were an identity hash. Try removing under the raw input too —
         // harmless no-op when no such entry exists.
-        let _ = transport_query(
+        let legacy_resp = transport_query(
             &state,
             TransportQuery::UnblackholeIdentity { hash: input_bytes },
         )
         .await;
+        unblackholed =
+            unblackholed || matches!(legacy_resp, Some(TransportQueryResponse::BoolResult(true)));
 
         if unblackholed || pending_cleared {
             broadcast_blackhole_update(&state).await;

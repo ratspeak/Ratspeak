@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub async fn api_version() -> AppResult<Value> {
-    Ok(json!({ "version": "1.0.11", "name": "Ratspeak" }))
+    Ok(json!({ "version": env!("CARGO_PKG_VERSION"), "name": "Ratspeak" }))
 }
 
 #[tauri::command]
@@ -413,6 +413,10 @@ pub async fn dismiss_alert(state: State<'_, Arc<AppState>>, index: i64) -> AppRe
 pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     // Capture config_dir before shutdown wipes RNS.
     let rns_config_dir = active_rns_config_dir(&state);
+    let app_private_rns_config_dir = state
+        .config
+        .uses_app_private_rns_config_dir()
+        .then(|| state.config.rns_config_dir.clone());
 
     #[cfg(feature = "lxst-voice")]
     {
@@ -488,6 +492,15 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
             && let Err(e) = std::fs::remove_dir_all(&files_dir)
         {
             tracing::warn!("Factory reset: failed to remove files dir: {e}");
+        }
+        if let Some(rns_dir) = app_private_rns_config_dir
+            && rns_dir.exists()
+            && let Err(e) = std::fs::remove_dir_all(&rns_dir)
+        {
+            tracing::warn!(
+                "Factory reset: failed to remove app-private Reticulum config {}: {e}",
+                rns_dir.display()
+            );
         }
         if let Ok(entries) = std::fs::read_dir(&data_dir) {
             for entry in entries.flatten() {

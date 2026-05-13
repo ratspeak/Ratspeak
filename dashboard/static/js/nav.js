@@ -421,7 +421,7 @@ function showAboutModal() {
                 '<button class="modal-close" id="about-modal-close">&times;</button>' +
             '</div>' +
             '<div class="modal-body about-modal-body">' +
-                '<p class="font-600 about-modal-title">Ratspeak <span class="mono text-muted-color about-modal-version">v1.0.7</span></p>' +
+                '<p class="font-600 about-modal-title">Ratspeak <span class="mono text-muted-color about-modal-version" id="about-modal-version"></span></p>' +
                 '<p>Real-time dashboard for Reticulum mesh networks. Encrypted messaging, dynamic node management, and network health monitoring.</p>' +
                 '<p class="about-modal-link-row">' +
                     '<a href="https://ratspeak.org" target="_blank" rel="noopener" class="text-link">ratspeak.org</a>' +
@@ -431,6 +431,12 @@ function showAboutModal() {
             '</div>' +
         '</div>';
     document.body.appendChild(overlay);
+
+    RS.invoke('api_version').then(function(data) {
+        var version = data && data.version ? String(data.version) : '';
+        var versionEl = document.getElementById('about-modal-version');
+        if (versionEl && version) versionEl.textContent = 'v.' + version;
+    }).catch(function() {});
 
     function close() { overlay.remove(); }
     document.getElementById('about-modal-close').addEventListener('click', close);
@@ -1138,21 +1144,90 @@ function initTabSwipe() {
     });
 }
 
+var FIRST_RUN_ANNOUNCE_HINT_KEY = 'ratspeak_first_run';
 var _firstRunDismiss = null;
+var _firstRunHintEl = null;
+var _firstRunHintTimer = null;
+var _firstRunHintAutoHiddenThisSession = false;
+var _firstRunAnnounceListenerBound = false;
+var _firstRunHasConfiguredInterface = false;
+
+function _firstRunHintDone() {
+    try { return !!localStorage.getItem(FIRST_RUN_ANNOUNCE_HINT_KEY); } catch (_) { return false; }
+}
+
+function _setFirstRunHintDone() {
+    try { localStorage.setItem(FIRST_RUN_ANNOUNCE_HINT_KEY, 'done'); } catch (_) {}
+}
+
+function clearFirstRunAnnounceHintDone() {
+    try { localStorage.removeItem(FIRST_RUN_ANNOUNCE_HINT_KEY); } catch (_) {}
+    _firstRunHintAutoHiddenThisSession = false;
+}
+
+function _firstRunMobileEligible() {
+    if (window.__RATSPEAK_DESKTOP__) return false;
+    if (window.__RATSPEAK_MOBILE__ === true) return true;
+    return typeof isMobile === 'function' && isMobile();
+}
+
+function _firstRunInterfaceEnabled(entry) {
+    if (!entry || typeof entry !== 'object') return false;
+    var enabled = entry.enabled;
+    if (enabled === undefined || enabled === null) return true;
+    return !/^(false|no|0)$/i.test(String(enabled).trim());
+}
+
+function _firstRunConfiguredInterfaceCount(data) {
+    if (!data || typeof data !== 'object') return 0;
+    return ['rnode', 'auto', 'tcp_client', 'tcp_server', 'backbone_client', 'backbone_server']
+        .reduce(function(count, group) {
+            var entries = Array.isArray(data[group]) ? data[group] : [];
+            return count + entries.filter(_firstRunInterfaceEnabled).length;
+        }, 0);
+}
+
+function updateFirstRunInterfaceHintGate(data) {
+    _firstRunHasConfiguredInterface = _firstRunConfiguredInterfaceCount(data) > 0;
+    if (_firstRunHasConfiguredInterface &&
+            typeof _anyInterfaceOnline !== 'undefined' &&
+            _anyInterfaceOnline === true &&
+            typeof scheduleFirstRunTooltip === 'function') {
+        scheduleFirstRunTooltip(600);
+    }
+}
+
+function _firstRunAnnounceHintEligible() {
+    if (_firstRunHintDone() || _firstRunHintEl || _firstRunHintAutoHiddenThisSession) return false;
+    if (!_firstRunMobileEligible()) return false;
+    if (typeof _isSetupActive === 'function' && _isSetupActive()) return false;
+    if (_firstRunHasConfiguredInterface !== true) return false;
+    if (typeof _anyInterfaceOnline === 'undefined' || _anyInterfaceOnline !== true) return false;
+
+    var bar = document.querySelector('.bottom-bar');
+    if (!bar) return false;
+    var style = getComputedStyle(bar);
+    return style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.opacity !== '0' &&
+        style.pointerEvents !== 'none';
+}
 
 function showFirstRunTooltip() {
-    if (localStorage.getItem('ratspeak_first_run')) return;
-    var setupView = document.getElementById('view-setup');
-    if (setupView && setupView.classList.contains('active')) return;
-    // Hint points at the bottom-bar announce button (mobile only).
-    var bar = document.querySelector('.bottom-bar');
-    if (!bar || getComputedStyle(bar).display === 'none') return;
+    if (!_firstRunAnnounceHintEligible()) return false;
 
     var hint = document.createElement('div');
     hint.className = 'first-run-hint';
-    hint.innerHTML = '<span class="first-run-hint-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12 7 2l5 10-5 10z"/><path d="M7 12h15"/><path d="M13 5l9 7-9 7"/></svg></span>' +
-        '<span class="first-run-hint-text">Press and hold to announce.</span>';
+    hint.innerHTML = '<span class="first-run-hint-icon" aria-hidden="true"><svg class="first-run-hint-svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' +
+            '<rect x="4" y="16" width="16" height="4.5" rx="2.25"/>' +
+            '<circle cx="12" cy="18.25" r="1.15" fill="currentColor" stroke="none"/>' +
+            '<path d="M12 16v-3"/>' +
+            '<path d="M9.2 12.2a4 4 0 0 1 5.6 0"/>' +
+            '<path d="M6.8 9.4a7.4 7.4 0 0 1 10.4 0"/>' +
+        '</svg></span>' +
+        '<span class="first-run-hint-text">Tap and hold to announce</span>';
     document.body.appendChild(hint);
+    _firstRunHintEl = hint;
 
     // Double-rAF so the initial-state paint happens before transition.
     requestAnimationFrame(function() {
@@ -1160,22 +1235,46 @@ function showFirstRunTooltip() {
     });
 
     var dismissed = false;
-    function dismiss() {
+    function dismiss(opts) {
         if (dismissed) return;
+        opts = opts || {};
         dismissed = true;
         _firstRunDismiss = null;
+        _firstRunHintEl = null;
+        if (_firstRunHintTimer) {
+            clearTimeout(_firstRunHintTimer);
+            _firstRunHintTimer = null;
+        }
+        if (opts.persist) _setFirstRunHintDone();
+        if (opts.auto) _firstRunHintAutoHiddenThisSession = true;
         hint.classList.add('dismissing');
         hint.classList.remove('visible');
         setTimeout(function() { hint.remove(); }, 400);
-        localStorage.setItem('ratspeak_first_run', 'done');
     }
 
     _firstRunDismiss = dismiss;
-    hint.addEventListener('click', dismiss);
-    setTimeout(dismiss, 5000);
+    hint.addEventListener('click', function() { dismiss({ persist: true }); });
+    _firstRunHintTimer = setTimeout(function() {
+        if (_firstRunDismiss) _firstRunDismiss({ auto: true });
+    }, 7000);
+    return true;
+}
 
+function scheduleFirstRunTooltip(delayMs) {
+    if (_firstRunHintTimer || _firstRunHintDone() || _firstRunHintAutoHiddenThisSession) return;
+    _firstRunHintTimer = setTimeout(function() {
+        _firstRunHintTimer = null;
+        showFirstRunTooltip();
+    }, delayMs || 0);
+}
+
+function bindFirstRunAnnounceListener() {
+    if (_firstRunAnnounceListenerBound) return;
+    _firstRunAnnounceListenerBound = true;
     RS.listen('announce_triggered', function(data) {
-        if (data && data.success && _firstRunDismiss) _firstRunDismiss();
+        if (!data || !data.success || _firstRunHintDone()) return;
+        _setFirstRunHintDone();
+        if (_firstRunDismiss) _firstRunDismiss();
     });
 }
 
@@ -1227,8 +1326,9 @@ document.addEventListener('DOMContentLoaded', function() {
         initSheetSwipeDismiss(cfg.id, cfg.overlayId, cfg.closeFn);
     });
 
-    // Delay so initial layout settles before hint paints over it.
-    setTimeout(showFirstRunTooltip, 2000);
+    bindFirstRunAnnounceListener();
+    // Delay so initial layout settles; actual display waits for an online interface.
+    scheduleFirstRunTooltip(2000);
 
     if (typeof needsSetup !== 'undefined' && needsSetup) return;
 

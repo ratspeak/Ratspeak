@@ -94,6 +94,28 @@ fn stable_notification_id(key: &str, offset: i32) -> i32 {
     offset + ((h >> 1) % 1_000_000) as i32
 }
 
+fn local_now_ts() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
+async fn next_chat_observed_timestamp(
+    state: &AppState,
+    counterpart_hash: &str,
+    identity_id: &str,
+) -> f64 {
+    let observed_at = local_now_ts();
+    let counterpart = counterpart_hash.to_string();
+    let identity = identity_id.to_string();
+    db::spawn_db(state.db.clone(), move |p| {
+        db::next_conversation_observed_timestamp(&p, &counterpart, &identity, observed_at)
+    })
+    .await
+    .unwrap_or(observed_at)
+}
+
 fn contact_label_from_db(pool: &db::DbPool, source_hash: &str, identity_id: &str) -> String {
     db::get_contact(pool, source_hash, identity_id)
         .and_then(|c| {
@@ -227,7 +249,19 @@ fn seed_identity_rns_config_from_app_private(
         );
         return;
     }
-    if let Err(e) = std::fs::copy(&source, &target) {
+    let source_content = match std::fs::read_to_string(&source) {
+        Ok(content) => content,
+        Err(e) => {
+            tracing::warn!(
+                source = %source.display(),
+                error = %e,
+                "failed to read app-private Reticulum config for identity seed"
+            );
+            return;
+        }
+    };
+    let identity_content = rns_config::strip_legacy_default_auto_interface(&source_content);
+    if let Err(e) = std::fs::write(&target, identity_content) {
         tracing::warn!(
             source = %source.display(),
             target = %target.display(),
@@ -1066,7 +1100,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     for (msg_id, new_state) in &results {
                         let msg_id_for_db = msg_id.clone();
                         let new_state_for_db = new_state.to_string();
+                        let delivery_method_for_db =
+                            matches!(*new_state, "propagating" | "propagated")
+                                .then_some("propagated".to_string());
                         match db::spawn_db(tick_state.db.clone(), move |p| {
+                            if let Some(method) = delivery_method_for_db.as_deref() {
+                                db::update_message_delivery_method(&p, &msg_id_for_db, method);
+                            }
                             db::update_message_state(&p, &msg_id_for_db, &new_state_for_db, None);
                         })
                         .await
@@ -1895,6 +1935,8 @@ async fn handle_inbound_lxmf(
             continue;
         }
 
+        let received_at =
+            next_chat_observed_timestamp(state.as_ref(), &source_hash, &identity_id).await;
         let attachment_file = extract_and_save_attachment(&state, &msg);
         {
             let msg_id_for_save = msg_id.clone();
@@ -1902,7 +1944,7 @@ async fn handle_inbound_lxmf(
             let dest_hash_for_save = dest_hash.clone();
             let content_for_save = msg.content.clone();
             let title_for_save = msg.title.clone();
-            let timestamp_for_save = msg.timestamp;
+            let timestamp_for_save = received_at;
             let identity_id_for_save = identity_id.clone();
             let (att_name, att_stored, img_name, img_stored) = match attachment_file.as_ref() {
                 Some(a) if a.is_image => (
@@ -1969,7 +2011,7 @@ async fn handle_inbound_lxmf(
             "destination": dest_hash,
             "content": msg.content,
             "title": msg.title,
-            "timestamp": msg.timestamp,
+            "timestamp": received_at,
             "state": "received",
             "direction": "inbound",
         });
@@ -2145,6 +2187,7 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
         return;
     }
 
+    let received_at = next_chat_observed_timestamp(state, &source_hash, &identity_id).await;
     let attachment_file = extract_and_save_attachment(state, &msg);
     {
         let msg_id_for_save = msg_id.clone();
@@ -2152,7 +2195,7 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
         let dest_hash_for_save = dest_hash.clone();
         let content_for_save = msg.content.clone();
         let title_for_save = msg.title.clone();
-        let timestamp_for_save = msg.timestamp;
+        let timestamp_for_save = received_at;
         let identity_id_for_save = identity_id.clone();
         let (att_name, att_stored, img_name, img_stored) = match attachment_file.as_ref() {
             Some(a) if a.is_image => (
@@ -2219,7 +2262,7 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
         "destination": dest_hash,
         "content": msg.content,
         "title": msg.title,
-        "timestamp": msg.timestamp,
+        "timestamp": received_at,
         "state": "received",
         "direction": "inbound",
     });

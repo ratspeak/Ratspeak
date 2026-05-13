@@ -1293,6 +1293,50 @@ pub fn get_blocked_set(pool: &DbPool, identity_id: &str) -> std::collections::Ha
         .unwrap_or_default()
 }
 
+pub fn identity_hash_for_dest(pool: &DbPool, dest_hash: &str) -> Option<String> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT identity_hash FROM identity_activity WHERE dest_hash = ?1",
+        params![dest_hash],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+}
+
+pub fn identity_hashes_for_dests(
+    pool: &DbPool,
+    dest_hashes: &[String],
+) -> std::collections::HashMap<String, String> {
+    if dest_hashes.is_empty() {
+        return Default::default();
+    }
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return Default::default(),
+    };
+    let mut stmt =
+        match conn.prepare("SELECT identity_hash FROM identity_activity WHERE dest_hash = ?1") {
+            Ok(s) => s,
+            Err(_) => return Default::default(),
+        };
+
+    let mut out = std::collections::HashMap::new();
+    for dest_hash in dest_hashes {
+        let identity_hash = stmt
+            .query_row(params![dest_hash], |row| row.get::<_, String>(0))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(identity_hash) = identity_hash {
+            out.insert(dest_hash.clone(), identity_hash);
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingBlackholeRow {
     pub dest_hash: String,
@@ -1414,6 +1458,18 @@ pub fn get_message_delivery_method(pool: &DbPool, msg_id: &str) -> Option<String
     )
     .ok()
     .flatten()
+}
+
+pub fn update_message_delivery_method(pool: &DbPool, msg_id: &str, delivery_method: &str) {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    conn.execute(
+        "UPDATE messages SET delivery_method = ?1 WHERE id = ?2",
+        params![delivery_method, msg_id],
+    )
+    .ok();
 }
 
 pub fn message_exists(pool: &DbPool, msg_id: &str) -> bool {
@@ -1554,6 +1610,40 @@ pub fn get_conversation(
             m
         })
         .collect()
+}
+
+/// Return a display timestamp that appends to the current local conversation.
+///
+/// LXMF payload timestamps are sender-authored protocol data. Chat ordering uses
+/// local observation time so delayed/offline deliveries cannot insert ahead of
+/// messages the user has already seen or sent.
+pub fn next_conversation_observed_timestamp(
+    pool: &DbPool,
+    dest_hash: &str,
+    identity_id: &str,
+    observed_at: f64,
+) -> f64 {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return observed_at,
+    };
+    let latest: Option<f64> = conn
+        .query_row(
+            "SELECT MAX(timestamp) FROM (
+                SELECT timestamp FROM messages WHERE source = ?1 AND identity_id = ?2
+                UNION ALL
+                SELECT timestamp FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1
+            )",
+            params![dest_hash, identity_id],
+            |row| row.get::<_, Option<f64>>(0),
+        )
+        .ok()
+        .flatten();
+
+    match latest {
+        Some(ts) if ts.is_finite() && observed_at <= ts => ts + 0.001,
+        _ => observed_at,
+    }
 }
 
 pub fn search_messages(
@@ -3169,6 +3259,118 @@ mod unread_breakdown_tests {
         assert_eq!(get_conversation(&pool, "peer", "me", 10).len(), 0);
         assert_eq!(get_conversation(&pool, "peer", "other", 10).len(), 1);
     }
+
+    #[test]
+    fn update_message_delivery_method_changes_existing_row() {
+        let pool = test_pool();
+        save_message(
+            &pool,
+            "msg",
+            "me",
+            "peer",
+            "content",
+            "",
+            10.0,
+            "sending",
+            "outbound",
+            "me",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+
+        update_message_delivery_method(&pool, "msg", "propagated");
+
+        assert_eq!(
+            get_message_delivery_method(&pool, "msg").as_deref(),
+            Some("propagated")
+        );
+    }
+
+    #[test]
+    fn observed_conversation_timestamp_appends_after_latest_message() {
+        let pool = test_pool();
+        save_message(
+            &pool,
+            "sent-first",
+            "me",
+            "echo",
+            "ping",
+            "",
+            100.0,
+            "sent",
+            "outbound",
+            "me",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("opportunistic"),
+        );
+
+        let observed = next_conversation_observed_timestamp(&pool, "echo", "me", 99.0);
+        assert!(observed > 100.0);
+
+        save_message(
+            &pool,
+            "reply-second",
+            "echo",
+            "me",
+            "ping",
+            "",
+            observed,
+            "received",
+            "inbound",
+            "me",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            None,
+        );
+
+        let messages = get_conversation(&pool, "echo", "me", 10);
+        let ids: Vec<&str> = messages
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|id| id.as_str()))
+            .collect();
+        assert_eq!(ids, vec!["sent-first", "reply-second"]);
+    }
+
+    #[test]
+    fn observed_conversation_timestamp_keeps_newer_observation() {
+        let pool = test_pool();
+        save_message(
+            &pool,
+            "old",
+            "me",
+            "peer",
+            "old",
+            "",
+            100.0,
+            "sent",
+            "outbound",
+            "me",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+
+        let observed = next_conversation_observed_timestamp(&pool, "peer", "me", 101.0);
+        assert!((observed - 101.0).abs() < f64::EPSILON);
+    }
 }
 
 #[cfg(test)]
@@ -3732,6 +3934,47 @@ mod pending_blackhole_tests {
             rows.iter().map(|r| r.identity_id.clone()).collect();
         assert!(ids.contains("alice"));
         assert!(ids.contains("bob"));
+    }
+
+    #[test]
+    fn identity_activity_resolves_dest_to_identity_for_blackhole_fallbacks() {
+        let pool = test_pool();
+        let dest_a = "11111111111111111111111111111111".to_string();
+        let dest_b = "22222222222222222222222222222222".to_string();
+        let identity_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let identity_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let rows = vec![
+            (dest_a.clone(), 1.0, None, None),
+            (dest_b.clone(), 2.0, None, None),
+        ];
+
+        assert_eq!(
+            touch_identity_activity_for_service(
+                &pool,
+                &rows[..1],
+                Some(identity_a),
+                "lxmf.delivery"
+            ),
+            1
+        );
+        assert_eq!(
+            touch_identity_activity_for_service(
+                &pool,
+                &rows[1..],
+                Some(identity_b),
+                "lxst.telephony"
+            ),
+            1
+        );
+
+        assert_eq!(
+            identity_hash_for_dest(&pool, &dest_a).as_deref(),
+            Some(identity_a)
+        );
+        let found = identity_hashes_for_dests(&pool, &[dest_a.clone(), dest_b.clone()]);
+        assert_eq!(found.get(&dest_a).map(String::as_str), Some(identity_a));
+        assert_eq!(found.get(&dest_b).map(String::as_str), Some(identity_b));
+        assert!(identity_hash_for_dest(&pool, "33333333333333333333333333333333").is_none());
     }
 
     #[test]

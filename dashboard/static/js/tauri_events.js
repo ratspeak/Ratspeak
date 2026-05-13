@@ -52,6 +52,9 @@ RS.listen('stats_update', function(data) {
     var ifaces = (data.interface_stats && Array.isArray(data.interface_stats.interfaces)) ? data.interface_stats.interfaces : null;
     if (ifaces) {
         _anyInterfaceOnline = ifaces.some(function(i) { return i && i.online === true; });
+        if (_anyInterfaceOnline && typeof scheduleFirstRunTooltip === 'function') {
+            scheduleFirstRunTooltip(600);
+        }
     }
     renderStats(data);
 
@@ -427,6 +430,9 @@ RS.listen('hub_interfaces_update', function(data) {
     // Pre-submit UX (handoff hints, duplicate detection) uses the full payload.
     window._hubInterfacesData = data || null;
     window._autoEnabled = !!(data && data.auto && data.auto.length > 0);
+    if (typeof updateFirstRunInterfaceHintGate === 'function') {
+        updateFirstRunInterfaceHintGate(data);
+    }
     if (typeof updateAutoToggle === 'function') updateAutoToggle();
     if (isViewActive('network')) {
         if (typeof renderMergedConnections === 'function') renderMergedConnections();

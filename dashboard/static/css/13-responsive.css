@@ -952,6 +952,11 @@
     .settings-detail-header {
         display: none;
     }
+    .settings-version-system {
+        display: block;
+        margin: var(--space-5) var(--space-2) 0;
+        text-align: center;
+    }
     .settings-detail-pane {
         display: block;
     }

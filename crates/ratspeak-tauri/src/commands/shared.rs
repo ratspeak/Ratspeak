@@ -130,6 +130,28 @@ pub(crate) async fn resolve_identity_hash(state: &AppState, input: [u8; 16]) -> 
     }
 }
 
+/// Resolve a contact's LXMF destination hash to its Reticulum identity hash.
+/// The transport announce cache is preferred, but blackholing deliberately
+/// drops paths and future announces, so contact unblock also needs the
+/// persistent `identity_activity` mapping learned before the block.
+pub(crate) async fn resolve_contact_identity_hash(
+    state: &AppState,
+    dest_hash_hex: &str,
+    input: [u8; 16],
+) -> Option<[u8; 16]> {
+    if let Some(identity_hash) = resolve_identity_hash(state, input).await {
+        return Some(identity_hash);
+    }
+
+    let dest = dest_hash_hex.to_string();
+    let db = state.db.clone();
+    let identity_hex = db::spawn_db(db, move |p| db::identity_hash_for_dest(&p, &dest))
+        .await
+        .ok()
+        .flatten()?;
+    hex_to_array16(&identity_hex)
+}
+
 /// Batch lookup: which of the given LXMF dest hashes belong to a currently
 /// blackholed identity? Returns the set of hex-encoded dest hashes that are
 /// blocked at the transport layer. The actor handles the dest→identity→

@@ -100,8 +100,86 @@ pub fn ensure_app_private_shared_instance_ports(
 
 fn ratspeak_default_config() -> String {
     format!(
-        "# This is the default Ratspeak Reticulum config file.\n\n[reticulum]\nenable_transport = False\nshare_instance = Yes\ninstance_name = default\nshared_instance_port = {RATSPEAK_RNS_SHARED_INSTANCE_PORT}\ninstance_control_port = {RATSPEAK_RNS_INSTANCE_CONTROL_PORT}\n\n[logging]\nloglevel = 4\n\n[interfaces]\n\n[[Default Interface]]\ntype = AutoInterface\nenabled = Yes\n"
+        "# This is the default Ratspeak Reticulum config file.\n\n[reticulum]\nenable_transport = False\nshare_instance = Yes\ninstance_name = default\nshared_instance_port = {RATSPEAK_RNS_SHARED_INSTANCE_PORT}\ninstance_control_port = {RATSPEAK_RNS_INSTANCE_CONTROL_PORT}\n\n[logging]\nloglevel = 4\n\n[interfaces]\n"
     )
+}
+
+pub fn strip_legacy_default_auto_interface(content: &str) -> String {
+    if !content.contains("[[Default Interface]]") {
+        return content.to_string();
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    let had_trailing_newline = content.ends_with('\n');
+    let mut out = Vec::with_capacity(lines.len());
+    let mut i = 0;
+
+    while i < lines.len() {
+        if interface_block_name(lines[i]) == Some("Default Interface") {
+            let end = next_section_header(&lines, i + 1);
+            if is_legacy_default_auto_interface_block(&lines[i..end]) {
+                i = end;
+                continue;
+            }
+        }
+
+        out.push(lines[i]);
+        i += 1;
+    }
+
+    let mut result = out.join("\n");
+    if had_trailing_newline && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+fn interface_block_name(line: &str) -> Option<&str> {
+    line.trim()
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .map(str::trim)
+}
+
+fn next_section_header(lines: &[&str], start: usize) -> usize {
+    lines[start..]
+        .iter()
+        .position(|line| line.trim().starts_with('[') && line.trim().ends_with(']'))
+        .map(|offset| start + offset)
+        .unwrap_or(lines.len())
+}
+
+fn config_value_eq(value: &str, expected: &str) -> bool {
+    value
+        .trim()
+        .trim_matches('"')
+        .eq_ignore_ascii_case(expected)
+}
+
+fn is_legacy_default_auto_interface_block(block: &[&str]) -> bool {
+    let mut is_auto = false;
+
+    for line in block.iter().skip(1) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = parse_key_value(trimmed) else {
+            return false;
+        };
+        match key.as_str() {
+            "type" | "interface_type" => {
+                if !config_value_eq(&value, "AutoInterface") {
+                    return false;
+                }
+                is_auto = true;
+            }
+            "enabled" | "interface_enabled" => {}
+            _ => return false,
+        }
+    }
+
+    is_auto
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1029,8 +1107,29 @@ mod tests {
         let content = read_config(&dir).unwrap();
         assert!(content.contains("shared_instance_port = 37430"));
         assert!(content.contains("instance_control_port = 37431"));
-        assert!(content.contains("[[Default Interface]]"));
+        assert!(content.contains("[interfaces]"));
+        assert!(!content.contains("[[Default Interface]]"));
+        assert!(!content.contains("type = AutoInterface"));
         assert!(!dir.join("config.backup").exists());
+    }
+
+    #[test]
+    fn strip_legacy_default_auto_interface_removes_seeded_default_only() {
+        let content = "[reticulum]\nshare_instance = Yes\n\n[interfaces]\n  [[Default Interface]]\n    type = AutoInterface\n    enabled = True\n\n  [[TCP Node]]\n    type = TCPClientInterface\n    target_host = example.org\n    target_port = 4242\n    enabled = true\n";
+
+        let stripped = strip_legacy_default_auto_interface(content);
+
+        assert!(!stripped.contains("[[Default Interface]]"));
+        assert!(!stripped.contains("type = AutoInterface"));
+        assert!(stripped.contains("[[TCP Node]]"));
+        assert!(stripped.ends_with('\n'));
+    }
+
+    #[test]
+    fn strip_legacy_default_auto_interface_preserves_custom_auto_config() {
+        let content = "[interfaces]\n  [[Default Interface]]\n    type = AutoInterface\n    enabled = True\n    group_id = private\n";
+
+        assert_eq!(strip_legacy_default_auto_interface(content), content);
     }
 
     #[test]

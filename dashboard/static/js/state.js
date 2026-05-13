@@ -475,16 +475,8 @@ var _dateOrderDMY = (function() {
 })();
 
 function formatTime(ts) {
-    var d = new Date(ts * 1000);
-    var m = d.getMinutes().toString().padStart(2, '0');
-    var s = d.getSeconds().toString().padStart(2, '0');
-    if (_use12Hour) {
-        var h = d.getHours();
-        var period = h >= 12 ? 'PM' : 'AM';
-        h = h % 12 || 12;
-        return h + ':' + m + ':' + s + ' ' + period;
-    }
-    return d.getHours().toString().padStart(2, '0') + ':' + m + ':' + s;
+    if (!ts) return '';
+    return _formatClockMinute(new Date(ts * 1000));
 }
 
 function formatConvTime(ts) {

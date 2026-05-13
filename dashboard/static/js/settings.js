@@ -1,10 +1,43 @@
 function openSettings() {
     switchView('settings');
     initSettingsSectionNav();
+    renderSettingsVersion();
     // Re-seal every System Data subsection on each visit. The collapse IS the
     // safety feature for destructive ops — a stale-open Delete Data section
     // from a previous visit would defeat it.
     resetSystemDataCollapse();
+}
+
+var _settingsVersionLabel = '';
+
+function renderSettingsVersion() {
+    var targets = [
+        document.getElementById('settings-version-sidebar'),
+        document.getElementById('settings-version-system')
+    ].filter(Boolean);
+    if (!targets.length) return;
+
+    function paint(label) {
+        targets.forEach(function(el) {
+            el.textContent = label || '';
+            el.style.display = label ? '' : 'none';
+        });
+    }
+
+    if (_settingsVersionLabel) {
+        paint(_settingsVersionLabel);
+        return;
+    }
+
+    RS.invoke('api_version').then(function(data) {
+        var name = (data && data.name) || 'Ratspeak';
+        var version = (data && data.version) || '';
+        if (!version) return;
+        _settingsVersionLabel = name + ' v.' + version;
+        paint(_settingsVersionLabel);
+    }).catch(function() {
+        paint('');
+    });
 }
 
 // Seal all System Data subsections. Called on every Settings open so the
@@ -756,6 +789,7 @@ function confirmDangerAction(action, onClose) {
             showToast('Resetting\u2026', 'toast-orange', 5000);
             RS.invoke('api_factory_reset')
                 .then(function() {
+                    if (typeof clearFirstRunAnnounceHintDone === 'function') clearFirstRunAnnounceHintDone();
                     // reload() re-requests tauri://localhost/. location.href='/'
                     // breaks on dev-contaminated builds (TAURI_CONFIG leak → dev URL).
                     setTimeout(function() { window.location.reload(); }, 1500);
@@ -812,6 +846,7 @@ function initThemeToggle() {
 document.addEventListener('DOMContentLoaded', function() {
     initThemeToggle();
     initSettingsSectionNav();
+    renderSettingsVersion();
 });
 
 function updateBlockedCount() {

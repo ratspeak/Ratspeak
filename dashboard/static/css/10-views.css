@@ -1314,6 +1314,21 @@
     box-shadow: var(--shadow-panel);
     padding: var(--space-6);
 }
+.settings-sidebar-version,
+.settings-version-system {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: 1.35;
+    user-select: text;
+}
+.settings-sidebar-version {
+    margin: var(--space-8) var(--space-3) 0;
+    padding-top: var(--space-5);
+    border-top: 1px solid var(--border-row);
+}
+.settings-version-system {
+    display: none;
+}
 .settings-sidebar-header {
     padding: var(--space-3) var(--space-3) var(--space-6);
 }

@@ -340,25 +340,33 @@ function _voicePeerSurfaceTitle(call) {
     return _voicePeerName(call);
 }
 
-function _voiceActiveConversationHash() {
-    var call = lxstVoiceState.active || lxstVoiceState.incoming;
-    if (!call) return null;
-    return lxstVoiceState.lastDialHash || _voicePeerLookupHash(call) || null;
+function _voiceCallSurfaceAvatarHtml(call, size) {
+    var info = _voicePeerDisplayInfo(call);
+    if (typeof identityAvatar === 'function') {
+        return identityAvatar(info.avatarHash || info.address || '', size);
+    }
+    return _voiceIcon('phone', Math.max(18, Math.round(size * 0.45)));
 }
 
-function _voiceOpenActiveConversation() {
-    var hash = _voiceActiveConversationHash();
-    if (!hash || typeof openConversationWith !== 'function') return;
-    openConversationWith(hash);
-}
-
-function _voiceWireCallSurfaceNavigation(id) {
-    var surface = document.getElementById(id);
-    if (!surface || surface._voiceSurfaceNavigationBound) return;
-    surface._voiceSurfaceNavigationBound = true;
+function _voiceWireHangupProximity(surfaceId, hangupId) {
+    var surface = document.getElementById(surfaceId);
+    var hangup = document.getElementById(hangupId);
+    if (!surface || !hangup || surface._voiceHangupProximityBound) return;
+    surface._voiceHangupProximityBound = true;
     surface.addEventListener('click', function(e) {
         if (e.target && e.target.closest && e.target.closest('button')) return;
-        _voiceOpenActiveConversation();
+        if (!lxstVoiceState.active || hangup.style.display === 'none') return;
+        var surfaceRect = surface.getBoundingClientRect();
+        var buttonRect = hangup.getBoundingClientRect();
+        var pad = 12;
+        var x = e.clientX;
+        var y = e.clientY;
+        var inExpandedButton =
+            x >= buttonRect.left - pad &&
+            x <= buttonRect.right + pad &&
+            y >= Math.max(surfaceRect.top, buttonRect.top - pad) &&
+            y <= Math.min(surfaceRect.bottom, buttonRect.bottom + pad);
+        if (inExpandedButton) _voiceHangupCall();
     });
 }
 
@@ -373,6 +381,7 @@ function _voiceRenderCallSurface(ids) {
     var rejectBtn = document.getElementById(ids.reject);
     var hangupBtn = document.getElementById(ids.hangup);
     var peer = active || incoming;
+    var avatarEl = surface.querySelector('.lxst-call-strip-indicator');
 
     surface.hidden = !peer;
     surface.classList.toggle('is-incoming', !!incoming && !active);
@@ -380,6 +389,9 @@ function _voiceRenderCallSurface(ids) {
     surface.classList.toggle('is-connecting', !!(active && active.status !== 'established'));
     if (!peer) return;
 
+    if (avatarEl) {
+        avatarEl.innerHTML = _voiceCallSurfaceAvatarHtml(peer, ids.global ? 48 : 42);
+    }
     if (titleEl) {
         titleEl.textContent = _voicePeerSurfaceTitle(peer);
         titleEl.title = titleEl.textContent;
@@ -3466,8 +3478,8 @@ document.addEventListener('DOMContentLoaded', function() {
         var btn = document.getElementById(id);
         if (btn) btn.addEventListener('click', _voiceHangupCall);
     });
-    _voiceWireCallSurfaceNavigation('lxst-call-strip');
-    _voiceWireCallSurfaceNavigation('lxst-call-global');
+    _voiceWireHangupProximity('lxst-call-strip', 'lxst-call-hangup-btn');
+    _voiceWireHangupProximity('lxst-call-global', 'lxst-call-global-hangup-btn');
     RS.invoke('voice_status').then(function(status) {
         lxstVoiceState.available = true;
         lxstVoiceState.running = !!(status && status.running);
