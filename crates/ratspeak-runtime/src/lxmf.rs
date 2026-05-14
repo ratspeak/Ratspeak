@@ -198,6 +198,7 @@ pub struct LxmfManager {
     pub ratchet_ring: RatchetRing,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
     pub known_identities: HashMap<String, [u8; 64]>,
+    route_hops: HashMap<[u8; 16], u8>,
     /// Held so identity-switch can re-register with the transport actor.
     pub delivery_tx:
         Option<tokio::sync::mpsc::Sender<rns_transport::link_messages::DestinationEvent>>,
@@ -407,6 +408,7 @@ impl LxmfManager {
             ratchet_ring,
             received_ratchets,
             known_identities,
+            route_hops: HashMap::new(),
             delivery_tx: None,
             link_delivery: None,
             propagation_sync: None,
@@ -1831,6 +1833,24 @@ impl LxmfManager {
         }
     }
 
+    pub fn replace_route_hops_from_path_table(
+        &mut self,
+        entries: &[rns_transport::messages::PathTableRpcEntry],
+    ) {
+        self.route_hops.clear();
+        for entry in entries {
+            self.route_hops.insert(entry.hash, entry.hops.max(1));
+        }
+    }
+
+    pub fn update_route_hop(&mut self, dest_hash: [u8; 16], hops: u8) {
+        self.route_hops.insert(dest_hash, hops.max(1));
+    }
+
+    fn delivery_link_hops(&self, dest_hash: [u8; 16]) -> u8 {
+        self.route_hops.get(&dest_hash).copied().unwrap_or(1).max(1)
+    }
+
     pub fn update_lxmf_announce_app_data(
         &mut self,
         dest_hash: [u8; 16],
@@ -2406,8 +2426,9 @@ impl LxmfManager {
                     ));
                 }
 
+                let hops = self.delivery_link_hops(dest_hash);
                 if let Some(ref mut ld) = self.link_delivery {
-                    ld.start_delivery(message, dest_hash, 1);
+                    ld.start_delivery(message, dest_hash, hops);
                     if let Some(hash) = msg_hash
                         && !is_ephemeral
                     {
@@ -2512,8 +2533,9 @@ impl LxmfManager {
                     ));
                 }
 
+                let hops = self.delivery_link_hops(dest_hash);
                 if let Some(ref mut ld) = self.link_delivery {
-                    ld.start_delivery(message, dest_hash, 1);
+                    ld.start_delivery(message, dest_hash, hops);
                     if let Some(hash) = msg_hash
                         && !is_ephemeral
                     {
@@ -2617,6 +2639,7 @@ pub async fn resolve_destination(
     );
 
     if path_found {
+        refresh_route_hops_from_transport(state, transport_tx).await;
         pull_identity_from_announces(state, transport_tx, dest_hash_hex).await;
     }
 
@@ -2636,6 +2659,27 @@ pub async fn resolve_destination(
         tracing::warn!(dest = %dest_hash_hex, "destination resolution timed out after 5s");
     }
     known
+}
+
+async fn refresh_route_hops_from_transport(
+    state: &AppState,
+    transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
+) {
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    if let Err(e) = transport_tx.try_send(TransportMessage::Rpc {
+        query: rns_transport::messages::TransportQuery::GetPathTable,
+        response_tx: resp_tx,
+    }) {
+        tracing::warn!(error = %e, "path-table RPC drop during route-hop refresh");
+        return;
+    }
+
+    if let Ok(rns_transport::messages::TransportQueryResponse::PathTable(entries)) = resp_rx.await
+        && let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.replace_route_hops_from_path_table(&entries);
+    }
 }
 
 async fn pull_identity_from_announces(
@@ -2731,6 +2775,20 @@ mod tests {
             Ok(_) => panic!("missing preferred identity should fail"),
             Err(err) => assert!(err.to_string().contains("active identity file not found")),
         }
+    }
+
+    #[test]
+    fn direct_link_hops_follow_cached_route_hops() {
+        let mut mgr = test_manager();
+        let dest = [0x42; 16];
+
+        assert_eq!(mgr.delivery_link_hops(dest), 1);
+
+        mgr.update_route_hop(dest, 4);
+        assert_eq!(mgr.delivery_link_hops(dest), 4);
+
+        mgr.update_route_hop(dest, 0);
+        assert_eq!(mgr.delivery_link_hops(dest), 1);
     }
 
     #[test]

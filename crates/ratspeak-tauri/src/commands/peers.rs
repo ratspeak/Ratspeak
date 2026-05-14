@@ -35,6 +35,7 @@ pub async fn api_get_peers_snapshot(state: State<'_, Arc<AppState>>) -> AppResul
             json!({
                 "hash": r.hash,
                 "identity_hash": r.identity_hash,
+                "telephony_hash": ratspeak_runtime::telephony_hash_for_identity_hex(&r.identity_hash),
                 "last_seen": r.last_seen,
                 "first_seen": r.first_seen,
                 "display_name": r.display_name,

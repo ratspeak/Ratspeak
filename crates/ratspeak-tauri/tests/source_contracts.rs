@@ -460,13 +460,17 @@ fn empty_ghost_conversations_are_removed_when_leaving_chat_detail() {
     assert!(lxmf.contains("function _ensureGhostRow(hash)"));
     assert!(lxmf.contains("row.dataset.ghost = 'true';"));
     assert!(lxmf.contains("function _onChatDetailExit()"));
+    assert!(lxmf.contains("function _conversationHasVisibleMessages()"));
+    assert!(lxmf.contains("function _mergeOptimisticConversation(convos)"));
     assert!(lxmf.contains(
         "if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) return;"
     ));
+    assert!(lxmf.contains("if (_conversationHasVisibleMessages())"));
     assert!(lxmf.contains("_removeGhostRow();"));
     assert!(lxmf.contains("cacheDel(exitingHash);"));
     assert!(lxmf.contains("lxmfActiveContact = null;"));
     assert!(lxmf.contains("lxmfConversation = [];"));
+    assert!(lxmf.contains("convos = _mergeOptimisticConversation(convos);"));
     assert!(lxmf.contains("_renderConversationsFromCache(lxmfConversations || []);"));
     assert!(view_stack.contains("popped.viewId === 'chat-detail'"));
     assert!(view_stack.contains("typeof _onChatDetailExit === 'function'"));
@@ -899,7 +903,9 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     assert!(!sheet_source.contains("id=\"conn-sheet-block-btn\""));
     assert!(sheet_source.contains("conn-detail-sheet-primary-actions entity-action-grid"));
     assert!(sheet_source.contains("conn-detail-sheet-secondary-actions entity-action-grid"));
-    assert!(sheet_source.contains("<span>Hops</span><strong>"));
+    assert!(sheet_source.contains("<span>Message route</span><strong>"));
+    assert!(sheet_source.contains("<span>Call route</span><strong>"));
+    assert!(!sheet_source.contains("<span>Hops</span><strong>"));
     assert!(!sheet_source.contains("<span>Route</span>"));
     assert!(!sheet_source.contains("<span>Via</span>"));
     assert!(sheet_source.contains("TODO(dev-mode): expose next-hop/via"));
@@ -1493,6 +1499,12 @@ fn peer_reachability_uses_uncapped_path_index() {
     assert!(peers.contains("lastStats.path_index"));
     assert!(peers.contains("pathLookup[h] = pathIndex[h]"));
     assert!(peers.contains("else if (pathTable)"));
+    assert!(peers.contains("function pathInfo(hash, service, pathLookup, nowSecs)"));
+    assert!(peers.contains("function primaryRouteInfo(messageInfo, voiceInfo)"));
+    assert!(peers.contains("entry.telephony_hash"));
+    assert!(peers.contains("message_route_label: messageInfo.route_label"));
+    assert!(peers.contains("voice_route_label: voiceInfo.route_label"));
+    assert!(peers.contains("route_service: primaryInfo.service"));
 
     let connections =
         read_source(root.join("dashboard/static/js/connections.js")).expect("connections");
@@ -1526,6 +1538,7 @@ fn peers_are_filtered_to_ratspeak_actionable_services() {
     assert!(peers.contains("function _hasSupportedPeerService(entry)"));
     assert!(peers.contains("services.indexOf('lxmf.delivery') !== -1"));
     assert!(peers.contains("services.indexOf('lxst.telephony') !== -1"));
+    assert!(peers.contains("telephony_hash"));
     assert!(peers.contains("supports_lxst_call"));
 
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db");
@@ -1539,6 +1552,18 @@ fn peers_are_filtered_to_ratspeak_actionable_services() {
     assert!(handlers.contains("const LXST_TELEPHONY_ASPECT: &str = \"lxst.telephony\";"));
     assert!(handlers.contains("Destination::hash_from_name_and_identity(\"lxmf.delivery\""));
     assert!(handlers.contains("db::PEER_SERVICE_LXST_TELEPHONY"));
+
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
+    assert!(runtime.contains("pub fn telephony_hash_for_identity_hex"));
+    assert!(
+        runtime.contains("\"telephony_hash\": telephony_hash_for_identity_hex(&r.identity_hash)")
+    );
+
+    let tauri_peers =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/peers.rs")).expect("peers cmd");
+    assert!(tauri_peers.contains(
+        "\"telephony_hash\": ratspeak_runtime::telephony_hash_for_identity_hex(&r.identity_hash)"
+    ));
 }
 
 #[test]

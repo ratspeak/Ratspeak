@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use rns_identity::destination::Destination;
 use serde_json::json;
 
 use state::AppState;
@@ -41,6 +42,19 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 // ~150 bytes/entry → ~750 KB ceiling for hub bootstrap bursts.
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
+
+pub fn telephony_hash_for_identity_hex(identity_hash_hex: &str) -> Option<String> {
+    let bytes = hex::decode(identity_hash_hex).ok()?;
+    if bytes.len() != 16 {
+        return None;
+    }
+    let mut identity_hash = [0u8; 16];
+    identity_hash.copy_from_slice(&bytes);
+    Some(hex::encode(Destination::hash_from_name_and_identity(
+        db::PEER_SERVICE_LXST_TELEPHONY,
+        Some(&identity_hash),
+    )))
+}
 
 fn inbound_packet_targets_destination(raw: &[u8], destination_hash: [u8; 16]) -> bool {
     rns_wire::header::PacketHeader::unpack(raw)
@@ -2413,6 +2427,7 @@ async fn push_stats_once(state: &AppState) {
 
     let (path_table, path_index, path_table_total, path_table_truncated) = match path_result {
         Some(rns_transport::messages::TransportQueryResponse::PathTable(entries)) => {
+            cache_lxmf_route_hops_from_path_table(state, &entries);
             crate::rns::path_table_stats_snapshot(entries)
         }
         _ => (
@@ -2460,6 +2475,17 @@ async fn push_stats_once(state: &AppState) {
 
     state.set_last_stats(stats.clone());
     state.emit_to_all("stats_update", stats);
+}
+
+fn cache_lxmf_route_hops_from_path_table(
+    state: &AppState,
+    entries: &[rns_transport::messages::PathTableRpcEntry],
+) {
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.replace_route_hops_from_path_table(entries);
+    }
 }
 
 // Debounce for eager `poll_now` wakes.
@@ -2628,6 +2654,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
             let (path_table, path_index, path_table_total, path_table_truncated) = match path_result
             {
                 Some(rns_transport::messages::TransportQueryResponse::PathTable(entries)) => {
+                    cache_lxmf_route_hops_from_path_table(&state, &entries);
                     let hashes: std::collections::HashSet<String> =
                         entries.iter().map(|e| hex::encode(e.hash)).collect();
 
@@ -3124,6 +3151,7 @@ pub(crate) fn emit_peers_batch(state: &AppState, rows: &[db::PeerRow]) {
             json!({
                 "hash": r.hash,
                 "identity_hash": r.identity_hash,
+                "telephony_hash": telephony_hash_for_identity_hex(&r.identity_hash),
                 "last_seen": r.last_seen,
                 "first_seen": r.first_seen,
                 "display_name": r.display_name,

@@ -1387,6 +1387,27 @@ function _removeGhostRow() {
     _ghostConversationHash = null;
 }
 
+function _conversationHasVisibleMessages() {
+    if (!Array.isArray(lxmfConversation)) return false;
+    for (var i = 0; i < lxmfConversation.length; i++) {
+        var m = lxmfConversation[i];
+        if (!m) continue;
+        if ((m.content || '').trim()) return true;
+        if (m.image) return true;
+        if (Array.isArray(m.attachments) && m.attachments.length > 0) return true;
+        if (m.id) return true;
+    }
+    return false;
+}
+
+function _promoteGhostConversationRow(hash) {
+    var container = document.getElementById('lxmf-conversations-list');
+    if (!container) return;
+    var row = container.querySelector('.conv-row[data-hash="' + hash + '"]');
+    if (row) row.removeAttribute('data-ghost');
+    if (_ghostConversationHash === hash) _ghostConversationHash = null;
+}
+
 function _onChatDetailExit() {
     var exitingHash = lxmfActiveContact;
     var input = document.getElementById('lxmf-input');
@@ -1396,6 +1417,12 @@ function _onChatDetailExit() {
     }
 
     if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) return;
+
+    if (_conversationHasVisibleMessages()) {
+        _promoteGhostConversationRow(exitingHash);
+        loadConversations();
+        return;
+    }
 
     _removeGhostRow();
     cacheDel(exitingHash);
@@ -1541,6 +1568,57 @@ function _updateConversationPreview(hash, previewText, timestamp) {
     }
 }
 
+function _conversationPreviewForMessage(message) {
+    if (!message) return '';
+    var content = (message.content || '').trim();
+    if (content) return content;
+    if (message.image) return 'Photo';
+    if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+        return message.attachments[0].filename || 'Attachment';
+    }
+    return '';
+}
+
+function _lastVisibleConversationMessage() {
+    if (!Array.isArray(lxmfConversation)) return null;
+    for (var i = lxmfConversation.length - 1; i >= 0; i--) {
+        var m = lxmfConversation[i];
+        if (!m) continue;
+        if ((m.content || '').trim() || m.image || (Array.isArray(m.attachments) && m.attachments.length > 0) || m.id) {
+            return m;
+        }
+    }
+    return null;
+}
+
+function _optimisticConversationPayload() {
+    if (!lxmfActiveContact) return null;
+    var last = _lastVisibleConversationMessage();
+    if (!last) return null;
+    return {
+        hash: lxmfActiveContact,
+        display_name: null,
+        is_contact: false,
+        last_message: _conversationPreviewForMessage(last),
+        last_direction: last.direction || 'outbound',
+        last_state: last.state || '',
+        last_delivery_method: last.delivery_method || null,
+        timestamp: last.timestamp || (Date.now() / 1000),
+        unread: 0,
+    };
+}
+
+function _mergeOptimisticConversation(convos) {
+    var rows = Array.isArray(convos) ? convos.slice() : [];
+    var optimistic = _optimisticConversationPayload();
+    if (!optimistic) return rows;
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i] && rows[i].hash === optimistic.hash) return rows;
+    }
+    rows.unshift(optimistic);
+    return rows;
+}
+
 function renderCockpitConversations() {
     renderDashboardRecentMessages();
 }
@@ -1678,6 +1756,8 @@ function _loadConversationsReal(retryCount) {
 function _renderConversationsFromCache(convos) {
     var container = document.getElementById('lxmf-conversations-list');
     if (!container) return;
+
+    convos = _mergeOptimisticConversation(convos);
 
     if (!convos || convos.length === 0) {
         if (_ghostConversationHash && _ghostConversationHash === lxmfActiveContact) {

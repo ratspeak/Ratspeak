@@ -66,6 +66,7 @@ var PeersCache = (function() {
         return {
             hash: r.hash,
             identity_hash: typeof r.identity_hash === 'string' ? r.identity_hash : '',
+            telephony_hash: typeof r.telephony_hash === 'string' ? r.telephony_hash : '',
             last_seen: (r.last_seen === undefined || r.last_seen === null) ? null : r.last_seen,
             first_seen: (r.first_seen === undefined || r.first_seen === null) ? null : r.first_seen,
             display_name: typeof r.display_name === 'string' ? r.display_name : '',
@@ -122,6 +123,7 @@ var PeersCache = (function() {
                 existing.last_interface = n.last_interface;
             }
             if (payload.identity_hash !== undefined) existing.identity_hash = n.identity_hash;
+            if (payload.telephony_hash !== undefined) existing.telephony_hash = n.telephony_hash;
             if (payload.services !== undefined) existing.services = n.services;
         } else {
             _cache[n.hash] = n;
@@ -223,6 +225,29 @@ var PeersCache = (function() {
         return { state: 'available', label: 'Available' };
     }
 
+    function pathInfo(hash, service, pathLookup, nowSecs) {
+        var pi = hash ? (pathLookup[hash] || null) : null;
+        var route = computeRoute(pi);
+        return {
+            hash: hash || '',
+            service: service,
+            path: pi,
+            hops: pi ? (pi.hops != null ? pi.hops : null) : null,
+            via: pi ? (pi.via || null) : null,
+            iface: pi ? (pi.interface || null) : null,
+            path_age: (pi && pi.timestamp) ? (nowSecs - pi.timestamp) : null,
+            in_path: !!pi,
+            route_state: route.state,
+            route_label: route.label,
+        };
+    }
+
+    function primaryRouteInfo(messageInfo, voiceInfo) {
+        if (messageInfo.in_path) return messageInfo;
+        if (voiceInfo.in_path) return voiceInfo;
+        return messageInfo;
+    }
+
     function isInitialized() { return _initialized; }
 
     // Cache rows overlaid with the live path index. `path_table` is capped for
@@ -254,11 +279,17 @@ var PeersCache = (function() {
         var out = new Array(entries.length);
         for (var j = 0; j < entries.length; j++) {
             var entry = entries[j];
-            var pi = pathLookup[entry.hash] || null;
-            var hops = pi ? (pi.hops != null ? pi.hops : null) : null;
-            var pathAge = (pi && pi.timestamp) ? (nowSecs - pi.timestamp) : null;
+            var messageInfo = pathInfo(entry.hash, 'lxmf.delivery', pathLookup, nowSecs);
+            var voiceInfo = pathInfo(entry.telephony_hash || '', 'lxst.telephony', pathLookup, nowSecs);
+            var primaryInfo = primaryRouteInfo(messageInfo, voiceInfo);
+            var pi = primaryInfo.path;
+            var hops = primaryInfo.hops;
+            var pathAge = primaryInfo.path_age;
             var activity = computeActivity(entry, nowSecs);
-            var route = computeRoute(pi);
+            var routeLabel = primaryInfo.route_label;
+            if (primaryInfo.service === 'lxst.telephony' && primaryInfo.in_path) {
+                routeLabel = 'Voice: ' + routeLabel;
+            }
             // Iface precedence: live path_table > persisted last_interface
             // (so a peer survives a reboot with a route badge).
             var liveIface = pi ? (pi.interface || null) : null;
@@ -266,6 +297,7 @@ var PeersCache = (function() {
             out[j] = {
                 hash: entry.hash,
                 identity_hash: entry.identity_hash || '',
+                telephony_hash: entry.telephony_hash || '',
                 display_name: entry.display_name || '',
                 is_contact: !!entry.is_contact,
                 services: Array.isArray(entry.services) ? entry.services.slice() : [],
@@ -279,11 +311,29 @@ var PeersCache = (function() {
                 iface_is_live: !!liveIface,
                 path_age: pathAge,
                 in_path: !!pi,
+                route_hash: primaryInfo.hash,
+                route_service: primaryInfo.service,
+                message_route_hash: messageInfo.hash,
+                message_route_label: messageInfo.route_label,
+                message_route_state: messageInfo.route_state,
+                message_in_path: messageInfo.in_path,
+                message_hops: messageInfo.hops,
+                message_path_age: messageInfo.path_age,
+                message_iface: messageInfo.iface,
+                message_iface_is_live: messageInfo.in_path,
+                voice_route_hash: voiceInfo.hash,
+                voice_route_label: voiceInfo.route_label,
+                voice_route_state: voiceInfo.route_state,
+                voice_in_path: voiceInfo.in_path,
+                voice_hops: voiceInfo.hops,
+                voice_path_age: voiceInfo.path_age,
+                voice_iface: voiceInfo.iface,
+                voice_iface_is_live: voiceInfo.in_path,
                 status: computeStatus(entry, nowSecs),
                 activity_tier: activity.tier,
                 activity_label: activity.label,
-                route_state: route.state,
-                route_label: route.label,
+                route_state: primaryInfo.route_state,
+                route_label: routeLabel,
             };
         }
         _enrichedCache = out;

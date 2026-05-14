@@ -583,17 +583,48 @@ function showConnectionDetailSheet(hash, options) {
     var avatarHtml = (typeof identityAvatar === 'function') ? identityAvatar(contact.hash, 64) : '';
     var lastHeardText = typeof formatLastHeard === 'function' ? formatLastHeard(contact.last_seen) : (contact.last_seen ? new Date(contact.last_seen * 1000).toLocaleString() : 'No activity yet');
     var firstHeardText = contact.first_seen ? (typeof formatLastHeard === 'function' ? formatLastHeard(contact.first_seen) : new Date(contact.first_seen * 1000).toLocaleString()) : '\u2014';
-    var pathAgeText = contact.in_path && contact.path_age !== null && contact.path_age !== undefined ? prettyTime(contact.path_age) + ' ago' : '\u2014';
-    var hopsSummaryText = 'No current path';
-    if (contact.in_path) {
-        if (contact.hops !== null && contact.hops !== undefined) {
-            hopsSummaryText = contact.hops === 0 ? 'Direct' : contact.hops + (contact.hops === 1 ? ' hop' : ' hops');
-        } else {
-            hopsSummaryText = contact.route_label || 'Available';
-        }
+    function routeDetailText(label, pathAge, iface) {
+        var text = label || 'No current path';
+        var meta = [];
+        if (pathAge !== null && pathAge !== undefined) meta.push(prettyTime(pathAge) + ' ago');
+        if (iface) meta.push(iface);
+        return meta.length ? text + ' · ' + meta.join(' · ') : text;
     }
+    var messageRouteText = routeDetailText(
+        contact.message_route_label || 'No current path',
+        contact.message_path_age,
+        contact.message_iface
+    );
+    var callRouteText = routeDetailText(
+        contact.voice_route_label || 'No current path',
+        contact.voice_path_age,
+        contact.voice_iface
+    );
+    if (!contact.telephony_hash && !contact.supports_lxst_call && !contact.voice_in_path) {
+        callRouteText = 'Not announced';
+    }
+    function summarizeRouteAges() {
+        var parts = [];
+        if (contact.message_path_age !== null && contact.message_path_age !== undefined) {
+            parts.push('Message: ' + prettyTime(contact.message_path_age) + ' ago');
+        }
+        if (contact.voice_path_age !== null && contact.voice_path_age !== undefined) {
+            parts.push('Call: ' + prettyTime(contact.voice_path_age) + ' ago');
+        }
+        return parts.length ? parts.join(' · ') : '\u2014';
+    }
+    function summarizeRouteIfaces() {
+        var parts = [];
+        if (contact.message_iface) parts.push('Message: ' + contact.message_iface);
+        if (contact.voice_iface && contact.voice_iface !== contact.message_iface) {
+            parts.push('Call: ' + contact.voice_iface);
+        }
+        if (parts.length) return parts.join(' · ');
+        return contact.iface ? contact.iface + (contact.iface_is_live ? '' : ' (last known)') : '\u2014';
+    }
+    var pathAgeText = summarizeRouteAges();
     // TODO(dev-mode): expose next-hop/via once developer-mode detail rows exist.
-    var ifaceText = contact.iface ? contact.iface + (contact.iface_is_live ? '' : ' (last known)') : '\u2014';
+    var ifaceText = summarizeRouteIfaces();
     var progressive = !!options.progressive;
     var callActionHtml = typeof voiceActionButtonHtml === 'function' ? voiceActionButtonHtml('conn-sheet-call-btn', contact.hash) : '';
     var addActionHtml = !contact.is_contact
@@ -633,7 +664,8 @@ function showConnectionDetailSheet(hash, options) {
         '<div class="conn-detail-sheet-fields">' +
             '<div class="conn-detail-sheet-field"><span>Last heard</span><strong>' + escapeHtml(lastHeardText) + '</strong></div>' +
             '<div class="conn-detail-sheet-field"><span>First heard</span><strong>' + escapeHtml(firstHeardText) + '</strong></div>' +
-            '<div class="conn-detail-sheet-field"><span>Hops</span><strong>' + escapeHtml(hopsSummaryText) + '</strong></div>' +
+            '<div class="conn-detail-sheet-field"><span>Message route</span><strong>' + escapeHtml(messageRouteText) + '</strong></div>' +
+            '<div class="conn-detail-sheet-field"><span>Call route</span><strong>' + escapeHtml(callRouteText) + '</strong></div>' +
             '<div class="conn-detail-sheet-field"><span>Path age</span><strong>' + escapeHtml(pathAgeText) + '</strong></div>' +
             '<div class="conn-detail-sheet-field"><span>Interface</span><strong>' + escapeHtml(ifaceText) + '</strong></div>' +
         '</div>' +
