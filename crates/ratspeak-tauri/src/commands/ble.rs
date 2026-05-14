@@ -631,13 +631,15 @@ pub async fn ble_rnode_bridge_ready(
             if let Some(rns) = rns {
                 match rns_runtime::reticulum::spawn_ble_rnode_runtime_native(
                     &rns,
-                    &name,
-                    &port,
-                    frequency as u32,
-                    bandwidth as u32,
-                    sf,
-                    cr,
-                    tx,
+                    rns_runtime::reticulum::BleRnodeRuntimeArgs {
+                        name: &name,
+                        port: &port,
+                        frequency: frequency as u32,
+                        bandwidth: bandwidth as u32,
+                        spreading_factor: sf,
+                        coding_rate: cr,
+                        tx_power: tx,
+                    },
                     tcp_port,
                 )
                 .await

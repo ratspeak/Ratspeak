@@ -3943,7 +3943,7 @@ mod pending_blackhole_tests {
         let dest_b = "22222222222222222222222222222222".to_string();
         let identity_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let identity_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let rows = vec![
+        let rows = [
             (dest_a.clone(), 1.0, None, None),
             (dest_b.clone(), 2.0, None, None),
         ];

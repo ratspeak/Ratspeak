@@ -4007,7 +4007,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-core"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "chrono",
  "serde",
@@ -4018,7 +4018,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-db"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "hex",
  "lrgp",
@@ -4035,7 +4035,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-runtime"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "base64 0.22.1",
  "btleplug",
@@ -4081,7 +4081,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-tauri"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "base64 0.22.1",
  "btleplug",

@@ -145,6 +145,16 @@ pub struct MessageSendRequest<'a> {
     pub profile: DeliveryProfile,
 }
 
+struct MessageWithMethodRequest<'a> {
+    dest_hash_hex: &'a str,
+    content: &'a str,
+    title: &'a str,
+    db_pool: &'a DbPool,
+    identity_id: &'a str,
+    delivery_method: DeliveryMethod,
+    auto_fallback: Option<(DeliveryPreference, DeliveryProfile)>,
+}
+
 pub struct ReactionSendRequest<'a> {
     pub dest_hash_hex: &'a str,
     pub message_id: &'a str,
@@ -882,15 +892,15 @@ impl LxmfManager {
             request.preference,
             request.profile,
         );
-        self.send_message_with_method_internal(
-            request.dest_hash_hex,
-            request.content,
-            request.title,
-            request.db_pool,
-            request.identity_id,
-            method,
-            Some((request.preference, request.profile)),
-        )
+        self.send_message_with_method_internal(MessageWithMethodRequest {
+            dest_hash_hex: request.dest_hash_hex,
+            content: request.content,
+            title: request.title,
+            db_pool: request.db_pool,
+            identity_id: request.identity_id,
+            delivery_method: method,
+            auto_fallback: Some((request.preference, request.profile)),
+        })
     }
 
     /// `DeliveryMethod::Propagated` requires `configured_propagation_node`.
@@ -903,27 +913,30 @@ impl LxmfManager {
         identity_id: &str,
         delivery_method: DeliveryMethod,
     ) -> Option<String> {
-        self.send_message_with_method_internal(
+        self.send_message_with_method_internal(MessageWithMethodRequest {
             dest_hash_hex,
             content,
             title,
             db_pool,
             identity_id,
             delivery_method,
-            None,
-        )
+            auto_fallback: None,
+        })
     }
 
     fn send_message_with_method_internal(
         &mut self,
-        dest_hash_hex: &str,
-        content: &str,
-        title: &str,
-        db_pool: &DbPool,
-        identity_id: &str,
-        delivery_method: DeliveryMethod,
-        auto_fallback: Option<(DeliveryPreference, DeliveryProfile)>,
+        request: MessageWithMethodRequest<'_>,
     ) -> Option<String> {
+        let MessageWithMethodRequest {
+            dest_hash_hex,
+            content,
+            title,
+            db_pool,
+            identity_id,
+            delivery_method,
+            auto_fallback,
+        } = request;
         let mut msg = self.create_message(dest_hash_hex, content, title, delivery_method)?;
         normalize_protocol_delivery_method(&mut msg);
         if !message_within_resource_limit(&msg) {
@@ -2090,12 +2103,11 @@ impl LxmfManager {
             if self.client_propagation_enabled
                 && now - self.last_propagation_check > AUTO_PROPAGATION_CHECK_INTERVAL_SECS
                 && client.state == lxmf_core::propagation_client::PropagationClientState::Idle
+                && auto_download_ready
             {
-                if auto_download_ready {
-                    self.last_propagation_check = now;
-                    client.start_download();
-                    tracing::debug!("auto-triggered propagation download check");
-                }
+                self.last_propagation_check = now;
+                client.start_download();
+                tracing::debug!("auto-triggered propagation download check");
             }
         }
         for msg_data in downloaded {

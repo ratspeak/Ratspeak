@@ -460,7 +460,9 @@ fn empty_ghost_conversations_are_removed_when_leaving_chat_detail() {
     assert!(lxmf.contains("function _ensureGhostRow(hash)"));
     assert!(lxmf.contains("row.dataset.ghost = 'true';"));
     assert!(lxmf.contains("function _onChatDetailExit()"));
-    assert!(lxmf.contains("if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) return;"));
+    assert!(lxmf.contains(
+        "if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) return;"
+    ));
     assert!(lxmf.contains("_removeGhostRow();"));
     assert!(lxmf.contains("cacheDel(exitingHash);"));
     assert!(lxmf.contains("lxmfActiveContact = null;"));
@@ -821,7 +823,7 @@ fn settings_version_display_uses_package_version_api() {
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
     assert!(system_rs.contains("env!(\"CARGO_PKG_VERSION\")"));
-    assert!(!system_rs.contains("\"version\": \"1.0.11\""));
+    assert!(!system_rs.contains("\"version\": \"1.0.12\""));
 
     let index = read_source(root.join("dashboard/index.html")).expect("index");
     assert!(index.contains("id=\"settings-version-sidebar\""));
@@ -865,14 +867,12 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
         connections
             .contains("sheet.classList.toggle('conn-detail-sheet--progressive', progressive);")
     );
-    assert!(
-        connections
-            .contains("sheet.classList.toggle('conn-detail-sheet--compact', progressive && !addActionHtml);")
-    );
-    assert!(
-        connections
-            .contains("sheet.classList.toggle('conn-detail-sheet--with-add', progressive && !!addActionHtml);")
-    );
+    assert!(connections.contains(
+        "sheet.classList.toggle('conn-detail-sheet--compact', progressive && !addActionHtml);"
+    ));
+    assert!(connections.contains(
+        "sheet.classList.toggle('conn-detail-sheet--with-add', progressive && !!addActionHtml);"
+    ));
     assert!(connections.contains(
         "sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded', 'conn-detail-sheet--compact', 'conn-detail-sheet--with-add');"
     ));
@@ -926,13 +926,16 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     assert!(responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-expand-hint"));
     assert!(responsive_css.contains(".conn-detail-sheet--with-add .conn-detail-sheet-expand-hint"));
     assert!(responsive_css.contains(".conn-detail-sheet {\n    max-width: 100vw;"));
-    assert!(responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-primary-actions"));
     assert!(
-        responsive_css.contains(
-            ".conn-detail-sheet--compact .conn-detail-sheet-actions .entity-action-btn"
-        )
+        responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-primary-actions")
     );
-    assert!(responsive_css.contains(".conn-detail-sheet-secondary-actions {\n    grid-template-columns: minmax(0, 1fr);"));
+    assert!(
+        responsive_css
+            .contains(".conn-detail-sheet--compact .conn-detail-sheet-actions .entity-action-btn")
+    );
+    assert!(responsive_css.contains(
+        ".conn-detail-sheet-secondary-actions {\n    grid-template-columns: minmax(0, 1fr);"
+    ));
     assert!(responsive_css.contains("overflow-x: hidden;"));
     assert!(responsive_css.contains("grid-template-areas: \"avatar title actions\";"));
     assert!(responsive_css.contains("grid-template-columns: 64px minmax(0, 1fr) auto;"));

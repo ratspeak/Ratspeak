@@ -216,15 +216,9 @@ pub async fn api_ble_scan() -> AppResult<Value> {
         )
         .await
         {
-            Ok(Ok(devices)) => {
-                return Ok(json!({"devices": devices, "available": true, "error": null}));
-            }
-            Ok(Err(e)) => return Ok(json!({"devices": [], "available": true, "error": e})),
-            Err(_) => {
-                return Ok(
-                    json!({"devices": [], "available": false, "error": "BLE scan timed out"}),
-                );
-            }
+            Ok(Ok(devices)) => Ok(json!({"devices": devices, "available": true, "error": null})),
+            Ok(Err(e)) => Ok(json!({"devices": [], "available": true, "error": e})),
+            Err(_) => Ok(json!({"devices": [], "available": false, "error": "BLE scan timed out"})),
         }
     }
     #[cfg(not(feature = "ble"))]
@@ -1289,13 +1283,15 @@ async fn spawn_editable_interface(
                 {
                     let (id, _online) = rns_runtime::reticulum::spawn_ble_rnode_runtime(
                         &handle,
-                        name,
-                        port,
-                        *frequency as u32,
-                        *bandwidth as u32,
-                        *spreading_factor,
-                        *coding_rate,
-                        *tx_power,
+                        rns_runtime::reticulum::BleRnodeRuntimeArgs {
+                            name,
+                            port,
+                            frequency: *frequency as u32,
+                            bandwidth: *bandwidth as u32,
+                            spreading_factor: *spreading_factor,
+                            coding_rate: *coding_rate,
+                            tx_power: *tx_power,
+                        },
                     )
                     .await?;
                     return Ok(format!("BLE LoRa interface active (#{id})"));
@@ -1756,13 +1752,15 @@ pub async fn add_lora_interface(
                         .await;
                     match rns_runtime::reticulum::spawn_ble_rnode_runtime(
                         &rns,
-                        &name,
-                        &port_str,
-                        radio.frequency as u32,
-                        radio.bandwidth as u32,
-                        radio.spreading_factor,
-                        radio.coding_rate,
-                        radio.tx_power,
+                        rns_runtime::reticulum::BleRnodeRuntimeArgs {
+                            name: &name,
+                            port: &port_str,
+                            frequency: radio.frequency as u32,
+                            bandwidth: radio.bandwidth as u32,
+                            spreading_factor: radio.spreading_factor,
+                            coding_rate: radio.coding_rate,
+                            tx_power: radio.tx_power,
+                        },
                     )
                     .await
                     {
