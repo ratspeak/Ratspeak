@@ -811,6 +811,28 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
             .contains("sheet.classList.toggle('conn-detail-sheet--progressive', progressive);")
     );
     assert!(connections.contains("dy < -28"));
+    let sheet_start = connections
+        .find("function showConnectionDetailSheet")
+        .expect("connection detail sheet renderer");
+    let sheet_tail = &connections[sheet_start..];
+    let sheet_end = sheet_tail
+        .find("function expandConnectionDetailSheet")
+        .expect("connection detail sheet renderer end");
+    let sheet_source = &sheet_tail[..sheet_end];
+    assert!(sheet_source.contains("identityAvatar(contact.hash, 56)"));
+    assert!(sheet_source.contains("conn-detail-sheet-identity"));
+    assert!(sheet_source.contains("conn-detail-sheet-header-actions"));
+    assert!(sheet_source.contains("id=\"conn-sheet-more-btn\""));
+    assert!(sheet_source.contains("actionPopover(this"));
+    assert!(sheet_source.contains("label: 'Block'"));
+    assert!(sheet_source.contains("function confirmBlockPeer(h)"));
+    assert!(!sheet_source.contains("id=\"conn-sheet-block-btn\""));
+    assert!(sheet_source.contains("conn-detail-sheet-primary-actions entity-action-grid"));
+    assert!(sheet_source.contains("conn-detail-sheet-secondary-actions entity-action-grid"));
+    assert!(sheet_source.contains("<span>Hops</span><strong>"));
+    assert!(!sheet_source.contains("<span>Route</span>"));
+    assert!(!sheet_source.contains("<span>Via</span>"));
+    assert!(sheet_source.contains("TODO(dev-mode): expose next-hop/via"));
 
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("css");
@@ -819,12 +841,47 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
         responsive_css.contains(".peers-row-avatar {\n        width: 42px;\n        height: 42px;")
     );
     assert!(responsive_css.contains(".conn-detail-sheet.conn-detail-sheet--progressive"));
+    assert!(responsive_css.contains(".conn-detail-sheet-identity"));
+    assert!(responsive_css.contains(".conn-detail-sheet-avatar"));
+    assert!(responsive_css.contains(".conn-detail-sheet-header-actions"));
+    assert!(responsive_css.contains(".conn-detail-sheet-icon-btn"));
+    assert!(responsive_css.contains(".conn-detail-sheet-primary-actions"));
+    assert!(responsive_css.contains(".conn-detail-sheet-secondary-actions"));
+    assert!(responsive_css.contains("margin-top: auto;"));
     assert!(responsive_css.contains(
         ".conn-detail-sheet--progressive .conn-detail-sheet-fields {\n    display: none;"
     ));
     assert!(responsive_css.contains(
         ".conn-detail-sheet--progressive.conn-detail-sheet--expanded .conn-detail-sheet-fields"
     ));
+}
+
+#[test]
+fn peers_avatars_are_circle_cropped_like_contacts() {
+    let root = repo_root();
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    assert!(views_css.contains(
+        ".peers-row-avatar {\n    width: 28px;\n    height: 28px;\n    border-radius: var(--radius-full);"
+    ));
+    assert!(views_css.contains(
+        ".peers-detail-avatar {\n    width: 64px;\n    height: 64px;\n    border-radius: var(--radius-full);"
+    ));
+    assert!(views_css.contains("clip-path: circle(50% at 50% 50%);"));
+    assert!(views_css.contains(
+        ".contacts-avatar {\n    flex-shrink: 0;\n    width: 40px;\n    height: 40px;\n    border-radius: var(--radius-full);"
+    ));
+
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    assert!(responsive_css.contains(
+        ".peers-row-avatar {\n        width: 42px;\n        height: 42px;\n        border-radius: var(--radius-full);"
+    ));
+    assert!(
+        !responsive_css.contains(
+            ".peers-row-avatar {\n        width: 42px;\n        height: 42px;\n        border-radius: var(--radius-lg);"
+        ),
+        "mobile peers avatars must not override contact-style circle cropping"
+    );
 }
 
 #[test]

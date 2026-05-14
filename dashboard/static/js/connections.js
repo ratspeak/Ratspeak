@@ -580,33 +580,50 @@ function showConnectionDetailSheet(hash, options) {
 
     var nameText = escapeHtml(contact.display_name || (typeof shortHash === 'function' ? shortHash(contact.hash, 8, 4) : contact.hash));
     var hashText = escapeHtml(contact.hash);
+    var avatarHtml = (typeof identityAvatar === 'function') ? identityAvatar(contact.hash, 56) : '';
     var lastHeardText = typeof formatLastHeard === 'function' ? formatLastHeard(contact.last_seen) : (contact.last_seen ? new Date(contact.last_seen * 1000).toLocaleString() : 'No activity yet');
     var firstHeardText = contact.first_seen ? (typeof formatLastHeard === 'function' ? formatLastHeard(contact.first_seen) : new Date(contact.first_seen * 1000).toLocaleString()) : '\u2014';
     var pathAgeText = contact.in_path && contact.path_age !== null && contact.path_age !== undefined ? prettyTime(contact.path_age) + ' ago' : '\u2014';
-    var viaText = contact.in_path ? formatVia(contact.via) : '\u2014';
-    var hopsText = contact.hops !== null && contact.hops !== undefined ? contact.hops + (contact.hops === 1 ? ' hop' : ' hops') : '\u2014';
+    var hopsSummaryText = 'No current path';
+    if (contact.in_path) {
+        if (contact.hops !== null && contact.hops !== undefined) {
+            hopsSummaryText = contact.hops === 0 ? 'Direct' : contact.hops + (contact.hops === 1 ? ' hop' : ' hops');
+        } else {
+            hopsSummaryText = contact.route_label || 'Available';
+        }
+    }
+    // TODO(dev-mode): expose next-hop/via once developer-mode detail rows exist.
     var ifaceText = contact.iface ? contact.iface + (contact.iface_is_live ? '' : ' (last known)') : '\u2014';
     var progressive = !!options.progressive;
+    var callActionHtml = typeof voiceActionButtonHtml === 'function' ? voiceActionButtonHtml('conn-sheet-call-btn', contact.hash) : '';
+    var addActionHtml = !contact.is_contact
+        ? '<button class="nr-btn entity-action-btn conn-sheet-secondary-action" id="conn-sheet-add-btn" data-hash="' + escapeHtml(contact.hash) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg><span>Add</span></button>'
+        : '';
+    var messageActionHtml = '<button class="nr-btn entity-action-btn conn-sheet-message-action" id="conn-sheet-msg-btn" data-hash="' + escapeHtml(contact.hash) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Message</span></button>';
+    var secondaryActionsHtml = addActionHtml
+        ? '<div class="conn-detail-sheet-secondary-actions entity-action-grid">' + addActionHtml + '</div>'
+        : '';
 
     var html = '<div class="conn-detail-sheet-content">' +
-        '<div class="conn-detail-sheet-name">' + nameText + '</div>' +
-        '<div class="conn-detail-sheet-hash-row">' +
-            '<span class="conn-detail-sheet-hash">' + hashText + '</span>' +
-            '<button class="conn-detail-sheet-copy-btn" id="conn-sheet-copy-btn" data-hash="' + escapeHtml(contact.hash) + '" title="Copy LXMF address" aria-label="Copy LXMF address">' +
-                '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
-            '</button>' +
+        '<div class="conn-detail-sheet-identity">' +
+            '<div class="conn-detail-sheet-avatar">' + avatarHtml + '</div>' +
+            '<div class="conn-detail-sheet-title">' +
+                '<div class="conn-detail-sheet-name">' + nameText + '</div>' +
+                '<div class="conn-detail-sheet-hash">' + hashText + '</div>' +
+            '</div>' +
+            '<div class="conn-detail-sheet-header-actions">' +
+                '<button class="conn-detail-sheet-icon-btn" id="conn-sheet-copy-btn" data-hash="' + escapeHtml(contact.hash) + '" title="Copy LXMF address" aria-label="Copy LXMF address">' +
+                    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
+                '</button>' +
+                '<button class="conn-detail-sheet-icon-btn" id="conn-sheet-more-btn" data-hash="' + escapeHtml(contact.hash) + '" title="More actions" aria-label="More actions" aria-haspopup="menu">' +
+                    '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>' +
+                '</button>' +
+            '</div>' +
         '</div>' +
-        '<div class="conn-detail-sheet-actions entity-action-grid">';
-
-    if (typeof voiceActionButtonHtml === 'function') {
-        html += voiceActionButtonHtml('conn-sheet-call-btn', contact.hash);
-    }
-    if (!contact.is_contact) {
-        html += '<button class="nr-btn entity-action-btn" id="conn-sheet-add-btn" data-hash="' + escapeHtml(contact.hash) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg><span>Add</span></button>';
-    }
-    html += '<button class="nr-btn entity-action-btn" id="conn-sheet-msg-btn" data-hash="' + escapeHtml(contact.hash) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Message</span></button>';
-    html += '<button class="danger-btn entity-action-btn" id="conn-sheet-block-btn" data-hash="' + escapeHtml(contact.hash) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg><span>Block</span></button>';
-    html += '</div>' +
+        '<div class="conn-detail-sheet-actions">' +
+            '<div class="conn-detail-sheet-primary-actions entity-action-grid">' + callActionHtml + messageActionHtml + '</div>' +
+            secondaryActionsHtml +
+        '</div>' +
         (progressive
             ? '<button type="button" class="conn-detail-sheet-expand-hint" id="conn-sheet-expand-hint" aria-label="Swipe up for more info">' +
                 '<span>Swipe up for more info</span>' +
@@ -616,10 +633,8 @@ function showConnectionDetailSheet(hash, options) {
         '<div class="conn-detail-sheet-fields">' +
             '<div class="conn-detail-sheet-field"><span>Last heard</span><strong>' + escapeHtml(lastHeardText) + '</strong></div>' +
             '<div class="conn-detail-sheet-field"><span>First heard</span><strong>' + escapeHtml(firstHeardText) + '</strong></div>' +
-            '<div class="conn-detail-sheet-field"><span>Route</span><strong>' + escapeHtml(contact.route_label || 'No current path') + '</strong></div>' +
-            '<div class="conn-detail-sheet-field"><span>Hops</span><strong>' + escapeHtml(hopsText) + '</strong></div>' +
+            '<div class="conn-detail-sheet-field"><span>Hops</span><strong>' + escapeHtml(hopsSummaryText) + '</strong></div>' +
             '<div class="conn-detail-sheet-field"><span>Path age</span><strong>' + escapeHtml(pathAgeText) + '</strong></div>' +
-            '<div class="conn-detail-sheet-field"><span>Via</span><strong>' + escapeHtml(viaText) + '</strong></div>' +
             '<div class="conn-detail-sheet-field"><span>Interface</span><strong>' + escapeHtml(ifaceText) + '</strong></div>' +
         '</div>' +
     '</div>';
@@ -668,31 +683,45 @@ function showConnectionDetailSheet(hash, options) {
         wireVoiceActionButton('conn-sheet-call-btn', closeConnectionDetailSheet);
     }
 
-    var blockBtn = document.getElementById('conn-sheet-block-btn');
-    if (blockBtn) {
-        blockBtn.addEventListener('click', function() {
+    var moreBtn = document.getElementById('conn-sheet-more-btn');
+    if (moreBtn) {
+        moreBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
             var h = this.dataset.hash;
-            var contactData = null;
-            _connsView().forEach(function(c) { if (c.hash === h) contactData = c; });
-            var displayName = contactData ? (contactData.display_name || (typeof shortHash === 'function' ? shortHash(h, 8, 4) : h.substring(0, 12))) : (typeof shortHash === 'function' ? shortHash(h, 8, 4) : h.substring(0, 12));
-            closeConnectionDetailSheet();
-            rsConfirmWithCheckbox({
-                message: 'Block "' + displayName + '"? They won\'t appear in your peers list and their messages will be hidden.',
+            if (typeof actionPopover !== 'function') {
+                confirmBlockPeer(h);
+                return;
+            }
+            actionPopover(this, [{
+                label: 'Block',
                 danger: true,
-                confirmText: 'Block',
-                checkboxLabel: 'Also block at the network layer (drop their packets entirely)',
-                checkboxHelp: 'Stops their messages from reaching this device at all, instead of just hiding them. Useful for relay nodes. This affects all accounts on this device.',
-                defaultChecked: false
-            }).then(function(result) {
-                if (!result.confirmed) return;
-                RS.invoke('block_contact', { args: { hash: h, escalate_to_blackhole: result.checked } })
-                    .then(function(resp) {
-                        if (resp && resp.blackhole_pending && typeof showToast === 'function') {
-                            showToast('Blocked. Network blackhole will activate on their next announce.', 'toast-orange', 5000);
-                        }
-                    })
-                    .catch(function() {});
-            });
+                icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>',
+                onSelect: function() { confirmBlockPeer(h); }
+            }]);
+        });
+    }
+
+    function confirmBlockPeer(h) {
+        var contactData = null;
+        _connsView().forEach(function(c) { if (c.hash === h) contactData = c; });
+        var displayName = contactData ? (contactData.display_name || (typeof shortHash === 'function' ? shortHash(h, 8, 4) : h.substring(0, 12))) : (typeof shortHash === 'function' ? shortHash(h, 8, 4) : h.substring(0, 12));
+        closeConnectionDetailSheet();
+        rsConfirmWithCheckbox({
+            message: 'Block "' + displayName + '"? They won\'t appear in your peers list and their messages will be hidden.',
+            danger: true,
+            confirmText: 'Block',
+            checkboxLabel: 'Also block at the network layer (drop their packets entirely)',
+            checkboxHelp: 'Stops their messages from reaching this device at all, instead of just hiding them. Useful for relay nodes. This affects all accounts on this device.',
+            defaultChecked: false
+        }).then(function(result) {
+            if (!result.confirmed) return;
+            RS.invoke('block_contact', { args: { hash: h, escalate_to_blackhole: result.checked } })
+                .then(function(resp) {
+                    if (resp && resp.blackhole_pending && typeof showToast === 'function') {
+                        showToast('Blocked. Network blackhole will activate on their next announce.', 'toast-orange', 5000);
+                    }
+                })
+                .catch(function() {});
         });
     }
 
@@ -751,6 +780,7 @@ function wireConnectionDetailExpansion(sheet) {
 function closeConnectionDetailSheet() {
     var overlay = document.getElementById('conn-detail-sheet-overlay');
     var sheet = document.getElementById('conn-detail-sheet');
+    if (typeof closeActionPopover === 'function') closeActionPopover();
     if (overlay) overlay.classList.remove('active');
     if (sheet) {
         sheet.classList.remove('open');

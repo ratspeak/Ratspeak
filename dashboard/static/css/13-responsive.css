@@ -331,7 +331,7 @@
     .peers-row-avatar {
         width: 42px;
         height: 42px;
-        border-radius: var(--radius-lg);
+        border-radius: var(--radius-full);
     }
     .peers-row-name {
         font-size: var(--text-base);
@@ -1298,43 +1298,82 @@
 .conn-detail-sheet-content {
     display: flex;
     flex-direction: column;
-    gap: var(--space-6);
+    gap: var(--space-5);
     padding: var(--space-6) var(--space-10) var(--space-10);
 }
 .conn-detail-sheet.conn-detail-sheet--progressive {
-    max-height: min(42vh, 360px);
+    min-height: min(46vh, 400px);
+    max-height: min(56vh, 440px);
     overflow-y: hidden;
 }
 .conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--expanded {
     max-height: min(82vh, calc(100vh - 48px));
     overflow-y: auto;
 }
+.conn-detail-sheet--progressive #conn-detail-sheet-content {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+}
 .conn-detail-sheet--progressive .conn-detail-sheet-content {
+    flex: 1 1 auto;
     gap: var(--space-4);
     padding-bottom: calc(var(--space-6) + var(--sab, env(safe-area-inset-bottom, 0px)));
+}
+.conn-detail-sheet-identity {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-4);
+}
+.conn-detail-sheet-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: var(--radius-full);
+    overflow: hidden;
+    clip-path: circle(50% at 50% 50%);
+    flex-shrink: 0;
+}
+.conn-detail-sheet-avatar svg,
+.conn-detail-sheet-avatar img,
+.conn-detail-sheet-avatar canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: inherit;
+    clip-path: circle(50% at 50% 50%);
+}
+.conn-detail-sheet-title {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
 }
 .conn-detail-sheet-name {
     font-size: var(--text-lg);
     font-weight: 600;
     color: var(--text-primary);
-}
-.conn-detail-sheet-hash-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
+    line-height: 1.2;
+    overflow-wrap: anywhere;
 }
 .conn-detail-sheet-hash {
     font-size: var(--text-sm);
     font-family: var(--font-mono);
     color: var(--text-muted);
-    word-break: break-all;
-    flex: 1;
-    min-width: 0;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
 }
-.conn-detail-sheet-copy-btn {
+.conn-detail-sheet-header-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-2);
+}
+.conn-detail-sheet-icon-btn {
     flex-shrink: 0;
-    width: 32px;
-    height: 32px;
+    width: 42px;
+    height: 42px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1345,21 +1384,36 @@
     cursor: pointer;
     padding: 0;
     transition: color var(--transition-base), border-color var(--transition-base);
+    -webkit-tap-highlight-color: transparent;
 }
-.conn-detail-sheet-copy-btn:hover {
+.conn-detail-sheet-icon-btn:hover,
+.conn-detail-sheet-icon-btn:focus-visible {
     color: var(--accent);
     border-color: var(--accent);
 }
 .conn-detail-sheet-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin-top: var(--space-2);
+}
+.conn-detail-sheet-primary-actions,
+.conn-detail-sheet-secondary-actions {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
-    gap: var(--space-4);
-    margin-top: var(--space-4);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
 }
 .conn-detail-sheet-actions .nr-btn,
 .conn-detail-sheet-actions .danger-btn {
     width: auto;
     min-width: 0;
+}
+.conn-detail-sheet-primary-actions .entity-action-btn {
+    min-height: 56px;
+}
+.conn-detail-sheet-primary-actions .entity-action-btn:only-child,
+.conn-detail-sheet-secondary-actions .entity-action-btn:only-child {
+    grid-column: 1 / -1;
 }
 .conn-detail-sheet-expand-hint {
     appearance: none;
@@ -1377,7 +1431,8 @@
     gap: var(--space-1);
     min-height: 44px;
     width: 100%;
-    padding: var(--space-2) 0 0;
+    margin-top: auto;
+    padding: var(--space-6) 0 0;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
 }
