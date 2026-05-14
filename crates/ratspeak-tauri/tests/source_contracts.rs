@@ -451,6 +451,27 @@ fn conversation_row_swipe_uses_delete_choice_without_tab_navigation() {
 }
 
 #[test]
+fn empty_ghost_conversations_are_removed_when_leaving_chat_detail() {
+    let root = repo_root();
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let view_stack =
+        read_source(root.join("dashboard/static/js/view_stack.js")).expect("view stack js");
+
+    assert!(lxmf.contains("function _ensureGhostRow(hash)"));
+    assert!(lxmf.contains("row.dataset.ghost = 'true';"));
+    assert!(lxmf.contains("function _onChatDetailExit()"));
+    assert!(lxmf.contains("if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) return;"));
+    assert!(lxmf.contains("_removeGhostRow();"));
+    assert!(lxmf.contains("cacheDel(exitingHash);"));
+    assert!(lxmf.contains("lxmfActiveContact = null;"));
+    assert!(lxmf.contains("lxmfConversation = [];"));
+    assert!(lxmf.contains("_renderConversationsFromCache(lxmfConversations || []);"));
+    assert!(view_stack.contains("popped.viewId === 'chat-detail'"));
+    assert!(view_stack.contains("typeof _onChatDetailExit === 'function'"));
+    assert!(view_stack.contains("_onChatDetailExit(popped);"));
+}
+
+#[test]
 fn message_composer_send_preserves_preexisting_focus_state() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");

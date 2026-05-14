@@ -92,7 +92,7 @@ function _voicePrimaryActionLabel(hash) {
         var active = lxstVoiceState.active;
         return active && active.status === 'established' ? 'Hang up' : 'Cancel call';
     }
-    return 'Start call';
+    return 'Call';
 }
 
 function _voicePrimaryActionIcon(hash) {
@@ -1317,6 +1317,28 @@ function _removeGhostRow() {
         if (ghost) ghost.remove();
     }
     _ghostConversationHash = null;
+}
+
+function _onChatDetailExit() {
+    var exitingHash = lxmfActiveContact;
+    var input = document.getElementById('lxmf-input');
+    if (input && exitingHash) {
+        if (input.value.trim()) { _lxmfDrafts[exitingHash] = input.value; }
+        else { delete _lxmfDrafts[exitingHash]; }
+    }
+
+    if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) return;
+
+    _removeGhostRow();
+    cacheDel(exitingHash);
+    lxmfActiveContact = null;
+    lxmfConversation = [];
+    if (input) {
+        input.value = '';
+        input.style.height = '';
+    }
+    renderConversation();
+    _renderConversationsFromCache(lxmfConversations || []);
 }
 
 // Cache-first render to avoid an empty-spinner flash; reconciles via fetch.

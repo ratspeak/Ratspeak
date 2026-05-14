@@ -64,6 +64,9 @@ RS._viewStack = RS._viewStack || [];
         var classOff = CLASS_TOGGLE_VIEWS[popped.viewId];
         if (classOff) {
             classOff(true);
+            if (popped.viewId === 'chat-detail' && typeof _onChatDetailExit === 'function') {
+                _onChatDetailExit(popped);
+            }
             if (typeof opts.onPop === 'function') opts.onPop();
             return;
         }
