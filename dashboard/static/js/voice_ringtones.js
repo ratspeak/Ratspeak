@@ -1,21 +1,43 @@
 (function() {
     window.RS = window.RS || {};
 
-    var OUTGOING_GROUPS = [2, 2];
-    var INCOMING_GROUPS = [2, 2];
-    var OUTGOING_DOOT_MS = 145;
-    var INCOMING_DOOT_MS = 145;
-    var OUTGOING_SPACING_MS = 225;
-    var INCOMING_SPACING_MS = 225;
-    var OUTGOING_GROUP_PAUSE_MS = 720;
-    var INCOMING_GROUP_PAUSE_MS = 720;
-    var OUTGOING_FINAL_PAUSE_MS = 1536;
-    var INCOMING_FINAL_PAUSE_MS = 1536;
-    var OUTGOING_ROOT = 622.25;
-    var INCOMING_ROOT = 622.25;
-    var OUTGOING_VOLUME = 0.17;
-    var INCOMING_VOLUME = 0.22;
-    var NO_ANSWER_ROOT = 440.0;
+    var TWO_PI = Math.PI * 2;
+    var RATSPEAK_RINGTONE_LOOP_MS = 3200;
+    var RATSPEAK_RINGTONE_E5_HZ = 659.255114;
+    var RATSPEAK_RINGTONE_G5_HZ = 783.990872;
+    var RATSPEAK_RINGTONE_B5_HZ = 987.766603;
+    var RATSPEAK_RINGTONE_SECOND_PARTIAL_PHASE = 0.35 * Math.PI;
+    var RATSPEAK_RINGTONE_AIR_PARTIAL_PHASE = 0.10 * Math.PI;
+    var RATSPEAK_RINGTONE_INCOMING_NOTES = [
+        { startMs: 0, freqHz: RATSPEAK_RINGTONE_E5_HZ, durationMs: 112, gain: 1.00 },
+        { startMs: 150, freqHz: RATSPEAK_RINGTONE_G5_HZ, durationMs: 112, gain: 1.00 },
+        { startMs: 300, freqHz: RATSPEAK_RINGTONE_B5_HZ, durationMs: 168, gain: 1.00 },
+        { startMs: 780, freqHz: RATSPEAK_RINGTONE_B5_HZ, durationMs: 84, gain: 0.88 },
+        { startMs: 920, freqHz: RATSPEAK_RINGTONE_G5_HZ, durationMs: 112, gain: 0.92 },
+        { startMs: 1070, freqHz: RATSPEAK_RINGTONE_E5_HZ, durationMs: 176, gain: 0.96 }
+    ];
+    var RATSPEAK_RINGTONE_OUTGOING_NOTES = [
+        { startMs: 0, freqHz: RATSPEAK_RINGTONE_G5_HZ, durationMs: 118, gain: 0.82 },
+        { startMs: 180, freqHz: RATSPEAK_RINGTONE_E5_HZ, durationMs: 190, gain: 0.88 },
+        { startMs: 1560, freqHz: RATSPEAK_RINGTONE_G5_HZ, durationMs: 96, gain: 0.68 },
+        { startMs: 1710, freqHz: RATSPEAK_RINGTONE_E5_HZ, durationMs: 160, gain: 0.72 }
+    ];
+    var RATSPEAK_RINGTONE_INCOMING_PARTIALS = [0.74, 0.18, 0.08];
+    var RATSPEAK_RINGTONE_OUTGOING_PARTIALS = [0.80, 0.15, 0.05];
+    var RATSPEAK_RINGTONE_INCOMING_GAIN = 0.36;
+    var RATSPEAK_RINGTONE_OUTGOING_GAIN = 0.18;
+    var RATSPEAK_RINGTONE_INCOMING_GLIDE_CENTS = 7.0;
+    var RATSPEAK_RINGTONE_OUTGOING_GLIDE_CENTS = -4.0;
+    var RATSPEAK_RINGTONE_INCOMING_ATTACK_MS = 6;
+    var RATSPEAK_RINGTONE_OUTGOING_ATTACK_MS = 9;
+    var RATSPEAK_RINGTONE_INCOMING_RELEASE_MS = 52;
+    var RATSPEAK_RINGTONE_OUTGOING_RELEASE_MS = 64;
+    var RATSPEAK_TIMEOUT_CUE_NOTES = [
+        { startMs: 0, freqHz: RATSPEAK_RINGTONE_B5_HZ, durationMs: 88, gain: 0.82 },
+        { startMs: 112, freqHz: RATSPEAK_RINGTONE_G5_HZ, durationMs: 104, gain: 0.74 },
+        { startMs: 238, freqHz: RATSPEAK_RINGTONE_E5_HZ, durationMs: 168, gain: 0.68 }
+    ];
+    var RATSPEAK_TIMEOUT_CUE_MS = 520;
     var OUTGOING_TIMEOUT_MS = 25000;
     var activeMode = null;
     var activeToken = null;
@@ -138,19 +160,13 @@
     function _modeConfig(mode) {
         var incoming = mode === 'incoming';
         return {
-            groups: incoming ? INCOMING_GROUPS : OUTGOING_GROUPS,
-            dootMs: incoming ? INCOMING_DOOT_MS : OUTGOING_DOOT_MS,
-            spacingMs: incoming ? INCOMING_SPACING_MS : OUTGOING_SPACING_MS,
-            groupPauseMs: incoming ? INCOMING_GROUP_PAUSE_MS : OUTGOING_GROUP_PAUSE_MS,
-            finalPauseMs: incoming ? INCOMING_FINAL_PAUSE_MS : OUTGOING_FINAL_PAUSE_MS,
-            root: incoming ? INCOMING_ROOT : OUTGOING_ROOT,
-            phrase: [1, 1.25992],
-            volume: incoming ? INCOMING_VOLUME : OUTGOING_VOLUME,
-            filterHz: 2350,
-            overtone: 1.498,
-            drift: 1.006,
-            attackMs: 10,
-            airGain: 0.30
+            notes: incoming ? RATSPEAK_RINGTONE_INCOMING_NOTES : RATSPEAK_RINGTONE_OUTGOING_NOTES,
+            loopMs: RATSPEAK_RINGTONE_LOOP_MS,
+            gain: incoming ? RATSPEAK_RINGTONE_INCOMING_GAIN : RATSPEAK_RINGTONE_OUTGOING_GAIN,
+            glideCents: incoming ? RATSPEAK_RINGTONE_INCOMING_GLIDE_CENTS : RATSPEAK_RINGTONE_OUTGOING_GLIDE_CENTS,
+            attackMs: incoming ? RATSPEAK_RINGTONE_INCOMING_ATTACK_MS : RATSPEAK_RINGTONE_OUTGOING_ATTACK_MS,
+            releaseMs: incoming ? RATSPEAK_RINGTONE_INCOMING_RELEASE_MS : RATSPEAK_RINGTONE_OUTGOING_RELEASE_MS,
+            partials: incoming ? RATSPEAK_RINGTONE_INCOMING_PARTIALS : RATSPEAK_RINGTONE_OUTGOING_PARTIALS
         };
     }
 
@@ -165,79 +181,70 @@
         activeNodes = [];
     }
 
-    function _playTone(freq, opts) {
-        opts = opts || {};
-        var ctx = _ringCtx();
-        if (!ctx) return;
-        var t = ctx.currentTime + ((opts.delayMs || 0) / 1000);
-        var duration = (opts.durationMs || OUTGOING_DOOT_MS) / 1000;
-        var volume = opts.volume || 0.12;
-        var drift = opts.drift || 0;
+    function _clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+    }
 
-        var filter = ctx.createBiquadFilter();
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(opts.filterHz || 1680, t);
-        filter.Q.setValueAtTime(0.72, t);
+    function _raisedCosine(progress) {
+        var x = _clamp(progress, 0, 1);
+        return 0.5 - (0.5 * Math.cos(Math.PI * x));
+    }
 
-        var envelope = ctx.createGain();
-        envelope.gain.setValueAtTime(0.0001, t);
-        envelope.gain.exponentialRampToValueAtTime(volume, t + ((opts.attackMs || 14) / 1000));
-        envelope.gain.exponentialRampToValueAtTime(0.0001, t + duration);
-
-        var body = ctx.createOscillator();
-        body.type = 'triangle';
-        body.frequency.setValueAtTime(freq, t);
-        if (drift) body.frequency.linearRampToValueAtTime(freq * drift, t + duration);
-        body.detune.setValueAtTime(opts.detune || 0, t);
-
-        var airGain = ctx.createGain();
-        airGain.gain.setValueAtTime(opts.airGain || 0.32, t);
-        var air = ctx.createOscillator();
-        air.type = 'sine';
-        air.frequency.setValueAtTime(freq * (opts.overtone || 1.5), t);
-        air.detune.setValueAtTime((opts.detune || 0) * -0.5, t);
-
-        body.connect(filter);
-        air.connect(airGain);
-        airGain.connect(filter);
-        filter.connect(envelope);
-        envelope.connect(_master(ctx));
-
-        body.start(t);
-        air.start(t);
-        body.stop(t + duration + 0.045);
-        air.stop(t + duration + 0.045);
-        if (!opts.detached) {
-            _trackNode(body);
-            _trackNode(air);
+    function _mixTone(output, sampleRate, note, opts) {
+        var sampleCount = Math.max(1, Math.round((sampleRate * note.durationMs) / 1000));
+        var startSample = Math.max(0, Math.round((sampleRate * note.startMs) / 1000));
+        var phase = 0;
+        for (var i = 0; i < sampleCount; i++) {
+            var outputIndex = startSample + i;
+            if (outputIndex >= output.length) break;
+            var progress = sampleCount > 1 ? i / (sampleCount - 1) : 0;
+            var elapsedMs = (i * 1000) / sampleRate;
+            var remainingMs = ((sampleCount - i - 1) * 1000) / sampleRate;
+            var instantFreq = note.freqHz * Math.pow(2, (opts.glideCents * progress) / 1200);
+            phase += (TWO_PI * instantFreq) / sampleRate;
+            var envelope = _raisedCosine(elapsedMs / opts.attackMs);
+            if (remainingMs < opts.releaseMs) {
+                envelope *= _raisedCosine(remainingMs / opts.releaseMs);
+            }
+            var tone = (opts.partials[0] * Math.sin(phase))
+                + (opts.partials[1] * Math.sin((phase * 2.0) + RATSPEAK_RINGTONE_SECOND_PARTIAL_PHASE))
+                + (opts.partials[2] * Math.sin((phase * 1.5) + RATSPEAK_RINGTONE_AIR_PARTIAL_PHASE));
+            var sample = tone * envelope * opts.gain * note.gain;
+            output[outputIndex] = _clamp(output[outputIndex] + sample, -1, 1);
         }
-
-        var cleanupAt = Math.ceil((duration + 0.18) * 1000);
-        setTimeout(function() {
-            try { filter.disconnect(); } catch (_) {}
-            try { envelope.disconnect(); } catch (_) {}
-            try { airGain.disconnect(); } catch (_) {}
-        }, cleanupAt);
     }
 
-    function _dootFrequency(mode, groupIndex, noteIndex) {
-        var cfg = _modeConfig(mode);
-        var taperLift = Math.max(0, groupIndex - 2) * 0.004;
-        return cfg.root * cfg.phrase[noteIndex % cfg.phrase.length] * (1 + taperLift);
+    function _renderBuffer(ctx, notes, durationMs, opts) {
+        var sampleRate = ctx.sampleRate || 44100;
+        var sampleCount = Math.max(1, Math.round((sampleRate * durationMs) / 1000));
+        var buffer = ctx.createBuffer(1, sampleCount, sampleRate);
+        var output = buffer.getChannelData(0);
+        notes.forEach(function(note) { _mixTone(output, sampleRate, note, opts); });
+        return buffer;
     }
 
-    function _playDoot(mode, groupIndex, noteIndex) {
+    function _renderRingtoneBuffer(ctx, mode) {
         var cfg = _modeConfig(mode);
-        _playTone(_dootFrequency(mode, groupIndex, noteIndex), {
-            durationMs: cfg.dootMs,
-            volume: cfg.volume,
-            filterHz: cfg.filterHz,
-            overtone: cfg.overtone,
-            detune: ((groupIndex + noteIndex) % 2 === 0) ? -3 : 3,
-            drift: cfg.drift,
-            attackMs: cfg.attackMs,
-            airGain: cfg.airGain
-        });
+        return _renderBuffer(ctx, cfg.notes, cfg.loopMs, cfg);
+    }
+
+    function _startBufferRingtone(mode) {
+        var ctx = _ringCtx();
+        if (!ctx) return false;
+        try {
+            var source = ctx.createBufferSource();
+            source.buffer = _renderRingtoneBuffer(ctx, mode);
+            source.loop = true;
+            source.loopStart = 0;
+            source.loopEnd = RATSPEAK_RINGTONE_LOOP_MS / 1000;
+            source.connect(_master(ctx));
+            _trackNode(source);
+            source.start(ctx.currentTime);
+            return true;
+        } catch (err) {
+            window.RS.diag('warn', '[ringtone] Web Audio ringtone failed:', err);
+            return false;
+        }
     }
 
     function _handleOutgoingTimeout(mode, token, id) {
@@ -247,44 +254,15 @@
         activeToken = null;
         _clearTimers();
         _stopNativeRingtone();
+        _stopNodes();
         playTimeoutCue();
         if (typeof handlers.onOutgoingTimeout === 'function') {
             try { handlers.onOutgoingTimeout(); } catch (err) { window.RS.diag('warn', '[ringtone] timeout handler failed:', err); }
         }
     }
 
-    function _handleSequenceComplete(mode, token, id) {
-        if (sequenceId !== id || activeToken !== token || activeMode !== mode) return;
-        _scheduleSequence(mode, token, id);
-    }
-
     function _sequenceLengthMs(mode) {
-        var cfg = _modeConfig(mode || 'outgoing');
-        var cursor = 0;
-        cfg.groups.forEach(function(count, idx) {
-            cursor += ((count - 1) * cfg.spacingMs) + cfg.dootMs;
-            cursor += idx === cfg.groups.length - 1 ? cfg.finalPauseMs : cfg.groupPauseMs;
-        });
-        return cursor;
-    }
-
-    function _scheduleSequence(mode, token, id) {
-        var cfg = _modeConfig(mode);
-        var cursor = 0;
-        cfg.groups.forEach(function(count, groupIndex) {
-            for (var i = 0; i < count; i++) {
-                (function(noteIndex, delay) {
-                    _schedule(function() {
-                        if (sequenceId !== id || activeToken !== token || activeMode !== mode) return;
-                        _playDoot(mode, groupIndex, noteIndex);
-                    }, delay);
-                })(i, cursor + (i * cfg.spacingMs));
-            }
-            cursor += ((count - 1) * cfg.spacingMs) + cfg.dootMs;
-            cursor += groupIndex === cfg.groups.length - 1 ? cfg.finalPauseMs : cfg.groupPauseMs;
-        });
-
-        _schedule(function() { _handleSequenceComplete(mode, token, id); }, cursor);
+        return _modeConfig(mode || 'outgoing').loopMs;
     }
 
     function start(mode, call) {
@@ -304,12 +282,10 @@
         }
         _ensureAudio().then(function(ok) {
             if (sequenceId !== id || activeMode !== mode || activeToken !== token) return;
-            if (!ok) {
+            if (!ok || !_startBufferRingtone(mode)) {
                 activeMode = null;
                 activeToken = null;
-                return;
             }
-            _scheduleSequence(mode, token, id);
         });
     }
 
@@ -323,12 +299,21 @@
     }
 
     function playTimeoutCue() {
-        _ensureAudio().then(function() {
-            var root = NO_ANSWER_ROOT;
-            _playTone(root * 1.12246, { durationMs: 92, volume: 0.13, filterHz: 1840, drift: 1.04, detached: true });
-            _playTone(root * 1.41421, { delayMs: 96, durationMs: 86, volume: 0.12, filterHz: 1920, drift: 1.06, detached: true });
-            _playTone(root * 1.25992, { delayMs: 190, durationMs: 104, volume: 0.115, filterHz: 1760, drift: 0.98, detached: true });
-            _playTone(root * 1.68179, { delayMs: 310, durationMs: 150, volume: 0.10, filterHz: 2080, drift: 0.96, detached: true });
+        _ensureAudio().then(function(ok) {
+            if (!ok) return;
+            var ctx = _ringCtx();
+            if (!ctx) return;
+            var source = ctx.createBufferSource();
+            source.buffer = _renderBuffer(ctx, RATSPEAK_TIMEOUT_CUE_NOTES, RATSPEAK_TIMEOUT_CUE_MS, {
+                gain: 0.20,
+                glideCents: -6.0,
+                attackMs: 7,
+                releaseMs: 58,
+                partials: RATSPEAK_RINGTONE_OUTGOING_PARTIALS
+            });
+            source.connect(_master(ctx));
+            _trackNode(source);
+            source.start(ctx.currentTime);
         });
     }
 

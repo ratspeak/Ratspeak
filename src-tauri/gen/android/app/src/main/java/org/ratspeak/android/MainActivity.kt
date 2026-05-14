@@ -53,7 +53,8 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.PI
-import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.pow
 import kotlin.math.sin
 
 class MainActivity : TauriActivity() {
@@ -64,16 +65,40 @@ class MainActivity : TauriActivity() {
         private const val USB_PERMISSION_ACTION = "org.ratspeak.android.USB_PERMISSION"
         private const val MAX_IDENTITY_IMPORT_BYTES = 1024 * 1024
         private const val CALL_RINGTONE_SAMPLE_RATE = 44100
-        private const val CALL_RINGTONE_OUTGOING_DOOT_MS = 145L
-        private const val CALL_RINGTONE_INCOMING_DOOT_MS = 145L
-        private const val CALL_RINGTONE_OUTGOING_SPACING_MS = 225L
-        private const val CALL_RINGTONE_INCOMING_SPACING_MS = 225L
-        private const val CALL_RINGTONE_OUTGOING_GROUP_PAUSE_MS = 720L
-        private const val CALL_RINGTONE_INCOMING_GROUP_PAUSE_MS = 720L
-        private const val CALL_RINGTONE_OUTGOING_FINAL_PAUSE_MS = 1536L
-        private const val CALL_RINGTONE_INCOMING_FINAL_PAUSE_MS = 1536L
-        private const val CALL_RINGTONE_OUTGOING_VOLUME = 0.25
-        private const val CALL_RINGTONE_INCOMING_VOLUME = 0.32
+        private const val CALL_RINGTONE_LOOP_MS = 3200L
+        private const val CALL_RINGTONE_E5_HZ = 659.255114
+        private const val CALL_RINGTONE_G5_HZ = 783.990872
+        private const val CALL_RINGTONE_B5_HZ = 987.766603
+        private const val CALL_RINGTONE_OUTGOING_VOLUME = 0.18
+        private const val CALL_RINGTONE_INCOMING_VOLUME = 0.36
+        private const val CALL_RINGTONE_INCOMING_GLIDE_CENTS = 7.0
+        private const val CALL_RINGTONE_OUTGOING_GLIDE_CENTS = -4.0
+        private const val CALL_RINGTONE_INCOMING_ATTACK_MS = 6L
+        private const val CALL_RINGTONE_OUTGOING_ATTACK_MS = 9L
+        private const val CALL_RINGTONE_INCOMING_RELEASE_MS = 52L
+        private const val CALL_RINGTONE_OUTGOING_RELEASE_MS = 64L
+        private val CALL_RINGTONE_INCOMING_START_MS = longArrayOf(0L, 150L, 300L, 780L, 920L, 1070L)
+        private val CALL_RINGTONE_INCOMING_FREQ_HZ = doubleArrayOf(
+            CALL_RINGTONE_E5_HZ,
+            CALL_RINGTONE_G5_HZ,
+            CALL_RINGTONE_B5_HZ,
+            CALL_RINGTONE_B5_HZ,
+            CALL_RINGTONE_G5_HZ,
+            CALL_RINGTONE_E5_HZ
+        )
+        private val CALL_RINGTONE_INCOMING_DURATION_MS = longArrayOf(112L, 112L, 168L, 84L, 112L, 176L)
+        private val CALL_RINGTONE_INCOMING_NOTE_GAIN = doubleArrayOf(1.00, 1.00, 1.00, 0.88, 0.92, 0.96)
+        private val CALL_RINGTONE_OUTGOING_START_MS = longArrayOf(0L, 180L, 1560L, 1710L)
+        private val CALL_RINGTONE_OUTGOING_FREQ_HZ = doubleArrayOf(
+            CALL_RINGTONE_G5_HZ,
+            CALL_RINGTONE_E5_HZ,
+            CALL_RINGTONE_G5_HZ,
+            CALL_RINGTONE_E5_HZ
+        )
+        private val CALL_RINGTONE_OUTGOING_DURATION_MS = longArrayOf(118L, 190L, 96L, 160L)
+        private val CALL_RINGTONE_OUTGOING_NOTE_GAIN = doubleArrayOf(0.82, 0.88, 0.68, 0.72)
+        private val CALL_RINGTONE_INCOMING_PARTIALS = doubleArrayOf(0.74, 0.18, 0.08)
+        private val CALL_RINGTONE_OUTGOING_PARTIALS = doubleArrayOf(0.80, 0.15, 0.05)
         // Standard Bluetooth MAC-48 address format: 6 hex octets separated
         // by colons. Used to guard the BLE connect bridge methods before we
         // hand the string to BluetoothAdapter.getRemoteDevice, which throws
@@ -766,38 +791,88 @@ class MainActivity : TauriActivity() {
         callProximityWakeLock = null
     }
 
-    private fun callRingtoneSequenceMs(mode: String): Long {
-        val incoming = mode == "incoming"
-        val groups = intArrayOf(2, 2)
-        val dootMs = if (incoming) CALL_RINGTONE_INCOMING_DOOT_MS else CALL_RINGTONE_OUTGOING_DOOT_MS
-        val spacingMs = if (incoming) CALL_RINGTONE_INCOMING_SPACING_MS else CALL_RINGTONE_OUTGOING_SPACING_MS
-        val groupPauseMs = if (incoming) {
-            CALL_RINGTONE_INCOMING_GROUP_PAUSE_MS
-        } else {
-            CALL_RINGTONE_OUTGOING_GROUP_PAUSE_MS
-        }
-        val finalPauseMs = if (incoming) {
-            CALL_RINGTONE_INCOMING_FINAL_PAUSE_MS
-        } else {
-            CALL_RINGTONE_OUTGOING_FINAL_PAUSE_MS
-        }
-        var cursorMs = 0L
-        for ((groupIndex, count) in groups.withIndex()) {
-            cursorMs += (count - 1) * spacingMs + dootMs
-            cursorMs += if (groupIndex == groups.lastIndex) {
-                finalPauseMs
-            } else {
-                groupPauseMs
-            }
-        }
-        return cursorMs
+    private fun callRingtoneSequenceMs(): Long {
+        return CALL_RINGTONE_LOOP_MS
     }
 
-    private fun nativeCallDootFrequency(groupIndex: Int, noteIndex: Int): Double {
-        val root = 622.25
-        val phrase = doubleArrayOf(1.0, 1.25992)
-        val taperLift = maxOf(0, groupIndex - 2) * 0.004
-        return root * phrase[noteIndex % phrase.size] * (1.0 + taperLift)
+    private fun callRingtoneNoteCount(mode: String): Int {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_FREQ_HZ.size
+        } else {
+            CALL_RINGTONE_OUTGOING_FREQ_HZ.size
+        }
+    }
+
+    private fun callRingtoneNoteStartMs(mode: String, noteIndex: Int): Long {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_START_MS[noteIndex]
+        } else {
+            CALL_RINGTONE_OUTGOING_START_MS[noteIndex]
+        }
+    }
+
+    private fun callRingtoneNoteFrequency(mode: String, noteIndex: Int): Double {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_FREQ_HZ[noteIndex]
+        } else {
+            CALL_RINGTONE_OUTGOING_FREQ_HZ[noteIndex]
+        }
+    }
+
+    private fun callRingtoneNoteDurationMs(mode: String, noteIndex: Int): Long {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_DURATION_MS[noteIndex]
+        } else {
+            CALL_RINGTONE_OUTGOING_DURATION_MS[noteIndex]
+        }
+    }
+
+    private fun callRingtoneNoteGain(mode: String, noteIndex: Int): Double {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_NOTE_GAIN[noteIndex]
+        } else {
+            CALL_RINGTONE_OUTGOING_NOTE_GAIN[noteIndex]
+        }
+    }
+
+    private fun callRingtonePartials(mode: String): DoubleArray {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_PARTIALS
+        } else {
+            CALL_RINGTONE_OUTGOING_PARTIALS
+        }
+    }
+
+    private fun callRingtoneVolume(mode: String): Double {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_VOLUME
+        } else {
+            CALL_RINGTONE_OUTGOING_VOLUME
+        }
+    }
+
+    private fun callRingtoneGlideCents(mode: String): Double {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_GLIDE_CENTS
+        } else {
+            CALL_RINGTONE_OUTGOING_GLIDE_CENTS
+        }
+    }
+
+    private fun callRingtoneAttackMs(mode: String): Long {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_ATTACK_MS
+        } else {
+            CALL_RINGTONE_OUTGOING_ATTACK_MS
+        }
+    }
+
+    private fun callRingtoneReleaseMs(mode: String): Long {
+        return if (mode == "incoming") {
+            CALL_RINGTONE_INCOMING_RELEASE_MS
+        } else {
+            CALL_RINGTONE_OUTGOING_RELEASE_MS
+        }
     }
 
     private fun playNativeCallRingtoneLoop(mode: String, generation: Int): Boolean {
@@ -838,48 +913,32 @@ class MainActivity : TauriActivity() {
     }
 
     private fun buildNativeCallRingtonePcm(mode: String): ByteArray {
-        val incoming = mode == "incoming"
-        val groups = intArrayOf(2, 2)
-        val dootMs = if (incoming) CALL_RINGTONE_INCOMING_DOOT_MS else CALL_RINGTONE_OUTGOING_DOOT_MS
-        val spacingMs = if (incoming) CALL_RINGTONE_INCOMING_SPACING_MS else CALL_RINGTONE_OUTGOING_SPACING_MS
-        val groupPauseMs = if (incoming) {
-            CALL_RINGTONE_INCOMING_GROUP_PAUSE_MS
-        } else {
-            CALL_RINGTONE_OUTGOING_GROUP_PAUSE_MS
-        }
-        val finalPauseMs = if (incoming) {
-            CALL_RINGTONE_INCOMING_FINAL_PAUSE_MS
-        } else {
-            CALL_RINGTONE_OUTGOING_FINAL_PAUSE_MS
-        }
-        val volume = if (incoming) CALL_RINGTONE_INCOMING_VOLUME else CALL_RINGTONE_OUTGOING_VOLUME
-        val totalSamples = ((CALL_RINGTONE_SAMPLE_RATE * callRingtoneSequenceMs(mode)) / 1000L)
+        val volume = callRingtoneVolume(mode)
+        val partials = callRingtonePartials(mode)
+        val totalSamples = ((CALL_RINGTONE_SAMPLE_RATE * callRingtoneSequenceMs()) / 1000L)
             .toInt()
             .coerceAtLeast(1)
         val samples = DoubleArray(totalSamples)
-        var cursorMs = 0L
-        for ((groupIndex, count) in groups.withIndex()) {
-            for (noteIndex in 0 until count) {
-                val startMs = cursorMs + noteIndex * spacingMs
-                mixNativeCallTone(
-                    samples,
-                    startMs,
-                    nativeCallDootFrequency(groupIndex, noteIndex),
-                    dootMs,
-                    volume,
-                    1.006,
-                    10L,
-                    0.18
-                )
-            }
-            cursorMs += (count - 1) * spacingMs + dootMs
-            cursorMs += if (groupIndex == groups.lastIndex) {
-                finalPauseMs
-            } else {
-                groupPauseMs
-            }
+        for (noteIndex in 0 until callRingtoneNoteCount(mode)) {
+            mixNativeCallTone(
+                samples,
+                callRingtoneNoteStartMs(mode, noteIndex),
+                callRingtoneNoteFrequency(mode, noteIndex),
+                callRingtoneNoteDurationMs(mode, noteIndex),
+                volume,
+                callRingtoneNoteGain(mode, noteIndex),
+                callRingtoneGlideCents(mode),
+                callRingtoneAttackMs(mode),
+                callRingtoneReleaseMs(mode),
+                partials
+            )
         }
         return samplesToPcm16(samples)
+    }
+
+    private fun raisedCosine(progress: Double): Double {
+        val x = progress.coerceIn(0.0, 1.0)
+        return 0.5 - (0.5 * cos(PI * x))
     }
 
     private fun mixNativeCallTone(
@@ -888,33 +947,36 @@ class MainActivity : TauriActivity() {
         freq: Double,
         durationMs: Long,
         volume: Double,
-        drift: Double,
+        noteGain: Double,
+        glideCents: Double,
         attackMs: Long,
-        airMix: Double
+        releaseMs: Long,
+        partials: DoubleArray
     ) {
         val sampleCount = ((CALL_RINGTONE_SAMPLE_RATE * durationMs) / 1000L).toInt()
         val startSample = ((CALL_RINGTONE_SAMPLE_RATE * startMs) / 1000L).toInt()
-        val attackSamples = ((CALL_RINGTONE_SAMPLE_RATE * attackMs) / 1000L).toInt().coerceAtLeast(1)
-        val releaseSamples = (CALL_RINGTONE_SAMPLE_RATE * 0.085).toInt().coerceAtLeast(1)
+        val attackDurationMs = attackMs.toDouble().coerceAtLeast(1.0)
+        val releaseDurationMs = releaseMs.toDouble().coerceAtLeast(1.0)
+        val secondPartialPhase = 0.35 * PI
+        val airPartialPhase = 0.10 * PI
+        var phase = 0.0
         for (i in 0 until sampleCount) {
             val outputIndex = startSample + i
             if (outputIndex !in output.indices) break
             val progress = if (sampleCount > 1) i.toDouble() / (sampleCount - 1).toDouble() else 0.0
-            val instantFreq = freq * (1.0 + (drift - 1.0) * progress)
-            val t = i.toDouble() / CALL_RINGTONE_SAMPLE_RATE.toDouble()
-            val phase = (instantFreq * t) % 1.0
-            val triangle = 2.0 * abs(2.0 * phase - 1.0) - 1.0
-            val body = sin(2.0 * PI * instantFreq * t)
-            val air = sin(2.0 * PI * instantFreq * 1.5 * t)
-            val attack = (i.toDouble() / attackSamples.toDouble()).coerceIn(0.0, 1.0)
-            val releaseStart = sampleCount - releaseSamples
-            val release = if (i >= releaseStart) {
-                ((sampleCount - i).toDouble() / releaseSamples.toDouble()).coerceIn(0.0, 1.0)
-            } else {
-                1.0
+            val elapsedMs = (i.toDouble() * 1000.0) / CALL_RINGTONE_SAMPLE_RATE.toDouble()
+            val remainingMs = ((sampleCount - i - 1).toDouble() * 1000.0) /
+                CALL_RINGTONE_SAMPLE_RATE.toDouble()
+            val instantFreq = freq * 2.0.pow((glideCents * progress) / 1200.0)
+            phase += (2.0 * PI * instantFreq) / CALL_RINGTONE_SAMPLE_RATE.toDouble()
+            var envelope = raisedCosine(elapsedMs / attackDurationMs)
+            if (remainingMs < releaseDurationMs) {
+                envelope *= raisedCosine(remainingMs / releaseDurationMs)
             }
-            val envelope = attack * release * release
-            val sample = ((body * 0.60 + triangle * 0.27 + air * airMix) * envelope * volume)
+            val tone = (partials[0] * sin(phase)) +
+                (partials[1] * sin((phase * 2.0) + secondPartialPhase)) +
+                (partials[2] * sin((phase * 1.5) + airPartialPhase))
+            val sample = (tone * envelope * volume * noteGain)
                 .coerceIn(-1.0, 1.0)
             output[outputIndex] = (output[outputIndex] + sample).coerceIn(-1.0, 1.0)
         }

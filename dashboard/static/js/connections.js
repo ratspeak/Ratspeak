@@ -580,7 +580,7 @@ function showConnectionDetailSheet(hash, options) {
 
     var nameText = escapeHtml(contact.display_name || (typeof shortHash === 'function' ? shortHash(contact.hash, 8, 4) : contact.hash));
     var hashText = escapeHtml(contact.hash);
-    var avatarHtml = (typeof identityAvatar === 'function') ? identityAvatar(contact.hash, 56) : '';
+    var avatarHtml = (typeof identityAvatar === 'function') ? identityAvatar(contact.hash, 64) : '';
     var lastHeardText = typeof formatLastHeard === 'function' ? formatLastHeard(contact.last_seen) : (contact.last_seen ? new Date(contact.last_seen * 1000).toLocaleString() : 'No activity yet');
     var firstHeardText = contact.first_seen ? (typeof formatLastHeard === 'function' ? formatLastHeard(contact.first_seen) : new Date(contact.first_seen * 1000).toLocaleString()) : '\u2014';
     var pathAgeText = contact.in_path && contact.path_age !== null && contact.path_age !== undefined ? prettyTime(contact.path_age) + ' ago' : '\u2014';
@@ -612,10 +612,10 @@ function showConnectionDetailSheet(hash, options) {
                 '<div class="conn-detail-sheet-hash">' + hashText + '</div>' +
             '</div>' +
             '<div class="conn-detail-sheet-header-actions">' +
-                '<button class="conn-detail-sheet-icon-btn" id="conn-sheet-copy-btn" data-hash="' + escapeHtml(contact.hash) + '" title="Copy LXMF address" aria-label="Copy LXMF address">' +
+                '<button type="button" class="conn-detail-sheet-icon-btn" id="conn-sheet-copy-btn" data-hash="' + escapeHtml(contact.hash) + '" title="Copy LXMF address" aria-label="Copy LXMF address">' +
                     '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
                 '</button>' +
-                '<button class="conn-detail-sheet-icon-btn" id="conn-sheet-more-btn" data-hash="' + escapeHtml(contact.hash) + '" title="More actions" aria-label="More actions" aria-haspopup="menu">' +
+                '<button type="button" class="conn-detail-sheet-icon-btn" id="conn-sheet-more-btn" data-hash="' + escapeHtml(contact.hash) + '" title="More actions" aria-label="More actions" aria-haspopup="menu">' +
                     '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>' +
                 '</button>' +
             '</div>' +
@@ -641,6 +641,8 @@ function showConnectionDetailSheet(hash, options) {
 
     content.innerHTML = html;
     sheet.classList.toggle('conn-detail-sheet--progressive', progressive);
+    sheet.classList.toggle('conn-detail-sheet--compact', progressive && !addActionHtml);
+    sheet.classList.toggle('conn-detail-sheet--with-add', progressive && !!addActionHtml);
     sheet.classList.remove('conn-detail-sheet--expanded');
     sheet._progressiveExpansionEnabled = progressive;
 
@@ -784,7 +786,7 @@ function closeConnectionDetailSheet() {
     if (overlay) overlay.classList.remove('active');
     if (sheet) {
         sheet.classList.remove('open');
-        sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded');
+        sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded', 'conn-detail-sheet--compact', 'conn-detail-sheet--with-add');
         sheet._progressiveExpansionEnabled = false;
         if (sheet._escHandler) {
             document.removeEventListener('keydown', sheet._escHandler);

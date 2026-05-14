@@ -689,20 +689,54 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let ringtone_js =
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");
-    assert!(ringtone_js.contains("var OUTGOING_GROUPS = [2, 2]"));
-    assert!(ringtone_js.contains("var INCOMING_GROUPS = [2, 2]"));
-    assert!(ringtone_js.contains("var OUTGOING_ROOT = 622.25"));
-    assert!(ringtone_js.contains("var INCOMING_ROOT = 622.25"));
-    assert!(ringtone_js.contains("var OUTGOING_VOLUME = 0.17"));
-    assert!(ringtone_js.contains("var INCOMING_VOLUME = 0.22"));
-    assert!(ringtone_js.contains("var OUTGOING_FINAL_PAUSE_MS = 1536"));
-    assert!(ringtone_js.contains("var INCOMING_FINAL_PAUSE_MS = 1536"));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_LOOP_MS = 3200"));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_E5_HZ = 659.255114"));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_G5_HZ = 783.990872"));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_B5_HZ = 987.766603"));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_INCOMING_NOTES = ["));
+    assert!(ringtone_js.contains(
+        "{ startMs: 300, freqHz: RATSPEAK_RINGTONE_B5_HZ, durationMs: 168, gain: 1.00 }"
+    ));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_OUTGOING_NOTES = ["));
+    assert!(ringtone_js.contains(
+        "{ startMs: 1560, freqHz: RATSPEAK_RINGTONE_G5_HZ, durationMs: 96, gain: 0.68 }"
+    ));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_INCOMING_GAIN = 0.36"));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_OUTGOING_GAIN = 0.18"));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_INCOMING_GLIDE_CENTS = 7.0"));
+    assert!(ringtone_js.contains("var RATSPEAK_RINGTONE_OUTGOING_GLIDE_CENTS = -4.0"));
+    assert!(ringtone_js.contains("ctx.createBuffer(1, sampleCount, sampleRate)"));
+    assert!(ringtone_js.contains("source.loop = true"));
     assert!(ringtone_js.contains("var OUTGOING_TIMEOUT_MS = 25000"));
     assert!(ringtone_js.contains("playCallRingtone"));
     assert!(ringtone_js.contains("stopCallRingtone"));
     assert!(ringtone_js.contains("if (started === false)"));
     assert!(ringtone_js.contains("playTimeoutCue();"));
     assert!(ringtone_js.contains("active.status !== 'established'"));
+    assert!(activity.contains("private const val CALL_RINGTONE_LOOP_MS = 3200L"));
+    assert!(activity.contains("private const val CALL_RINGTONE_E5_HZ = 659.255114"));
+    assert!(activity.contains("private const val CALL_RINGTONE_G5_HZ = 783.990872"));
+    assert!(activity.contains("private const val CALL_RINGTONE_B5_HZ = 987.766603"));
+    assert!(activity.contains(
+        "CALL_RINGTONE_INCOMING_START_MS = longArrayOf(0L, 150L, 300L, 780L, 920L, 1070L)"
+    ));
+    assert!(
+        activity.contains("CALL_RINGTONE_OUTGOING_START_MS = longArrayOf(0L, 180L, 1560L, 1710L)")
+    );
+    assert!(activity.contains("private const val CALL_RINGTONE_INCOMING_VOLUME = 0.36"));
+    assert!(activity.contains("private const val CALL_RINGTONE_OUTGOING_VOLUME = 0.18"));
+    assert!(
+        activity.contains(
+            "private val CALL_RINGTONE_INCOMING_PARTIALS = doubleArrayOf(0.74, 0.18, 0.08)"
+        )
+    );
+    assert!(
+        activity.contains(
+            "private val CALL_RINGTONE_OUTGOING_PARTIALS = doubleArrayOf(0.80, 0.15, 0.05)"
+        )
+    );
+    assert!(activity.contains("private fun raisedCosine(progress: Double): Double"));
+    assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
@@ -810,6 +844,17 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
         connections
             .contains("sheet.classList.toggle('conn-detail-sheet--progressive', progressive);")
     );
+    assert!(
+        connections
+            .contains("sheet.classList.toggle('conn-detail-sheet--compact', progressive && !addActionHtml);")
+    );
+    assert!(
+        connections
+            .contains("sheet.classList.toggle('conn-detail-sheet--with-add', progressive && !!addActionHtml);")
+    );
+    assert!(connections.contains(
+        "sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded', 'conn-detail-sheet--compact', 'conn-detail-sheet--with-add');"
+    ));
     assert!(connections.contains("dy < -28"));
     let sheet_start = connections
         .find("function showConnectionDetailSheet")
@@ -819,7 +864,7 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
         .find("function expandConnectionDetailSheet")
         .expect("connection detail sheet renderer end");
     let sheet_source = &sheet_tail[..sheet_end];
-    assert!(sheet_source.contains("identityAvatar(contact.hash, 56)"));
+    assert!(sheet_source.contains("identityAvatar(contact.hash, 64)"));
     assert!(sheet_source.contains("conn-detail-sheet-identity"));
     assert!(sheet_source.contains("conn-detail-sheet-header-actions"));
     assert!(sheet_source.contains("id=\"conn-sheet-more-btn\""));
@@ -847,7 +892,32 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     assert!(responsive_css.contains(".conn-detail-sheet-icon-btn"));
     assert!(responsive_css.contains(".conn-detail-sheet-primary-actions"));
     assert!(responsive_css.contains(".conn-detail-sheet-secondary-actions"));
-    assert!(responsive_css.contains("margin-top: auto;"));
+    assert!(
+        responsive_css.contains(
+            ".conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--compact"
+        )
+    );
+    assert!(
+        responsive_css.contains(
+            ".conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--with-add"
+        )
+    );
+    assert!(responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-expand-hint"));
+    assert!(responsive_css.contains(".conn-detail-sheet--with-add .conn-detail-sheet-expand-hint"));
+    assert!(responsive_css.contains(".conn-detail-sheet {\n    max-width: 100vw;"));
+    assert!(responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-primary-actions"));
+    assert!(
+        responsive_css.contains(
+            ".conn-detail-sheet--compact .conn-detail-sheet-actions .entity-action-btn"
+        )
+    );
+    assert!(responsive_css.contains(".conn-detail-sheet-secondary-actions {\n    grid-template-columns: minmax(0, 1fr);"));
+    assert!(responsive_css.contains("overflow-x: hidden;"));
+    assert!(responsive_css.contains("grid-template-areas: \"avatar title actions\";"));
+    assert!(responsive_css.contains("grid-template-columns: 64px minmax(0, 1fr) auto;"));
+    assert!(responsive_css.contains("min-height: 60px;"));
+    assert!(responsive_css.contains(".conn-detail-sheet-expand-hint {\n    appearance: none;"));
+    assert!(!responsive_css.contains("margin-top: auto;"));
     assert!(responsive_css.contains(
         ".conn-detail-sheet--progressive .conn-detail-sheet-fields {\n    display: none;"
     ));
