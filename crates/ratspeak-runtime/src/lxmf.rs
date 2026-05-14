@@ -27,6 +27,7 @@ const LXMF_APP_NAME: &str = "lxmf.delivery";
 const LXMF_PROPAGATION_APP_NAME: &str = "lxmf.propagation";
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
+const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 
 pub type PropagationHealth = (
     Vec<[u8; 16]>,
@@ -1944,8 +1945,33 @@ impl LxmfManager {
             .as_secs_f64();
     }
 
+    pub fn auto_propagation_check_due(&self, network_available: bool) -> bool {
+        if !network_available || !self.client_propagation_enabled {
+            return false;
+        }
+        let Some(client) = self.propagation_client.as_ref() else {
+            return false;
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        now - self.last_propagation_check > AUTO_PROPAGATION_CHECK_INTERVAL_SECS
+            && client.state == lxmf_core::propagation_client::PropagationClientState::Idle
+    }
+
     /// Returns `(msg_hash_hex, status)` for each send outcome.
     pub fn tick(&mut self) -> Vec<(String, &'static str)> {
+        self.tick_with_auto_propagation_download_ready(true)
+    }
+
+    /// Like [`Self::tick`], but only starts automatic Offline Inbox downloads
+    /// when the selected propagation node is already reachable and metadata-ready.
+    /// In-flight syncs still advance so they can finish or fail normally.
+    pub fn tick_with_auto_propagation_download_ready(
+        &mut self,
+        auto_download_ready: bool,
+    ) -> Vec<(String, &'static str)> {
         let mut results = Vec::new();
 
         // 15-min ratchet cleanup cadence (matches reference).
@@ -2055,35 +2081,20 @@ impl LxmfManager {
             }
             downloaded = client.take_received_messages();
 
-            // Auto-poll every 90s when idle; gated on client propagation mode.
+            // Auto-poll every 5 minutes when idle. Missing relay readiness is
+            // not an inbox check, so it must not consume the pickup interval.
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64();
             if self.client_propagation_enabled
-                && now - self.last_propagation_check > 90.0
+                && now - self.last_propagation_check > AUTO_PROPAGATION_CHECK_INTERVAL_SECS
                 && client.state == lxmf_core::propagation_client::PropagationClientState::Idle
             {
-                let node_ready = self
-                    .router
-                    .outbound_propagation_node
-                    .map(|node| self.known_identities.contains_key(&hex::encode(node)))
-                    .unwrap_or(false);
-                if node_ready {
+                if auto_download_ready {
+                    self.last_propagation_check = now;
                     client.start_download();
-                    self.last_propagation_check = now;
                     tracing::debug!("auto-triggered propagation download check");
-                } else if let Some(node) = self.router.outbound_propagation_node
-                    && let Some(ref tx) = self.router.transport_tx
-                {
-                    self.last_propagation_check = now;
-                    let _ = tx.try_send(TransportMessage::RequestPath {
-                        destination_hash: node,
-                    });
-                    tracing::debug!(
-                        node = %hex::encode(node),
-                        "propagation node identity unknown; requesting path before relay check"
-                    );
                 }
             }
         }
@@ -3012,6 +3023,41 @@ mod tests {
         assert_eq!(mgr.configured_propagation_node, Some(node));
         assert_eq!(mgr.router.outbound_propagation_node, None);
         assert!(!mgr.client_propagation_enabled);
+    }
+
+    #[test]
+    fn auto_propagation_download_poll_requires_ready_relay() {
+        let mut mgr = test_manager();
+        let node = [0x55; 16];
+        let node_hex = hex::encode(node);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TransportMessage>(16);
+        mgr.router.set_transport(tx);
+        mgr.client_propagation_enabled = true;
+        mgr.activate_client_propagation_node(node);
+        mgr.known_identities
+            .insert(node_hex, Identity::new().get_public_key());
+        mgr.last_propagation_check = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            - AUTO_PROPAGATION_CHECK_INTERVAL_SECS
+            - 1.0;
+
+        assert!(!mgr.auto_propagation_check_due(false));
+        assert!(mgr.auto_propagation_check_due(true));
+
+        mgr.tick_with_auto_propagation_download_ready(false);
+        assert_eq!(
+            mgr.propagation_client.as_ref().map(|client| client.state),
+            Some(lxmf_core::propagation_client::PropagationClientState::Idle)
+        );
+        assert!(mgr.auto_propagation_check_due(true));
+
+        mgr.tick_with_auto_propagation_download_ready(true);
+        assert_eq!(
+            mgr.propagation_client.as_ref().map(|client| client.state),
+            Some(lxmf_core::propagation_client::PropagationClientState::LinkEstablishing)
+        );
     }
 
     #[test]

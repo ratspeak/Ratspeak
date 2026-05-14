@@ -707,6 +707,15 @@ async fn relay_path_snapshot(state: &AppState) -> RelayPathSnapshot {
     }
 }
 
+async fn path_requests_have_online_interface(state: &AppState) -> bool {
+    match transport_query(state, TransportQuery::GetInterfaceStats).await {
+        Some(TransportQueryResponse::InterfaceStats(stats)) => {
+            stats.iter().any(|iface| iface.online)
+        }
+        _ => false,
+    }
+}
+
 fn auto_select_node_with_live_paths(
     state: &AppState,
     live_paths: &HashSet<[u8; 16]>,
@@ -1004,6 +1013,20 @@ pub async fn ensure_relay_ready_for_send(state: &Arc<AppState>) -> RelayReadines
     }
 }
 
+pub async fn auto_inbox_download_ready(state: &Arc<AppState>) -> bool {
+    if read_settings(state).0 == PropagationMode::Off {
+        return false;
+    }
+    let Some(node) = configured_client_relay(state) else {
+        return false;
+    };
+    let snapshot = relay_path_snapshot(state).await;
+    if snapshot.state != RelayPathState::Reachable || !snapshot.live_paths.contains(&node) {
+        return false;
+    }
+    relay_send_metadata_ready(state, &node)
+}
+
 pub async fn reconcile_active_auto_node(state: &Arc<AppState>) {
     let (mode, _) = read_settings(state);
     if mode != PropagationMode::Auto {
@@ -1070,6 +1093,10 @@ pub async fn refresh_paths(state: &Arc<AppState>, ignore_throttle: bool) -> Refr
     let Some(tx) = transport_tx else {
         return RefreshOutcome::Offline;
     };
+
+    if !path_requests_have_online_interface(state).await {
+        return RefreshOutcome::Offline;
+    }
 
     let now = now_f64();
     let static_kind = if ignore_throttle {
@@ -1168,6 +1195,10 @@ pub async fn probe_static_nodes_background(state: &Arc<AppState>) {
     let Some(tx) = transport_tx else {
         return;
     };
+
+    if !path_requests_have_online_interface(state).await {
+        return;
+    }
 
     let now = now_f64();
     let candidates = select_static_probe_candidates(state, StaticProbeKind::Background, now);

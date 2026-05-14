@@ -40,6 +40,7 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 
 // ~150 bytes/entry → ~750 KB ceiling for hub bootstrap bursts.
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
+const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 
 fn inbound_packet_targets_destination(raw: &[u8], destination_hash: [u8; 16]) -> bool {
     rns_wire::header::PacketHeader::unpack(raw)
@@ -991,6 +992,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 let mut interval = tokio::time::interval(Duration::from_millis(500));
                 let mut save_counter: u64 = 0;
                 let mut timeout_check_counter: u64 = 0;
+                let mut next_auto_inbox_ready_check_at = 0.0;
                 #[cfg(feature = "mobile-throttle")]
                 let mut was_foreground = true;
                 loop {
@@ -1023,6 +1025,28 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             was_foreground = is_fg;
                         }
                     }
+                    let network_available =
+                        crate::any_interface_online_cached(&tick_state).unwrap_or(false);
+                    let auto_inbox_check_due = if let Ok(lxmf) = tick_state.lxmf.lock() {
+                        lxmf.as_ref()
+                            .map(|mgr| mgr.auto_propagation_check_due(network_available))
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+                    let now = local_now_ts();
+                    let auto_inbox_download_ready =
+                        if auto_inbox_check_due && now >= next_auto_inbox_ready_check_at {
+                            let ready = propagation::auto_inbox_download_ready(&tick_state).await;
+                            if ready {
+                                next_auto_inbox_ready_check_at = 0.0;
+                            } else {
+                                next_auto_inbox_ready_check_at = now + AUTO_INBOX_READY_RETRY_SECS;
+                            }
+                            ready
+                        } else {
+                            false
+                        };
                     let (
                         results,
                         downloaded_propagation_messages,
@@ -1033,7 +1057,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     ) = {
                         if let Ok(mut lxmf) = tick_state.lxmf.lock() {
                             if let Some(mgr) = lxmf.as_mut() {
-                                let results = mgr.tick();
+                                let results = mgr.tick_with_auto_propagation_download_ready(
+                                    auto_inbox_download_ready,
+                                );
                                 let downloaded = mgr.take_downloaded_propagation_messages();
                                 let (
                                     completed_deposits,
@@ -1083,15 +1109,31 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         );
                     }
                     for (node, reason) in failed_propagation_deposits {
-                        propagation::mark_relay_failure(&tick_state, node, &reason);
-                        propagation::reconcile_active_auto_node(&tick_state).await;
+                        if network_available {
+                            propagation::mark_relay_failure(&tick_state, node, &reason);
+                            propagation::reconcile_active_auto_node(&tick_state).await;
+                        } else {
+                            tracing::info!(
+                                node = %hex::encode(node),
+                                reason = %reason,
+                                "propagation deposit failed while offline; not penalizing relay"
+                            );
+                        }
                     }
                     for node in completed_propagation_syncs {
                         propagation::mark_relay_transaction_success(&tick_state, node, "sync_ok");
                     }
                     for (node, reason) in failed_propagation_syncs {
-                        propagation::mark_relay_failure(&tick_state, node, &reason);
-                        propagation::reconcile_active_auto_node(&tick_state).await;
+                        if network_available {
+                            propagation::mark_relay_failure(&tick_state, node, &reason);
+                            propagation::reconcile_active_auto_node(&tick_state).await;
+                        } else {
+                            tracing::info!(
+                                node = %hex::encode(node),
+                                reason = %reason,
+                                "propagation sync failed while offline; not penalizing relay"
+                            );
+                        }
                     }
                     // Persist before emit: a successful `lxmf_step` event
                     // must imply the DB has already accepted the transition.
