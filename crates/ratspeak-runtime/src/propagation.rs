@@ -319,6 +319,18 @@ fn static_probe_sort_key(hash: &[u8; 16]) -> (u16, [u8; 16]) {
     (static_nodes::priority_for(hash), *hash)
 }
 
+fn static_probe_goal_satisfied_by_active(hash: &[u8; 16]) -> bool {
+    let Some(active_node) = static_nodes::node_for(hash) else {
+        return false;
+    };
+    let best_priority = static_nodes::load()
+        .iter()
+        .map(|node| node.priority)
+        .min()
+        .unwrap_or(active_node.priority);
+    active_node.priority <= best_priority
+}
+
 fn select_static_probe_candidates(
     state: &AppState,
     kind: StaticProbeKind,
@@ -1133,7 +1145,7 @@ pub async fn probe_static_nodes_background(state: &Arc<AppState>) {
 
     if let Ok(current) = state.auto_active_node.read()
         && let Some(hash) = *current
-        && static_nodes::hash_set().contains(&hash)
+        && static_probe_goal_satisfied_by_active(&hash)
     {
         return;
     }
@@ -1506,6 +1518,13 @@ mod tests {
         hash
     }
 
+    fn ratspeak_node_2_hash() -> [u8; 16] {
+        let bytes = hex::decode("222222222222d1846e8b9a7f92e30de5").unwrap();
+        let mut hash = [0u8; 16];
+        hash.copy_from_slice(&bytes);
+        hash
+    }
+
     #[test]
     fn parses_known_modes() {
         assert_eq!(PropagationMode::parse("off"), Some(PropagationMode::Off));
@@ -1601,6 +1620,22 @@ mod tests {
             auto_select_node(&state),
             Some(sync_hub),
             "Ratspeak static priority should put the sync hub first when reachable"
+        );
+    }
+
+    #[test]
+    fn secondary_ratspeak_node_does_not_stop_sync_hub_background_probe() {
+        assert!(
+            static_probe_goal_satisfied_by_active(&sync_hub_hash()),
+            "the top-priority sync hub satisfies the static probe goal"
+        );
+        assert!(
+            !static_probe_goal_satisfied_by_active(&ratspeak_node_2_hash()),
+            "secondary Ratspeak nodes must keep background probing alive so the sync hub can replace them"
+        );
+        assert!(
+            !static_probe_goal_satisfied_by_active(&[0xAA; 16]),
+            "non-bundled relays must not suppress static probing"
         );
     }
 

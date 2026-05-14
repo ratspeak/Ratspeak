@@ -1352,6 +1352,10 @@ fn bundled_ratspeak_propagation_nodes_are_destination_hashes_with_sync_hub_prior
     assert!(nodes.contains("\"priority\": 0"));
     assert!(propagation.contains("registry_static_priority(favor_static && is_static"));
     assert!(propagation.contains("favor_static_prefers_sync_hub_over_lower_hop_static_node"));
+    assert!(propagation.contains("static_probe_goal_satisfied_by_active"));
+    assert!(
+        propagation.contains("secondary_ratspeak_node_does_not_stop_sync_hub_background_probe")
+    );
     assert!(propagation.contains("const STATIC_STARTUP_PROBE_BUDGET: usize = 1"));
     assert!(propagation.contains("static_probe_prefers_sync_hub_first"));
     assert!(announce_handlers.contains("let hash_hex = hex::encode(event.destination_hash);"));
