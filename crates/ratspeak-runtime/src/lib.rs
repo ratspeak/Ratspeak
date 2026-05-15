@@ -1098,6 +1098,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             let results = mgr.tick_with_auto_propagation_download_ready(
                                 auto_inbox_download_ready,
                             );
+                            let delivery_progress = mgr.take_delivery_progress_updates();
                             let downloaded = mgr.take_downloaded_propagation_messages();
                             let (
                                 completed_deposits,
@@ -1111,6 +1112,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             }
                             (
                                 results,
+                                delivery_progress,
                                 downloaded,
                                 completed_deposits,
                                 failed_deposits,
@@ -1125,12 +1127,14 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                Vec::new(),
                             )
                         }
                     })
                     .await;
                     let (
                         results,
+                        delivery_progress,
                         downloaded_propagation_messages,
                         completed_propagation_deposits,
                         failed_propagation_deposits,
@@ -1144,6 +1148,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 "lxmf tick worker failed; skipping this tick"
                             );
                             (
+                                Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
@@ -1292,6 +1297,31 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 map.remove(msg_id);
                             }
                         }
+                    }
+
+                    for update in delivery_progress {
+                        let client_msg_id = tick_state
+                            .msg_id_map
+                            .lock()
+                            .ok()
+                            .and_then(|map| map.get(&update.msg_id).cloned());
+                        tick_state.emit_to_all(
+                            "lxmf_delivery_progress",
+                            json!({
+                                "step": update.step,
+                                "msg_id": update.msg_id,
+                                "client_msg_id": client_msg_id,
+                                "method": update.method,
+                                "progress": update.progress,
+                                "link_id": update.link_id,
+                                "dest_hash": update.dest_hash,
+                                "attempts": update.attempts,
+                                "representation": update.representation,
+                                "queued_deliveries": update.queued_deliveries,
+                                "in_flight_deliveries": update.in_flight_deliveries,
+                                "reason": update.reason,
+                            }),
+                        );
                     }
 
                     let downloaded_count = downloaded_propagation_messages.len();

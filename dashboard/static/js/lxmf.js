@@ -1256,7 +1256,11 @@ function _messageStateIconHtml(msg) {
     if ((state === 'sent' || state === 'delivered') && method !== 'direct') return wrap('msg-state-sent', 'Sent', ICON.check);
     // In-flight: sending, routing, propagating, generating, outbound,
     // resending, or `sent` awaiting a Direct LXMF link receipt.
-    return wrap('msg-state-sending', 'Sending', ICON.clock);
+    var progress = typeof msg.delivery_progress === 'number' ? msg.delivery_progress : null;
+    var label = progress !== null && progress > 0.05 && progress < 1.0
+        ? 'Sending ' + Math.round(progress * 100) + '%'
+        : 'Sending';
+    return wrap('msg-state-sending', label, ICON.clock);
 }
 
 function cacheGet(hash) {
@@ -3352,6 +3356,40 @@ RS.listen('lxmf_step', function(data) {
     if (data.step === 'rejected') {
         showToast(data.message || 'Message rejected by destination', 'toast-red', 5000);
     }
+});
+
+RS.listen('lxmf_delivery_progress', function(data) {
+    if (data.client_msg_id && data.msg_id) {
+        for (var ri = 0; ri < lxmfConversation.length; ri++) {
+            if (lxmfConversation[ri].id === data.client_msg_id) {
+                lxmfConversation[ri].id = data.msg_id;
+                break;
+            }
+        }
+    }
+    var inFlightSteps = [
+        'routing',
+        'propagating',
+        'link_establishing',
+        'sending_via_link',
+        'reusing_direct_link',
+        'reusing_backchannel'
+    ];
+    var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected'];
+    var changed = false;
+    lxmfConversation.forEach(function(msg) {
+        if (data.msg_id && msg.id === data.msg_id) {
+            if (typeof data.progress === 'number') msg.delivery_progress = data.progress;
+            if (data.link_id) msg.delivery_link_id = data.link_id;
+            if (data.representation) msg.delivery_representation = data.representation;
+            if (data.method) msg.delivery_method = data.method;
+            if (data.step && inFlightSteps.indexOf(data.step) !== -1 && terminalStates.indexOf(msg.state) === -1) {
+                msg.state = data.step;
+            }
+            changed = true;
+        }
+    });
+    if (changed) renderConversation();
 });
 
 RS.listen('voice_call_update', _voiceHandleUpdate);

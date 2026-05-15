@@ -10,10 +10,13 @@ use bytes::Bytes;
 use serde_json::{Value, json};
 
 use lxmf_core::constants::{
-    DELIVERY_RETRY_WAIT, DeliveryMethod, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES,
-    PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
+    DELIVERY_RETRY_WAIT, DeliveryMethod, DeliveryRepresentation, MAX_DELIVERY_ATTEMPTS,
+    MAX_PATHLESS_TRIES, PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
-use lxmf_core::link_delivery::{DeliveryState, DirectLinkStartKind};
+use lxmf_core::link_delivery::{
+    DeliveryState, DirectLinkStartKind, LxmfDeliveryEvent, LxmfDeliveryEventKind,
+    LxmfDeliveryEventMethod,
+};
 use lxmf_core::message::LxMessage;
 use lxmf_core::router::{
     DirectDeliveryPlan, DirectDeliveryPlanInput, DirectReusableLinkState, DirectRouteSnapshot,
@@ -67,6 +70,21 @@ pub type PropagationHealth = (
     Vec<[u8; 16]>,
     Vec<([u8; 16], String)>,
 );
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LxmfDeliveryProgressUpdate {
+    pub msg_id: String,
+    pub step: &'static str,
+    pub method: &'static str,
+    pub progress: Option<f64>,
+    pub link_id: Option<String>,
+    pub dest_hash: String,
+    pub attempts: u32,
+    pub representation: &'static str,
+    pub queued_deliveries: usize,
+    pub in_flight_deliveries: usize,
+    pub reason: Option<String>,
+}
 
 /// Stable string identifier for the chosen `DeliveryMethod`. Persisted in the
 /// `messages.delivery_method` column and surfaced to the frontend so the UI can
@@ -255,6 +273,7 @@ pub struct LxmfManager {
     completed_propagation_syncs: Vec<[u8; 16]>,
     failed_propagation_syncs: Vec<([u8; 16], String)>,
     downloaded_propagation_messages: Vec<Vec<u8>>,
+    delivery_progress_updates: Vec<LxmfDeliveryProgressUpdate>,
     ephemeral_outbound: HashSet<[u8; 32]>,
 }
 
@@ -493,6 +512,7 @@ impl LxmfManager {
             completed_propagation_syncs: Vec::new(),
             failed_propagation_syncs: Vec::new(),
             downloaded_propagation_messages: Vec::new(),
+            delivery_progress_updates: Vec::new(),
             ephemeral_outbound: HashSet::new(),
         })
     }
@@ -542,6 +562,7 @@ impl LxmfManager {
         self.router = router;
         self.lxmf_storage_dir = lxmf_storage;
         self.link_delivery = None;
+        self.delivery_progress_updates.clear();
         self.backchannel_links.clear();
         self.pending_backchannel_starts.clear();
         self.pending_backchannel_deliveries.clear();
@@ -2030,6 +2051,7 @@ impl LxmfManager {
         } else {
             self.push_failed_outbound_state(msg_hash, results);
         }
+        self.drain_link_delivery_progress_updates();
     }
 
     fn queue_path_rediscovery(&self, dest_hash: [u8; 16], drop_existing: bool, reason: &str) {
@@ -2419,6 +2441,7 @@ impl LxmfManager {
         });
         if !actions.is_empty() {
             results.extend(self.execute_encrypted_actions(actions));
+            self.drain_link_delivery_progress_updates();
         }
 
         if let Some(ref mut ld) = self.link_delivery {
@@ -2505,6 +2528,7 @@ impl LxmfManager {
                     }
                 }
             }
+            self.drain_link_delivery_progress_updates();
         }
 
         if let Some(ref mut ps) = self.propagation_sync {
@@ -2608,6 +2632,62 @@ impl LxmfManager {
             std::mem::take(&mut self.completed_propagation_syncs),
             std::mem::take(&mut self.failed_propagation_syncs),
         )
+    }
+
+    pub fn take_delivery_progress_updates(&mut self) -> Vec<LxmfDeliveryProgressUpdate> {
+        std::mem::take(&mut self.delivery_progress_updates)
+    }
+
+    fn drain_link_delivery_progress_updates(&mut self) {
+        let events = if let Some(ref mut ld) = self.link_delivery {
+            ld.take_delivery_events()
+        } else {
+            Vec::new()
+        };
+        self.delivery_progress_updates.extend(
+            events
+                .into_iter()
+                .filter_map(Self::progress_update_from_link_event),
+        );
+    }
+
+    fn progress_update_from_link_event(
+        event: LxmfDeliveryEvent,
+    ) -> Option<LxmfDeliveryProgressUpdate> {
+        let msg_hash = event.msg_hash?;
+        let step = match event.kind {
+            LxmfDeliveryEventKind::LinkEstablishing => "link_establishing",
+            LxmfDeliveryEventKind::LinkEstablished
+            | LxmfDeliveryEventKind::TransferStarted
+            | LxmfDeliveryEventKind::TransferProgress
+            | LxmfDeliveryEventKind::AwaitingProof
+            | LxmfDeliveryEventKind::DirectLinkPending => "sending_via_link",
+            LxmfDeliveryEventKind::DirectLinkReused => "reusing_direct_link",
+            LxmfDeliveryEventKind::Delivered => "delivered",
+            LxmfDeliveryEventKind::Rejected => "rejected",
+            LxmfDeliveryEventKind::Failed => "failed",
+        };
+        Some(LxmfDeliveryProgressUpdate {
+            msg_id: hex::encode(msg_hash),
+            step,
+            method: match event.method {
+                LxmfDeliveryEventMethod::Direct => "direct",
+                LxmfDeliveryEventMethod::PropagationDeposit => "propagated",
+            },
+            progress: event.progress,
+            link_id: Some(hex::encode(event.link_id)),
+            dest_hash: hex::encode(event.dest_hash),
+            attempts: event.attempts,
+            representation: match event.representation {
+                DeliveryRepresentation::Unknown => "unknown",
+                DeliveryRepresentation::Packet => "packet",
+                DeliveryRepresentation::Resource => "resource",
+                DeliveryRepresentation::Paper => "paper",
+            },
+            queued_deliveries: event.queued_deliveries,
+            in_flight_deliveries: event.in_flight_deliveries,
+            reason: event.reason,
+        })
     }
 
     fn ensure_message_stamp(&self, message: &mut LxMessage) {
@@ -4060,6 +4140,14 @@ mod tests {
         }]);
 
         assert_eq!(results, vec![(hex::encode(msg_hash), "link_establishing")]);
+        let progress = mgr.take_delivery_progress_updates();
+        assert_eq!(progress.len(), 1);
+        assert_eq!(progress[0].msg_id, hex::encode(msg_hash));
+        assert_eq!(progress[0].step, "link_establishing");
+        assert_eq!(progress[0].method, "direct");
+        assert_eq!(progress[0].progress, Some(0.03));
+        assert_eq!(progress[0].dest_hash, dest_hex);
+        assert!(progress[0].link_id.is_some());
 
         match rx.try_recv().unwrap() {
             TransportMessage::RegisterDestination {
