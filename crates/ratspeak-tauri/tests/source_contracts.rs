@@ -1092,6 +1092,17 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("RS.invoke('api_preview_contact_card'"));
     assert!(contact_card_js.contains("RS.invoke('import_contact_card'"));
     assert!(contact_card_js.contains("renderQrCanvas(canvas, card.payload || '')"));
+    assert!(contact_card_js.contains("function drawVersionBits()"));
+    assert!(contact_card_js.contains("0x1f25"));
+    assert!(contact_card_js.contains("drawVersionBits();"));
+    assert!(contact_card_js.contains("moduleFallsBehindLogo"));
+    assert!(
+        contact_card_js
+            .contains("drawRatspeakLogo(ctx, pixels / 2, pixels / 2, logoSize, qrSurface)")
+    );
+    assert!(contact_card_js.contains("var scanCanvas = document.createElement('canvas')"));
+    assert!(contact_card_js.contains("scanCtx.drawImage(video"));
+    assert!(contact_card_js.contains("detector.detect(scanCanvas)"));
     assert!(contact_card_js.contains("RATSPEAK_MARK_PATHS"));
     assert!(contact_card_js.contains("drawOfficialRatspeakMark"));
     assert!(contact_card_js.contains("new Path2D(RATSPEAK_MARK_PATHS[i])"));

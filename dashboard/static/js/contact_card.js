@@ -112,6 +112,7 @@
                 });
             });
             setFunction(8, 4 * VERSION + 9, true);
+            drawVersionBits();
             drawFormatBits(0);
         }
 
@@ -130,6 +131,21 @@
             for (var a = 0; a < 8; a++) setFunction(SIZE - 1 - a, 8, ((bits >>> a) & 1) !== 0);
             for (var b = 8; b < 15; b++) setFunction(8, SIZE - 15 + b, ((bits >>> b) & 1) !== 0);
             setFunction(8, SIZE - 8, true);
+        }
+
+        function drawVersionBits() {
+            var rem = VERSION;
+            for (var i = 0; i < 12; i++) {
+                rem = (rem << 1) ^ (((rem >>> 11) & 1) ? 0x1f25 : 0);
+            }
+            var bits = (VERSION << 12) | rem;
+            for (var j = 0; j < 18; j++) {
+                var bit = ((bits >>> j) & 1) !== 0;
+                var a = SIZE - 11 + (j % 3);
+                var b = Math.floor(j / 3);
+                setFunction(a, b, bit);
+                setFunction(b, a, bit);
+            }
         }
 
         function appendBits(arr, value, len) {
@@ -423,17 +439,27 @@ z`,
         ctx.fillStyle = qrSurface;
         ctx.fillRect(0, 0, pixels, pixels);
         var cell = pixels / modules;
+        var logoSize = pixels * 0.12;
+        var logoClearSize = logoSize * 1.04;
+        var logoClearMin = (pixels - logoClearSize) / 2;
+        var logoClearMax = (pixels + logoClearSize) / 2;
+        function moduleFallsBehindLogo(px, py) {
+            var cx = px + cell / 2;
+            var cy = py + cell / 2;
+            return cx >= logoClearMin && cx <= logoClearMax && cy >= logoClearMin && cy <= logoClearMax;
+        }
         ctx.fillStyle = '#11100e';
         for (var y = 0; y < qr.size; y++) {
             for (var x = 0; x < qr.size; x++) {
                 if (!qr.modules[y][x]) continue;
                 var px = (x + quiet) * cell;
                 var py = (y + quiet) * cell;
+                if (moduleFallsBehindLogo(px, py)) continue;
                 roundRect(ctx, px + cell * 0.08, py + cell * 0.08, cell * 0.84, cell * 0.84, cell * 0.24);
                 ctx.fill();
             }
         }
-        drawRatspeakLogo(ctx, pixels / 2, pixels / 2, pixels * 0.145, qrSurface);
+        drawRatspeakLogo(ctx, pixels / 2, pixels / 2, logoSize, qrSurface);
         return canvas;
     }
 
@@ -609,6 +635,13 @@ z`,
         var body = built.sheet.querySelector('.contact-scan-body');
         var status = built.sheet.querySelector('.contact-scan-status');
         var video = built.sheet.querySelector('video');
+        var scanCanvas = document.createElement('canvas');
+        var scanCtx = null;
+        try {
+            scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+        } catch (_) {
+            scanCtx = scanCanvas.getContext('2d');
+        }
 
         function stop() {
             stopped = true;
@@ -649,11 +682,52 @@ z`,
             video.srcObject = stream;
             status.textContent = 'Point the camera at a Ratspeak QR.';
             var detector = new BarcodeDetector({ formats: ['qr_code'] });
+            var scanStarted = false;
+
+            function scheduleScan() {
+                if (stopped) return;
+                setTimeout(function() {
+                    if (!stopped) requestAnimationFrame(scan);
+                }, 90);
+            }
+
+            function detectFrame() {
+                if (!scanCtx || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+                    return detector.detect(video);
+                }
+                var vw = video.videoWidth;
+                var vh = video.videoHeight;
+                var side = Math.min(vw, vh);
+                var sx = (vw - side) / 2;
+                var sy = (vh - side) / 2;
+                var target = Math.round(Math.max(480, Math.min(900, side)));
+                if (scanCanvas.width !== target) scanCanvas.width = target;
+                if (scanCanvas.height !== target) scanCanvas.height = target;
+                scanCtx.drawImage(video, sx, sy, side, side, 0, 0, target, target);
+                return detector.detect(scanCanvas).then(function(codes) {
+                    if (codes && codes.length) return codes;
+                    return detector.detect(video).catch(function() { return codes || []; });
+                }).catch(function() {
+                    return detector.detect(video).catch(function() { return []; });
+                });
+            }
 
             function scan() {
                 if (stopped || detecting) return;
+                if (video.readyState < 2) {
+                    scheduleScan();
+                    return;
+                }
                 detecting = true;
-                detector.detect(video).then(function(codes) {
+                var detection = null;
+                try {
+                    detection = detectFrame();
+                } catch (_) {
+                    detecting = false;
+                    scheduleScan();
+                    return;
+                }
+                detection.then(function(codes) {
                     detecting = false;
                     if (stopped) return;
                     if (codes && codes.length && codes[0].rawValue) {
@@ -665,22 +739,30 @@ z`,
                         }).catch(function() {
                             status.textContent = 'That QR is not a valid Ratspeak contact card.';
                             setTimeout(function() {
-                                if (!stopped) status.textContent = 'Point the camera at a Ratspeak QR.';
-                            }, 1400);
-                            requestAnimationFrame(scan);
+                                if (!stopped) {
+                                    status.textContent = 'Point the camera at a Ratspeak QR.';
+                                    scheduleScan();
+                                }
+                            }, 1200);
                         });
                         return;
                     }
-                    requestAnimationFrame(scan);
+                    scheduleScan();
                 }).catch(function() {
                     detecting = false;
-                    if (!stopped) requestAnimationFrame(scan);
+                    scheduleScan();
                 });
             }
-            video.addEventListener('loadedmetadata', function() {
+
+            function beginScanning() {
+                if (scanStarted) return;
+                scanStarted = true;
                 video.play().catch(function() {});
-                requestAnimationFrame(scan);
-            }, { once: true });
+                scheduleScan();
+            }
+            video.addEventListener('loadedmetadata', beginScanning, { once: true });
+            video.addEventListener('canplay', beginScanning, { once: true });
+            video.play().then(beginScanning).catch(function() {});
         }).catch(function(err) {
             status.textContent = err && err.message ? err.message : 'Could not open camera.';
         });
