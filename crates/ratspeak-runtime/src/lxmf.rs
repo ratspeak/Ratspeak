@@ -3153,6 +3153,57 @@ mod tests {
     }
 
     #[test]
+    fn propagated_delivery_waits_for_recipient_identity_key() {
+        let mut mgr = test_manager();
+        let propagation_node = [0x44; 16];
+        let recipient_dest = [0x77; 16];
+        let prop_hex = hex::encode(propagation_node);
+        let recipient_hex = hex::encode(recipient_dest);
+        let prop_identity = Identity::new();
+
+        mgr.known_identities
+            .insert(prop_hex, prop_identity.get_public_key());
+        mgr.router.set_stamp_cost(propagation_node, 19);
+        mgr.router
+            .set_outbound_propagation_node(Some(propagation_node));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+
+        let message = mgr
+            .create_message(
+                &recipient_hex,
+                "wait until recipient identity is known",
+                "",
+                DeliveryMethod::Propagated,
+            )
+            .expect("message created");
+        let message_id = message.hash.expect("message hash");
+        mgr.router.send(message);
+
+        let states = mgr.tick();
+        assert!(states.is_empty());
+
+        match rx.try_recv() {
+            Ok(TransportMessage::RequestPath { destination_hash }) => {
+                assert_eq!(destination_hash, recipient_dest);
+            }
+            other => panic!("expected recipient path request, got {other:?}"),
+        }
+        assert!(
+            mgr.router
+                .pending_outbound
+                .iter()
+                .any(|msg| msg.hash == Some(message_id)),
+            "message should be requeued until recipient identity key is learned"
+        );
+        assert!(
+            mgr.link_delivery.is_none(),
+            "propagation link must not start until the message can be encrypted for the recipient"
+        );
+    }
+
+    #[test]
     fn attachment_field_uses_lxmf_string_filename_and_binary_bytes() {
         let pool = test_pool();
         let mut mgr = test_manager();
