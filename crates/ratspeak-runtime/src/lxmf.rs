@@ -1910,6 +1910,20 @@ impl LxmfManager {
             && client.state == lxmf_core::propagation_client::PropagationClientState::Idle
     }
 
+    pub fn propagated_deposit_pending(&self) -> bool {
+        !self.in_flight_propagation.is_empty()
+            || self
+                .router
+                .pending_outbound
+                .iter()
+                .any(|msg| msg.method == DeliveryMethod::Propagated)
+            || self
+                .router
+                .pending_deferred_stamps
+                .values()
+                .any(|msg| msg.method == DeliveryMethod::Propagated)
+    }
+
     /// Returns `(msg_hash_hex, status)` for each send outcome.
     pub fn tick(&mut self) -> Vec<(String, &'static str)> {
         self.tick_with_auto_propagation_download_ready(true)

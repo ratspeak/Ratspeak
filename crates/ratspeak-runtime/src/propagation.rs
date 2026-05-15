@@ -825,6 +825,29 @@ fn relay_send_metadata_ready(state: &AppState, hash: &[u8; 16]) -> bool {
         .unwrap_or(false)
 }
 
+fn propagated_deposit_pending(state: &AppState) -> bool {
+    state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.propagated_deposit_pending()))
+        .unwrap_or(false)
+}
+
+fn auto_relay_change_deferred_by_pending_deposit(state: &AppState, next: Option<[u8; 16]>) -> bool {
+    let current = state.auto_active_node.read().ok().and_then(|g| *g);
+    if current == next || current.is_none() || !propagated_deposit_pending(state) {
+        return false;
+    }
+
+    tracing::info!(
+        current = ?current.map(hex::encode),
+        next = ?next.map(hex::encode),
+        "deferred auto propagation relay change until pending propagated send finishes"
+    );
+    true
+}
+
 async fn relay_send_ready_or_waiting(state: &Arc<AppState>, hash: [u8; 16]) -> RelayReadiness {
     if relay_send_metadata_ready(state, &hash) {
         RelayReadiness::Ready
@@ -851,6 +874,10 @@ pub async fn maybe_reselect_on_announce(state: &Arc<AppState>) {
     };
     let current = state.auto_active_node.read().ok().and_then(|g| *g);
     if current == Some(new_winner) {
+        return;
+    }
+    if auto_relay_change_deferred_by_pending_deposit(state, Some(new_winner)) {
+        emit_propagation_update(state);
         return;
     }
     apply_auto_selection(state, new_winner).await;
@@ -926,6 +953,10 @@ async fn apply_best_live_auto_selection(
 ) -> Option<[u8; 16]> {
     promote_static_live_paths(state, live_paths);
     let winner = auto_select_node_with_live_paths(state, live_paths)?;
+    if auto_relay_change_deferred_by_pending_deposit(state, Some(winner)) {
+        emit_propagation_update(state);
+        return None;
+    }
     apply_auto_selection(state, winner).await;
     Some(winner)
 }
@@ -948,6 +979,10 @@ async fn reselect_from_live_paths_after_probe(state: &Arc<AppState>) {
     if let Some(winner) = auto_select_node_with_live_paths(state, &snapshot.live_paths)
         && current != Some(winner)
     {
+        if auto_relay_change_deferred_by_pending_deposit(state, Some(winner)) {
+            emit_propagation_update(state);
+            return;
+        }
         apply_auto_selection(state, winner).await;
         return;
     }
@@ -989,6 +1024,13 @@ pub async fn ensure_relay_ready_for_send(state: &Arc<AppState>) -> RelayReadines
             if let Some(winner) = auto_select_node_with_live_paths(state, &snapshot.live_paths)
                 && active != Some(winner)
             {
+                if auto_relay_change_deferred_by_pending_deposit(state, Some(winner)) {
+                    if let Some(active) = active {
+                        request_relay_path(state, active).await;
+                        return relay_send_ready_or_waiting(state, active).await;
+                    }
+                    return RelayReadiness::Waiting;
+                }
                 apply_auto_selection(state, winner).await;
                 mark_relay_path_success(state, winner);
                 return relay_send_ready_or_waiting(state, winner).await;
@@ -1009,6 +1051,10 @@ pub async fn ensure_relay_ready_for_send(state: &Arc<AppState>) -> RelayReadines
                 relay_send_ready_or_waiting(state, winner).await
             } else {
                 let _ = refresh_paths(state, true).await;
+                if auto_relay_change_deferred_by_pending_deposit(state, None) {
+                    emit_propagation_update(state);
+                    return RelayReadiness::Waiting;
+                }
                 clear_auto_selection(state).await;
                 RelayReadiness::Waiting
             }
@@ -1050,6 +1096,10 @@ pub async fn reconcile_active_auto_node(state: &Arc<AppState>) {
     if let Some(winner) = auto_select_node_with_live_paths(state, &snapshot.live_paths)
         && active != winner
     {
+        if auto_relay_change_deferred_by_pending_deposit(state, Some(winner)) {
+            emit_propagation_update(state);
+            return;
+        }
         apply_auto_selection(state, winner).await;
         return;
     }
@@ -1066,7 +1116,25 @@ pub async fn reconcile_active_auto_node(state: &Arc<AppState>) {
         .await
         .is_none()
     {
+        if auto_relay_change_deferred_by_pending_deposit(state, None) {
+            emit_propagation_update(state);
+            return;
+        }
         clear_auto_selection(state).await;
+    }
+}
+
+pub async fn maybe_reselect_auto_after_propagation_idle(state: &Arc<AppState>) {
+    let (mode, _) = read_settings(state);
+    if mode != PropagationMode::Auto || propagated_deposit_pending(state) {
+        return;
+    }
+    let Some(winner) = auto_select_node(state) else {
+        return;
+    };
+    let current = state.auto_active_node.read().ok().and_then(|g| *g);
+    if current != Some(winner) {
+        apply_auto_selection(state, winner).await;
     }
 }
 
@@ -1273,8 +1341,18 @@ pub async fn handle_sync_failure(state: &Arc<AppState>) {
             node = %hex::encode(node),
             "propagation node hit 3 failures within 30 min — dropping from auto-selection"
         );
+        if auto_relay_change_deferred_by_pending_deposit(state, None) {
+            emit_propagation_update(state);
+            return;
+        }
         match auto_select_node(state) {
-            Some(w) if w != node => apply_auto_selection(state, w).await,
+            Some(w) if w != node => {
+                if auto_relay_change_deferred_by_pending_deposit(state, Some(w)) {
+                    emit_propagation_update(state);
+                    return;
+                }
+                apply_auto_selection(state, w).await
+            }
             _ => clear_auto_selection(state).await,
         }
     }
@@ -1655,6 +1733,50 @@ mod tests {
                 .as_ref()
                 .and_then(|mgr| mgr.configured_propagation_node)),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_selection_defers_elevation_while_propagated_deposit_pending() {
+        let state = make_state();
+        install_lxmf_manager(&state, "auto", "");
+        let now = now_f64();
+        let current = [0x11; 16];
+        let better = [0x22; 16];
+        seed_node(&state, current, 4, now);
+        seed_node(&state, better, 1, now);
+
+        apply_auto_selection(&state, current).await;
+        {
+            let mut lxmf = state.lxmf.lock().unwrap();
+            let mgr = lxmf.as_mut().unwrap();
+            mgr.router
+                .pending_outbound
+                .push(lxmf_core::message::LxMessage::new(
+                    [0x33; 16],
+                    mgr.lxmf_dest_hash,
+                    "pending",
+                    "pending",
+                    lxmf_core::constants::DeliveryMethod::Propagated,
+                ));
+        }
+
+        maybe_reselect_on_announce(&state).await;
+        assert_eq!(
+            state.auto_active_node.read().ok().and_then(|node| *node),
+            Some(current),
+            "Auto must not elevate away from the active relay while a propagated send is pending"
+        );
+
+        {
+            let mut lxmf = state.lxmf.lock().unwrap();
+            lxmf.as_mut().unwrap().router.pending_outbound.clear();
+        }
+        maybe_reselect_auto_after_propagation_idle(&state).await;
+        assert_eq!(
+            state.auto_active_node.read().ok().and_then(|node| *node),
+            Some(better),
+            "Auto can elevate after the pending propagated send finishes or fails"
         );
     }
 

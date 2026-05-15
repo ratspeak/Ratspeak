@@ -1128,6 +1128,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             )
                         }
                     };
+                    let propagation_deposit_terminal = !completed_propagation_deposits.is_empty()
+                        || !failed_propagation_deposits.is_empty();
                     for node in completed_propagation_deposits {
                         propagation::mark_relay_transaction_success(
                             &tick_state,
@@ -1161,6 +1163,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 "propagation sync failed while offline; not penalizing relay"
                             );
                         }
+                    }
+                    if propagation_deposit_terminal {
+                        propagation::maybe_reselect_auto_after_propagation_idle(&tick_state).await;
                     }
                     // Persist before emit: a successful `lxmf_step` event
                     // must imply the DB has already accepted the transition.
