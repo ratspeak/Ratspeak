@@ -1071,6 +1071,10 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     let contact_card_js =
         read_source(root.join("dashboard/static/js/contact_card.js")).expect("contact card js");
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    let tauri_build = read_source(root.join("src-tauri/build.rs")).expect("tauri build script");
     let contact_card_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/contact_card.rs"))
             .expect("contact card command");
@@ -1088,6 +1092,18 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("RS.invoke('api_preview_contact_card'"));
     assert!(contact_card_js.contains("RS.invoke('import_contact_card'"));
     assert!(contact_card_js.contains("renderQrCanvas(canvas, card.payload || '')"));
+    assert!(contact_card_js.contains("function showContactAddDial"));
+    assert!(
+        contact_card_js.contains("isMobileContactFlow() && showContactAddDial(trigger, items)")
+    );
+    assert!(views_css.contains(".contact-share-sheet"));
+    assert!(views_css.contains(".contact-scan-sheet"));
+    assert!(views_css.contains(".contact-share-qr-shell"));
+    assert!(views_css.contains(".contact-scan-camera-wrap"));
+    assert!(responsive_css.contains(".view-fab.dial-open"));
+    assert!(tauri_build.contains("build_dashboard_css();"));
+    assert!(tauri_build.contains(r#""10-views.css""#));
+    assert!(tauri_build.contains(r#""13-responsive.css""#));
 
     assert!(contact_card_rs.contains(r#"const CONTACT_CARD_PREFIX: &str = "RSCP1:""#));
     assert!(contact_card_rs.contains("Identity::from_public_key(&public_key)"));

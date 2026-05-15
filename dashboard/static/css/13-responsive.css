@@ -2361,7 +2361,7 @@
     }
     .fab-dial-item:first-child .fab-dial-btn,
     .fab-dial-item:first-child .fab-dial-label { transition-delay: 0.05s; }
-    #lxmf-send-fab.dial-open {
+    .view-fab.dial-open {
         transform: rotate(45deg);
         background: var(--surface-control-active);
         color: var(--text-primary);

@@ -1,5 +1,6 @@
 (function() {
     var CONTACT_QR_FILE = 'ratspeak-contact-card.png';
+    var activeContactAddDial = null;
 
     function iconSvg(name) {
         if (name === 'qr') {
@@ -589,6 +590,120 @@
         });
     }
 
+    function isMobileContactFlow() {
+        if (typeof isMobile === 'function') return isMobile();
+        return window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+    }
+
+    function closeContactAddDial() {
+        if (!activeContactAddDial) return;
+        var dial = activeContactAddDial;
+        activeContactAddDial = null;
+
+        if (dial.trigger) {
+            dial.trigger.classList.remove('dial-open');
+            dial.trigger.setAttribute('aria-expanded', 'false');
+        }
+        dial.actions.classList.remove('open');
+        dial.scrim.classList.remove('active');
+        document.removeEventListener('keydown', dial.onKey, true);
+
+        setTimeout(function() {
+            if (dial.scrim.parentNode) dial.scrim.remove();
+            if (dial.actions.parentNode) dial.actions.remove();
+        }, 130);
+    }
+
+    function showContactAddDial(trigger, items) {
+        if (!trigger || !items || !items.length) return false;
+        if (activeContactAddDial && activeContactAddDial.trigger === trigger) {
+            closeContactAddDial();
+            return true;
+        }
+        closeContactAddDial();
+
+        var scrim = document.createElement('div');
+        scrim.className = 'fab-dial-scrim contact-add-dial-scrim';
+        scrim.addEventListener('mousedown', function(e) { e.preventDefault(); });
+        scrim.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
+        scrim.addEventListener('touchend', function(e) { e.preventDefault(); closeContactAddDial(); });
+        scrim.addEventListener('click', closeContactAddDial);
+
+        var actions = document.createElement('div');
+        actions.className = 'fab-dial-actions contact-add-dial-actions';
+        actions.setAttribute('role', 'menu');
+
+        items.forEach(function(item) {
+            var row = document.createElement('div');
+            row.className = 'fab-dial-item';
+            row.setAttribute('role', 'menuitem');
+
+            var label = document.createElement('span');
+            label.className = 'fab-dial-label';
+            label.textContent = item.label;
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'fab-dial-btn';
+            btn.setAttribute('aria-label', item.label);
+            btn.innerHTML = item.icon || '';
+
+            var activated = false;
+            function activate(e) {
+                if (activated) return;
+                activated = true;
+                if (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                if (typeof haptic === 'function') haptic('selection');
+                closeContactAddDial();
+                if (typeof item.onSelect === 'function') setTimeout(item.onSelect, 0);
+            }
+
+            row.addEventListener('mousedown', function(e) { e.preventDefault(); });
+            row.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
+            row.addEventListener('touchend', function(e) {
+                var t = (e.changedTouches && e.changedTouches[0]) || null;
+                if (t) {
+                    var hit = document.elementFromPoint(t.clientX, t.clientY);
+                    if (hit !== row && !row.contains(hit)) return;
+                }
+                activate(e);
+            });
+            row.addEventListener('click', activate);
+
+            row.appendChild(label);
+            row.appendChild(btn);
+            actions.appendChild(row);
+        });
+
+        function onKey(e) {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                closeContactAddDial();
+            }
+        }
+
+        document.body.appendChild(scrim);
+        document.body.appendChild(actions);
+        activeContactAddDial = {
+            trigger: trigger,
+            scrim: scrim,
+            actions: actions,
+            onKey: onKey,
+        };
+        document.addEventListener('keydown', onKey, true);
+
+        trigger.classList.add('dial-open');
+        trigger.setAttribute('aria-expanded', 'true');
+        requestAnimationFrame(function() {
+            scrim.classList.add('active');
+            actions.classList.add('open');
+        });
+        return true;
+    }
+
     function openContactAddOptions(trigger) {
         var items = [
             {
@@ -602,6 +717,9 @@
                 onSelect: openContactQrScanner,
             },
         ];
+        if (isMobileContactFlow() && showContactAddDial(trigger, items)) {
+            return;
+        }
         if (typeof actionPopover === 'function') {
             actionPopover(trigger, items, { mobileSheet: false });
         } else {
@@ -615,6 +733,7 @@
         openContactQrScanner: openContactQrScanner,
         openContactAddOptions: openContactAddOptions,
     };
+    window.closeContactAddDial = closeContactAddDial;
     window.openIdentityShareScreen = showIdentityShareScreen;
     window.openContactAddOptions = openContactAddOptions;
     window.openContactQrScanner = openContactQrScanner;
