@@ -758,22 +758,18 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                     .lock()
                                     .ok()
                                     .and_then(|ids| ids.get(&link_id).copied());
-                                let peer_hash = remote_identity_hash
-                                    .map(|identity_hash| {
-                                        rns_identity::destination::Destination::hash_from_name_and_identity(
-                                            "lxmf.propagation",
-                                            Some(&identity_hash),
-                                        )
-                                    })
-                                    .unwrap_or([0u8; 16]);
+                                let identity_known = remote_identity_hash.is_some();
+                                let peer_hash = remote_identity_hash.unwrap_or([0u8; 16]);
                                 Some(node.handle_offer_request(
                                     &data,
-                                    peer_hash,
-                                    remote_identity_hash.is_some(),
-                                    false,
-                                    true,
-                                    Some(&local_identity_hash),
-                                    remote_identity_hash.as_ref(),
+                                    lxmf_core::propagation_node::OfferRequestContext {
+                                        peer_hash,
+                                        identity_known,
+                                        is_throttled: false,
+                                        access_allowed: true,
+                                        local_identity_hash: Some(&local_identity_hash),
+                                        remote_identity_hash: remote_identity_hash.as_ref(),
+                                    },
                                 ))
                             } else {
                                 None

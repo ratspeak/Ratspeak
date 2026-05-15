@@ -70,6 +70,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
+          cache-bin: false
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri

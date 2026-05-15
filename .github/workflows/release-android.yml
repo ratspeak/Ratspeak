@@ -25,9 +25,9 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: 81672542cea47e42cf4245e36ded2b5fdb91b5df
-  RATSPEAK_RSLXMF_REF: 21aeb349990a7ce59e45e1c8f056baa751d4666e
-  RATSPEAK_RSLXST_REF: main
+  RATSPEAK_RSRETICULUM_REF: 017b747eebb769c0e70aca06861853d746cf8bdf
+  RATSPEAK_RSLXMF_REF: d9e2d5e2444dbb43f5effb1c6cbc87ac7137198d
+  RATSPEAK_RSLXST_REF: 8f452ad1e75c4a4db1266a829ea484ed0c651908
 
 jobs:
   build:
@@ -95,6 +95,7 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
+          cache-bin: false
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri

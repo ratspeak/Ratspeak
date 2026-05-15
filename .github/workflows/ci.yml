@@ -33,6 +33,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-bin: false
           workspaces: Ratspeak
       - name: Install system deps
         run: |
@@ -81,6 +82,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-bin: false
           workspaces: Ratspeak
       - name: Install system deps
         run: |

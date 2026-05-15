@@ -40,6 +40,11 @@ fn build_dashboard_css() {
         bundle.push('\n');
     }
     println!("cargo:rerun-if-changed={}", dashboard_dir.join("index.html").display());
-    fs::write(&out, bundle)
-        .unwrap_or_else(|err| panic!("failed to write {}: {}", out.display(), err));
+    if fs::read_to_string(&out)
+        .map(|existing| existing != bundle)
+        .unwrap_or(true)
+    {
+        fs::write(&out, bundle)
+            .unwrap_or_else(|err| panic!("failed to write {}: {}", out.display(), err));
+    }
 }
