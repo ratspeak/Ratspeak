@@ -3317,11 +3317,13 @@ body.setup-active .bottom-bar {
     position: fixed;
     inset: 0;
     margin: auto;
-    width: min(440px, calc(100vw - 28px));
+    width: min(416px, calc(100vw - 28px));
     max-height: min(92vh, 760px);
     display: flex;
     flex-direction: column;
-    background: var(--surface-dialog);
+    background:
+        radial-gradient(circle at 50% 0%, rgba(var(--accent-rgb), 0.08), transparent 34%),
+        linear-gradient(180deg, var(--surface-dialog), var(--surface-panel));
     border: 1px solid var(--border-surface);
     border-radius: var(--radius-2xl);
     box-shadow: var(--shadow-modal);
@@ -3418,14 +3420,17 @@ body.setup-active .bottom-bar {
 }
 
 .contact-share-qr-shell {
-    width: min(76vw, 330px);
+    width: min(68vw, 292px);
     aspect-ratio: 1 / 1;
     margin: 0 auto;
-    padding: 12px;
-    border: 1px solid var(--border-surface);
-    border-radius: var(--radius-xl);
-    background: #ffffff;
-    box-shadow: var(--shadow-lg);
+    padding: 10px;
+    border: 1px solid rgba(var(--accent-rgb), 0.20);
+    border-radius: calc(var(--radius-xl) + 4px);
+    background:
+        linear-gradient(145deg, rgba(var(--accent-rgb), 0.16), rgba(var(--accent-rgb), 0.04) 42%, var(--surface-panel));
+    box-shadow:
+        0 16px 36px rgba(0, 0, 0, 0.18),
+        inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .contact-share-qr {
@@ -3433,6 +3438,8 @@ body.setup-active .bottom-bar {
     width: 100%;
     height: 100%;
     border-radius: var(--radius-lg);
+    border: 1px solid rgba(42, 37, 34, 0.08);
+    background: #fffaf3;
 }
 
 .contact-share-address-block {

@@ -1092,6 +1092,9 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("RS.invoke('api_preview_contact_card'"));
     assert!(contact_card_js.contains("RS.invoke('import_contact_card'"));
     assert!(contact_card_js.contains("renderQrCanvas(canvas, card.payload || '')"));
+    assert!(contact_card_js.contains("RATSPEAK_MARK_PATHS"));
+    assert!(contact_card_js.contains("drawOfficialRatspeakMark"));
+    assert!(contact_card_js.contains("new Path2D(RATSPEAK_MARK_PATHS[i])"));
     assert!(contact_card_js.contains("function showContactAddDial"));
     assert!(
         contact_card_js.contains("isMobileContactFlow() && showContactAddDial(trigger, items)")
