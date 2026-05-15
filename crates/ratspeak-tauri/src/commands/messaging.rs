@@ -516,11 +516,12 @@ pub async fn send_lxmf_reply(
                 let rid = reply_to_id.clone();
                 let rpv = reply_to_preview.clone();
                 let id_for_update = id.clone();
+                let identity_for_update = identity_id.clone();
                 let _ = db::spawn_db(pool, move |p| {
                     if let Ok(conn) = p.get() {
                         conn.execute(
-                            "UPDATE messages SET reply_to_id = ?1, reply_to_preview = ?2 WHERE id = ?3",
-                            rusqlite::params![rid, rpv, id_for_update],
+                            "UPDATE messages SET reply_to_id = ?1, reply_to_preview = ?2 WHERE id = ?3 AND identity_id = ?4",
+                            rusqlite::params![rid, rpv, id_for_update, identity_for_update],
                         ).ok();
                     }
                 })

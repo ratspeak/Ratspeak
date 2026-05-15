@@ -1917,18 +1917,6 @@ async fn handle_inbound_lxmf(
             .map(hex::encode)
             .unwrap_or_else(|| hex::encode(rns_crypto::sha::sha256(lxmf_payload)));
 
-        // Senders retry on missing proofs; skip duplicates.
-        let msg_id_for_exists = msg_id.clone();
-        let already_exists = db::spawn_db(state.db.clone(), move |p| {
-            db::message_exists(&p, &msg_id_for_exists)
-        })
-        .await
-        .expect("db task panicked");
-        if already_exists {
-            tracing::debug!(msg_id = %msg_id, "inbound LXMF duplicate — skipping");
-            continue;
-        }
-
         tracing::info!(
             from = %source_hash,
             title = %msg.title,
@@ -1957,6 +1945,20 @@ async fn handle_inbound_lxmf(
             .unwrap_or_default();
         if identity_id.is_empty() {
             tracing::warn!("No active identity — dropping inbound message");
+            continue;
+        }
+
+        // Senders retry on missing proofs; duplicates are scoped to the local
+        // identity so two Ratspeak identities can hold the same LXMF hash.
+        let msg_id_for_exists = msg_id.clone();
+        let identity_id_for_exists = identity_id.clone();
+        let already_exists = db::spawn_db(state.db.clone(), move |p| {
+            db::message_exists_for_identity(&p, &msg_id_for_exists, &identity_id_for_exists)
+        })
+        .await
+        .expect("db task panicked");
+        if already_exists {
+            tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "inbound LXMF duplicate — skipping");
             continue;
         }
 
@@ -2206,6 +2208,10 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
                 .map(|m| (m.identity_hash.clone(), m.lxmf_hash.clone()))
         })
         .unwrap_or_default();
+    if identity_id.is_empty() {
+        tracing::warn!("No active LXMF identity — dropping link-delivered message");
+        return;
+    }
 
     let msg_id = msg
         .hash
@@ -2214,13 +2220,14 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
 
     // Skip duplicates (sender retries on missing proofs).
     let msg_id_for_exists = msg_id.clone();
+    let identity_id_for_exists = identity_id.clone();
     let already_exists = db::spawn_db(state.db.clone(), move |p| {
-        db::message_exists(&p, &msg_id_for_exists)
+        db::message_exists_for_identity(&p, &msg_id_for_exists, &identity_id_for_exists)
     })
     .await
     .expect("db task panicked");
     if already_exists {
-        tracing::debug!(msg_id = %msg_id, "link-delivered LXMF duplicate — skipping");
+        tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "link-delivered LXMF duplicate — skipping");
         return;
     }
 

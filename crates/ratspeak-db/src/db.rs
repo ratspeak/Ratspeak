@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 29;
+const SCHEMA_VERSION: i64 = 30;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = "lxmf.delivery";
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS contacts (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     source TEXT NOT NULL,
     destination TEXT NOT NULL,
     content TEXT DEFAULT '',
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS messages (
     rtt_ms REAL,
     hops INTEGER,
     path TEXT,
-    identity_id TEXT DEFAULT '',
+    identity_id TEXT NOT NULL DEFAULT '',
     attachment_name TEXT DEFAULT '',
     attachment_stored_name TEXT DEFAULT '',
     image_name TEXT DEFAULT '',
@@ -154,7 +154,8 @@ CREATE TABLE IF NOT EXISTS messages (
     game_id TEXT DEFAULT '',
     game_action TEXT DEFAULT '',
     game_move_san TEXT DEFAULT '',
-    delivery_method TEXT
+    delivery_method TEXT,
+    PRIMARY KEY (id, identity_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_dest ON messages(destination);
@@ -931,6 +932,133 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         tracing::info!("Migrated to schema version 29 (peer service aspects)");
     }
 
+    if from_version < 30 {
+        if table_exists(conn, "messages")? {
+            let msg_cols = get_column_names(conn, "messages").unwrap_or_default();
+            for (col, ddl) in [
+                ("rtt_ms", "REAL"),
+                ("hops", "INTEGER"),
+                ("path", "TEXT"),
+                ("identity_id", "TEXT DEFAULT ''"),
+                ("attachment_name", "TEXT DEFAULT ''"),
+                ("attachment_stored_name", "TEXT DEFAULT ''"),
+                ("image_name", "TEXT DEFAULT ''"),
+                ("image_stored_name", "TEXT DEFAULT ''"),
+                ("reply_to_id", "TEXT DEFAULT ''"),
+                ("reply_to_preview", "TEXT DEFAULT ''"),
+                ("game_id", "TEXT DEFAULT ''"),
+                ("game_action", "TEXT DEFAULT ''"),
+                ("game_move_san", "TEXT DEFAULT ''"),
+                ("delivery_method", "TEXT"),
+            ] {
+                if !msg_cols.iter().any(|c| c == col) {
+                    conn.execute_batch(&format!("ALTER TABLE messages ADD COLUMN {col} {ddl}"))?;
+                }
+            }
+
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS messages_ai;
+                 DROP TRIGGER IF EXISTS messages_ad;
+                 DROP TRIGGER IF EXISTS messages_au;
+                 DROP TABLE IF EXISTS messages_fts;
+
+                 ALTER TABLE messages RENAME TO messages_old;
+
+                 CREATE TABLE messages (
+                    id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    content TEXT DEFAULT '',
+                    title TEXT DEFAULT '',
+                    timestamp REAL NOT NULL,
+                    state TEXT DEFAULT 'unknown',
+                    direction TEXT DEFAULT 'outbound',
+                    rtt_ms REAL,
+                    hops INTEGER,
+                    path TEXT,
+                    identity_id TEXT NOT NULL DEFAULT '',
+                    attachment_name TEXT DEFAULT '',
+                    attachment_stored_name TEXT DEFAULT '',
+                    image_name TEXT DEFAULT '',
+                    image_stored_name TEXT DEFAULT '',
+                    reply_to_id TEXT DEFAULT '',
+                    reply_to_preview TEXT DEFAULT '',
+                    game_id TEXT DEFAULT '',
+                    game_action TEXT DEFAULT '',
+                    game_move_san TEXT DEFAULT '',
+                    delivery_method TEXT,
+                    PRIMARY KEY (id, identity_id)
+                 );
+
+                 INSERT OR IGNORE INTO messages (
+                    id, source, destination, content, title, timestamp, state, direction,
+                    rtt_ms, hops, path, identity_id,
+                    attachment_name, attachment_stored_name, image_name, image_stored_name,
+                    reply_to_id, reply_to_preview, game_id, game_action, game_move_san,
+                    delivery_method
+                 )
+                 SELECT
+                    id,
+                    COALESCE(source, ''),
+                    COALESCE(destination, ''),
+                    COALESCE(content, ''),
+                    COALESCE(title, ''),
+                    COALESCE(timestamp, 0),
+                    COALESCE(state, 'unknown'),
+                    COALESCE(direction, 'outbound'),
+                    rtt_ms,
+                    hops,
+                    path,
+                    COALESCE(identity_id, ''),
+                    COALESCE(attachment_name, ''),
+                    COALESCE(attachment_stored_name, ''),
+                    COALESCE(image_name, ''),
+                    COALESCE(image_stored_name, ''),
+                    COALESCE(reply_to_id, ''),
+                    COALESCE(reply_to_preview, ''),
+                    COALESCE(game_id, ''),
+                    COALESCE(game_action, ''),
+                    COALESCE(game_move_san, ''),
+                    delivery_method
+                 FROM messages_old;
+
+                 DROP TABLE messages_old;
+
+                 CREATE INDEX IF NOT EXISTS idx_messages_dest ON messages(destination);
+                 CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source);
+                 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+                 CREATE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_id);
+                 CREATE INDEX IF NOT EXISTS idx_messages_identity_ts ON messages(identity_id, timestamp DESC);
+                 CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(identity_id, direction, state, source);
+                 CREATE INDEX IF NOT EXISTS idx_messages_identity_state ON messages(identity_id, state);
+                 CREATE INDEX IF NOT EXISTS idx_messages_source_identity ON messages(source, identity_id, timestamp ASC);
+                 CREATE INDEX IF NOT EXISTS idx_messages_dest_identity ON messages(destination, identity_id, timestamp ASC);
+
+                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                    content, title, id UNINDEXED, identity_id UNINDEXED,
+                    content='messages', content_rowid='rowid'
+                 );
+                 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                    INSERT INTO messages_fts(rowid, content, title, id, identity_id)
+                    VALUES (new.rowid, new.content, new.title, new.id, new.identity_id);
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+                    INSERT INTO messages_fts(messages_fts, rowid, content, title, id, identity_id)
+                    VALUES ('delete', old.rowid, old.content, old.title, old.id, old.identity_id);
+                 END;
+                 CREATE TRIGGER messages_au AFTER UPDATE OF content, title ON messages BEGIN
+                    INSERT INTO messages_fts(messages_fts, rowid, content, title, id, identity_id)
+                    VALUES ('delete', old.rowid, old.content, old.title, old.id, old.identity_id);
+                    INSERT INTO messages_fts(rowid, content, title, id, identity_id)
+                    VALUES (new.rowid, new.content, new.title, new.id, new.identity_id);
+                 END;
+                 INSERT INTO messages_fts(messages_fts) VALUES('rebuild');",
+            )?;
+        }
+        conn.execute_batch("UPDATE schema_version SET version = 30;")?;
+        tracing::info!("Migrated to schema version 30 (messages scoped by identity)");
+    }
+
     Ok(())
 }
 
@@ -1488,7 +1616,7 @@ pub fn clear_pending_blackhole(pool: &DbPool, dest_hash: &str, identity_id: &str
 pub fn get_message_delivery_method(pool: &DbPool, msg_id: &str) -> Option<String> {
     let conn = pool.get().ok()?;
     conn.query_row(
-        "SELECT delivery_method FROM messages WHERE id = ?1",
+        "SELECT delivery_method FROM messages WHERE id = ?1 AND direction = 'outbound' LIMIT 1",
         params![msg_id],
         |row| row.get::<_, Option<String>>(0),
     )
@@ -1502,7 +1630,7 @@ pub fn update_message_delivery_method(pool: &DbPool, msg_id: &str, delivery_meth
         Err(_) => return,
     };
     conn.execute(
-        "UPDATE messages SET delivery_method = ?1 WHERE id = ?2",
+        "UPDATE messages SET delivery_method = ?1 WHERE id = ?2 AND direction = 'outbound'",
         params![delivery_method, msg_id],
     )
     .ok();
@@ -1516,6 +1644,20 @@ pub fn message_exists(pool: &DbPool, msg_id: &str) -> bool {
     conn.query_row(
         "SELECT COUNT(*) FROM messages WHERE id = ?1",
         params![msg_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+        > 0
+}
+
+pub fn message_exists_for_identity(pool: &DbPool, msg_id: &str, identity_id: &str) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE id = ?1 AND identity_id = ?2",
+        params![msg_id, identity_id],
         |row| row.get::<_, i64>(0),
     )
     .unwrap_or(0)
@@ -1550,8 +1692,8 @@ pub fn save_message(
     };
     let exists: bool = conn
         .query_row(
-            "SELECT COUNT(*) FROM messages WHERE id = ?1",
-            params![msg_id],
+            "SELECT COUNT(*) FROM messages WHERE id = ?1 AND identity_id = ?2",
+            params![msg_id, identity_id],
             |row| row.get::<_, i64>(0),
         )
         .unwrap_or(0)
@@ -1559,8 +1701,8 @@ pub fn save_message(
 
     if exists {
         conn.execute(
-            "UPDATE messages SET state = ?1 WHERE id = ?2",
-            params![state, msg_id],
+            "UPDATE messages SET state = ?1 WHERE id = ?2 AND identity_id = ?3",
+            params![state, msg_id, identity_id],
         )
         .ok();
     } else {
@@ -1583,14 +1725,14 @@ pub fn update_message_state(pool: &DbPool, msg_id: &str, state: &str, rtt_ms: Op
     if let Some(rtt) = rtt_ms {
         conn.execute(
             "UPDATE messages SET state = ?1, rtt_ms = ?2 \
-             WHERE id = ?3 AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+             WHERE id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
             params![state, rtt, msg_id],
         )
         .ok();
     } else {
         conn.execute(
             "UPDATE messages SET state = ?1 \
-             WHERE id = ?2 AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+             WHERE id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
             params![state, msg_id],
         )
         .ok();
@@ -2879,7 +3021,7 @@ pub fn mark_message_resent(pool: &DbPool, msg_id: &str) {
         Err(_) => return,
     };
     conn.execute(
-        "UPDATE messages SET state = 'resent' WHERE id = ?1 AND state = 'failed'",
+        "UPDATE messages SET state = 'resent' WHERE id = ?1 AND direction = 'outbound' AND state = 'failed'",
         params![msg_id],
     )
     .ok();
@@ -3297,6 +3439,74 @@ mod unread_breakdown_tests {
     }
 
     #[test]
+    fn same_lxmf_message_id_can_exist_for_different_local_identities() {
+        let pool = test_pool();
+        let shared_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        save_message(
+            &pool,
+            shared_id,
+            "identity-a-lxmf",
+            "peer-b",
+            "outbound copy",
+            "",
+            10.0,
+            "propagated",
+            "outbound",
+            "identity-a",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("propagated"),
+        );
+        save_message(
+            &pool,
+            shared_id,
+            "peer-a",
+            "identity-b-lxmf",
+            "inbound copy",
+            "",
+            20.0,
+            "received",
+            "inbound",
+            "identity-b",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            None,
+        );
+
+        assert!(message_exists_for_identity(&pool, shared_id, "identity-a"));
+        assert!(message_exists_for_identity(&pool, shared_id, "identity-b"));
+
+        let conn = pool.get().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE id = ?1",
+                params![shared_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+        drop(conn);
+
+        let identity_a = get_conversation(&pool, "peer-b", "identity-a", 10);
+        let identity_b = get_conversation(&pool, "peer-a", "identity-b", 10);
+        assert_eq!(identity_a.len(), 1);
+        assert_eq!(identity_b.len(), 1);
+        assert_eq!(
+            identity_b[0].get("content").and_then(|v| v.as_str()),
+            Some("inbound copy")
+        );
+    }
+
+    #[test]
     fn update_message_delivery_method_changes_existing_row() {
         let pool = test_pool();
         save_message(
@@ -3325,6 +3535,70 @@ mod unread_breakdown_tests {
             get_message_delivery_method(&pool, "msg").as_deref(),
             Some("propagated")
         );
+    }
+
+    #[test]
+    fn outbound_state_updates_do_not_touch_inbound_duplicate_ids() {
+        let pool = test_pool();
+        let shared_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        save_message(
+            &pool,
+            shared_id,
+            "me-a",
+            "peer",
+            "outbound",
+            "",
+            10.0,
+            "sending",
+            "outbound",
+            "identity-a",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+        save_message(
+            &pool,
+            shared_id,
+            "peer",
+            "me-b",
+            "inbound",
+            "",
+            20.0,
+            "received",
+            "inbound",
+            "identity-b",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            None,
+        );
+
+        update_message_state(&pool, shared_id, "delivered", Some(12.0));
+
+        let conn = pool.get().unwrap();
+        let inbound_state: String = conn
+            .query_row(
+                "SELECT state FROM messages WHERE id = ?1 AND identity_id = 'identity-b'",
+                params![shared_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let outbound_state: String = conn
+            .query_row(
+                "SELECT state FROM messages WHERE id = ?1 AND identity_id = 'identity-a'",
+                params![shared_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(inbound_state, "received");
+        assert_eq!(outbound_state, "delivered");
     }
 
     #[test]
