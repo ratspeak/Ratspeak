@@ -3462,16 +3462,17 @@ body.setup-active .bottom-bar {
 
 .contact-share-address {
     color: var(--text-primary);
-    font-size: var(--type-id-size);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: var(--text-xs);
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
 }
 
 .contact-share-actions,
 .contact-scan-actions {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-3);
     padding: var(--space-6) var(--space-7) var(--space-7);
 }

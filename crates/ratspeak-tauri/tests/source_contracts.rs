@@ -1095,6 +1095,9 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("RATSPEAK_MARK_PATHS"));
     assert!(contact_card_js.contains("drawOfficialRatspeakMark"));
     assert!(contact_card_js.contains("new Path2D(RATSPEAK_MARK_PATHS[i])"));
+    assert!(contact_card_js.contains("'<span>Copy</span></button>'"));
+    assert!(!contact_card_js.contains("Share Card"));
+    assert!(!contact_card_js.contains("contact-share-card"));
     assert!(contact_card_js.contains("function showContactAddDial"));
     assert!(
         contact_card_js.contains("isMobileContactFlow() && showContactAddDial(trigger, items)")
@@ -1103,6 +1106,7 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(views_css.contains(".contact-scan-sheet"));
     assert!(views_css.contains(".contact-share-qr-shell"));
     assert!(views_css.contains(".contact-scan-camera-wrap"));
+    assert!(views_css.contains("overflow-wrap: anywhere;"));
     assert!(responsive_css.contains(".view-fab.dial-open"));
     assert!(tauri_build.contains("build_dashboard_css();"));
     assert!(tauri_build.contains(r#""10-views.css""#));

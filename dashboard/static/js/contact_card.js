@@ -516,12 +516,11 @@ z`,
                 '</div>' +
                 '<div class="contact-share-address-block">' +
                     '<div class="contact-share-address-label">LXMF Address</div>' +
-                    '<div class="contact-share-address mono">' + escapeHtml(shortValue(card.lxmf_hash, 12, 8)) + '</div>' +
+                    '<div class="contact-share-address mono">' + escapeHtml(card.lxmf_hash || '') + '</div>' +
                 '</div>' +
                 '<div class="contact-share-actions">' +
-                    '<button class="nr-btn contact-share-action" id="contact-copy-address">' + iconSvg('copy') + '<span>Copy Address</span></button>' +
+                    '<button class="nr-btn contact-share-action" id="contact-copy-address">' + iconSvg('copy') + '<span>Copy</span></button>' +
                     '<button class="nr-btn contact-share-action" id="contact-share-qr">' + iconSvg('qr') + '<span>Share QR</span></button>' +
-                    '<button class="nr-btn contact-share-action" id="contact-share-card">' + iconSvg('share') + '<span>Share Card</span></button>' +
                 '</div>';
 
             var canvas = built.sheet.querySelector('canvas');
@@ -539,18 +538,6 @@ z`,
             });
             built.sheet.querySelector('#contact-copy-address').addEventListener('click', function() {
                 copyText(card.lxmf_hash, 'Address');
-            });
-            built.sheet.querySelector('#contact-share-card').addEventListener('click', function() {
-                if (navigator.share) {
-                    navigator.share({
-                        title: name + ' on Ratspeak',
-                        text: card.payload || card.lxmf_hash,
-                    }).catch(function() {});
-                } else {
-                    copyText(card.payload || card.lxmf_hash, 'Contact Card').then(function(ok) {
-                        if (!ok) showToast('Could not share contact card', 'toast-orange', 2500);
-                    });
-                }
             });
             built.sheet.querySelector('#contact-share-qr').addEventListener('click', function() {
                 canvasBlob(canvas).then(function(blob) {
