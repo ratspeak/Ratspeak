@@ -3323,7 +3323,17 @@ RS.listen('lxmf_step', function(data) {
         }
         renderConversation();
     }
-    if (data.step === 'sent' || data.step === 'routing' || data.step === 'propagating' || data.step === 'resolving') {
+    var inFlightSteps = [
+        'sent',
+        'routing',
+        'propagating',
+        'resolving',
+        'link_establishing',
+        'sending_via_link',
+        'reusing_direct_link',
+        'reusing_backchannel'
+    ];
+    if (inFlightSteps.indexOf(data.step) !== -1) {
         lxmfConversation.forEach(function(msg) {
             if (data.msg_id && msg.id === data.msg_id) {
                 msg.state = data.step;

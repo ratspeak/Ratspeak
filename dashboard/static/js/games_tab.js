@@ -103,6 +103,14 @@
         }
     }
 
+    function _isSendingDeliveryState(state) {
+        return state === 'sending' ||
+            state === 'link_establishing' ||
+            state === 'sending_via_link' ||
+            state === 'reusing_direct_link' ||
+            state === 'reusing_backchannel';
+    }
+
     function _statusText(session) {
         var status = session.status;
 
@@ -111,8 +119,8 @@
                 // LXMF Direct's MAX_DELIVERY_ATTEMPTS=5 handles transient
                 // wire loss; `failed` here means the transport gave up.
                 // Resend is exposed via the `Resend last move` button.
+                if (_isSendingDeliveryState(session.delivery_state)) return 'Sending…';
                 switch (session.delivery_state) {
-                    case 'sending':          return 'Sending…';
                     case 'sent':
                     case 'routing':          return 'Sent';
                     case 'propagating':      return 'Storing in Offline Inbox…';
@@ -407,7 +415,7 @@
             if (marker) chips.push('You are ' + marker);
         }
 
-        if (session.delivery_state === 'sending') chips.push('Sending');
+        if (_isSendingDeliveryState(session.delivery_state)) chips.push('Sending');
         if (session.delivery_state === 'propagating') chips.push('Offline Inbox');
         if (session.delivery_state === 'propagated') chips.push('Stored');
         if (session.delivery_state === 'failed') chips.push('Retry needed');

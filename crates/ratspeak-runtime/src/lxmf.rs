@@ -13,6 +13,7 @@ use lxmf_core::constants::{
     DELIVERY_RETRY_WAIT, DeliveryMethod, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES,
     PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
+use lxmf_core::link_delivery::DirectLinkStartKind;
 use lxmf_core::message::LxMessage;
 use lxmf_core::router::{LxmRouter, OutboundAction, RouterConfig};
 use rns_identity::destination::Destination;
@@ -35,6 +36,14 @@ const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_DELIVERY_TIMEOUT_SECS: f64 = 360.0;
+
+fn direct_link_start_step(kind: DirectLinkStartKind) -> &'static str {
+    match kind {
+        DirectLinkStartKind::NewDirect => "link_establishing",
+        DirectLinkStartKind::ReusedActiveDirect => "reusing_direct_link",
+        DirectLinkStartKind::QueuedOnDirect => "sending_via_link",
+    }
+}
 
 pub type PropagationHealth = (
     Vec<[u8; 16]>,
@@ -2779,7 +2788,7 @@ impl LxmfManager {
                             if let Some(hash) = msg_hash
                                 && !is_ephemeral
                             {
-                                results.push((hex::encode(hash), "sending_via_link"));
+                                results.push((hex::encode(hash), "reusing_backchannel"));
                             }
                             continue;
                         }
@@ -2873,12 +2882,23 @@ impl LxmfManager {
                 self.log_direct_route_state(dest_hash, now);
                 if let Some(ref mut ld) = self.link_delivery {
                     let attempts = message.delivery_attempts;
-                    match ld.start_delivery(message, dest_hash, hops) {
-                        Ok(_) => {
+                    match ld.start_delivery_with_report(message, dest_hash, hops) {
+                        Ok(report) => {
+                            let step = direct_link_start_step(report.kind);
+                            tracing::info!(
+                                link_id = %hex::encode(report.link_id),
+                                dest = %dest_hex,
+                                kind = ?report.kind,
+                                link_state = ?report.link_state,
+                                delivery_state = ?report.delivery_state,
+                                queued = report.queued_deliveries,
+                                in_flight = report.in_flight_deliveries,
+                                "outbound LXMF: Direct Link delivery accepted"
+                            );
                             if let Some(hash) = msg_hash
                                 && !is_ephemeral
                             {
-                                results.push((hex::encode(hash), "sending_via_link"));
+                                results.push((hex::encode(hash), step));
                             }
                         }
                         Err(err) => {
@@ -3080,12 +3100,23 @@ impl LxmfManager {
                 self.log_direct_route_state(dest_hash, now);
                 if let Some(ref mut ld) = self.link_delivery {
                     let attempts = message.delivery_attempts;
-                    match ld.start_delivery(message, dest_hash, hops) {
-                        Ok(_) => {
+                    match ld.start_delivery_with_report(message, dest_hash, hops) {
+                        Ok(report) => {
+                            let step = direct_link_start_step(report.kind);
+                            tracing::info!(
+                                link_id = %hex::encode(report.link_id),
+                                dest = %dest_hex,
+                                kind = ?report.kind,
+                                link_state = ?report.link_state,
+                                delivery_state = ?report.delivery_state,
+                                queued = report.queued_deliveries,
+                                in_flight = report.in_flight_deliveries,
+                                "outbound LXMF: oversized Direct Link delivery accepted"
+                            );
                             if let Some(hash) = msg_hash
                                 && !is_ephemeral
                             {
-                                results.push((hex::encode(hash), "sending_via_link"));
+                                results.push((hex::encode(hash), step));
                             }
                         }
                         Err(err) => {
@@ -3497,7 +3528,10 @@ mod tests {
             message: msg,
             dest_hash: dest,
         }]);
-        assert_eq!(results, vec![(hex::encode(msg_hash), "sending_via_link")]);
+        assert_eq!(
+            results,
+            vec![(hex::encode(msg_hash), "reusing_backchannel")]
+        );
         assert_eq!(mgr.pending_backchannel_starts.len(), 1);
 
         let command = command_rx.try_recv().expect("backchannel send command");
@@ -3718,6 +3752,75 @@ mod tests {
             rx.try_recv().is_err(),
             "no LinkRequest should be emitted at the post-increment attempt boundary"
         );
+    }
+
+    #[test]
+    fn direct_delivery_with_current_path_reports_link_establishing() {
+        let mut mgr = test_manager();
+        let dest = [0x46; 16];
+        let dest_hex = hex::encode(dest);
+        let remote = Identity::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex.clone(), remote.get_public_key());
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 2,
+            expires: now + 60.0,
+            interface: "test".to_string(),
+        }]);
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Direct",
+            "hello over link",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message: msg,
+            dest_hash: dest,
+        }]);
+
+        assert_eq!(results, vec![(hex::encode(msg_hash), "link_establishing")]);
+
+        match rx.try_recv().unwrap() {
+            TransportMessage::RegisterDestination {
+                hash,
+                app_name,
+                delivery_tx,
+            } => {
+                assert_eq!(hash.len(), 16);
+                assert_eq!(app_name, "lxmf.delivery.link");
+                assert!(delivery_tx.is_some());
+            }
+            other => panic!("expected RegisterDestination, got {other:?}"),
+        }
+
+        match rx.try_recv().unwrap() {
+            TransportMessage::Outbound(request) => {
+                assert_eq!(request.destination_hash, dest);
+                let (header, _) = rns_wire::header::PacketHeader::unpack(&request.raw)
+                    .expect("link request header");
+                assert_eq!(
+                    header.flags.packet_type,
+                    rns_wire::flags::PacketType::LinkRequest
+                );
+                assert_eq!(header.destination_hash, dest);
+            }
+            other => panic!("expected outbound LinkRequest, got {other:?}"),
+        }
     }
 
     /// D2: Python `handle_outbound` pre-emptively requests an unknown path for
