@@ -54,12 +54,15 @@
         return out;
     }
 
-    function QrV9L(text) {
-        var VERSION = 9;
-        var SIZE = 53;
-        var DATA_CODEWORDS = 232;
-        var ECC_CODEWORDS_PER_BLOCK = 30;
-        var NUM_BLOCKS = 2;
+    function QrContactCard(text) {
+        var VERSION = 13;
+        var SIZE = 69;
+        var ALIGNMENT_POSITIONS = [6, 34, 62];
+        var ERROR_CORRECTION_FORMAT_BITS = 3; // Error correction Q, mask value added separately.
+        var BYTE_COUNT_BITS = VERSION >= 10 ? 16 : 8;
+        var DATA_BLOCK_SIZES = [20, 20, 20, 20, 20, 20, 20, 20, 21, 21, 21, 21];
+        var DATA_CODEWORDS = DATA_BLOCK_SIZES.reduce(function(sum, count) { return sum + count; }, 0);
+        var ECC_CODEWORDS_PER_BLOCK = 24;
         var modules = [];
         var functionModules = [];
         for (var y = 0; y < SIZE; y++) {
@@ -102,9 +105,9 @@
                 setFunction(6, i, i % 2 === 0);
                 setFunction(i, 6, i % 2 === 0);
             }
-            [6, 26, 46].forEach(function(x) {
-                [6, 26, 46].forEach(function(y) {
-                    if ((x === 6 && y === 6) || (x === 46 && y === 6) || (x === 6 && y === 46)) return;
+            ALIGNMENT_POSITIONS.forEach(function(x) {
+                ALIGNMENT_POSITIONS.forEach(function(y) {
+                    if ((x === 6 && y === 6) || (x === SIZE - 7 && y === 6) || (x === 6 && y === SIZE - 7)) return;
                     drawAlignment(x, y);
                 });
             });
@@ -114,7 +117,7 @@
         }
 
         function drawFormatBits(mask) {
-            var data = (1 << 3) | mask; // Error correction L, mask 0.
+            var data = (ERROR_CORRECTION_FORMAT_BITS << 3) | mask;
             var rem = data;
             for (var i = 0; i < 10; i++) {
                 rem = (rem << 1) ^ (((rem >>> 9) & 1) ? 0x537 : 0);
@@ -190,12 +193,13 @@
 
         function encodeCodewords(value) {
             var bytes = textBytes(value);
-            if (bytes.length > 230) {
+            var maxBytePayload = Math.floor((DATA_CODEWORDS * 8 - 4 - BYTE_COUNT_BITS) / 8);
+            if (bytes.length > maxBytePayload) {
                 throw new Error('Contact card is too large for the QR layout');
             }
             var bits = [];
             appendBits(bits, 0x4, 4);
-            appendBits(bits, bytes.length, 8);
+            appendBits(bits, bytes.length, BYTE_COUNT_BITS);
             for (var i = 0; i < bytes.length; i++) appendBits(bits, bytes[i], 8);
             var capacityBits = DATA_CODEWORDS * 8;
             var terminator = Math.min(4, capacityBits - bits.length);
@@ -215,18 +219,22 @@
             var divisor = reedSolomonDivisor(ECC_CODEWORDS_PER_BLOCK);
             var blocks = [];
             var offset = 0;
-            for (var block = 0; block < NUM_BLOCKS; block++) {
-                var part = data.slice(offset, offset + 116);
-                offset += 116;
+            for (var block = 0; block < DATA_BLOCK_SIZES.length; block++) {
+                var blockSize = DATA_BLOCK_SIZES[block];
+                var part = data.slice(offset, offset + blockSize);
+                offset += blockSize;
                 blocks.push({ data: part, ecc: reedSolomonRemainder(part, divisor) });
             }
 
             var out = [];
-            for (var x = 0; x < 116; x++) {
-                for (var b = 0; b < NUM_BLOCKS; b++) out.push(blocks[b].data[x]);
+            var maxBlockSize = Math.max.apply(null, DATA_BLOCK_SIZES);
+            for (var x = 0; x < maxBlockSize; x++) {
+                for (var b = 0; b < blocks.length; b++) {
+                    if (x < blocks[b].data.length) out.push(blocks[b].data[x]);
+                }
             }
             for (var e = 0; e < ECC_CODEWORDS_PER_BLOCK; e++) {
-                for (var c = 0; c < NUM_BLOCKS; c++) out.push(blocks[c].ecc[e]);
+                for (var c = 0; c < blocks.length; c++) out.push(blocks[c].ecc[e]);
             }
             return out;
         }
@@ -418,14 +426,14 @@ z`,
         ctx.lineWidth = Math.max(2, size * 0.025);
         ctx.strokeStyle = 'rgba(210, 105, 59, 0.22)';
         ctx.stroke();
-        if (!drawOfficialRatspeakMark(ctx, cx, cy, size * 0.72, '#D2693B')) {
-            drawFallbackRatspeakMark(ctx, cx, cy, size * 0.78);
+        if (!drawOfficialRatspeakMark(ctx, cx, cy, size * 0.84, '#D2693B')) {
+            drawFallbackRatspeakMark(ctx, cx, cy, size * 0.84);
         }
         ctx.restore();
     }
 
     function renderQrCanvas(canvas, payload) {
-        var qr = QrV9L(payload);
+        var qr = QrContactCard(payload);
         var quiet = 4;
         var modules = qr.size + quiet * 2;
         var pixels = 900;
@@ -436,8 +444,8 @@ z`,
         ctx.fillStyle = qrSurface;
         ctx.fillRect(0, 0, pixels, pixels);
         var cell = pixels / modules;
-        var logoSize = pixels * 0.12;
-        var logoClearSize = logoSize * 1.04;
+        var logoSize = pixels * 0.155;
+        var logoClearSize = logoSize * 1.18;
         var logoClearMin = (pixels - logoClearSize) / 2;
         var logoClearMax = (pixels + logoClearSize) / 2;
         function moduleFallsBehindLogo(px, py) {
@@ -456,6 +464,9 @@ z`,
                 ctx.fill();
             }
         }
+        roundRect(ctx, (pixels - logoClearSize) / 2, (pixels - logoClearSize) / 2, logoClearSize, logoClearSize, logoClearSize * 0.18);
+        ctx.fillStyle = qrSurface;
+        ctx.fill();
         drawRatspeakLogo(ctx, pixels / 2, pixels / 2, logoSize, qrSurface);
         return canvas;
     }

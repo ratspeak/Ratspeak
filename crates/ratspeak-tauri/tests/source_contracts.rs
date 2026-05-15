@@ -1092,10 +1092,20 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("RS.invoke('api_preview_contact_card'"));
     assert!(contact_card_js.contains("RS.invoke('import_contact_card'"));
     assert!(contact_card_js.contains("renderQrCanvas(canvas, card.payload || '')"));
+    assert!(contact_card_js.contains("function QrContactCard(text)"));
+    assert!(contact_card_js.contains("var VERSION = 13;"));
+    assert!(contact_card_js.contains("var ERROR_CORRECTION_FORMAT_BITS = 3;"));
+    assert!(contact_card_js.contains("var BYTE_COUNT_BITS = VERSION >= 10 ? 16 : 8;"));
+    assert!(
+        contact_card_js
+            .contains("var DATA_BLOCK_SIZES = [20, 20, 20, 20, 20, 20, 20, 20, 21, 21, 21, 21];")
+    );
     assert!(contact_card_js.contains("function drawVersionBits()"));
     assert!(contact_card_js.contains("0x1f25"));
     assert!(contact_card_js.contains("drawVersionBits();"));
     assert!(contact_card_js.contains("moduleFallsBehindLogo"));
+    assert!(contact_card_js.contains("var logoSize = pixels * 0.155;"));
+    assert!(contact_card_js.contains("var logoClearSize = logoSize * 1.18;"));
     assert!(
         contact_card_js
             .contains("drawRatspeakLogo(ctx, pixels / 2, pixels / 2, logoSize, qrSurface)")
