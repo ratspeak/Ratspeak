@@ -13,9 +13,12 @@ use lxmf_core::constants::{
     DELIVERY_RETRY_WAIT, DeliveryMethod, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES,
     PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
-use lxmf_core::link_delivery::DirectLinkStartKind;
+use lxmf_core::link_delivery::{DeliveryState, DirectLinkStartKind};
 use lxmf_core::message::LxMessage;
-use lxmf_core::router::{LxmRouter, OutboundAction, RouterConfig};
+use lxmf_core::router::{
+    DirectDeliveryPlan, DirectDeliveryPlanInput, DirectReusableLinkState, DirectRouteSnapshot,
+    LxmRouter, OutboundAction, RouterConfig, plan_direct_delivery,
+};
 use rns_identity::destination::Destination;
 use rns_identity::identity::Identity;
 use rns_identity::ratchet::{
@@ -42,6 +45,19 @@ fn direct_link_start_step(kind: DirectLinkStartKind) -> &'static str {
         DirectLinkStartKind::NewDirect => "link_establishing",
         DirectLinkStartKind::ReusedActiveDirect => "reusing_direct_link",
         DirectLinkStartKind::QueuedOnDirect => "sending_via_link",
+    }
+}
+
+fn direct_route_snapshot_from_entry(
+    dest_hash: [u8; 16],
+    entry: &PathTableRpcEntry,
+) -> DirectRouteSnapshot {
+    DirectRouteSnapshot {
+        destination_hash: dest_hash,
+        hops: entry.hops.max(1),
+        interface_name: Some(entry.interface.clone()),
+        learned_at: Some(entry.timestamp),
+        expires_at: Some(entry.expires),
     }
 }
 
@@ -1860,6 +1876,122 @@ impl LxmfManager {
             .filter(|entry| entry.expires > now)
     }
 
+    fn direct_reusable_link_state(&self, dest_hash: [u8; 16]) -> DirectReusableLinkState {
+        let Some(snapshot) = self
+            .link_delivery
+            .as_ref()
+            .and_then(|ld| ld.direct_link_snapshot(dest_hash))
+        else {
+            return DirectReusableLinkState::None;
+        };
+
+        if snapshot.link_state == rns_link::link::LinkState::Closed
+            || snapshot.delivery_state == DeliveryState::Failed
+        {
+            return DirectReusableLinkState::Closed { activated: false };
+        }
+
+        if snapshot.link_state == rns_link::link::LinkState::Active
+            && snapshot.delivery_state == DeliveryState::Idle
+        {
+            DirectReusableLinkState::Active
+        } else {
+            DirectReusableLinkState::Pending
+        }
+    }
+
+    fn ensure_link_delivery_manager(&mut self) -> bool {
+        if self.link_delivery.is_some() {
+            return true;
+        }
+
+        let Some(ref tx) = self.router.transport_tx else {
+            return false;
+        };
+
+        self.link_delivery = Some(lxmf_core::link_delivery::LinkDeliveryManager::new(
+            tx.clone(),
+            Some(self.identity.get_public_key()),
+            self.identity.get_signing_key(),
+        ));
+        true
+    }
+
+    fn push_failed_outbound_state(
+        &mut self,
+        msg_hash: Option<[u8; 32]>,
+        results: &mut Vec<(String, &'static str)>,
+    ) {
+        if let Some(hash) = msg_hash {
+            if self.ephemeral_outbound.remove(&hash) {
+                return;
+            }
+            results.push((hex::encode(hash), "failed"));
+        }
+    }
+
+    fn start_direct_link_delivery_with_results(
+        &mut self,
+        message: LxMessage,
+        dest_hash: [u8; 16],
+        hops: u8,
+        now: f64,
+        msg_hash: Option<[u8; 32]>,
+        is_ephemeral: bool,
+        results: &mut Vec<(String, &'static str)>,
+    ) {
+        let dest_hex = hex::encode(dest_hash);
+        if !self.ensure_link_delivery_manager() {
+            self.push_failed_outbound_state(msg_hash, results);
+            return;
+        }
+
+        self.log_direct_route_state(dest_hash, now);
+        if let Some(ref mut ld) = self.link_delivery {
+            let attempts = message.delivery_attempts;
+            match ld.start_delivery_with_report(message, dest_hash, hops) {
+                Ok(report) => {
+                    let step = direct_link_start_step(report.kind);
+                    tracing::info!(
+                        link_id = %hex::encode(report.link_id),
+                        dest = %dest_hex,
+                        kind = ?report.kind,
+                        link_state = ?report.link_state,
+                        delivery_state = ?report.delivery_state,
+                        queued = report.queued_deliveries,
+                        in_flight = report.in_flight_deliveries,
+                        "outbound LXMF: Direct Link delivery accepted"
+                    );
+                    if let Some(hash) = msg_hash
+                        && !is_ephemeral
+                    {
+                        results.push((hex::encode(hash), step));
+                    }
+                }
+                Err(err) => {
+                    let reason = err.error.to_string();
+                    tracing::warn!(
+                        dest = %dest_hex,
+                        attempts,
+                        reason = %reason,
+                        "outbound LXMF: failed to start Direct link delivery"
+                    );
+                    if self.requeue_direct_after_link_failure(err.message, dest_hash, &reason) {
+                        if let Some(hash) = msg_hash
+                            && !is_ephemeral
+                        {
+                            results.push((hex::encode(hash), "routing"));
+                        }
+                    } else {
+                        self.push_failed_outbound_state(msg_hash, results);
+                    }
+                }
+            }
+        } else {
+            self.push_failed_outbound_state(msg_hash, results);
+        }
+    }
+
     fn queue_path_rediscovery(&self, dest_hash: [u8; 16], drop_existing: bool, reason: &str) {
         let Some(ref tx) = self.router.transport_tx else {
             return;
@@ -2803,135 +2935,105 @@ impl LxmfManager {
                     }
                 }
 
-                if !self.known_identities.contains_key(&dest_hex) {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs_f64();
-                    message.delivery_attempts += 1;
-                    message.last_delivery_attempt = now;
-                    if let Some(ref tx) = self.router.transport_tx {
-                        let _ = tx.try_send(TransportMessage::RequestPath {
-                            destination_hash: dest_hash,
-                        });
-                    }
-
-                    message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
-                    tracing::warn!(
-                        dest = %dest_hex,
-                        attempts = message.delivery_attempts,
-                        "outbound LXMF: destination key unknown, re-queuing direct link delivery"
-                    );
-                    self.router.send(message);
-                    continue;
-                }
-
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs_f64();
-                message.delivery_attempts += 1;
-                message.last_delivery_attempt = now;
+                let route = self
+                    .direct_route_entry(dest_hash, now)
+                    .map(|entry| direct_route_snapshot_from_entry(dest_hash, entry));
+                let identity_known = self.known_identities.contains_key(&dest_hex);
+                let had_expired_snapshot = identity_known
+                    && route.is_none()
+                    && self.route_entries.contains_key(&dest_hash);
+                let plan = plan_direct_delivery(
+                    &mut message,
+                    DirectDeliveryPlanInput {
+                        identity_known,
+                        route,
+                        reusable_link: self.direct_reusable_link_state(dest_hash),
+                    },
+                    now,
+                );
 
-                if self.direct_route_entry(dest_hash, now).is_none() {
-                    let had_expired_snapshot = self.route_entries.contains_key(&dest_hash);
-                    self.queue_path_rediscovery(dest_hash, had_expired_snapshot, "no current path");
-                    tracing::warn!(
-                        dest = %dest_hex,
-                        attempts = message.delivery_attempts,
-                        expired_snapshot = had_expired_snapshot,
-                        "outbound LXMF: Direct delivery has no current path, re-queuing"
-                    );
-                    message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
-                    self.router.send(message);
-                    if let Some(hash) = msg_hash
-                        && !is_ephemeral
-                    {
-                        results.push((hex::encode(hash), "routing"));
-                    }
-                    continue;
-                }
-
-                // Python increments the attempt counter before considering a
-                // new Link, but only creates that Link while attempts < MAX
-                // (LXMRouter.py:2655-2669). Keep the terminal >MAX failure
-                // boundary in the router while preventing one extra LinkRequest.
-                if message.delivery_attempts >= MAX_DELIVERY_ATTEMPTS {
-                    message.next_delivery_attempt = now + DELIVERY_RETRY_WAIT as f64;
-                    tracing::warn!(
-                        dest = %dest_hex,
-                        attempts = message.delivery_attempts,
-                        max_attempts = MAX_DELIVERY_ATTEMPTS,
-                        "outbound LXMF: Direct delivery attempt budget reached; deferring terminal failure"
-                    );
-                    self.router.send(message);
-                    continue;
-                }
-
-                if self.link_delivery.is_none()
-                    && let Some(ref tx) = self.router.transport_tx
-                {
-                    self.link_delivery = Some(lxmf_core::link_delivery::LinkDeliveryManager::new(
-                        tx.clone(),
-                        Some(self.identity.get_public_key()),
-                        self.identity.get_signing_key(),
-                    ));
-                }
-
-                let hops = self.delivery_link_hops(dest_hash);
-                self.log_direct_route_state(dest_hash, now);
-                if let Some(ref mut ld) = self.link_delivery {
-                    let attempts = message.delivery_attempts;
-                    match ld.start_delivery_with_report(message, dest_hash, hops) {
-                        Ok(report) => {
-                            let step = direct_link_start_step(report.kind);
-                            tracing::info!(
-                                link_id = %hex::encode(report.link_id),
-                                dest = %dest_hex,
-                                kind = ?report.kind,
-                                link_state = ?report.link_state,
-                                delivery_state = ?report.delivery_state,
-                                queued = report.queued_deliveries,
-                                in_flight = report.in_flight_deliveries,
-                                "outbound LXMF: Direct Link delivery accepted"
-                            );
-                            if let Some(hash) = msg_hash
-                                && !is_ephemeral
-                            {
-                                results.push((hex::encode(hash), step));
-                            }
-                        }
-                        Err(err) => {
-                            let reason = err.error.to_string();
-                            tracing::warn!(
-                                dest = %dest_hex,
-                                attempts,
-                                reason = %reason,
-                                "outbound LXMF: failed to start Direct link delivery"
-                            );
-                            if self.requeue_direct_after_link_failure(
-                                err.message,
-                                dest_hash,
-                                &reason,
-                            ) {
-                                if let Some(hash) = msg_hash
-                                    && !is_ephemeral
-                                {
-                                    results.push((hex::encode(hash), "routing"));
-                                }
-                            } else if let Some(hash) = msg_hash {
-                                if self.ephemeral_outbound.remove(&hash) {
-                                    continue;
-                                }
-                                results.push((hex::encode(hash), "failed"));
-                            }
+                match plan {
+                    DirectDeliveryPlan::RequestPath { drop_existing } => {
+                        let drop_existing = drop_existing || had_expired_snapshot;
+                        let reason = if identity_known {
+                            "no current path"
+                        } else {
+                            "destination identity unknown"
+                        };
+                        self.queue_path_rediscovery(dest_hash, drop_existing, reason);
+                        tracing::warn!(
+                            dest = %dest_hex,
+                            attempts = message.delivery_attempts,
+                            drop_existing,
+                            identity_known,
+                            expired_snapshot = had_expired_snapshot,
+                            "outbound LXMF: Direct delivery waiting for path"
+                        );
+                        self.router.send(message);
+                        if identity_known
+                            && let Some(hash) = msg_hash
+                            && !is_ephemeral
+                        {
+                            results.push((hex::encode(hash), "routing"));
                         }
                     }
-                } else if let Some(hash) = msg_hash {
-                    if self.ephemeral_outbound.remove(&hash) {
-                        continue;
+                    DirectDeliveryPlan::DeferTerminalFailure => {
+                        tracing::warn!(
+                            dest = %dest_hex,
+                            attempts = message.delivery_attempts,
+                            max_attempts = MAX_DELIVERY_ATTEMPTS,
+                            "outbound LXMF: Direct delivery attempt budget reached; deferring terminal failure"
+                        );
+                        self.router.send(message);
                     }
-                    results.push((hex::encode(hash), "failed"));
+                    DirectDeliveryPlan::WaitForReusableLink => {
+                        tracing::debug!(
+                            dest = %dest_hex,
+                            attempts = message.delivery_attempts,
+                            "outbound LXMF: Direct delivery waiting for reusable Link"
+                        );
+                        self.router.send(message);
+                        if let Some(hash) = msg_hash
+                            && !is_ephemeral
+                        {
+                            results.push((hex::encode(hash), "sending_via_link"));
+                        }
+                    }
+                    DirectDeliveryPlan::UseReusableLink => {
+                        let hops = self.delivery_link_hops(dest_hash);
+                        self.start_direct_link_delivery_with_results(
+                            message,
+                            dest_hash,
+                            hops,
+                            now,
+                            msg_hash,
+                            is_ephemeral,
+                            &mut results,
+                        );
+                    }
+                    DirectDeliveryPlan::StartNewLink { hops } => {
+                        self.start_direct_link_delivery_with_results(
+                            message,
+                            dest_hash,
+                            hops,
+                            now,
+                            msg_hash,
+                            is_ephemeral,
+                            &mut results,
+                        );
+                    }
+                    DirectDeliveryPlan::Fail => {
+                        if let Some(hash) = msg_hash {
+                            if self.ephemeral_outbound.remove(&hash) {
+                                continue;
+                            }
+                            results.push((hex::encode(hash), "failed"));
+                        }
+                    }
                 }
                 continue;
             }
@@ -3823,6 +3925,81 @@ mod tests {
             }
             other => panic!("expected outbound LinkRequest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn direct_delivery_with_pending_link_waits_without_new_link_request() {
+        let mut mgr = test_manager();
+        let dest = [0x47; 16];
+        let dest_hex = hex::encode(dest);
+        let remote = Identity::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(dest_hex.clone(), remote.get_public_key());
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 2,
+            expires: now + 60.0,
+            interface: "test".to_string(),
+        }]);
+
+        let mut first = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Direct one",
+            "opens link",
+            DeliveryMethod::Direct,
+        );
+        first
+            .sign(&mgr.identity.get_signing_key().unwrap())
+            .unwrap();
+        let first_hash = first.hash.unwrap();
+        assert_eq!(
+            mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+                message: first,
+                dest_hash: dest,
+            }]),
+            vec![(hex::encode(first_hash), "link_establishing")]
+        );
+
+        rx.try_recv().expect("destination registration");
+        rx.try_recv().expect("initial LinkRequest");
+
+        let mut second = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Direct two",
+            "waits on pending link",
+            DeliveryMethod::Direct,
+        );
+        second
+            .sign(&mgr.identity.get_signing_key().unwrap())
+            .unwrap();
+        let second_hash = second.hash.unwrap();
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message: second,
+            dest_hash: dest,
+        }]);
+
+        assert_eq!(
+            results,
+            vec![(hex::encode(second_hash), "sending_via_link")]
+        );
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+        assert_eq!(mgr.router.pending_outbound[0].delivery_attempts, 0);
+        assert!(
+            rx.try_recv().is_err(),
+            "pending reusable Direct Link must not emit another LinkRequest"
+        );
     }
 
     /// D2: Python `handle_outbound` pre-emptively requests an unknown path for
