@@ -3315,10 +3315,12 @@ body.setup-active .bottom-bar {
 .contact-share-sheet,
 .contact-scan-sheet {
     position: fixed;
-    inset: 0;
-    margin: auto;
+    top: 50%;
+    left: 50%;
+    height: auto;
+    margin: 0;
     width: min(416px, calc(100vw - 28px));
-    max-height: min(92vh, 760px);
+    max-height: min(calc(var(--app-height, 100vh) - 32px - var(--sat, 0px) - var(--sab, 0px)), 760px);
     display: flex;
     flex-direction: column;
     background:
@@ -3330,7 +3332,7 @@ body.setup-active .bottom-bar {
     z-index: calc(var(--z-modal) + 1);
     overflow: hidden auto;
     opacity: 0;
-    transform: translateY(12px) scale(0.98);
+    transform: translate(-50%, calc(-50% + 12px)) scale(0.98);
     pointer-events: none;
     transition: opacity var(--transition-base), transform var(--transition-base);
 }
@@ -3338,7 +3340,7 @@ body.setup-active .bottom-bar {
 .contact-share-sheet.open,
 .contact-scan-sheet.open {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate(-50%, -50%) scale(1);
     pointer-events: auto;
 }
 

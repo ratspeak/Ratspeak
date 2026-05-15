@@ -1117,6 +1117,11 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("drawOfficialRatspeakMark"));
     assert!(contact_card_js.contains("new Path2D(RATSPEAK_MARK_PATHS[i])"));
     assert!(contact_card_js.contains("'<span>Copy</span></button>'"));
+    assert!(contact_card_js.contains(r#"<circle cx="9" cy="7" r="4"/>"#));
+    assert!(
+        !contact_card_js.contains("M12 21s7-4.35"),
+        "address contact action should use a peer/person icon, not a map pin"
+    );
     assert!(!contact_card_js.contains("Share Card"));
     assert!(!contact_card_js.contains("contact-share-card"));
     assert!(!contact_card_js.contains("contact-scan-check"));
@@ -1126,6 +1131,9 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     );
     assert!(views_css.contains(".contact-share-sheet"));
     assert!(views_css.contains(".contact-scan-sheet"));
+    assert!(views_css.contains("top: 50%;\n    left: 50%;\n    height: auto;"));
+    assert!(views_css.contains("transform: translate(-50%, calc(-50% + 12px)) scale(0.98);"));
+    assert!(views_css.contains("transform: translate(-50%, -50%) scale(1);"));
     assert!(views_css.contains(".contact-share-qr-shell"));
     assert!(views_css.contains(".contact-scan-camera-wrap"));
     assert!(views_css.contains(".contact-scan-avatar {\n    width: 72px;\n    height: 72px;\n    border-radius: var(--radius-full);"));
@@ -1135,6 +1143,9 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
         "scan preview should lead with the peer avatar, not a separate success check"
     );
     assert!(views_css.contains("overflow-wrap: anywhere;"));
+    assert!(responsive_css.contains(
+        ".fab-dial-btn svg {\n        display: block;\n        width: 22px;\n        height: 22px;"
+    ));
     assert!(responsive_css.contains(".view-fab.dial-open"));
     assert!(tauri_build.contains("build_dashboard_css();"));
     assert!(tauri_build.contains(r#""10-views.css""#));

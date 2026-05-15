@@ -2355,6 +2355,12 @@
         transition: opacity var(--transition-fast), transform var(--transition-fast);
         outline: none;
     }
+    .fab-dial-btn svg {
+        display: block;
+        width: 22px;
+        height: 22px;
+        flex: 0 0 22px;
+    }
     .fab-dial-actions.open .fab-dial-btn {
         opacity: 1;
         transform: scale(1) translateY(0);
