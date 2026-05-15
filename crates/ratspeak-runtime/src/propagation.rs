@@ -141,6 +141,10 @@ fn node_state_is_usable(value: &serde_json::Value) -> bool {
     )
 }
 
+fn relay_metadata_is_usable(value: &serde_json::Value) -> bool {
+    value.get("stamp_cost").and_then(|v| v.as_u64()).is_some()
+}
+
 fn relay_path_state_allows_selection(value: &serde_json::Value, now: f64) -> bool {
     let backoff_active = value
         .get("backoff_until")
@@ -200,6 +204,7 @@ fn static_entry_is_selectable(value: &serde_json::Value, now: f64) -> bool {
         .unwrap_or("unknown");
     (status == "reachable" || last_seen_is_current(value, now))
         && node_state_is_usable(value)
+        && relay_metadata_is_usable(value)
         && relay_path_state_allows_selection(value, now)
 }
 
@@ -596,6 +601,7 @@ pub fn auto_select_node(state: &AppState) -> Option<[u8; 16]> {
                 } else {
                     // Never auto-pick a node we couldn't parse PN metadata for.
                     if !node_state_is_usable(value)
+                        || !relay_metadata_is_usable(value)
                         || !last_seen_is_current(value, now)
                         || !relay_path_state_allows_selection(value, now)
                     {
@@ -745,6 +751,7 @@ fn auto_select_node_with_live_paths(
                         return None;
                     }
                 } else if !node_state_is_usable(value)
+                    || !relay_metadata_is_usable(value)
                     || !last_seen_is_current(value, now)
                     || !relay_path_state_allows_selection(value, now)
                 {
@@ -791,7 +798,7 @@ fn auto_select_node_with_live_paths(
     candidates.first().map(|(_, _, _, h)| *h)
 }
 
-async fn request_relay_path(state: &Arc<AppState>, hash: [u8; 16]) {
+pub async fn request_relay_path(state: &Arc<AppState>, hash: [u8; 16]) {
     let transport_tx = state
         .rns
         .read()
@@ -1001,6 +1008,7 @@ pub async fn ensure_relay_ready_for_send(state: &Arc<AppState>) -> RelayReadines
                 mark_relay_path_success(state, winner);
                 relay_send_ready_or_waiting(state, winner).await
             } else {
+                let _ = refresh_paths(state, true).await;
                 clear_auto_selection(state).await;
                 RelayReadiness::Waiting
             }
@@ -1506,6 +1514,7 @@ mod tests {
             "hash": hash_hex,
             "display_name": format!("Test {}", &hex::encode(hash)[..6]),
             "hops": hops,
+            "stamp_cost": 16,
             "last_seen": last_seen,
             "node_state": node_state,
         });
@@ -1526,6 +1535,7 @@ mod tests {
             "hash": hash_hex,
             "display_name": format!("Static {}", &hex::encode(hash)[..6]),
             "hops": hops,
+            "stamp_cost": 16,
             "last_seen": last_seen,
             "node_state": node_state,
             "static_status": static_status,
@@ -1835,6 +1845,15 @@ mod tests {
         let now = now_f64();
         let sync_hub = sync_hub_hash();
         seed_static_node(&state, sync_hub, None, 0.0, "bootstrap", "unknown");
+        {
+            let mut nodes = state.discovered_propagation_nodes.lock().unwrap();
+            nodes
+                .get_mut(&hex::encode(sync_hub))
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove("stamp_cost");
+        }
         seed_node(&state, [0xBB; 16], 1, now);
 
         let mut live = HashSet::new();
@@ -1851,8 +1870,47 @@ mod tests {
 
         assert_eq!(
             auto_select_node_with_live_paths(&state, &live),
+            Some([0xBB; 16]),
+            "a live path alone must not promote the bundled sync hub before PN metadata is known"
+        );
+
+        {
+            let mut nodes = state.discovered_propagation_nodes.lock().unwrap();
+            nodes
+                .get_mut(&hex::encode(sync_hub))
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("stamp_cost".to_string(), json!(16));
+        }
+
+        assert_eq!(
+            auto_select_node_with_live_paths(&state, &live),
             Some(sync_hub),
-            "a live path to the bundled sync hub must promote it above fallback nodes"
+            "a live path plus PN metadata promotes the bundled sync hub above fallback nodes"
+        );
+    }
+
+    #[test]
+    fn reachable_static_without_pn_metadata_is_not_auto_selected() {
+        let state = make_state();
+        let now = now_f64();
+        let sync_hub = sync_hub_hash();
+        seed_static_node(&state, sync_hub, Some(1), now, "known", "reachable");
+        {
+            let mut nodes = state.discovered_propagation_nodes.lock().unwrap();
+            nodes
+                .get_mut(&hex::encode(sync_hub))
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove("stamp_cost");
+        }
+
+        assert_eq!(
+            auto_select_node(&state),
+            None,
+            "Auto must not connect to a static node until its PN stamp-cost metadata is known"
         );
     }
 

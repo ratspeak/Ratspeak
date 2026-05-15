@@ -1063,6 +1063,47 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         } else {
                             false
                         };
+                    save_counter = save_counter.wrapping_add(1);
+                    let should_save_crypto_state = save_counter.is_multiple_of(600);
+                    let tick_state_for_lxmf = tick_state.clone();
+                    let tick_result = tokio::task::spawn_blocking(move || {
+                        if let Ok(mut lxmf) = tick_state_for_lxmf.lxmf.lock()
+                            && let Some(mgr) = lxmf.as_mut()
+                        {
+                            let results = mgr.tick_with_auto_propagation_download_ready(
+                                auto_inbox_download_ready,
+                            );
+                            let downloaded = mgr.take_downloaded_propagation_messages();
+                            let (
+                                completed_deposits,
+                                failed_deposits,
+                                completed_syncs,
+                                failed_syncs,
+                            ) = mgr.take_propagation_health();
+                            // Persist crypto state every ~5 min (600 × 500ms).
+                            if should_save_crypto_state {
+                                mgr.save_crypto_state();
+                            }
+                            (
+                                results,
+                                downloaded,
+                                completed_deposits,
+                                failed_deposits,
+                                completed_syncs,
+                                failed_syncs,
+                            )
+                        } else {
+                            (
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        }
+                    })
+                    .await;
                     let (
                         results,
                         downloaded_propagation_messages,
@@ -1070,43 +1111,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         failed_propagation_deposits,
                         completed_propagation_syncs,
                         failed_propagation_syncs,
-                    ) = {
-                        if let Ok(mut lxmf) = tick_state.lxmf.lock() {
-                            if let Some(mgr) = lxmf.as_mut() {
-                                let results = mgr.tick_with_auto_propagation_download_ready(
-                                    auto_inbox_download_ready,
-                                );
-                                let downloaded = mgr.take_downloaded_propagation_messages();
-                                let (
-                                    completed_deposits,
-                                    failed_deposits,
-                                    completed_syncs,
-                                    failed_syncs,
-                                ) = mgr.take_propagation_health();
-                                // Persist crypto state every ~5 min (600 × 500ms).
-                                save_counter += 1;
-                                if save_counter.is_multiple_of(600) {
-                                    mgr.save_crypto_state();
-                                }
-                                (
-                                    results,
-                                    downloaded,
-                                    completed_deposits,
-                                    failed_deposits,
-                                    completed_syncs,
-                                    failed_syncs,
-                                )
-                            } else {
-                                (
-                                    Vec::new(),
-                                    Vec::new(),
-                                    Vec::new(),
-                                    Vec::new(),
-                                    Vec::new(),
-                                    Vec::new(),
-                                )
-                            }
-                        } else {
+                    ) = match tick_result {
+                        Ok(result) => result,
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "lxmf tick worker failed; skipping this tick"
+                            );
                             (
                                 Vec::new(),
                                 Vec::new(),

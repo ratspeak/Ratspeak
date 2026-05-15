@@ -1773,6 +1773,28 @@ fn offline_inbox_auto_settings_use_ratspeak_node_preference() {
     assert!(!propagation_js.contains("Connecting..."));
     assert!(!settings_html.contains("Relay Node"));
     assert!(settings_html.contains("Offline Inbox"));
+    assert!(propagation_js.contains("beginRelayRefresh(RELAY_REFRESH_WATCHDOG_MS)"));
+    assert!(propagation_js.contains("finishRelayRefresh()"));
+    assert!(propagation_js.contains("clearRelayRefreshWatchdog()"));
+    assert!(network_commands.contains("propagation::request_relay_path(&st, node).await"));
+    assert!(
+        network_commands.contains("crate::propagation::request_relay_path(&state, node).await")
+    );
+    assert!(network_commands.contains("ensure_relay_ready_for_send(&state).await"));
+}
+
+#[test]
+fn lxmf_tick_runs_blocking_work_off_async_runtime() {
+    let root = repo_root();
+    let runtime =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime source");
+    let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf source");
+
+    assert!(runtime.contains("tokio::task::spawn_blocking(move ||"));
+    assert!(runtime.contains("mgr.tick_with_auto_propagation_download_ready("));
+    assert!(runtime.contains("lxmf tick worker failed; skipping this tick"));
+    assert!(lxmf.contains("OutboundAction::Failed(message) | OutboundAction::Expired(message)"));
+    assert!(lxmf.contains("expired_or_attempt_exhausted_outbound_surfaces_failed_state"));
 }
 
 #[test]

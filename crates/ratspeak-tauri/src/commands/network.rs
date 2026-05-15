@@ -271,6 +271,13 @@ pub async fn set_propagation_mode(
             if let Ok(mut slot) = st.auto_active_node.write() {
                 *slot = None;
             }
+            if !stored_hash.is_empty() && validate_hex(&stored_hash, 32, 32) {
+                let bytes = hex::decode(&stored_hash)
+                    .map_err(|_| AppError::bad_request("Offline Inbox node hash must be hex"))?;
+                let mut node = [0u8; 16];
+                node.copy_from_slice(&bytes);
+                propagation::request_relay_path(&st, node).await;
+            }
         }
     }
 
@@ -499,6 +506,7 @@ pub async fn set_propagation_node(
 
     let st: Arc<AppState> = Arc::clone(&state);
     if mode == crate::propagation::PropagationMode::Manual {
+        let path_request_node = runtime_node;
         tokio::task::spawn_blocking(move || {
             if let Ok(mut lxmf) = st.lxmf.lock()
                 && let Some(mgr) = lxmf.as_mut()
@@ -510,6 +518,9 @@ pub async fn set_propagation_node(
         .map_err(|_| AppError::internal("set_propagation_node task panicked"))?;
         if let Ok(mut slot) = state.auto_active_node.write() {
             *slot = None;
+        }
+        if let Some(node) = path_request_node {
+            crate::propagation::request_relay_path(&state, node).await;
         }
     }
 
@@ -560,6 +571,9 @@ pub async fn sync_propagation(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         crate::propagation::handle_sync_failure(&st).await;
     }
 
+    let readiness = crate::propagation::ensure_relay_ready_for_send(&state).await;
+    let relay_ready = readiness == crate::propagation::RelayReadiness::Ready;
+
     let result = if let Ok(mut lxmf) = state.lxmf.lock() {
         if let Some(mgr) = lxmf.as_mut() {
             if let Some(ref mut client) = mgr.propagation_client {
@@ -569,27 +583,15 @@ pub async fn sync_propagation(state: State<'_, Arc<AppState>>) -> AppResult<Valu
                         | PropagationClientState::Complete
                         | PropagationClientState::Failed
                 ) {
-                    let node_ready = mgr
-                        .router
-                        .outbound_propagation_node
-                        .map(|node| mgr.known_identities.contains_key(&hex::encode(node)))
-                        .unwrap_or(false);
-                    if node_ready {
+                    if relay_ready {
                         client.start_download();
-                    } else if let Some(node) = mgr.router.outbound_propagation_node
-                        && let Some(ref tx) = mgr.router.transport_tx
-                    {
-                        let _ =
-                            tx.try_send(rns_transport::messages::TransportMessage::RequestPath {
-                                destination_hash: node,
-                            });
                     }
                     json!({
                         "ok": true,
                         "success": true,
-                        "started": true,
+                        "started": relay_ready,
                         "downloaded": 0,
-                        "message": if node_ready { "Offline Inbox check started" } else { "Offline Inbox path requested" },
+                        "message": if relay_ready { "Offline Inbox check started" } else { "Offline Inbox path requested" },
                     })
                 } else {
                     json!({

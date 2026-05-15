@@ -21,6 +21,8 @@ var propagationStatus = {
 
 var discoveredRelayNodes = [];
 var refreshInFlight = false;
+var refreshWatchdog = null;
+var RELAY_REFRESH_WATCHDOG_MS = 15000;
 
 // Backend trims to 512 with a 48h TTL; UI shows top 30 (rest still tracked).
 var MAX_RELAY_ROWS = 30;
@@ -492,12 +494,48 @@ function findNode(hash) {
     return null;
 }
 
+function clearRelayRefreshWatchdog() {
+    if (refreshWatchdog) {
+        clearTimeout(refreshWatchdog);
+        refreshWatchdog = null;
+    }
+}
+
+function beginRelayRefresh(timeoutMs) {
+    refreshInFlight = true;
+    clearRelayRefreshWatchdog();
+    refreshWatchdog = setTimeout(function() {
+        refreshInFlight = false;
+        refreshWatchdog = null;
+        renderPropagationStatus();
+    }, timeoutMs || RELAY_REFRESH_WATCHDOG_MS);
+}
+
+function finishRelayRefresh() {
+    refreshInFlight = false;
+    clearRelayRefreshWatchdog();
+    renderPropagationStatus();
+}
+
 function applyPropagationMode(mode, opts) {
     var args = { mode: mode };
     if (opts && opts.favor_static !== undefined) args.favorStatic = !!opts.favor_static;
+    propagationStatus.mode = mode;
+    if (mode === 'off') {
+        propagationStatus.connected = false;
+    } else if (opts && opts.favor_static !== undefined) {
+        propagationStatus.favor_static = !!opts.favor_static;
+    }
+    renderPropagationStatus();
     RS.invoke('set_propagation_mode', args).catch(function(err) {
         showToast('Could not change Offline Inbox mode: ' + (err && err.message ? err.message : 'Unknown'),
             'toast-red', 4000);
+        RS.invoke('api_propagation').then(function(data) {
+            propagationStatus = data || propagationStatus;
+            renderPropagationStatus();
+        }).catch(function() {
+            renderPropagationStatus();
+        });
     });
 }
 
@@ -544,7 +582,7 @@ function syncPropagationMailbox() {
 
 function refreshRelayNodes() {
     if (refreshInFlight) return;
-    refreshInFlight = true;
+    beginRelayRefresh(RELAY_REFRESH_WATCHDOG_MS);
     var btn = document.getElementById('prop-refresh-btn');
     if (btn) {
         btn.disabled = true;
@@ -555,13 +593,9 @@ function refreshRelayNodes() {
         if (outcome.kind === 'offline') {
             showToast('No transport connection — connect to a hub interface first.',
                 'toast-red', 4000);
-            refreshInFlight = false;
-            renderPropagationStatus();
         } else if (outcome.kind === 'throttled') {
             showToast('Refresh throttled — try again in a few seconds.',
                 'toast-blue', 3000);
-            refreshInFlight = false;
-            renderPropagationStatus();
         }
         // Re-pull so newly-arrived nodes appear without waiting for the
         // ~4s propagation_update follow-up emit.
@@ -569,17 +603,17 @@ function refreshRelayNodes() {
     }).then(function(data) {
         if (Array.isArray(data)) {
             discoveredRelayNodes = data;
-            renderPropagationStatus();
         }
+        finishRelayRefresh();
     }).catch(function() {
-        refreshInFlight = false;
-        renderPropagationStatus();
+        finishRelayRefresh();
     });
 }
 
 RS.listen('propagation_update', function(data) {
     propagationStatus = data || propagationStatus;
     refreshInFlight = false;
+    clearRelayRefreshWatchdog();
     renderPropagationStatus();
     var relayDot = document.getElementById('settings-relay-dot');
     if (relayDot) {
@@ -606,11 +640,12 @@ RS.listen('propagation_update', function(data) {
 });
 
 RS.listen('propagation_refresh_started', function(data) {
-    refreshInFlight = true;
+    var count = (data && data.count) || 0;
+    beginRelayRefresh(Math.max(RELAY_REFRESH_WATCHDOG_MS, 8000 + count * 2000));
     var btn = document.getElementById('prop-refresh-btn');
     if (btn) {
         btn.disabled = true;
-        btn.textContent = 'Requesting ' + ((data && data.count) || 0) + ' path(s)…';
+        btn.textContent = 'Requesting ' + count + ' path(s)…';
     }
 });
 

@@ -2170,65 +2170,33 @@ impl LxmfManager {
         let prop_hex = hex::encode(prop_hash);
 
         if !self.known_identities.contains_key(&prop_hex) {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
-            message.delivery_attempts += 1;
-            message.last_delivery_attempt = now;
-            if let Some(ref tx) = self.router.transport_tx {
-                let _ = tx.try_send(TransportMessage::RequestPath {
-                    destination_hash: prop_hash,
-                });
-            }
             tracing::warn!(
                 prop = %prop_hex,
                 attempts = message.delivery_attempts,
                 "cannot propagate LXMF before propagation node identity is known; requesting path"
             );
-            self.router.send(message);
+            self.defer_propagation_delivery(message, prop_hash);
             return;
         }
 
         if self.router.get_stamp_cost(&prop_hash).is_none() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
-            message.delivery_attempts += 1;
-            message.last_delivery_attempt = now;
-            if let Some(ref tx) = self.router.transport_tx {
-                let _ = tx.try_send(TransportMessage::RequestPath {
-                    destination_hash: prop_hash,
-                });
-            }
             tracing::warn!(
                 prop = %prop_hex,
                 attempts = message.delivery_attempts,
                 "cannot propagate LXMF before propagation node stamp cost is known; requesting path"
             );
-            self.router.send(message);
+            self.defer_propagation_delivery(message, prop_hash);
             return;
         }
 
         if !self.known_identities.contains_key(&dest_hex) {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
-            message.delivery_attempts += 1;
-            message.last_delivery_attempt = now;
-            if let Some(ref tx) = self.router.transport_tx {
-                let _ = tx.try_send(TransportMessage::RequestPath {
-                    destination_hash: message.destination_hash,
-                });
-            }
             tracing::warn!(
                 dest = %dest_hex,
                 attempts = message.delivery_attempts,
                 "cannot propagate LXMF before recipient identity key is known; requesting path"
             );
-            self.router.send(message);
+            let destination_hash = message.destination_hash;
+            self.defer_propagation_delivery(message, destination_hash);
             return;
         }
 
@@ -2266,15 +2234,25 @@ impl LxmfManager {
         }
     }
 
+    fn defer_propagation_delivery(&mut self, mut message: LxMessage, request_hash: [u8; 16]) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        message.last_delivery_attempt = now;
+        if let Some(ref tx) = self.router.transport_tx {
+            let _ = tx.try_send(TransportMessage::RequestPath {
+                destination_hash: request_hash,
+            });
+        }
+        self.router.send(message);
+    }
+
     fn execute_encrypted_actions(
         &mut self,
         actions: Vec<OutboundAction>,
     ) -> Vec<(String, &'static str)> {
         let mut results = Vec::new();
-        let transport_tx = match &self.router.transport_tx {
-            Some(tx) => tx.clone(),
-            None => return results,
-        };
 
         for action in actions {
             let (mut message, dest_hash, is_opportunistic) = match action {
@@ -2291,7 +2269,13 @@ impl LxmfManager {
                     self.start_propagation_delivery(message, prop_hash, &mut results);
                     continue;
                 }
-                OutboundAction::Failed(_) | OutboundAction::Expired(_) => {
+                OutboundAction::Failed(message) | OutboundAction::Expired(message) => {
+                    if let Some(hash) = message.hash {
+                        if self.ephemeral_outbound.remove(&hash) {
+                            continue;
+                        }
+                        results.push((hex::encode(hash), "failed"));
+                    }
                     continue;
                 }
             };
@@ -2459,6 +2443,17 @@ impl LxmfManager {
                 }
                 continue;
             }
+
+            let Some(ref transport_tx) = self.router.transport_tx else {
+                tracing::error!(dest = %dest_hex, "transport unavailable; message dropped");
+                if let Some(hash) = msg_hash {
+                    if self.ephemeral_outbound.remove(&hash) {
+                        continue;
+                    }
+                    results.push((hex::encode(hash), "failed"));
+                }
+                continue;
+            };
 
             match transport_tx.try_send(TransportMessage::Outbound(
                 rns_transport::messages::OutboundRequest {
@@ -3150,6 +3145,20 @@ mod tests {
                 .any(|msg| msg.hash == Some(message_id)),
             "message should be requeued until propagation-node stamp cost is learned"
         );
+        let queued = mgr
+            .router
+            .pending_outbound
+            .iter()
+            .find(|msg| msg.hash == Some(message_id))
+            .expect("message requeued");
+        assert_eq!(
+            queued.delivery_attempts, 0,
+            "waiting for relay metadata must not consume delivery attempts"
+        );
+        assert!(
+            queued.last_delivery_attempt > 0.0,
+            "metadata waits still need retry backoff"
+        );
     }
 
     #[test]
@@ -3197,9 +3206,48 @@ mod tests {
                 .any(|msg| msg.hash == Some(message_id)),
             "message should be requeued until recipient identity key is learned"
         );
+        let queued = mgr
+            .router
+            .pending_outbound
+            .iter()
+            .find(|msg| msg.hash == Some(message_id))
+            .expect("message requeued");
+        assert_eq!(
+            queued.delivery_attempts, 0,
+            "waiting for recipient identity metadata must not consume delivery attempts"
+        );
+        assert!(
+            queued.last_delivery_attempt > 0.0,
+            "identity waits still need retry backoff"
+        );
         assert!(
             mgr.link_delivery.is_none(),
             "propagation link must not start until the message can be encrypted for the recipient"
+        );
+    }
+
+    #[test]
+    fn expired_or_attempt_exhausted_outbound_surfaces_failed_state() {
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x88; 16]);
+        let mut message = mgr
+            .create_message(
+                &dest_hex,
+                "delivery attempts exhausted",
+                "",
+                DeliveryMethod::Direct,
+            )
+            .expect("message created");
+        let message_id = message.hash.expect("message hash");
+        message.delivery_attempts = u32::MAX;
+        mgr.router.send(message);
+
+        let states = mgr.tick();
+
+        assert_eq!(states, vec![(hex::encode(message_id), "failed")]);
+        assert!(
+            mgr.router.pending_outbound.is_empty(),
+            "failed outbound messages should not stay queued indefinitely"
         );
     }
 
