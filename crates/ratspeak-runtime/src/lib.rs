@@ -933,8 +933,37 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         tokio::sync::mpsc::channel::<(Vec<u8>, [u8; 16])>(CHANNEL_BUFFER_SIZE);
                     let (link_res_tx, mut link_res_rx) =
                         tokio::sync::mpsc::channel::<(Vec<u8>, [u8; 16])>(CHANNEL_BUFFER_SIZE);
+                    let (link_command_tx, link_command_rx) = tokio::sync::mpsc::channel::<
+                        rns_runtime::link_manager::LinkManagerCommand,
+                    >(
+                        CHANNEL_BUFFER_SIZE
+                    );
+                    let (link_identified_tx, link_identified_rx) =
+                        tokio::sync::mpsc::channel::<([u8; 16], [u8; 16])>(CHANNEL_BUFFER_SIZE);
+                    let (link_packet_proof_tx, link_packet_proof_rx) =
+                        tokio::sync::mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(
+                            CHANNEL_BUFFER_SIZE,
+                        );
+                    let (link_resource_proof_tx, link_resource_proof_rx) =
+                        tokio::sync::mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(
+                            CHANNEL_BUFFER_SIZE,
+                        );
                     lxmf_link_mgr.set_link_packet_channel(link_pkt_tx);
                     lxmf_link_mgr.set_resource_completed_channel(link_res_tx);
+                    lxmf_link_mgr.set_link_identified_channel(link_identified_tx);
+                    lxmf_link_mgr.set_link_packet_proof_channel(link_packet_proof_tx);
+                    lxmf_link_mgr.set_outbound_resource_proof_channel(link_resource_proof_tx);
+
+                    if let Ok(mut lxmf) = state.lxmf.lock()
+                        && let Some(mgr) = lxmf.as_mut()
+                    {
+                        mgr.set_lxmf_link_control(
+                            link_command_tx,
+                            link_identified_rx,
+                            link_packet_proof_rx,
+                            link_resource_proof_rx,
+                        );
+                    }
 
                     let lxmf_link_shutdown = state
                         .session_shutdown
@@ -944,7 +973,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     tokio::spawn(async move {
                         tokio::select! {
                             _ = lxmf_link_shutdown.wait() => {}
-                            _ = lxmf_link_mgr.run() => {}
+                            _ = lxmf_link_mgr.run_with_commands(link_command_rx) => {}
                         }
                     });
 

@@ -23,6 +23,7 @@ use rns_identity::ratchet::{
 use rns_transport::messages::{
     PathTableRpcEntry, TransportMessage, TransportQuery, TransportQueryResponse,
 };
+use tokio::sync::{mpsc, oneshot};
 
 use crate::db;
 use crate::state::{AppState, DbPool};
@@ -32,6 +33,7 @@ const LXMF_PROPAGATION_APP_NAME: &str = "lxmf.propagation";
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
+const BACKCHANNEL_DELIVERY_TIMEOUT_SECS: f64 = 360.0;
 
 pub type PropagationHealth = (
     Vec<[u8; 16]>,
@@ -201,6 +203,14 @@ pub struct LxmfManager {
     pub delivery_tx:
         Option<tokio::sync::mpsc::Sender<rns_transport::link_messages::DestinationEvent>>,
     pub link_delivery: Option<lxmf_core::link_delivery::LinkDeliveryManager>,
+    lxmf_link_command_tx: Option<mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>>,
+    lxmf_link_identified_rx: Option<mpsc::Receiver<([u8; 16], [u8; 16])>>,
+    lxmf_link_packet_proof_rx: Option<mpsc::Receiver<rns_runtime::link_manager::LinkPacketProof>>,
+    lxmf_link_resource_proof_rx:
+        Option<mpsc::Receiver<rns_runtime::link_manager::LinkResourceProof>>,
+    backchannel_links: HashMap<[u8; 16], [u8; 16]>,
+    pending_backchannel_starts: Vec<PendingBackchannelStart>,
+    pending_backchannel_deliveries: HashMap<BackchannelProofKey, PendingBackchannelDelivery>,
     pub propagation_sync: Option<lxmf_core::propagation_sync::PropagationSyncTask>,
     pub propagation_client: Option<lxmf_core::propagation_client::PropagationClient>,
     last_propagation_check: f64,
@@ -220,6 +230,32 @@ pub struct LxmfManager {
     failed_propagation_syncs: Vec<([u8; 16], String)>,
     downloaded_propagation_messages: Vec<Vec<u8>>,
     ephemeral_outbound: HashSet<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BackchannelProofKey {
+    Packet([u8; 16], [u8; 32]),
+    Resource([u8; 16], [u8; 32]),
+}
+
+struct PendingBackchannelStart {
+    receiver: oneshot::Receiver<
+        Result<
+            rns_runtime::link_manager::LinkPayloadSendReceipt,
+            rns_runtime::link_manager::LinkSendError,
+        >,
+    >,
+    message: LxMessage,
+    dest_hash: [u8; 16],
+    link_id: [u8; 16],
+    requested_at: std::time::Instant,
+}
+
+struct PendingBackchannelDelivery {
+    message: LxMessage,
+    dest_hash: [u8; 16],
+    link_id: [u8; 16],
+    started_at: std::time::Instant,
 }
 
 impl LxmfManager {
@@ -408,6 +444,13 @@ impl LxmfManager {
             route_entries: HashMap::new(),
             delivery_tx: None,
             link_delivery: None,
+            lxmf_link_command_tx: None,
+            lxmf_link_identified_rx: None,
+            lxmf_link_packet_proof_rx: None,
+            lxmf_link_resource_proof_rx: None,
+            backchannel_links: HashMap::new(),
+            pending_backchannel_starts: Vec::new(),
+            pending_backchannel_deliveries: HashMap::new(),
             propagation_sync: None,
             propagation_client: None,
             last_propagation_check: 0.0,
@@ -472,6 +515,10 @@ impl LxmfManager {
         }
         self.router = router;
         self.lxmf_storage_dir = lxmf_storage;
+        self.link_delivery = None;
+        self.backchannel_links.clear();
+        self.pending_backchannel_starts.clear();
+        self.pending_backchannel_deliveries.clear();
         if let Some(tx) = old_transport_tx {
             self.router.set_transport(tx.clone());
 
@@ -584,6 +631,22 @@ impl LxmfManager {
 
         tracing::info!("Created new identity: {}", &hash_hex[..16]);
         Ok((hash_hex, lxmf_hex))
+    }
+
+    pub fn set_lxmf_link_control(
+        &mut self,
+        command_tx: mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>,
+        identified_rx: mpsc::Receiver<([u8; 16], [u8; 16])>,
+        packet_proof_rx: mpsc::Receiver<rns_runtime::link_manager::LinkPacketProof>,
+        resource_proof_rx: mpsc::Receiver<rns_runtime::link_manager::LinkResourceProof>,
+    ) {
+        self.lxmf_link_command_tx = Some(command_tx);
+        self.lxmf_link_identified_rx = Some(identified_rx);
+        self.lxmf_link_packet_proof_rx = Some(packet_proof_rx);
+        self.lxmf_link_resource_proof_rx = Some(resource_proof_rx);
+        self.backchannel_links.clear();
+        self.pending_backchannel_starts.clear();
+        self.pending_backchannel_deliveries.clear();
     }
 
     /// `key_bytes` must be exactly 64 bytes (X25519 || Ed25519 seed).
@@ -2057,6 +2120,7 @@ impl LxmfManager {
             self.last_ratchet_clean = now;
         }
 
+        self.drain_backchannel_events(&mut results);
         self.router.process_deferred_stamps();
         let actions = self.router.process_outbound();
         if !actions.is_empty() {
@@ -2393,6 +2457,239 @@ impl LxmfManager {
         self.router.send(message);
     }
 
+    fn drain_backchannel_events(&mut self, results: &mut Vec<(String, &'static str)>) {
+        if let Some(rx) = self.lxmf_link_identified_rx.as_mut() {
+            while let Ok((link_id, identity_hash)) = rx.try_recv() {
+                let dest_hash =
+                    Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity_hash));
+                self.backchannel_links.insert(dest_hash, link_id);
+                tracing::info!(
+                    link_id = %hex::encode(link_id),
+                    identity = %hex::encode(identity_hash),
+                    dest = %hex::encode(dest_hash),
+                    "LXMF inbound Link identified; registered backchannel"
+                );
+            }
+        }
+
+        if let Some(rx) = self.lxmf_link_packet_proof_rx.as_mut() {
+            while let Ok(proof) = rx.try_recv() {
+                let key = BackchannelProofKey::Packet(proof.link_id, proof.packet_hash);
+                if let Some(delivery) = self.pending_backchannel_deliveries.remove(&key)
+                    && let Some(hash) = delivery.message.hash
+                {
+                    if self.ephemeral_outbound.remove(&hash) {
+                        continue;
+                    }
+                    tracing::info!(
+                        link_id = %hex::encode(delivery.link_id),
+                        dest = %hex::encode(delivery.dest_hash),
+                        age_secs = delivery.started_at.elapsed().as_secs_f64(),
+                        "LXMF backchannel packet delivery proved"
+                    );
+                    results.push((hex::encode(hash), "delivered"));
+                }
+            }
+        }
+
+        if let Some(rx) = self.lxmf_link_resource_proof_rx.as_mut() {
+            while let Ok(proof) = rx.try_recv() {
+                let key = BackchannelProofKey::Resource(proof.link_id, proof.resource_hash);
+                if let Some(delivery) = self.pending_backchannel_deliveries.remove(&key)
+                    && let Some(hash) = delivery.message.hash
+                {
+                    if self.ephemeral_outbound.remove(&hash) {
+                        continue;
+                    }
+                    tracing::info!(
+                        link_id = %hex::encode(delivery.link_id),
+                        dest = %hex::encode(delivery.dest_hash),
+                        age_secs = delivery.started_at.elapsed().as_secs_f64(),
+                        "LXMF backchannel resource delivery proved"
+                    );
+                    results.push((hex::encode(hash), "delivered"));
+                }
+            }
+        }
+
+        let mut still_waiting = Vec::new();
+        let starts = std::mem::take(&mut self.pending_backchannel_starts);
+        for mut start in starts {
+            match start.receiver.try_recv() {
+                Ok(Ok(receipt)) => {
+                    let key = match receipt {
+                        rns_runtime::link_manager::LinkPayloadSendReceipt::Packet(receipt) => {
+                            BackchannelProofKey::Packet(receipt.link_id, receipt.packet_hash)
+                        }
+                        rns_runtime::link_manager::LinkPayloadSendReceipt::Resource(receipt) => {
+                            BackchannelProofKey::Resource(receipt.link_id, receipt.resource_hash)
+                        }
+                    };
+                    self.pending_backchannel_deliveries.insert(
+                        key,
+                        PendingBackchannelDelivery {
+                            message: start.message,
+                            dest_hash: start.dest_hash,
+                            link_id: start.link_id,
+                            started_at: std::time::Instant::now(),
+                        },
+                    );
+                }
+                Ok(Err(err)) => {
+                    let reason = err.to_string();
+                    tracing::warn!(
+                        link_id = %hex::encode(start.link_id),
+                        dest = %hex::encode(start.dest_hash),
+                        reason = %reason,
+                        "LXMF backchannel send failed"
+                    );
+                    self.backchannel_links.remove(&start.dest_hash);
+                    let hash = start.message.hash;
+                    if self.requeue_direct_after_link_failure(
+                        start.message,
+                        start.dest_hash,
+                        &reason,
+                    ) {
+                        if let Some(hash) = hash {
+                            results.push((hex::encode(hash), "routing"));
+                        }
+                    } else if let Some(hash) = hash {
+                        results.push((hex::encode(hash), "failed"));
+                    }
+                }
+                Err(oneshot::error::TryRecvError::Empty) => {
+                    if start.requested_at.elapsed().as_secs_f64() > 10.0 {
+                        let reason = "backchannel send command timeout";
+                        tracing::warn!(
+                            link_id = %hex::encode(start.link_id),
+                            dest = %hex::encode(start.dest_hash),
+                            "LXMF backchannel send command timed out"
+                        );
+                        self.backchannel_links.remove(&start.dest_hash);
+                        let hash = start.message.hash;
+                        if self.requeue_direct_after_link_failure(
+                            start.message,
+                            start.dest_hash,
+                            reason,
+                        ) {
+                            if let Some(hash) = hash {
+                                results.push((hex::encode(hash), "routing"));
+                            }
+                        } else if let Some(hash) = hash {
+                            results.push((hex::encode(hash), "failed"));
+                        }
+                    } else {
+                        still_waiting.push(start);
+                    }
+                }
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    let reason = "backchannel send command closed";
+                    self.backchannel_links.remove(&start.dest_hash);
+                    let hash = start.message.hash;
+                    if self.requeue_direct_after_link_failure(
+                        start.message,
+                        start.dest_hash,
+                        reason,
+                    ) {
+                        if let Some(hash) = hash {
+                            results.push((hex::encode(hash), "routing"));
+                        }
+                    } else if let Some(hash) = hash {
+                        results.push((hex::encode(hash), "failed"));
+                    }
+                }
+            }
+        }
+        self.pending_backchannel_starts = still_waiting;
+
+        let expired: Vec<_> = self
+            .pending_backchannel_deliveries
+            .iter()
+            .filter_map(|(key, delivery)| {
+                (delivery.started_at.elapsed().as_secs_f64() > BACKCHANNEL_DELIVERY_TIMEOUT_SECS)
+                    .then_some(*key)
+            })
+            .collect();
+        for key in expired {
+            if let Some(delivery) = self.pending_backchannel_deliveries.remove(&key) {
+                let reason = "backchannel delivery timeout";
+                self.backchannel_links.remove(&delivery.dest_hash);
+                let hash = delivery.message.hash;
+                if self.requeue_direct_after_link_failure(
+                    delivery.message,
+                    delivery.dest_hash,
+                    reason,
+                ) {
+                    if let Some(hash) = hash {
+                        results.push((hex::encode(hash), "routing"));
+                    }
+                } else if let Some(hash) = hash {
+                    results.push((hex::encode(hash), "failed"));
+                }
+            }
+        }
+    }
+
+    fn start_backchannel_delivery(
+        &mut self,
+        message: LxMessage,
+        dest_hash: [u8; 16],
+    ) -> Result<(), LxMessage> {
+        let Some(link_id) = self.backchannel_links.get(&dest_hash).copied() else {
+            return Err(message);
+        };
+        let Some(command_tx) = self.lxmf_link_command_tx.as_ref() else {
+            return Err(message);
+        };
+        let payload = match message.pack() {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!(
+                    dest = %hex::encode(dest_hash),
+                    error = ?e,
+                    "failed to pack LXMF for backchannel delivery"
+                );
+                return Err(message);
+            }
+        };
+        let auto_compress = message.auto_compress;
+        let (result_tx, result_rx) = oneshot::channel();
+        let command = rns_runtime::link_manager::LinkManagerCommand::SendLinkPayload {
+            link_id,
+            payload,
+            auto_compress,
+            result_tx: Some(result_tx),
+        };
+        match command_tx.try_send(command) {
+            Ok(()) => {
+                tracing::info!(
+                    link_id = %hex::encode(link_id),
+                    dest = %hex::encode(dest_hash),
+                    "routing Direct LXMF message over authenticated backchannel Link"
+                );
+                self.pending_backchannel_starts
+                    .push(PendingBackchannelStart {
+                        receiver: result_rx,
+                        message,
+                        dest_hash,
+                        link_id,
+                        requested_at: std::time::Instant::now(),
+                    });
+                Ok(())
+            }
+            Err(err) => {
+                tracing::warn!(
+                    link_id = %hex::encode(link_id),
+                    dest = %hex::encode(dest_hash),
+                    error = %err,
+                    "failed to queue LXMF backchannel send command"
+                );
+                self.backchannel_links.remove(&dest_hash);
+                Err(message)
+            }
+        }
+    }
+
     fn execute_encrypted_actions(
         &mut self,
         actions: Vec<OutboundAction>,
@@ -2433,6 +2730,35 @@ impl LxmfManager {
             let dest_hex = hex::encode(dest_hash);
 
             if !is_opportunistic {
+                if self.backchannel_links.contains_key(&dest_hash)
+                    && self.lxmf_link_command_tx.is_some()
+                {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64();
+                    message.delivery_attempts += 1;
+                    message.last_delivery_attempt = now;
+                    match self.start_backchannel_delivery(message, dest_hash) {
+                        Ok(()) => {
+                            if let Some(hash) = msg_hash
+                                && !is_ephemeral
+                            {
+                                results.push((hex::encode(hash), "sending_via_link"));
+                            }
+                            continue;
+                        }
+                        Err(returned_message) => {
+                            message = returned_message;
+                            message.delivery_attempts = message.delivery_attempts.saturating_sub(1);
+                            tracing::debug!(
+                                dest = %dest_hex,
+                                "LXMF backchannel unavailable; falling back to outbound Direct link"
+                            );
+                        }
+                    }
+                }
+
                 if !self.known_identities.contains_key(&dest_hex) {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -3016,6 +3342,124 @@ mod tests {
 
         mgr.update_route_hop(dest, 0);
         assert_eq!(mgr.delivery_link_hops(dest), 1);
+    }
+
+    #[test]
+    fn identified_lxmf_link_registers_backchannel() {
+        let mut mgr = test_manager();
+        let (command_tx, _command_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
+        let (identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (_packet_tx, packet_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
+        let (_resource_tx, resource_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
+        mgr.set_lxmf_link_control(command_tx, identified_rx, packet_rx, resource_rx);
+
+        let link_id = [0x11; 16];
+        let identity_hash = [0x22; 16];
+        identified_tx.try_send((link_id, identity_hash)).unwrap();
+
+        let mut results = Vec::new();
+        mgr.drain_backchannel_events(&mut results);
+
+        let dest_hash =
+            Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity_hash));
+        assert_eq!(mgr.backchannel_links.get(&dest_hash), Some(&link_id));
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn direct_delivery_prefers_registered_backchannel() {
+        let mut mgr = test_manager();
+        let (command_tx, mut command_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
+        let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (_packet_tx, packet_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
+        let (_resource_tx, resource_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
+        mgr.set_lxmf_link_control(command_tx, identified_rx, packet_rx, resource_rx);
+
+        let dest = [0x33; 16];
+        let link_id = [0x44; 16];
+        mgr.backchannel_links.insert(dest, link_id);
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Backchannel",
+            "reply over inbound link",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message: msg,
+            dest_hash: dest,
+        }]);
+        assert_eq!(results, vec![(hex::encode(msg_hash), "sending_via_link")]);
+        assert_eq!(mgr.pending_backchannel_starts.len(), 1);
+
+        let command = command_rx.try_recv().expect("backchannel send command");
+        match command {
+            rns_runtime::link_manager::LinkManagerCommand::SendLinkPayload {
+                link_id: command_link,
+                payload,
+                ..
+            } => {
+                assert_eq!(command_link, link_id);
+                assert!(!payload.is_empty());
+            }
+            _ => panic!("expected SendLinkPayload command"),
+        }
+    }
+
+    #[test]
+    fn backchannel_packet_proof_marks_delivery_delivered() {
+        let mut mgr = test_manager();
+        let (command_tx, _command_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
+        let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (packet_tx, packet_rx) = mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
+        let (_resource_tx, resource_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
+        mgr.set_lxmf_link_control(command_tx, identified_rx, packet_rx, resource_rx);
+
+        let dest = [0x55; 16];
+        let link_id = [0x66; 16];
+        let packet_hash = [0x77; 32];
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Proof",
+            "proof event",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+        mgr.pending_backchannel_deliveries.insert(
+            BackchannelProofKey::Packet(link_id, packet_hash),
+            PendingBackchannelDelivery {
+                message: msg,
+                dest_hash: dest,
+                link_id,
+                started_at: std::time::Instant::now(),
+            },
+        );
+
+        packet_tx
+            .try_send(rns_runtime::link_manager::LinkPacketProof {
+                link_id,
+                packet_hash,
+            })
+            .unwrap();
+        let mut results = Vec::new();
+        mgr.drain_backchannel_events(&mut results);
+
+        assert_eq!(results, vec![(hex::encode(msg_hash), "delivered")]);
+        assert!(mgr.pending_backchannel_deliveries.is_empty());
     }
 
     #[test]
