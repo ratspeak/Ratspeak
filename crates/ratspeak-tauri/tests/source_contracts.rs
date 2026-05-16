@@ -905,10 +905,11 @@ fn mobile_primary_lists_share_readable_row_scale() {
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
 
-    assert!(responsive_css.contains("--mobile-list-avatar-size: 42px;"));
-    assert!(responsive_css.contains("--mobile-list-min-height: 56px;"));
-    assert!(responsive_css.contains("--mobile-list-title-size: var(--text-base);"));
-    assert!(responsive_css.contains("--mobile-list-detail-size: var(--text-sm);"));
+    assert!(responsive_css.contains("--mobile-list-avatar-size: 44px;"));
+    assert!(responsive_css.contains("--mobile-list-min-height: 58px;"));
+    assert!(responsive_css.contains("--mobile-list-title-size: 16px;"));
+    assert!(responsive_css.contains("--mobile-list-detail-size: 14px;"));
+    assert!(responsive_css.contains("--mobile-list-meta-size: 13px;"));
     assert!(responsive_css.contains(
         ".conv-row,\n    .contacts-row,\n    .identity-list-item,\n    .games-session-row"
     ));
@@ -929,7 +930,17 @@ fn mobile_primary_lists_share_readable_row_scale() {
     );
     assert!(responsive_css.contains(".contacts-standalone .contacts-row-hash"));
     assert!(responsive_css.contains(".games-session-game {\n        display: none;"));
-    assert!(responsive_css.contains("--mobile-list-avatar-size: 40px;"));
+    assert!(responsive_css.contains(".peers-list-scroll,\n    #lxmf-conversations-list,"));
+    assert!(responsive_css.contains(".dashboard-peers-scroll,"));
+    assert!(responsive_css.contains(".peers-list-scroll::-webkit-scrollbar,"));
+    assert!(responsive_css.contains(".dashboard-peers-scroll::-webkit-scrollbar,"));
+    assert!(responsive_css.contains(".conn-group-header {\n        font-size: 13px;"));
+    assert!(responsive_css.contains(".system-action-label,"));
+    assert!(responsive_css.contains(".system-subsection-title,"));
+    assert!(responsive_css.contains(".relay-card-header,"));
+    assert!(responsive_css.contains(".relay-card-details,"));
+    assert!(responsive_css.contains(".propagation-section-desc,"));
+    assert!(responsive_css.contains("--mobile-list-avatar-size: 42px;"));
 }
 
 #[test]
@@ -946,7 +957,12 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(!index.contains("id=\"peers-filter-pills\""));
     assert!(!index.contains("data-filter=\"reachable\""));
     assert!(!peers_js.contains("peersFilter"));
+    assert!(peers_js.contains("return 'Local';"));
     assert!(index.contains("class=\"peers-sort-icon\""));
+    assert!(!index.contains("<span>Peers</span>"));
+    assert!(!index.contains("<span>Messages</span>"));
+    assert!(!index.contains("<span>Contacts</span>"));
+    assert!(!index.contains("<span>More</span>"));
     assert!(responsive_css.contains(".peers-toolbar {\n        padding:"));
     assert!(responsive_css.contains(".peers-toolbar { flex-wrap: nowrap; }"));
     assert!(responsive_css.contains(".peers-sort-label {\n        display: none;"));
@@ -954,10 +970,16 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
         responsive_css
             .contains(".peers-sort-dropdown .toolbar-dropdown-btn {\n        width: 44px;")
     );
+    assert!(responsive_css.contains("background: var(--input-bg);"));
     assert!(
         responsive_css
             .contains(".peers-sort-dropdown .toolbar-dropdown-item {\n        min-height: 48px;")
     );
+    assert!(
+        responsive_css.contains(".bottom-bar-item span:not(.bottom-bar-badge) { display: none; }")
+    );
+    assert!(responsive_css.contains(".bottom-bar-item svg {\n        width: 26px;"));
+    assert!(responsive_css.contains("right: calc(50% - 18px);"));
 
     assert!(!index.contains("id=\"header-mobile-hash\""));
     assert!(responsive_css.contains(".header-mobile-avatar {\n        width: 42px;"));
@@ -995,8 +1017,8 @@ fn contact_detail_sheet_centers_identity_and_separates_primary_actions() {
 fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     let root = repo_root();
     let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
-    assert!(peers.contains("_peersRowHeight = window.innerWidth <= 768 ? 54 : 36;"));
-    assert!(peers.contains("var avatarSize = window.innerWidth <= 768 ? 42 : 28;"));
+    assert!(peers.contains("_peersRowHeight = window.innerWidth <= 768 ? 58 : 36;"));
+    assert!(peers.contains("var avatarSize = window.innerWidth <= 768 ? 44 : 28;"));
     assert!(peers.contains("showConnectionDetailSheet(hash, { progressive: true });"));
 
     let connections =
@@ -1046,9 +1068,9 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
 
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("css");
-    assert!(responsive_css.contains(".peers-row {\n        min-height: 54px;"));
+    assert!(responsive_css.contains(".peers-row {\n        min-height: 58px;"));
     assert!(
-        responsive_css.contains(".peers-row-avatar {\n        width: 42px;\n        height: 42px;")
+        responsive_css.contains(".peers-row-avatar {\n        width: 44px;\n        height: 44px;")
     );
     assert!(responsive_css.contains(".conn-detail-sheet.conn-detail-sheet--progressive"));
     assert!(responsive_css.contains(".conn-detail-sheet-identity"));
@@ -1112,11 +1134,11 @@ fn peers_avatars_are_circle_cropped_like_contacts() {
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     assert!(responsive_css.contains(
-        ".peers-row-avatar {\n        width: 42px;\n        height: 42px;\n        border-radius: var(--radius-full);"
+        ".peers-row-avatar {\n        width: 44px;\n        height: 44px;\n        border-radius: var(--radius-full);"
     ));
     assert!(
         !responsive_css.contains(
-            ".peers-row-avatar {\n        width: 42px;\n        height: 42px;\n        border-radius: var(--radius-lg);"
+            ".peers-row-avatar {\n        width: 44px;\n        height: 44px;\n        border-radius: var(--radius-lg);"
         ),
         "mobile peers avatars must not override contact-style circle cropping"
     );

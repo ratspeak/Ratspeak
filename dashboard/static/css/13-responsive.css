@@ -342,12 +342,12 @@
         padding: 0;
         justify-content: center;
         border-radius: var(--radius-pill);
-        border-color: var(--border-control);
-        background: var(--surface-control);
+        border-color: var(--input-border);
+        background: var(--input-bg);
         color: var(--text-secondary);
     }
     .peers-sort-dropdown .toolbar-dropdown-btn:active {
-        background: var(--surface-control-active);
+        background: var(--surface-row-active);
     }
     .peers-sort-label {
         display: none;
@@ -371,18 +371,18 @@
         padding-right: var(--space-4);
     }
     .peers-row {
-        min-height: 54px;
+        min-height: 58px;
         padding: var(--space-3) var(--space-7);
         gap: var(--space-5);
         -webkit-tap-highlight-color: transparent;
     }
     .peers-row-avatar {
-        width: 42px;
-        height: 42px;
+        width: 44px;
+        height: 44px;
         border-radius: var(--radius-full);
     }
     .peers-row-name {
-        font-size: var(--text-base);
+        font-size: 16px;
         font-weight: var(--type-weight-semibold);
     }
     .peers-row .conn-status-dot {
@@ -682,10 +682,10 @@
     .bottom-bar-item {
         flex: 1;
         display: flex;
-        flex-direction: column;
+        flex-direction: row;
         align-items: center;
         justify-content: center;
-        gap: var(--space-1);
+        gap: 0;
         color: var(--text-muted);
         font-size: var(--text-2xs);
         font-family: var(--font-sans);
@@ -710,19 +710,19 @@
     }
     .bottom-bar-item.active::before { opacity: 1; }
     .bottom-bar-item svg {
-        width: 22px;
-        height: 22px;
+        width: 26px;
+        height: 26px;
         stroke: currentColor;
         fill: none;
-        stroke-width: 1.8;
+        stroke-width: 1.9;
         stroke-linecap: round;
         stroke-linejoin: round;
     }
     .bottom-bar-badge {
         display: block;
         position: absolute;
-        top: 4px;
-        right: calc(50% - 16px);
+        top: 9px;
+        right: calc(50% - 18px);
         width: 8px;
         height: 8px;
         border-radius: var(--radius-full);
@@ -1323,9 +1323,7 @@
     }
     .conn-card .nr-btn-sm { padding: 6px 16px; min-height: 36px; font-size: var(--text-sm); }
 
-    .bottom-bar-item span:not(.bottom-bar-badge) {
-        font-size: var(--text-2xs);
-    }
+    .bottom-bar-item span:not(.bottom-bar-badge) { display: none; }
 }
 
 @media (max-width: 768px) {
@@ -2869,12 +2867,56 @@
    Keep Settings separate; it has its own mobile drill-down sizing above. */
 @media (max-width: 768px) {
     :root {
-        --mobile-list-avatar-size: 42px;
+        --mobile-list-avatar-size: 44px;
         --mobile-list-icon-size: 40px;
-        --mobile-list-min-height: 56px;
-        --mobile-list-title-size: var(--text-base);
-        --mobile-list-detail-size: var(--text-sm);
-        --mobile-list-meta-size: var(--text-xs);
+        --mobile-list-min-height: 58px;
+        --mobile-list-title-size: 16px;
+        --mobile-list-detail-size: 14px;
+        --mobile-list-meta-size: 13px;
+    }
+
+    .peers-list-scroll,
+    #lxmf-conversations-list,
+    .contacts-list-scroll,
+    .dashboard-peers-scroll,
+    .conn-table-scroll,
+    .eventlog-full,
+    .games-session-list,
+    .propagation-standalone,
+    .settings-page,
+    .identity-page,
+    .view-grid-identity,
+    .view-grid-network {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+    }
+    .peers-list-scroll::-webkit-scrollbar,
+    #lxmf-conversations-list::-webkit-scrollbar,
+    .contacts-list-scroll::-webkit-scrollbar,
+    .dashboard-peers-scroll::-webkit-scrollbar,
+    .conn-table-scroll::-webkit-scrollbar,
+    .eventlog-full::-webkit-scrollbar,
+    .games-session-list::-webkit-scrollbar,
+    .propagation-standalone::-webkit-scrollbar,
+    .settings-page::-webkit-scrollbar,
+    .identity-page::-webkit-scrollbar,
+    .view-grid-identity::-webkit-scrollbar,
+    .view-grid-network::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+    }
+
+    .conn-group-header {
+        font-size: 13px;
+        min-height: 36px;
+        padding: 0 var(--space-7);
+    }
+    .conn-group-chevron {
+        font-size: 10px;
+    }
+    .conn-group-count {
+        font-size: 13px;
     }
 
     .conv-row,
@@ -2923,7 +2965,10 @@
     .identity-list-name,
     .games-session-name,
     .conn-section-label,
-    .conn-iface-name {
+    .conn-iface-name,
+    .system-subsection-title,
+    .relay-card-header,
+    .relay-details summary {
         font-size: var(--mobile-list-title-size);
         line-height: 1.25;
         font-weight: var(--type-weight-semibold);
@@ -2935,7 +2980,11 @@
     .games-session-status,
     .games-session-game,
     .conn-iface-stats,
-    .activity-entry {
+    .activity-entry,
+    .system-subsection-desc,
+    .relay-card-details,
+    .inline-hint,
+    .inline-hint-sm {
         font-size: var(--mobile-list-detail-size);
         line-height: 1.35;
     }
@@ -2961,9 +3010,18 @@
     .contacts-row-status,
     .games-session-time,
     .activity-entry-time,
-    .activity-entry-detail {
+    .activity-entry-detail,
+    .settings-relay-badge {
         font-size: var(--mobile-list-meta-size);
         line-height: 1.3;
+    }
+
+    .peers-row-avatar {
+        width: 44px;
+        height: 44px;
+    }
+    .peers-row-name {
+        font-size: var(--mobile-list-title-size);
     }
 
     .contacts-group-header {
@@ -3090,13 +3148,31 @@
         padding: var(--space-3) var(--space-5);
         align-items: flex-start;
     }
+
+    .settings-row-label,
+    .system-action-label,
+    .propagation-section-title {
+        font-size: var(--mobile-list-title-size);
+    }
+    .settings-row-desc,
+    .system-action-hint,
+    .propagation-section-desc,
+    .propagation-hint {
+        font-size: var(--mobile-list-detail-size);
+        line-height: 1.4;
+    }
+    .system-action-btn {
+        min-height: 58px;
+        padding: var(--space-4) var(--space-5);
+        gap: var(--space-1);
+    }
 }
 
 @media (max-width: 360px) {
     :root {
-        --mobile-list-avatar-size: 40px;
+        --mobile-list-avatar-size: 42px;
         --mobile-list-icon-size: 38px;
-        --mobile-list-min-height: 54px;
+        --mobile-list-min-height: 56px;
     }
 
     .conv-row,
@@ -3109,6 +3185,11 @@
 
     .conn-iface-row {
         padding-left: 52px;
+    }
+
+    .peers-row-avatar {
+        width: 42px;
+        height: 42px;
     }
 
     .games-session-game {

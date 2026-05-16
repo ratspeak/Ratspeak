@@ -177,7 +177,7 @@ function renderPeersList(scrollOnly) {
     var scrollContainer = document.getElementById('peers-list-scroll');
     if (!container || !scrollContainer) return;
     if (typeof PeersCache === 'undefined' || !PeersCache) return;
-    _peersRowHeight = window.innerWidth <= 768 ? 54 : 36;
+    _peersRowHeight = window.innerWidth <= 768 ? 58 : 36;
 
     if (!scrollOnly) {
         var dirtyKey = peersSearch + '|' + peersSort + '|' + JSON.stringify(peersCollapsedGroups) + '|' + peersSelectedHash + '|' + _peersCacheGen;
@@ -303,7 +303,7 @@ function buildPeersHTML(flatItems, start, end) {
             var hasName = c.display_name && c.display_name !== '' && c.display_name !== c.hash;
             var nameClass = 'peers-row-name' + (hasName ? '' : ' is-hash');
             var statusClass = 'status-' + c.status;
-            var avatarSize = window.innerWidth <= 768 ? 42 : 28;
+            var avatarSize = window.innerWidth <= 768 ? 44 : 28;
             var av = (typeof identityAvatar === 'function') ? identityAvatar(c.hash, avatarSize) : '';
             var ifaceLabel = c.iface_is_live ? ifaceShortLabel(c.iface) : '';
             var ifaceBadge = ifaceLabel
