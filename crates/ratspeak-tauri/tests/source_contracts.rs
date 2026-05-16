@@ -834,6 +834,9 @@ fn settings_version_display_uses_package_version_api() {
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
     assert!(system_rs.contains("env!(\"CARGO_PKG_VERSION\")"));
+    assert!(system_rs.contains("RATSPEAK_DISPLAY_VERSION"));
+    assert!(system_rs.contains("GITHUB_REF_NAME"));
+    assert!(system_rs.contains("strip_prefix('v')"));
     assert!(!system_rs.contains("\"version\": \"1.0.13\""));
 
     let index = read_source(root.join("dashboard/index.html")).expect("index");

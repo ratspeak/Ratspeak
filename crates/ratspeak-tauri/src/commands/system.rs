@@ -13,9 +13,23 @@ use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text};
 use crate::state::AppState;
 
+fn app_display_version() -> &'static str {
+    let tagged_version = option_env!("RATSPEAK_DISPLAY_VERSION")
+        .or(option_env!("GITHUB_REF_NAME"))
+        .map(|value| value.strip_prefix('v').unwrap_or(value))
+        .filter(|value| {
+            value
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_digit())
+        });
+
+    tagged_version.unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 #[tauri::command]
 pub async fn api_version() -> AppResult<Value> {
-    Ok(json!({ "version": env!("CARGO_PKG_VERSION"), "name": "Ratspeak" }))
+    Ok(json!({ "version": app_display_version(), "name": "Ratspeak" }))
 }
 
 #[tauri::command]
