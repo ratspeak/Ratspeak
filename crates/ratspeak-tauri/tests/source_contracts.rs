@@ -632,8 +632,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_audio.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION"));
     assert!(voice_audio.contains("AudioAttributes.CONTENT_TYPE_SPEECH"));
     assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_FLOAT"));
+    assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_16BIT"));
     assert!(voice_audio.contains("AudioTrack.MODE_STREAM"));
     assert!(voice_audio.contains("AudioTrack.WRITE_NON_BLOCKING"));
+    assert!(voice_audio.contains("fun lastError(): String"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("window.RS.mediaPermissions"));
@@ -701,6 +703,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_rs.contains("start_microphone_side("));
     assert!(voice_rs.contains("start_android_speaker_side("));
     assert!(voice_rs.contains("RatspeakVoiceAudio.write"));
+    assert!(voice_rs.contains("retry_missing_audio("));
     assert!(voice_rs.contains("const VOICE_OUTPUT_GAIN"));
     assert!(voice_rs.contains("const VOICE_NOISE_GATE_OPEN_RMS"));
     assert!(voice_rs.contains("fn update_noise_gate("));

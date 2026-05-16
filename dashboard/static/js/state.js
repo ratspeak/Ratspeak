@@ -184,7 +184,7 @@ function _rsPrimeAudioPlayback(ctx) {
     if (!ctx) return;
     try {
         var gain = ctx.createGain();
-        gain.gain.setValueAtTime(0.00001, ctx.currentTime);
+        gain.gain.setValueAtTime(0, ctx.currentTime);
         gain.connect(ctx.destination);
         var osc = ctx.createOscillator();
         osc.type = 'sine';

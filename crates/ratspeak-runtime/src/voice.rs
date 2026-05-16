@@ -52,6 +52,9 @@ const VOICE_PROFILE_DROPPED_FRAME_THRESHOLD: usize = 4;
 const VOICE_AUDIO_FADE_IN_MS: usize = 20;
 #[cfg_attr(target_os = "android", allow(dead_code))]
 const VOICE_AUDIO_OUTPUT_PREBUFFER_MS: usize = 120;
+const VOICE_AUDIO_RECOVERY_TICK: Duration = Duration::from_millis(1500);
+const VOICE_AUDIO_RECOVERY_INITIAL_DELAY: Duration = Duration::from_millis(750);
+const VOICE_AUDIO_RECOVERY_MAX_DELAY: Duration = Duration::from_secs(10);
 const VOICE_OUTPUT_GAIN: f32 = 1.85;
 const VOICE_OUTPUT_LIMIT: f32 = 0.98;
 const VOICE_OUTPUT_LIMIT_CURVE: f32 = 0.35;
@@ -713,6 +716,8 @@ async fn drive_voice_events(
     let mut profile_adaptation = VoiceProfileAdaptation::new();
     let mut latest_snapshot: Option<TelephonyRuntimeSnapshot> = None;
     let mut suppressed_call_links: HashSet<[u8; 16]> = HashSet::new();
+    let mut audio_recovery_tick = tokio::time::interval(VOICE_AUDIO_RECOVERY_TICK);
+    audio_recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         let event = tokio::select! {
@@ -730,6 +735,19 @@ async fn drive_voice_events(
                     .await;
                 } else {
                     break;
+                }
+                continue;
+            }
+            _ = audio_recovery_tick.tick() => {
+                if let Some(snapshot) = latest_snapshot.as_ref() {
+                    reconcile_audio_session(
+                        &state,
+                        &control_tx,
+                        snapshot,
+                        &mut audio_session,
+                        &mut audio_failure,
+                    )
+                    .await;
                 }
                 continue;
             }
@@ -1116,6 +1134,11 @@ async fn reconcile_audio_session(
         .as_ref()
         .is_some_and(|session| session.link_id == active.link_id && session.profile == profile);
     if current_matches {
+        if let Some(session) = audio_session.as_mut() {
+            if session.retry_missing_audio(control_tx.clone()).await {
+                emit_audio_session_state(state, "recovered", session);
+            }
+        }
         return;
     }
 
@@ -1269,6 +1292,23 @@ fn emit_snapshot(
                 "speaker": session.speaker,
             })),
             "active_call": snapshot.active_call.as_ref().map(active_call_payload),
+        }),
+    );
+}
+
+fn emit_audio_session_state(state: &AppState, state_key: &str, session: &VoiceAudioSession) {
+    state.emit_to_all(
+        "voice_call_update",
+        json!({
+            "type": "audio",
+            "state": state_key,
+            "link_id": hex::encode(session.link_id),
+            "profile": profile_key(session.profile),
+            "running": session.running(),
+            "microphone": session.microphone,
+            "microphone_muted": microphone_muted(),
+            "speaker": session.speaker,
+            "warnings": session.warnings.clone(),
         }),
     );
 }
@@ -1527,6 +1567,10 @@ struct VoiceAudioSession {
     microphone: bool,
     speaker: bool,
     warnings: Vec<String>,
+    microphone_retry_attempts: u32,
+    speaker_retry_attempts: u32,
+    next_microphone_retry_at: Option<Instant>,
+    next_speaker_retry_at: Option<Instant>,
     _input_stream: Option<cpal::Stream>,
     _output_stream: Option<VoiceOutputStream>,
     sink_task: Option<JoinHandle<()>>,
@@ -1559,9 +1603,113 @@ impl VoiceAudioFailure {
     }
 }
 
+fn audio_recovery_delay(attempts: u32) -> Duration {
+    let shift = attempts.min(4);
+    let factor = 1u32 << shift;
+    (VOICE_AUDIO_RECOVERY_INITIAL_DELAY * factor).min(VOICE_AUDIO_RECOVERY_MAX_DELAY)
+}
+
 impl VoiceAudioSession {
     fn running(&self) -> bool {
         self.microphone || self.speaker
+    }
+
+    fn schedule_microphone_retry(&mut self) {
+        let delay = audio_recovery_delay(self.microphone_retry_attempts);
+        self.microphone_retry_attempts = self.microphone_retry_attempts.saturating_add(1);
+        self.next_microphone_retry_at = Some(Instant::now() + delay);
+    }
+
+    fn schedule_speaker_retry(&mut self) {
+        let delay = audio_recovery_delay(self.speaker_retry_attempts);
+        self.speaker_retry_attempts = self.speaker_retry_attempts.saturating_add(1);
+        self.next_speaker_retry_at = Some(Instant::now() + delay);
+    }
+
+    async fn retry_missing_audio(&mut self, control_tx: mpsc::Sender<TelephonyControl>) -> bool {
+        let mut recovered = false;
+        let now = Instant::now();
+
+        if !self.microphone
+            && self
+                .next_microphone_retry_at
+                .is_some_and(|retry_at| now >= retry_at)
+        {
+            let host = cpal::default_host();
+            let target_channels = usize::from(self.profile.channels());
+            let target_sample_rate = self.profile.sample_rate_hz();
+            let target_frames = self.profile.sample_frames_per_packet();
+            match start_microphone_side(
+                &host,
+                self.profile,
+                control_tx.clone(),
+                target_channels,
+                target_sample_rate,
+                target_frames,
+            )
+            .await
+            {
+                Ok(stream) => {
+                    tracing::info!(
+                        link_id = %hex::encode(self.link_id),
+                        profile = profile_key(self.profile),
+                        "recovered LXST microphone stream"
+                    );
+                    self._input_stream = Some(stream);
+                    self.microphone = true;
+                    self.microphone_retry_attempts = 0;
+                    self.next_microphone_retry_at = None;
+                    recovered = true;
+                }
+                Err(message) => {
+                    tracing::warn!(
+                        link_id = %hex::encode(self.link_id),
+                        profile = profile_key(self.profile),
+                        error = %message,
+                        "LXST microphone recovery failed"
+                    );
+                    self.schedule_microphone_retry();
+                }
+            }
+        }
+
+        if !self.speaker
+            && self
+                .next_speaker_retry_at
+                .is_some_and(|retry_at| now >= retry_at)
+        {
+            let host = cpal::default_host();
+            match start_speaker_side(&host, control_tx, self.profile.sample_rate_hz()).await {
+                Ok((stream, sink_task)) => {
+                    tracing::info!(
+                        link_id = %hex::encode(self.link_id),
+                        profile = profile_key(self.profile),
+                        "recovered LXST speaker stream"
+                    );
+                    self._output_stream = Some(stream);
+                    self.sink_task = Some(sink_task);
+                    self.speaker = true;
+                    self.speaker_retry_attempts = 0;
+                    self.next_speaker_retry_at = None;
+                    recovered = true;
+                }
+                Err(message) => {
+                    tracing::warn!(
+                        link_id = %hex::encode(self.link_id),
+                        profile = profile_key(self.profile),
+                        error = %message,
+                        "LXST speaker recovery failed"
+                    );
+                    self.schedule_speaker_retry();
+                }
+            }
+        }
+
+        if recovered && self.microphone && self.speaker {
+            self.warnings.clear();
+        }
+
+        recovered
     }
 
     async fn restart_speaker(
@@ -1605,9 +1753,12 @@ impl VoiceAudioSession {
             Ok(stream) => {
                 self._input_stream = Some(stream);
                 self.microphone = true;
+                self.microphone_retry_attempts = 0;
+                self.next_microphone_retry_at = None;
             }
             Err(message) => {
                 restart_warnings.push(message);
+                self.schedule_microphone_retry();
             }
         }
 
@@ -1616,9 +1767,12 @@ impl VoiceAudioSession {
                 self._output_stream = Some(stream);
                 self.sink_task = Some(sink_task);
                 self.speaker = true;
+                self.speaker_retry_attempts = 0;
+                self.next_speaker_retry_at = None;
             }
             Err(message) => {
                 restart_warnings.push(message);
+                self.schedule_speaker_retry();
             }
         }
 
@@ -1683,16 +1837,27 @@ impl VoiceAudioSession {
             return Err(format!("Failed to start LXST audio: {detail}"));
         }
 
-        Ok(Self {
+        let mut session = Self {
             link_id,
             profile,
             microphone: input_stream.is_some(),
             speaker: output_stream.is_some(),
             warnings,
+            microphone_retry_attempts: 0,
+            speaker_retry_attempts: 0,
+            next_microphone_retry_at: None,
+            next_speaker_retry_at: None,
             _input_stream: input_stream,
             _output_stream: output_stream,
             sink_task,
-        })
+        };
+        if !session.microphone {
+            session.schedule_microphone_retry();
+        }
+        if !session.speaker {
+            session.schedule_speaker_retry();
+        }
+        Ok(session)
     }
 }
 
@@ -2577,7 +2742,7 @@ fn log_output_stream_error(err: cpal::StreamError) {
 mod android_voice_audio {
     use std::sync::OnceLock;
 
-    use jni::objects::{GlobalRef, JClass, JObject, JValue};
+    use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 
     use super::VoiceResult;
 
@@ -2606,7 +2771,14 @@ mod android_voice_audio {
             if ok {
                 Ok(())
             } else {
-                Err("Android voice AudioTrack could not be initialized".to_string())
+                let detail = last_error(env, class);
+                if detail.is_empty() {
+                    Err("Android voice AudioTrack could not be initialized".to_string())
+                } else {
+                    Err(format!(
+                        "Android voice AudioTrack could not be initialized: {detail}"
+                    ))
+                }
             }
         })
     }
@@ -2658,6 +2830,25 @@ mod android_voice_audio {
                 })?;
             Ok(())
         });
+    }
+
+    fn last_error(env: &jni::JNIEnv, class: JClass) -> String {
+        let value = match env
+            .call_static_method(class, "lastError", "()Ljava/lang/String;", &[])
+            .and_then(|result| result.l())
+        {
+            Ok(value) => value,
+            Err(_) => {
+                clear_exception(env);
+                return String::new();
+            }
+        };
+        if value.is_null() {
+            return String::new();
+        }
+        env.get_string(JString::from(value))
+            .map(|s| s.into())
+            .unwrap_or_default()
     }
 
     fn with_env<F, T>(f: F) -> VoiceResult<T>
