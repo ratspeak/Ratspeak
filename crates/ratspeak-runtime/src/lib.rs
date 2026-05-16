@@ -1485,6 +1485,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     state.set_startup_stage("ready");
     state.emit_to_all("system_status", json!({"status": "ready"}));
     tracing::info!("Startup complete");
+    schedule_startup_auto_announce(state.clone());
 
     // Schedule identity pruning after ready so it doesn't block cold-start.
     let prune_state = state.clone();
@@ -1523,6 +1524,62 @@ pub async fn send_announce_from_state(state: &AppState) -> AnnounceSendReport {
 
 pub async fn send_manual_announce_from_state(state: &AppState) -> AnnounceSendReport {
     send_announce_from_state_inner(state, false).await
+}
+
+fn schedule_startup_auto_announce(state: Arc<AppState>) {
+    if *state.announce_interval_rx.borrow() == 0 {
+        return;
+    }
+
+    let shutdown = state
+        .session_shutdown
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    tokio::spawn(async move {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        state.poll_now.notify_one();
+
+        loop {
+            tokio::select! {
+                _ = shutdown.wait() => return,
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
+
+            if *state.announce_interval_rx.borrow() == 0 {
+                return;
+            }
+
+            if matches!(any_interface_online_cached(&state), Some(true)) {
+                let report = send_announce_from_state(&state).await;
+                if report.queued > 0 {
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    state.add_event(json!({
+                        "timestamp": ts,
+                        "category": "system",
+                        "message": "Startup auto-announce queued",
+                    }));
+                    tracing::info!(
+                        packets = report.packets,
+                        queued = report.queued,
+                        failed = report.failed,
+                        "startup auto-announce queued"
+                    );
+                }
+                return;
+            }
+
+            if std::time::Instant::now() >= deadline {
+                tracing::debug!("startup auto-announce skipped: no online interface observed");
+                return;
+            }
+
+            state.poll_now.notify_one();
+        }
+    });
 }
 
 async fn send_announce_from_state_inner(
