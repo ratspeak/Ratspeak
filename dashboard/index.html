@@ -36,7 +36,6 @@
             <div class="header-mobile-avatar" id="header-mobile-avatar"></div>
             <div class="header-mobile-info">
                 <span class="header-mobile-name" id="header-mobile-name"></span>
-                <span class="header-mobile-hash" id="header-mobile-hash"></span>
             </div>
             <svg class="header-identity-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
@@ -566,16 +565,10 @@
                     <div class="peers-list-panel">
                         <div class="peers-toolbar">
                             <input type="text" id="peers-search" class="conn-search-input" placeholder="Search..." autocorrect="off" autocapitalize="none" spellcheck="false">
-                            <div class="conn-filter-pills" id="peers-filter-pills">
-                                <button class="conn-filter active" data-filter="all">All</button>
-                                <button class="conn-filter" data-filter="reachable">Recent</button>
-                                <button class="conn-filter" data-filter="stale">Seen today</button>
-                                <button class="conn-filter" data-filter="offline">Older</button>
-                            </div>
                             <div class="toolbar-dropdown peers-sort-dropdown">
-                                <button class="toolbar-dropdown-btn" id="peers-sort-btn" type="button">
-                                    <span>Sort by</span>
-                                    <span class="dropdown-caret">&#9662;</span>
+                                <button class="toolbar-dropdown-btn" id="peers-sort-btn" type="button" aria-label="Sort peers" title="Sort peers">
+                                    <span class="peers-sort-label">Sort by</span>
+                                    <svg class="peers-sort-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
                                 </button>
                                 <div class="toolbar-dropdown-menu" id="peers-sort-menu">
                                     <button class="toolbar-dropdown-item active" data-sort="name">Alphabetical</button>
@@ -834,26 +827,44 @@
                         <nav class="settings-nav" id="settings-section-nav">
                             <button class="settings-nav-item active" type="button" aria-current="page" data-settings-panel="panel-settings-general" data-settings-title="General" data-settings-desc="Theme, haptics, and app preferences.">
                                 <span class="settings-nav-label">General</span>
+                                <span class="settings-nav-desc">Theme, vibration, and app preferences</span>
                             </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-network" data-settings-title="Network" data-settings-desc="Transport behavior and announce cadence.">
                                 <span class="settings-nav-label">Network</span>
+                                <span class="settings-nav-desc">Transport behavior and announce cadence</span>
                             </button>
                             <button class="settings-nav-item" type="button" id="settings-nav-notifications" style="display:none;" data-settings-panel="panel-settings-notifications" data-settings-title="Notifications" data-settings-desc="Desktop notification delivery.">
                                 <span class="settings-nav-label">Notifications</span>
+                                <span class="settings-nav-desc">Desktop notification delivery</span>
                             </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-offline-inbox" data-settings-title="Offline Inbox" data-settings-desc="Offline Inbox status and offline message storage.">
                                 <span class="settings-nav-label">Offline Inbox</span>
+                                <span class="settings-nav-desc">Offline message storage and relay status</span>
                             </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-blocked" data-settings-title="Blocked Users" data-settings-desc="Blocked contacts and delivery filters.">
                                 <span class="settings-nav-label">Blocked Users</span>
+                                <span class="settings-nav-desc">Blocked contacts and delivery filters</span>
                             </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-system" data-settings-title="System Data" data-settings-desc="Cache, deletion, and reset actions.">
                                 <span class="settings-nav-label">System Data</span>
+                                <span class="settings-nav-desc">Cache, deletion, and reset actions</span>
                             </button>
                         </nav>
                         <div class="settings-sidebar-version" id="settings-version-sidebar" aria-label="App version"></div>
                     </aside>
                     <section class="settings-detail-pane" aria-labelledby="settings-detail-title">
+                        <div class="settings-mobile-detail-bar">
+                            <button class="settings-mobile-back-btn" id="settings-mobile-back-btn" type="button" aria-label="Back to settings sections">
+                                <svg class="settings-mobile-back-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M15 18l-6-6 6-6"/>
+                                </svg>
+                                <span>Settings</span>
+                            </button>
+                            <div class="settings-mobile-detail-copy">
+                                <span class="settings-mobile-detail-eyebrow">Section</span>
+                                <h2 id="settings-mobile-detail-title">General</h2>
+                            </div>
+                        </div>
                         <div class="settings-detail-header">
                             <div>
                                 <span class="settings-detail-eyebrow">Ratspeak</span>

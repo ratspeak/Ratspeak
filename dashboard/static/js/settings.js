@@ -1,6 +1,7 @@
 function openSettings() {
     switchView('settings');
     initSettingsSectionNav();
+    showSettingsMobileSectionIndex({ restoreFocus: false });
     initHapticsToggle();
     renderSettingsVersion();
     // Re-seal every System Data subsection on each visit. The collapse IS the
@@ -70,9 +71,15 @@ function handleSystemSubsectionKey(e) {
 var SETTINGS_DEFAULT_PANEL_ID = 'panel-settings-general';
 var _settingsSectionNavBound = false;
 var _settingsSectionResizeBound = false;
+var _settingsMobileBackBound = false;
+var _settingsMobileDetailActive = false;
 
 function _settingsDetailModeActive() {
     return !!(window.matchMedia && window.matchMedia('(min-width: 769px)').matches);
+}
+
+function _settingsMobileModeActive() {
+    return !!(window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
 }
 
 function _settingsPanelAvailable(panel) {
@@ -131,14 +138,20 @@ function selectSettingsSection(panelId, opts) {
     var activeItem = document.querySelector('.settings-nav-item[data-settings-panel="' + panelId + '"]');
     var title = document.getElementById('settings-detail-title');
     var desc = document.getElementById('settings-detail-desc');
+    var mobileTitle = document.getElementById('settings-mobile-detail-title');
     if (activeItem) {
-        if (title) title.textContent = activeItem.dataset.settingsTitle || activeItem.textContent.trim();
+        var settingsTitle = activeItem.dataset.settingsTitle || activeItem.textContent.trim();
+        if (title) title.textContent = settingsTitle;
+        if (mobileTitle) mobileTitle.textContent = settingsTitle;
         if (desc) desc.textContent = activeItem.dataset.settingsDesc || '';
     }
 
     if (!opts.skipStore) {
         try { localStorage.setItem('ratspeak_settings_section', panelId); } catch(e) {}
     }
+
+    if (opts.showMobileDetail) _settingsMobileDetailActive = true;
+    syncSettingsMobileLayout();
 }
 
 function initSettingsSectionNav() {
@@ -148,10 +161,18 @@ function initSettingsSectionNav() {
     if (!_settingsSectionNavBound) {
         nav.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
             item.addEventListener('click', function() {
-                selectSettingsSection(item.dataset.settingsPanel);
+                selectSettingsSection(item.dataset.settingsPanel, { showMobileDetail: _settingsMobileModeActive() });
             });
         });
         _settingsSectionNavBound = true;
+    }
+
+    if (!_settingsMobileBackBound) {
+        var backBtn = document.getElementById('settings-mobile-back-btn');
+        if (backBtn) {
+            backBtn.addEventListener('click', showSettingsMobileSectionIndex);
+            _settingsMobileBackBound = true;
+        }
     }
 
     if (!_settingsSectionResizeBound) {
@@ -168,6 +189,34 @@ function initSettingsSectionNav() {
         selected = localStorage.getItem('ratspeak_settings_section') || selected;
     } catch(e) {}
     selectSettingsSection(selected, { skipStore: true });
+    if (_settingsMobileModeActive()) _settingsMobileDetailActive = false;
+    syncSettingsMobileLayout();
+}
+
+function syncSettingsMobileLayout() {
+    var page = document.querySelector('#view-settings .settings-page');
+    if (!page) return;
+    var mobile = _settingsMobileModeActive();
+    page.classList.toggle('settings-mobile-mode', mobile);
+    page.classList.toggle('settings-mobile-detail-active', mobile && _settingsMobileDetailActive);
+}
+
+function isSettingsMobileDetailActive() {
+    return _settingsMobileModeActive() && _settingsMobileDetailActive;
+}
+
+function showSettingsMobileSectionIndex(opts) {
+    opts = opts || {};
+    _settingsMobileDetailActive = false;
+    syncSettingsMobileLayout();
+    if (_settingsMobileModeActive()) {
+        var view = document.getElementById('view-settings');
+        if (view) view.scrollTop = 0;
+        if (opts.restoreFocus !== false) {
+            var activeItem = document.querySelector('.settings-nav-item.active[data-settings-panel]');
+            if (activeItem) requestAnimationFrame(function() { activeItem.focus({ preventScroll: true }); });
+        }
+    }
 }
 
 function loadSettingsInterfaces() {
@@ -341,10 +390,8 @@ function updateHeaderIdentity(hash, displayName) {
     }
     var hdrAvatar = document.getElementById('header-mobile-avatar');
     var hdrName = document.getElementById('header-mobile-name');
-    var hdrHash = document.getElementById('header-mobile-hash');
-    if (hash && hdrAvatar) hdrAvatar.innerHTML = (typeof identityAvatar === 'function') ? identityAvatar(hash, 34) : '';
-    if (hdrName) hdrName.textContent = displayName || localStorage.getItem('ratspeak_identity_name') || '';
-    if (hash && hdrHash) hdrHash.textContent = typeof shortHash === 'function' ? shortHash(hash, 8, 4) : hash.substring(0, 12) + '\u2026' + hash.slice(-4);
+    if (hash && hdrAvatar) hdrAvatar.innerHTML = (typeof identityAvatar === 'function') ? identityAvatar(hash, 42) : '';
+    if (hdrName) hdrName.textContent = displayName || localStorage.getItem('ratspeak_identity_name') || 'Account 1';
 
     // JS fallback for WebView CSS caching.
     var _chevrons = document.querySelectorAll('.header-identity-chevron');

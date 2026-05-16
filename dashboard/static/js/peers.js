@@ -1,5 +1,4 @@
 var peersSort = 'name';
-var peersFilter = 'all';
 var peersSearch = '';
 var peersCollapsedGroups = { 'online_star': true, 'offline': true };
 var peersSelectedHash = null;
@@ -96,19 +95,6 @@ function initPeersView() {
             });
         }
 
-        var pills = document.getElementById('peers-filter-pills');
-        if (pills) {
-            pills.querySelectorAll('.conn-filter').forEach(function(btn) {
-                btn.addEventListener('click', function() {
-                    pills.querySelectorAll('.conn-filter').forEach(function(b) { b.classList.remove('active'); });
-                    this.classList.add('active');
-                    peersFilter = this.dataset.filter;
-                    _peersLastDirtyKey = '';
-                    scheduleRenderPeersList();
-                });
-            });
-        }
-
         var sortBtn = document.getElementById('peers-sort-btn');
         var sortMenu = document.getElementById('peers-sort-menu');
         if (sortBtn && sortMenu) {
@@ -194,7 +180,7 @@ function renderPeersList(scrollOnly) {
     _peersRowHeight = window.innerWidth <= 768 ? 54 : 36;
 
     if (!scrollOnly) {
-        var dirtyKey = peersFilter + '|' + peersSearch + '|' + peersSort + '|' + JSON.stringify(peersCollapsedGroups) + '|' + peersSelectedHash + '|' + _peersCacheGen;
+        var dirtyKey = peersSearch + '|' + peersSort + '|' + JSON.stringify(peersCollapsedGroups) + '|' + peersSelectedHash + '|' + _peersCacheGen;
         if (dirtyKey === _peersLastDirtyKey) return;
         _peersLastDirtyKey = dirtyKey;
         _peersLastGen = _peersCacheGen;
@@ -212,15 +198,6 @@ function renderPeersList(scrollOnly) {
     }
 
     var filtered = peers;
-    if (peersFilter !== 'all') {
-        filtered = peers.filter(function(c) {
-            if (peersFilter === 'reachable') return c.status === 'reachable' || c.status === 'direct';
-            if (peersFilter === 'stale') return c.status === 'stale';
-            if (peersFilter === 'offline') return c.status === 'offline' || c.status === 'unreachable' || c.status === 'unknown';
-            return true;
-        });
-    }
-
     if (peersSearch) {
         filtered = filtered.filter(function(c) {
             var name = (c.display_name || '').toLowerCase();

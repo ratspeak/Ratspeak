@@ -76,7 +76,7 @@ function enterSetupMode() {
     var uptimeEl = document.getElementById('uptime');
     if (uptimeEl) uptimeEl.style.display = 'none';
 
-    ['header-mobile-name', 'header-mobile-hash'].forEach(function(id) {
+    ['header-mobile-name'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.textContent = '';
     });

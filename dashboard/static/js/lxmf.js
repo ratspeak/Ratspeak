@@ -1349,11 +1349,9 @@ function renderMsgProfileStrip() {
 
         var hdrAvatar = document.getElementById('header-mobile-avatar');
         var hdrName = document.getElementById('header-mobile-name');
-        var hdrHash = document.getElementById('header-mobile-hash');
         var mobileName = active.display_name || active.nickname || 'Account 1';
-        if (hdrAvatar) hdrAvatar.innerHTML = identityAvatar(hash, 34);
+        if (hdrAvatar) hdrAvatar.innerHTML = identityAvatar(hash, 42);
         if (hdrName) hdrName.textContent = mobileName;
-        if (hdrHash) hdrHash.textContent = typeof shortHash === 'function' ? shortHash(hash, 8, 4) : hash.substring(0, 12) + '\u2026' + hash.slice(-4);
     }
 }
 
@@ -2196,6 +2194,10 @@ function showContactDetailSheet(hash) {
                     '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
                 '</button>' +
             '</div>' +
+            '<div class="contact-detail-actions contact-detail-primary-actions entity-action-grid">' +
+                voiceActionButtonHtml('cd-call-btn', hash) +
+                '<button class="nr-btn entity-action-btn" id="cd-message-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Message</span></button>' +
+            '</div>' +
             '<div class="contact-detail-fields">' +
                 '<div class="contact-detail-field">' +
                     '<span class="contact-detail-field-label">Last heard</span>' +
@@ -2226,9 +2228,7 @@ function showContactDetailSheet(hash) {
                     '<span class="contact-detail-field-value">' + escapeHtml(ifaceText) + '</span>' +
                 '</div>' +
             '</div>' +
-            '<div class="contact-detail-actions entity-action-grid">' +
-                voiceActionButtonHtml('cd-call-btn', hash) +
-                '<button class="nr-btn entity-action-btn" id="cd-message-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Message</span></button>' +
+            '<div class="contact-detail-actions contact-detail-danger-actions entity-action-grid">' +
                 '<button class="danger-btn entity-action-btn" id="cd-remove-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg><span>Remove</span></button>' +
                 '<button class="danger-btn entity-action-btn" id="cd-block-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg><span>Block</span></button>' +
             '</div>' +

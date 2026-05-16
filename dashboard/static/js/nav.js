@@ -1101,6 +1101,12 @@ function initTextareaAutoGrow() {
     });
 }
 
+function _settingsDetailSwipeActive() {
+    return currentView === 'settings' &&
+        typeof isSettingsMobileDetailActive === 'function' &&
+        isSettingsMobileDetailActive();
+}
+
 function initDrillDownSwipeBack() {
     if (!isMobile()) return;
 
@@ -1140,12 +1146,14 @@ function initDrillDownSwipeBack() {
         skipIf: function(e) {
             if (_navTransitioning) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
+            if (_settingsDetailSwipeActive()) return true;
             // Fire when something's on the stack OR sitting on a legacy drill-down.
             if (RS.viewStack.depth() > 1) return false;
             if (RS.gestures.DRILL_DOWN_VIEWS.indexOf(currentView) !== -1) return false;
             return true;
         },
         onProgress: function(dx) {
+            if (_settingsDetailSwipeActive()) return;
             var viewEl = document.getElementById('view-' + currentView);
             if (viewEl && dx > 0) {
                 viewEl.style.transition = 'none';
@@ -1155,6 +1163,7 @@ function initDrillDownSwipeBack() {
         },
         onCommit: _animateOutAndPop,
         onCancel: function() {
+            if (_settingsDetailSwipeActive()) return;
             var viewEl = document.getElementById('view-' + currentView);
             if (viewEl) {
                 viewEl.style.transition = 'transform 0.2s cubic-bezier(0.2, 0, 0, 1), opacity 0.2s ease';
@@ -1162,6 +1171,63 @@ function initDrillDownSwipeBack() {
                 viewEl.style.opacity = '';
                 setTimeout(function() { viewEl.style.transition = ''; }, 200);
             }
+        }
+    });
+}
+
+function initSettingsDetailSwipeBack() {
+    if (!isMobile()) return;
+
+    function _settingsDetailPane() {
+        return document.querySelector('#view-settings .settings-detail-pane');
+    }
+
+    function _resetSettingsDetailPane() {
+        var pane = _settingsDetailPane();
+        if (!pane) return;
+        pane.style.transition = '';
+        pane.style.transform = '';
+        pane.style.opacity = '';
+    }
+
+    RS.gestures.attachSwipe(document, {
+        direction: 'right',
+        distanceThreshold: RS.gestures.SWIPE_DISTANCE_DRILLBACK_PX,
+        hapticAt: { commit: 'selection' },
+        skipIf: function(e) {
+            if (_navTransitioning) return true;
+            if (!_settingsDetailSwipeActive()) return true;
+            if (e.target.closest('button, a, input, select, textarea, .selector-badge, .theme-toggle, .prop-toggle')) return true;
+            return false;
+        },
+        onProgress: function(dx) {
+            var pane = _settingsDetailPane();
+            if (!pane || dx <= 0) return;
+            pane.style.transition = 'none';
+            pane.style.transform = 'translateX(' + dx + 'px)';
+            pane.style.opacity = Math.max(0.35, 1 - dx / RS.gestures.DRAG_DISMISS_OPACITY_DENOM_PX);
+        },
+        onCommit: function() {
+            var pane = _settingsDetailPane();
+            if (!pane) {
+                if (typeof showSettingsMobileSectionIndex === 'function') showSettingsMobileSectionIndex();
+                return;
+            }
+            pane.style.transition = 'transform 0.18s ease, opacity 0.18s ease';
+            pane.style.transform = 'translateX(100%)';
+            pane.style.opacity = '0';
+            setTimeout(function() {
+                _resetSettingsDetailPane();
+                if (typeof showSettingsMobileSectionIndex === 'function') showSettingsMobileSectionIndex();
+            }, 180);
+        },
+        onCancel: function() {
+            var pane = _settingsDetailPane();
+            if (!pane) return;
+            pane.style.transition = 'transform 0.18s cubic-bezier(0.2, 0, 0, 1), opacity 0.18s ease';
+            pane.style.transform = '';
+            pane.style.opacity = '';
+            setTimeout(_resetSettingsDetailPane, 180);
         }
     });
 }
@@ -1201,6 +1267,8 @@ function initTabSwipe() {
             if (typeof _isSetupActive === 'function' && _isSetupActive()) return true;
             if (_isMobileNavigationBlocked()) return true;
             if (_navTransitioning) return true;
+            if (_settingsDetailSwipeActive()) return true;
+            if (RS.viewStack && typeof RS.viewStack.depth === 'function' && RS.viewStack.depth() > 1) return true;
             if (MOBILE_TAB_SLOTS.indexOf(_mobileTabSlot(currentView)) === -1) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
             // Conversation rows own horizontal swipes for message actions. The
@@ -1382,6 +1450,7 @@ document.addEventListener('DOMContentLoaded', function() {
         hapticOnTap: 'light'
     });
     initDrillDownSwipeBack();
+    initSettingsDetailSwipeBack();
     initEdgeSwipeOpenSidebar();
     initTabSwipe();
 

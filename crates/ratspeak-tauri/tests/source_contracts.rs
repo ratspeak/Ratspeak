@@ -864,6 +864,134 @@ fn settings_version_display_uses_package_version_api() {
 }
 
 #[test]
+fn mobile_settings_use_section_drilldown_instead_of_stacked_panels() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+
+    assert!(index.contains("class=\"settings-nav-desc\""));
+    assert!(index.contains("id=\"settings-mobile-back-btn\""));
+    assert!(index.contains("id=\"settings-mobile-detail-title\""));
+    assert!(settings_js.contains("function _settingsMobileModeActive()"));
+    assert!(settings_js.contains("showMobileDetail: _settingsMobileModeActive()"));
+    assert!(settings_js.contains("function showSettingsMobileSectionIndex(opts)"));
+    assert!(settings_js.contains("function isSettingsMobileDetailActive()"));
+    assert!(settings_js.contains("settings-mobile-detail-active"));
+    assert!(nav_js.contains("function _settingsDetailSwipeActive()"));
+    assert!(nav_js.contains("function initSettingsDetailSwipeBack()"));
+    assert!(nav_js.contains("if (_settingsDetailSwipeActive()) return true;"));
+    assert!(nav_js.contains("RS.viewStack.depth() > 1) return true;"));
+    assert!(nav_js.contains("showSettingsMobileSectionIndex();"));
+    assert!(nav_js.contains("initSettingsDetailSwipeBack();"));
+    assert!(views_css.contains(".settings-nav-desc,"));
+    assert!(
+        responsive_css
+            .contains(".settings-page:not(.settings-mobile-detail-active) .settings-detail-pane")
+    );
+    assert!(
+        responsive_css.contains(".settings-detail-mode .settings-panel.settings-panel-selected")
+    );
+    assert!(responsive_css.contains(".settings-row-label {\n        font-size: 16px;"));
+}
+
+#[test]
+fn mobile_primary_lists_share_readable_row_scale() {
+    let root = repo_root();
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+
+    assert!(responsive_css.contains("--mobile-list-avatar-size: 42px;"));
+    assert!(responsive_css.contains("--mobile-list-min-height: 56px;"));
+    assert!(responsive_css.contains("--mobile-list-title-size: var(--text-base);"));
+    assert!(responsive_css.contains("--mobile-list-detail-size: var(--text-sm);"));
+    assert!(responsive_css.contains(
+        ".conv-row,\n    .contacts-row,\n    .identity-list-item,\n    .games-session-row"
+    ));
+    assert!(responsive_css.contains(
+        ".conv-avatar-wrap,\n    .conv-avatar,\n    .contacts-avatar,\n    .identity-list-avatar"
+    ));
+    assert!(responsive_css.contains(
+        ".conv-name,\n    .contacts-row-name,\n    .identity-list-name,\n    .games-session-name"
+    ));
+    assert!(responsive_css.contains(".conn-section-label,\n    .conn-iface-name"));
+    assert!(
+        responsive_css
+            .contains(".games-session-icon {\n        width: var(--mobile-list-icon-size);")
+    );
+    assert!(
+        responsive_css
+            .contains(".conn-card-label {\n        font-size: var(--mobile-list-title-size);")
+    );
+    assert!(responsive_css.contains(".contacts-standalone .contacts-row-hash"));
+    assert!(responsive_css.contains(".games-session-game {\n        display: none;"));
+    assert!(responsive_css.contains("--mobile-list-avatar-size: 40px;"));
+}
+
+#[test]
+fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    let peers_js = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+
+    assert!(!index.contains("id=\"peers-filter-pills\""));
+    assert!(!index.contains("data-filter=\"reachable\""));
+    assert!(!peers_js.contains("peersFilter"));
+    assert!(index.contains("class=\"peers-sort-icon\""));
+    assert!(responsive_css.contains(".peers-toolbar {\n        padding:"));
+    assert!(responsive_css.contains(".peers-toolbar { flex-wrap: nowrap; }"));
+    assert!(responsive_css.contains(".peers-sort-label {\n        display: none;"));
+    assert!(
+        responsive_css
+            .contains(".peers-sort-dropdown .toolbar-dropdown-btn {\n        width: 44px;")
+    );
+    assert!(
+        responsive_css
+            .contains(".peers-sort-dropdown .toolbar-dropdown-item {\n        min-height: 48px;")
+    );
+
+    assert!(!index.contains("id=\"header-mobile-hash\""));
+    assert!(responsive_css.contains(".header-mobile-avatar {\n        width: 42px;"));
+    assert!(responsive_css.contains(".header-mobile-name {\n        font-size: var(--text-lg);"));
+    assert!(lxmf_js.contains("identityAvatar(hash, 42)"));
+    assert!(settings_js.contains("identityAvatar(hash, 42)"));
+}
+
+#[test]
+fn contact_detail_sheet_centers_identity_and_separates_primary_actions() {
+    let root = repo_root();
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+
+    let hash_row = lxmf_js.find("contact-detail-hash-row").expect("hash row");
+    let primary_actions = lxmf_js
+        .find("contact-detail-primary-actions")
+        .expect("primary actions");
+    let fields = lxmf_js.find("contact-detail-fields").expect("fields");
+    let danger_actions = lxmf_js
+        .find("contact-detail-danger-actions")
+        .expect("danger actions");
+    assert!(hash_row < primary_actions);
+    assert!(primary_actions < fields);
+    assert!(fields < danger_actions);
+
+    assert!(views_css.contains(".contact-detail-avatar {\n    display: flex;"));
+    assert!(views_css.contains("margin: var(--space-4) auto 0;"));
+    assert!(views_css.contains(".contact-detail-avatar svg,"));
+    assert!(views_css.contains(".contact-detail-primary-actions"));
+    assert!(views_css.contains(".contact-detail-danger-actions"));
+}
+
+#[test]
 fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     let root = repo_root();
     let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
