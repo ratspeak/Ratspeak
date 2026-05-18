@@ -645,6 +645,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf.contains("function _voiceEnsureMicrophonePermission()"));
+    assert!(lxmf.contains("isTauriDesktop())"));
     assert!(lxmf.contains("function _voiceEnsurePlaybackReady()"));
     assert!(lxmf.contains("function _voiceAfterNextPaint()"));
     assert!(lxmf.contains("function _voiceSetOptimisticOutgoing(hash)"));
