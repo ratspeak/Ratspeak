@@ -748,7 +748,7 @@ if (factoryResetBtn) {
 }
 
 var _lastAnnounceTime = 0;
-var ANNOUNCE_COOLDOWN = 60000;
+var ANNOUNCE_COOLDOWN = 5000;
 var _announceCooldownTimer = null;
 
 function setAnnounceLabel(btn, text) {

@@ -402,6 +402,10 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     }
     assert!(settings_js.contains("data.error === 'not_sent'"));
     assert!(settings_js.contains("delete networkBtn.dataset.announcePending"));
+    assert!(
+        settings_js.contains("var ANNOUNCE_COOLDOWN = 5000;"),
+        "manual announce cooldown should only prevent rapid repeat taps"
+    );
 
     let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
     assert!(health_js.contains("networkAnnounceBtn.dataset.announcePending = '1'"));
