@@ -3200,17 +3200,27 @@ body.setup-active .bottom-bar {
     z-index: 1;
 }
 .contacts-group-header:first-child { margin-top: 0; }
-.ratspeak-avatar-glow {
-    border-radius: var(--radius-full);
-    filter: drop-shadow(0 0 2px rgba(0, 178, 153, 0.22));
+.ratspeak-name-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    min-width: 0;
+    vertical-align: baseline;
 }
-.ratspeak-avatar-glow .ratspeak-avatar-ring-halo {
-    stroke: rgba(255, 255, 255, 0.96);
-    stroke-width: 0.64;
+.ratspeak-name-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
-.ratspeak-avatar-glow .ratspeak-avatar-ring-core {
-    stroke: rgba(0, 191, 166, 0.96);
-    stroke-width: 0.34;
+.ratspeak-name-badge {
+    flex: 0 0 auto;
+    color: var(--text-disabled);
+    font-size: 0.76em;
+    line-height: 1;
+    opacity: 0.82;
+    transform: translateY(-0.02em);
 }
 .contacts-avatar {
     flex-shrink: 0;

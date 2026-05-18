@@ -314,7 +314,7 @@ function buildPeersHTML(flatItems, start, end) {
             html += '<div class="peers-row' + (isSelected ? ' selected' : '') + '" data-hash="' + escapeHtml(c.hash) + '" style="height:' + _peersRowHeight + 'px;flex-shrink:0">' +
                 '<span class="conn-status-dot ' + statusClass + '"></span>' +
                 '<div class="peers-row-avatar">' + av + '</div>' +
-                '<span class="' + nameClass + '">' + escapeHtml(displayName) + '</span>' +
+                '<span class="' + nameClass + '">' + ratspeakDisplayNameHtml(displayName, c) + '</span>' +
                 '<span class="peers-row-meta">' +
                     ifaceBadge +
                 '</span>' +
@@ -340,7 +340,7 @@ function renderPeersDetailPanel(hash) {
     var iface = peer.iface || null;
 
     var hasName = peer.display_name && peer.display_name !== '' && peer.display_name !== peer.hash;
-    var displayName = hasName ? escapeHtml(peer.display_name) : escapeHtml(typeof shortHash === 'function' ? shortHash(peer.hash, 8, 4) : peer.hash.substring(0, 12) + '\u2026');
+    var displayName = hasName ? peer.display_name : (typeof shortHash === 'function' ? shortHash(peer.hash, 8, 4) : peer.hash.substring(0, 12) + '\u2026');
     var av = (typeof identityAvatar === 'function') ? identityAvatar(hash, 64) : '';
     var statusLabel = peer.status === 'reachable' || peer.status === 'direct' ? 'Recent' : peer.status === 'stale' ? 'Seen today' : 'Older / unknown';
     var statusDotClass = 'status-' + peer.status;
@@ -353,7 +353,7 @@ function renderPeersDetailPanel(hash) {
 
     var html = '<div class="peers-detail-header">' +
         '<div class="peers-detail-avatar">' + av + '</div>' +
-        '<div class="peers-detail-name">' + displayName + '</div>' +
+        '<div class="peers-detail-name">' + ratspeakDisplayNameHtml(displayName, peer) + '</div>' +
         '<div class="peers-detail-hash" id="peers-detail-hash-copy" title="Click to copy">' + escapeHtml(hash) + '</div>' +
         '<div class="peers-detail-status"><span class="conn-status-dot ' + statusDotClass + '"></span> ' + statusLabel + '</div>' +
     '</div>';

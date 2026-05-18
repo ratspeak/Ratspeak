@@ -1,3 +1,48 @@
+function ratspeakSupportsFeatures(record) {
+    if (!record || typeof record !== 'object') return false;
+    if (record.supports_ratspeak === true) return true;
+    var services = Array.isArray(record.services) ? record.services : [];
+    return services.indexOf('ratspeak.client') !== -1;
+}
+
+function ratspeakRecordForHash(hash) {
+    if (!hash) return null;
+    if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.get === 'function') {
+        var peer = PeersCache.get(hash);
+        if (peer) return peer;
+    }
+    if (typeof lxmfContacts !== 'undefined' && Array.isArray(lxmfContacts)) {
+        for (var i = 0; i < lxmfContacts.length; i++) {
+            if (lxmfContacts[i] && lxmfContacts[i].hash === hash) return lxmfContacts[i];
+        }
+    }
+    return null;
+}
+
+function ratspeakSupportsFeaturesFor(recordOrHash) {
+    if (!recordOrHash) return false;
+    if (typeof recordOrHash === 'string') {
+        return ratspeakSupportsFeatures(ratspeakRecordForHash(recordOrHash));
+    }
+    if (ratspeakSupportsFeatures(recordOrHash)) return true;
+    if (recordOrHash.hash) {
+        return ratspeakSupportsFeatures(ratspeakRecordForHash(recordOrHash.hash));
+    }
+    return false;
+}
+
+function ratspeakNameBadgeHtml(recordOrHash) {
+    if (!ratspeakSupportsFeaturesFor(recordOrHash)) return '';
+    return '<span class="ratspeak-name-badge" title="Ratspeak user" aria-label="Ratspeak user">&#9733;</span>';
+}
+
+function ratspeakDisplayNameHtml(displayName, recordOrHash) {
+    var nameHtml = escapeHtml(String(displayName || ''));
+    if (!ratspeakSupportsFeaturesFor(recordOrHash)) return nameHtml;
+    return '<span class="ratspeak-name-label"><span class="ratspeak-name-text">' + nameHtml + '</span>' +
+        ratspeakNameBadgeHtml(recordOrHash) + '</span>';
+}
+
 // PeersCache: single source of truth for peer rows on the JS side.
 // Loaded once from `api_get_peers_snapshot`, updated by `peer_updated` /
 // `peer_removed` events. Status tier is computed from `last_seen` alone —
@@ -48,9 +93,7 @@ var PeersCache = (function() {
     }
 
     function _supportsRatspeakFeatures(entry) {
-        if (!entry) return false;
-        var services = Array.isArray(entry.services) ? entry.services : [];
-        return services.indexOf('ratspeak.client') !== -1;
+        return ratspeakSupportsFeatures(entry);
     }
 
     function _isSuppressedPeerEntry(entry) {
@@ -132,7 +175,10 @@ var PeersCache = (function() {
             }
             if (payload.identity_hash !== undefined) existing.identity_hash = n.identity_hash;
             if (payload.telephony_hash !== undefined) existing.telephony_hash = n.telephony_hash;
-            if (payload.services !== undefined) existing.services = n.services;
+            if (payload.services !== undefined) {
+                existing.services = n.services;
+                existing.supports_ratspeak = n.supports_ratspeak;
+            }
         } else {
             _cache[n.hash] = n;
         }

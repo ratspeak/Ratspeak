@@ -84,7 +84,7 @@ function renderDashboardPeersList() {
         var statusClass = 'status-' + p.status;
         var av = (typeof identityAvatar === 'function') ? identityAvatar(hash, 24) : '';
         var hasName = p.display_name && p.display_name !== '' && p.display_name !== hash;
-        var displayName = hasName ? escapeHtml(p.display_name) : escapeHtml(hash.substring(0, 8));
+        var displayName = hasName ? p.display_name : hash.substring(0, 8);
         var nameClass = 'dashboard-peers-name' + (hasName ? '' : ' dashboard-peers-name-hash');
         var hopText = (p.hops !== null && p.hops !== undefined)
             ? p.hops + (p.hops === 1 ? ' hop' : ' hops') : '';
@@ -99,7 +99,7 @@ function renderDashboardPeersList() {
         html += '<div class="dashboard-peers-row" data-hash="' + escapeHtml(hash) + '">' +
             '<span class="dashboard-peers-dot ' + statusClass + '"></span>' +
             '<div class="dashboard-peers-avatar">' + av + '</div>' +
-            '<span class="' + nameClass + '">' + displayName + '</span>' +
+            '<span class="' + nameClass + '">' + ratspeakDisplayNameHtml(displayName, p) + '</span>' +
             (hopText ? '<span class="dashboard-peers-hops">' + hopText + '</span>' : '') +
             actions +
             '</div>';

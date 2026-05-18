@@ -1205,7 +1205,7 @@ function _refreshRenderedConversationNames() {
             payload ? payload.display_name : null,
             payload ? payload.is_contact : false
         );
-        nameEl.textContent = info.name;
+        nameEl.innerHTML = ratspeakDisplayNameHtml(info.name, hash);
         nameEl.classList.toggle('is-hash', !!info.isHash);
         nameEl.title = info.isHash ? hash : '';
     });
@@ -1213,9 +1213,9 @@ function _refreshRenderedConversationNames() {
     if (lxmfActiveContact) {
         var activeInfo = _conversationNameInfo(lxmfActiveContact, null, false);
         var headerName = document.getElementById('lxmf-chat-header-name');
-        if (headerName) headerName.textContent = activeInfo.name;
+        if (headerName) headerName.innerHTML = ratspeakDisplayNameHtml(activeInfo.name, lxmfActiveContact);
         var emptyName = document.querySelector('.lxmf-empty-conv-name');
-        if (emptyName) emptyName.textContent = activeInfo.name;
+        if (emptyName) emptyName.innerHTML = ratspeakDisplayNameHtml(activeInfo.name, lxmfActiveContact);
     }
 }
 
@@ -1504,7 +1504,7 @@ function _ensureGhostRow(hash) {
         avatarHtml +
         '<div class="conv-row-content">' +
             '<div class="conv-row-top">' +
-                '<span class="conv-name' + (nameInfo.isHash ? ' is-hash' : '') + '" title="' + (nameInfo.isHash ? escapeHtml(hash) : '') + '">' + escapeHtml(nameInfo.name) + '</span>' +
+                '<span class="conv-name' + (nameInfo.isHash ? ' is-hash' : '') + '" title="' + (nameInfo.isHash ? escapeHtml(hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, hash) + '</span>' +
                 '<span class="conv-time"></span>' +
             '</div>' +
             '<div class="conv-row-bottom">' +
@@ -1559,7 +1559,7 @@ function _updateConversationPreview(hash, previewText, timestamp) {
             newAvatarHtml +
             '<div class="conv-row-content">' +
                 '<div class="conv-row-top">' +
-                    '<span class="conv-name' + (nameInfo.isHash ? ' is-hash' : '') + '" title="' + (nameInfo.isHash ? escapeHtml(hash) : '') + '">' + escapeHtml(nameInfo.name) + '</span>' +
+                    '<span class="conv-name' + (nameInfo.isHash ? ' is-hash' : '') + '" title="' + (nameInfo.isHash ? escapeHtml(hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, hash) + '</span>' +
                     '<span class="conv-time">' + (timestamp ? formatConvTime(timestamp) : '') + '</span>' +
                 '</div>' +
                 '<div class="conv-row-bottom">' +
@@ -1667,7 +1667,7 @@ function renderDashboardRecentMessages() {
                 avatarHtml +
                 '<div class="conv-row-content">' +
                     '<div class="conv-row-top">' +
-                        '<span class="' + nameClass + '" title="' + (nameInfo.isHash ? escapeHtml(c.hash) : '') + '">' + escapeHtml(nameInfo.name) + '</span>' +
+                        '<span class="' + nameClass + '" title="' + (nameInfo.isHash ? escapeHtml(c.hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, c.hash) + '</span>' +
                         '<span class="conv-time">' + time + '</span>' +
                     '</div>' +
                     '<div class="conv-row-bottom">' +
@@ -1829,7 +1829,7 @@ function _renderConversationsFromCache(convos) {
                 '<div class="conv-avatar-wrap"><span class="conv-avatar">' + avatarHtml + '</span><span class="conv-status-dot ' + statusClass + '"></span></div>' +
                 '<div class="conv-row-content">' +
                     '<div class="conv-row-top">' +
-                        '<span class="' + nameClass + '" title="' + (nameInfo.isHash ? escapeHtml(c.hash) : '') + '">' + escapeHtml(nameInfo.name) + '</span>' +
+                        '<span class="' + nameClass + '" title="' + (nameInfo.isHash ? escapeHtml(c.hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, c.hash) + '</span>' +
                         '<span class="conv-time">' + time + '</span>' +
                     '</div>' +
                     '<div class="conv-row-bottom">' +
@@ -1963,7 +1963,7 @@ function renderContactList() {
         }
         html += '<div class="lxmf-contact' + activeClass + '" data-hash="' + escapeHtml(c.hash) + '" tabindex="0" role="button">' +
             '<span class="contact-id-status status-' + reachStatus + '" title="' + reachTitle + '" role="img" aria-label="' + reachTitle + '"></span>' +
-            '<span class="lxmf-contact-name">' + escapeHtml(name) + hopBadge + '</span>' +
+            '<span class="lxmf-contact-name">' + ratspeakDisplayNameHtml(name, c) + hopBadge + '</span>' +
             '<button class="lxmf-contact-remove" data-hash="' + escapeHtml(c.hash) + '" title="Remove contact">&times;</button>' +
         '</div>';
     });
@@ -2067,7 +2067,7 @@ function renderStandaloneContactList() {
         html += '<div class="contacts-row" data-hash="' + escapeHtml(c.hash) + '">' +
             avatarHtml +
             '<div class="contacts-row-content">' +
-                '<span class="contacts-row-name">' + escapeHtml(name) + '</span>' +
+                '<span class="contacts-row-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
                 '<span class="contacts-row-hash">' + escapeHtml(c.hash) + '</span>' +
             '</div>' +
         '</div>';
@@ -2104,7 +2104,7 @@ function renderNetworkContactList() {
         html += '<div class="contacts-row" data-hash="' + escapeHtml(c.hash) + '" style="padding:8px 12px;min-height:40px;">' +
             avatarHtml +
             '<div class="contacts-row-content">' +
-                '<span class="contacts-row-name">' + escapeHtml(name) + '</span>' +
+                '<span class="contacts-row-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
                 '<span class="contacts-row-hash">' + escapeHtml(truncHash) + '</span>' +
             '</div>' +
         '</div>';
@@ -2201,7 +2201,7 @@ function showContactDetailSheet(hash) {
                 '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>' +
             '</button>' +
             '<div class="contact-detail-avatar">' + avatarSvg + '</div>' +
-            '<div class="contact-detail-name">' + escapeHtml(name) + '</div>' +
+            '<div class="contact-detail-name">' + ratspeakDisplayNameHtml(name, contact || hash) + '</div>' +
             '<div class="contact-detail-hash-row">' +
                 '<span class="contact-detail-hash">' + escapeHtml(hash) + '</span>' +
                 '<button class="contact-detail-copy-btn" id="cd-copy-hash-btn" title="Copy LXMF address" aria-label="Copy LXMF address">' +
@@ -2392,7 +2392,7 @@ function renderConversation(options) {
             header.style.display = 'flex';
             var contact = _lookupContactRecord(lxmfActiveContact);
             var nameInfo = _conversationNameInfo(lxmfActiveContact, null, false);
-            document.getElementById('lxmf-chat-header-name').textContent = nameInfo.name;
+            document.getElementById('lxmf-chat-header-name').innerHTML = ratspeakDisplayNameHtml(nameInfo.name, lxmfActiveContact);
 
             var statusEl = document.getElementById('lxmf-chat-header-status');
             var avatarEl = document.getElementById('lxmf-contact-avatar');
@@ -2432,7 +2432,7 @@ function renderConversation(options) {
         var emptyAvatar = (typeof identityAvatar === 'function') ? identityAvatar(lxmfActiveContact, 48) : '';
         container.innerHTML = '<div class="lxmf-empty-conv">' +
             '<div style="opacity:0.6;">' + emptyAvatar + '</div>' +
-            '<span class="lxmf-empty-conv-name">' + escapeHtml(emptyNameInfo.name) + '</span>' +
+            '<span class="lxmf-empty-conv-name">' + ratspeakDisplayNameHtml(emptyNameInfo.name, lxmfActiveContact) + '</span>' +
             '<span class="lxmf-empty-conv-hint">This is the beginning of your encrypted conversation.</span>' +
         '</div>';
         return;
@@ -3827,12 +3827,12 @@ function openFabContactPicker() {
         });
         var html = '';
         sorted.forEach(function(c) {
-            var name = escapeHtml(c.display_name || 'Anonymous');
+            var name = c.display_name || 'Anonymous';
             var avatarHtml = '<span style="width:32px;height:32px;flex-shrink:0;display:flex;">' + identityAvatar(c.hash, 32) + '</span>';
             html += '<div class="fab-picker-row" data-hash="' + escapeHtml(c.hash) + '">' +
                 avatarHtml +
                 '<div>' +
-                    '<div class="fab-picker-name">' + name + '</div>' +
+                    '<div class="fab-picker-name">' + ratspeakDisplayNameHtml(name, c) + '</div>' +
                     '<div class="fab-picker-hash">' + escapeHtml(typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : c.hash.substring(0, 12) + '…') + '</div>' +
                 '</div>' +
             '</div>';

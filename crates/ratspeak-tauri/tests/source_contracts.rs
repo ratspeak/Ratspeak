@@ -66,23 +66,22 @@ fn privacy_announce_usage_setting_is_wired() {
 }
 
 #[test]
-fn ratspeak_capability_marker_drives_avatar_glow() {
+fn ratspeak_capability_marker_drives_name_badge() {
     let root = repo_root();
-    let identity_js =
-        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
-    assert!(identity_js.contains("function ratspeakAvatarSupported"));
-    assert!(identity_js.contains("function ratspeakAvatarRingMarkup"));
-    assert!(identity_js.contains("ratspeak-avatar-ring-core"));
-    assert!(identity_js.contains("ratspeak.client"));
-    assert!(identity_js.contains("ratspeak-avatar-glow"));
-
     let peers_cache_js =
         read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache");
+    assert!(peers_cache_js.contains("function ratspeakDisplayNameHtml"));
+    assert!(peers_cache_js.contains("ratspeak-name-badge"));
+    assert!(peers_cache_js.contains("ratspeak.client"));
     assert!(peers_cache_js.contains("supports_ratspeak"));
     assert!(peers_cache_js.contains("supportsRatspeakFeatures"));
 
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".ratspeak-avatar-glow"));
+    assert!(views_css.contains(".ratspeak-name-badge"));
+
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    assert!(!identity_js.contains("ratspeak-avatar-glow"));
 }
 
 #[test]

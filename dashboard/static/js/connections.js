@@ -273,7 +273,7 @@ function renderConnectionsTable(contacts, scrollOnly) {
                 var viaText = formatVia(c.via);
                 mobileHtml += '<div class="conn-row' + (isSelected ? ' selected' : '') + '" data-hash="' + escapeHtml(c.hash) + '">' +
                     '<span class="conn-status-dot ' + statusClass + '"></span>' +
-                    '<span class="conn-name">' + escapeHtml(displayName) + '</span>' +
+                    '<span class="conn-name">' + ratspeakDisplayNameHtml(displayName, c) + '</span>' +
                     '<span class="conn-row-meta">' +
                         '<span class="conn-hop-badge">' + hopText + '</span>' +
                         '<span class="conn-age ' + ageClass + '">' + ageText + '</span>' +
@@ -336,7 +336,7 @@ function renderConnectionsTable(contacts, scrollOnly) {
 
             html += '<div class="conn-row' + (isSelected ? ' selected' : '') + '" data-hash="' + escapeHtml(c.hash) + '" style="height:' + _rowHeight + 'px">' +
                 '<span class="conn-status-dot ' + statusClass + '"></span>' +
-                '<span class="conn-name">' + escapeHtml(displayName) + '</span>' +
+                '<span class="conn-name">' + ratspeakDisplayNameHtml(displayName, c) + '</span>' +
                 '<span class="conn-row-meta">' +
                     '<span class="conn-hop-badge">' + hopText + '</span>' +
                     '<span class="conn-age ' + ageClass + '">' + ageText + '</span>' +
@@ -409,7 +409,7 @@ function renderDetailStrip(hash) {
             '<button class="conn-msg-btn" data-hash="' + escapeHtml(contact.hash) + '">Message</button>' +
         '</div>' +
         '<div class="detail-sep"></div>' +
-        '<div class="detail-field detail-field-name"><span class="detail-label">Name</span><span class="detail-value" title="' + escapeHtml(nameText) + '">' + escapeHtml(nameText) + '</span></div>' +
+        '<div class="detail-field detail-field-name"><span class="detail-label">Name</span><span class="detail-value" title="' + escapeHtml(nameText) + '">' + ratspeakDisplayNameHtml(nameText, contact) + '</span></div>' +
         '<div class="detail-field detail-field-hash"><span class="detail-label">Hash</span><span class="detail-value mono">' + copyableHash(contact.hash) + '</span></div>' +
         '<div class="detail-field"><span class="detail-label">Last heard</span><span class="detail-value">' + escapeHtml(lastHeardText) + '</span></div>' +
         '<div class="detail-field"><span class="detail-label">Route</span><span class="detail-value">' + escapeHtml(contact.route_label || 'No current path') + '</span></div>' +
@@ -578,7 +578,7 @@ function showConnectionDetailSheet(hash, options) {
     });
     if (!contact) return;
 
-    var nameText = escapeHtml(contact.display_name || (typeof shortHash === 'function' ? shortHash(contact.hash, 8, 4) : contact.hash));
+    var nameText = contact.display_name || (typeof shortHash === 'function' ? shortHash(contact.hash, 8, 4) : contact.hash);
     var hashText = escapeHtml(contact.hash);
     var avatarHtml = (typeof identityAvatar === 'function') ? identityAvatar(contact.hash, 64) : '';
     var lastHeardText = typeof formatLastHeard === 'function' ? formatLastHeard(contact.last_seen) : (contact.last_seen ? new Date(contact.last_seen * 1000).toLocaleString() : 'No activity yet');
@@ -639,7 +639,7 @@ function showConnectionDetailSheet(hash, options) {
         '<div class="conn-detail-sheet-identity">' +
             '<div class="conn-detail-sheet-avatar">' + avatarHtml + '</div>' +
             '<div class="conn-detail-sheet-title">' +
-                '<div class="conn-detail-sheet-name">' + nameText + '</div>' +
+                '<div class="conn-detail-sheet-name">' + ratspeakDisplayNameHtml(nameText, contact) + '</div>' +
                 '<div class="conn-detail-sheet-hash">' + hashText + '</div>' +
             '</div>' +
             '<div class="conn-detail-sheet-header-actions">' +

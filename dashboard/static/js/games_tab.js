@@ -246,7 +246,7 @@
             html += '<div class="' + classes + ' game-row-' + escapeHtml(appId || 'unknown') + '" data-session-id="' + escapeHtml(s.game_id) + '" role="button" tabindex="0">' +
                 '<div class="games-session-icon">' + _gameIcon(s.app_id || s.game) + '</div>' +
                 '<div class="games-session-info">' +
-                    '<div class="games-session-name">' + escapeHtml(_contactName(s.contact_hash)) + '</div>' +
+                    '<div class="games-session-name">' + ratspeakDisplayNameHtml(_contactName(s.contact_hash), s.contact_hash) + '</div>' +
                     '<div class="games-session-meta">' +
                         '<span class="games-session-game">' + _gameName(appId) + '</span>' +
                         '<span class="games-session-status ' + _statusClass(s) + '">' + _statusText(s) + '</span>' +
@@ -463,7 +463,7 @@
                 '<span class="games-detail-icon">' + _gameIcon(appId) + '</span>' +
                 '<span class="games-detail-copy">' +
                     '<span class="games-detail-title">' + _gameName(appId) + '</span>' +
-                    '<span class="games-detail-vs">vs ' + escapeHtml(_contactName(session.contact_hash)) + '</span>' +
+                    '<span class="games-detail-vs">vs ' + ratspeakDisplayNameHtml(_contactName(session.contact_hash), session.contact_hash) + '</span>' +
                 '</span>' +
             '</div>' +
             _renderDetailMeta(session) +
@@ -551,9 +551,9 @@
 
         if (iAmX) {
             xPlayer = 'You (X)';
-            oPlayer = escapeHtml(_contactName(session.contact_hash)) + ' (O)';
+            oPlayer = ratspeakDisplayNameHtml(_contactName(session.contact_hash), session.contact_hash) + ' (O)';
         } else {
-            xPlayer = escapeHtml(_contactName(session.contact_hash)) + ' (X)';
+            xPlayer = ratspeakDisplayNameHtml(_contactName(session.contact_hash), session.contact_hash) + ' (X)';
             oPlayer = 'You (O)';
         }
 
@@ -836,7 +836,7 @@
         var whiteAdvantage = whiteMaterial - blackMaterial;
 
         var opponentHash = session.contact_hash;
-        var opponentName = escapeHtml(_contactName(opponentHash));
+        var opponentName = ratspeakDisplayNameHtml(_contactName(opponentHash), opponentHash);
         var opponentColor = (myColor === 'w') ? 'b' : (myColor === 'b' ? 'w' : '');
         var myColorLabel = myColor === 'w' ? 'White' : (myColor === 'b' ? 'Black' : '');
         var opponentColorLabel = opponentColor === 'w' ? 'White' : (opponentColor === 'b' ? 'Black' : '');
@@ -1355,7 +1355,7 @@
                 contactsHtml += '<button type="button" class="games-sheet-contact-row" data-hash="' + escapeHtml(c.hash) + '" aria-pressed="false">' +
                     '<span class="games-sheet-contact-avatar">' + avatar + '</span>' +
                     '<span class="games-sheet-contact-copy">' +
-                        '<span class="games-sheet-contact-name">' + escapeHtml(name) + '</span>' +
+                        '<span class="games-sheet-contact-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
                         '<span class="games-sheet-contact-hash">' + escapeHtml(_shortHash(c.hash, 8, 4)) + '</span>' +
                     '</span>' +
                 '</button>';
