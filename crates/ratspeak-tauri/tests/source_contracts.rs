@@ -1570,6 +1570,8 @@ fn message_actions_use_mobile_long_press_and_action_state() {
         read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("runtime lxmf");
     let inbound =
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    let messaging = read_source(root.join("crates/ratspeak-tauri/src/commands/messaging.rs"))
+        .expect("messaging command");
 
     assert!(lxmf.contains("RS.gestures.attachLongPress(bubble"));
     assert!(lxmf.contains("window.RS.closeMessageActionMenu"));
@@ -1587,6 +1589,7 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(inbound.contains("apply_inbound_ratspeak_reaction"));
     assert!(inbound.contains("\"reply_to_id\": reply_to_id"));
     assert!(inbound.contains("\"reaction_update\""));
+    assert!(messaging.contains("\"reaction_update\""));
 }
 
 #[test]

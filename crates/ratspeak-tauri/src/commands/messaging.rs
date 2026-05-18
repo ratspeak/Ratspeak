@@ -449,6 +449,20 @@ pub async fn send_reaction(
     .unwrap_or(false);
     if sent {
         state.lxmf_notify.notify_one();
+        let mid_for_db = message_id.clone();
+        let id_for_db = identity_id.clone();
+        let reactions = db::spawn_db(state.db.clone(), move |p| {
+            db::get_reactions_for_message(&p, &mid_for_db, &id_for_db)
+        })
+        .await
+        .unwrap_or_default();
+        state.emit_to_all(
+            "reaction_update",
+            json!({
+                "message_id": message_id,
+                "reactions": reactions,
+            }),
+        );
         Ok(json!(null))
     } else {
         Err(AppError::lxmf_not_initialized("LXMF not initialized"))

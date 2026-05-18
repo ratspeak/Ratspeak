@@ -3061,7 +3061,17 @@ function _messageActionIcon(name) {
 }
 
 function _ownReactionSender() {
-    return lxmfIdentity ? (lxmfIdentity.hash || lxmfIdentity.lxmf_hash || '') : '';
+    if (lxmfIdentity) {
+        if (lxmfIdentity.lxmf_hash) return lxmfIdentity.lxmf_hash;
+        if (lxmfIdentity.lxmf_destination) return lxmfIdentity.lxmf_destination;
+        if (lxmfIdentity.hash && lxmfIdentity.hash !== lxmfIdentity.identity_hash) return lxmfIdentity.hash;
+    }
+    if (typeof identityList !== 'undefined' && Array.isArray(identityList)) {
+        for (var i = 0; i < identityList.length; i++) {
+            if (identityList[i].is_active && identityList[i].lxmf_hash) return identityList[i].lxmf_hash;
+        }
+    }
+    return '';
 }
 
 function _hasOwnReaction(msgId, emoji) {
