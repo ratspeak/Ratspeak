@@ -63,6 +63,8 @@ pub struct AppState {
     /// Auto-announce interval in seconds (0 = disabled).
     pub announce_interval_tx: watch::Sender<u64>,
     pub announce_interval_rx: watch::Receiver<u64>,
+    /// If true, delivery announces include Ratspeak capability metadata.
+    pub announce_ratspeak_usage: AtomicBool,
     /// Eager-wake for the stats poll loop; loop has 750ms debounce cooldown.
     pub poll_now: Arc<tokio::sync::Notify>,
     /// Live BLE-peer count, driven by `BlePeerEvent::Connected/Disconnected`.
@@ -109,6 +111,11 @@ impl AppState {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(1800);
         let (announce_interval_tx, announce_interval_rx) = watch::channel(initial_interval);
+        let initial_announce_ratspeak_usage =
+            crate::db::get_setting(&db, "announce_ratspeak_usage")
+                .and_then(|v| v.parse::<u8>().ok())
+                .map(|v| v != 0)
+                .unwrap_or(true);
 
         let initial_enforce_stamps = crate::db::get_setting(&db, "enforce_stamps")
             .and_then(|v| v.parse::<u8>().ok())
@@ -166,6 +173,7 @@ impl AppState {
             network_log_level: RwLock::new("standard".into()),
             announce_interval_tx,
             announce_interval_rx,
+            announce_ratspeak_usage: AtomicBool::new(initial_announce_ratspeak_usage),
             poll_now: Arc::new(tokio::sync::Notify::new()),
             ble_peer_count: AtomicUsize::new(0),
             enforce_stamps: AtomicBool::new(initial_enforce_stamps),
@@ -199,6 +207,15 @@ impl AppState {
 
     pub fn set_native_notifications_enabled(&self, enabled: bool) {
         self.native_notifications_enabled
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn announce_ratspeak_usage_enabled(&self) -> bool {
+        self.announce_ratspeak_usage.load(Ordering::Relaxed)
+    }
+
+    pub fn set_announce_ratspeak_usage_enabled(&self, enabled: bool) {
+        self.announce_ratspeak_usage
             .store(enabled, Ordering::Relaxed);
     }
 

@@ -823,6 +823,10 @@
                                 <span class="settings-nav-label">General</span>
                                 <span class="settings-nav-desc">Theme, vibration, and app preferences</span>
                             </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-privacy" data-settings-title="Privacy" data-settings-desc="Privacy related preferences">
+                                <span class="settings-nav-label">Privacy</span>
+                                <span class="settings-nav-desc">Privacy related preferences</span>
+                            </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-network" data-settings-title="Network" data-settings-desc="Transport behavior and announce cadence.">
                                 <span class="settings-nav-label">Network</span>
                                 <span class="settings-nav-desc">Transport behavior and announce cadence</span>
@@ -894,6 +898,22 @@
                                 </div>
                                 <label class="prop-toggle" aria-label="Enable vibration">
                                     <input type="checkbox" id="haptics-enabled-toggle">
+                                    <span class="prop-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                            <div class="panel settings-panel" id="panel-settings-privacy">
+                        <div class="panel-header">Privacy</div>
+                        <div class="panel-body">
+                            <div class="settings-row" style="border-bottom:none;">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Announce Ratspeak usage</span>
+                                    <span class="settings-row-desc">Let others know you support games, calls, and extra features.</span>
+                                </div>
+                                <label class="prop-toggle" aria-label="Announce Ratspeak usage">
+                                    <input type="checkbox" id="announce-ratspeak-usage-toggle" checked>
                                     <span class="prop-slider"></span>
                                 </label>
                             </div>

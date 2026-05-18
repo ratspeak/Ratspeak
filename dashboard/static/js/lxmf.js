@@ -983,13 +983,16 @@ function normalizeContactRecord(c) {
     if (hash === null || hash === undefined) hash = '';
     hash = String(hash).trim();
     if (!hash) return null;
+    var services = Array.isArray(c.services) ? c.services.slice() : [];
     return {
         hash: hash,
         display_name: c.display_name || '',
         trust: c.trust || '',
         notes: c.notes || '',
         first_seen: c.first_seen,
-        last_seen: c.last_seen
+        last_seen: c.last_seen,
+        services: services,
+        supports_ratspeak: services.indexOf('ratspeak.client') !== -1
     };
 }
 

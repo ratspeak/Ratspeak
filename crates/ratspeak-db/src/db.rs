@@ -12,6 +12,9 @@ const SCHEMA_VERSION: i64 = 30;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = "lxmf.delivery";
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
+pub const PEER_SERVICE_RATSPEAK_CLIENT: &str = "ratspeak.client";
+pub const PEER_SERVICE_RATSPEAK_GAMES: &str = "ratspeak.games";
+pub const PEER_SERVICE_RATSPEAK_CHAT: &str = "ratspeak.chat";
 
 const POOL_MAX_SIZE: u32 = 32;
 
@@ -1313,11 +1316,25 @@ pub fn get_all_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Val
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    let mut stmt =
-        match conn.prepare("SELECT * FROM contacts WHERE identity_id = ?1 ORDER BY display_name") {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
+    let mut stmt = match conn.prepare(
+        "SELECT
+            c.dest_hash,
+            c.identity_id,
+            c.display_name,
+            c.identity_pubkey,
+            c.first_seen,
+            c.last_seen,
+            c.trust,
+            c.notes,
+            COALESCE(ia.services, '') AS services
+         FROM contacts c
+         LEFT JOIN identity_activity ia ON ia.dest_hash = c.dest_hash
+         WHERE c.identity_id = ?1
+         ORDER BY c.display_name",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
 
     stmt.query_map(params![identity_id], row_to_contact)
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -1325,11 +1342,25 @@ pub fn get_all_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Val
 }
 
 pub fn get_all_contacts_conn(conn: &Connection, identity_id: &str) -> Vec<serde_json::Value> {
-    let mut stmt =
-        match conn.prepare("SELECT * FROM contacts WHERE identity_id = ?1 ORDER BY display_name") {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
+    let mut stmt = match conn.prepare(
+        "SELECT
+            c.dest_hash,
+            c.identity_id,
+            c.display_name,
+            c.identity_pubkey,
+            c.first_seen,
+            c.last_seen,
+            c.trust,
+            c.notes,
+            COALESCE(ia.services, '') AS services
+         FROM contacts c
+         LEFT JOIN identity_activity ia ON ia.dest_hash = c.dest_hash
+         WHERE c.identity_id = ?1
+         ORDER BY c.display_name",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
 
     stmt.query_map(params![identity_id], row_to_contact)
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -2112,6 +2143,17 @@ pub fn touch_identity_activity(
     touch_identity_activity_for_service(pool, rows, None, PEER_SERVICE_LXMF_DELIVERY)
 }
 
+fn normalized_peer_services<'a>(services: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out = Vec::new();
+    for service in services {
+        let service = service.trim();
+        if !service.is_empty() && !out.iter().any(|s| s == service) {
+            out.push(service.to_string());
+        }
+    }
+    out
+}
+
 /// Same as `touch_identity_activity`, but records the service aspect that made
 /// the destination actionable for Ratspeak.
 pub fn touch_identity_activity_for_service(
@@ -2120,11 +2162,25 @@ pub fn touch_identity_activity_for_service(
     identity_hash: Option<&str>,
     service: &str,
 ) -> usize {
+    touch_identity_activity_for_services(pool, rows, identity_hash, &[service], false)
+}
+
+/// Same as `touch_identity_activity_for_service`, but merges multiple service
+/// tokens in one row update so one announce increments `announce_count` once.
+/// `clear_ratspeak_services` removes stale `ratspeak.*` tokens before adding
+/// the provided services, allowing peers to opt out on a later announce.
+pub fn touch_identity_activity_for_services(
+    pool: &DbPool,
+    rows: &[(String, f64, Option<String>, Option<String>)],
+    identity_hash: Option<&str>,
+    services: &[&str],
+    clear_ratspeak_services: bool,
+) -> usize {
     if rows.is_empty() {
         return 0;
     }
-    let service = service.trim();
-    if service.is_empty() {
+    let services = normalized_peer_services(services.iter().copied());
+    if services.is_empty() {
         return 0;
     }
     let mut conn = match pool.get() {
@@ -2137,6 +2193,12 @@ pub fn touch_identity_activity_for_service(
     };
     let mut touched = 0usize;
     {
+        let mut existing_stmt = match tx.prepare_cached(
+            "SELECT COALESCE(services, '') FROM identity_activity WHERE dest_hash = ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
         let mut stmt = match tx.prepare_cached(
             "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, last_interface, services)
              VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), ?6)
@@ -2155,12 +2217,7 @@ pub fn touch_identity_activity_for_service(
                      WHEN excluded.last_interface != '' THEN excluded.last_interface
                      ELSE last_interface
                  END,
-                 services = CASE
-                     WHEN excluded.services = '' THEN services
-                     WHEN services = '' THEN excluded.services
-                     WHEN instr(',' || services || ',', ',' || excluded.services || ',') > 0 THEN services
-                     ELSE services || ',' || excluded.services
-                 END",
+                 services = excluded.services",
         ) {
             Ok(s) => s,
             Err(_) => return 0,
@@ -2169,8 +2226,21 @@ pub fn touch_identity_activity_for_service(
         for (hash, ts, name, iface) in rows {
             let n = name.as_deref().filter(|s| !s.is_empty());
             let i = iface.as_deref().filter(|s| !s.is_empty());
+            let existing_raw = existing_stmt
+                .query_row(params![hash], |row| row.get::<_, String>(0))
+                .unwrap_or_default();
+            let mut merged = normalized_peer_services(existing_raw.split(','));
+            if clear_ratspeak_services {
+                merged.retain(|service| !service.starts_with("ratspeak."));
+            }
+            for service in &services {
+                if !merged.iter().any(|existing| existing == service) {
+                    merged.push(service.clone());
+                }
+            }
+            let merged_services = merged.join(",");
             let ok = stmt
-                .execute(params![hash, identity_hash, ts, n, i, service])
+                .execute(params![hash, identity_hash, ts, n, i, merged_services])
                 .is_ok();
             if ok {
                 touched += 1;
@@ -3081,6 +3151,7 @@ fn row_to_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
         "last_seen": row.get::<_, Option<f64>>(5)?,
         "trust": row.get::<_, String>(6).unwrap_or("pending".into()),
         "notes": row.get::<_, String>(7).unwrap_or_default(),
+        "services": parse_peer_services(row.get::<_, String>(8).unwrap_or_default()),
     }))
 }
 
@@ -3994,6 +4065,60 @@ mod peers_snapshot_tests {
             params![name, hash],
         )
         .unwrap();
+    }
+
+    fn services_for(pool: &DbPool, hash: &str) -> String {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT services FROM identity_activity WHERE dest_hash = ?1",
+            params![hash],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    }
+
+    fn announce_count_for(pool: &DbPool, hash: &str) -> i64 {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT announce_count FROM identity_activity WHERE dest_hash = ?1",
+            params![hash],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn touch_identity_activity_merges_multiple_services_once_and_clears_ratspeak() {
+        let pool = test_pool();
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let rows = vec![(hash.to_string(), 100.0, None, None)];
+
+        touch_identity_activity_for_services(
+            &pool,
+            &rows,
+            None,
+            &[
+                PEER_SERVICE_LXMF_DELIVERY,
+                PEER_SERVICE_RATSPEAK_CLIENT,
+                PEER_SERVICE_RATSPEAK_GAMES,
+            ],
+            true,
+        );
+        assert_eq!(announce_count_for(&pool, hash), 1);
+        assert_eq!(
+            services_for(&pool, hash),
+            "lxmf.delivery,ratspeak.client,ratspeak.games"
+        );
+
+        touch_identity_activity_for_services(
+            &pool,
+            &rows,
+            None,
+            &[PEER_SERVICE_LXMF_DELIVERY],
+            true,
+        );
+        assert_eq!(announce_count_for(&pool, hash), 2);
+        assert_eq!(services_for(&pool, hash), "lxmf.delivery");
     }
 
     fn add_contact(pool: &DbPool, hash: &str, display_name: &str) {

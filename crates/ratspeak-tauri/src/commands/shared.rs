@@ -239,6 +239,7 @@ pub(crate) fn format_contacts_list(contacts: &[Value]) -> Vec<Value> {
                 "notes": c.get("notes"),
                 "first_seen": c.get("first_seen"),
                 "last_seen": c.get("last_seen"),
+                "services": c.get("services"),
             })
         })
         .collect()

@@ -203,16 +203,23 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         let iface = lookup_path_iface(state, event.destination_hash).await;
         let identity_hash_hex = event.identity_hash.map(hex::encode);
         let activity = vec![(hash_hex.clone(), now_f64(), display_name, iface)];
+        let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY];
+        if let Some(bytes) = event.app_data.as_deref() {
+            services.extend(crate::lxmf::ratspeak_capability_services_from_app_data(
+                bytes,
+            ));
+        }
 
         let pool = state.db.clone();
         let activity_owned = activity.clone();
         let identity_hash_for_db = identity_hash_hex.as_deref().map(str::to_owned);
         db::spawn_db(pool, move |p| {
-            db::touch_identity_activity_for_service(
+            db::touch_identity_activity_for_services(
                 &p,
                 &activity_owned,
                 identity_hash_for_db.as_deref(),
-                db::PEER_SERVICE_LXMF_DELIVERY,
+                &services,
+                true,
             );
         })
         .await

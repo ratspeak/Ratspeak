@@ -3200,6 +3200,13 @@ body.setup-active .bottom-bar {
     z-index: 1;
 }
 .contacts-group-header:first-child { margin-top: 0; }
+.ratspeak-avatar-glow {
+    border-radius: var(--radius-full);
+    box-shadow:
+        inset 0 0 0 1px rgba(104, 224, 199, 0.62),
+        0 0 0 1px rgba(104, 224, 199, 0.22),
+        0 0 7px rgba(104, 224, 199, 0.28);
+}
 .contacts-avatar {
     flex-shrink: 0;
     width: 40px;

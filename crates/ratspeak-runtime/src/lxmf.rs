@@ -46,6 +46,12 @@ const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
 const DIRECT_PATH_FAILURE_SUPPRESSION_SECS: f64 = 30.0;
 pub const RATSPEAK_CHAT_CUSTOM_TYPE: &[u8] = b"ratspeak.chat.v1";
 pub const LEGACY_RATSPEAK_REACTION_TYPE: &[u8] = b"ratspeak.reaction";
+pub const RATSPEAK_ANNOUNCE_EXTENSION_VERSION: u8 = 1;
+pub const RATSPEAK_CAP_CLIENT: u64 = 0x01;
+pub const RATSPEAK_CAP_GAMES: u64 = 0x02;
+pub const RATSPEAK_CAP_CHAT: u64 = 0x04;
+pub const RATSPEAK_DEFAULT_CAPABILITIES: u64 =
+    RATSPEAK_CAP_CLIENT | RATSPEAK_CAP_GAMES | RATSPEAK_CAP_CHAT;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RatspeakChatExtension {
@@ -59,6 +65,72 @@ pub enum RatspeakChatExtension {
         preview: String,
         target_sender: Option<String>,
     },
+}
+
+fn encode_msgpack_value(value: &rmpv::Value) -> Vec<u8> {
+    let mut buf = Vec::new();
+    rmpv::encode::write_value(&mut buf, value).expect("writing msgpack to Vec cannot fail");
+    buf
+}
+
+pub fn get_ratspeak_announce_app_data(
+    display_name: Option<&str>,
+    stamp_cost: Option<u8>,
+    announce_ratspeak_usage: bool,
+) -> Vec<u8> {
+    use rmpv::Value;
+
+    if !announce_ratspeak_usage {
+        return lxmf_core::handlers::get_announce_app_data(display_name, stamp_cost);
+    }
+
+    let name_val = match display_name {
+        Some(name) => Value::Binary(name.as_bytes().to_vec()),
+        None => Value::Nil,
+    };
+    let cost_val = match stamp_cost {
+        Some(cost) if cost > 0 && cost < 255 => Value::from(cost as u64),
+        _ => Value::Nil,
+    };
+    let features = Value::Array(vec![Value::from(
+        lxmf_core::constants::SF_COMPRESSION as u64,
+    )]);
+    let ratspeak = Value::Array(vec![
+        Value::from(RATSPEAK_ANNOUNCE_EXTENSION_VERSION as u64),
+        Value::from(RATSPEAK_DEFAULT_CAPABILITIES),
+    ]);
+
+    encode_msgpack_value(&Value::Array(vec![name_val, cost_val, features, ratspeak]))
+}
+
+pub fn ratspeak_capability_services_from_app_data(data: &[u8]) -> Vec<&'static str> {
+    let Ok(value) = rmpv::decode::read_value(&mut &data[..]) else {
+        return Vec::new();
+    };
+    let Some(arr) = value.as_array() else {
+        return Vec::new();
+    };
+    let Some(ext) = arr.get(3).and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    if ext.first().and_then(|v| v.as_u64()) != Some(RATSPEAK_ANNOUNCE_EXTENSION_VERSION as u64) {
+        return Vec::new();
+    }
+    let Some(bits) = ext.get(1).and_then(|v| v.as_u64()) else {
+        return Vec::new();
+    };
+    if bits & RATSPEAK_CAP_CLIENT == 0 {
+        return Vec::new();
+    }
+
+    let mut services = vec![db::PEER_SERVICE_RATSPEAK_CLIENT];
+    if bits & RATSPEAK_CAP_GAMES != 0 {
+        services.push(db::PEER_SERVICE_RATSPEAK_GAMES);
+    }
+    if bits & RATSPEAK_CAP_CHAT != 0 {
+        services.push(db::PEER_SERVICE_RATSPEAK_CHAT);
+    }
+    services
 }
 
 fn chat_map_entry(key: &str, value: rmpv::Value) -> (rmpv::Value, rmpv::Value) {
@@ -486,6 +558,7 @@ pub struct LxmfManager {
     pub data_dir: PathBuf,
     pub lxmf_storage_dir: PathBuf,
     pub display_name: String,
+    pub announce_ratspeak_usage: bool,
     pub ratchet_ring: RatchetRing,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
     pub known_identities: HashMap<String, [u8; 64]>,
@@ -706,6 +779,7 @@ impl LxmfManager {
             data_dir: ratspeak_dir,
             lxmf_storage_dir: lxmf_storage,
             display_name: String::new(),
+            announce_ratspeak_usage: true,
             ratchet_ring,
             received_ratchets,
             known_identities,
@@ -1974,8 +2048,11 @@ impl LxmfManager {
             Some(self.display_name.as_str())
         };
         let stamp_cost = self.router.config.stamp_cost;
-        let app_data_bytes =
-            lxmf_core::handlers::get_announce_app_data(display_name_opt, stamp_cost);
+        let app_data_bytes = get_ratspeak_announce_app_data(
+            display_name_opt,
+            stamp_cost,
+            self.announce_ratspeak_usage,
+        );
 
         let announce = AnnounceData::create(
             &self.identity,
@@ -2004,6 +2081,13 @@ impl LxmfManager {
 
         let mut raw = header.pack();
         raw.extend_from_slice(&payload);
+        if raw.len() > rns_wire::constants::MTU {
+            return Err(format!(
+                "Announce packet exceeds Reticulum MTU ({} > {})",
+                raw.len(),
+                rns_wire::constants::MTU
+            ));
+        }
         Ok(raw)
     }
 
@@ -2030,6 +2114,13 @@ impl LxmfManager {
         }
         .pack();
         raw.extend_from_slice(&announce.pack());
+        if raw.len() > rns_wire::constants::MTU {
+            return Err(format!(
+                "Propagation announce packet exceeds Reticulum MTU ({} > {})",
+                raw.len(),
+                rns_wire::constants::MTU
+            ));
+        }
         Ok(raw)
     }
 
@@ -4191,6 +4282,38 @@ mod tests {
                 .as_nanos()
         ));
         LxmfManager::load_or_create(&tmp, None).unwrap()
+    }
+
+    #[test]
+    fn ratspeak_announce_extension_is_optional_and_parseable() {
+        let legacy = get_ratspeak_announce_app_data(Some("Alice"), Some(8), false);
+        assert!(ratspeak_capability_services_from_app_data(&legacy).is_empty());
+        let (name, cost) = lxmf_core::handlers::parse_announce_app_data(&legacy).unwrap();
+        assert_eq!(name.as_deref(), Some("Alice"));
+        assert_eq!(cost, Some(8));
+
+        let extended = get_ratspeak_announce_app_data(Some("Alice"), Some(8), true);
+        let services = ratspeak_capability_services_from_app_data(&extended);
+        assert!(services.contains(&db::PEER_SERVICE_RATSPEAK_CLIENT));
+        assert!(services.contains(&db::PEER_SERVICE_RATSPEAK_GAMES));
+        assert!(services.contains(&db::PEER_SERVICE_RATSPEAK_CHAT));
+        let (name, cost) = lxmf_core::handlers::parse_announce_app_data(&extended).unwrap();
+        assert_eq!(name.as_deref(), Some("Alice"));
+        assert_eq!(cost, Some(8));
+        assert!(lxmf_core::handlers::compression_support_from_app_data(
+            &extended
+        ));
+    }
+
+    #[test]
+    fn delivery_announce_packet_stays_under_reticulum_mtu_with_max_display_name() {
+        let mut mgr = test_manager();
+        mgr.display_name = "a".repeat(crate::helpers::ANNOUNCED_DISPLAY_NAME_MAX_BYTES);
+        mgr.announce_ratspeak_usage = true;
+
+        let raw = mgr.create_announce_packet().expect("announce packet");
+
+        assert!(raw.len() <= rns_wire::constants::MTU);
     }
 
     #[test]

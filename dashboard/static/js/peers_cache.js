@@ -47,6 +47,12 @@ var PeersCache = (function() {
         return services.indexOf('lxmf.delivery') !== -1 || services.indexOf('lxst.telephony') !== -1;
     }
 
+    function _supportsRatspeakFeatures(entry) {
+        if (!entry) return false;
+        var services = Array.isArray(entry.services) ? entry.services : [];
+        return services.indexOf('ratspeak.client') !== -1;
+    }
+
     function _isSuppressedPeerEntry(entry) {
         return !!entry && (
             _isSuppressedPeerDisplayName(entry.display_name) ||
@@ -63,6 +69,7 @@ var PeersCache = (function() {
 
     function _normalizeRow(r) {
         if (!r || !r.hash) return null;
+        var services = _normalizeServices(r.services);
         return {
             hash: r.hash,
             identity_hash: typeof r.identity_hash === 'string' ? r.identity_hash : '',
@@ -72,7 +79,8 @@ var PeersCache = (function() {
             display_name: typeof r.display_name === 'string' ? r.display_name : '',
             is_contact: !!r.is_contact,
             last_interface: typeof r.last_interface === 'string' ? r.last_interface : '',
-            services: _normalizeServices(r.services),
+            services: services,
+            supports_ratspeak: services.indexOf('ratspeak.client') !== -1,
         };
     }
 
@@ -301,6 +309,7 @@ var PeersCache = (function() {
                 display_name: entry.display_name || '',
                 is_contact: !!entry.is_contact,
                 services: Array.isArray(entry.services) ? entry.services.slice() : [],
+                supports_ratspeak: _supportsRatspeakFeatures(entry),
                 supports_lxst_call: Array.isArray(entry.services) && entry.services.indexOf('lxst.telephony') !== -1,
                 last_seen: entry.last_seen,
                 first_seen: entry.first_seen,
@@ -353,6 +362,7 @@ var PeersCache = (function() {
         size: size,
         subscribe: subscribe,
         computeStatus: computeStatus,
+        supportsRatspeakFeatures: _supportsRatspeakFeatures,
         isSuppressedPeerDisplayName: _isSuppressedPeerDisplayName,
         enriched: enriched,
         isInitialized: isInitialized,

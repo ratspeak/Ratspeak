@@ -164,6 +164,8 @@ pub async fn send_game_action(
         state_arc.emit_to_all("game_action_result", payload.clone());
         return Ok(payload);
     }
+    // TODO: Once Ratspeak capability discovery has been deployed long enough,
+    // reject or warn for contacts that do not advertise `ratspeak.games`.
     crate::commands::messaging::validate_delivery_preference(&state_arc, delivery_pref)?;
 
     crate::commands::shared::resolve_before_send(&state_arc, &dest_hash).await;

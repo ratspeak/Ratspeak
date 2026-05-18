@@ -75,6 +75,7 @@ pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfMana
     } else {
         None
     };
+    mgr.announce_ratspeak_usage = state.announce_ratspeak_usage_enabled();
 
     let hosting = state
         .propagation_node_hosting_enabled
@@ -452,6 +453,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             "notes": c.get("notes"),
                             "first_seen": c.get("first_seen"),
                             "last_seen": c.get("last_seen"),
+                            "services": c.get("services"),
                         })
                     })
                     .collect();
@@ -2327,6 +2329,7 @@ async fn handle_inbound_lxmf(
                             "notes": c.get("notes"),
                             "first_seen": c.get("first_seen"),
                             "last_seen": c.get("last_seen"),
+                            "services": c.get("services"),
                         })
                     })
                     .collect();
@@ -2603,6 +2606,7 @@ async fn handle_link_delivered_lxmf(state: &AppState, data: Vec<u8>, mark_sender
                         "notes": c.get("notes"),
                         "first_seen": c.get("first_seen"),
                         "last_seen": c.get("last_seen"),
+                        "services": c.get("services"),
                     })
                 })
                 .collect();
@@ -3161,6 +3165,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                     "notes": c.get("notes"),
                                     "first_seen": c.get("first_seen"),
                                     "last_seen": c.get("last_seen"),
+                                    "services": c.get("services"),
                                 })
                             })
                             .collect();

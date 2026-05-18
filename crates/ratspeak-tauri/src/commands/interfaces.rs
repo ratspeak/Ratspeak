@@ -691,6 +691,42 @@ pub async fn set_auto_announce(state: State<'_, Arc<AppState>>, interval: u64) -
 }
 
 #[tauri::command]
+pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    Ok(json!({
+        "auto_announce_interval": *state.announce_interval_rx.borrow(),
+        "announce_ratspeak_usage": state.announce_ratspeak_usage_enabled(),
+    }))
+}
+
+#[tauri::command]
+pub async fn set_announce_ratspeak_usage(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> AppResult<Value> {
+    let persisted = if enabled { "1" } else { "0" };
+    let _ = db::spawn_db(state.db.clone(), move |p| {
+        db::set_setting(&p, "announce_ratspeak_usage", persisted);
+    })
+    .await;
+
+    state.set_announce_ratspeak_usage_enabled(enabled);
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.announce_ratspeak_usage = enabled;
+    }
+
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({
+            "auto_announce_interval": *state.announce_interval_rx.borrow(),
+            "announce_ratspeak_usage": enabled,
+        }),
+    );
+    Ok(json!({ "enabled": enabled }))
+}
+
+#[tauri::command]
 pub async fn api_notification_settings(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     Ok(json!({
         "enabled": state.native_notifications_enabled(),

@@ -37,6 +37,7 @@ pub async fn api_contacts(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
                 "notes": c.get("notes"),
                 "first_seen": c.get("first_seen"),
                 "last_seen": c.get("last_seen"),
+                "services": c.get("services"),
             })
         })
         .collect();

@@ -10,7 +10,7 @@ use tauri::State;
 use crate::commands::shared::{active_rns_config_dir, remove_stored_file_refs};
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::helpers::{active_identity_id, sanitize_text};
+use crate::helpers::{active_identity_id, sanitize_announced_display_name};
 use crate::state::AppState;
 
 fn app_display_version() -> &'static str {
@@ -59,7 +59,8 @@ pub async fn api_setup_complete(
     state: State<'_, Arc<AppState>>,
     args: SetupCompleteArgs,
 ) -> AppResult<Value> {
-    let display_name = sanitize_text(args.display_name.as_deref().unwrap_or(""), 64);
+    let display_name = sanitize_announced_display_name(args.display_name.as_deref().unwrap_or(""))
+        .map_err(AppError::bad_request)?;
 
     match crate::lxmf::LxmfManager::load_or_create(&state.config.data_root, None) {
         Ok(mgr) => {

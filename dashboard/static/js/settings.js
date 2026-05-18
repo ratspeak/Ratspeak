@@ -572,13 +572,42 @@ if (_settingsAnnounceBadge) {
 }
 
 RS.listen('auto_announce_updated', function(data) {
+    applyAppSettingsPayload({ auto_announce_interval: data && data.interval });
+});
+
+function applyAppSettingsPayload(data) {
+    if (!data) return;
     var badge = document.getElementById('auto-announce-select');
-    if (badge && data && data.interval !== undefined) {
-        var secs = parseInt(data.interval, 10);
+    var interval = data.auto_announce_interval !== undefined ? data.auto_announce_interval : data.interval;
+    if (badge && interval !== undefined) {
+        var secs = parseInt(interval, 10);
         badge.textContent = _announceLabel(secs);
         badge.setAttribute('data-value', secs);
     }
-});
+    var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
+    if (usageToggle && data.announce_ratspeak_usage !== undefined) {
+        usageToggle.checked = !!data.announce_ratspeak_usage;
+    }
+}
+
+(function() {
+    var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
+    RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {});
+    if (!usageToggle) return;
+    usageToggle.addEventListener('change', function() {
+        var enabled = !!usageToggle.checked;
+        RS.invoke('set_announce_ratspeak_usage', { enabled: enabled })
+            .then(function(data) {
+                if (data && data.enabled !== undefined) usageToggle.checked = !!data.enabled;
+            })
+            .catch(function(err) {
+                usageToggle.checked = !enabled;
+                showToast((err && err.message) || 'Failed to update privacy setting', 'toast-red', 8000);
+            });
+    });
+})();
+
+RS.listen('app_settings_updated', applyAppSettingsPayload);
 
 // Keep this desktop-only until mobile has a user-facing notifications screen.
 (function() {

@@ -13,7 +13,9 @@ use tauri::State;
 use crate::commands::shared::remove_stored_file_refs;
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
+use crate::helpers::{
+    active_identity_id, sanitize_announced_display_name, sanitize_text, validate_hex,
+};
 use crate::state::AppState;
 
 const IDENTITY_BACKUP_FORMAT: &str = "ratspeak.identity.v1";
@@ -249,7 +251,8 @@ pub async fn api_create_identity(
     state: State<'_, Arc<AppState>>,
     args: CreateIdentityArgs,
 ) -> AppResult<Value> {
-    let nickname = sanitize_text(args.nickname.as_deref().unwrap_or(""), 64);
+    let nickname = sanitize_announced_display_name(args.nickname.as_deref().unwrap_or(""))
+        .map_err(AppError::bad_request)?;
 
     let st: Arc<AppState> = Arc::clone(&state);
     let result = tokio::task::spawn_blocking(move || {
@@ -305,7 +308,8 @@ async fn import_identity_shared(
     key_bytes: Vec<u8>,
     nickname: Option<String>,
 ) -> AppResult<Value> {
-    let nickname = sanitize_text(nickname.as_deref().unwrap_or(""), 64);
+    let nickname = sanitize_announced_display_name(nickname.as_deref().unwrap_or(""))
+        .map_err(AppError::bad_request)?;
     let parsed = parse_private_identity_bytes(&key_bytes).map_err(AppError::bad_request)?;
     let format = parsed.format;
     let parsed_identity = Identity::from_private_key(&parsed.key_bytes)
@@ -554,8 +558,18 @@ pub async fn api_update_identity(
     if !validate_hex(&hash_hex, 16, 128) {
         return Err(AppError::bad_request("Invalid hash"));
     }
-    let nickname = args.nickname.as_deref().map(|s| sanitize_text(s, 64));
-    let display_name = args.display_name.as_deref().map(|s| sanitize_text(s, 64));
+    let nickname = args
+        .nickname
+        .as_deref()
+        .map(sanitize_announced_display_name)
+        .transpose()
+        .map_err(AppError::bad_request)?;
+    let display_name = args
+        .display_name
+        .as_deref()
+        .map(sanitize_announced_display_name)
+        .transpose()
+        .map_err(AppError::bad_request)?;
     let hash_for_db = hash_hex.clone();
     let nick_for_db = nickname.clone();
     let dn_for_db = display_name.clone();
@@ -761,7 +775,8 @@ pub async fn api_set_display_name(
     state: State<'_, Arc<AppState>>,
     args: DisplayNameArgs,
 ) -> AppResult<Value> {
-    let display_name = sanitize_text(args.display_name.as_deref().unwrap_or(""), 64);
+    let display_name = sanitize_announced_display_name(args.display_name.as_deref().unwrap_or(""))
+        .map_err(AppError::bad_request)?;
     if display_name.is_empty() {
         return Err(AppError::bad_request("display_name required"));
     }

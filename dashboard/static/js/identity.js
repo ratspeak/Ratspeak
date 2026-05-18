@@ -375,6 +375,29 @@ var blockies = (function() {
 
 // Cache avatars per (hash, size) — blockies PRNG + 64 SVG rects is expensive per call.
 var _avatarCache = {};
+function ratspeakSupportsFeatures(record) {
+    if (!record || typeof record !== 'object') return false;
+    if (record.supports_ratspeak === true) return true;
+    var services = Array.isArray(record.services) ? record.services : [];
+    return services.indexOf('ratspeak.client') !== -1;
+}
+
+function ratspeakAvatarSupported(hashValue) {
+    if (!hashValue) return false;
+    if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.get === 'function') {
+        var peer = PeersCache.get(hashValue);
+        if (ratspeakSupportsFeatures(peer)) return true;
+    }
+    if (typeof lxmfContacts !== 'undefined' && Array.isArray(lxmfContacts)) {
+        for (var i = 0; i < lxmfContacts.length; i++) {
+            if (lxmfContacts[i] && lxmfContacts[i].hash === hashValue) {
+                return ratspeakSupportsFeatures(lxmfContacts[i]);
+            }
+        }
+    }
+    return false;
+}
+
 function identityAvatar(hashValue, size) {
     if (!hashValue) {
         var color = 'var(--text-muted)';
@@ -384,9 +407,13 @@ function identityAvatar(hashValue, size) {
             '<circle cx="' + radius + '" cy="' + radius + '" r="' + radius + '" fill="' + color + '" opacity="0.3"/>' +
             '</svg>';
     }
-    var key = hashValue + '|' + size;
+    var ratspeakCapable = ratspeakAvatarSupported(hashValue);
+    var key = hashValue + '|' + size + '|' + (ratspeakCapable ? 'rs' : 'std');
     if (_avatarCache[key]) return _avatarCache[key];
     var svg = blockies(hashValue, size);
+    if (ratspeakCapable) {
+        svg = svg.replace('<svg ', '<svg class="ratspeak-avatar-glow" ');
+    }
     _avatarCache[key] = svg;
     return svg;
 }

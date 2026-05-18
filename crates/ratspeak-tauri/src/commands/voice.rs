@@ -59,6 +59,7 @@ pub async fn voice_call(state: State<'_, Arc<AppState>>, args: VoiceCallArgs) ->
     let input = hex_to_array16(&hash)
         .ok_or_else(|| AppError::bad_request("Voice calls require a 16-byte hash"))?;
     let remote_identity = resolve_identity_hash(&state, input).await.unwrap_or(input);
+    // TODO: Warn or block when the contact has not advertised `lxst.telephony`.
 
     let app_state = state.inner().clone();
     let mut result = crate::voice::call_identity(&app_state, remote_identity)

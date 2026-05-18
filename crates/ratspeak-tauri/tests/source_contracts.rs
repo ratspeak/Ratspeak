@@ -28,6 +28,62 @@ fn read_source(path: impl AsRef<Path>) -> std::io::Result<String> {
 }
 
 #[test]
+fn privacy_announce_usage_setting_is_wired() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    assert!(index.contains("data-settings-title=\"Privacy\""));
+    assert!(index.contains("Privacy related preferences"));
+    assert!(index.contains("Announce Ratspeak usage"));
+    assert!(index.contains("Let others know you support games, calls, and extra features."));
+    assert!(index.contains("id=\"announce-ratspeak-usage-toggle\" checked"));
+
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    assert!(settings_js.contains("api_app_settings"));
+    assert!(settings_js.contains("set_announce_ratspeak_usage"));
+    assert!(settings_js.contains("auto_announce_interval"));
+    assert!(settings_js.contains("announce_ratspeak_usage"));
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    assert!(interfaces_rs.contains("pub async fn api_app_settings"));
+    assert!(interfaces_rs.contains("\"auto_announce_interval\""));
+    assert!(interfaces_rs.contains("\"announce_ratspeak_usage\""));
+    assert!(interfaces_rs.contains("db::set_setting(&p, \"announce_ratspeak_usage\""));
+
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    assert!(tauri_lib.contains("api_app_settings"));
+    assert!(tauri_lib.contains("set_announce_ratspeak_usage"));
+
+    let system_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system");
+    let reset_body = system_rs
+        .split("pub async fn api_reset_database")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn api_identity_reset").next())
+        .expect("reset database body");
+    assert!(!reset_body.contains("\"settings\""));
+}
+
+#[test]
+fn ratspeak_capability_marker_drives_avatar_glow() {
+    let root = repo_root();
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    assert!(identity_js.contains("function ratspeakAvatarSupported"));
+    assert!(identity_js.contains("ratspeak.client"));
+    assert!(identity_js.contains("ratspeak-avatar-glow"));
+
+    let peers_cache_js =
+        read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache");
+    assert!(peers_cache_js.contains("supports_ratspeak"));
+    assert!(peers_cache_js.contains("supportsRatspeakFeatures"));
+
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    assert!(views_css.contains(".ratspeak-avatar-glow"));
+}
+
+#[test]
 fn linux_package_metadata_is_explicit_for_app_stores() {
     let root = repo_root();
     let summary = "Ratspeak: An all-in-one Reticulum & LXMF client in Rust.";
