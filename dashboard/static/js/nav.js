@@ -3,13 +3,17 @@ var VIEWS = ['dashboard', 'message', 'contacts', 'identity', 'peers', 'network',
 
 // Tab-bar destinations use replaceState; MORE_VIEWS live under the hamburger.
 var TAB_VIEWS = ['peers', 'message', 'contacts', 'identity', 'network', 'games', 'settings'];
+var PRIMARY_TAB_VIEWS = ['peers', 'message', 'contacts'];
 var MORE_VIEWS = ['identity', 'network', 'games', 'settings'];
 var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];
 var DEFAULT_MORE_VIEW = 'identity';
 var _lastMoreView = DEFAULT_MORE_VIEW;
+var _lastPrimaryView = 'peers';
 try {
     var _savedMoreView = localStorage.getItem('ratspeak_more_view');
     if (MORE_VIEWS.indexOf(_savedMoreView) !== -1) _lastMoreView = _savedMoreView;
+    var _savedPrimaryView = localStorage.getItem('ratspeak_last_primary_view');
+    if (PRIMARY_TAB_VIEWS.indexOf(_savedPrimaryView) !== -1) _lastPrimaryView = _savedPrimaryView;
 } catch(e) {}
 
 function _mobileTabSlot(viewId) {
@@ -18,6 +22,17 @@ function _mobileTabSlot(viewId) {
 
 function _viewForMobileTabSlot(slot) {
     return slot === 'more' ? (_lastMoreView || DEFAULT_MORE_VIEW) : slot;
+}
+
+function _rememberPrimaryView(viewId) {
+    if (PRIMARY_TAB_VIEWS.indexOf(viewId) === -1) return;
+    _lastPrimaryView = viewId;
+    try { localStorage.setItem('ratspeak_last_primary_view', viewId); } catch(e) {}
+}
+
+function _lastPrimaryTabView() {
+    if (PRIMARY_TAB_VIEWS.indexOf(_lastPrimaryView) !== -1) return _lastPrimaryView;
+    return 'peers';
 }
 
 // Legacy hashes that predate the current view names.
@@ -273,6 +288,7 @@ function switchView(viewId, opts) {
         _lastMoreView = viewId;
         try { localStorage.setItem('ratspeak_more_view', viewId); } catch(e) {}
     }
+    _rememberPrimaryView(viewId);
     document.querySelectorAll('.bottom-bar-item').forEach(function(item) {
         item.classList.remove('active');
         if (item.dataset.view === viewId) item.classList.add('active');
@@ -434,6 +450,79 @@ function _fireViewLifecycle(viewId) {
     if (handler) handler();
 }
 
+function _closeOpenBottomSheet() {
+    var sheet = document.getElementById('bottom-sheet');
+    if (!sheet || !sheet.classList.contains('open')) return false;
+    sheet.classList.remove('open');
+    var sheetOverlay = document.getElementById('bottom-sheet-overlay');
+    if (sheetOverlay) sheetOverlay.classList.remove('active');
+    return true;
+}
+
+function _closeOpenFabPicker() {
+    var fabPicker = document.getElementById('fab-contact-picker-sheet');
+    if (!fabPicker || !fabPicker.classList.contains('open')) return false;
+    if (typeof closeFabContactPicker === 'function') closeFabContactPicker();
+    return true;
+}
+
+function _closeOpenContactSheet() {
+    var contactSheet = document.getElementById('contact-detail-sheet');
+    if (!contactSheet) return false;
+    contactSheet.remove();
+    var contactOverlay = document.getElementById('contact-detail-overlay');
+    if (contactOverlay) contactOverlay.remove();
+    return true;
+}
+
+function _pushCurrentHistoryAnchor() {
+    history.pushState({ view: currentView }, '', '#' + currentView);
+}
+
+function _handleAppBackNavigation(opts) {
+    opts = opts || {};
+    var fromPopState = opts.source === 'popstate';
+    var state = opts.state || null;
+
+    if (_closeOpenBottomSheet() || _closeOpenFabPicker() || _closeOpenContactSheet()) {
+        if (fromPopState) _pushCurrentHistoryAnchor();
+        return true;
+    }
+
+    if (typeof isSettingsMobileDetailActive === 'function' && isSettingsMobileDetailActive()) {
+        if (typeof showSettingsMobileSectionIndex === 'function') {
+            showSettingsMobileSectionIndex();
+        }
+        if (fromPopState) _pushCurrentHistoryAnchor();
+        return true;
+    }
+
+    // chat-detail / game-detail are tracked on the view-stack — pop() clears
+    // their classes as a side effect.
+    if (RS.viewStack && typeof RS.viewStack.depth === 'function' && RS.viewStack.depth() > 1) {
+        RS.viewStack.pop();
+        if (fromPopState) _pushCurrentHistoryAnchor();
+        return true;
+    }
+
+    if (isMobile() && MORE_VIEWS.indexOf(currentView) !== -1) {
+        if (fromPopState && state && PRIMARY_TAB_VIEWS.indexOf(state.view) !== -1) {
+            switchView(state.view, { skipHistory: true, back: true });
+        } else {
+            switchView(_lastPrimaryTabView(), { back: true });
+        }
+        return true;
+    }
+
+    return false;
+}
+
+window.RS = window.RS || {};
+window.RS.handleAppBackNavigation = _handleAppBackNavigation;
+window.RS.handleAndroidBack = function() {
+    return _handleAppBackNavigation({ source: 'android' });
+};
+
 function _initHistoryNavigation() {
     // Anchor prevents a back-swipe from landing on about:blank.
     history.replaceState({ view: currentView, anchor: true }, '', '#' + currentView);
@@ -441,36 +530,7 @@ function _initHistoryNavigation() {
     window.addEventListener('popstate', function(e) {
         var state = e.state;
 
-        var sheet = document.getElementById('bottom-sheet');
-        if (sheet && sheet.classList.contains('open')) {
-            sheet.classList.remove('open');
-            var sheetOverlay = document.getElementById('bottom-sheet-overlay');
-            if (sheetOverlay) sheetOverlay.classList.remove('active');
-            history.pushState({ view: currentView }, '', '#' + currentView);
-            return;
-        }
-
-        var fabPicker = document.getElementById('fab-contact-picker-sheet');
-        if (fabPicker && fabPicker.classList.contains('open')) {
-            if (typeof closeFabContactPicker === 'function') closeFabContactPicker();
-            history.pushState({ view: currentView }, '', '#' + currentView);
-            return;
-        }
-
-        var contactSheet = document.getElementById('contact-detail-sheet');
-        if (contactSheet) {
-            contactSheet.remove();
-            var contactOverlay = document.getElementById('contact-detail-overlay');
-            if (contactOverlay) contactOverlay.remove();
-            history.pushState({ view: currentView }, '', '#' + currentView);
-            return;
-        }
-
-        // chat-detail / game-detail are tracked on the view-stack — pop()
-        // clears their classes as a side effect.
-        if (RS.viewStack.depth() > 1) {
-            RS.viewStack.pop();
-            history.pushState({ view: currentView }, '', '#' + currentView);
+        if (_handleAppBackNavigation({ source: 'popstate', state: state })) {
             return;
         }
 
@@ -1117,14 +1177,9 @@ function initDrillDownSwipeBack() {
                 RS.viewStack.pop();
                 return;
             }
-            // Drill-down reached via plain switchView (no push) → go back to last-tab.
-            var lastTab = 'dashboard';
-            try {
-                var saved = localStorage.getItem('ratspeak_view');
-                if (saved && TAB_VIEWS.indexOf(saved) !== -1) lastTab = saved;
-            } catch(e) {}
-            if (TAB_VIEWS.indexOf(lastTab) === -1) lastTab = 'dashboard';
-            switchView(lastTab, { back: true });
+            // Drill-down reached via plain switchView (no push) returns to
+            // the last real bottom-tab, not another More destination.
+            switchView(_lastPrimaryTabView(), { back: true });
         }
         if (!viewEl) { _doPop(); return; }
         viewEl.style.transition = 'transform 0.2s ease, opacity 0.2s ease';
@@ -1282,6 +1337,11 @@ function initTabSwipe() {
             return false;
         },
         onCommit: function(_target, dx) {
+            if (MORE_VIEWS.indexOf(currentView) !== -1 && dx > 0) {
+                haptic('selection');
+                switchView(_lastPrimaryTabView(), { back: true });
+                return;
+            }
             var currentIdx = MOBILE_TAB_SLOTS.indexOf(_mobileTabSlot(currentView));
             if (currentIdx === -1) return;
             var nextIdx = dx < 0 ? currentIdx + 1 : currentIdx - 1;

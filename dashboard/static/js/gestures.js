@@ -398,15 +398,57 @@ RS.gestures = RS.gestures || {};
         var onCommit = opts.onCommit || function() {};
         var onCancel = opts.onCancel || function() {};
 
-        var startX = 0, startY = 0, currentDelta = 0, dragging = false, startT = 0;
+        var startX = 0, startY = 0, currentDelta = 0, tracking = false, dragging = false, startT = 0;
+        var scrollOwner = null, scrollLocked = false;
+        var DRAG_ACTIVATE_PX = 4;
 
         function _readDelta(t) {
             if (axis === 'y') return t.clientY - startY;
             return t.clientX - startX;
         }
 
-        function _shouldBlock() {
-            return blockIfScrolled && el.scrollTop > 0;
+        function _scrollPos(node) {
+            if (!node) return 0;
+            return axis === 'y' ? node.scrollTop : node.scrollLeft;
+        }
+
+        function _isScrollable(node) {
+            if (!node || node.nodeType !== 1) return false;
+            var style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+            var overflow = style ? (axis === 'y' ? style.overflowY : style.overflowX) : '';
+            if (!/(auto|scroll|overlay)/.test(overflow)) return false;
+            var scrollSize = axis === 'y' ? node.scrollHeight : node.scrollWidth;
+            var clientSize = axis === 'y' ? node.clientHeight : node.clientWidth;
+            return scrollSize > clientSize + 1;
+        }
+
+        function _findScrollableOwner(target) {
+            var preferredSelector = opts.scrollContainerSelector || '[data-sheet-scroll], .bottom-sheet-body';
+            if (target && target.closest && preferredSelector) {
+                var closestPreferred = target.closest(preferredSelector);
+                if (closestPreferred && el.contains(closestPreferred) && _isScrollable(closestPreferred)) {
+                    return closestPreferred;
+                }
+            }
+
+            var node = target;
+            while (node && node !== document && node !== el.parentNode) {
+                if (node.nodeType === 1 && el.contains(node) && _isScrollable(node)) return node;
+                if (node === el) break;
+                node = node.parentElement;
+            }
+
+            if (preferredSelector) {
+                var primary = el.querySelector(preferredSelector);
+                if (_isScrollable(primary)) return primary;
+            }
+            return _isScrollable(el) ? el : null;
+        }
+
+        function _resetVisuals() {
+            el.style.transform = '';
+            el.style.opacity = '';
+            if (parallaxOverlay) parallaxOverlay.style.opacity = '';
         }
 
         function _applyDrag(delta) {
@@ -425,27 +467,55 @@ RS.gestures = RS.gestures || {};
 
         function _onTouchStart(e) {
             if (skipIf && skipIf(e)) return;
-            if (_shouldBlock()) return;
             var t = e.touches[0];
             if (!t) return;
             startX = t.clientX;
             startY = t.clientY;
             startT = performance.now();
             currentDelta = 0;
-            dragging = true;
-            el.style.transition = 'none';
+            scrollOwner = _findScrollableOwner(e.target);
+            scrollLocked = !!(blockIfScrolled && scrollOwner && _scrollPos(scrollOwner) > 0);
+            tracking = true;
+            dragging = false;
         }
 
         function _onTouchMove(e) {
-            if (!dragging) return;
+            if (!tracking) return;
             var t = e.touches[0];
             if (!t) return;
-            currentDelta = _readDelta(t);
+            var delta = _readDelta(t);
+
+            if (!dragging) {
+                if (scrollLocked) return;
+                if (Math.abs(delta) < DRAG_ACTIVATE_PX) return;
+
+                // Upward/leftward movement belongs to content scrolling. Once
+                // a gesture is classified that way, never convert the same
+                // touch into a dismiss after the content reaches scrollTop 0.
+                if (delta < 0) {
+                    tracking = false;
+                    scrollOwner = null;
+                    scrollLocked = false;
+                    return;
+                }
+
+                dragging = true;
+                el.style.transition = 'none';
+            }
+
+            if (e.cancelable) e.preventDefault();
+            currentDelta = delta;
             _applyDrag(currentDelta);
         }
 
         function _onTouchEnd() {
-            if (!dragging) return;
+            if (!tracking) return;
+            tracking = false;
+            if (!dragging) {
+                scrollOwner = null;
+                scrollLocked = false;
+                return;
+            }
             dragging = false;
             var elapsed = Math.max(1, performance.now() - startT);
             var velocity = currentDelta / elapsed;
@@ -456,35 +526,39 @@ RS.gestures = RS.gestures || {};
                 // Clear inline styles AFTER onCommit — clearing before causes a
                 // 1-frame snap-back; never clearing leaves residual transform
                 // on the next open.
-                el.style.transform = '';
-                el.style.opacity = '';
-                if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+                _resetVisuals();
             } else {
                 if (hapticAt.snap) _hapticByName(hapticAt.snap);
-                el.style.transform = '';
-                el.style.opacity = '';
-                if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+                _resetVisuals();
                 onCancel(currentDelta, velocity);
             }
+            scrollOwner = null;
+            scrollLocked = false;
         }
 
         function _onTouchCancel() {
+            if (!tracking && !dragging) return;
+            tracking = false;
+            scrollOwner = null;
+            scrollLocked = false;
             if (!dragging) return;
             dragging = false;
             el.style.transition = '';
-            el.style.transform = '';
-            el.style.opacity = '';
-            if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+            _resetVisuals();
             onCancel(currentDelta, 0);
         }
 
         handle.addEventListener('touchstart', _onTouchStart, { passive: true });
-        handle.addEventListener('touchmove', _onTouchMove, { passive: true });
+        handle.addEventListener('touchmove', _onTouchMove, { passive: false });
         handle.addEventListener('touchend', _onTouchEnd);
         handle.addEventListener('touchcancel', _onTouchCancel);
 
         return {
             detach: function() {
+                tracking = false;
+                dragging = false;
+                scrollOwner = null;
+                scrollLocked = false;
                 handle.removeEventListener('touchstart', _onTouchStart);
                 handle.removeEventListener('touchmove', _onTouchMove);
                 handle.removeEventListener('touchend', _onTouchEnd);
@@ -492,9 +566,7 @@ RS.gestures = RS.gestures || {};
             },
             snapTo: function(point) {
                 if (point === 0) {
-                    el.style.transform = '';
-                    el.style.opacity = '';
-                    if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+                    _resetVisuals();
                 } else if (point === 1) {
                     onCommit(threshold + 1);
                 }

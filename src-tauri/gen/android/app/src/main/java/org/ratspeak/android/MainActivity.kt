@@ -39,6 +39,7 @@ import android.provider.OpenableColumns
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
@@ -106,6 +107,7 @@ class MainActivity : TauriActivity() {
         private val BLE_MAC_RE = Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
     }
     private var webViewRef: WebView? = null
+    private var appBackCallback: OnBackPressedCallback? = null
     private val handler = Handler(Looper.getMainLooper())
     private var bleGatt: RatspeakBleGatt? = null
     private var pendingTop = 0
@@ -156,6 +158,7 @@ class MainActivity : TauriActivity() {
         // Web Audio playback after startup notification permission handling.
         webView.settings.mediaPlaybackRequiresUserGesture = false
         webViewRef = webView
+        installAppBackNavigation()
         // Expose BLE permission bridge to JavaScript
         webView.addJavascriptInterface(BlePermissionBridge(), "RatspeakAndroid")
         // Inject any insets that arrived before WebView was ready
@@ -180,6 +183,52 @@ class MainActivity : TauriActivity() {
             handler.postDelayed({
                 navigateToView(target)
             }, 3000)
+        }
+    }
+
+    private fun installAppBackNavigation() {
+        if (appBackCallback != null) return
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                dispatchBackToWebView()
+            }
+        }
+        appBackCallback = callback
+        onBackPressedDispatcher.addCallback(this, callback)
+    }
+
+    private fun dispatchBackToWebView() {
+        val webView = webViewRef
+        if (webView == null) {
+            continueSystemBack()
+            return
+        }
+
+        webView.evaluateJavascript(
+            """
+            (function() {
+              try {
+                return !!(window.RS &&
+                  typeof window.RS.handleAndroidBack === 'function' &&
+                  window.RS.handleAndroidBack());
+              } catch (e) {
+                return false;
+              }
+            })();
+            """.trimIndent()
+        ) { rawResult ->
+            if (rawResult == "true") return@evaluateJavascript
+            continueSystemBack()
+        }
+    }
+
+    private fun continueSystemBack() {
+        val callback = appBackCallback
+        callback?.isEnabled = false
+        try {
+            onBackPressedDispatcher.onBackPressed()
+        } finally {
+            callback?.isEnabled = true
         }
     }
 
