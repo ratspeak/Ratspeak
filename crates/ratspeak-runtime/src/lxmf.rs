@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use serde_json::{Value, json};
@@ -44,6 +44,7 @@ const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
 const DIRECT_PATH_FAILURE_SUPPRESSION_SECS: f64 = 30.0;
+const DIRECT_BACKCHANNEL_IDENTIFY_GRACE: Duration = Duration::from_secs(3);
 pub const RATSPEAK_CHAT_CUSTOM_TYPE: &[u8] = b"ratspeak.chat.v1";
 pub const LEGACY_RATSPEAK_REACTION_TYPE: &[u8] = b"ratspeak.reaction";
 pub const RATSPEAK_ANNOUNCE_EXTENSION_VERSION: u8 = 1;
@@ -548,6 +549,11 @@ pub fn peer_last_seen(db_pool: &DbPool, dest_hash_hex: &str) -> Option<f64> {
     .ok()
 }
 
+struct PendingDirectLinkIdentification {
+    link_id: [u8; 16],
+    observed_at: Instant,
+}
+
 pub struct LxmfManager {
     pub identity: Identity,
     pub identity_hash: String,
@@ -570,6 +576,7 @@ pub struct LxmfManager {
     pub link_delivery: Option<lxmf_core::link_delivery::LinkDeliveryManager>,
     lxmf_link_command_tx: Option<mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>>,
     lxmf_direct_link_packet_tx: Option<mpsc::Sender<(Vec<u8>, [u8; 16])>>,
+    pending_direct_link_identifications: HashMap<[u8; 16], PendingDirectLinkIdentification>,
     lxmf_backchannel_command_rx: Option<mpsc::Receiver<BackchannelSendCommand>>,
     lxmf_link_identified_rx: Option<mpsc::Receiver<([u8; 16], [u8; 16])>>,
     lxmf_link_closed_rx: Option<mpsc::Receiver<[u8; 16]>>,
@@ -790,6 +797,7 @@ impl LxmfManager {
             link_delivery: None,
             lxmf_link_command_tx: None,
             lxmf_direct_link_packet_tx: None,
+            pending_direct_link_identifications: HashMap::new(),
             lxmf_backchannel_command_rx: None,
             lxmf_link_identified_rx: None,
             lxmf_link_closed_rx: None,
@@ -1004,15 +1012,14 @@ impl LxmfManager {
         self.ensure_link_delivery_inbound_sender();
     }
 
-    pub fn register_direct_backchannel(&mut self, dest_hash: [u8; 16], link_id: [u8; 16]) -> bool {
-        if !self.ensure_link_delivery_manager() {
-            return false;
-        }
-        if let Some(ref mut ld) = self.link_delivery {
-            ld.register_backchannel(dest_hash, link_id);
-            return true;
-        }
-        false
+    pub fn note_pending_direct_backchannel(&mut self, dest_hash: [u8; 16], link_id: [u8; 16]) {
+        self.pending_direct_link_identifications.insert(
+            dest_hash,
+            PendingDirectLinkIdentification {
+                link_id,
+                observed_at: Instant::now(),
+            },
+        );
     }
 
     /// `key_bytes` must be exactly 64 bytes (X25519 || Ed25519 seed).
@@ -2326,6 +2333,32 @@ impl LxmfManager {
         }
     }
 
+    fn expire_pending_direct_link_identifications(&mut self) {
+        self.pending_direct_link_identifications
+            .retain(|_, pending| {
+                pending.observed_at.elapsed() <= DIRECT_BACKCHANNEL_IDENTIFY_GRACE
+            });
+    }
+
+    fn pending_direct_link_identification_state(
+        &self,
+        dest_hash: [u8; 16],
+    ) -> DirectReusableLinkState {
+        self.pending_direct_link_identifications
+            .get(&dest_hash)
+            .filter(|pending| pending.observed_at.elapsed() <= DIRECT_BACKCHANNEL_IDENTIFY_GRACE)
+            .map(|_| DirectReusableLinkState::Pending)
+            .unwrap_or(DirectReusableLinkState::None)
+    }
+
+    fn direct_or_identifying_link_state(&self, dest_hash: [u8; 16]) -> DirectReusableLinkState {
+        let direct_state = self.direct_reusable_link_state(dest_hash);
+        if direct_state != DirectReusableLinkState::None {
+            return direct_state;
+        }
+        self.pending_direct_link_identification_state(dest_hash)
+    }
+
     fn direct_reusable_link_state_for_router(
         &self,
         dest_hash: [u8; 16],
@@ -2333,6 +2366,11 @@ impl LxmfManager {
         let direct_state = self.direct_reusable_link_state(dest_hash);
         if direct_state != DirectReusableLinkState::None {
             return direct_state;
+        }
+
+        let pending_identification = self.pending_direct_link_identification_state(dest_hash);
+        if pending_identification != DirectReusableLinkState::None {
+            return pending_identification;
         }
 
         let Some(snapshot) = self
@@ -3485,6 +3523,7 @@ impl LxmfManager {
 
     fn drain_backchannel_events(&mut self, results: &mut Vec<(String, &'static str)>) {
         self.ensure_link_delivery_backchannel_sender();
+        self.expire_pending_direct_link_identifications();
 
         if let Some(rx) = self.lxmf_link_identified_rx.as_mut() {
             let mut identified = Vec::new();
@@ -3497,6 +3536,7 @@ impl LxmfManager {
                 }
                 let dest_hash =
                     Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity_hash));
+                self.pending_direct_link_identifications.remove(&dest_hash);
                 if let Some(ref mut ld) = self.link_delivery {
                     ld.register_backchannel(dest_hash, link_id);
                 }
@@ -3515,6 +3555,8 @@ impl LxmfManager {
                 closed.push(link_id);
             }
             for link_id in closed {
+                self.pending_direct_link_identifications
+                    .retain(|_, pending| pending.link_id != link_id);
                 let closed_results = self
                     .link_delivery
                     .as_mut()
@@ -3725,7 +3767,7 @@ impl LxmfManager {
                         DirectDeliveryPlanInput {
                             identity_known,
                             route,
-                            reusable_link: self.direct_reusable_link_state(dest_hash),
+                            reusable_link: self.direct_or_identifying_link_state(dest_hash),
                         },
                         now,
                     )
@@ -3955,7 +3997,7 @@ impl LxmfManager {
                     DirectDeliveryPlanInput {
                         identity_known,
                         route,
-                        reusable_link: self.direct_reusable_link_state(dest_hash),
+                        reusable_link: self.direct_or_identifying_link_state(dest_hash),
                     },
                     now,
                 );
@@ -4589,6 +4631,78 @@ mod tests {
                 .unwrap()
                 .queued_deliveries,
             1
+        );
+
+        let command = command_rx.try_recv().expect("backchannel send command");
+        match command {
+            rns_runtime::link_manager::LinkManagerCommand::SendLinkPayload {
+                link_id: command_link,
+                payload,
+                ..
+            } => {
+                assert_eq!(command_link, link_id);
+                assert!(!payload.is_empty());
+            }
+            _ => panic!("expected SendLinkPayload command"),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_reply_waits_for_link_identify_before_reusing_backchannel() {
+        let mut mgr = test_manager();
+        let (transport_tx, _transport_rx) = mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(transport_tx);
+        let (command_tx, mut command_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
+        let (identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
+        let (_packet_tx, packet_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
+        let (_resource_tx, resource_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
+        mgr.set_lxmf_link_control(
+            command_tx,
+            direct_tx,
+            identified_rx,
+            closed_rx,
+            packet_rx,
+            resource_rx,
+        );
+
+        let identity_hash = [0x22; 16];
+        let dest = Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity_hash));
+        let link_id = [0x44; 16];
+        mgr.note_pending_direct_backchannel(dest, link_id);
+
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Pending identify",
+            "reply should wait for LINKIDENTIFY",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+
+        let waiting = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message: msg,
+            dest_hash: dest,
+        }]);
+        assert_eq!(waiting, vec![(hex::encode(msg_hash), "sending_via_link")]);
+        assert!(command_rx.try_recv().is_err());
+        assert!(
+            mgr.link_delivery
+                .as_ref()
+                .and_then(|ld| ld.backchannel_link_snapshot(dest))
+                .is_none()
+        );
+
+        identified_tx.try_send((link_id, identity_hash)).unwrap();
+        let results = mgr.tick();
+        assert_eq!(
+            results,
+            vec![(hex::encode(msg_hash), "reusing_backchannel")]
         );
 
         let command = command_rx.try_recv().expect("backchannel send command");

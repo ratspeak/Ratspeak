@@ -2408,19 +2408,7 @@ async fn handle_link_delivered_lxmf(
             .and_then(|mgr| mgr.verify_inbound_signature(&mut msg))
     });
     match sig_valid {
-        Some(true) => {
-            if let Some(link_id) = link_id
-                && let Ok(mut lxmf) = state.lxmf.lock()
-                && let Some(mgr) = lxmf.as_mut()
-                && mgr.register_direct_backchannel(msg.source_hash, link_id)
-            {
-                tracing::debug!(
-                    from = %source_hash,
-                    link_id = %hex::encode(link_id),
-                    "registered verified Direct reply backchannel from inbound LXMF payload"
-                );
-            }
-        }
+        Some(true) => {}
         Some(false) => {
             tracing::warn!("link-delivered signature INVALID — dropping");
             return;
@@ -2485,6 +2473,24 @@ async fn handle_link_delivered_lxmf(
     if blocked {
         tracing::debug!(from = %source_hash, "link-delivered message from blocked user — discarding");
         return;
+    }
+
+    if let Some(link_id) = link_id {
+        let local_destination_matches = hex::decode(&lxmf_id)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .is_some_and(|local_dest: [u8; 16]| local_dest == msg.destination_hash);
+        if local_destination_matches
+            && let Ok(mut lxmf) = state.lxmf.lock()
+            && let Some(mgr) = lxmf.as_mut()
+        {
+            mgr.note_pending_direct_backchannel(msg.source_hash, link_id);
+            tracing::debug!(
+                from = %source_hash,
+                link_id = %hex::encode(link_id),
+                "Direct LXMF payload received; waiting for LINKIDENTIFY before backchannel reuse"
+            );
+        }
     }
 
     if mark_sender_seen {
