@@ -173,8 +173,18 @@ jobs:
       - name: Stage macOS release artifacts
         shell: bash
         working-directory: Ratspeak
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
+          release_version="${RELEASE_VERSION:?Missing release version.}"
+          case "$release_version" in
+            */*|*\\*)
+              echo "Release version must not contain path separators: $release_version" >&2
+              exit 1
+              ;;
+          esac
+
           out_dir="dist/macos"
           rm -rf "$out_dir"
           mkdir -p "$out_dir"
@@ -199,8 +209,8 @@ jobs:
             bash scripts/release/verify-macos-dmg.sh "$out_dir/$name" "$expected_arch"
           }
 
-          stage_dmg aarch64-apple-darwin Ratspeak-macos-arm64.dmg arm64
-          stage_dmg x86_64-apple-darwin Ratspeak-macos-x64.dmg x86_64
+          stage_dmg aarch64-apple-darwin "Ratspeak-${release_version}-macos-arm64.dmg" arm64
+          stage_dmg x86_64-apple-darwin "Ratspeak-${release_version}-macos-x64.dmg" x86_64
 
       - name: Check for bundled dev URLs
         shell: bash

@@ -151,13 +151,24 @@ jobs:
       - name: Stage Android release APKs
         shell: bash
         working-directory: Ratspeak
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
+          set -euo pipefail
+          release_version="${RELEASE_VERSION:?Missing release version.}"
+          case "$release_version" in
+            */*|*\\*)
+              echo "Release version must not contain path separators: $release_version" >&2
+              exit 1
+              ;;
+          esac
+
           out_dir="dist/android"
           rm -rf "$out_dir"
           mkdir -p "$out_dir"
-          cp src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk "$out_dir/Ratspeak-arm64.apk"
-          cp src-tauri/gen/android/app/build/outputs/apk/arm/release/app-arm-release.apk "$out_dir/Ratspeak-armv7.apk"
-          cp src-tauri/gen/android/app/build/outputs/apk/x86_64/release/app-x86_64-release.apk "$out_dir/Ratspeak-x86_64.apk"
+          cp src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk "$out_dir/Ratspeak-${release_version}-android-arm64.apk"
+          cp src-tauri/gen/android/app/build/outputs/apk/arm/release/app-arm-release.apk "$out_dir/Ratspeak-${release_version}-android-armv7.apk"
+          cp src-tauri/gen/android/app/build/outputs/apk/x86_64/release/app-x86_64-release.apk "$out_dir/Ratspeak-${release_version}-android-x86_64.apk"
 
       - name: Write APK checksums
         shell: bash

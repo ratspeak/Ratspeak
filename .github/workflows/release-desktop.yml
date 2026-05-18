@@ -36,15 +36,15 @@ jobs:
             runner: ubuntu-22.04
             bundles: deb appimage rpm
             artifact_name: ratspeak-linux-amd64
-            deb_name: Ratspeak-amd64.deb
+            deb_name: linux-amd64.deb
             deb_arch: amd64
-            appimage_name: Ratspeak-x86_64.AppImage
-            rpm_name: Ratspeak-x86_64.rpm
+            appimage_name: linux-x86_64.AppImage
+            rpm_name: linux-x86_64.rpm
           - arch: arm64
             runner: ubuntu-22.04-arm
             bundles: deb
             artifact_name: ratspeak-linux-arm64
-            deb_name: Ratspeak-arm64.deb
+            deb_name: linux-arm64.deb
             deb_arch: arm64
             appimage_name: ""
             rpm_name: ""
@@ -147,12 +147,21 @@ jobs:
         shell: bash
         working-directory: Ratspeak
         env:
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           DEB_NAME: ${{ matrix.deb_name }}
           DEB_ARCH: ${{ matrix.deb_arch }}
           APPIMAGE_NAME: ${{ matrix.appimage_name }}
           RPM_NAME: ${{ matrix.rpm_name }}
         run: |
           set -euo pipefail
+          release_version="${RELEASE_VERSION:?Missing release version.}"
+          case "$release_version" in
+            */*|*\\*)
+              echo "Release version must not contain path separators: $release_version" >&2
+              exit 1
+              ;;
+          esac
+
           out_dir="dist/linux"
           rm -rf "$out_dir"
           mkdir -p "$out_dir"
@@ -161,11 +170,12 @@ jobs:
           deb="${debs[0]:-}"
           test -n "$deb"
 
-          cp "$deb" "$out_dir/$DEB_NAME"
-          dpkg-deb --info "$out_dir/$DEB_NAME" >/dev/null
-          actual_arch="$(dpkg-deb --field "$out_dir/$DEB_NAME" Architecture)"
+          deb_artifact="Ratspeak-${release_version}-${DEB_NAME}"
+          cp "$deb" "$out_dir/$deb_artifact"
+          dpkg-deb --info "$out_dir/$deb_artifact" >/dev/null
+          actual_arch="$(dpkg-deb --field "$out_dir/$deb_artifact" Architecture)"
           if [ "$actual_arch" != "$DEB_ARCH" ]; then
-            echo "Expected $DEB_NAME architecture $DEB_ARCH, got $actual_arch"
+            echo "Expected $deb_artifact architecture $DEB_ARCH, got $actual_arch"
             exit 1
           fi
 
@@ -173,16 +183,18 @@ jobs:
             mapfile -t appimages < <(find src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | sort)
             appimage="${appimages[0]:-}"
             test -n "$appimage"
-            cp "$appimage" "$out_dir/$APPIMAGE_NAME"
-            chmod +x "$out_dir/$APPIMAGE_NAME"
-            file "$out_dir/$APPIMAGE_NAME"
+            appimage_artifact="Ratspeak-${release_version}-${APPIMAGE_NAME}"
+            cp "$appimage" "$out_dir/$appimage_artifact"
+            chmod +x "$out_dir/$appimage_artifact"
+            file "$out_dir/$appimage_artifact"
           fi
 
           if [ -n "$RPM_NAME" ]; then
             mapfile -t rpms < <(find src-tauri/target/release/bundle/rpm -maxdepth 1 -type f -name '*.rpm' | sort || true)
             rpm="${rpms[0]:-}"
             if [ -n "$rpm" ]; then
-              cp "$rpm" "$out_dir/$RPM_NAME"
+              rpm_artifact="Ratspeak-${release_version}-${RPM_NAME}"
+              cp "$rpm" "$out_dir/$rpm_artifact"
             fi
           fi
 
@@ -216,12 +228,24 @@ jobs:
 
       - name: Validate Linux release artifacts
         shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
-          test -f Ratspeak/dist/linux/Ratspeak-amd64.deb
-          test -f Ratspeak/dist/linux/Ratspeak-arm64.deb
-          amd64_arch="$(dpkg-deb --field Ratspeak/dist/linux/Ratspeak-amd64.deb Architecture)"
-          arm64_arch="$(dpkg-deb --field Ratspeak/dist/linux/Ratspeak-arm64.deb Architecture)"
+          release_version="${RELEASE_VERSION:?Missing release version.}"
+          case "$release_version" in
+            */*|*\\*)
+              echo "Release version must not contain path separators: $release_version" >&2
+              exit 1
+              ;;
+          esac
+
+          amd64_deb="Ratspeak/dist/linux/Ratspeak-${release_version}-linux-amd64.deb"
+          arm64_deb="Ratspeak/dist/linux/Ratspeak-${release_version}-linux-arm64.deb"
+          test -f "$amd64_deb"
+          test -f "$arm64_deb"
+          amd64_arch="$(dpkg-deb --field "$amd64_deb" Architecture)"
+          arm64_arch="$(dpkg-deb --field "$arm64_deb" Architecture)"
           test "$amd64_arch" = "amd64"
           test "$arm64_arch" = "arm64"
           find Ratspeak/dist/linux -maxdepth 1 -type f -print | sort

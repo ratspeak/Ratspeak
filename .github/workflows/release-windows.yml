@@ -111,8 +111,18 @@ jobs:
       - name: Stage Windows release artifacts
         shell: pwsh
         working-directory: Ratspeak
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           $ErrorActionPreference = "Stop"
+          $version = "$env:RELEASE_VERSION".Trim()
+          if (-not $version) {
+            throw "Missing release version."
+          }
+          if ($version -match '[\\/]') {
+            throw "Release version must not contain path separators: $version"
+          }
+
           $outDir = "dist/windows"
           Remove-Item -Recurse -Force $outDir -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $outDir | Out-Null
@@ -131,10 +141,12 @@ jobs:
             throw "Missing Windows NSIS setup executable."
           }
 
-          Copy-Item $msi.FullName "$outDir/Ratspeak-x64.msi"
-          Copy-Item $setup.FullName "$outDir/Ratspeak-x64-setup.exe"
+          $msiName = "Ratspeak-$version-windows-x64.msi"
+          $setupName = "Ratspeak-$version-windows-x64-setup.exe"
+          Copy-Item $msi.FullName "$outDir/$msiName"
+          Copy-Item $setup.FullName "$outDir/$setupName"
 
-          Get-Item "$outDir/Ratspeak-x64.msi", "$outDir/Ratspeak-x64-setup.exe" |
+          Get-Item "$outDir/$msiName", "$outDir/$setupName" |
             Format-Table Name, Length
 
       - name: Write Windows checksums
