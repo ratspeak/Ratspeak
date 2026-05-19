@@ -28,6 +28,7 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }
+base64 = "0.22"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 ratspeak-tauri = { path = "../crates/ratspeak-tauri", features = ["ble"] }
 rfd = "0.15"

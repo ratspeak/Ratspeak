@@ -305,23 +305,131 @@ window.RS.fileDownload = function(storedName) {
             url: URL.createObjectURL(blob),
             filename: result.filename || storedName,
             mime: result.mime || 'application/octet-stream',
+            data_base64: result.data_base64 || '',
         };
     });
 };
 
+var _rsAndroidFileSaveSeq = 0;
+var _rsAndroidFileSaveWaiters = {};
+
+window._onAndroidFileSaveResult = function(data) {
+    data = data || {};
+    var requestId = data.request_id || '';
+    var waiter = _rsAndroidFileSaveWaiters[requestId];
+    if (!waiter) return;
+    delete _rsAndroidFileSaveWaiters[requestId];
+    if (data.success) {
+        waiter.resolve(data);
+    } else {
+        var err = new Error(data.error || 'Save failed');
+        err.code = 'native_save_failed';
+        waiter.reject(err);
+    }
+};
+
+function _rsNativeAndroidSave(file, opts) {
+    opts = opts || {};
+    if (!hasAndroidBridge()) return null;
+    var bridge = window.RatspeakAndroid;
+    var image = /^image\//i.test(file.mime || '');
+    var method = image && opts.preferPhotos && typeof bridge.saveImageToPhotos === 'function'
+        ? 'saveImageToPhotos'
+        : (typeof bridge.saveFileDocument === 'function' ? 'saveFileDocument' : null);
+    if (!method) return null;
+    return new Promise(function(resolve, reject) {
+        var requestId = 'file-save-' + Date.now() + '-' + (++_rsAndroidFileSaveSeq);
+        _rsAndroidFileSaveWaiters[requestId] = { resolve: resolve, reject: reject };
+        try {
+            bridge[method](file.filename || 'download', file.data_base64 || '', file.mime || 'application/octet-stream', requestId);
+        } catch (err) {
+            delete _rsAndroidFileSaveWaiters[requestId];
+            reject(err);
+        }
+        setTimeout(function() {
+            if (!_rsAndroidFileSaveWaiters[requestId]) return;
+            delete _rsAndroidFileSaveWaiters[requestId];
+            var timeout = new Error('Save timed out');
+            timeout.code = 'native_save_timeout';
+            reject(timeout);
+        }, 60000);
+    });
+}
+
+function _rsNativeIosSavePhoto(file, opts) {
+    opts = opts || {};
+    if (!isIOS() || !opts.preferPhotos || !/^image\//i.test(file.mime || '')) return null;
+    if (typeof window.RS.invoke !== 'function') return null;
+    return window.RS.invoke('save_image_to_photos', {
+        filename: file.filename || 'image',
+        mime: file.mime || 'image/png',
+        dataBase64: file.data_base64 || ''
+    });
+}
+
+function _rsShareFile(file) {
+    if (!navigator.share || typeof File === 'undefined') return null;
+    try {
+        var raw = atob(file.data_base64 || '');
+        var bytes = new Uint8Array(raw.length);
+        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        var shareFile = new File([bytes], file.filename || 'download', {
+            type: file.mime || 'application/octet-stream'
+        });
+        if (navigator.canShare && !navigator.canShare({ files: [shareFile] })) return null;
+        return navigator.share({ files: [shareFile], title: file.filename || 'Ratspeak file' });
+    } catch (_) {
+        return null;
+    }
+}
+
 // Blob URL is auto-revoked after 60s.
-window.RS.saveFile = function(storedName) {
-    return window.RS.fileDownload(storedName).then(function(f) {
+window.RS.saveDownloadedFile = function(file, opts) {
+    opts = opts || {};
+    var nativeAndroid = _rsNativeAndroidSave(file, opts);
+    if (nativeAndroid) return nativeAndroid;
+    var nativeIosPhoto = _rsNativeIosSavePhoto(file, opts);
+    if (nativeIosPhoto) return nativeIosPhoto;
+    if (isTauriMobile()) {
+        var shared = _rsShareFile(file);
+        if (shared) return shared;
+    }
+    return Promise.resolve().then(function() {
         var a = document.createElement('a');
-        a.href = f.url;
-        a.download = f.filename;
+        a.href = file.url;
+        a.download = file.filename || 'download';
         a.style.display = 'none';
         document.body.appendChild(a);
         a.click();
         a.remove();
-        setTimeout(function() { try { URL.revokeObjectURL(f.url); } catch (_) {} }, 60000);
-        return f;
+        setTimeout(function() { try { URL.revokeObjectURL(file.url); } catch (_) {} }, 60000);
+        return file;
     });
+};
+
+window.RS.saveFile = function(storedName, opts) {
+    return window.RS.fileDownload(storedName).then(function(f) {
+        return window.RS.saveDownloadedFile(f, opts || {});
+    });
+};
+
+window.RS.openExternalUrl = function(url) {
+    if (!url) return Promise.resolve(false);
+    var clean = String(url).trim();
+    if (!/^https?:\/\//i.test(clean)) clean = 'https://' + clean;
+    if (hasAndroidBridge() && typeof window.RatspeakAndroid.openExternalUrl === 'function') {
+        try {
+            if (window.RatspeakAndroid.openExternalUrl(clean)) return Promise.resolve(true);
+        } catch (_) {}
+    }
+    if (typeof window.RS.invoke === 'function') {
+        return window.RS.invoke('open_external_url', { url: clean }).then(function() { return true; }).catch(function() {
+            window.open(clean, '_blank', 'noopener');
+            return true;
+        });
+    }
+    window.open(clean, '_blank', 'noopener');
+    return Promise.resolve(true);
 };
 
 // Mobile uses native RatspeakService channel; rsNotify is desktop-only.

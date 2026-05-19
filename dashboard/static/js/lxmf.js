@@ -1057,6 +1057,20 @@ function _scheduleLxmfScrollToBottom(container) {
     });
 }
 
+function _compensateImageLoadScroll(container, img, before) {
+    if (!container || !img || !before) return;
+    if (!container.isConnected) return;
+    var afterHeight = container.scrollHeight;
+    var delta = afterHeight - before.scrollHeight;
+    if (Math.abs(delta) < 1) return;
+    var containerRect = container.getBoundingClientRect();
+    // If an older image above the viewport gains height, preserve the user's
+    // current reading position by moving the scroll offset by the exact delta.
+    if (before.imgTop < containerRect.top + 8) {
+        _setLxmfMessageScrollTop(container, container.scrollTop + delta);
+    }
+}
+
 function _captureLxmfMessageScrollState(container) {
     return {
         scrollTop: container ? container.scrollTop : 0,
@@ -1091,11 +1105,25 @@ function _applyLxmfMessageScrollAfterRender(container, state, options) {
 }
 
 function _watchLxmfImagesForBottomPin(container, shouldPin) {
-    if (!container || !shouldPin) return;
+    if (!container) return;
     container.querySelectorAll('img').forEach(function(img) {
-        if (img.complete) return;
+        if (img.complete && img.naturalWidth) return;
+        var before = {
+            scrollHeight: container.scrollHeight,
+            imgTop: img.getBoundingClientRect().top
+        };
         img.addEventListener('load', function() {
-            _scheduleLxmfScrollToBottom(container);
+            if (shouldPin && !_userIsActivelyScrollingMessagesUp()) {
+                _scheduleLxmfScrollToBottom(container);
+                return;
+            }
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(function() {
+                    _compensateImageLoadScroll(container, img, before);
+                });
+            } else {
+                _compensateImageLoadScroll(container, img, before);
+            }
         }, { once: true });
     });
 }
@@ -1242,6 +1270,59 @@ function _utf8ByteLength(value) {
     return new Blob([value || '']).size;
 }
 
+var RS_LINK_TLDS = [
+    'com', 'org', 'net', 'io', 'fi', 'app', 'dev', 'ai', 'co', 'us', 'uk',
+    'ca', 'de', 'fr', 'nl', 'se', 'no', 'dk', 'ch', 'au', 'jp', 'me',
+    'info', 'biz', 'xyz', 'online', 'site', 'tech', 'cloud', 'network',
+    'systems', 'software', 'chat', 'social', 'news', 'live', 'store',
+    'blog', 'wiki', 'earth', 'world', 'one'
+];
+var RS_LINK_RE = new RegExp(
+    "(https?:\\/\\/[^\\s<>\"']+)|((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:" +
+    RS_LINK_TLDS.join('|') +
+    ")(?:\\/[^\\s<>\"']*)?)",
+    'ig'
+);
+
+function _splitTrailingUrlPunctuation(raw) {
+    var url = raw || '';
+    var trailing = '';
+    while (url.length && /[.,!?;:]$/.test(url)) {
+        trailing = url.slice(-1) + trailing;
+        url = url.slice(0, -1);
+    }
+    while (url.length && /[\])]$/.test(url)) {
+        var close = url.slice(-1);
+        var open = close === ')' ? '(' : '[';
+        if (url.split(close).length <= url.split(open).length) break;
+        trailing = close + trailing;
+        url = url.slice(0, -1);
+    }
+    return { url: url, trailing: trailing };
+}
+
+function linkifyMessageText(text) {
+    var value = String(text || '');
+    if (!value) return '';
+    var out = '';
+    var last = 0;
+    value.replace(RS_LINK_RE, function(match, schemeUrl, bareUrl, offset) {
+        var prev = offset > 0 ? value.charAt(offset - 1) : '';
+        if (prev === '@') return match;
+        out += escapeHtml(value.slice(last, offset));
+        var split = _splitTrailingUrlPunctuation(match);
+        var label = split.url;
+        var href = /^https?:\/\//i.test(label) ? label : 'https://' + label;
+        out += '<a class="rs-message-link" href="' + escapeHtml(href) +
+            '" data-url="' + escapeHtml(href) + '" rel="noopener noreferrer">' +
+            escapeHtml(label) + '</a>' + escapeHtml(split.trailing);
+        last = offset + match.length;
+        return match;
+    });
+    out += escapeHtml(value.slice(last));
+    return out.replace(/\n/g, '<br>');
+}
+
 // Icons must distinguish proof-backed delivery from accepted-for-forwarding.
 // Opportunistic sends have no LXMF receipt; propagation means node deposit,
 // not end-to-end recipient delivery.
@@ -1301,7 +1382,7 @@ function cacheDel(hash) {
     if (idx !== -1) _cacheLru.splice(idx, 1);
 }
 
-function _rememberImageBlobUrl(name, url) {
+function _rememberImageBlobUrl(name, url, file) {
     var existing = _imageBlobUrlCache[name];
     if (existing && existing.url !== url) {
         try { URL.revokeObjectURL(existing.url); } catch (_) {}
@@ -1309,7 +1390,7 @@ function _rememberImageBlobUrl(name, url) {
     var idx = _imageBlobUrlLru.indexOf(name);
     if (idx !== -1) _imageBlobUrlLru.splice(idx, 1);
     _imageBlobUrlLru.push(name);
-    _imageBlobUrlCache[name] = { url: url, ts: Date.now() };
+    _imageBlobUrlCache[name] = { url: url, ts: Date.now(), file: file || null };
     while (_imageBlobUrlLru.length > _imageBlobUrlMax) {
         var evict = _imageBlobUrlLru.shift();
         var entry = _imageBlobUrlCache[evict];
@@ -1329,6 +1410,11 @@ function _getImageBlobUrl(name) {
         _imageBlobUrlLru.push(name);
     }
     return entry.url;
+}
+
+function _getImageDownloadFile(name) {
+    var entry = _imageBlobUrlCache[name];
+    return entry && entry.file ? entry.file : null;
 }
 
 function _formatDateLabel(timestamp) {
@@ -2468,7 +2554,7 @@ function renderConversation(options) {
         else if (sameSenderAsNext) groupClass = ' msg-group-first';
 
         var isOut = msg.direction === 'outbound';
-        var bubbleClass = isOut ? 'lxmf-msg outbound' : 'lxmf-msg inbound';
+        var bubbleClassBase = isOut ? 'lxmf-msg outbound' : 'lxmf-msg inbound';
         var time = formatTime(msg.timestamp);
         var stateIcon = isOut ? _messageStateIconHtml(msg) : '';
 
@@ -2496,17 +2582,30 @@ function renderConversation(options) {
 
         var imageHtml = '';
         if (msg.image) {
+            var imageFilename = msg.image.filename || 'image';
+            var imageMime = msg.image.mime_type || msg.image.mime || '';
             // stored_name \u2192 async fetch via RS.fileDownload; data_url \u2192 embed direct.
             if (msg.image.stored_name) {
                 imageHtml = '<div class="lxmf-msg-image">' +
+                    '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
+                    'data-stored-name="' + escapeHtml(msg.image.stored_name) + '" ' +
+                    'data-filename="' + escapeHtml(imageFilename) + '" ' +
+                    'data-mime="' + escapeHtml(imageMime) + '">' +
                     '<img data-stored-name="' + escapeHtml(msg.image.stored_name) + '" alt="Image" ' +
-                    'class="lxmf-clickable-img rs-lazy-image" ' +
-                    'style="max-width:200px;max-height:200px;border-radius:4px;cursor:pointer;">' +
+                    'data-filename="' + escapeHtml(imageFilename) + '" ' +
+                    'data-mime="' + escapeHtml(imageMime) + '" ' +
+                    'class="lxmf-clickable-img rs-lazy-image">' +
+                    '</button>' +
                 '</div>';
             } else if (msg.image.data_url) {
                 imageHtml = '<div class="lxmf-msg-image">' +
+                    '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
+                    'data-filename="' + escapeHtml(imageFilename) + '" ' +
+                    'data-mime="' + escapeHtml(imageMime) + '">' +
                     '<img src="' + msg.image.data_url + '" alt="Image" class="lxmf-clickable-img" ' +
-                    'style="max-width:200px;max-height:200px;border-radius:4px;cursor:pointer;">' +
+                    'data-filename="' + escapeHtml(imageFilename) + '" ' +
+                    'data-mime="' + escapeHtml(imageMime) + '">' +
+                    '</button>' +
                 '</div>';
             }
         }
@@ -2537,11 +2636,16 @@ function renderConversation(options) {
         }
 
         var hasReactions = reactionHtml ? ' has-reactions' : '';
+        var hasImage = !!imageHtml;
+        var hasAttachment = !!attachHtml;
+        var bubbleClass = bubbleClassBase +
+            (hasImage ? ' msg-has-image' : '') +
+            (hasImage && !displayContent && !hasAttachment ? ' msg-image-only' : '');
         htmlParts.push('<div class="msg-row' + (isOut ? ' outbound' : ' inbound') + hasReactions + groupClass + '">' +
             '<div class="' + bubbleClass + '" data-msg-id="' + escapeHtml(msg.id || '') + '">' +
                 replyHtml +
                 imageHtml +
-                (displayContent ? '<div class="lxmf-msg-content">' + escapeHtml(displayContent) + '</div>' : '') +
+                (displayContent ? '<div class="lxmf-msg-content">' + linkifyMessageText(displayContent) + '</div>' : '') +
                 attachHtml +
                 '<div class="lxmf-msg-meta">' + time + stateIcon + '</div>' +
             '</div>' +
@@ -2558,14 +2662,28 @@ function renderConversation(options) {
         if (!name) return;
         var cachedUrl = _getImageBlobUrl(name);
         if (cachedUrl) {
+            var cachedFile = _getImageDownloadFile(name);
+            if (cachedFile) {
+                if (cachedFile.filename) img.setAttribute('data-filename', cachedFile.filename);
+                if (cachedFile.mime) img.setAttribute('data-mime', cachedFile.mime);
+            }
             img.src = cachedUrl;
             return;
         }
         RS.fileDownload(name).then(function(f) {
-            _rememberImageBlobUrl(name, f.url);
+            _rememberImageBlobUrl(name, f.url, f);
+            if (f.filename) img.setAttribute('data-filename', f.filename);
+            if (f.mime) img.setAttribute('data-mime', f.mime);
+            var btn = img.closest('.lxmf-image-button');
+            if (btn) {
+                if (f.filename) btn.setAttribute('data-filename', f.filename);
+                if (f.mime) btn.setAttribute('data-mime', f.mime);
+            }
             img.src = f.url;
         }).catch(function(err) {
             window.RS.diag('warn', '[lxmf] inline image fetch failed:', name, err);
+            img.classList.add('is-error');
+            img.setAttribute('alt', 'Image failed to load');
         });
     });
 
@@ -2575,7 +2693,9 @@ function renderConversation(options) {
             e.preventDefault();
             var name = this.getAttribute('data-stored-name');
             if (!name) return;
-            RS.saveFile(name).catch(function(err) {
+            RS.saveFile(name).then(function() {
+                if (typeof showToast === 'function') showToast('Saved', 'toast-green', 2200);
+            }).catch(function(err) {
                 if (typeof showToast === 'function') {
                     showToast('Download failed: ' + (err.message || err.code || 'error'), 'toast-red', 4000);
                 } else {
@@ -2588,18 +2708,19 @@ function renderConversation(options) {
     container.querySelectorAll('.lxmf-clickable-img').forEach(function(img) {
         img.addEventListener('click', function(e) {
             e.stopPropagation();
-            var menu = document.getElementById('imgActions');
-            window._imgActionsSrc = this.src;
-            menu.style.left = e.clientX + 'px';
-            menu.style.top = e.clientY + 'px';
-            menu.classList.add('open');
-            // Clamp to viewport.
-            var rect = menu.getBoundingClientRect();
-            if (rect.right > window.innerWidth) {
-                menu.style.left = (window.innerWidth - rect.width - 8) + 'px';
-            }
-            if (rect.bottom > window.innerHeight) {
-                menu.style.top = (e.clientY - rect.height) + 'px';
+            if (typeof openImageViewer === 'function') openImageViewer(this);
+        });
+    });
+
+    container.querySelectorAll('.rs-message-link[data-url]').forEach(function(link) {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var url = this.getAttribute('data-url');
+            if (url && window.RS && typeof RS.openExternalUrl === 'function') {
+                RS.openExternalUrl(url).catch(function(err) {
+                    showToast('Could not open link: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+                });
             }
         });
     });
@@ -2800,7 +2921,7 @@ function sendLxmfMessage(deliveryMethod) {
                 delivery_method: chosenDelivery,
                 client_msg_id: attachMsgId,
                 file_data: isImage ? null : lxmfPendingFile.data,
-                file_name: isImage ? null : lxmfPendingFile.name,
+                file_name: lxmfPendingFile.name,
                 image_data: isImage ? lxmfPendingFile.data : null,
                 image_mime: isImage ? lxmfPendingFile.mime : null,
             }
@@ -2817,6 +2938,7 @@ function sendLxmfMessage(deliveryMethod) {
             image: isImage ? {
                 mime_type: lxmfPendingFile.mime,
                 size: lxmfPendingFile.size,
+                filename: lxmfPendingFile.name,
                 data_url: 'data:' + lxmfPendingFile.mime + ';base64,' + lxmfPendingFile.data,
             } : null,
         });
@@ -4536,48 +4658,172 @@ setInterval(function() {
     }
 }, 30000);
 
-(function() {
-    var menu = document.getElementById('imgActions');
-    var copyBtn = document.getElementById('imgCopy');
-    var downloadBtn = document.getElementById('imgDownload');
+function _imageActionIcon(name) {
+    var icons = {
+        close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
+        copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+        save: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+    };
+    return icons[name] || '';
+}
 
-    document.addEventListener('click', function(e) {
-        if (menu && !menu.contains(e.target)) {
-            menu.classList.remove('open');
+function _filenameWithImageExtension(filename, mime) {
+    var name = (filename || 'image').trim() || 'image';
+    if (/\.[A-Za-z0-9]{1,8}$/.test(name)) return name;
+    var ext = ({
+        'image/jpeg': 'jpg',
+        'image/jpg': 'jpg',
+        'image/png': 'png',
+        'image/gif': 'gif',
+        'image/webp': 'webp',
+        'image/heic': 'heic',
+        'image/heif': 'heif',
+        'image/bmp': 'bmp'
+    })[(mime || '').toLowerCase()] || 'png';
+    return name + '.' + ext;
+}
+
+function _fileFromDataUrl(src, filename, mime) {
+    var match = /^data:([^;,]+);base64,(.*)$/i.exec(src || '');
+    if (!match) return null;
+    var resolvedMime = mime || match[1] || 'image/png';
+    var resolvedName = _filenameWithImageExtension(filename, resolvedMime);
+    var raw = atob(match[2]);
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    var blob = new Blob([bytes], { type: resolvedMime });
+    return {
+        url: URL.createObjectURL(blob),
+        filename: resolvedName,
+        mime: resolvedMime,
+        data_base64: match[2]
+    };
+}
+
+function _fileFromImageElement(img) {
+    if (!img) return Promise.reject(new Error('No image selected'));
+    var stored = img.getAttribute('data-stored-name') ||
+        (img.closest('.lxmf-image-button') && img.closest('.lxmf-image-button').getAttribute('data-stored-name'));
+    if (stored) {
+        var cached = _getImageDownloadFile(stored);
+        if (cached) return Promise.resolve(cached);
+        return RS.fileDownload(stored).then(function(file) {
+            _rememberImageBlobUrl(stored, file.url, file);
+            return file;
+        });
+    }
+    var filename = img.getAttribute('data-filename') || 'image';
+    var mime = img.getAttribute('data-mime') || '';
+    var file = _fileFromDataUrl(img.src, filename, mime);
+    if (file) return Promise.resolve(file);
+    return Promise.reject(new Error('Image data is not ready yet'));
+}
+
+function _blobFromDownloadedFile(file) {
+    var raw = atob(file.data_base64 || '');
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return new Blob([bytes], { type: file.mime || 'image/png' });
+}
+
+function _copyDownloadedImage(file) {
+    if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+        return Promise.reject(new Error('Image copy is not supported on this device'));
+    }
+    var blob = _blobFromDownloadedFile(file);
+    var mime = /^image\//i.test(file.mime || '') ? file.mime : 'image/png';
+    return navigator.clipboard.write([new ClipboardItem({ [mime]: blob })]);
+}
+
+function _ensureImageViewer() {
+    var existing = document.getElementById('rs-image-viewer');
+    if (existing) return existing;
+    var viewer = document.createElement('div');
+    viewer.id = 'rs-image-viewer';
+    viewer.className = 'image-viewer lightbox-zoomable';
+    viewer.setAttribute('hidden', '');
+    viewer.innerHTML =
+        '<div class="image-viewer-backdrop" data-image-viewer-close></div>' +
+        '<div class="image-viewer-toolbar">' +
+            '<button type="button" class="image-viewer-btn" id="image-viewer-close" title="Close" aria-label="Close">' + _imageActionIcon('close') + '</button>' +
+            '<button type="button" class="image-viewer-btn" id="image-viewer-copy" title="Copy image" aria-label="Copy image">' + _imageActionIcon('copy') + '</button>' +
+            '<button type="button" class="image-viewer-btn" id="image-viewer-save" title="Save image" aria-label="Save image">' + _imageActionIcon('save') + '</button>' +
+        '</div>' +
+        '<div class="image-viewer-stage">' +
+            '<img id="image-viewer-img" class="image-viewer-img" alt="">' +
+        '</div>';
+    document.body.appendChild(viewer);
+
+    function close() { closeImageViewer(); }
+    viewer.querySelector('[data-image-viewer-close]').addEventListener('click', close);
+    viewer.querySelector('#image-viewer-close').addEventListener('click', close);
+    viewer.querySelector('#image-viewer-img').addEventListener('click', function(e) {
+        e.stopPropagation();
+        this.classList.toggle('is-zoomed');
+        if (!this.classList.contains('is-zoomed')) {
+            var stage = viewer.querySelector('.image-viewer-stage');
+            if (stage) { stage.scrollTop = 0; stage.scrollLeft = 0; }
         }
     });
-
-    copyBtn.addEventListener('click', function() {
-        menu.classList.remove('open');
-        var src = window._imgActionsSrc;
-        if (!src) return;
-        var img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = function() {
-            var canvas = document.createElement('canvas');
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-            canvas.getContext('2d').drawImage(img, 0, 0);
-            canvas.toBlob(function(blob) {
-                navigator.clipboard.write([
-                    new ClipboardItem({ 'image/png': blob })
-                ]).then(function() {
-                    showCopyConfirmationToast('Image');
-                });
-            }, 'image/png');
-        };
-        img.src = src;
+    viewer.querySelector('#image-viewer-copy').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var source = viewer._sourceImage;
+        _fileFromImageElement(source).then(_copyDownloadedImage).then(function() {
+            showCopyConfirmationToast('Image');
+        }).catch(function(err) {
+            showToast((err && err.message) || 'Could not copy image', 'toast-orange', 3000);
+        });
     });
-
-    downloadBtn.addEventListener('click', function() {
-        menu.classList.remove('open');
-        var src = window._imgActionsSrc;
-        if (!src) return;
-        var a = document.createElement('a');
-        a.href = src;
-        a.download = '';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+    viewer.querySelector('#image-viewer-save').addEventListener('click', function(e) {
+        e.stopPropagation();
+        var source = viewer._sourceImage;
+        _fileFromImageElement(source).then(function(file) {
+            return RS.saveDownloadedFile(file, { preferPhotos: true }).then(function() {
+                showToast(/^image\//i.test(file.mime || '') ? 'Saved to photos!' : 'Saved', 'toast-green', 2500);
+            });
+        }).catch(function(err) {
+            showToast('Save failed: ' + ((err && err.message) || 'error'), 'toast-red', 4000);
+        });
     });
-})();
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && viewer.classList.contains('open')) closeImageViewer();
+    });
+    return viewer;
+}
+
+function openImageViewer(img) {
+    if (!img || !img.src) return;
+    var viewer = _ensureImageViewer();
+    var viewerImg = viewer.querySelector('#image-viewer-img');
+    var stage = viewer.querySelector('.image-viewer-stage');
+    viewer._sourceImage = img;
+    viewerImg.src = img.src;
+    viewerImg.alt = img.getAttribute('data-filename') || 'Image';
+    viewerImg.classList.remove('is-zoomed');
+    if (stage) { stage.scrollTop = 0; stage.scrollLeft = 0; }
+    viewer.removeAttribute('hidden');
+    // Force a layout flush so open animation starts from hidden state.
+    // eslint-disable-next-line no-unused-expressions
+    viewer.offsetHeight;
+    viewer.classList.add('open');
+    document.body.classList.add('image-viewer-open');
+}
+
+function closeImageViewer() {
+    var viewer = document.getElementById('rs-image-viewer');
+    if (!viewer || !viewer.classList.contains('open')) return false;
+    viewer.classList.remove('open');
+    document.body.classList.remove('image-viewer-open');
+    setTimeout(function() {
+        if (!viewer.classList.contains('open')) {
+            viewer.setAttribute('hidden', '');
+            var img = viewer.querySelector('#image-viewer-img');
+            if (img) img.removeAttribute('src');
+            viewer._sourceImage = null;
+        }
+    }, 160);
+    return true;
+}
+
+window.RS = window.RS || {};
+window.RS.closeImageViewer = closeImageViewer;

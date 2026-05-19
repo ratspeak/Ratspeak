@@ -25,6 +25,51 @@ fn base64_decoded_len_upper_bound(encoded_len: usize) -> Option<usize> {
     encoded_len.checked_add(3)?.checked_div(4)?.checked_mul(3)
 }
 
+fn extension_for_mime(mime: &str) -> &'static str {
+    match mime.trim().to_ascii_lowercase().as_str() {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/heic" => "heic",
+        "image/heif" => "heif",
+        "image/bmp" => "bmp",
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        "text/csv" => "csv",
+        "application/json" => "json",
+        "application/zip" => "zip",
+        _ => "",
+    }
+}
+
+fn ensure_filename_extension(name: &str, mime: &str, fallback_stem: &str) -> String {
+    let mut clean = sanitize_text(name, 200)
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ')
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if clean.is_empty() {
+        clean = fallback_stem.to_string();
+    }
+    let has_ext = clean
+        .rsplit_once('.')
+        .map(|(_, ext)| {
+            !ext.is_empty() && ext.len() <= 8 && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .unwrap_or(false);
+    if has_ext {
+        return clean;
+    }
+    let ext = extension_for_mime(mime);
+    if ext.is_empty() {
+        clean
+    } else {
+        format!("{clean}.{ext}")
+    }
+}
+
 fn sanitize_message_content(value: &str) -> AppResult<String> {
     let trimmed = value.trim();
     if trimmed.len() > MAX_LXMF_MESSAGE_BYTES {
@@ -741,10 +786,17 @@ pub async fn send_lxmf_with_attachment(
         String::new()
     };
     let file_name = if is_image {
-        let ext = image_mime.rsplit('/').next().unwrap_or("png");
-        format!("image.{ext}")
+        ensure_filename_extension(
+            args.file_name.as_deref().unwrap_or("image"),
+            &image_mime,
+            "image",
+        )
     } else {
-        sanitize_text(args.file_name.as_deref().unwrap_or("attachment"), 200)
+        ensure_filename_extension(
+            args.file_name.as_deref().unwrap_or("attachment"),
+            "",
+            "attachment",
+        )
     };
     let file_data_b64: &str = if is_image {
         args.image_data.as_deref().unwrap_or("")
@@ -1138,6 +1190,26 @@ mod tests {
                 > rns_protocol::resource::MAX_RESOURCE_SIZE
         );
         assert_eq!(base64_decoded_len_upper_bound(4), Some(3));
+    }
+
+    #[test]
+    fn attachment_filenames_keep_or_gain_expected_extensions() {
+        assert_eq!(
+            ensure_filename_extension("screen", "image/png", "image"),
+            "screen.png"
+        );
+        assert_eq!(
+            ensure_filename_extension("screen.jpg", "image/png", "image"),
+            "screen.jpg"
+        );
+        assert_eq!(
+            ensure_filename_extension("", "image/jpeg", "image"),
+            "image.jpg"
+        );
+        assert_eq!(
+            ensure_filename_extension("archive", "", "attachment"),
+            "archive"
+        );
     }
 
     /// Catches column-name drift between inline SQL and schema in `db.rs`.

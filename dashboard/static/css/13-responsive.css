@@ -455,6 +455,14 @@
     .lxmf-msg {
         max-width: 85%;
     }
+    .lxmf-msg.msg-has-image {
+        max-width: min(92vw, 560px);
+        padding: 4px;
+    }
+    .lxmf-clickable-img {
+        max-width: calc(92vw - 18px);
+        max-height: 70vh;
+    }
 
     .panel-body {
         padding: var(--space-4) var(--space-5);
@@ -478,6 +486,14 @@
         max-width: 90%;
         padding: var(--space-4) var(--space-6);
         font-size: var(--text-sm);
+    }
+    .lxmf-msg.msg-has-image {
+        max-width: 94vw;
+        padding: 4px;
+    }
+    .lxmf-clickable-img {
+        max-width: calc(94vw - 18px);
+        max-height: 72vh;
     }
 
     .toast {

@@ -73,6 +73,172 @@ fn diagnostics_enabled() -> bool {
     env_flag("RATSPEAK_DIAGNOSTICS")
 }
 
+fn validate_http_url(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw.trim()).map_err(|_| "Invalid URL".to_string())?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(parsed.into()),
+        _ => Err("Only http and https links can be opened".into()),
+    }
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let clean = validate_http_url(&url)?;
+
+    #[cfg(target_os = "ios")]
+    {
+        open_external_url_ios(&clean)
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let _ = clean;
+        Err("Android external links are opened through the native WebView bridge".into())
+    }
+
+    #[cfg(all(not(any(target_os = "android", target_os = "ios")), target_os = "macos"))]
+    {
+        std::process::Command::new("open")
+            .arg(&clean)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open link: {e}"))
+    }
+
+    #[cfg(all(not(any(target_os = "android", target_os = "ios")), target_os = "windows"))]
+    {
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &clean])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open link: {e}"))
+    }
+
+    #[cfg(all(
+        not(any(target_os = "android", target_os = "ios")),
+        not(any(target_os = "macos", target_os = "windows"))
+    ))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&clean)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open link: {e}"))
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn open_external_url_ios(url: &str) -> Result<(), String> {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use std::ffi::CString;
+
+    unsafe {
+        let ns_string_class = AnyClass::get(c"NSString")
+            .ok_or_else(|| "NSString class not found".to_string())?;
+        let ns_url_class =
+            AnyClass::get(c"NSURL").ok_or_else(|| "NSURL class not found".to_string())?;
+        let ui_app_class = AnyClass::get(c"UIApplication")
+            .ok_or_else(|| "UIApplication class not found".to_string())?;
+        let c_url = CString::new(url).map_err(|_| "Invalid URL".to_string())?;
+        let ns_string: *mut AnyObject =
+            msg_send![ns_string_class, stringWithUTF8String: c_url.as_ptr()];
+        let ns_url: *mut AnyObject = msg_send![ns_url_class, URLWithString: ns_string];
+        if ns_url.is_null() {
+            return Err("Invalid URL".into());
+        }
+        let app: *mut AnyObject = msg_send![ui_app_class, sharedApplication];
+        if app.is_null() {
+            return Err("UIApplication unavailable".into());
+        }
+        let ok: bool = msg_send![app, openURL: ns_url];
+        if ok {
+            Ok(())
+        } else {
+            Err("No application can open this link".into())
+        }
+    }
+}
+
+#[tauri::command]
+fn save_image_to_photos(filename: String, mime: String, data_base64: String) -> Result<(), String> {
+    #[cfg(target_os = "ios")]
+    {
+        save_image_to_photos_ios(&filename, &mime, &data_base64)
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = (filename, mime, data_base64);
+        Err("Native photo saving is only implemented on iOS through this command".into())
+    }
+}
+
+#[cfg(target_os = "ios")]
+#[link(name = "Photos", kind = "framework")]
+unsafe extern "C" {}
+
+#[cfg(target_os = "ios")]
+fn save_image_to_photos_ios(_filename: &str, mime: &str, data_base64: &str) -> Result<(), String> {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as B64;
+    use block2::RcBlock;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use std::ptr;
+
+    if !mime.to_ascii_lowercase().starts_with("image/") {
+        return Err("Only images can be saved to Photos".into());
+    }
+    let bytes = B64
+        .decode(data_base64)
+        .map_err(|_| "Invalid image data".to_string())?;
+
+    unsafe {
+        let ns_data_class =
+            AnyClass::get(c"NSData").ok_or_else(|| "NSData class not found".to_string())?;
+        let ui_image_class =
+            AnyClass::get(c"UIImage").ok_or_else(|| "UIImage class not found".to_string())?;
+        let data: *mut AnyObject =
+            msg_send![ns_data_class, dataWithBytes: bytes.as_ptr(), length: bytes.len()];
+        if data.is_null() {
+            return Err("Could not decode image data".into());
+        }
+        let image: *mut AnyObject = msg_send![ui_image_class, imageWithData: data];
+        if image.is_null() {
+            return Err("Could not create image".into());
+        }
+
+        let photo_library_class = AnyClass::get(c"PHPhotoLibrary")
+            .ok_or_else(|| "PHPhotoLibrary class not found".to_string())?;
+        let asset_request_class = AnyClass::get(c"PHAssetChangeRequest")
+            .ok_or_else(|| "PHAssetChangeRequest class not found".to_string())?;
+        let library: *mut AnyObject = msg_send![photo_library_class, sharedPhotoLibrary];
+        if library.is_null() {
+            return Err("Photo library unavailable".into());
+        }
+
+        let changes = RcBlock::new(move || {
+            let _: *mut AnyObject =
+                msg_send![asset_request_class, creationRequestForAssetFromImage: image];
+        });
+        let mut error: *mut AnyObject = ptr::null_mut();
+        let ok: bool = msg_send![
+            library,
+            performChangesAndWait: &*changes,
+            error: &mut error
+        ];
+        if !ok {
+            return Err(if error.is_null() {
+                "Could not save image to Photos".into()
+            } else {
+                "Photo library denied or failed the save".into()
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn diagnostic_file_enabled() -> bool {
     diagnostics_enabled() && env_flag("RATSPEAK_DIAGNOSTIC_FILE")
@@ -184,6 +350,8 @@ pub fn run() {
 
     builder
         .invoke_handler(tauri::generate_handler![
+            open_external_url,
+            save_image_to_photos,
             ratspeak_tauri::commands::system::api_version,
             ratspeak_tauri::commands::system::api_startup_progress,
             ratspeak_tauri::commands::system::api_setup_status,

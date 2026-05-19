@@ -4153,6 +4153,7 @@ dependencies = [
 name = "ratspeak"
 version = "1.0.14"
 dependencies = [
+ "base64 0.22.1",
  "block2 0.6.2",
  "btleplug",
  "dirs 5.0.1",

@@ -13,6 +13,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -35,6 +36,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.webkit.JavascriptInterface
@@ -116,6 +118,7 @@ class MainActivity : TauriActivity() {
     private var usbPermissionReceiver: BroadcastReceiver? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var pendingIdentityExport: PendingIdentityExport? = null
+    private var pendingGenericFileSave: PendingFileSave? = null
     private var pendingMediaRequestId: String? = null
     private var pendingMediaRequestAudio = false
     private var pendingMediaRequestCamera = false
@@ -137,6 +140,12 @@ class MainActivity : TauriActivity() {
     @Volatile private var serviceMulticastEnabled = false
 
     private data class PendingIdentityExport(val fileName: String, val bytes: ByteArray)
+    private data class PendingFileSave(
+        val requestId: String,
+        val fileName: String,
+        val bytes: ByteArray,
+        val mimeType: String
+    )
 
     private val identityBackupDocumentLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -146,6 +155,11 @@ class MainActivity : TauriActivity() {
     private val identityImportDocumentLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             handleIdentityImportDocumentResult(result.resultCode, result.data)
+        }
+
+    private val genericFileDocumentLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            handleGenericFileDocumentResult(result.resultCode, result.data)
         }
 
     override fun onWebViewCreate(webView: WebView) {
@@ -1382,6 +1396,157 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    private fun sanitizeDownloadFileName(name: String, mimeType: String): String {
+        val cleaned = sanitizeIdentityDocumentFileName(name)
+        if (cleaned.contains('.') && cleaned.substringAfterLast('.').length in 1..8) {
+            return cleaned
+        }
+        val ext = when (mimeType.lowercase()) {
+            "image/jpeg", "image/jpg" -> "jpg"
+            "image/png" -> "png"
+            "image/gif" -> "gif"
+            "image/webp" -> "webp"
+            "image/heic" -> "heic"
+            "image/heif" -> "heif"
+            "image/bmp" -> "bmp"
+            "application/pdf" -> "pdf"
+            "text/plain" -> "txt"
+            "text/csv" -> "csv"
+            "application/json" -> "json"
+            "application/zip" -> "zip"
+            else -> ""
+        }
+        return if (ext.isNotEmpty()) "$cleaned.$ext" else cleaned
+    }
+
+    private fun launchGenericFileSave(
+        requestId: String,
+        fileName: String,
+        bytes: ByteArray,
+        mimeType: String
+    ) {
+        val safeName = sanitizeDownloadFileName(fileName, mimeType)
+        handler.post {
+            try {
+                pendingGenericFileSave = PendingFileSave(requestId, safeName, bytes, mimeType)
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = mimeType.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+                    putExtra(Intent.EXTRA_TITLE, safeName)
+                }
+                genericFileDocumentLauncher.launch(intent)
+            } catch (_: ActivityNotFoundException) {
+                pendingGenericFileSave = null
+                dispatchFileSaveResult(requestId, false, null, "No file picker available on this device")
+            } catch (e: Throwable) {
+                pendingGenericFileSave = null
+                dispatchFileSaveResult(requestId, false, null, e.message ?: "Unable to open save picker")
+            }
+        }
+    }
+
+    private fun handleGenericFileDocumentResult(resultCode: Int, data: Intent?) {
+        val pending = pendingGenericFileSave
+        pendingGenericFileSave = null
+
+        if (pending == null) return
+        if (resultCode != Activity.RESULT_OK) {
+            dispatchFileSaveResult(pending.requestId, false, null, "Save cancelled")
+            return
+        }
+
+        val uri = data?.data
+        if (uri == null) {
+            dispatchFileSaveResult(pending.requestId, false, null, "No save destination selected")
+            return
+        }
+
+        Thread({
+            try {
+                val stream = contentResolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("Could not open selected destination")
+                stream.use { it.write(pending.bytes) }
+                dispatchFileSaveResult(pending.requestId, true, uri.toString(), null)
+            } catch (e: Throwable) {
+                dispatchFileSaveResult(
+                    pending.requestId,
+                    false,
+                    null,
+                    e.message ?: "Failed to save file"
+                )
+            }
+        }, "ratspeak-file-save").start()
+    }
+
+    private fun saveImageToMediaStore(
+        requestId: String,
+        fileName: String,
+        bytes: ByteArray,
+        mimeType: String
+    ) {
+        val safeName = sanitizeDownloadFileName(fileName, mimeType)
+        Thread({
+            var uri: Uri? = null
+            try {
+                val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                } else {
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                }
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, safeName)
+                    put(MediaStore.Images.Media.MIME_TYPE, mimeType.takeIf { it.isNotBlank() } ?: "image/png")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Ratspeak")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                }
+                uri = contentResolver.insert(collection, values)
+                    ?: throw IllegalStateException("Could not create image in Photos")
+                val stream = contentResolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("Could not open image destination")
+                stream.use { it.write(bytes) }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val done = ContentValues().apply {
+                        put(MediaStore.Images.Media.IS_PENDING, 0)
+                    }
+                    contentResolver.update(uri, done, null, null)
+                }
+                dispatchFileSaveResult(requestId, true, uri.toString(), null)
+            } catch (e: Throwable) {
+                if (uri != null) {
+                    try { contentResolver.delete(uri, null, null) } catch (_: Throwable) {}
+                }
+                dispatchFileSaveResult(
+                    requestId,
+                    false,
+                    null,
+                    e.message ?: "Failed to save image"
+                )
+            }
+        }, "ratspeak-photo-save").start()
+    }
+
+    private fun dispatchFileSaveResult(
+        requestId: String,
+        success: Boolean,
+        uri: String?,
+        error: String?
+    ) {
+        val json = JSONObject().apply {
+            put("request_id", requestId)
+            put("success", success)
+            if (uri != null) put("uri", uri)
+            if (error != null) put("error", error)
+        }
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "if(typeof window._onAndroidFileSaveResult==='function')window._onAndroidFileSaveResult($json);",
+                null
+            )
+        }
+    }
+
     private fun handleIdentityImportDocumentResult(resultCode: Int, data: Intent?) {
         if (resultCode != Activity.RESULT_OK) {
             dispatchIdentityImportResult(false, null, null, null, null, "Import cancelled")
@@ -1511,6 +1676,64 @@ class MainActivity : TauriActivity() {
             }
 
             launchIdentityDocumentSave(safeName, bytes, mimeType)
+        }
+
+        @JavascriptInterface
+        fun saveFileDocument(
+            fileName: String,
+            dataBase64: String,
+            mimeType: String,
+            requestId: String
+        ) {
+            val bytes = try {
+                Base64.decode(dataBase64, Base64.DEFAULT)
+            } catch (_: Throwable) {
+                dispatchFileSaveResult(requestId, false, null, "Invalid file data")
+                return
+            }
+            launchGenericFileSave(
+                requestId,
+                fileName,
+                bytes,
+                mimeType.ifBlank { "application/octet-stream" }
+            )
+        }
+
+        @JavascriptInterface
+        fun saveImageToPhotos(
+            fileName: String,
+            dataBase64: String,
+            mimeType: String,
+            requestId: String
+        ) {
+            val bytes = try {
+                Base64.decode(dataBase64, Base64.DEFAULT)
+            } catch (_: Throwable) {
+                dispatchFileSaveResult(requestId, false, null, "Invalid image data")
+                return
+            }
+            saveImageToMediaStore(
+                requestId,
+                fileName,
+                bytes,
+                mimeType.takeIf { it.startsWith("image/", ignoreCase = true) } ?: "image/png"
+            )
+        }
+
+        @JavascriptInterface
+        fun openExternalUrl(url: String): Boolean {
+            val parsed = try { Uri.parse(url.trim()) } catch (_: Throwable) { return false }
+            val scheme = parsed.scheme?.lowercase() ?: return false
+            if (scheme != "http" && scheme != "https") return false
+            val intent = Intent(Intent.ACTION_VIEW, parsed).apply {
+                addCategory(Intent.CATEGORY_BROWSABLE)
+            }
+            return try {
+                startActivity(intent)
+                true
+            } catch (_: Throwable) {
+                false
+            }
         }
 
         @JavascriptInterface

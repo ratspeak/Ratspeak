@@ -644,6 +644,51 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
 }
 
 #[test]
+fn message_media_viewer_links_and_native_saves_are_wired() {
+    let root = repo_root();
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf.contains("function linkifyMessageText(text)"));
+    assert!(lxmf.contains("class=\"rs-message-link\""));
+    assert!(lxmf.contains("function openImageViewer(img)"));
+    assert!(lxmf.contains("lightbox-zoomable"));
+    assert!(lxmf.contains("RS.saveDownloadedFile(file, { preferPhotos: true })"));
+    assert!(lxmf.contains("Saved to photos!"));
+    assert!(lxmf.contains("function _compensateImageLoadScroll(container, img, before)"));
+
+    let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
+    assert!(state_js.contains("saveImageToPhotos"));
+    assert!(state_js.contains("saveFileDocument"));
+    assert!(state_js.contains("data_base64: result.data_base64 || ''"));
+    assert!(state_js.contains("window.RS.openExternalUrl"));
+    assert!(state_js.contains("open_external_url"));
+
+    let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    assert!(nav_js.contains("RS.closeImageViewer"));
+
+    let messaging_css =
+        read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
+    assert!(messaging_css.contains(".lxmf-msg.msg-has-image"));
+    assert!(messaging_css.contains(".image-viewer"));
+    assert!(messaging_css.contains(".rs-message-link"));
+
+    let android_activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("android main activity");
+    assert!(android_activity.contains("fun saveImageToPhotos("));
+    assert!(android_activity.contains("MediaStore.Images.Media.RELATIVE_PATH"));
+    assert!(android_activity.contains("Pictures/Ratspeak"));
+    assert!(android_activity.contains("fun saveFileDocument("));
+    assert!(android_activity.contains("fun openExternalUrl(url: String): Boolean"));
+
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    assert!(tauri_lib.contains("fn open_external_url(url: String)"));
+    assert!(tauri_lib.contains("fn save_image_to_photos("));
+    assert!(tauri_lib.contains("performChangesAndWait"));
+    assert!(tauri_lib.contains("PHAssetChangeRequest"));
+}
+
+#[test]
 fn voice_and_capture_paths_preflight_media_permissions() {
     let root = repo_root();
     let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))

@@ -50,6 +50,8 @@
 	<string>Ratspeak accesses your camera so you can take photos or videos to send in a message.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Ratspeak accesses your photo library so you can attach existing photos or videos to a message.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Ratspeak saves received images to your photo library when you choose Save to Photos.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Ratspeak uses your microphone for voice calls and when recording videos to send in a message.</string>
 	<key>NSBonjourServices</key>

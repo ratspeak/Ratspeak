@@ -485,6 +485,7 @@ function _handleAppBackNavigation(opts) {
     var state = opts.state || null;
 
     if (
+        (window.RS && typeof RS.closeImageViewer === 'function' && RS.closeImageViewer()) ||
         (window.RS && typeof RS.closeMessageActionMenu === 'function' && RS.closeMessageActionMenu()) ||
         _closeOpenBottomSheet() ||
         _closeOpenFabPicker() ||
