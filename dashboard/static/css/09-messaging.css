@@ -341,6 +341,7 @@
 .lxmf-msg-image {
     position: relative;
     line-height: 0;
+    max-width: 100%;
 }
 .lxmf-image-button {
     display: block;
@@ -356,7 +357,7 @@
 .lxmf-clickable-img {
     display: block;
     width: auto;
-    max-width: min(520px, 62vw);
+    max-width: min(520px, 100%);
     max-height: min(620px, 68vh);
     min-width: 170px;
     min-height: 112px;
@@ -376,7 +377,7 @@
         var(--surface-control);
 }
 .lxmf-msg.msg-has-image {
-    max-width: min(560px, 74vw);
+    max-width: min(560px, 75%);
     padding: var(--space-2);
 }
 .lxmf-msg.msg-has-image .lxmf-msg-content {
@@ -477,6 +478,12 @@
     padding: 10px calc(14px + var(--sar, 0px)) calc(24px + var(--sab, 0px)) calc(14px + var(--sal, 0px));
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
+    /* Non-zoomed vertical drags dismiss the viewer; zoomed images can pan. */
+    overflow: hidden;
+    touch-action: pan-x pinch-zoom;
+}
+.image-viewer.is-zoomed .image-viewer-stage {
+    overflow: auto;
     touch-action: pan-x pan-y pinch-zoom;
 }
 .image-viewer-img {
@@ -489,11 +496,20 @@
     border-radius: 10px;
     box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
     cursor: zoom-in;
+    transition: transform 160ms ease, opacity 160ms ease;
+    will-change: transform, opacity;
 }
 .image-viewer-img.is-zoomed {
     max-width: none;
     max-height: none;
     cursor: zoom-out;
+}
+.image-viewer-img.is-dragging {
+    transition: none;
+    cursor: grabbing;
+}
+.image-viewer-img.is-settling {
+    transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), opacity 180ms ease;
 }
 body.image-viewer-open {
     overflow: hidden;

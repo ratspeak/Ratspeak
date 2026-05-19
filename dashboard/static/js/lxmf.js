@@ -22,6 +22,7 @@ var _lxmfLastUserScrollUpAt = 0;
 var _lxmfProgrammaticScrollUntil = 0;
 var _lxmfScrollSettleToken = 0;
 var _messageLongPressDetachFns = [];
+var _pendingAttachmentToken = 0;
 var lxmfLimits = {
     max_attachment_bytes: 134217727,
     max_message_bytes: 134217727,
@@ -3055,6 +3056,141 @@ function _pendingAttachmentName(file) {
     return file && file.name ? file.name : 'Photo';
 }
 
+function _imageShareMime(mime) {
+    var lower = String(mime || '').toLowerCase();
+    if (lower === 'image/jpeg' || lower === 'image/jpg') return 'image/jpeg';
+    if (lower === 'image/webp') return 'image/webp';
+    return 'image/png';
+}
+
+function _imageShareExtension(mime) {
+    if (mime === 'image/jpeg') return 'jpg';
+    if (mime === 'image/webp') return 'webp';
+    return 'png';
+}
+
+function _metadataStrippedImageName(file, mime) {
+    var source = _pendingAttachmentName(file);
+    var stem = source.replace(/\.[A-Za-z0-9]{1,8}$/, '').trim() || 'image';
+    return stem + '.' + _imageShareExtension(mime);
+}
+
+function _readBlobBase64(blob) {
+    return new Promise(function(resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var result = String((e && e.target && e.target.result) || '');
+            var comma = result.indexOf(',');
+            resolve(comma >= 0 ? result.slice(comma + 1) : result);
+        };
+        reader.onerror = function() {
+            reject(new Error('Could not read file'));
+        };
+        reader.readAsDataURL(blob);
+    });
+}
+
+function _decodeImageForCanvas(file) {
+    if (typeof createImageBitmap === 'function') {
+        return createImageBitmap(file, { imageOrientation: 'from-image' }).then(function(bitmap) {
+            return {
+                source: bitmap,
+                width: bitmap.width,
+                height: bitmap.height,
+                close: function() {
+                    if (typeof bitmap.close === 'function') bitmap.close();
+                }
+            };
+        }).catch(function() {
+            return _decodeImageElementForCanvas(file);
+        });
+    }
+    return _decodeImageElementForCanvas(file);
+}
+
+function _decodeImageElementForCanvas(file) {
+    return new Promise(function(resolve, reject) {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function() {
+            URL.revokeObjectURL(url);
+            resolve({
+                source: img,
+                width: img.naturalWidth || img.width,
+                height: img.naturalHeight || img.height,
+                close: function() {}
+            });
+        };
+        img.onerror = function() {
+            URL.revokeObjectURL(url);
+            reject(new Error('Could not decode image'));
+        };
+        img.src = url;
+    });
+}
+
+function _canvasToBlob(canvas, mime) {
+    return new Promise(function(resolve, reject) {
+        try {
+            canvas.toBlob(function(blob) {
+                if (!blob) {
+                    reject(new Error('Could not encode sanitized image'));
+                    return;
+                }
+                resolve(blob);
+            }, mime, 0.92);
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
+
+function _stripImageMetadataForShare(file) {
+    var targetMime = _imageShareMime(file && file.type);
+    return _decodeImageForCanvas(file).then(function(decoded) {
+        if (!decoded.width || !decoded.height) {
+            if (decoded.close) decoded.close();
+            throw new Error('Image has no readable pixels');
+        }
+        var canvas = document.createElement('canvas');
+        canvas.width = decoded.width;
+        canvas.height = decoded.height;
+        var ctx = canvas.getContext('2d', { alpha: targetMime !== 'image/jpeg' });
+        if (!ctx) {
+            if (decoded.close) decoded.close();
+            throw new Error('Could not prepare image sanitizer');
+        }
+        if (targetMime === 'image/jpeg') {
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        ctx.drawImage(decoded.source, 0, 0, canvas.width, canvas.height);
+        if (decoded.close) decoded.close();
+        return _canvasToBlob(canvas, targetMime);
+    }).then(function(blob) {
+        return _readBlobBase64(blob).then(function(base64) {
+            return {
+                name: _metadataStrippedImageName(file, targetMime),
+                data: base64,
+                size: blob.size,
+                mime: targetMime,
+                metadata_stripped: true
+            };
+        });
+    });
+}
+
+function _readGenericAttachment(file) {
+    return _readBlobBase64(file).then(function(base64) {
+        return {
+            name: _pendingAttachmentName(file),
+            data: base64,
+            size: file.size,
+            mime: file.type || 'application/octet-stream',
+        };
+    });
+}
+
 function handleFileSelected(inputEl) {
     var file = inputEl.files[0];
     if (!file) return;
@@ -3070,18 +3206,32 @@ function handleFileSelected(inputEl) {
         showToast('Large attachment - transfer may take a while on slow links.', 'toast-blue', 3500);
     }
 
-    var reader = new FileReader();
-    reader.onload = function(e) {
-        var base64 = e.target.result.split(',')[1];
-        lxmfPendingFile = {
-            name: _pendingAttachmentName(file),
-            data: base64,
-            size: file.size,
-            mime: file.type || 'application/octet-stream',
-        };
+    var token = ++_pendingAttachmentToken;
+    var isImage = /^image\//i.test(file.type || '');
+    var prepare = isImage ? _stripImageMetadataForShare(file) : _readGenericAttachment(file);
+    if (isImage) showToast('Removing image metadata...', 'toast-blue', 1800);
+
+    prepare.then(function(pendingFile) {
+        if (token !== _pendingAttachmentToken) return;
+        if (pendingFile.size > maxSize) {
+            showToast('Sanitized image exceeds protocol limit (' + prettySize(pendingFile.size) + ' > ' + prettySize(maxSize) + '). Choose a smaller image.', 'toast-red', 5000);
+            clearPendingFile();
+            return;
+        }
+        if (pendingFile.size > (lxmfLimits.efficient_resource_bytes || 1048575) && file.size <= (lxmfLimits.efficient_resource_bytes || 1048575)) {
+            showToast('Large attachment - transfer may take a while on slow links.', 'toast-blue', 3500);
+        }
+        lxmfPendingFile = pendingFile;
         renderPendingFile();
-    };
-    reader.readAsDataURL(file);
+    }).catch(function(err) {
+        if (token !== _pendingAttachmentToken) return;
+        clearPendingFile();
+        if (isImage) {
+            showToast('Could not remove image metadata; image not attached', 'toast-red', 4500);
+        } else {
+            showToast('Could not read attachment: ' + ((err && err.message) || 'error'), 'toast-red', 4500);
+        }
+    });
     inputEl.value = '';
 }
 
@@ -3112,6 +3262,7 @@ function renderPendingFile() {
 }
 
 function clearPendingFile() {
+    _pendingAttachmentToken++;
     lxmfPendingFile = null;
     var container = document.getElementById('lxmf-pending-file');
     if (container) {
@@ -4755,11 +4906,18 @@ function _ensureImageViewer() {
     document.body.appendChild(viewer);
 
     function close() { closeImageViewer(); }
+    var stage = viewer.querySelector('.image-viewer-stage');
+    var viewerImg = viewer.querySelector('#image-viewer-img');
     viewer.querySelector('[data-image-viewer-close]').addEventListener('click', close);
     viewer.querySelector('#image-viewer-close').addEventListener('click', close);
-    viewer.querySelector('#image-viewer-img').addEventListener('click', function(e) {
+    stage.addEventListener('click', function(e) {
+        if (e.target === stage) closeImageViewer();
+    });
+    viewerImg.addEventListener('click', function(e) {
         e.stopPropagation();
-        this.classList.toggle('is-zoomed');
+        if (viewer._suppressImageClickUntil && Date.now() < viewer._suppressImageClickUntil) return;
+        var zoomed = this.classList.toggle('is-zoomed');
+        viewer.classList.toggle('is-zoomed', zoomed);
         if (!this.classList.contains('is-zoomed')) {
             var stage = viewer.querySelector('.image-viewer-stage');
             if (stage) { stage.scrollTop = 0; stage.scrollLeft = 0; }
@@ -4788,7 +4946,101 @@ function _ensureImageViewer() {
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape' && viewer.classList.contains('open')) closeImageViewer();
     });
+    _wireImageViewerSwipeDismiss(viewer, stage, viewerImg);
     return viewer;
+}
+
+function _wireImageViewerSwipeDismiss(viewer, stage, img) {
+    if (!viewer || !stage || !img) return;
+    var swipe = null;
+
+    function mobileSwipeEnabled() {
+        if (typeof isTauriDesktop === 'function' && isTauriDesktop()) return false;
+        return typeof isMobile === 'function' && isMobile();
+    }
+
+    function resetSwipe(animated) {
+        if (animated) img.classList.add('is-settling');
+        img.classList.remove('is-dragging');
+        img.style.transform = '';
+        img.style.opacity = '';
+        if (animated) {
+            setTimeout(function() { img.classList.remove('is-settling'); }, 180);
+        } else {
+            img.classList.remove('is-settling');
+        }
+        swipe = null;
+    }
+
+    stage.addEventListener('pointerdown', function(e) {
+        if (!mobileSwipeEnabled()) return;
+        if (e.pointerType === 'mouse') return;
+        if (!viewer.classList.contains('open')) return;
+        if (img.classList.contains('is-zoomed')) return;
+        if (e.target !== img) return;
+        swipe = {
+            id: e.pointerId,
+            x: e.clientX,
+            y: e.clientY,
+            lastX: e.clientX,
+            lastY: e.clientY,
+            lastAt: Date.now(),
+            dragging: false
+        };
+        try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+    });
+
+    stage.addEventListener('pointermove', function(e) {
+        if (!swipe || e.pointerId !== swipe.id) return;
+        var dx = e.clientX - swipe.x;
+        var dy = e.clientY - swipe.y;
+        var ax = Math.abs(dx);
+        var ay = Math.abs(dy);
+        var now = Date.now();
+        var dt = Math.max(1, now - swipe.lastAt);
+        swipe.velocityY = (e.clientY - swipe.lastY) / dt;
+        swipe.lastX = e.clientX;
+        swipe.lastY = e.clientY;
+        swipe.lastAt = now;
+        if (!swipe.dragging && ay > 12 && ay > ax * 1.15) {
+            swipe.dragging = true;
+            img.classList.add('is-dragging');
+        }
+        if (!swipe.dragging) return;
+        e.preventDefault();
+        var scale = Math.max(0.82, 1 - Math.min(ay, 260) / 1300);
+        var opacity = Math.max(0.35, 1 - Math.min(ay, 260) / 320);
+        img.style.transform = 'translate3d(' + Math.round(dx * 0.18) + 'px,' + Math.round(dy) + 'px,0) scale(' + scale.toFixed(3) + ')';
+        img.style.opacity = opacity.toFixed(3);
+    });
+
+    function finishSwipe(e) {
+        if (!swipe || e.pointerId !== swipe.id) return;
+        var dy = (typeof e.clientY === 'number' ? e.clientY : swipe.lastY) - swipe.y;
+        var velocity = Math.abs(swipe.velocityY || 0);
+        var shouldClose = swipe.dragging && (Math.abs(dy) > 64 || (Math.abs(dy) > 36 && velocity > 0.45));
+        if (swipe.dragging) viewer._suppressImageClickUntil = Date.now() + 300;
+        try { stage.releasePointerCapture(swipe.id); } catch (_) {}
+        if (shouldClose) {
+            img.classList.remove('is-dragging');
+            closeImageViewer();
+        } else {
+            resetSwipe(!!swipe.dragging);
+        }
+    }
+
+    stage.addEventListener('pointerup', finishSwipe);
+    stage.addEventListener('pointercancel', function(e) {
+        if (!swipe || e.pointerId !== swipe.id) return;
+        var shouldClose = swipe.dragging && Math.abs((swipe.lastY || swipe.y) - swipe.y) > 48;
+        try { stage.releasePointerCapture(swipe.id); } catch (_) {}
+        if (shouldClose) {
+            img.classList.remove('is-dragging');
+            closeImageViewer();
+        } else {
+            resetSwipe(!!swipe.dragging);
+        }
+    });
 }
 
 function openImageViewer(img) {
@@ -4799,7 +5051,11 @@ function openImageViewer(img) {
     viewer._sourceImage = img;
     viewerImg.src = img.src;
     viewerImg.alt = img.getAttribute('data-filename') || 'Image';
+    viewer.classList.remove('is-zoomed');
     viewerImg.classList.remove('is-zoomed');
+    viewerImg.classList.remove('is-dragging', 'is-settling');
+    viewerImg.style.transform = '';
+    viewerImg.style.opacity = '';
     if (stage) { stage.scrollTop = 0; stage.scrollLeft = 0; }
     viewer.removeAttribute('hidden');
     // Force a layout flush so open animation starts from hidden state.
@@ -4813,12 +5069,18 @@ function closeImageViewer() {
     var viewer = document.getElementById('rs-image-viewer');
     if (!viewer || !viewer.classList.contains('open')) return false;
     viewer.classList.remove('open');
+    viewer.classList.remove('is-zoomed');
     document.body.classList.remove('image-viewer-open');
     setTimeout(function() {
         if (!viewer.classList.contains('open')) {
             viewer.setAttribute('hidden', '');
             var img = viewer.querySelector('#image-viewer-img');
-            if (img) img.removeAttribute('src');
+            if (img) {
+                img.removeAttribute('src');
+                img.classList.remove('is-dragging', 'is-settling', 'is-zoomed');
+                img.style.transform = '';
+                img.style.opacity = '';
+            }
             viewer._sourceImage = null;
         }
     }, 160);

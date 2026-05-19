@@ -456,11 +456,11 @@
         max-width: 85%;
     }
     .lxmf-msg.msg-has-image {
-        max-width: min(92vw, 560px);
+        max-width: 75%;
         padding: 4px;
     }
     .lxmf-clickable-img {
-        max-width: calc(92vw - 18px);
+        max-width: 100%;
         max-height: 70vh;
     }
 
@@ -488,11 +488,11 @@
         font-size: var(--text-sm);
     }
     .lxmf-msg.msg-has-image {
-        max-width: 94vw;
+        max-width: 75%;
         padding: 4px;
     }
     .lxmf-clickable-img {
-        max-width: calc(94vw - 18px);
+        max-width: 100%;
         max-height: 72vh;
     }
 

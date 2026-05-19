@@ -629,6 +629,10 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
         lxmf.contains("{ label: 'Video', icon: ICON_VIDEO, onSelect: triggerVideoAttachment }")
     );
     assert!(lxmf.contains("function _pendingAttachmentName(file)"));
+    assert!(lxmf.contains("function _stripImageMetadataForShare(file)"));
+    assert!(lxmf.contains("ctx.drawImage(decoded.source"));
+    assert!(lxmf.contains("metadata_stripped: true"));
+    assert!(lxmf.contains("Could not remove image metadata; image not attached"));
     assert!(lxmf.contains("pending-file-thumbnail"));
     assert!(lxmf.contains(
         "src=\"data:' + escapeHtml(lxmfPendingFile.mime) + ';base64,' + lxmfPendingFile.data"
@@ -651,6 +655,10 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("class=\"rs-message-link\""));
     assert!(lxmf.contains("function openImageViewer(img)"));
     assert!(lxmf.contains("lightbox-zoomable"));
+    assert!(lxmf.contains("function _wireImageViewerSwipeDismiss(viewer, stage, img)"));
+    assert!(lxmf.contains("viewer.classList.toggle('is-zoomed', zoomed);"));
+    assert!(lxmf.contains("Math.abs(dy) > 64"));
+    assert!(lxmf.contains("if (e.target === stage) closeImageViewer();"));
     assert!(lxmf.contains("RS.saveDownloadedFile(file, { preferPhotos: true })"));
     assert!(lxmf.contains("Saved to photos!"));
     assert!(lxmf.contains("function _compensateImageLoadScroll(container, img, before)"));
@@ -668,6 +676,10 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
     assert!(messaging_css.contains(".lxmf-msg.msg-has-image"));
+    assert!(messaging_css.contains("max-width: min(560px, 75%);"));
+    assert!(messaging_css.contains(".image-viewer-img.is-dragging"));
+    assert!(messaging_css.contains("touch-action: pan-x pinch-zoom;"));
+    assert!(messaging_css.contains(".image-viewer.is-zoomed .image-viewer-stage"));
     assert!(messaging_css.contains(".image-viewer"));
     assert!(messaging_css.contains(".rs-message-link"));
 
