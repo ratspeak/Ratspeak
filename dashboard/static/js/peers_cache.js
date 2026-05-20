@@ -208,6 +208,23 @@ var PeersCache = (function() {
         }
     }
 
+    function replace(rows) {
+        var fresh = Object.create(null);
+        if (Array.isArray(rows)) {
+            for (var i = 0; i < rows.length; i++) {
+                var n = _normalizeRow(rows[i]);
+                if (n) fresh[n.hash] = n;
+            }
+        }
+        _cache = fresh;
+        _initialized = true;
+        _initPromise = null;
+        if (!_retierTimer) {
+            _retierTimer = setInterval(_notify, RETIER_INTERVAL_MS);
+        }
+        _notify();
+    }
+
     // Called on identity / factory reset so the pre-reset list doesn't
     // briefly paint while the page reload is in flight.
     function clear() {
@@ -402,6 +419,7 @@ var PeersCache = (function() {
         applyUpdated: applyUpdated,
         applyBatch: applyBatch,
         applyRemoved: applyRemoved,
+        replace: replace,
         clear: clear,
         get: get,
         getAll: getAll,

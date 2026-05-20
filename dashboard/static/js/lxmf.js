@@ -528,14 +528,7 @@ function _voiceNotify(message, className) {
 }
 
 function _voiceRestoreHeaderStatus() {
-    var statusEl = document.getElementById('lxmf-chat-header-status');
-    if (!statusEl || !lxmfActiveContact) return;
-    var peer = (typeof _peerInfo === 'function') ? _peerInfo(lxmfActiveContact) : null;
-    var statusText = (typeof _peerHeaderStatus === 'function') ? _peerHeaderStatus(peer) : '';
-    var statusOnline = !!(peer && peer.route_state && peer.route_state !== 'none');
-    statusEl.textContent = statusText;
-    statusEl.style.display = statusText ? '' : 'none';
-    statusEl.className = 'lxmf-chat-header-status' + (statusOnline ? ' is-online' : '');
+    _applyChatHeaderPresence();
 }
 
 function _voiceHaptic(name) {
@@ -1159,11 +1152,41 @@ function _peerActivityLabel(peer) {
     return peer.activity_label || 'Never seen';
 }
 
+function _peerPresenceClass(peer) {
+    var status = peer && peer.status ? peer.status : 'unknown';
+    if (status === 'reachable' || status === 'direct') return 'online';
+    if (status === 'stale') return 'stale';
+    return 'offline';
+}
+
 function _peerHeaderStatus(peer) {
     if (!peer) return '';
-    if (peer.in_path || (peer.route_state && peer.route_state !== 'none')) return 'Seen recently';
-    if (typeof formatLastHeard === 'function') return formatLastHeard(peer.last_seen);
-    return peer.last_seen ? prettyTime((Date.now() / 1000) - peer.last_seen) + ' ago' : '';
+    var status = peer.status || 'unknown';
+    if (status === 'reachable' || status === 'direct') return 'Seen recently';
+    return _peerActivityLabel(peer);
+}
+
+function _applyChatHeaderPresence() {
+    var statusEl = document.getElementById('lxmf-chat-header-status');
+    var avatarEl = document.getElementById('lxmf-contact-avatar');
+    if (!lxmfActiveContact) return;
+    var peer = (typeof _peerInfo === 'function') ? _peerInfo(lxmfActiveContact) : null;
+    var statusText = (typeof _peerHeaderStatus === 'function') ? _peerHeaderStatus(peer) : '';
+    var presenceClass = _peerPresenceClass(peer);
+    var title = statusText || 'Never seen';
+    if (peer && peer.route_label) title += ' - ' + peer.route_label;
+    if (statusEl) {
+        statusEl.textContent = statusText;
+        statusEl.style.display = statusText ? '' : 'none';
+        statusEl.className = 'lxmf-chat-header-status' +
+            (presenceClass === 'online' ? ' is-online' : (presenceClass === 'stale' ? ' is-stale' : ''));
+        statusEl.title = title;
+    }
+    if (avatarEl) {
+        avatarEl.className = 'lxmf-chat-header-avatar' +
+            (presenceClass === 'online' || presenceClass === 'stale' ? ' ' + presenceClass : '');
+        avatarEl.title = title;
+    }
 }
 
 function _peerLastHeardLabel(peer) {
@@ -1244,6 +1267,19 @@ function _refreshRenderedConversationNames() {
         var emptyName = document.querySelector('.lxmf-empty-conv-name');
         if (emptyName) emptyName.innerHTML = ratspeakDisplayNameHtml(activeInfo.name, lxmfActiveContact);
     }
+}
+
+function _refreshRenderedConversationPresence() {
+    document.querySelectorAll('.conv-row[data-hash]').forEach(function(row) {
+        var hash = row.dataset.hash;
+        var dot = row.querySelector('.conv-status-dot');
+        if (!hash || !dot) return;
+        var peer = _peerInfo(hash);
+        dot.className = 'conv-status-dot ' + _peerPresenceClass(peer);
+        if (peer) dot.title = (peer.activity_label || 'Never seen') + ' - ' + (peer.route_label || 'No current path');
+        else dot.title = 'Never seen';
+    });
+    _applyChatHeaderPresence();
 }
 
 function _peerViaLabel(peer) {
@@ -2084,15 +2120,8 @@ function _renderConversationsFromCache(convos) {
             var avatarHtml = identityAvatar(c.hash, 40);
 
             var statusClass = 'offline';
-            var _peers = _lxmfPeers();
-            for (var ri = 0; ri < _peers.length; ri++) {
-                if (_peers[ri].hash === c.hash) {
-                    var rs = _peers[ri].status;
-                    if (rs === 'reachable' || rs === 'direct') statusClass = 'online';
-                    else if (rs === 'stale') statusClass = 'stale';
-                    break;
-                }
-            }
+            var convPeer = _peerInfo(c.hash);
+            if (convPeer) statusClass = _peerPresenceClass(convPeer);
 
             var previewStateHtml = '';
             if (c.last_direction === 'outbound' && c.last_state) {
@@ -2121,6 +2150,7 @@ function _renderConversationsFromCache(convos) {
             '</div>';
         });
         container.innerHTML = html;
+        _refreshRenderedConversationPresence();
 
         container.querySelectorAll('.conv-row').forEach(function(el) {
             el.addEventListener('click', function() {
@@ -2675,20 +2705,11 @@ function renderConversation(options) {
             var nameInfo = _conversationNameInfo(lxmfActiveContact, null, false);
             document.getElementById('lxmf-chat-header-name').innerHTML = ratspeakDisplayNameHtml(nameInfo.name, lxmfActiveContact);
 
-            var statusEl = document.getElementById('lxmf-chat-header-status');
             var avatarEl = document.getElementById('lxmf-contact-avatar');
-            var peer = _peerInfo(lxmfActiveContact);
-            var statusText = _peerHeaderStatus(peer);
-            var statusOnline = !!(peer && peer.route_state && peer.route_state !== 'none');
-            if (statusEl) {
-                statusEl.textContent = statusText;
-                statusEl.style.display = statusText ? '' : 'none';
-                statusEl.className = 'lxmf-chat-header-status' + (statusOnline ? ' is-online' : '');
-            }
             if (avatarEl) {
                 avatarEl.innerHTML = identityAvatar(lxmfActiveContact, 40);
-                avatarEl.className = 'lxmf-chat-header-avatar' + (statusOnline ? ' online' : '');
             }
+            _applyChatHeaderPresence();
             var addBtn = document.getElementById('lxmf-chat-add-contact-btn');
             if (addBtn) {
                 addBtn.style.display = contact ? 'none' : '';
@@ -4045,6 +4066,7 @@ RS.listen('conversations_update', function(data) {
 if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.subscribe === 'function') {
     PeersCache.subscribe(function() {
         _refreshRenderedConversationNames();
+        _refreshRenderedConversationPresence();
         renderVoiceUi();
     });
 }

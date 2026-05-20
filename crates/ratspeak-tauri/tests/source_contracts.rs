@@ -1610,6 +1610,35 @@ fn lxmf_conversation_rows_use_peer_display_names_when_available() {
 }
 
 #[test]
+fn cache_clear_buttons_clear_reticulum_db_and_frontend_caches() {
+    let root = repo_root();
+    let system =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
+    let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db rs");
+    let events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events");
+    let peers_cache =
+        read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache");
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+
+    assert!(system.contains("TransportQuery::DropPathTable"));
+    assert!(system.contains("TransportQuery::DropRecentAnnounces"));
+    assert!(system.contains("clear_discovered_identity_activity"));
+    assert!(system.contains("emit_to_all(\"paths_cleared\""));
+    assert!(system.contains("emit_to_all(\n        \"announces_cleared\""));
+    assert!(db.contains("pub fn clear_discovered_identity_activity"));
+    assert!(db.contains("DELETE FROM identity_activity AS ia"));
+    assert!(db.contains("NOT EXISTS (\n                 SELECT 1 FROM contacts"));
+    assert!(events.contains("RS.listen('paths_cleared'"));
+    assert!(events.contains("RS.listen('announces_cleared'"));
+    assert!(events.contains("announceCache = [];"));
+    assert!(events.contains("RS.invoke('api_get_peers_snapshot')"));
+    assert!(peers_cache.contains("function replace(rows)"));
+    assert!(settings.contains("Path table cleared."));
+    assert!(!settings.contains("Hub node restarting"));
+}
+
+#[test]
 fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
@@ -2337,6 +2366,77 @@ fn peer_reachability_uses_uncapped_path_index() {
 
     let health = read_source(root.join("dashboard/static/js/health.js")).expect("health");
     assert!(health.contains("renderPathTable(data.path_table || [], data)"));
+}
+
+#[test]
+fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
+    let root = repo_root();
+
+    let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf");
+    let resolve_destination = lxmf
+        .split("pub async fn resolve_destination")
+        .nth(1)
+        .expect("resolve destination fn");
+    let resolve_destination = resolve_destination
+        .split("// 5s tighter than transport's 15s for interactive responsiveness.")
+        .next()
+        .expect("resolve destination pre-timeout section");
+    assert!(resolve_destination.contains("TransportMessage::AwaitPath"));
+    assert!(
+        !resolve_destination.contains("TransportMessage::RequestPath"),
+        "AwaitPath already requests a path when none exists"
+    );
+
+    let handlers = read_source(root.join("crates/ratspeak-runtime/src/announce_handlers.rs"))
+        .expect("announce handlers");
+    assert!(handlers.contains("refresh_lxmf_route_cache_and_lookup_iface(state"));
+    assert!(handlers.contains("mgr.replace_route_hops_from_path_table(entries);"));
+    assert!(
+        handlers.find("refresh_lxmf_route_cache_and_lookup_iface(state")
+            < handlers.find("trigger_outbound_for_delivery_announce"),
+        "delivery announce/path-response must refresh route cache before waking outbound"
+    );
+
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
+    assert!(runtime.contains("\"held_announces\": e.held_announces"));
+    assert!(runtime.contains("\"burst_active\": e.burst_active"));
+    assert!(runtime.contains("ingress burst active; passive announces may be held"));
+
+    let rns = read_source(root.join("crates/ratspeak-runtime/src/rns.rs")).expect("rns");
+    assert!(rns.contains("\"held_announces\": s.held_announces"));
+    assert!(rns.contains("\"burst_active\": s.burst_active"));
+
+    let network =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs")).expect("network");
+    assert!(network.contains("dest_hash = dest_hash.to_ascii_lowercase();"));
+    assert!(network.contains("async fn ingress_path_diagnostics"));
+    assert!(network.contains("emit_ingress_diagnostics_snapshot(state.inner()).await;"));
+    assert!(network.contains("\"interfaces_holding_announces\""));
+}
+
+#[test]
+fn conversation_header_presence_uses_peer_cache_status() {
+    let root = repo_root();
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+
+    assert!(lxmf.contains("function _peerPresenceClass(peer)"));
+    assert!(lxmf.contains("var status = peer && peer.status ? peer.status : 'unknown';"));
+    assert!(lxmf.contains("function _applyChatHeaderPresence()"));
+    assert!(lxmf.contains("avatarEl.className = 'lxmf-chat-header-avatar' +"));
+    assert!(lxmf.contains("statusEl.className = 'lxmf-chat-header-status' +"));
+    assert!(lxmf.contains("if (convPeer) statusClass = _peerPresenceClass(convPeer);"));
+    assert!(lxmf.contains("_refreshRenderedConversationPresence();"));
+    assert!(lxmf.contains("_peerActivityLabel(peer)"));
+    assert!(
+        !lxmf.contains(
+            "var statusOnline = !!(peer && peer.route_state && peer.route_state !== 'none')"
+        ),
+        "conversation header presence must not be derived from route/path state"
+    );
+
+    let css =
+        read_source(root.join("dashboard/static/css/09-messaging.css")).expect("messaging css");
+    assert!(css.contains(".lxmf-chat-header-status.is-stale"));
 }
 
 #[test]

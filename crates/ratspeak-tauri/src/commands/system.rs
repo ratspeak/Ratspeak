@@ -251,29 +251,143 @@ pub async fn api_database_stats(state: State<'_, Arc<AppState>>) -> AppResult<Va
     Ok(stats)
 }
 
+fn clear_cached_path_stats(state: &AppState) {
+    let stats = {
+        let mut guard = match state.last_stats.write() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        let Some(stats) = guard.as_mut() else {
+            return;
+        };
+        if let Some(obj) = stats.as_object_mut() {
+            obj.insert("path_table".to_string(), json!([]));
+            obj.insert("path_index".to_string(), json!({}));
+            obj.insert("path_table_total".to_string(), json!(0));
+            obj.insert("path_table_truncated".to_string(), json!(false));
+        }
+        stats.clone()
+    };
+    state.emit_to_all("stats_update", stats);
+}
+
 #[tauri::command]
 pub async fn api_clear_paths(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    if let Ok(rns) = state.rns.read()
-        && let Some(mgr) = rns.as_ref()
-    {
-        let (resp_tx, _resp_rx) = tokio::sync::oneshot::channel();
-        let _ = mgr
-            .handle
-            .transport_tx
-            .try_send(rns_transport::messages::TransportMessage::Rpc {
-                query: rns_transport::messages::TransportQuery::DropAnnounceQueues,
-                response_tx: resp_tx,
-            });
+    let handle = {
+        let rns = state.rns.read().ok();
+        rns.as_ref()
+            .and_then(|r| r.as_ref())
+            .map(|mgr| mgr.handle.clone())
+    };
+
+    let mut cleared = 0i64;
+    if let Some(handle) = handle {
+        if let Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) = handle
+            .query_control(rns_transport::messages::TransportQuery::DropPathTable)
+            .await
+        {
+            cleared += n;
+        }
+        if handle.instance_mode == rns_runtime::reticulum::InstanceMode::Client
+            && let Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) = handle
+                .query_transport(rns_transport::messages::TransportQuery::DropPathTable)
+                .await
+        {
+            cleared += n;
+        }
+        if let Some(rns_transport::messages::TransportQueryResponse::PathTable(entries)) = handle
+            .query_control(rns_transport::messages::TransportQuery::GetPathTable)
+            .await
+        {
+            for entry in entries {
+                let _ = handle
+                    .query_control(rns_transport::messages::TransportQuery::DropPath {
+                        dest: entry.hash,
+                    })
+                    .await;
+                cleared += 1;
+            }
+        }
     }
-    Ok(json!(null))
+
+    if let Ok(mut paths) = state.known_path_hashes.lock() {
+        paths.clear();
+    }
+    state
+        .path_activity_baselined
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.replace_route_hops_from_path_table(&[]);
+    }
+    clear_cached_path_stats(&state);
+    state.emit_to_all("paths_cleared", json!({ "cleared": cleared }));
+    state.request_poll_now();
+
+    Ok(json!({ "cleared": cleared }))
 }
 
 #[tauri::command]
 pub async fn api_clear_announces(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let handle = {
+        let rns = state.rns.read().ok();
+        rns.as_ref()
+            .and_then(|r| r.as_ref())
+            .map(|mgr| mgr.handle.clone())
+    };
+
+    let mut recent_cleared = 0i64;
+    if let Some(handle) = handle {
+        if let Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) = handle
+            .query_transport(rns_transport::messages::TransportQuery::DropRecentAnnounces)
+            .await
+        {
+            recent_cleared += n;
+        }
+        if handle.instance_mode == rns_runtime::reticulum::InstanceMode::Client
+            && let Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) = handle
+                .query_control(rns_transport::messages::TransportQuery::DropRecentAnnounces)
+                .await
+        {
+            recent_cleared += n;
+        }
+        let _ = handle
+            .query_control(rns_transport::messages::TransportQuery::DropAnnounceQueues)
+            .await;
+    }
+
     if let Ok(mut announces) = state.announce_history.write() {
         announces.clear();
     }
-    Ok(json!(null))
+    if let Ok(mut seen) = state.seen_announce_hashes.lock() {
+        seen.clear();
+    }
+    state
+        .announce_activity_baselined
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let peers_cleared = db::spawn_db(state.db.clone(), |p| {
+        db::clear_discovered_identity_activity(&p)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(error = %e, "clear_announces db task panicked");
+        0
+    });
+    state.emit_to_all(
+        "announces_cleared",
+        json!({
+            "recent_cleared": recent_cleared,
+            "peers_cleared": peers_cleared,
+        }),
+    );
+    state.request_poll_now();
+
+    Ok(json!({
+        "recent_cleared": recent_cleared,
+        "peers_cleared": peers_cleared,
+    }))
 }
 
 #[tauri::command]

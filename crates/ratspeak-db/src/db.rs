@@ -2593,6 +2593,48 @@ pub fn delete_identity_activity(pool: &DbPool, hashes: &[String]) -> usize {
     deleted
 }
 
+/// Clear discovered peer activity while preserving rows needed by user data.
+///
+/// Contacts, blocked identities, message counterparties, and configured
+/// propagation nodes are not merely cache; keeping those rows preserves name
+/// resolution and conversation affordances after an announce-cache clear.
+pub fn clear_discovered_identity_activity(pool: &DbPool) -> usize {
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let tx = match conn.transaction() {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    let deleted = tx
+        .execute(
+            "DELETE FROM identity_activity AS ia
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM contacts c WHERE c.dest_hash = ia.dest_hash
+             )
+               AND NOT EXISTS (
+                 SELECT 1 FROM blocked_contacts b WHERE b.dest_hash = ia.dest_hash
+             )
+               AND NOT EXISTS (
+                 SELECT 1 FROM messages m WHERE m.source = ia.dest_hash
+             )
+               AND NOT EXISTS (
+                 SELECT 1 FROM messages m WHERE m.destination = ia.dest_hash
+             )
+               AND NOT EXISTS (
+                 SELECT 1 FROM identities i
+                  WHERE COALESCE(i.propagation_node, '') = ia.dest_hash
+             )",
+            [],
+        )
+        .unwrap_or(0);
+    if tx.commit().is_err() {
+        return 0;
+    }
+    deleted
+}
+
 /// `ON CONFLICT DO NOTHING`: only stamps unseen peers.
 pub fn seed_identity_activity_now(pool: &DbPool, hashes: &[String]) {
     if hashes.is_empty() {
@@ -4274,6 +4316,56 @@ mod peers_snapshot_tests {
             params![hash],
         )
         .unwrap();
+    }
+
+    fn activity_count(pool: &DbPool, hash: &str) -> i64 {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM identity_activity WHERE dest_hash = ?1",
+            params![hash],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn clear_discovered_identity_activity_preserves_user_owned_rows() {
+        let pool = test_pool();
+        for hash in [
+            "drop-me",
+            "contact-peer",
+            "blocked-peer",
+            "message-source",
+            "message-dest",
+            "prop-node",
+        ] {
+            touch(&pool, hash, 100.0);
+        }
+        add_contact(&pool, "contact-peer", "Contact");
+        block(&pool, "blocked-peer");
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO messages (id, source, destination, timestamp, state, direction, identity_id)
+                 VALUES ('msg-clear-cache', 'message-source', 'message-dest', 100.0, 'delivered', 'inbound', 'me')",
+                [],
+            )
+            .unwrap();
+        }
+        save_identity(&pool, "identity", "lxmf", "Me", "Me");
+        set_identity_propagation_node(&pool, "identity", "prop-node").unwrap();
+
+        assert_eq!(clear_discovered_identity_activity(&pool), 1);
+        assert_eq!(activity_count(&pool, "drop-me"), 0);
+        for hash in [
+            "contact-peer",
+            "blocked-peer",
+            "message-source",
+            "message-dest",
+            "prop-node",
+        ] {
+            assert_eq!(activity_count(&pool, hash), 1, "{hash} should be preserved");
+        }
     }
 
     #[test]

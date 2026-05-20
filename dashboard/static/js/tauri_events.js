@@ -155,6 +155,48 @@ RS.listen('peer_removed', function(payload) {
     }
 });
 
+function _renderPathCacheCleared() {
+    if (typeof lastStats !== 'undefined' && lastStats && typeof lastStats === 'object') {
+        lastStats.path_table = [];
+        lastStats.path_index = {};
+        lastStats.path_table_total = 0;
+        lastStats.path_table_truncated = false;
+        if (typeof renderStats === 'function') renderStats(lastStats);
+    }
+    if (typeof updatePeersFromStats === 'function') updatePeersFromStats();
+    if (typeof renderContactList === 'function') renderContactList();
+    if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
+    if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
+}
+
+function _reloadPeersAfterCacheClear() {
+    if (typeof PeersCache === 'undefined' || !PeersCache) return;
+    if (typeof RS === 'undefined' || typeof RS.invoke !== 'function') {
+        if (typeof PeersCache.clear === 'function') PeersCache.clear();
+        return;
+    }
+    RS.invoke('api_get_peers_snapshot').then(function(rows) {
+        if (typeof PeersCache.replace === 'function') {
+            PeersCache.replace(rows);
+        } else {
+            PeersCache.clear();
+            if (typeof PeersCache.init === 'function') PeersCache.init().catch(function() {});
+        }
+    }).catch(function() {
+        if (typeof PeersCache.clear === 'function') PeersCache.clear();
+    });
+}
+
+RS.listen('paths_cleared', function() {
+    _renderPathCacheCleared();
+});
+
+RS.listen('announces_cleared', function() {
+    if (typeof announceCache !== 'undefined') announceCache = [];
+    if (typeof renderAnnounceList === 'function') renderAnnounceList();
+    _reloadPeersAfterCacheClear();
+});
+
 var _eventRenderScheduled = false;
 function _scheduleEventRender() {
     if (_eventRenderScheduled) return;

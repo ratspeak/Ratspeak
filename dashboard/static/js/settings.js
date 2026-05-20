@@ -682,8 +682,8 @@ var clearPathsBtn = document.getElementById('settings-clear-paths');
 if (clearPathsBtn) {
     clearPathsBtn.addEventListener('click', function() {
         clearWithConfirm('api_clear_paths',
-            'Clear all cached paths? The hub node will be restarted. Paths will be re-discovered over time.',
-            'Path table cleared. Hub node restarting...',
+            'Clear all cached paths? Paths will be re-discovered over time.',
+            'Path table cleared.',
             'Failed to clear paths.');
     });
 }
@@ -847,9 +847,9 @@ function confirmDangerAction(action, onClose) {
     function _close() { if (typeof onClose === 'function') try { onClose(); } catch (_) {} }
     var actions = {
         'clear-paths': {
-            msg: 'Clear all cached paths? The hub node will be restarted. Paths will be re-discovered over time.',
+            msg: 'Clear all cached paths? Paths will be re-discovered over time.',
             command: 'api_clear_paths',
-            success: 'Path table cleared. Hub node restarting...',
+            success: 'Path table cleared.',
             fail: 'Failed to clear paths.'
         },
         'clear-announces': {

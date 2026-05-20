@@ -2730,6 +2730,16 @@ async fn push_stats_once(state: &AppState) {
                         "name": e.name, "rxb": e.rx_bytes, "txb": e.tx_bytes,
                         "online": e.online, "bitrate": e.bitrate, "mtu": e.mtu, "mode": e.mode,
                         "role": e.role,
+                        "announce_queue": e.announce_queue,
+                        "held_announces": e.held_announces,
+                        "incoming_announce_frequency": e.incoming_announce_frequency,
+                        "outgoing_announce_frequency": e.outgoing_announce_frequency,
+                        "incoming_pr_frequency": e.incoming_pr_frequency,
+                        "outgoing_pr_frequency": e.outgoing_pr_frequency,
+                        "burst_active": e.burst_active,
+                        "burst_activated": e.burst_activated,
+                        "pr_burst_active": e.pr_burst_active,
+                        "pr_burst_activated": e.pr_burst_activated,
                         "announce_rate_target": e.announce_rate_target,
                         "announce_rate_grace": e.announce_rate_grace,
                         "announce_rate_penalty": e.announce_rate_penalty,
@@ -2826,6 +2836,10 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
     state.emit_network_event("interface", "Ratspeak dashboard started", "", "essential");
 
     let mut prev_online: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut prev_ingress_burst: std::collections::HashMap<String, bool> =
+        std::collections::HashMap::new();
+    let mut prev_held_announces: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
     let mut last_interface_announce = std::time::Instant::now();
 
     #[cfg(feature = "mobile-throttle")]
@@ -2894,6 +2908,16 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             "name": e.name, "rxb": e.rx_bytes, "txb": e.tx_bytes,
                             "online": e.online, "bitrate": e.bitrate, "mtu": e.mtu, "mode": e.mode,
                             "role": e.role,
+                            "announce_queue": e.announce_queue,
+                            "held_announces": e.held_announces,
+                            "incoming_announce_frequency": e.incoming_announce_frequency,
+                            "outgoing_announce_frequency": e.outgoing_announce_frequency,
+                            "incoming_pr_frequency": e.incoming_pr_frequency,
+                            "outgoing_pr_frequency": e.outgoing_pr_frequency,
+                            "burst_active": e.burst_active,
+                            "burst_activated": e.burst_activated,
+                            "pr_burst_active": e.pr_burst_active,
+                            "pr_burst_activated": e.pr_burst_activated,
                             "announce_rate_target": e.announce_rate_target,
                             "announce_rate_grace": e.announce_rate_grace,
                             "announce_rate_penalty": e.announce_rate_penalty,
@@ -2915,6 +2939,8 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                 for iface in ifaces {
                     let name = iface["name"].as_str().unwrap_or("unknown");
                     let online = iface["online"].as_bool().unwrap_or(false);
+                    let burst_active = iface["burst_active"].as_bool().unwrap_or(false);
+                    let held_announces = iface["held_announces"].as_u64().unwrap_or(0);
                     let key = name.to_string();
                     let prev = prev_online.get(&key).copied();
                     if prev != Some(online) {
@@ -2969,7 +2995,41 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             });
                         }
                     }
+                    let prev_burst = prev_ingress_burst.get(&key).copied();
+                    if let Some(was_bursting) = prev_burst
+                        && was_bursting != burst_active
+                        && state
+                            .network_log_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        let msg = if burst_active {
+                            format!(
+                                "{} ingress burst active; passive announces may be held",
+                                name
+                            )
+                        } else {
+                            format!("{} ingress burst cleared", name)
+                        };
+                        state.emit_network_event("announce", &msg, name, "standard");
+                    }
+                    let prev_held = prev_held_announces.get(&key).copied().unwrap_or(0);
+                    if held_announces > 0
+                        && prev_held == 0
+                        && state
+                            .network_log_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        let msg = format!(
+                            "{} holding {} passive announce{} during ingress burst",
+                            name,
+                            held_announces,
+                            if held_announces == 1 { "" } else { "s" }
+                        );
+                        state.emit_network_event("announce", &msg, name, "standard");
+                    }
                     prev_online.insert(key, online);
+                    prev_ingress_burst.insert(name.to_string(), burst_active);
+                    prev_held_announces.insert(name.to_string(), held_announces);
                 }
             }
 

@@ -652,6 +652,9 @@ body.image-viewer-open {
 .lxmf-chat-header-status.is-online {
     color: var(--status-online);
 }
+.lxmf-chat-header-status.is-stale {
+    color: var(--status-warning);
+}
 .chat-header-menu-btn,
 .game-challenge-btn,
 .lxst-call-btn {

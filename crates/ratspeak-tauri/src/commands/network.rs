@@ -357,11 +357,12 @@ pub async fn api_network_blackhole(state: State<'_, Arc<AppState>>) -> AppResult
 #[tauri::command]
 pub async fn api_path_query(
     state: State<'_, Arc<AppState>>,
-    dest_hash: String,
+    mut dest_hash: String,
 ) -> AppResult<Value> {
     if !validate_hex(&dest_hash, 16, 64) {
         return Ok(json!({ "has_path": false, "error": "Invalid hash" }));
     }
+    dest_hash = dest_hash.to_ascii_lowercase();
 
     let transport_tx = state
         .rns
@@ -398,9 +399,113 @@ pub async fn api_path_query(
                     }));
                 }
             }
-            Ok(json!({ "has_path": false }))
+            let diagnostics = ingress_path_diagnostics(&tx).await;
+            Ok(json!({
+                "has_path": false,
+                "diagnostics": diagnostics,
+            }))
         }
         _ => Ok(json!({ "has_path": false, "error": "Unexpected response" })),
+    }
+}
+
+async fn ingress_path_diagnostics(
+    tx: &tokio::sync::mpsc::Sender<rns_transport::messages::TransportMessage>,
+) -> Value {
+    match query_interface_stats(tx).await {
+        Some(entries) => ingress_diagnostics_from_interface_stats(&entries),
+        None => empty_ingress_diagnostics(),
+    }
+}
+
+async fn query_interface_stats(
+    tx: &tokio::sync::mpsc::Sender<rns_transport::messages::TransportMessage>,
+) -> Option<Vec<rns_transport::messages::InterfaceStatRpcEntry>> {
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    if tx
+        .send(rns_transport::messages::TransportMessage::Rpc {
+            query: rns_transport::messages::TransportQuery::GetInterfaceStats,
+            response_tx: resp_tx,
+        })
+        .await
+        .is_err()
+    {
+        return None;
+    }
+
+    match resp_rx.await {
+        Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(entries)) => {
+            Some(entries)
+        }
+        _ => None,
+    }
+}
+
+fn ingress_diagnostics_from_interface_stats(
+    entries: &[rns_transport::messages::InterfaceStatRpcEntry],
+) -> Value {
+    let held_announces: u64 = entries.iter().map(|e| e.held_announces).sum();
+    let ingress_burst_active = entries.iter().any(|e| e.burst_active);
+    let pr_burst_active = entries.iter().any(|e| e.pr_burst_active);
+    let interfaces_holding_announces: Vec<Value> = entries
+        .iter()
+        .filter(|e| e.held_announces > 0 || e.burst_active || e.pr_burst_active)
+        .map(|e| {
+            json!({
+                "name": e.name,
+                "held_announces": e.held_announces,
+                "incoming_announce_frequency": e.incoming_announce_frequency,
+                "incoming_pr_frequency": e.incoming_pr_frequency,
+                "burst_active": e.burst_active,
+                "pr_burst_active": e.pr_burst_active,
+            })
+        })
+        .collect();
+    json!({
+        "ingress_burst_active": ingress_burst_active,
+        "path_response_burst_active": pr_burst_active,
+        "held_announces": held_announces,
+        "interfaces_holding_announces": interfaces_holding_announces,
+    })
+}
+
+fn empty_ingress_diagnostics() -> Value {
+    json!({
+        "ingress_burst_active": false,
+        "held_announces": 0,
+        "interfaces_holding_announces": [],
+    })
+}
+
+async fn emit_ingress_diagnostics_snapshot(state: &Arc<AppState>) {
+    let transport_tx = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()));
+    let Some(tx) = transport_tx else {
+        return;
+    };
+    let Some(entries) = query_interface_stats(&tx).await else {
+        return;
+    };
+    for entry in entries {
+        if entry.burst_active {
+            let msg = format!(
+                "{} ingress burst active; passive announces may be held",
+                entry.name
+            );
+            state.emit_network_event("announce", &msg, &entry.name, "standard");
+        }
+        if entry.held_announces > 0 {
+            let msg = format!(
+                "{} holding {} passive announce{} during ingress burst",
+                entry.name,
+                entry.held_announces,
+                if entry.held_announces == 1 { "" } else { "s" }
+            );
+            state.emit_network_event("announce", &msg, &entry.name, "standard");
+        }
     }
 }
 
@@ -437,6 +542,10 @@ pub async fn enable_network_log(
         "Network logging {}",
         if args.enabled { "enabled" } else { "disabled" }
     );
+
+    if args.enabled {
+        emit_ingress_diagnostics_snapshot(state.inner()).await;
+    }
 
     let level_out = state
         .network_log_level

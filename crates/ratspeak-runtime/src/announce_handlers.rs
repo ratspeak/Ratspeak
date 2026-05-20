@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use rns_identity::destination::Destination;
 use rns_runtime::lifecycle::ShutdownSignal;
-use rns_transport::messages::{AnnounceHandlerEvent, TransportMessage};
+use rns_transport::messages::{
+    AnnounceHandlerEvent, PathTableRpcEntry, TransportMessage, TransportQuery,
+    TransportQueryResponse,
+};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -184,6 +187,8 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         mgr.router.set_stamp_cost(event.destination_hash, cost);
     }
 
+    let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
+
     let triggered = if let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
     {
@@ -200,7 +205,6 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
     }
 
     if should_touch_peer_activity(&event) {
-        let iface = lookup_path_iface(state, event.destination_hash).await;
         let identity_hash_hex = event.identity_hash.map(hex::encode);
         let activity = vec![(hash_hex.clone(), now_f64(), display_name, iface)];
         let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY];
@@ -263,8 +267,8 @@ async fn process_lxst_telephony_announce(state: &Arc<AppState>, event: AnnounceH
     let lxmf_dest = Destination::hash_from_name_and_identity("lxmf.delivery", Some(&identity_hash));
     let lxmf_dest_hex = hex::encode(lxmf_dest);
     let identity_hash_hex = hex::encode(identity_hash);
+    let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
     if should_touch_peer_activity(&event) {
-        let iface = lookup_path_iface(state, event.destination_hash).await;
         let activity = vec![(lxmf_dest_hex.clone(), now_f64(), None, iface)];
 
         let pool = state.db.clone();
@@ -431,9 +435,10 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
     }
 }
 
-async fn lookup_path_iface(state: &Arc<AppState>, dest: [u8; 16]) -> Option<String> {
-    use rns_transport::messages::{TransportQuery, TransportQueryResponse};
-
+async fn refresh_lxmf_route_cache_and_lookup_iface(
+    state: &Arc<AppState>,
+    dest: [u8; 16],
+) -> Option<String> {
     let tx = {
         let rns = state.rns.read().ok()?;
         rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone())?
@@ -453,13 +458,22 @@ async fn lookup_path_iface(state: &Arc<AppState>, dest: [u8; 16]) -> Option<Stri
         Ok(TransportQueryResponse::PathTable(e)) => e,
         _ => return None,
     };
-    entries.into_iter().find(|e| e.hash == dest).and_then(|e| {
+    refresh_lxmf_route_cache_from_path_table(state, &entries);
+    entries.iter().find(|e| e.hash == dest).and_then(|e| {
         if e.interface.is_empty() {
             None
         } else {
-            Some(e.interface)
+            Some(e.interface.clone())
         }
     })
+}
+
+fn refresh_lxmf_route_cache_from_path_table(state: &Arc<AppState>, entries: &[PathTableRpcEntry]) {
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.replace_route_hops_from_path_table(entries);
+    }
 }
 
 fn now_f64() -> f64 {

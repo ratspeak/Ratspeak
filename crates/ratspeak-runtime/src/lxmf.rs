@@ -4308,23 +4308,18 @@ pub async fn resolve_destination(
         identity_known,
         "resolving destination path before send..."
     );
-    if let Err(e) = transport_tx
-        .send(TransportMessage::RequestPath {
-            destination_hash: dest,
-        })
-        .await
-    {
-        tracing::warn!(dest = %dest_hash_hex, error = %e, "path request failed during destination resolve");
-        return false;
-    }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    let _ = transport_tx
+    if let Err(e) = transport_tx
         .send(TransportMessage::AwaitPath {
             dest,
             reply: reply_tx,
         })
-        .await;
+        .await
+    {
+        tracing::warn!(dest = %dest_hash_hex, error = %e, "path wait registration failed during destination resolve");
+        return false;
+    }
 
     // 5s tighter than transport's 15s for interactive responsiveness.
     let path_found = matches!(
