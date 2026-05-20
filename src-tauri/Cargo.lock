@@ -4151,7 +4151,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak"
-version = "1.0.14"
+version = "1.0.15"
 dependencies = [
  "base64 0.22.1",
  "block2 0.6.2",
@@ -4181,7 +4181,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-core"
-version = "1.0.14"
+version = "1.0.15"
 dependencies = [
  "chrono",
  "serde",
@@ -4192,7 +4192,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-db"
-version = "1.0.14"
+version = "1.0.15"
 dependencies = [
  "hex",
  "lrgp",
@@ -4209,7 +4209,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-runtime"
-version = "1.0.14"
+version = "1.0.15"
 dependencies = [
  "base64 0.22.1",
  "btleplug",
@@ -4255,7 +4255,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-tauri"
-version = "1.0.14"
+version = "1.0.15"
 dependencies = [
  "base64 0.22.1",
  "btleplug",
@@ -6646,7 +6646,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
