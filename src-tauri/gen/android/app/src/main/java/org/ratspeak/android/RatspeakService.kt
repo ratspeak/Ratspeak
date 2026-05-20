@@ -13,6 +13,7 @@ class RatspeakService : Service() {
         private const val TAG = "RatspeakService"
         const val CHANNEL_ID = "ratspeak_service"
         const val MSG_CHANNEL_ID = "ratspeak_messages"
+        const val CALL_CHANNEL_ID = "ratspeak_calls"
         const val NOTIFICATION_ID = 1
         // Reserved below 100 for system use (foreground / group summary).
         const val GROUP_SUMMARY_ID = 2
@@ -37,8 +38,9 @@ class RatspeakService : Service() {
         super.onCreate()
         createNotificationChannel()
         createMessageNotificationChannel()
+        createCallNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        // Per-message notifications are driven by the Rust/Tauri notification backend.
+        // Message and call notifications are driven by the Rust/Tauri notification backend.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -104,6 +106,18 @@ class RatspeakService : Service() {
             MSG_CHANNEL_ID, "Messages",
             NotificationManager.IMPORTANCE_HIGH
         ).apply { description = "New message notifications" }
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+    }
+
+    private fun createCallNotificationChannel() {
+        val channel = NotificationChannel(
+            CALL_CHANNEL_ID, "Calls",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Incoming call notifications"
+            enableVibration(true)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 

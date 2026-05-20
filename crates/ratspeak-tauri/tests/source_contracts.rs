@@ -838,6 +838,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let voice_rs =
         read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice rs");
+    assert!(voice_rs.contains("fn notify_incoming_call_if_background("));
+    assert!(voice_rs.contains("NativeNotification::call("));
+    assert!(voice_rs.contains("Incoming call from {label}"));
+    assert!(voice_rs.contains("crate::stable_notification_id(&link_hex, 3_000_000)"));
     assert!(voice_rs.contains("remote_lxmf_destination"));
     assert!(voice_rs.contains("fn lxmf_destination_for_identity(identity_hash: [u8; 16])"));
     assert!(voice_rs.contains("const VOICE_CONTACTS_ONLY_NOTICE"));
@@ -875,6 +879,15 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
     assert!(runtime_rs.contains("voice::announce_if_running(state).await"));
     assert!(runtime_rs.contains("LXST telephony announced on all interfaces"));
+
+    let notification_rs =
+        read_source(root.join("crates/ratspeak-core/src/notification.rs")).expect("notification");
+    assert!(notification_rs.contains("NativeNotificationKind::Call"));
+    assert!(notification_rs.contains("pub fn call("));
+
+    let notifier_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/notifier.rs")).expect("notifier");
+    assert!(notifier_rs.contains("NativeNotificationKind::Call => \"ratspeak_calls\""));
 
     let ringtone_js =
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");
@@ -942,6 +955,16 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         read_source(root.join("dashboard/static/js/activity.js")).expect("activity js");
     assert!(activity_js.contains("lxst: true"));
     assert!(activity_js.contains("lxst: 'LXST'"));
+
+    let service =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt",
+        ))
+        .expect("android service");
+    assert!(service.contains("CALL_CHANNEL_ID = \"ratspeak_calls\""));
+    assert!(service.contains("createCallNotificationChannel()"));
+    assert!(service.contains("NotificationManager.IMPORTANCE_HIGH"));
+    assert!(service.contains("lockscreenVisibility = Notification.VISIBILITY_PUBLIC"));
 }
 
 #[test]

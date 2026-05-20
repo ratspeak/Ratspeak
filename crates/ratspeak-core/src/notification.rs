@@ -2,6 +2,7 @@
 pub enum NativeNotificationKind {
     Message,
     Game,
+    Call,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +38,21 @@ impl NativeNotification {
     ) -> Self {
         Self {
             kind: NativeNotificationKind::Game,
+            title: title.into(),
+            body: body.into(),
+            thread_id: Some(thread_id.into()),
+            notification_id: Some(notification_id),
+        }
+    }
+
+    pub fn call(
+        title: impl Into<String>,
+        body: impl Into<String>,
+        thread_id: impl Into<String>,
+        notification_id: i32,
+    ) -> Self {
+        Self {
+            kind: NativeNotificationKind::Call,
             title: title.into(),
             body: body.into(),
             thread_id: Some(thread_id.into()),

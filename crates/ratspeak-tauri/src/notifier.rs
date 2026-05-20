@@ -24,6 +24,13 @@ impl NativeNotifier for TauriNotifier {
 
         #[cfg(not(target_os = "ios"))]
         {
+            let NativeNotification {
+                kind: _kind,
+                title,
+                body,
+                thread_id,
+                notification_id,
+            } = notification;
             let state = match self.handle.notification().permission_state() {
                 Ok(state) => state,
                 Err(e) => {
@@ -40,19 +47,24 @@ impl NativeNotifier for TauriNotifier {
                 .handle
                 .notification()
                 .builder()
-                .title(notification.title)
-                .body(notification.body)
+                .title(title)
+                .body(body)
                 .auto_cancel();
 
-            if let Some(id) = notification.notification_id {
+            if let Some(id) = notification_id {
                 builder = builder.id(id);
             }
-            if let Some(thread_id) = notification.thread_id {
+            if let Some(thread_id) = thread_id {
                 builder = builder.group(thread_id);
             }
             #[cfg(target_os = "android")]
             {
-                builder = builder.channel_id("ratspeak_messages");
+                let channel_id = match _kind {
+                    ratspeak_core::NativeNotificationKind::Message
+                    | ratspeak_core::NativeNotificationKind::Game => "ratspeak_messages",
+                    ratspeak_core::NativeNotificationKind::Call => "ratspeak_calls",
+                };
+                builder = builder.channel_id(channel_id);
             }
 
             if let Err(e) = builder.show() {

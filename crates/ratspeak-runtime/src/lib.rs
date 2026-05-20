@@ -101,7 +101,7 @@ fn compact_hash_label(hash: &str) -> String {
     }
 }
 
-fn stable_notification_id(key: &str, offset: i32) -> i32 {
+pub(crate) fn stable_notification_id(key: &str, offset: i32) -> i32 {
     let mut h: u32 = 0x811c9dc5;
     for b in key.bytes() {
         h ^= b as u32;
@@ -132,7 +132,11 @@ async fn next_chat_observed_timestamp(
     .unwrap_or(observed_at)
 }
 
-fn contact_label_from_db(pool: &db::DbPool, source_hash: &str, identity_id: &str) -> String {
+pub(crate) fn contact_label_from_db(
+    pool: &db::DbPool,
+    source_hash: &str,
+    identity_id: &str,
+) -> String {
     if let Some(label) = db::get_contact(pool, source_hash, identity_id).and_then(|c| {
         c.get("display_name")
             .and_then(|v| v.as_str())

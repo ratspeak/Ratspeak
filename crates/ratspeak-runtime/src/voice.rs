@@ -445,6 +445,29 @@ async fn contact_call_state(state: &AppState, remote_lxmf_destination: &str) -> 
     .unwrap_or((false, false))
 }
 
+fn notify_incoming_call_if_background(
+    state: &AppState,
+    remote_lxmf_destination: &str,
+    link_id: [u8; 16],
+) {
+    if state.is_foreground() || !state.native_notifications_enabled() {
+        return;
+    }
+    let identity_id = crate::helpers::active_identity_id(state);
+    let label = if identity_id.is_empty() {
+        remote_lxmf_destination.to_string()
+    } else {
+        crate::contact_label_from_db(&state.db, remote_lxmf_destination, &identity_id)
+    };
+    let link_hex = hex::encode(link_id);
+    state.emit_native_notification(ratspeak_core::NativeNotification::call(
+        format!("Incoming call from {label}"),
+        "Tap to open Ratspeak",
+        format!("lxst:{link_hex}"),
+        crate::stable_notification_id(&link_hex, 3_000_000),
+    ));
+}
+
 async fn is_network_blackholed(state: &AppState, remote_identity: [u8; 16]) -> bool {
     matches!(
         transport_query(
@@ -804,12 +827,14 @@ async fn drive_voice_events(
                     continue;
                 }
 
+                let remote_lxmf_destination = policy.remote_lxmf_destination.clone();
                 let payload = json!({
                     "type": "incoming",
                     "link_id": hex::encode(link_id),
                     "remote_identity": hex::encode(remote_identity),
-                    "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
+                    "remote_lxmf_destination": remote_lxmf_destination.clone(),
                 });
+                notify_incoming_call_if_background(&state, &remote_lxmf_destination, link_id);
                 state.emit_to_all("voice_incoming_call", payload.clone());
                 state.emit_to_all("voice_call_update", payload);
                 emit_lxst_activity(
@@ -2939,6 +2964,68 @@ mod android_voice_audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DashboardConfig;
+    use r2d2_sqlite::SqliteConnectionManager;
+    use ratspeak_core::{NativeNotification, NativeNotificationKind, NativeNotifier};
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Default)]
+    struct RecordingNotifier {
+        notifications: StdMutex<Vec<NativeNotification>>,
+    }
+
+    impl NativeNotifier for RecordingNotifier {
+        fn notify(&self, notification: NativeNotification) {
+            self.notifications.lock().unwrap().push(notification);
+        }
+    }
+
+    fn make_notification_state(notifier: Arc<RecordingNotifier>) -> AppState {
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-voice-notification-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let config = DashboardConfig::from_env_and_defaults(tmp);
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(2).build(mgr).unwrap();
+        db::init_schema(&pool).unwrap();
+        AppState::new(config, pool, Arc::new(ratspeak_core::NoopEmitter), notifier)
+    }
+
+    #[test]
+    fn incoming_call_native_notification_uses_contact_label_and_call_kind() {
+        let notifier = Arc::new(RecordingNotifier::default());
+        let state = make_notification_state(notifier.clone());
+        state.is_foreground.store(false, Ordering::Relaxed);
+        db::save_identity(&state.db, "identity-a", "lxmf-a", "Me", "Me");
+        db::set_active_identity(&state.db, "identity-a").unwrap();
+
+        let remote_identity = [0x42; 16];
+        let remote_lxmf_destination = lxmf_destination_for_identity(remote_identity);
+        db::save_contact(
+            &state.db,
+            &remote_lxmf_destination,
+            Some("Caller Alice"),
+            "trusted",
+            "identity-a",
+        );
+
+        notify_incoming_call_if_background(&state, &remote_lxmf_destination, [0x77; 16]);
+
+        let seen = notifier.notifications.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].kind, NativeNotificationKind::Call);
+        assert_eq!(seen[0].title, "Incoming call from Caller Alice");
+        assert_eq!(seen[0].body, "Tap to open Ratspeak");
+        assert_eq!(
+            seen[0].thread_id.as_deref(),
+            Some("lxst:77777777777777777777777777777777")
+        );
+    }
 
     #[test]
     fn output_resampler_uses_decoded_frame_channel_count() {
