@@ -802,11 +802,18 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(state_js.contains("window.RS.mediaPermissions"));
     assert!(state_js.contains("window.RS.audioPlayback"));
     assert!(state_js.contains("window.RatspeakAndroid.requestMediaPermissions"));
+    assert!(state_js.contains("function _rsDesktopMicrophonePermission(audio)"));
+    assert!(state_js.contains("RS.invoke('request_microphone_permission')"));
     assert!(state_js.contains("navigator.mediaDevices.getUserMedia"));
 
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf.contains("function _voiceEnsureMicrophonePermission()"));
-    assert!(lxmf.contains("isTauriDesktop())"));
+    let voice_mic_permission = lxmf
+        .split("function _voiceEnsureMicrophonePermission()")
+        .nth(1)
+        .and_then(|tail| tail.split("function _voiceEnsurePlaybackReady()").next())
+        .expect("voice microphone permission function");
+    assert!(!voice_mic_permission.contains("isTauriDesktop"));
     assert!(lxmf.contains("function _voiceEnsurePlaybackReady()"));
     assert!(lxmf.contains("function _voiceAfterNextPaint()"));
     assert!(lxmf.contains("function _voiceSetOptimisticOutgoing(hash)"));
@@ -842,6 +849,16 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     ));
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true })"));
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true, audio: true })"));
+
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    assert!(tauri_lib.contains("async fn request_microphone_permission()"));
+    assert!(tauri_lib.contains("fn request_microphone_permission_macos()"));
+    assert!(tauri_lib.contains("AVCaptureDevice"));
+    assert!(tauri_lib.contains("requestAccessForMediaType"));
+    assert!(tauri_lib.contains("request_microphone_permission,"));
+
+    let mac_info_plist = read_source(root.join("src-tauri/Info.plist")).expect("mac info plist");
+    assert!(mac_info_plist.contains("NSMicrophoneUsageDescription"));
 
     let voice_rs =
         read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice rs");

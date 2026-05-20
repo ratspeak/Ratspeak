@@ -290,9 +290,6 @@ function _voiceSyncNativeAudioRoute(force) {
 }
 
 function _voiceEnsureMicrophonePermission() {
-    if (typeof isTauriDesktop === 'function' && isTauriDesktop()) {
-        return Promise.resolve(true);
-    }
     if (!window.RS || !RS.mediaPermissions || typeof RS.mediaPermissions.ensure !== 'function') {
         return Promise.resolve(true);
     }

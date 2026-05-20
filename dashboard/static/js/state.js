@@ -144,6 +144,21 @@ function _rsBrowserMediaPermission(audio, camera) {
     });
 }
 
+function _rsDesktopMicrophonePermission(audio) {
+    if (!audio || typeof isTauriDesktop !== 'function' || !isTauriDesktop()) {
+        return Promise.resolve(null);
+    }
+    if (!window.RS || typeof RS.invoke !== 'function') {
+        return Promise.resolve(null);
+    }
+    return RS.invoke('request_microphone_permission').then(function(granted) {
+        return !!granted;
+    }).catch(function(err) {
+        window.RS.diag('warn', '[media] native microphone permission probe failed:', err);
+        return null;
+    });
+}
+
 window.RS.mediaPermissions = {
     ensure: function(opts) {
         opts = opts || {};
@@ -152,8 +167,11 @@ window.RS.mediaPermissions = {
         if (!audio && !camera) return Promise.resolve(true);
         return _rsAndroidMediaPermission(audio, camera).then(function(androidGranted) {
             if (androidGranted !== null) return androidGranted;
-            return _rsBrowserMediaPermission(audio, camera).then(function(browserGranted) {
-                return browserGranted !== false;
+            return _rsDesktopMicrophonePermission(audio).then(function(desktopMicGranted) {
+                if (desktopMicGranted === false) return false;
+                return _rsBrowserMediaPermission(audio && desktopMicGranted !== true, camera).then(function(browserGranted) {
+                    return browserGranted !== false;
+                });
             });
         });
     }
