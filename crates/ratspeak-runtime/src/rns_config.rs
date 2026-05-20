@@ -1404,4 +1404,29 @@ mod tests {
         assert!(content.contains("ratspeak_region = uhf_433"));
         assert!(!content.contains("ratspeak_preset ="));
     }
+
+    #[test]
+    fn rnode_interface_accepts_tcp_port_url() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(add_rnode_interface(
+            &dir,
+            RnodeInterfaceArgs {
+                name: "TCP Radio",
+                port: "tcp://rnode.local:7633",
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: Some("americas"),
+                preset_key: Some("medium_fast"),
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("port = tcp://rnode.local:7633"));
+        assert!(content.contains("type = RNodeInterface"));
+    }
 }

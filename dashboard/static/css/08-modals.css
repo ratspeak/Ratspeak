@@ -455,13 +455,15 @@
 
 .rnode-conn-toggle button {
     flex: 1;
-    padding: var(--space-3) var(--space-6);
+    min-width: 0;
+    padding: var(--space-3) var(--space-4);
     background: var(--bg-primary);
     border: none;
     color: var(--text-secondary);
     font-size: var(--text-sm);
     font-family: var(--font-sans);
     cursor: pointer;
+    white-space: nowrap;
     transition: all var(--transition-base);
 }
 
@@ -497,6 +499,14 @@
     color: var(--text-secondary);
     font-size: var(--text-sm);
     line-height: 1.4;
+}
+
+@media (max-width: 420px) {
+    .rnode-conn-toggle button {
+        padding-left: var(--space-2);
+        padding-right: var(--space-2);
+        font-size: var(--text-xs);
+    }
 }
 
 .rnode-pairing-tip {

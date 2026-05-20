@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 serial = ["dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
+rnode-tcp = ["rns-interface/rnode-tcp", "rns-runtime/rnode-tcp"]
 ble = ["dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
 # Background-throttle gate for mobile builds.
 mobile-throttle = ["rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]

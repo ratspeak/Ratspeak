@@ -800,6 +800,85 @@ fn default_tx() -> i8 {
     ratspeak_core::radio::default_rnode_params().tx_power
 }
 
+const RNODE_TCP_SCHEME: &str = "tcp://";
+const RNODE_TCP_DEFAULT_PORT: u16 = 7633;
+
+fn is_rnode_tcp_port(port: &str) -> bool {
+    port.get(..RNODE_TCP_SCHEME.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(RNODE_TCP_SCHEME))
+}
+
+fn normalise_rnode_port(port: &str) -> AppResult<String> {
+    if !is_rnode_tcp_port(port) {
+        return Ok(port.to_string());
+    }
+    let endpoint = port
+        .get(RNODE_TCP_SCHEME.len()..)
+        .ok_or_else(|| AppError::bad_request("Missing RNode TCP host"))?;
+    normalise_rnode_tcp_endpoint(endpoint)
+        .map(|endpoint| format!("{RNODE_TCP_SCHEME}{endpoint}"))
+        .map_err(AppError::bad_request)
+}
+
+fn normalise_rnode_tcp_endpoint(endpoint: &str) -> Result<String, String> {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return Err("Missing RNode TCP host".to_string());
+    }
+
+    if let Some(rest) = endpoint.strip_prefix('[') {
+        let Some(closing) = rest.find(']') else {
+            return Err("Missing closing ']' in IPv6 TCP host".to_string());
+        };
+        let host = &rest[..closing];
+        validate_rnode_tcp_host(host)?;
+        let tail = &rest[closing + 1..];
+        let port = if tail.is_empty() {
+            RNODE_TCP_DEFAULT_PORT
+        } else if let Some(port) = tail.strip_prefix(':') {
+            parse_rnode_tcp_port(port)?
+        } else {
+            return Err("Unexpected text after bracketed TCP host".to_string());
+        };
+        return Ok(format!("[{host}]:{port}"));
+    }
+
+    validate_rnode_tcp_host(endpoint)?;
+    let colon_count = endpoint.matches(':').count();
+    match colon_count {
+        0 => Ok(format!("{endpoint}:{RNODE_TCP_DEFAULT_PORT}")),
+        1 => {
+            let (host, port) = endpoint
+                .rsplit_once(':')
+                .expect("colon_count guarantees a separator");
+            validate_rnode_tcp_host(host)?;
+            Ok(format!("{host}:{}", parse_rnode_tcp_port(port)?))
+        }
+        _ => Ok(format!("[{endpoint}]:{RNODE_TCP_DEFAULT_PORT}")),
+    }
+}
+
+fn validate_rnode_tcp_host(host: &str) -> Result<(), String> {
+    if host.is_empty() {
+        return Err("Missing RNode TCP host".to_string());
+    }
+    if host
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '/' | '?' | '#' | '[' | ']'))
+    {
+        return Err("Invalid RNode TCP host".to_string());
+    }
+    Ok(())
+}
+
+fn parse_rnode_tcp_port(port: &str) -> Result<u16, String> {
+    if port.is_empty() {
+        return Err("Missing RNode TCP port".to_string());
+    }
+    port.parse::<u16>()
+        .map_err(|_| format!("Invalid RNode TCP port: {port}"))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ResolvedLoraRadio {
     frequency: u64,
@@ -1281,6 +1360,7 @@ async fn spawn_editable_interface(
         } => {
             #[cfg(all(
                 not(feature = "serial"),
+                not(feature = "rnode-tcp"),
                 not(feature = "ble"),
                 not(target_os = "android")
             ))]
@@ -1369,8 +1449,13 @@ async fn spawn_editable_interface(
                 }
             }
 
-            #[cfg(feature = "serial")]
+            #[cfg(any(feature = "serial", feature = "rnode-tcp"))]
             {
+                #[cfg(not(feature = "serial"))]
+                if !is_rnode_tcp_port(port) {
+                    return Err("Serial RNode unsupported on this build".to_string());
+                }
+
                 let (id, _online) = rns_runtime::reticulum::spawn_rnode_runtime(
                     &handle,
                     rns_runtime::reticulum::RnodeRuntimeArgs {
@@ -1384,11 +1469,19 @@ async fn spawn_editable_interface(
                     },
                 )
                 .await?;
-                Ok(format!("RNode interface active (#{id})"))
+                if is_rnode_tcp_port(port) {
+                    Ok(format!("RNode TCP interface active (#{id})"))
+                } else {
+                    Ok(format!("RNode interface active (#{id})"))
+                }
             }
-            #[cfg(not(feature = "serial"))]
+            #[cfg(not(any(feature = "serial", feature = "rnode-tcp")))]
             {
-                Err("Serial RNode unsupported on this build".to_string())
+                if is_rnode_tcp_port(port) {
+                    Err("RNode TCP unsupported on this build".to_string())
+                } else {
+                    Err("Serial RNode unsupported on this build".to_string())
+                }
             }
         }
         EditableInterfaceConfig::TcpClient { name, host, port } => {
@@ -1532,7 +1625,7 @@ pub async fn add_lora_interface(
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let name = sanitize_text(&args.name, 64);
-    let port = sanitize_text(&args.port, 256);
+    let port = normalise_rnode_port(&sanitize_text(&args.port, 256))?;
     let radio = resolve_lora_radio_args(LoraRadioArgs {
         region_key: args.region_key.as_deref(),
         preset_key: args.preset_key.as_deref(),
@@ -1877,19 +1970,39 @@ pub async fn add_lora_interface(
         }
     }
 
-    #[cfg(feature = "serial")]
+    #[cfg(any(feature = "serial", feature = "rnode-tcp"))]
     {
         let st = Arc::clone(&state_arc);
         let name_owned = name.clone();
         let port_str = port.clone();
+        let is_tcp = is_rnode_tcp_port(&port_str);
         let config_dir = config_dir.clone();
         let existing_rnode_port = existing_rnode_port.clone();
         tokio::spawn(async move {
+            #[cfg(not(feature = "serial"))]
+            if !is_tcp {
+                emit_op_status_broadcast(
+                    &st,
+                    "add_lora",
+                    "hub",
+                    "Serial RNode unsupported on this build",
+                    true,
+                    Some("serial feature not compiled"),
+                );
+                let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+                emit_hub_interfaces(&st, ifaces);
+                return;
+            }
+
             emit_op_status_broadcast(
                 &st,
                 "add_lora",
                 "hub",
-                "Opening serial port...",
+                if is_tcp {
+                    "Connecting to RNode TCP endpoint..."
+                } else {
+                    "Opening serial port..."
+                },
                 false,
                 None,
             );
@@ -1912,24 +2025,20 @@ pub async fn add_lora_interface(
                 .await
                 {
                     Ok((id, _online)) => {
-                        emit_op_status_broadcast(
-                            &st,
-                            "add_lora",
-                            "hub",
-                            &format!("RNode interface active (#{id})"),
-                            true,
-                            None,
-                        );
+                        let step = if is_tcp {
+                            format!("RNode TCP interface active (#{id})")
+                        } else {
+                            format!("RNode interface active (#{id})")
+                        };
+                        emit_op_status_broadcast(&st, "add_lora", "hub", &step, true, None);
                     }
                     Err(e) => {
-                        emit_op_status_broadcast(
-                            &st,
-                            "add_lora",
-                            "hub",
-                            &format!("Config saved. Serial open failed: {e}"),
-                            true,
-                            Some(&e),
-                        );
+                        let step = if is_tcp {
+                            format!("Config saved. RNode TCP connect failed: {e}")
+                        } else {
+                            format!("Config saved. Serial open failed: {e}")
+                        };
+                        emit_op_status_broadcast(&st, "add_lora", "hub", &step, true, Some(&e));
                     }
                 }
             } else {
@@ -1937,7 +2046,11 @@ pub async fn add_lora_interface(
                     &st,
                     "add_lora",
                     "hub",
-                    "Config saved. Serial open deferred (RNS not ready).",
+                    if is_tcp {
+                        "Config saved. RNode TCP connect deferred (RNS not ready)."
+                    } else {
+                        "Config saved. Serial open deferred (RNS not ready)."
+                    },
                     true,
                     None,
                 );
@@ -1946,18 +2059,24 @@ pub async fn add_lora_interface(
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             emit_hub_interfaces(&st, ifaces);
         });
-        Ok(json!({ "deferred": true, "transport": "serial" }))
+        Ok(
+            json!({ "deferred": true, "transport": if is_rnode_tcp_port(&port) { "tcp" } else { "serial" } }),
+        )
     }
 
-    #[cfg(not(feature = "serial"))]
+    #[cfg(not(any(feature = "serial", feature = "rnode-tcp")))]
     {
         emit_op_status_broadcast(
             &state_arc,
             "add_lora",
             "hub",
-            "Serial RNode unsupported on this build",
+            if is_rnode_tcp_port(&port) {
+                "RNode TCP unsupported on this build"
+            } else {
+                "Serial RNode unsupported on this build"
+            },
             true,
-            Some("serial feature not compiled"),
+            Some("rnode feature not compiled"),
         );
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&state_arc, ifaces);
@@ -1997,7 +2116,7 @@ pub async fn update_lora_interface(
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let old_name = sanitize_text(&args.old_name, 64);
     let name = sanitize_text(&args.name, 64);
-    let port = sanitize_text(&args.port, 256);
+    let port = normalise_rnode_port(&sanitize_text(&args.port, 256))?;
     if old_name.is_empty() || name.is_empty() || port.is_empty() {
         emit_op_status_broadcast(
             &state_arc,
@@ -3986,6 +4105,35 @@ mod backbone_args_tests {
             &ifaces_without_non_lora,
             "wifi"
         ));
+    }
+
+    #[test]
+    fn rnode_tcp_ports_normalise_to_config_urls() {
+        assert_eq!(
+            normalise_rnode_port("tcp://192.168.1.50").unwrap(),
+            "tcp://192.168.1.50:7633"
+        );
+        assert_eq!(
+            normalise_rnode_port("TCP://rnode.local:9000").unwrap(),
+            "tcp://rnode.local:9000"
+        );
+        assert_eq!(
+            normalise_rnode_port("tcp://[2001:db8::1]").unwrap(),
+            "tcp://[2001:db8::1]:7633"
+        );
+        assert_eq!(
+            normalise_rnode_port("tcp://2001:db8::1").unwrap(),
+            "tcp://[2001:db8::1]:7633"
+        );
+    }
+
+    #[test]
+    fn rnode_tcp_ports_reject_invalid_endpoints() {
+        assert!(normalise_rnode_port("tcp://").is_err());
+        assert!(normalise_rnode_port("tcp://rnode.local:").is_err());
+        assert!(normalise_rnode_port("tcp://rnode.local:notaport").is_err());
+        assert!(normalise_rnode_port("tcp://bad host:7633").is_err());
+        assert!(normalise_rnode_port("tcp://[2001:db8::1").is_err());
     }
 
     #[tokio::test]

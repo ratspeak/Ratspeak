@@ -528,6 +528,10 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(modals_js.contains("function _rnodeFormatScaledValue"));
     assert!(modals_js.contains("return _rnodeFormatScaledValue(freq, 1000000, 6, 3);"));
     assert!(modals_js.contains("return _rnodeFormatScaledValue(bw, 1000, 3, 0);"));
+    assert!(modals_js.contains("var RNODE_TCP_DEFAULT_PORT = 7633;"));
+    assert!(modals_js.contains("function _normaliseRnodeTcpEndpoint(raw)"));
+    assert!(modals_js.contains("if (_rnodeIsTcpPort(port)) return 'tcp';"));
+    assert!(modals_js.contains("setRnodeConnectionType('tcp')"));
     assert!(
         modals_js.contains("loraArgs.frequency = radioSettings.frequency")
             || modals_js.contains("frequency: radioSettings.frequency")
@@ -535,6 +539,13 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(modals_js.contains("loraArgs.custom_params = true"));
     assert!(index.contains(r#"id="rnode-frequency""#));
     assert!(index.contains(r#"id="rnode-advanced""#));
+    assert!(index.contains(r#"id="rnode-toggle-tcp""#));
+    assert!(index.contains(r#"id="rnode-tcp-endpoint""#));
+    let tauri_cargo =
+        read_source(root.join("crates/ratspeak-tauri/Cargo.toml")).expect("tauri cargo");
+    assert!(tauri_cargo.contains("rnode-tcp = [\"ratspeak-runtime/rnode-tcp\""));
+    let app_cargo = read_source(root.join("src-tauri/Cargo.toml")).expect("app cargo");
+    assert!(app_cargo.contains(r#"features = ["ble", "rnode-tcp", "mobile-throttle"]"#));
     assert!(!modals_js.contains("var RNODE_PRESETS = {"));
     assert!(!modals_js.contains("var RNODE_REGIONS = {"));
     assert!(!index.contains("<option value=\"americas\""));

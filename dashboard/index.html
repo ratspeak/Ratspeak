@@ -1224,6 +1224,7 @@
                     <button type="button" id="rnode-toggle-ble" class="active" title="Connect via Bluetooth Low Energy">Bluetooth<span class="toggle-hint" id="rnode-ble-hint"></span></button>
                     <button type="button" id="rnode-toggle-serial" title="Connect via USB cable">USB / Serial</button>
                     <button type="button" id="rnode-toggle-android-usb" style="display:none" title="Connect via USB-OTG">USB</button>
+                    <button type="button" id="rnode-toggle-tcp" title="Connect to an RNode TCP server">TCP</button>
                 </div>
 
                 <div id="rnode-ble-section" style="margin-top:12px;">
@@ -1252,6 +1253,14 @@
                     </div>
                     <button class="nr-btn w-full mt-3" id="android-usb-refresh-btn">Refresh</button>
                     <div id="rnode-handoff-hint-usb" class="rnode-handoff-hint" style="display:none">Connecting will disconnect your active Bluetooth LoRa radio.</div>
+                </div>
+
+                <div id="rnode-tcp-section" style="display:none;margin-top:12px;">
+                    <div class="modal-field">
+                        <label>TCP Endpoint</label>
+                        <input type="text" id="rnode-tcp-endpoint" class="modal-input" placeholder="192.168.1.50:7633" inputmode="url" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false">
+                    </div>
+                    <p class="inline-hint-sm mt-3" style="margin-bottom:0;">Use host or host:port. Default port 7633.</p>
                 </div>
 
                 <button class="nr-btn w-full mt-7" id="rnode-next-btn" disabled>Next</button>

@@ -249,6 +249,8 @@ function getIfaceDetailText(iface, ifaceType) {
         if (typeof portInfo === 'string' && portInfo.indexOf('ble://') === 0) {
             var bleTarget = portInfo.substring(6);
             portInfo = 'BLE: ' + (bleTarget || 'auto');
+        } else if (_rnodeIsTcpPort(portInfo)) {
+            portInfo = 'TCP: ' + _rnodeTcpInputValue(portInfo);
         }
         return freqMhz + ' MHz | BW ' + bwKhz + 'k | SF' + (iface.spreadingfactor || '?') +
             ' | CR' + (iface.codingrate || '?') + ' | ' + portInfo;
@@ -311,6 +313,7 @@ function removeHubInterface(ifaceType, ifaceName) {
 }
 
 var _rnodeConnectionType = 'serial';
+var RNODE_TCP_DEFAULT_PORT = 7633;
 var _bleSelectedDevice = null;
 var _androidUsbSelectedDevice = null;
 var _rnodeEditContext = null;
@@ -590,7 +593,71 @@ function _rnodeApplyDefaultRadioControls() {
     );
 }
 
+function _rnodeIsTcpPort(port) {
+    return ((port || '').slice(0, 6).toLowerCase() === 'tcp://');
+}
+
+function _rnodeValidateTcpHost(host) {
+    return !!host && !/[\s\/\?#\[\]\x00-\x1f\x7f]/.test(host);
+}
+
+function _rnodeParseTcpPort(portText) {
+    if (!portText) return { error: 'Missing TCP port.' };
+    if (!/^\d+$/.test(portText)) return { error: 'Invalid TCP port.' };
+    var port = parseInt(portText, 10);
+    if (port < 0 || port > 65535) return { error: 'TCP port must be 0-65535.' };
+    return { port: String(port) };
+}
+
+function _normaliseRnodeTcpEndpoint(raw) {
+    var endpoint = (raw || '').trim();
+    if (_rnodeIsTcpPort(endpoint)) endpoint = endpoint.slice(6).trim();
+    if (!endpoint) return { error: 'Enter a TCP endpoint.' };
+
+    if (endpoint.charAt(0) === '[') {
+        var close = endpoint.indexOf(']');
+        if (close < 0) return { error: 'Missing closing ] in IPv6 address.' };
+        var bracketHost = endpoint.slice(1, close);
+        if (!_rnodeValidateTcpHost(bracketHost)) return { error: 'Invalid TCP host.' };
+        var tail = endpoint.slice(close + 1);
+        var bracketPort = String(RNODE_TCP_DEFAULT_PORT);
+        if (tail) {
+            if (tail.charAt(0) !== ':') return { error: 'Unexpected text after IPv6 address.' };
+            var parsedBracketPort = _rnodeParseTcpPort(tail.slice(1));
+            if (parsedBracketPort.error) return parsedBracketPort;
+            bracketPort = parsedBracketPort.port;
+        }
+        var bracketLabel = '[' + bracketHost + ']:' + bracketPort;
+        return { port: 'tcp://' + bracketLabel, label: bracketLabel };
+    }
+
+    if (!_rnodeValidateTcpHost(endpoint)) return { error: 'Invalid TCP host.' };
+    var colonMatches = endpoint.match(/:/g);
+    var colonCount = colonMatches ? colonMatches.length : 0;
+    if (colonCount === 0) {
+        var defaultLabel = endpoint + ':' + RNODE_TCP_DEFAULT_PORT;
+        return { port: 'tcp://' + defaultLabel, label: defaultLabel };
+    }
+    if (colonCount === 1) {
+        var parts = endpoint.split(':');
+        if (!_rnodeValidateTcpHost(parts[0])) return { error: 'Invalid TCP host.' };
+        var parsedPort = _rnodeParseTcpPort(parts[1]);
+        if (parsedPort.error) return parsedPort;
+        var label = parts[0] + ':' + parsedPort.port;
+        return { port: 'tcp://' + label, label: label };
+    }
+
+    var ipv6Label = '[' + endpoint + ']:' + RNODE_TCP_DEFAULT_PORT;
+    return { port: 'tcp://' + ipv6Label, label: ipv6Label };
+}
+
+function _rnodeTcpInputValue(port) {
+    if (_rnodeIsTcpPort(port)) return port.slice(6);
+    return port || '';
+}
+
 function _rnodeModeForPort(port) {
+    if (_rnodeIsTcpPort(port)) return 'tcp';
     if ((port || '').indexOf('ble://') === 0) return 'ble';
     if ((port || '').indexOf('androidusb://') === 0) return 'android-usb';
     return 'serial';
@@ -602,6 +669,7 @@ function openRnodeModal(mode, editIface) {
     // iOS MFi blocks USB serial; Android uses USB-OTG JNI; desktop uses serialport.
     var serialToggle = document.getElementById('rnode-toggle-serial');
     var androidUsbToggle = document.getElementById('rnode-toggle-android-usb');
+    var tcpToggle = document.getElementById('rnode-toggle-tcp');
     if (serialToggle) {
         var hideSerial = isIOS() || (isAndroid() && hasAndroidBridge());
         serialToggle.style.display = hideSerial ? 'none' : '';
@@ -609,7 +677,8 @@ function openRnodeModal(mode, editIface) {
     if (androidUsbToggle) {
         androidUsbToggle.style.display = (isAndroid() && hasAndroidBridge()) ? '' : 'none';
     }
-    if (isIOS()) mode = 'ble';
+    if (tcpToggle) tcpToggle.style.display = '';
+    if (isIOS() && mode !== 'tcp') mode = 'ble';
     if (isAndroid() && hasAndroidBridge() && mode === 'serial') mode = 'android-usb';
     _rnodeConnectionType = mode;
     _bleSelectedDevice = null;
@@ -623,6 +692,8 @@ function openRnodeModal(mode, editIface) {
     var titleEl = document.querySelector('#rnode-modal .bottom-sheet-title');
     setBottomSheetTitleWithIcon(titleEl, editIface ? 'Edit LoRa Device' : 'Add LoRa Device', 'lora');
     document.getElementById('rnode-iface-name').value = '';
+    var tcpInput = document.getElementById('rnode-tcp-endpoint');
+    if (tcpInput) tcpInput.value = '';
     var catalogReady = loadRnodePresetCatalog();
     _rnodeApplyDefaultRadioControls();
     _bleSelectedDevice = null;
@@ -666,6 +737,8 @@ function openRnodeModal(mode, editIface) {
         } else if (port.indexOf('androidusb://') === 0) {
             var dev = port.substring('androidusb://'.length);
             _androidUsbSelectedDevice = { device_name: dev, product: editIface.name || 'LoRa Radio' };
+        } else if (_rnodeIsTcpPort(port)) {
+            if (tcpInput) tcpInput.value = _rnodeTcpInputValue(port);
         } else {
             _selectedSerialPort = { device: port, description: port };
             var serialSel = document.getElementById('rnode-port');
@@ -698,7 +771,7 @@ function openRnodeModal(mode, editIface) {
         applyRadioSelection();
         catalogReady.then(applyRadioSelection).catch(function() {});
         var summary = document.getElementById('rnode-device-summary');
-        if (summary) summary.textContent = port || 'LoRa radio';
+        if (summary) summary.textContent = _rnodeIsTcpPort(port) ? (_rnodeTcpInputValue(port) + ' via TCP') : (port || 'LoRa radio');
         if (step1) step1.style.display = 'none';
         if (step2) step2.style.display = '';
         var submit = document.getElementById('rnode-submit-btn');
@@ -719,6 +792,8 @@ function closeRnodeModal() {
     _selectedSerialPort = null;
     _androidUsbSelectedDevice = null;
     _rnodeEditContext = null;
+    var tcpInput = document.getElementById('rnode-tcp-endpoint');
+    if (tcpInput) tcpInput.value = '';
     var titleEl = document.querySelector('#rnode-modal .bottom-sheet-title');
     setBottomSheetTitleWithIcon(titleEl, 'Add LoRa Device', 'lora');
 }
@@ -729,16 +804,20 @@ function setRnodeConnectionType(type) {
     var serialBtn = document.getElementById('rnode-toggle-serial');
     var bleBtn = document.getElementById('rnode-toggle-ble');
     var usbBtn = document.getElementById('rnode-toggle-android-usb');
+    var tcpBtn = document.getElementById('rnode-toggle-tcp');
     if (serialBtn) serialBtn.classList.toggle('active', type === 'serial');
     if (bleBtn) bleBtn.classList.toggle('active', type === 'ble');
     if (usbBtn) usbBtn.classList.toggle('active', type === 'android-usb');
+    if (tcpBtn) tcpBtn.classList.toggle('active', type === 'tcp');
 
     var serialSection = document.getElementById('rnode-serial-section');
     var bleSection = document.getElementById('rnode-ble-section');
     var usbSection = document.getElementById('rnode-android-usb-section');
+    var tcpSection = document.getElementById('rnode-tcp-section');
     if (serialSection) serialSection.style.display = type === 'serial' ? '' : 'none';
     if (bleSection) bleSection.style.display = type === 'ble' ? '' : 'none';
     if (usbSection) usbSection.style.display = type === 'android-usb' ? '' : 'none';
+    if (tcpSection) tcpSection.style.display = type === 'tcp' ? '' : 'none';
 
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
@@ -781,6 +860,9 @@ function rnodeUpdateNextBtn() {
         hasDevice = !!_bleSelectedDevice;
     } else if (_rnodeConnectionType === 'android-usb') {
         hasDevice = !!_androidUsbSelectedDevice;
+    } else if (_rnodeConnectionType === 'tcp') {
+        var tcpInput = document.getElementById('rnode-tcp-endpoint');
+        hasDevice = !!(tcpInput && _normaliseRnodeTcpEndpoint(tcpInput.value).port);
     } else {
         hasDevice = !!_selectedSerialPort;
     }
@@ -803,6 +885,17 @@ function rnodeWizardNext() {
             || _androidUsbSelectedDevice.manufacturer
             || _androidUsbSelectedDevice.device_name;
         summary.textContent = usbLabel + ' via USB';
+        if (!nameInput.value.trim()) nameInput.value = 'LoRa Radio';
+    } else if (_rnodeConnectionType === 'tcp') {
+        var tcpInput = document.getElementById('rnode-tcp-endpoint');
+        var tcpEndpoint = _normaliseRnodeTcpEndpoint(tcpInput ? tcpInput.value : '');
+        if (tcpEndpoint.error) {
+            showPreConditionToast(tcpEndpoint.error);
+            rnodeUpdateNextBtn();
+            return;
+        }
+        if (tcpInput) tcpInput.value = tcpEndpoint.label;
+        summary.textContent = tcpEndpoint.label + ' via TCP';
         if (!nameInput.value.trim()) nameInput.value = 'LoRa Radio';
     } else if (_selectedSerialPort) {
         var desc = _selectedSerialPort.description || _selectedSerialPort.device;
@@ -1176,6 +1269,13 @@ function submitRnodeInterface() {
         port = 'ble://' + _bleSelectedDevice.address;
     } else if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice) {
         port = 'androidusb://' + _androidUsbSelectedDevice.device_name;
+    } else if (_rnodeConnectionType === 'tcp') {
+        var tcpEndpoint = _normaliseRnodeTcpEndpoint(document.getElementById('rnode-tcp-endpoint').value);
+        if (tcpEndpoint.error) {
+            showPreConditionToast(tcpEndpoint.error);
+            return;
+        }
+        port = tcpEndpoint.port;
     } else if (_selectedSerialPort) {
         port = _selectedSerialPort.device;
     }
@@ -1253,6 +1353,11 @@ function submitRnodeInterface() {
             } else if (_rnodeConnectionType === 'android-usb' && typeof rsProgress === 'function') {
                 window._activeProgressDialog = rsProgress({
                     message: isEdit ? 'Restarting USB LoRa radio...' : 'Connecting USB LoRa radio...',
+                    operation: isEdit ? 'update_lora' : 'add_lora',
+                });
+            } else if (_rnodeConnectionType === 'tcp' && typeof rsProgress === 'function') {
+                window._activeProgressDialog = rsProgress({
+                    message: isEdit ? 'Restarting TCP LoRa radio...' : 'Connecting TCP LoRa radio...',
                     operation: isEdit ? 'update_lora' : 'add_lora',
                 });
             }
@@ -2131,9 +2236,13 @@ if (rnodeFrequencyInput) rnodeFrequencyInput.addEventListener('input', _rnodeRef
 var rnodeToggleSerial = document.getElementById('rnode-toggle-serial');
 var rnodeToggleBle = document.getElementById('rnode-toggle-ble');
 var rnodeToggleAndroidUsb = document.getElementById('rnode-toggle-android-usb');
+var rnodeToggleTcp = document.getElementById('rnode-toggle-tcp');
 if (rnodeToggleSerial) rnodeToggleSerial.addEventListener('click', function() { setRnodeConnectionType('serial'); });
 if (rnodeToggleBle) rnodeToggleBle.addEventListener('click', function() { setRnodeConnectionType('ble'); });
 if (rnodeToggleAndroidUsb) rnodeToggleAndroidUsb.addEventListener('click', function() { setRnodeConnectionType('android-usb'); });
+if (rnodeToggleTcp) rnodeToggleTcp.addEventListener('click', function() { setRnodeConnectionType('tcp'); });
+var rnodeTcpEndpoint = document.getElementById('rnode-tcp-endpoint');
+if (rnodeTcpEndpoint) rnodeTcpEndpoint.addEventListener('input', rnodeUpdateNextBtn);
 var androidUsbRefresh = document.getElementById('android-usb-refresh-btn');
 if (androidUsbRefresh) androidUsbRefresh.addEventListener('click', refreshAndroidUsbDevices);
 
@@ -2141,7 +2250,9 @@ document.getElementById('rnode-modal').addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey && e.target.tagName === 'INPUT') {
         e.preventDefault();
         var step2 = document.getElementById('rnode-step-2');
+        var step1 = document.getElementById('rnode-step-1');
         if (step2 && step2.style.display !== 'none') submitRnodeInterface();
+        else if (step1 && step1.style.display !== 'none') rnodeWizardNext();
     }
 });
 
