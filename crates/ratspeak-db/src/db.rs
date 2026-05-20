@@ -1780,13 +1780,16 @@ pub fn get_conversation(
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    // UNION ALL preserves index use (OR would defeat it); rowid tiebreak.
+    // UNION ALL preserves index use (OR would defeat it). Pull the newest
+    // rows first, then restore chronological order for rendering.
     let mut stmt = match conn.prepare(
         "SELECT * FROM (
-            SELECT *, rowid AS _rw FROM messages WHERE source = ?1 AND identity_id = ?2
-            UNION ALL
-            SELECT *, rowid AS _rw FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1
-        ) ORDER BY timestamp ASC, _rw ASC LIMIT ?3"
+            SELECT * FROM (
+                SELECT *, rowid AS _rw FROM messages WHERE source = ?1 AND identity_id = ?2
+                UNION ALL
+                SELECT *, rowid AS _rw FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1
+            ) ORDER BY timestamp DESC, _rw DESC LIMIT ?3
+        ) ORDER BY timestamp ASC, _rw ASC"
     ) { Ok(s) => s, Err(_) => return vec![] };
 
     let rows: Vec<serde_json::Value> = stmt
@@ -3752,6 +3755,43 @@ mod unread_breakdown_tests {
             .filter_map(|m| m.get("id").and_then(|id| id.as_str()))
             .collect();
         assert_eq!(ids, vec!["sent-first", "reply-second"]);
+    }
+
+    #[test]
+    fn get_conversation_returns_latest_limited_messages_in_chronological_order() {
+        let pool = test_pool();
+        for i in 0..105 {
+            let id = format!("msg-{i:03}");
+            let content = format!("message {i}");
+            save_message(
+                &pool,
+                &id,
+                "me",
+                "echo",
+                &content,
+                "",
+                i as f64,
+                "sent",
+                "outbound",
+                "me",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Some("direct"),
+            );
+        }
+
+        let messages = get_conversation(&pool, "echo", "me", 10);
+        let ids: Vec<String> = messages
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|id| id.as_str()))
+            .map(str::to_string)
+            .collect();
+        let expected: Vec<String> = (95..105).map(|i| format!("msg-{i:03}")).collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]

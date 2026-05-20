@@ -43,6 +43,30 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 
+fn lxmf_progress_activity_label(step: &str) -> Option<&'static str> {
+    match step {
+        "link_establishing" => Some("Direct link establishing"),
+        "resource_link_ready" => Some("Resource link ready"),
+        "resource_advertised" => Some("Resource transfer advertised"),
+        "resource_transferring" => Some("Resource transfer sending chunks"),
+        "resource_waiting_for_proof" => Some("Resource transfer waiting for proof"),
+        _ => None,
+    }
+}
+
+fn lxmf_progress_activity_detail(update: &lxmf::LxmfDeliveryProgressUpdate) -> String {
+    let mut parts = Vec::new();
+    if let Some(progress) = update.progress {
+        let pct = (progress * 100.0).round().clamp(1.0, 99.0);
+        parts.push(format!("{pct:.0}%"));
+    }
+    parts.push(update.msg_id[..8.min(update.msg_id.len())].to_string());
+    if let Some(link_id) = update.link_id.as_deref() {
+        parts.push(format!("link {}", &link_id[..8.min(link_id.len())]));
+    }
+    parts.join(" - ")
+}
+
 pub fn telephony_hash_for_identity_hex(identity_hash_hex: &str) -> Option<String> {
     let bytes = hex::decode(identity_hash_hex).ok()?;
     if bytes.len() != 16 {
@@ -1352,6 +1376,14 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 "reason": update.reason,
                             }),
                         );
+                        if tick_state
+                            .network_log_enabled
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                            && let Some(label) = lxmf_progress_activity_label(update.step)
+                        {
+                            let detail = lxmf_progress_activity_detail(&update);
+                            tick_state.emit_network_event("message", label, &detail, "detailed");
+                        }
                     }
 
                     for data in downloaded_propagation_messages {

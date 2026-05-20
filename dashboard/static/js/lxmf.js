@@ -1377,6 +1377,10 @@ function _messageCanCancelSend(msg) {
         'resending',
         'link_establishing',
         'sending_via_link',
+        'resource_link_ready',
+        'resource_advertised',
+        'resource_transferring',
+        'resource_waiting_for_proof',
         'reusing_direct_link',
         'reusing_backchannel'
     ].indexOf(msg.state) !== -1;
@@ -1454,6 +1458,7 @@ function _markLxmfMessageCancelled(msgId) {
     delete msg.delivery_progress;
     delete msg.delivery_link_id;
     delete msg.delivery_representation;
+    _cacheActiveConversation();
     renderConversation();
 }
 
@@ -1493,6 +1498,7 @@ function _handleLxmfSendAccepted(resp, clientMsgId) {
             break;
         }
     }
+    _cacheActiveConversation();
     _flushPendingLxmfCancel(clientMsgId, serverMsgId);
 }
 
@@ -1518,6 +1524,57 @@ function cacheDel(hash) {
     delete _conversationCache[hash];
     var idx = _cacheLru.indexOf(hash);
     if (idx !== -1) _cacheLru.splice(idx, 1);
+}
+
+function _cacheActiveConversation() {
+    if (lxmfActiveContact) cacheSet(lxmfActiveContact, lxmfConversation.slice());
+}
+
+function _mergeConversationMessages(hash, serverMessages) {
+    var merged = Array.isArray(serverMessages) ? serverMessages.slice() : [];
+    var cached = cacheGet(hash) || [];
+    if (!cached.length) return merged;
+
+    var seen = {};
+    merged.forEach(function(msg) {
+        if (msg && msg.id) seen[msg.id] = true;
+    });
+
+    var keepStates = [
+        'sending',
+        'outbound',
+        'sent',
+        'routing',
+        'resolving',
+        'propagating',
+        'propagated',
+        'link_establishing',
+        'sending_via_link',
+        'resource_link_ready',
+        'resource_advertised',
+        'resource_transferring',
+        'resource_waiting_for_proof',
+        'reusing_direct_link',
+        'reusing_backchannel'
+    ];
+    var now = Date.now() / 1000;
+    cached.forEach(function(msg) {
+        if (!msg || !msg.id || seen[msg.id] || msg.direction !== 'outbound') return;
+        var state = msg.state || '';
+        var recent = !msg.timestamp || (now - msg.timestamp) < 3600;
+        if (recent && keepStates.indexOf(state) !== -1) {
+            merged.push(msg);
+            seen[msg.id] = true;
+        }
+    });
+
+    merged.sort(function(a, b) {
+        var at = Number(a && a.timestamp) || 0;
+        var bt = Number(b && b.timestamp) || 0;
+        if (at === bt) return 0;
+        return at < bt ? -1 : 1;
+    });
+    return merged;
 }
 
 function _rememberImageBlobUrl(name, url, file) {
@@ -1687,7 +1744,7 @@ function _loadConversation(hash) {
     renderConversation({ forceScrollBottom: true });
     // get_conversation fetches messages AND marks-read; broadcasts unread_total.
     RS.invoke('get_conversation', { hash: hash }).then(function(result) {
-        var messages = (result && result.messages) || [];
+        var messages = _mergeConversationMessages(hash, (result && result.messages) || []);
         cacheSet(hash, messages);
         if (hash === lxmfActiveContact) {
             lxmfConversation = messages;
@@ -3123,6 +3180,7 @@ function sendLxmfMessage(deliveryMethod) {
                 data_url: 'data:' + lxmfPendingFile.mime + ';base64,' + lxmfPendingFile.data,
             } : null,
         });
+        _cacheActiveConversation();
 
         // Capture before clearPendingFile() wipes pending state.
         var attachPreview = text || (isImage ? 'Photo' : lxmfPendingFile.name);
@@ -3161,6 +3219,7 @@ function sendLxmfMessage(deliveryMethod) {
             reply_to_id: _replyTarget.id,
             reply_to_preview: _replyTarget.content,
         });
+        _cacheActiveConversation();
         clearReplyTarget();
         renderConversation({ forceScrollBottom: true });
         _updateConversationPreview(lxmfActiveContact, text, Date.now() / 1000);
@@ -3188,6 +3247,7 @@ function sendLxmfMessage(deliveryMethod) {
         state: 'sending',
         delivery_method: _optimisticDeliveryMethod(chosenDelivery),
     });
+    _cacheActiveConversation();
     renderConversation({ forceScrollBottom: true });
     _updateConversationPreview(lxmfActiveContact, text, Date.now() / 1000);
     loadConversations();
@@ -4013,9 +4073,10 @@ RS.listen('contact_unblocked', function(data) {
 });
 
 RS.listen('conversation_update', function(data) {
-    cacheSet(data.hash, data.messages || []);
+    var messages = _mergeConversationMessages(data.hash, data.messages || []);
+    cacheSet(data.hash, messages);
     if (data.hash === lxmfActiveContact) {
-        lxmfConversation = data.messages || [];
+        lxmfConversation = messages;
         renderConversation({ stickToBottom: true });
     }
 });
@@ -4090,6 +4151,7 @@ RS.listen('lxmf_step', function(data) {
                 }
             }
         }
+        _cacheActiveConversation();
         renderConversation();
     }
     var inFlightSteps = [
@@ -4099,6 +4161,10 @@ RS.listen('lxmf_step', function(data) {
         'resolving',
         'link_establishing',
         'sending_via_link',
+        'resource_link_ready',
+        'resource_advertised',
+        'resource_transferring',
+        'resource_waiting_for_proof',
         'reusing_direct_link',
         'reusing_backchannel'
     ];
@@ -4109,6 +4175,7 @@ RS.listen('lxmf_step', function(data) {
                 if (data.method) msg.delivery_method = data.method;
             }
         });
+        _cacheActiveConversation();
         renderConversation();
     }
 
@@ -4138,6 +4205,10 @@ RS.listen('lxmf_delivery_progress', function(data) {
         'propagating',
         'link_establishing',
         'sending_via_link',
+        'resource_link_ready',
+        'resource_advertised',
+        'resource_transferring',
+        'resource_waiting_for_proof',
         'reusing_direct_link',
         'reusing_backchannel'
     ];
@@ -4155,7 +4226,10 @@ RS.listen('lxmf_delivery_progress', function(data) {
             changed = true;
         }
     });
-    if (changed) renderConversation();
+    if (changed) {
+        _cacheActiveConversation();
+        renderConversation();
+    }
 });
 
 RS.listen('voice_call_update', _voiceHandleUpdate);

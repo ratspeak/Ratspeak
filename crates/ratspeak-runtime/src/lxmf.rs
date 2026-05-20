@@ -3403,11 +3403,41 @@ impl LxmfManager {
         let msg_hash = event.msg_hash?;
         let step = match event.kind {
             LxmfDeliveryEventKind::LinkEstablishing => "link_establishing",
-            LxmfDeliveryEventKind::LinkEstablished
-            | LxmfDeliveryEventKind::TransferStarted
-            | LxmfDeliveryEventKind::TransferProgress
-            | LxmfDeliveryEventKind::AwaitingProof
-            | LxmfDeliveryEventKind::DirectLinkPending => "sending_via_link",
+            LxmfDeliveryEventKind::LinkEstablished => {
+                if event.representation == DeliveryRepresentation::Resource {
+                    "resource_link_ready"
+                } else {
+                    "sending_via_link"
+                }
+            }
+            LxmfDeliveryEventKind::TransferStarted => {
+                if event.representation == DeliveryRepresentation::Resource {
+                    "resource_advertised"
+                } else {
+                    "sending_via_link"
+                }
+            }
+            LxmfDeliveryEventKind::TransferProgress => {
+                if event.representation == DeliveryRepresentation::Resource {
+                    if event.delivery_state == DeliveryState::AwaitingProof
+                        || event.progress.unwrap_or_default() >= 0.99
+                    {
+                        "resource_waiting_for_proof"
+                    } else {
+                        "resource_transferring"
+                    }
+                } else {
+                    "sending_via_link"
+                }
+            }
+            LxmfDeliveryEventKind::AwaitingProof => {
+                if event.representation == DeliveryRepresentation::Resource {
+                    "resource_waiting_for_proof"
+                } else {
+                    "sending_via_link"
+                }
+            }
+            LxmfDeliveryEventKind::DirectLinkPending => "sending_via_link",
             LxmfDeliveryEventKind::DirectLinkReused => "reusing_direct_link",
             LxmfDeliveryEventKind::BackchannelLinkReused => "reusing_backchannel",
             LxmfDeliveryEventKind::Delivered => "delivered",
@@ -4729,6 +4759,45 @@ mod tests {
             }
             _ => panic!("expected SendLinkPayload command"),
         }
+    }
+
+    #[test]
+    fn resource_progress_events_use_resource_specific_steps() {
+        let msg_hash = [0x11; 32];
+        let base = LxmfDeliveryEvent {
+            kind: LxmfDeliveryEventKind::TransferStarted,
+            method: LxmfDeliveryEventMethod::Direct,
+            link_id: [0x22; 16],
+            dest_hash: [0x33; 16],
+            msg_hash: Some(msg_hash),
+            attempts: 1,
+            progress: Some(0.10),
+            representation: DeliveryRepresentation::Resource,
+            link_state: rns_link::link::LinkState::Active,
+            delivery_state: DeliveryState::Transferring,
+            queued_deliveries: 0,
+            in_flight_deliveries: 1,
+            reason: None,
+        };
+
+        let advertised = LxmfManager::progress_update_from_link_event(base.clone()).unwrap();
+        assert_eq!(advertised.step, "resource_advertised");
+
+        let transferring = LxmfManager::progress_update_from_link_event(LxmfDeliveryEvent {
+            kind: LxmfDeliveryEventKind::TransferProgress,
+            progress: Some(0.42),
+            ..base.clone()
+        })
+        .unwrap();
+        assert_eq!(transferring.step, "resource_transferring");
+
+        let waiting_for_proof = LxmfManager::progress_update_from_link_event(LxmfDeliveryEvent {
+            kind: LxmfDeliveryEventKind::TransferProgress,
+            progress: Some(0.99),
+            ..base
+        })
+        .unwrap();
+        assert_eq!(waiting_for_proof.step, "resource_waiting_for_proof");
     }
 
     #[tokio::test]
