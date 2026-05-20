@@ -1561,16 +1561,18 @@ function clearConnectPublicPending() {
     refreshConnectPublicServers();
 }
 
-function refreshConnectPublicServers(ifaces) {
-    if (ifaces) {
+function refreshConnectPublicServers(ifaces, opts) {
+    opts = opts || {};
+    if (ifaces && !opts.force) {
         renderPublicTcpServers(ifaces);
         return;
     }
-    if (window._hubInterfacesData || window._cachedConfigIfaces) {
+    if (!opts.force && (window._hubInterfacesData || window._cachedConfigIfaces)) {
         renderPublicTcpServers(window._hubInterfacesData || window._cachedConfigIfaces);
         return;
     }
     RS.invoke('api_hub_interfaces').then(function(data) {
+        window._hubInterfacesData = data || {};
         renderPublicTcpServers(data);
     }).catch(function() {
         renderPublicTcpServers({});

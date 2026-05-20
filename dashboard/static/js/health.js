@@ -748,19 +748,71 @@ function _renderBleSection(bodyEl, sectionEl, countEl) {
 var _cachedConfigByName = {};
 var _cachedConfigIfaces = null;
 
+function emptyInterfaceConfigPayload() {
+    return {
+        rnode: [],
+        auto: [],
+        tcp_client: [],
+        tcp_server: [],
+        backbone_client: [],
+        backbone_server: [],
+    };
+}
+
+function _interfaceConfigByName(ifaces) {
+    var byName = {};
+    (ifaces.rnode || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'rnode' }; });
+    (ifaces.tcp_client || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'tcp_client' }; });
+    (ifaces.tcp_server || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'tcp_server' }; });
+    (ifaces.backbone_client || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'backbone_client' }; });
+    (ifaces.backbone_server || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'backbone_server' }; });
+    (ifaces.auto || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'auto' }; });
+    return byName;
+}
+
+function applyNetworkInterfacePayload(ifaces, opts) {
+    opts = opts || {};
+    ifaces = ifaces || emptyInterfaceConfigPayload();
+    window._hubInterfacesData = ifaces;
+    _cachedConfigIfaces = ifaces;
+    _cachedConfigByName = _interfaceConfigByName(ifaces);
+    if (opts.render !== false) _renderConnectionsFromCache();
+    if (typeof refreshConnectPublicServers === 'function') refreshConnectPublicServers(ifaces);
+}
+
+function clearNetworkInterfaceCaches(opts) {
+    opts = opts || {};
+    var empty = emptyInterfaceConfigPayload();
+    window._hubInterfacesData = empty;
+    window._hubInterfacesCached = false;
+    window._autoEnabled = false;
+    window._autoUnavailable = null;
+    _cachedConfigIfaces = empty;
+    _cachedConfigByName = {};
+    interfaceHistory = {};
+    lastStats = null;
+    _anyInterfaceOnline = null;
+    _connectionsHasRendered = false;
+    _connectionsRenderScheduled = false;
+    if (_connectionsThrottleTimer) {
+        clearTimeout(_connectionsThrottleTimer);
+        _connectionsThrottleTimer = null;
+    }
+    if (_connectionsFirstLoadTimer) {
+        clearTimeout(_connectionsFirstLoadTimer);
+        _connectionsFirstLoadTimer = null;
+    }
+    if (opts.render) {
+        _renderConnectionsFromCache();
+        if (typeof refreshConnectPublicServers === 'function') refreshConnectPublicServers(empty);
+        if (typeof updateAutoToggle === 'function') updateAutoToggle();
+        if (typeof updateFirstRunInterfaceHintGate === 'function') updateFirstRunInterfaceHintGate(empty);
+    }
+}
+
 function refreshConfigInterfaces() {
     RS.invoke('api_hub_interfaces').then(function(ifaces) {
-        window._hubInterfacesData = ifaces || null;
-        _cachedConfigIfaces = ifaces;
-        var byName = {};
-        (ifaces.rnode || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'rnode' }; });
-        (ifaces.tcp_client || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'tcp_client' }; });
-        (ifaces.tcp_server || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'tcp_server' }; });
-        (ifaces.backbone_client || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'backbone_client' }; });
-        (ifaces.backbone_server || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'backbone_server' }; });
-        (ifaces.auto || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'auto' }; });
-        _cachedConfigByName = byName;
-        _renderConnectionsFromCache();
+        applyNetworkInterfacePayload(ifaces);
     }).catch(function() {});
 }
 

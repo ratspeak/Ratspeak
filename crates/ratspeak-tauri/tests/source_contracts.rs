@@ -1025,14 +1025,24 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(lxmf.contains("_ensureAttachmentMediaPermission({ camera: true, audio: true })"));
 
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
-    assert!(tauri_lib.contains("async fn request_microphone_permission()"));
-    assert!(tauri_lib.contains("fn request_microphone_permission_macos()"));
+    assert!(tauri_lib.contains("async fn request_microphone_permission(app: tauri::AppHandle)"));
+    assert!(tauri_lib.contains("fn request_microphone_permission_macos("));
     assert!(tauri_lib.contains("AVCaptureDevice"));
     assert!(tauri_lib.contains("requestAccessForMediaType"));
+    assert!(tauri_lib.contains("app.run_on_main_thread"));
     assert!(tauri_lib.contains("request_microphone_permission,"));
 
     let mac_info_plist = read_source(root.join("src-tauri/Info.plist")).expect("mac info plist");
     assert!(mac_info_plist.contains("NSMicrophoneUsageDescription"));
+    let tauri_conf = read_source(root.join("src-tauri/tauri.conf.json")).expect("tauri conf");
+    assert!(tauri_conf.contains(r#""signingIdentity": "-""#));
+    assert!(tauri_conf.contains(r#""entitlements": "Entitlements.plist""#));
+    let mac_entitlements =
+        read_source(root.join("src-tauri/Entitlements.plist")).expect("mac entitlements");
+    assert!(mac_entitlements.contains("com.apple.security.device.audio-input"));
+    let release_macos = read_source(root.join(".github/workflows/release-macos.yml"))
+        .expect("mac release workflow");
+    assert!(release_macos.contains(r#""entitlements":"Entitlements.plist""#));
 
     let voice_rs =
         read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice rs");
@@ -2117,6 +2127,36 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_rs.contains("base32-private-key"));
     assert!(identity_rs.contains("api_export_identity_reticulum_base64"));
     assert!(identity_rs.contains("api_export_identity_reticulum_base32"));
+}
+
+#[test]
+fn identity_switch_refreshes_interface_state_without_stale_public_servers() {
+    let root = repo_root();
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    let identity = read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    let modals = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    let events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
+    let identity_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/identity.rs"))
+        .expect("identity command");
+
+    assert!(health.contains("function clearNetworkInterfaceCaches"));
+    assert!(health.contains("function applyNetworkInterfacePayload"));
+    assert!(health.contains("window._hubInterfacesData = empty;"));
+    assert!(identity.contains("RS.listen('identity_switching'"));
+    assert!(identity.contains("clearNetworkInterfaceCaches({ render: true });"));
+    assert!(identity.contains("refreshConnectPublicServers(null, { force: true });"));
+    assert!(modals.contains("function refreshConnectPublicServers(ifaces, opts)"));
+    assert!(
+        modals.contains("!opts.force && (window._hubInterfacesData || window._cachedConfigIfaces)")
+    );
+    assert!(
+        events.contains("applyNetworkInterfacePayload(data, { render: isViewActive('network') });")
+    );
+    assert!(identity_rs.contains(
+        "let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state));"
+    ));
+    assert!(identity_rs.contains("emit_hub_interfaces(&state, ifaces);"));
 }
 
 #[test]

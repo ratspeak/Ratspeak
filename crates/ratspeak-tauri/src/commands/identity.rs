@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::State;
 
-use crate::commands::shared::remove_stored_file_refs;
+use crate::commands::shared::{
+    active_rns_config_dir, emit_hub_interfaces, remove_stored_file_refs,
+};
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{
@@ -686,16 +688,17 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
         return Ok(payload);
     }
 
+    let generation = state.bump_identity_session_generation();
     state.emit_to_all(
         "identity_switching",
         json!({
             "hash": hash_hex,
+            "generation": generation,
         }),
     );
 
     crate::shutdown_rns_lxmf(&state).await;
     state.clear_identity_scoped_runtime_state();
-    let generation = state.bump_identity_session_generation();
 
     let hash_for_db = hash_hex.clone();
     let set_result = db::spawn_db(state.db.clone(), move |p| {
@@ -756,6 +759,8 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
         "display_name": loaded_display,
         "generation": generation,
     });
+    let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state));
+    emit_hub_interfaces(&state, ifaces);
     state.emit_to_all("identity_switched", payload.clone());
     state.request_poll_now();
     Ok(payload)

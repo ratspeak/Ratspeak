@@ -1200,6 +1200,13 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
+RS.listen('identity_switching', function() {
+    window._identitySwitchInProgress = true;
+    if (typeof clearNetworkInterfaceCaches === 'function') {
+        clearNetworkInterfaceCaches({ render: true });
+    }
+});
+
 RS.listen('identity_switched', function(data) {
     // Suppress the redundant loadConversations() that lxmf_identity triggers —
     // emit_initial_state fires lxmf_identity right after identity_switched.
@@ -1246,6 +1253,9 @@ RS.listen('identity_switched', function(data) {
     if (typeof _conversationsFirstLoadDone !== 'undefined') _conversationsFirstLoadDone = false;
     if (typeof _lastConversationsLoad !== 'undefined') _lastConversationsLoad = 0;
     if (typeof loadConversations === 'function') loadConversations();
+
+    if (typeof renderMergedConnections === 'function') renderMergedConnections();
+    if (typeof refreshConnectPublicServers === 'function') refreshConnectPublicServers(null, { force: true });
 
     if (typeof gamesTabClear === 'function') gamesTabClear();
 

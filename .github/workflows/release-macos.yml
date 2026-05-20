@@ -165,7 +165,7 @@ jobs:
             unset APPLE_API_KEY
             unset APPLE_API_ISSUER
             unset APPLE_API_KEY_PATH
-            ad_hoc_signing_config='{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+            ad_hoc_signing_config='{"bundle":{"macOS":{"signingIdentity":"-","entitlements":"Entitlements.plist"}}}'
             cargo tauri build --target aarch64-apple-darwin --bundles dmg --config "$ad_hoc_signing_config"
             cargo tauri build --target x86_64-apple-darwin --bundles dmg --config "$ad_hoc_signing_config"
           fi

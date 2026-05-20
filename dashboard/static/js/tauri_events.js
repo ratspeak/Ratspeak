@@ -437,7 +437,11 @@ RS.listen('node_operation_status', function(data) {
 RS.listen('hub_interfaces_update', function(data) {
     window._hubInterfacesCached = true;
     // Pre-submit UX (handoff hints, duplicate detection) uses the full payload.
-    window._hubInterfacesData = data || null;
+    if (typeof applyNetworkInterfacePayload === 'function') {
+        applyNetworkInterfacePayload(data, { render: isViewActive('network') });
+    } else {
+        window._hubInterfacesData = data || null;
+    }
     window._autoEnabled = !!(data && data.auto && data.auto.some(function(entry) {
         var enabled = entry && entry.enabled;
         if (enabled === undefined || enabled === null) enabled = entry && entry.interface_enabled;
@@ -448,9 +452,10 @@ RS.listen('hub_interfaces_update', function(data) {
         updateFirstRunInterfaceHintGate(data);
     }
     if (typeof updateAutoToggle === 'function') updateAutoToggle();
-    if (typeof refreshConnectPublicServers === 'function') refreshConnectPublicServers(data);
     if (isViewActive('network')) {
-        if (typeof renderMergedConnections === 'function') renderMergedConnections();
+        if (typeof applyNetworkInterfacePayload !== 'function' && typeof renderMergedConnections === 'function') {
+            renderMergedConnections();
+        }
     } else {
         markViewDirty('network');
     }

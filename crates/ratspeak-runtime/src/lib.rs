@@ -2862,6 +2862,9 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
             }
         }
 
+        let poll_generation = state
+            .identity_session_generation
+            .load(std::sync::atomic::Ordering::SeqCst);
         let handle = {
             let rns = state.rns.read().ok();
             rns.as_ref()
@@ -3042,6 +3045,13 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                 let announce_activity_ready = state
                     .announce_activity_baselined
                     .load(std::sync::atomic::Ordering::Relaxed);
+                let lxmf_delivery_name_hash =
+                    rns_identity::name_hash::name_hash(db::PEER_SERVICE_LXMF_DELIVERY);
+                let lxst_telephony_name_hash =
+                    rns_identity::name_hash::name_hash(db::PEER_SERVICE_LXST_TELEPHONY);
+                let mut peer_activity_updates: Vec<db::IdentityActivityUpdate> = Vec::new();
+                let mut peer_activity_hashes: Vec<String> = Vec::new();
+                let mut delivery_trigger_hashes: Vec<[u8; 16]> = Vec::new();
                 // Aspect-agnostic: crypto cache, announce_history, contact-name refresh.
                 if let Ok(mut lxmf) = state.lxmf.lock()
                     && let Some(mgr) = lxmf.as_mut()
@@ -3122,11 +3132,72 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             .as_ref()
                             .map(|d| extract_display_name(d))
                             .unwrap_or_default();
+                        let previous_timestamp = history
+                            .get(&hash_hex)
+                            .and_then(|existing| existing.get("timestamp"))
+                            .and_then(|ts| ts.as_f64());
+                        let announce_timestamp_changed = previous_timestamp
+                            .map(|prev| a.timestamp > prev + 0.001)
+                            .unwrap_or(true);
                         let is_new = if let Ok(mut seen) = state.seen_announce_hashes.lock() {
                             seen.insert(hash_hex.clone())
                         } else {
                             false
                         };
+                        if announce_timestamp_changed && !a.is_path_response {
+                            if a.name_hash == lxmf_delivery_name_hash {
+                                let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY.to_string()];
+                                if let Some(app_data) = a.app_data.as_deref() {
+                                    services.extend(
+                                        crate::lxmf::ratspeak_capability_services_from_app_data(
+                                            app_data,
+                                        )
+                                        .into_iter()
+                                        .map(str::to_string),
+                                    );
+                                }
+                                peer_activity_updates.push(db::IdentityActivityUpdate {
+                                    dest_hash: hash_hex.clone(),
+                                    timestamp: a.timestamp,
+                                    display_name: if display_name.is_empty() {
+                                        None
+                                    } else {
+                                        Some(display_name.clone())
+                                    },
+                                    last_interface: None,
+                                    identity_hash: a
+                                        .public_key
+                                        .as_ref()
+                                        .map(|pk| hex::encode(rns_crypto::sha::truncated_hash(pk))),
+                                    services,
+                                    clear_ratspeak_services: true,
+                                });
+                                peer_activity_hashes.push(hash_hex.clone());
+                                delivery_trigger_hashes.push(a.dest_hash);
+                            } else if a.name_hash == lxst_telephony_name_hash {
+                                if let Some(identity_hash) = a
+                                    .public_key
+                                    .as_ref()
+                                    .map(|pk| rns_crypto::sha::truncated_hash(pk))
+                                {
+                                    let lxmf_dest = Destination::hash_from_name_and_identity(
+                                        db::PEER_SERVICE_LXMF_DELIVERY,
+                                        Some(&identity_hash),
+                                    );
+                                    let lxmf_dest_hex = hex::encode(lxmf_dest);
+                                    peer_activity_updates.push(db::IdentityActivityUpdate {
+                                        dest_hash: lxmf_dest_hex.clone(),
+                                        timestamp: a.timestamp,
+                                        display_name: None,
+                                        last_interface: None,
+                                        identity_hash: Some(hex::encode(identity_hash)),
+                                        services: vec![db::PEER_SERVICE_LXST_TELEPHONY.to_string()],
+                                        clear_ratspeak_services: false,
+                                    });
+                                    peer_activity_hashes.push(lxmf_dest_hex);
+                                }
+                            }
+                        }
                         if let Some(existing) = history.get_mut(&hash_hex) {
                             if !display_name.is_empty() {
                                 existing["display_name"] = json!(display_name);
@@ -3202,6 +3273,36 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                     while history.len() > ANNOUNCE_HISTORY_CAP {
                         history.shift_remove_index(0);
                     }
+                }
+                if !delivery_trigger_hashes.is_empty() {
+                    delivery_trigger_hashes.sort();
+                    delivery_trigger_hashes.dedup();
+                    let triggered = if let Ok(mut lxmf) = state.lxmf.lock()
+                        && let Some(mgr) = lxmf.as_mut()
+                    {
+                        delivery_trigger_hashes
+                            .iter()
+                            .map(|dest| mgr.router.trigger_outbound_for_delivery_announce(*dest))
+                            .sum::<usize>()
+                    } else {
+                        0
+                    };
+                    if triggered > 0 {
+                        state.lxmf_notify.notify_one();
+                    }
+                }
+                if !peer_activity_updates.is_empty() {
+                    peer_activity_hashes.sort();
+                    peer_activity_hashes.dedup();
+                    let pool = state.db.clone();
+                    let identity_id = crate::helpers::active_identity_id(&state);
+                    let rows = db::spawn_db(pool, move |p| {
+                        db::touch_identity_activity_updates(&p, &peer_activity_updates);
+                        db::get_peers_by_hashes(&p, &peer_activity_hashes, &identity_id)
+                    })
+                    .await
+                    .unwrap_or_default();
+                    emit_peers_batch(&state, &rows);
                 }
 
                 // Peers who messaged us before they announced have no real
@@ -3295,6 +3396,14 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                 "link_count": link_count,
             })
         };
+
+        if state
+            .identity_session_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != poll_generation
+        {
+            continue;
+        }
 
         state.set_last_stats(stats.clone());
         // Emit even when suspended; freshest snapshot is queued for resume.

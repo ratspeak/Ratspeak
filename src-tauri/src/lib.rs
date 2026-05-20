@@ -175,12 +175,19 @@ fn save_image_to_photos(filename: String, mime: String, data_base64: String) -> 
 }
 
 #[tauri::command]
-async fn request_microphone_permission() -> Result<bool, String> {
+async fn request_microphone_permission(app: tauri::AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
-        tauri::async_runtime::spawn_blocking(request_microphone_permission_macos)
+        use std::time::Duration;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || request_microphone_permission_macos(tx))
+            .map_err(|e| format!("Could not start microphone permission request: {e}"))?;
+
+        tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(120)))
             .await
             .map_err(|e| format!("Microphone permission task failed: {e}"))?
+            .map_err(|_| "Timed out waiting for microphone permission".to_string())?
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -194,12 +201,10 @@ async fn request_microphone_permission() -> Result<bool, String> {
 unsafe extern "C" {}
 
 #[cfg(target_os = "macos")]
-fn request_microphone_permission_macos() -> Result<bool, String> {
+fn request_microphone_permission_macos(reply: std::sync::mpsc::Sender<Result<bool, String>>) {
     use block2::RcBlock;
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     const AV_AUTHORIZATION_STATUS_NOT_DETERMINED: isize = 0;
     const AV_AUTHORIZATION_STATUS_RESTRICTED: isize = 1;
@@ -207,16 +212,21 @@ fn request_microphone_permission_macos() -> Result<bool, String> {
     const AV_AUTHORIZATION_STATUS_AUTHORIZED: isize = 3;
 
     unsafe {
-        let capture_device_class = AnyClass::get(c"AVCaptureDevice")
-            .ok_or_else(|| "AVCaptureDevice class not found".to_string())?;
-        let ns_string_class =
-            AnyClass::get(c"NSString").ok_or_else(|| "NSString class not found".to_string())?;
+        let Some(capture_device_class) = AnyClass::get(c"AVCaptureDevice") else {
+            let _ = reply.send(Err("AVCaptureDevice class not found".to_string()));
+            return;
+        };
+        let Some(ns_string_class) = AnyClass::get(c"NSString") else {
+            let _ = reply.send(Err("NSString class not found".to_string()));
+            return;
+        };
         // AVMediaTypeAudio's NSString value is "soun"; using the value avoids
         // depending on generated AVFoundation bindings for one constant.
         let media_type_audio: *mut AnyObject =
             msg_send![ns_string_class, stringWithUTF8String: c"soun".as_ptr()];
         if media_type_audio.is_null() {
-            return Err("Could not create AVMediaTypeAudio".into());
+            let _ = reply.send(Err("Could not create AVMediaTypeAudio".into()));
+            return;
         }
 
         let status: isize = msg_send![
@@ -224,31 +234,30 @@ fn request_microphone_permission_macos() -> Result<bool, String> {
             authorizationStatusForMediaType: media_type_audio
         ];
         match status {
-            AV_AUTHORIZATION_STATUS_AUTHORIZED => return Ok(true),
+            AV_AUTHORIZATION_STATUS_AUTHORIZED => {
+                let _ = reply.send(Ok(true));
+                return;
+            }
             AV_AUTHORIZATION_STATUS_DENIED | AV_AUTHORIZATION_STATUS_RESTRICTED => {
-                return Ok(false);
+                let _ = reply.send(Ok(false));
+                return;
             }
             AV_AUTHORIZATION_STATUS_NOT_DETERMINED => {}
-            _ => return Ok(false),
+            _ => {
+                let _ = reply.send(Ok(false));
+                return;
+            }
         }
 
-        let (tx, rx) = mpsc::channel();
         let completion = RcBlock::new(move |granted: Bool| {
-            let _ = tx.send(granted.as_bool());
+            let _ = reply.send(Ok(granted.as_bool()));
         });
         let _: () = msg_send![
             capture_device_class,
             requestAccessForMediaType: media_type_audio,
             completionHandler: &*completion
         ];
-
-        match rx.recv_timeout(Duration::from_secs(120)) {
-            Ok(granted) => Ok(granted),
-            Err(_) => {
-                std::mem::forget(completion);
-                Err("Timed out waiting for microphone permission".into())
-            }
-        }
+        std::mem::forget(completion);
     }
 }
 

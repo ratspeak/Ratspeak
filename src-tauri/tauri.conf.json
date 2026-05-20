@@ -48,6 +48,8 @@
       }
     },
     "macOS": {
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist",
       "dmg": {
         "background": "resources/macos/dmg-background.png",
         "windowPosition": {

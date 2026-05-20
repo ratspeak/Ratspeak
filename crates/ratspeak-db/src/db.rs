@@ -2168,6 +2168,17 @@ pub fn touch_identity_activity_for_service(
     touch_identity_activity_for_services(pool, rows, identity_hash, &[service], false)
 }
 
+#[derive(Debug, Clone)]
+pub struct IdentityActivityUpdate {
+    pub dest_hash: String,
+    pub timestamp: f64,
+    pub display_name: Option<String>,
+    pub last_interface: Option<String>,
+    pub identity_hash: Option<String>,
+    pub services: Vec<String>,
+    pub clear_ratspeak_services: bool,
+}
+
 /// Same as `touch_identity_activity_for_service`, but merges multiple service
 /// tokens in one row update so one announce increments `announce_count` once.
 /// `clear_ratspeak_services` removes stale `ratspeak.*` tokens before adding
@@ -2183,7 +2194,25 @@ pub fn touch_identity_activity_for_services(
         return 0;
     }
     let services = normalized_peer_services(services.iter().copied());
-    if services.is_empty() {
+    let updates: Vec<IdentityActivityUpdate> = rows
+        .iter()
+        .map(|(hash, ts, name, iface)| IdentityActivityUpdate {
+            dest_hash: hash.clone(),
+            timestamp: *ts,
+            display_name: name.clone(),
+            last_interface: iface.clone(),
+            identity_hash: identity_hash.map(str::to_owned),
+            services: services.clone(),
+            clear_ratspeak_services,
+        })
+        .collect();
+    touch_identity_activity_updates(pool, &updates)
+}
+
+/// Upsert peer activity where each row can carry its own identity hash and
+/// service set. Used for announce snapshot backfills from busy hubs.
+pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivityUpdate]) -> usize {
+    if updates.is_empty() {
         return 0;
     }
     let mut conn = match pool.get() {
@@ -2225,15 +2254,19 @@ pub fn touch_identity_activity_for_services(
             Ok(s) => s,
             Err(_) => return 0,
         };
-        let identity_hash = identity_hash.unwrap_or("").trim();
-        for (hash, ts, name, iface) in rows {
-            let n = name.as_deref().filter(|s| !s.is_empty());
-            let i = iface.as_deref().filter(|s| !s.is_empty());
+        for update in updates {
+            let services = normalized_peer_services(update.services.iter().map(String::as_str));
+            if services.is_empty() {
+                continue;
+            }
+            let n = update.display_name.as_deref().filter(|s| !s.is_empty());
+            let i = update.last_interface.as_deref().filter(|s| !s.is_empty());
+            let identity_hash = update.identity_hash.as_deref().unwrap_or("").trim();
             let existing_raw = existing_stmt
-                .query_row(params![hash], |row| row.get::<_, String>(0))
+                .query_row(params![update.dest_hash], |row| row.get::<_, String>(0))
                 .unwrap_or_default();
             let mut merged = normalized_peer_services(existing_raw.split(','));
-            if clear_ratspeak_services {
+            if update.clear_ratspeak_services {
                 merged.retain(|service| !service.starts_with("ratspeak."));
             }
             for service in &services {
@@ -2243,7 +2276,14 @@ pub fn touch_identity_activity_for_services(
             }
             let merged_services = merged.join(",");
             let ok = stmt
-                .execute(params![hash, identity_hash, ts, n, i, merged_services])
+                .execute(params![
+                    update.dest_hash,
+                    identity_hash,
+                    update.timestamp,
+                    n,
+                    i,
+                    merged_services
+                ])
                 .is_ok();
             if ok {
                 touched += 1;
@@ -4127,6 +4167,16 @@ mod peers_snapshot_tests {
         .unwrap()
     }
 
+    fn identity_hash_for(pool: &DbPool, hash: &str) -> String {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT identity_hash FROM identity_activity WHERE dest_hash = ?1",
+            params![hash],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn touch_identity_activity_merges_multiple_services_once_and_clears_ratspeak() {
         let pool = test_pool();
@@ -4159,6 +4209,47 @@ mod peers_snapshot_tests {
         );
         assert_eq!(announce_count_for(&pool, hash), 2);
         assert_eq!(services_for(&pool, hash), "lxmf.delivery");
+    }
+
+    #[test]
+    fn touch_identity_activity_updates_keeps_per_row_identity_and_services() {
+        let pool = test_pool();
+        touch_identity_activity_updates(
+            &pool,
+            &[
+                IdentityActivityUpdate {
+                    dest_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                    timestamp: 100.0,
+                    display_name: Some("Alice".into()),
+                    last_interface: None,
+                    identity_hash: Some("11111111111111111111111111111111".into()),
+                    services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
+                    clear_ratspeak_services: true,
+                },
+                IdentityActivityUpdate {
+                    dest_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+                    timestamp: 200.0,
+                    display_name: None,
+                    last_interface: None,
+                    identity_hash: Some("22222222222222222222222222222222".into()),
+                    services: vec![PEER_SERVICE_LXST_TELEPHONY.into()],
+                    clear_ratspeak_services: false,
+                },
+            ],
+        );
+
+        assert_eq!(
+            identity_hash_for(&pool, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            "11111111111111111111111111111111"
+        );
+        assert_eq!(
+            identity_hash_for(&pool, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            "22222222222222222222222222222222"
+        );
+        assert_eq!(
+            services_for(&pool, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            PEER_SERVICE_LXST_TELEPHONY
+        );
     }
 
     fn add_contact(pool: &DbPool, hash: &str, display_name: &str) {
