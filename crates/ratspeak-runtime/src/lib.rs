@@ -3234,28 +3234,27 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 });
                                 peer_activity_hashes.push(hash_hex.clone());
                                 delivery_trigger_hashes.push(a.dest_hash);
-                            } else if a.name_hash == lxst_telephony_name_hash {
-                                if let Some(identity_hash) = a
+                            } else if a.name_hash == lxst_telephony_name_hash
+                                && let Some(identity_hash) = a
                                     .public_key
                                     .as_ref()
                                     .map(|pk| rns_crypto::sha::truncated_hash(pk))
-                                {
-                                    let lxmf_dest = Destination::hash_from_name_and_identity(
-                                        db::PEER_SERVICE_LXMF_DELIVERY,
-                                        Some(&identity_hash),
-                                    );
-                                    let lxmf_dest_hex = hex::encode(lxmf_dest);
-                                    peer_activity_updates.push(db::IdentityActivityUpdate {
-                                        dest_hash: lxmf_dest_hex.clone(),
-                                        timestamp: a.timestamp,
-                                        display_name: None,
-                                        last_interface: None,
-                                        identity_hash: Some(hex::encode(identity_hash)),
-                                        services: vec![db::PEER_SERVICE_LXST_TELEPHONY.to_string()],
-                                        clear_ratspeak_services: false,
-                                    });
-                                    peer_activity_hashes.push(lxmf_dest_hex);
-                                }
+                            {
+                                let lxmf_dest = Destination::hash_from_name_and_identity(
+                                    db::PEER_SERVICE_LXMF_DELIVERY,
+                                    Some(&identity_hash),
+                                );
+                                let lxmf_dest_hex = hex::encode(lxmf_dest);
+                                peer_activity_updates.push(db::IdentityActivityUpdate {
+                                    dest_hash: lxmf_dest_hex.clone(),
+                                    timestamp: a.timestamp,
+                                    display_name: None,
+                                    last_interface: None,
+                                    identity_hash: Some(hex::encode(identity_hash)),
+                                    services: vec![db::PEER_SERVICE_LXST_TELEPHONY.to_string()],
+                                    clear_ratspeak_services: false,
+                                });
+                                peer_activity_hashes.push(lxmf_dest_hex);
                             }
                         }
                         if let Some(existing) = history.get_mut(&hash_hex) {
