@@ -49,11 +49,11 @@ function setBottomSheetTitleWithIcon(titleEl, title, iconType) {
 }
 
 var PUBLIC_TCP_SERVERS = [
-    { id: 'ratspeak-ruby', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark_icon: 'gem', tags: ['Ratspeak', 'Public'] },
-    { id: 'ratspeak-emerald', name: 'Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark_icon: 'gem', tags: ['Ratspeak', 'Public'], aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
-    { id: 'ratspeak-diamond', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark_icon: 'gem', tags: ['Ratspeak', 'Public'] },
-    { id: 'beleth', name: 'Beleth', host: 'rns.beleth.net', port: 4242, tone: 'beleth', mark: 'B', tags: ['Community', 'Public'] },
-    { id: 'rmap', name: 'RMAP', host: 'rmap.world', port: 4242, tone: 'rmap', mark: 'R', tags: ['Community', 'Public'] },
+    { id: 'ratspeak-ruby', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark_icon: 'gem', tags: ['OFFICIAL'] },
+    { id: 'ratspeak-emerald', name: 'Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark_icon: 'gem', tags: ['OFFICIAL'], aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
+    { id: 'ratspeak-diamond', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark_icon: 'gem', tags: ['OFFICIAL'] },
+    { id: 'beleth', name: 'Beleth', host: 'rns.beleth.net', port: 4242, tone: 'beleth', mark: 'B', tags: ['UNOFFICIAL'] },
+    { id: 'rmap', name: 'RMAP', host: 'rmap.world', port: 4242, tone: 'rmap', mark: 'R', tags: ['UNOFFICIAL'] },
 ];
 
 function _tcpServerKey(host, port) {

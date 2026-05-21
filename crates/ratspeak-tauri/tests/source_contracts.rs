@@ -632,6 +632,10 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     assert!(modals_js.contains("function _isPublicTcpServer(host, port)"));
     assert!(modals_js.contains("function _publicServerMatchesEndpoint(server, host, port)"));
     assert!(modals_js.contains("aliases: [{ host: 'rns.ratspeak.org', port: 4242 }]"));
+    assert!(modals_js.contains("tags: ['OFFICIAL']"));
+    assert!(modals_js.contains("tags: ['UNOFFICIAL']"));
+    assert!(!modals_js.contains("tags: ['Ratspeak', 'Public']"));
+    assert!(!modals_js.contains("tags: ['Community', 'Public']"));
     assert!(modals_js.contains("var PUBLIC_SERVER_ARROW_ICON"));
     assert!(modals_js.contains("var PUBLIC_SERVER_CHECK_ICON"));
     assert!(modals_js.contains("var PUBLIC_SERVER_GEM_ICON"));
@@ -1295,6 +1299,18 @@ fn settings_version_display_uses_package_version_api() {
     assert!(index.contains("id=\"settings-version-system\""));
     assert!(index.contains("class=\"system-data-tip\""));
     assert!(index.contains("Tap and hold the send button in Messages"));
+    let settings_sidebar = index
+        .split("class=\"settings-sidebar-panel\"")
+        .nth(1)
+        .and_then(|tail| tail.split("class=\"settings-detail-pane\"").next())
+        .expect("settings sidebar");
+    assert!(settings_sidebar.contains("class=\"system-data-tip\""));
+    let system_panel = index
+        .split("id=\"panel-settings-system\"")
+        .nth(1)
+        .and_then(|tail| tail.split("id=\"panel-settings-notifications\"").next())
+        .expect("system panel");
+    assert!(!system_panel.contains("class=\"system-data-tip\""));
 
     let settings_js = read_source(root.join("dashboard/static/js/settings.js")).expect("settings");
     assert!(settings_js.contains("function renderSettingsVersion()"));
