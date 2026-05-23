@@ -1521,12 +1521,48 @@ fn runtime_handle(state: &AppState) -> Option<rns_runtime::reticulum::ReticulumH
         .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()))
 }
 
+async fn teardown_rnode_interface_for_port(
+    handle: &rns_runtime::reticulum::ReticulumHandle,
+    id: u64,
+    port: &str,
+) {
+    #[cfg(feature = "ble")]
+    if port.starts_with("ble://") {
+        rns_runtime::reticulum::teardown_ble_rnode_interface(handle, id).await;
+        return;
+    }
+
+    #[cfg(target_os = "android")]
+    if port.starts_with("androidusb://") {
+        rns_runtime::reticulum::teardown_android_usb_rnode_interface(handle, id).await;
+        return;
+    }
+
+    #[cfg(any(feature = "serial", feature = "rnode-tcp"))]
+    {
+        let _ = port;
+        rns_runtime::reticulum::teardown_rnode_interface(handle, id).await;
+        return;
+    }
+
+    #[allow(unreachable_code)]
+    {
+        let _ = port;
+        rns_runtime::reticulum::teardown_interface(handle, id).await;
+    }
+}
+
 async fn teardown_live_interface_by_name(
     state: &Arc<AppState>,
     name: &str,
     rnode_port: Option<&str>,
 ) {
-    #[cfg(not(feature = "ble"))]
+    #[cfg(not(any(
+        feature = "ble",
+        feature = "serial",
+        feature = "rnode-tcp",
+        target_os = "android"
+    )))]
     let _ = rnode_port;
 
     let Some(handle) = runtime_handle(state) else {
@@ -1550,9 +1586,8 @@ async fn teardown_live_interface_by_name(
     };
     for iface in stats {
         if iface.name == name {
-            #[cfg(feature = "ble")]
-            if rnode_port.is_some_and(|p| p.starts_with("ble://")) {
-                rns_runtime::reticulum::teardown_ble_rnode_interface(&handle, iface.id).await;
+            if let Some(port) = rnode_port {
+                teardown_rnode_interface_for_port(&handle, iface.id, port).await;
                 return;
             }
             rns_runtime::reticulum::teardown_interface(&handle, iface.id).await;
@@ -2672,17 +2707,7 @@ async fn teardown_rnode_handoff_broadcast(
             {
                 for iface in stats {
                     if &iface.name == name {
-                        #[cfg(feature = "ble")]
-                        if other_prefix == "ble://" {
-                            rns_runtime::reticulum::teardown_ble_rnode_interface(handle, iface.id)
-                                .await;
-                        } else {
-                            rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
-                        }
-                        #[cfg(not(feature = "ble"))]
-                        {
-                            rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
-                        }
+                        teardown_rnode_interface_for_port(handle, iface.id, other_prefix).await;
                         break;
                     }
                 }
@@ -2759,18 +2784,7 @@ pub async fn remove_lora_interface(
             {
                 for iface in stats {
                     if iface.name == name {
-                        #[cfg(feature = "ble")]
-                        if port.starts_with("ble://") {
-                            rns_runtime::reticulum::teardown_ble_rnode_interface(handle, iface.id)
-                                .await;
-                        } else {
-                            rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
-                        }
-                        #[cfg(not(feature = "ble"))]
-                        {
-                            let _ = &port;
-                            rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
-                        }
+                        teardown_rnode_interface_for_port(handle, iface.id, &port).await;
                         break;
                     }
                 }
