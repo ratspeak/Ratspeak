@@ -117,8 +117,6 @@ pub async fn cancel_ble_rnode_pairing() -> AppResult<Value> {
 pub struct EnableBlePeerArgs {
     #[serde(default)]
     pub duration: u64,
-    #[serde(default)]
-    pub low_power_advertising: bool,
 }
 
 #[tauri::command]
@@ -129,8 +127,6 @@ pub async fn enable_ble_peer_interface(
     let state_arc: Arc<AppState> = Arc::clone(&state);
     #[allow(unused_variables)]
     let duration_secs = args.duration;
-    #[allow(unused_variables)]
-    let low_power_advertising = args.low_power_advertising;
 
     // Mark `ble_peer_enabled=1` only after spawn success.
     tokio::spawn(async move {
@@ -206,7 +202,6 @@ pub async fn enable_ble_peer_interface(
                     Some(event_tx),
                     state_arc.foreground_changed.clone(),
                     seed_identities,
-                    low_power_advertising,
                 ),
             )
             .await

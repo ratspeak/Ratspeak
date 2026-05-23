@@ -265,11 +265,9 @@ function _rsShowDialog(cfg, callback) {
 }
 
 // Resolves the chosen value or null on cancel.
-// With opts.checkbox, resolves { value, checked } for choices and null on cancel.
 function rsChoice(opts) {
     opts = opts || {};
     return new Promise(function(resolve) {
-        var checkbox = null;
         var built = _rsBuildSheet({
             title: opts.title || 'Choose',
             titleIcon: opts.titleIcon || '',
@@ -314,37 +312,10 @@ function rsChoice(opts) {
                 text.appendChild(hint);
             }
             btn.appendChild(text);
-            btn.addEventListener('click', function() {
-                if (opts.checkbox) {
-                    built.dismiss({ value: choice.value, checked: !!(checkbox && checkbox.checked) });
-                } else {
-                    built.dismiss(choice.value);
-                }
-            });
+            btn.addEventListener('click', function() { built.dismiss(choice.value); });
             choicesWrap.appendChild(btn);
         });
         built.body.appendChild(choicesWrap);
-
-        if (opts.checkbox) {
-            var checkboxWrap = document.createElement('label');
-            checkboxWrap.className = 'rs-dialog-checkbox-wrap';
-            checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.className = 'rs-dialog-checkbox';
-            checkbox.checked = !!opts.checkbox.defaultChecked;
-            var labelSpan = document.createElement('span');
-            labelSpan.className = 'rs-dialog-checkbox-label';
-            labelSpan.textContent = opts.checkbox.label || '';
-            checkboxWrap.appendChild(checkbox);
-            checkboxWrap.appendChild(labelSpan);
-            if (opts.checkbox.help) {
-                var helpDiv = document.createElement('div');
-                helpDiv.className = 'rs-dialog-checkbox-help';
-                helpDiv.textContent = opts.checkbox.help;
-                checkboxWrap.appendChild(helpDiv);
-            }
-            built.body.appendChild(checkboxWrap);
-        }
 
         if (opts.cancelText !== false) {
             var cancelBtn = document.createElement('button');
@@ -357,7 +328,7 @@ function rsChoice(opts) {
         built.sheet.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') { e.stopPropagation(); built.dismiss(null); }
             if (e.key === 'Tab') {
-                var focusable = built.sheet.querySelectorAll('button, input[type="checkbox"]');
+                var focusable = built.sheet.querySelectorAll('button');
                 if (!focusable.length) return;
                 var first = focusable[0], last = focusable[focusable.length - 1];
                 if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }

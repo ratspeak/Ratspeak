@@ -468,27 +468,6 @@ fn ble_peer_network_rows_are_identity_deduped() {
 }
 
 #[test]
-fn ble_peer_enable_exposes_battery_saver_advertising_choice() {
-    let root = repo_root();
-    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
-    assert!(modals_js.contains("label: 'Save battery'"));
-    assert!(modals_js.contains("lowPowerAdvertising = !!duration.checked"));
-    assert!(modals_js.contains("low_power_advertising: lowPowerAdvertising"));
-
-    let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
-    assert!(dialogs_js.contains("With opts.checkbox, resolves { value, checked }"));
-    assert!(dialogs_js.contains("if (opts.checkbox)"));
-    assert!(dialogs_js.contains(
-        "built.dismiss({ value: choice.value, checked: !!(checkbox && checkbox.checked) })"
-    ));
-
-    let ble_rs =
-        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble commands");
-    assert!(ble_rs.contains("pub low_power_advertising: bool"));
-    assert!(ble_rs.contains("low_power_advertising,"));
-}
-
-#[test]
 fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let root = repo_root();
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");

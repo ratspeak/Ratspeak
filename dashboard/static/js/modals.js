@@ -2347,11 +2347,6 @@ function toggleBlePeer() {
                     titleIcon: interfaceSheetIcon('ble'),
                     titleIconType: 'ble',
                     message: 'Discover nearby Ratspeak users via Bluetooth.\n\nConnect for:',
-                    checkbox: {
-                        label: 'Save battery',
-                        help: 'Uses slower BLE advertising. Peers may need to be closer or take longer to find you.',
-                        defaultChecked: false
-                    },
                     choices: [
                         { label: '10 minutes', value: '600' },
                         { label: '30 minutes', value: '1800' },
@@ -2360,18 +2355,13 @@ function toggleBlePeer() {
                     ]
                 }).then(function(duration) {
                     if (duration === null) return;
-                    var lowPowerAdvertising = false;
-                    if (duration && typeof duration === 'object') {
-                        lowPowerAdvertising = !!duration.checked;
-                        duration = duration.value;
-                    }
                     window._activeProgressDialog = rsProgress({
                         title: 'Enabling Bluetooth Peer',
                         message: 'Starting...',
                         timeout: 15000,
                         timeoutMessage: 'Bluetooth Peer setup timed out. Check Bluetooth permissions.'
                     });
-                    RS.invoke('enable_ble_peer_interface', { args: { duration: parseInt(duration, 10), low_power_advertising: lowPowerAdvertising } }).catch(function(err) {
+                    RS.invoke('enable_ble_peer_interface', { args: { duration: parseInt(duration, 10) } }).catch(function(err) {
                         if (window._activeProgressDialog && window._activeProgressDialog.error) {
                             window._activeProgressDialog.error((err && err.message) || 'Failed to enable Bluetooth Peer');
                         } else {
