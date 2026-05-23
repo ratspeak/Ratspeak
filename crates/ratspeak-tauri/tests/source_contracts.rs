@@ -2090,6 +2090,9 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("function _bindMessageFocusPreservingActivation"));
     assert!(lxmf.contains("preserveComposerKeyboard"));
     assert!(lxmf.contains("var _suppressImageOpenUntil = 0;"));
+    assert!(lxmf.contains("container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn)"));
+    assert!(lxmf.contains("_bindMessageFocusPreservingActivation(btn, function()"));
+    assert!(lxmf.contains("_cancelLxmfSend(btn.getAttribute('data-msg-id'));"));
     assert!(lxmf.contains("_suppressImageOpenUntil = Date.now() + 900;"));
     assert!(lxmf.contains("if (Date.now() < _suppressImageOpenUntil)"));
     assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));

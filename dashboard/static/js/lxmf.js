@@ -2958,10 +2958,8 @@ function renderConversation(options) {
     });
 
     container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn) {
-        btn.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            _cancelLxmfSend(this.getAttribute('data-msg-id'));
+        _bindMessageFocusPreservingActivation(btn, function() {
+            _cancelLxmfSend(btn.getAttribute('data-msg-id'));
         });
     });
 
