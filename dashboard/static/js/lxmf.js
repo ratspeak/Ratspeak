@@ -1294,9 +1294,17 @@ function _peerViaLabel(peer) {
     return peer.via || 'direct';
 }
 
+function _peerCompactIfaceLabel(iface) {
+    if (!iface) return null;
+    var s = String(iface).toLowerCase();
+    if (s.indexOf('ble_peer') >= 0 || s.indexOf('ble mesh') >= 0 || s.indexOf('bluetooth peer') >= 0) return 'BLE';
+    return null;
+}
+
 function _peerInterfaceLabel(peer) {
     if (!peer || !peer.iface) return '\u2014';
-    return peer.iface + (peer.iface_is_live ? '' : ' (last known)');
+    var label = _peerCompactIfaceLabel(peer.iface) || peer.iface;
+    return label + (peer.iface_is_live ? '' : ' (last known)');
 }
 
 function _deliveryPrefOrAuto(method) {
@@ -4310,7 +4318,7 @@ function _aboutClassifyIface(iface) {
     if (!iface) return null;
     var s = String(iface).toLowerCase();
     if (s.indexOf('rnode') >= 0) return 'LoRa';
-    if (s.indexOf('ble_peer') >= 0 || s.indexOf('ble mesh') >= 0 || s.indexOf('bluetooth peer') >= 0) return 'Bluetooth Peer';
+    if (s.indexOf('ble_peer') >= 0 || s.indexOf('ble mesh') >= 0 || s.indexOf('bluetooth peer') >= 0) return 'BLE';
     if (s.indexOf('ble') >= 0) return 'Bluetooth';
     if (s.indexOf('androidusb') >= 0) return 'USB';
     if (s.indexOf('serial') >= 0) return 'Serial';

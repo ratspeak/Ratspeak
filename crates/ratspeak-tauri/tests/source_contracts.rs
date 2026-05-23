@@ -2536,6 +2536,19 @@ fn peer_reachability_uses_uncapped_path_index() {
 }
 
 #[test]
+fn peer_transport_badges_use_compact_ble_label() {
+    let root = repo_root();
+    let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
+    assert!(peers.contains("return 'BLE';"));
+    assert!(!peers.contains("return 'Bluetooth Peer';"));
+
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf.contains("function _peerCompactIfaceLabel(iface)"));
+    assert!(lxmf.contains("return 'BLE';"));
+    assert!(!lxmf.contains("return 'Bluetooth Peer';"));
+}
+
+#[test]
 fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
     let root = repo_root();
 

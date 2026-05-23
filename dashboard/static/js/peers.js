@@ -84,7 +84,7 @@ var PEERS_STATUS_ORDER = { reachable: 0, direct: 0, stale: 1, offline: 2, unreac
 function ifaceShortLabel(name) {
     if (!name) return '';
     var lower = String(name).toLowerCase();
-    if (lower.indexOf('ble_peer') === 0 || lower.indexOf('ble peer') === 0 || lower.indexOf('ble mesh') === 0 || lower.indexOf('bluetooth peer') === 0) return 'Bluetooth Peer';
+    if (lower.indexOf('ble_peer') === 0 || lower.indexOf('ble peer') === 0 || lower.indexOf('ble mesh') === 0 || lower.indexOf('bluetooth peer') === 0) return 'BLE';
     if (lower.indexOf('ble_rnode') === 0 || lower.indexOf('rnode_ble') === 0) return 'LoRa (BLE)';
     if (lower.indexOf('rnode') === 0 || lower.indexOf('serial') === 0 || lower.indexOf('kiss') === 0) return 'LoRa';
     if (lower.indexOf('androidusb') === 0 || lower.indexOf('android_usb') === 0) return 'LoRa (USB)';
