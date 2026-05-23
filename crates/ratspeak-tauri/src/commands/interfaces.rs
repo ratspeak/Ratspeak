@@ -1612,6 +1612,7 @@ async fn spawn_editable_interface(
                             "spreading_factor": spreading_factor,
                             "coding_rate": coding_rate,
                             "tx_power": tx_power,
+                            "rollback_on_error": false,
                         }),
                     );
                     return Ok("Connecting via BLE".to_string());
@@ -2272,6 +2273,7 @@ pub async fn add_lora_interface(
                         "spreading_factor": radio.spreading_factor,
                         "coding_rate": radio.coding_rate,
                         "tx_power": radio.tx_power,
+                        "rollback_on_error": true,
                     }),
                 );
                 emit_op_status_broadcast(

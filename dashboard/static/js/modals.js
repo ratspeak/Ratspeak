@@ -1325,6 +1325,9 @@ function renderBleDeviceList(devices) {
                 b.classList.remove('selected');
             });
             btn.classList.add('selected');
+            if (showBondBadge && !dev.bonded) {
+                showPreConditionToast('Before connecting, hold P or OK on the RNode until the passkey screen appears.');
+            }
             rnodeUpdateNextBtn();
         });
 
@@ -1365,8 +1368,19 @@ function submitRnodeInterface() {
         return;
     }
 
-    // By this point the device is either bonded or non-BLE.
     var chain = Promise.resolve(true);
+    if (_rnodeConnectionType === 'ble' &&
+        _bleSelectedDevice &&
+        _bondBadgeReliable() &&
+        _bleSelectedDevice.bonded === false &&
+        typeof rsConfirm === 'function') {
+        chain = rsConfirm({
+            title: 'Pair RNode',
+            message: 'This RNode is not paired yet. Hold P or OK on the RNode until the passkey screen appears, then tap Pair.',
+            confirmText: 'Pair',
+            cancelText: 'Not Yet'
+        });
+    }
 
     chain.then(function(ok) {
         if (!ok) return;

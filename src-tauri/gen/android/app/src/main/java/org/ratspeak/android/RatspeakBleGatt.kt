@@ -53,6 +53,12 @@ class RatspeakBleGatt(private val context: Context) {
         // the per-chunk BLE write uses negotiatedMtu separately.
         private const val TCP_READ_BUFFER = 4096
 
+        // Upstream RNodeInterface.detach(): RADIO_STATE_OFF, then LEAVE.
+        private val RNODE_DETACH_FRAME = byteArrayOf(
+            0xC0.toByte(), 0x06, 0x00, 0xC0.toByte(),
+            0xC0.toByte(), 0x0A, 0xFF.toByte(), 0xC0.toByte(),
+        )
+
         // Error prefixes the JS side recognises to drive UX.
         const val ERR_PAIRING_MODE = "ERR_PAIRING_MODE"
     }
@@ -278,14 +284,40 @@ class RatspeakBleGatt(private val context: Context) {
         } catch (e: Exception) {
             if (running.get()) Log.e(TAG, "TCP→BLE error: ${e.javaClass.simpleName}: ${e.message}")
         }
+        sendRnodeDetachBestEffort("TCP bridge closing")
         Log.i(TAG, "TCP→BLE stopped")
         running.set(false)
         cleanup()
     }
 
     @SuppressLint("MissingPermission")
-    fun disconnect() { cleanup() }
+    fun disconnect() {
+        sendRnodeDetachBestEffort("disconnect requested")
+        cleanup()
+    }
     fun isRunning(): Boolean = running.get()
+
+    @SuppressLint("MissingPermission")
+    private fun sendRnodeDetachBestEffort(reason: String) {
+        val rxC = rxChar ?: return
+        val g = gatt ?: return
+        try {
+            Log.i(TAG, "Sending RNode detach before BLE close ($reason)")
+            var off = 0
+            val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
+            while (off < RNODE_DETACH_FRAME.size) {
+                val end = minOf(off + chunkSize, RNODE_DETACH_FRAME.size)
+                rxC.value = RNODE_DETACH_FRAME.copyOfRange(off, end)
+                rxC.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                g.writeCharacteristic(rxC)
+                off = end
+                if (off < RNODE_DETACH_FRAME.size) Thread.sleep(5)
+            }
+            Thread.sleep(80)
+        } catch (e: Exception) {
+            Log.d(TAG, "detach($reason): ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
 
     @SuppressLint("MissingPermission")
     private fun cleanup() {

@@ -984,7 +984,7 @@ RS.listen('ble_rnode_connect_native', function(data) {
         connecting: 'Connecting to RNode (GATT)...',
         mtu: 'Negotiating MTU...',
         discovering: 'Discovering services...',
-        bonding: 'Pairing with RNode...\nEnter the passkey shown on the RNode display.',
+        bonding: 'Pairing with RNode...\nHold P or OK until the passkey screen appears, then enter that passkey.',
         subscribing: 'Enabling notifications...',
         bridge: 'Opening TCP bridge...',
         ready: 'Connected — linking radio...',
@@ -1016,8 +1016,11 @@ RS.listen('ble_rnode_connect_native', function(data) {
             var errRaw = result.error || 'Unknown error';
             var pairingMode = errRaw.indexOf('ERR_PAIRING_MODE') === 0;
             var errMsg = pairingMode
-                ? 'Pairing failed. Hold the left button on the RNode until its display shows a passkey, then retry.'
+                ? 'Pairing failed. Hold P or OK on the RNode until its display shows a passkey, then retry.'
                 : 'BLE connect failed: ' + errRaw;
+            if (data.rollback_on_error && data.name) {
+                RS.invoke('cancel_ble_connect', { name: data.name }).catch(function() {});
+            }
             showToast(errMsg, 'toast-red', 5000);
             if (window._activeProgressDialog && window._activeProgressDialog.isOpen()) {
                 window._activeProgressDialog.error(errMsg);
@@ -1026,7 +1029,7 @@ RS.listen('ble_rnode_connect_native', function(data) {
     };
 
     if (window._activeProgressDialog && window._activeProgressDialog.isOpen()) {
-        window._activeProgressDialog.update('Connecting to RNode...\nIf pairing for the first time, enter the passkey shown on the RNode display.');
+        window._activeProgressDialog.update('Connecting to RNode...\nFor first pairing, hold P or OK until the passkey screen appears.');
     }
 
     window.RatspeakAndroid.connectBleDevice(data.address, data.tcp_port);
