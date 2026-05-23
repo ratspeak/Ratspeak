@@ -20,8 +20,8 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: 46449b21d37a8098bf555bede7d16c4e4d69fb50
-  RATSPEAK_RSLXMF_REF: 3d671ab528a4db7ee3036fbd0f2084a5fd431ed4
+  RATSPEAK_RSRETICULUM_REF: 73b250f36ee95a27cbddaa6b39c246091fdf7e2b
+  RATSPEAK_RSLXMF_REF: 30a62b29906281344a2a1a5d6fd4c99de7f29f83
   RATSPEAK_RSLXST_REF: 7ac244cafde428945838dd709794468d4654fc89
 
 jobs:
@@ -280,6 +280,9 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name, '-') }}
+          body: |
+            - Fix direct delivery for peers over Bluetooth
+            - General fixes and improvements
           files: |
             Ratspeak/dist/linux/*
             Ratspeak/checksums-linux.txt
