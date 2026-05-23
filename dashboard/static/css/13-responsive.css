@@ -1510,6 +1510,11 @@
         overscroll-behavior: contain;
     }
 
+    .lxmf-pending-send-bar {
+        margin: 0 var(--space-5);
+        min-height: 32px;
+    }
+
     .lxmf-chat-header-hash { word-break: break-all; max-width: calc(100vw - 100px); }
 
     .conn-row:active { background: var(--surface-row-active); transition: background 0.05s; }

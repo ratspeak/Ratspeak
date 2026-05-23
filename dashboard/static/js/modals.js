@@ -2348,8 +2348,8 @@ function toggleBlePeer() {
                     titleIconType: 'ble',
                     message: 'Discover nearby Ratspeak users via Bluetooth.\n\nConnect for:',
                     checkbox: {
-                        label: 'Save battery',
-                        help: 'Uses slower BLE advertising. Peers may need to be closer or take longer to find you.',
+                        label: 'Boost discovery',
+                        help: 'Uses faster BLE advertising while pairing. May use more battery and can be less stable on some devices.',
                         defaultChecked: false
                     },
                     choices: [
@@ -2360,9 +2360,9 @@ function toggleBlePeer() {
                     ]
                 }).then(function(duration) {
                     if (duration === null) return;
-                    var lowPowerAdvertising = false;
+                    var highDutyAdvertising = false;
                     if (duration && typeof duration === 'object') {
-                        lowPowerAdvertising = !!duration.checked;
+                        highDutyAdvertising = !!duration.checked;
                         duration = duration.value;
                     }
                     window._activeProgressDialog = rsProgress({
@@ -2371,7 +2371,7 @@ function toggleBlePeer() {
                         timeout: 15000,
                         timeoutMessage: 'Bluetooth Peer setup timed out. Check Bluetooth permissions.'
                     });
-                    RS.invoke('enable_ble_peer_interface', { args: { duration: parseInt(duration, 10), low_power_advertising: lowPowerAdvertising } }).catch(function(err) {
+                    RS.invoke('enable_ble_peer_interface', { args: { duration: parseInt(duration, 10), high_duty_advertising: highDutyAdvertising } }).catch(function(err) {
                         if (window._activeProgressDialog && window._activeProgressDialog.error) {
                             window._activeProgressDialog.error((err && err.message) || 'Failed to enable Bluetooth Peer');
                         } else {

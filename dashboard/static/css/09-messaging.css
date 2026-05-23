@@ -595,6 +595,44 @@ body.image-viewer-open {
     outline: 2px solid var(--accent-border);
     outline-offset: 2px;
 }
+.lxmf-pending-send-bar {
+    margin: 0 var(--space-8);
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: 1;
+}
+.lxmf-pending-send-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.lxmf-pending-send-cancel {
+    min-width: 0;
+    min-height: 30px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+.lxmf-pending-send-cancel:hover {
+    color: var(--accent-dim);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.lxmf-pending-send-cancel:focus-visible {
+    outline: 2px solid var(--accent-border);
+    outline-offset: 2px;
+}
 .lxmf-chat-header {
     display: flex;
     align-items: center;

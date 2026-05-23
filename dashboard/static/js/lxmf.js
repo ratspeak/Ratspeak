@@ -1500,6 +1500,44 @@ function _messageInlineCancelHtml(msg) {
         'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel send">Cancel</button>';
 }
 
+function _pendingSendBarMessage() {
+    for (var i = lxmfConversation.length - 1; i >= 0; i--) {
+        var msg = lxmfConversation[i];
+        if (msg && msg.direction === 'outbound' && _messageCanCancelSend(msg)) return msg;
+    }
+    return null;
+}
+
+function _renderPendingSendBar() {
+    var bar = document.getElementById('lxmf-pending-send-bar');
+    if (!bar) return;
+    var msg = lxmfActiveContact ? _pendingSendBarMessage() : null;
+    if (!msg) {
+        bar.style.display = 'none';
+        bar.innerHTML = '';
+        return;
+    }
+
+    var method = _messageDeliveryMethod(msg);
+    var percent = _messageProgressPercent(msg);
+    var label = method === 'direct' ? 'Direct message pending' : 'Message pending';
+    if (percent !== null) label += ' ' + percent + '%';
+    bar.innerHTML =
+        '<span class="lxmf-pending-send-label">' + escapeHtml(label) + '</span>' +
+        '<button type="button" class="lxmf-pending-send-cancel" ' +
+            'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel send">Cancel</button>';
+    bar.style.display = '';
+
+    var btn = bar.querySelector('.lxmf-pending-send-cancel');
+    if (btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            _cancelLxmfSend(this.getAttribute('data-msg-id'));
+        });
+    }
+}
+
 function _findLxmfMessageById(msgId) {
     for (var i = 0; i < lxmfConversation.length; i++) {
         if (lxmfConversation[i].id === msgId) return lxmfConversation[i];
@@ -2905,6 +2943,7 @@ function renderConversation(options) {
         '</div>');
     }
     container.innerHTML = htmlParts.join('');
+    _renderPendingSendBar();
     var shouldPinMessages = _applyLxmfMessageScrollAfterRender(container, scrollState, options);
     _watchLxmfImagesForBottomPin(container, shouldPinMessages);
 

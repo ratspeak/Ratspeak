@@ -468,12 +468,12 @@ fn ble_peer_network_rows_are_identity_deduped() {
 }
 
 #[test]
-fn ble_peer_enable_exposes_battery_saver_advertising_choice() {
+fn ble_peer_enable_keeps_balanced_advertising_default_with_opt_in_boost() {
     let root = repo_root();
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
-    assert!(modals_js.contains("label: 'Save battery'"));
-    assert!(modals_js.contains("lowPowerAdvertising = !!duration.checked"));
-    assert!(modals_js.contains("low_power_advertising: lowPowerAdvertising"));
+    assert!(modals_js.contains("label: 'Boost discovery'"));
+    assert!(modals_js.contains("highDutyAdvertising = !!duration.checked"));
+    assert!(modals_js.contains("high_duty_advertising: highDutyAdvertising"));
 
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("With opts.checkbox, resolves { value, checked }"));
@@ -484,8 +484,8 @@ fn ble_peer_enable_exposes_battery_saver_advertising_choice() {
 
     let ble_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble commands");
-    assert!(ble_rs.contains("pub low_power_advertising: bool"));
-    assert!(ble_rs.contains("low_power_advertising,"));
+    assert!(ble_rs.contains("pub high_duty_advertising: bool"));
+    assert!(ble_rs.contains("high_duty_advertising,"));
 }
 
 #[test]
@@ -850,6 +850,7 @@ fn empty_ghost_conversations_are_removed_when_leaving_chat_detail() {
 #[test]
 fn message_composer_send_preserves_preexisting_focus_state() {
     let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     let start = lxmf
         .find("function sendLxmfMessage(")
@@ -882,6 +883,12 @@ fn message_composer_send_preserves_preexisting_focus_state() {
 
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
+    assert!(index.contains("id=\"lxmf-pending-send-bar\""));
+    assert!(lxmf.contains("function _renderPendingSendBar()"));
+    assert!(lxmf.contains("class=\"lxmf-pending-send-cancel\""));
+    assert!(lxmf.contains("_renderPendingSendBar();"));
+    assert!(messaging_css.contains(".lxmf-pending-send-bar"));
+    assert!(messaging_css.contains(".lxmf-pending-send-cancel"));
     assert!(messaging_css.contains("overflow-y: auto;"));
     assert!(messaging_css.contains("scrollbar-width: none;"));
     assert!(messaging_css.contains("-webkit-appearance: none;"));
