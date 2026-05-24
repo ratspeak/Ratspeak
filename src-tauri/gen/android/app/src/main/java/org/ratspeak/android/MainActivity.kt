@@ -165,6 +165,13 @@ class MainActivity : TauriActivity() {
 
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
+        // Local app assets are served through WebViewAssetLoader. Same-version
+        // APK reinstalls during development can otherwise keep stale HTML/CSS.
+        try {
+            webView.clearCache(true)
+        } catch (e: Exception) {
+            Log.d("Ratspeak", "clearCache: ${e.javaClass.simpleName}: ${e.message}")
+        }
         // Allow the loading page (served over https://tauri.localhost/) to fetch
         // the embedded HTTP backend at http://127.0.0.1:<port>. Without this,
         // Android WebView blocks the request as mixed content (default on API 21+).
