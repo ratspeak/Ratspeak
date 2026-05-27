@@ -68,14 +68,29 @@ function _settingsNormalizeVersion(version) {
         .trim()
         .replace(/^ratspeak\s+/i, '')
         .replace(/^v/i, '')
-        .split(/[+\-\s]/)[0];
+        .split(/[+\s]/)[0]
+        .replace(/(\d)-([a-z]+)$/i, '$1$2');
 }
 
 function _settingsVersionParts(version) {
     return _settingsNormalizeVersion(version).split('.').map(function(part) {
-        var match = String(part || '').match(/^\d+/);
-        return match ? parseInt(match[0], 10) : 0;
+        var match = String(part || '').match(/^(\d+)([a-z]*)/i);
+        return {
+            number: match ? parseInt(match[1], 10) : 0,
+            suffix: match ? _settingsVersionSuffixRank(match[2]) : 0
+        };
     });
+}
+
+function _settingsVersionSuffixRank(suffix) {
+    suffix = String(suffix || '').toLowerCase();
+    var rank = 0;
+    for (var i = 0; i < suffix.length; i++) {
+        var code = suffix.charCodeAt(i);
+        if (code < 97 || code > 122) continue;
+        rank = (rank * 27) + (code - 96);
+    }
+    return rank;
 }
 
 function _settingsCompareVersions(left, right) {
@@ -83,10 +98,12 @@ function _settingsCompareVersions(left, right) {
     var b = _settingsVersionParts(right);
     var len = Math.max(a.length, b.length, 3);
     for (var i = 0; i < len; i++) {
-        var av = a[i] || 0;
-        var bv = b[i] || 0;
-        if (av > bv) return 1;
-        if (av < bv) return -1;
+        var av = a[i] || { number: 0, suffix: 0 };
+        var bv = b[i] || { number: 0, suffix: 0 };
+        if (av.number > bv.number) return 1;
+        if (av.number < bv.number) return -1;
+        if (av.suffix > bv.suffix) return 1;
+        if (av.suffix < bv.suffix) return -1;
     }
     return 0;
 }

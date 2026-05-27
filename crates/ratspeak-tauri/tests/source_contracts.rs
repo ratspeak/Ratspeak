@@ -1342,6 +1342,9 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 #[test]
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
+    let version_file = read_source(root.join("VERSION")).expect("display version");
+    assert_eq!(version_file.trim(), "1.0.18b");
+
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
     assert!(system_rs.contains("env!(\"CARGO_PKG_VERSION\")"));
@@ -1349,6 +1352,11 @@ fn settings_version_display_uses_package_version_api() {
     assert!(system_rs.contains("GITHUB_REF_NAME"));
     assert!(system_rs.contains("strip_prefix('v')"));
     assert!(!system_rs.contains("\"version\": \"1.0.13\""));
+
+    let tauri_build =
+        read_source(root.join("crates/ratspeak-tauri/build.rs")).expect("tauri crate build");
+    assert!(tauri_build.contains("../../VERSION"));
+    assert!(tauri_build.contains("cargo::rustc-env=RATSPEAK_DISPLAY_VERSION"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("index");
     assert!(index.contains("id=\"settings-version-sidebar\""));
@@ -1379,6 +1387,8 @@ fn settings_version_display_uses_package_version_api() {
     assert!(settings_js.contains("confirmText: 'Yes'"));
     assert!(settings_js.contains("cancelText: 'No'"));
     assert!(settings_js.contains("function checkRatspeakUpdate"));
+    assert!(settings_js.contains("function _settingsVersionSuffixRank"));
+    assert!(settings_js.contains("replace(/(\\d)-([a-z]+)$/i, '$1$2')"));
     assert!(settings_js.contains("fetch(RATSPEAK_RELEASE_LATEST_URL"));
     assert!(settings_js.contains("Update available!"));
     assert!(settings_js.contains("Up to date!"));
@@ -1409,6 +1419,13 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
+    assert!(tauri_conf.contains(r#""versionCode": 1000021"#));
+
+    let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
+        .expect("android gradle");
+    assert!(android_gradle.contains("fun ratspeakDisplayVersionName()"));
+    assert!(android_gradle.contains("../../../VERSION"));
+    assert!(android_gradle.contains("versionName = ratspeakDisplayVersionName()"));
 }
 
 #[test]

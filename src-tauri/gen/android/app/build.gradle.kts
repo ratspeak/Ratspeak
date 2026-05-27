@@ -22,6 +22,24 @@ val signingProperties = Properties().apply {
 }
 val hasReleaseSigning = signingProperties.containsKey("storeFile")
 
+fun normalizeDisplayVersion(value: String?): String? {
+    val version = value
+        ?.trim()
+        ?.removePrefix("v")
+        ?.trim()
+        ?: return null
+    return if (version.firstOrNull()?.isDigit() == true) version else null
+}
+
+fun ratspeakDisplayVersionName(): String {
+    val versionFile = rootProject.file("../../../VERSION")
+    val fileVersion = if (versionFile.exists()) versionFile.readText() else null
+    return normalizeDisplayVersion(System.getenv("RATSPEAK_DISPLAY_VERSION"))
+        ?: normalizeDisplayVersion(System.getenv("GITHUB_REF_NAME"))
+        ?: normalizeDisplayVersion(fileVersion)
+        ?: tauriProperties.getProperty("tauri.android.versionName", "1.0")
+}
+
 android {
     compileSdk = 36
     namespace = "org.ratspeak.android"
@@ -32,7 +50,7 @@ android {
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        versionName = ratspeakDisplayVersionName()
     }
     if (hasReleaseSigning) {
         signingConfigs {
