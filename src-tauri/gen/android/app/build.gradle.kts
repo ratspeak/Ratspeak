@@ -91,6 +91,42 @@ fun patchTauriGeneratedLoggerFile() {
     if (!patched.contains("return RatspeakDiagnostics.enabled()")) {
         throw GradleException("Tauri Logger.kt is not privacy-gated")
     }
+
+    val rustWebView = file("src/main/java/org/ratspeak/android/generated/RustWebView.kt")
+    if (!rustWebView.exists()) {
+        throw GradleException("Tauri generated RustWebView.kt is missing")
+    }
+    val rustWebViewSource = rustWebView.readText()
+    val rustWebViewPatched = rustWebViewSource.replace(
+        "@file:Suppress(\"unused\", \"SetJavaScriptEnabled\")",
+        "@file:Suppress(\"unused\", \"SetJavaScriptEnabled\", \"DEPRECATION\")"
+    )
+    if (rustWebViewPatched != rustWebViewSource) {
+        rustWebView.writeText(rustWebViewPatched)
+    }
+    if (!rustWebViewPatched.contains("@file:Suppress(\"unused\", \"SetJavaScriptEnabled\", \"DEPRECATION\")")) {
+        throw GradleException("Tauri RustWebView.kt deprecation warning is not suppressed")
+    }
+
+    val wryActivity = file("src/main/java/org/ratspeak/android/generated/WryActivity.kt")
+    if (!wryActivity.exists()) {
+        throw GradleException("Tauri generated WryActivity.kt is missing")
+    }
+    val wryActivitySource = wryActivity.readText()
+    val wryActivityPatched = if (wryActivitySource.contains("@file:Suppress(\"DEPRECATION\")")) {
+        wryActivitySource
+    } else {
+        wryActivitySource.replace(
+            "// SPDX-License-Identifier: MIT\n\npackage org.ratspeak.android",
+            "// SPDX-License-Identifier: MIT\n\n@file:Suppress(\"DEPRECATION\")\n\npackage org.ratspeak.android"
+        )
+    }
+    if (wryActivityPatched != wryActivitySource) {
+        wryActivity.writeText(wryActivityPatched)
+    }
+    if (!wryActivityPatched.contains("@file:Suppress(\"DEPRECATION\")")) {
+        throw GradleException("Tauri WryActivity.kt deprecation warning is not suppressed")
+    }
 }
 
 val patchTauriGeneratedLogger = tasks.register("patchTauriGeneratedLogger") {

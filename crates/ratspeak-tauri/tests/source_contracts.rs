@@ -66,6 +66,36 @@ fn privacy_announce_usage_setting_is_wired() {
 }
 
 #[test]
+fn peers_sort_preference_defaults_to_last_seen_and_persists() {
+    let root = repo_root();
+
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    assert!(index.contains(
+        r#"<button class="toolbar-dropdown-item" data-sort="name">Alphabetical</button>"#
+    ));
+    assert!(index.contains(
+        r#"<button class="toolbar-dropdown-item active" data-sort="last_seen">Last Seen</button>"#
+    ));
+
+    let peers_js = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
+    assert!(peers_js.contains("var PEERS_SORT_DEFAULT = 'last_seen';"));
+    assert!(peers_js.contains("function hydratePeersSortPreference()"));
+    assert!(peers_js.contains("RS.invoke('api_app_settings')"));
+    assert!(peers_js.contains("RS.invoke('set_peers_sort', { sort: peersSort })"));
+    assert!(peers_js.contains("RS.listen('app_settings_updated'"));
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    assert!(interfaces_rs.contains("const DEFAULT_PEERS_SORT: &str = \"last_seen\";"));
+    assert!(interfaces_rs.contains("pub async fn set_peers_sort"));
+    assert!(interfaces_rs.contains("\"peers_sort\": persisted_peers_sort(&state)"));
+    assert!(interfaces_rs.contains("db::set_setting(&p, \"peers_sort\", &persisted);"));
+
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    assert!(tauri_lib.contains("set_peers_sort"));
+}
+
+#[test]
 fn ratspeak_capability_marker_drives_name_badge() {
     let root = repo_root();
     let peers_cache_js =
@@ -1342,15 +1372,30 @@ fn settings_version_display_uses_package_version_api() {
     assert!(settings_js.contains("function renderSettingsVersion()"));
     assert!(settings_js.contains("RS.invoke('api_version')"));
     assert!(settings_js.contains("name + ' v.' + version"));
+    assert!(settings_js.contains("RATSPEAK_RELEASE_LATEST_URL"));
+    assert!(settings_js.contains("https://api.github.com/repos/ratspeak/Ratspeak/releases/latest"));
+    assert!(settings_js.contains("function promptRatspeakUpdateCheck"));
+    assert!(settings_js.contains("title: 'Check for updates?'"));
+    assert!(settings_js.contains("confirmText: 'Yes'"));
+    assert!(settings_js.contains("cancelText: 'No'"));
+    assert!(settings_js.contains("function checkRatspeakUpdate"));
+    assert!(settings_js.contains("fetch(RATSPEAK_RELEASE_LATEST_URL"));
+    assert!(settings_js.contains("Update available!"));
+    assert!(settings_js.contains("Up to date!"));
+    assert!(settings_js.contains("For privacy reasons, we do not currently auto-update"));
 
     let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav");
     assert!(nav_js.contains("id=\"about-modal-version\""));
     assert!(nav_js.contains("RS.invoke('api_version')"));
     assert!(!nav_js.contains("v1.0.7"));
 
+    let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs");
+    assert!(dialogs_js.contains("function rsAlert(opts)"));
+
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     assert!(views_css.contains(".settings-sidebar-version"));
     assert!(views_css.contains(".settings-version-system"));
+    assert!(views_css.contains(".settings-update-check-btn"));
     let forms_css = read_source(root.join("dashboard/static/css/06-forms.css")).expect("forms css");
     assert!(forms_css.contains(".system-data-tip"));
     assert!(forms_css.contains(".system-data-tip-icon"));
@@ -1359,6 +1404,11 @@ fn settings_version_display_uses_package_version_api() {
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     assert!(responsive_css.contains(".settings-version-system"));
     assert!(responsive_css.contains("text-align: center;"));
+
+    let tauri_conf = read_source(root.join("src-tauri/tauri.conf.json")).expect("tauri conf");
+    assert!(
+        tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
+    );
 }
 
 #[test]
@@ -2475,6 +2525,8 @@ fn android_logcat_output_is_privacy_gated() {
     assert!(gradle.contains("patchTauriGeneratedLogger"));
     assert!(gradle.contains("return BuildConfig.DEBUG"));
     assert!(gradle.contains("return RatspeakDiagnostics.enabled()"));
+    assert!(gradle.contains("RustWebView.kt deprecation warning is not suppressed"));
+    assert!(gradle.contains("WryActivity.kt deprecation warning is not suppressed"));
     assert!(gradle.contains("dependsOn(patchTauriGeneratedLogger)"));
     assert!(gradle.contains("finalizedBy(patchTauriGeneratedLogger)"));
     assert!(gradle.contains("outputs.upToDateWhen { false }"));

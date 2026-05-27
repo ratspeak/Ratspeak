@@ -3,6 +3,7 @@ package org.ratspeak.android
 import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.content.Context
+import android.os.Build
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -159,7 +160,7 @@ object RatspeakBleServer {
             BluetoothGattCharacteristic.PROPERTY_READ,
             BluetoothGattCharacteristic.PERMISSION_READ
         )
-        id.value = identityHash
+        setCharacteristicValueCompat(id, identityHash)
         service.addCharacteristic(id)
 
         return service
@@ -237,9 +238,8 @@ object RatspeakBleServer {
      * Push `data` to one specific subscribed central as a NOTIFY on the named
      * TX characteristic. Returns true if the notification was queued.
      *
-     * Uses the deprecated setValue/notifyCharacteristicChanged pair to keep
-     * compatibility with API 23+ (the API 33 overload that takes value
-     * directly is preferred but optional).
+     * Uses the API 33 value-carrying notify overload where available and keeps
+     * the older setValue/notify pair for API 24-32 compatibility.
      */
     @JvmStatic
     fun notifyTx(deviceAddress: String, characteristicUuidStr: String, data: ByteArray): Boolean {
@@ -254,9 +254,14 @@ object RatspeakBleServer {
             return false
         }
 
-        char.value = data
         return try {
-            server.notifyCharacteristicChanged(device, char, false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                server.notifyCharacteristicChanged(device, char, false, data) == BluetoothStatusCodes.SUCCESS
+            } else {
+                setCharacteristicValueCompat(char, data)
+                @Suppress("DEPRECATION")
+                server.notifyCharacteristicChanged(device, char, false)
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "notifyTx failed for $deviceAddress: ${t.message}")
             false
@@ -305,5 +310,13 @@ object RatspeakBleServer {
             sb.append(addr)
         }
         return sb.toString()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setCharacteristicValueCompat(
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray
+    ) {
+        characteristic.value = value
     }
 }

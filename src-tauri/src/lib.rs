@@ -498,6 +498,7 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::network_type_changed,
             ratspeak_tauri::commands::interfaces::set_auto_announce,
             ratspeak_tauri::commands::interfaces::api_app_settings,
+            ratspeak_tauri::commands::interfaces::set_peers_sort,
             ratspeak_tauri::commands::interfaces::set_announce_ratspeak_usage,
             ratspeak_tauri::commands::interfaces::api_notification_settings,
             ratspeak_tauri::commands::interfaces::set_desktop_notifications,

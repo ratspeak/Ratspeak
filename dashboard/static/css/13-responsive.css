@@ -1156,7 +1156,9 @@
         line-height: 1.15;
     }
     .settings-version-system {
-        display: block;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         margin: var(--space-5) var(--space-2) 0;
         text-align: center;
     }

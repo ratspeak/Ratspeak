@@ -9,11 +9,13 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
@@ -278,8 +280,13 @@ class RatspeakBlePeerClient(private val context: Context) {
             val tx = txChar ?: run { cleanup(); return errFalse("TX characteristic missing") }
             gatt?.setCharacteristicNotification(tx, true)
             tx.getDescriptor(CCCD)?.let { desc ->
-                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt?.writeDescriptor(desc)
+                gatt?.let { activeGatt ->
+                    writeDescriptorCompat(
+                        activeGatt,
+                        desc,
+                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    )
+                }
             } ?: run { cleanup(); return errFalse("CCCD descriptor missing") }
             descriptorLatch!!.await(10, TimeUnit.SECONDS)
 
@@ -328,9 +335,12 @@ class RatspeakBlePeerClient(private val context: Context) {
         return try {
             // Use no-response writes for throughput; the protocol layer above
             // (LXMF / Reticulum) handles delivery acknowledgement.
-            rx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            rx.value = data
-            g.writeCharacteristic(rx)
+            writeCharacteristicCompat(
+                g,
+                rx,
+                data,
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            )
         } catch (t: Throwable) {
             Log.w(TAG, "writeRx failed: ${t.message}")
             false
@@ -354,6 +364,48 @@ class RatspeakBlePeerClient(private val context: Context) {
     fun isRunning(): Boolean = running.get()
 
     private fun errFalse(msg: String): Boolean { Log.e(TAG, msg); return false }
+
+    @SuppressLint("MissingPermission")
+    private fun writeDescriptorCompat(
+        activeGatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray
+    ): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return activeGatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
+        }
+
+        @Suppress("DEPRECATION")
+        descriptor.value = value
+        @Suppress("DEPRECATION")
+        return activeGatt.writeDescriptor(descriptor)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeCharacteristicCompat(
+        activeGatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        writeType: Int
+    ): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return activeGatt.writeCharacteristic(characteristic, value, writeType) == BluetoothStatusCodes.SUCCESS
+        }
+
+        characteristic.writeType = writeType
+        @Suppress("DEPRECATION")
+        characteristic.value = value
+        @Suppress("DEPRECATION")
+        return activeGatt.writeCharacteristic(characteristic)
+    }
+
+    private fun handleCharacteristicChanged(ch: BluetoothGattCharacteristic, data: ByteArray) {
+        if (ch.uuid == RATSPEAK_TX || ch.uuid == COLUMBA_TX) {
+            // Push straight through to Rust; the per-peer reassembler there
+            // will tag by address and recombine fragments.
+            nativePeerClientDataReceived(address, data)
+        }
+    }
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -389,13 +441,17 @@ class RatspeakBlePeerClient(private val context: Context) {
             descriptorLatch?.countDown()
         }
 
+        override fun onCharacteristicChanged(
+            g: BluetoothGatt,
+            ch: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            handleCharacteristicChanged(ch, value)
+        }
+
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
-            if (ch.uuid == RATSPEAK_TX || ch.uuid == COLUMBA_TX) {
-                val data = ch.value ?: return
-                // Push straight through to Rust — the per-peer reassembler
-                // there will tag-by-address and recombine fragments.
-                nativePeerClientDataReceived(address, data)
-            }
+            handleCharacteristicChanged(ch, ch.value ?: return)
         }
     }
 

@@ -1,4 +1,6 @@
-var peersSort = 'name';
+var PEERS_SORT_DEFAULT = 'last_seen';
+var PEERS_SORT_OPTIONS = { name: true, hops: true, last_seen: true };
+var peersSort = PEERS_SORT_DEFAULT;
 var peersSearch = '';
 var peersCollapsedGroups = { 'online_star': true, 'offline': true };
 var peersSelectedHash = null;
@@ -20,6 +22,53 @@ var _peersCacheGen = 0;
 // same-frame caller asked for one.
 var _peersRenderRaf = null;
 var _peersPendingScrollOnly = false;
+
+function normalizePeersSort(sort) {
+    sort = String(sort || '').trim();
+    return PEERS_SORT_OPTIONS[sort] ? sort : PEERS_SORT_DEFAULT;
+}
+
+function syncPeersSortMenu() {
+    var sortMenu = document.getElementById('peers-sort-menu');
+    if (!sortMenu) return;
+    sortMenu.querySelectorAll('.toolbar-dropdown-item').forEach(function(item) {
+        item.classList.toggle('active', item.dataset.sort === peersSort);
+    });
+}
+
+function applyPeersSortPreference(sort, opts) {
+    opts = opts || {};
+    var next = normalizePeersSort(sort);
+    var changed = next !== peersSort;
+    peersSort = next;
+    syncPeersSortMenu();
+    if (changed) {
+        _peersLastDirtyKey = '';
+        scheduleRenderPeersList();
+    }
+    if (opts.persist) {
+        RS.invoke('set_peers_sort', { sort: peersSort }).catch(function(err) {
+            if (typeof showToast === 'function') {
+                showToast('Could not save peer sort preference', 'toast-red', 3000);
+            }
+            window.RS.diag('warn', '[peers] failed to persist sort preference:', err);
+        });
+    }
+}
+
+function hydratePeersSortPreference() {
+    if (!window.RS || typeof RS.invoke !== 'function') return;
+    RS.invoke('api_app_settings').then(function(data) {
+        if (data && data.peers_sort) {
+            applyPeersSortPreference(data.peers_sort, { persist: false });
+        } else {
+            syncPeersSortMenu();
+        }
+    }).catch(function(err) {
+        syncPeersSortMenu();
+        window.RS.diag('warn', '[peers] failed to load sort preference:', err);
+    });
+}
 
 function _peerRowProfileStatus(peer) {
     if (typeof ratspeakProfileStatusText === 'function') return ratspeakProfileStatusText(peer);
@@ -140,6 +189,8 @@ function initPeersView() {
         var sortBtn = document.getElementById('peers-sort-btn');
         var sortMenu = document.getElementById('peers-sort-menu');
         if (sortBtn && sortMenu) {
+            syncPeersSortMenu();
+            hydratePeersSortPreference();
             sortBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 var isOpen = sortMenu.classList.toggle('open');
@@ -151,12 +202,8 @@ function initPeersView() {
             });
             sortMenu.querySelectorAll('.toolbar-dropdown-item').forEach(function(item) {
                 item.addEventListener('click', function() {
-                    peersSort = this.dataset.sort;
-                    sortMenu.querySelectorAll('.toolbar-dropdown-item').forEach(function(i) { i.classList.remove('active'); });
-                    this.classList.add('active');
+                    applyPeersSortPreference(this.dataset.sort, { persist: true });
                     sortMenu.classList.remove('open');
-                    _peersLastDirtyKey = '';
-                    scheduleRenderPeersList();
                 });
             });
             document.addEventListener('click', function() { sortMenu.classList.remove('open'); });
@@ -579,4 +626,9 @@ RS.listen('contacts_update', function() {
         scheduleRenderPeersList();
         if (peersSelectedHash) renderPeersDetailPanel(peersSelectedHash);
     }
+});
+
+RS.listen('app_settings_updated', function(data) {
+    if (!data || data.peers_sort === undefined) return;
+    applyPeersSortPreference(data.peers_sort, { persist: false });
 });

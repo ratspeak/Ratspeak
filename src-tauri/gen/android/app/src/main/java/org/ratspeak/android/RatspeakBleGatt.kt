@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -219,8 +220,13 @@ class RatspeakBleGatt(private val context: Context) {
             descriptorLatch = CountDownLatch(1)
             gatt?.setCharacteristicNotification(txChar!!, true)
             txChar!!.getDescriptor(BleUuids.CCCD)?.let { desc ->
-                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt?.writeDescriptor(desc)
+                gatt?.let { activeGatt ->
+                    writeDescriptorCompat(
+                        activeGatt,
+                        desc,
+                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    )
+                }
                 descriptorLatch!!.await(10, TimeUnit.SECONDS)
             }
             Log.i(TAG, "Phase 5 COMPLETE: TX notifications enabled")
@@ -285,9 +291,14 @@ class RatspeakBleGatt(private val context: Context) {
                 val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
                 while (off < n && running.get()) {
                     val end = minOf(off + chunkSize, n)
-                    rxC.value = readBuf.copyOfRange(off, end)
-                    rxC.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                    gatt?.writeCharacteristic(rxC)
+                    gatt?.let { activeGatt ->
+                        writeCharacteristicCompat(
+                            activeGatt,
+                            rxC,
+                            readBuf.copyOfRange(off, end),
+                            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                        )
+                    }
                     off = end
                     if (off < n) Thread.sleep(5)
                 }
@@ -318,9 +329,12 @@ class RatspeakBleGatt(private val context: Context) {
             val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
             while (off < RNODE_DETACH_FRAME.size) {
                 val end = minOf(off + chunkSize, RNODE_DETACH_FRAME.size)
-                rxC.value = RNODE_DETACH_FRAME.copyOfRange(off, end)
-                rxC.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                g.writeCharacteristic(rxC)
+                writeCharacteristicCompat(
+                    g,
+                    rxC,
+                    RNODE_DETACH_FRAME.copyOfRange(off, end),
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                )
                 off = end
                 if (off < RNODE_DETACH_FRAME.size) Thread.sleep(5)
             }
@@ -368,7 +382,7 @@ class RatspeakBleGatt(private val context: Context) {
         bondReceiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
                 if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-                val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                val dev = bluetoothDeviceExtra(intent, BluetoothDevice.EXTRA_DEVICE)
                 val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
                 val prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
                 Log.i(TAG, "Bond: ${bondStr(prev)} → ${bondStr(state)} (${dev?.address})")
@@ -419,6 +433,61 @@ class RatspeakBleGatt(private val context: Context) {
         else -> "?($s)"
     }
 
+    @SuppressLint("MissingPermission")
+    private fun writeDescriptorCompat(
+        activeGatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray
+    ): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return activeGatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
+        }
+
+        @Suppress("DEPRECATION")
+        descriptor.value = value
+        @Suppress("DEPRECATION")
+        return activeGatt.writeDescriptor(descriptor)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeCharacteristicCompat(
+        activeGatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        writeType: Int
+    ): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return activeGatt.writeCharacteristic(characteristic, value, writeType) == BluetoothStatusCodes.SUCCESS
+        }
+
+        characteristic.writeType = writeType
+        @Suppress("DEPRECATION")
+        characteristic.value = value
+        @Suppress("DEPRECATION")
+        return activeGatt.writeCharacteristic(characteristic)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun bluetoothDeviceExtra(intent: Intent, name: String): BluetoothDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(name, BluetoothDevice::class.java)
+        } else {
+            intent.getParcelableExtra(name)
+        }
+    }
+
+    private fun handleCharacteristicChanged(ch: BluetoothGattCharacteristic, data: ByteArray) {
+        if (ch.uuid == BleUuids.NUS_TX_CHAR) {
+            try { tcpOut?.write(data); tcpOut?.flush() }
+            catch (e: Exception) {
+                if (running.get()) {
+                    Log.e(TAG, "BLE→TCP: ${e.javaClass.simpleName}: ${e.message}")
+                    running.set(false)
+                }
+            }
+        }
+    }
+
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             val s = when (newState) {
@@ -467,17 +536,17 @@ class RatspeakBleGatt(private val context: Context) {
             descriptorLatch?.countDown()
         }
 
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            ch: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            handleCharacteristicChanged(ch, value)
+        }
+
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, ch: BluetoothGattCharacteristic) {
-            if (ch.uuid == BleUuids.NUS_TX_CHAR) {
-                val data = ch.value ?: return
-                try { tcpOut?.write(data); tcpOut?.flush() }
-                catch (e: Exception) {
-                    if (running.get()) {
-                        Log.e(TAG, "BLE→TCP: ${e.javaClass.simpleName}: ${e.message}")
-                        running.set(false)
-                    }
-                }
-            }
+            handleCharacteristicChanged(ch, ch.value ?: return)
         }
     }
 }

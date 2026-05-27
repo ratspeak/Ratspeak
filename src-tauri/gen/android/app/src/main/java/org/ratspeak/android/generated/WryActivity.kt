@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
+@file:Suppress("DEPRECATION")
+
 package org.ratspeak.android
 
 import org.ratspeak.android.RustWebView

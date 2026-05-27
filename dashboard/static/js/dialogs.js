@@ -16,6 +16,69 @@ function rsConfirm(opts) {
     });
 }
 
+function rsAlert(opts) {
+    opts = opts || {};
+    return new Promise(function(resolve) {
+        var built = _rsBuildSheet({ title: opts.title || 'Ratspeak' }, function() {
+            resolve();
+        });
+
+        built.overlay.addEventListener('click', function(e) {
+            if (e.target === built.overlay) built.dismiss(null);
+        });
+
+        var message = document.createElement('div');
+        message.className = 'rs-dialog-message';
+        message.textContent = opts.message || '';
+        built.body.appendChild(message);
+
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'rs-dialog-confirm';
+        closeBtn.textContent = opts.closeText || 'Close';
+        closeBtn.addEventListener('click', function() {
+            built.dismiss(null);
+        });
+        built.footer.appendChild(closeBtn);
+
+        built.sheet.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                built.dismiss(null);
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                built.dismiss(null);
+            }
+            if (e.key === 'Tab') {
+                var focusable = built.sheet.querySelectorAll('button');
+                if (!focusable.length) return;
+                var first = focusable[0];
+                var last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
+        });
+
+        RS.gestures.attachDragDismiss(built.sheet, {
+            axis: 'y',
+            blockIfScrolled: true,
+            skipIf: function(e) {
+                return !!(e.target.closest('button') || e.target.tagName === 'INPUT');
+            },
+            parallaxOverlay: built.overlay,
+            onCommit: function() { built.dismiss(null); }
+        });
+
+        built.present();
+        closeBtn.focus();
+    });
+}
+
 // Resolves { confirmed, checked }.
 function rsConfirmWithCheckbox(opts) {
     opts = opts || {};

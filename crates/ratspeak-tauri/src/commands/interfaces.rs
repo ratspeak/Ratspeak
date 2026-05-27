@@ -16,6 +16,23 @@ use crate::error::{AppError, AppResult};
 use crate::helpers::sanitize_text;
 use crate::state::AppState;
 
+const DEFAULT_PEERS_SORT: &str = "last_seen";
+
+fn normalize_peers_sort(sort: &str) -> Option<&'static str> {
+    match sort.trim() {
+        "name" => Some("name"),
+        "hops" => Some("hops"),
+        "last_seen" => Some("last_seen"),
+        _ => None,
+    }
+}
+
+fn persisted_peers_sort(state: &AppState) -> String {
+    db::get_setting(&state.db, "peers_sort")
+        .and_then(|sort| normalize_peers_sort(&sort).map(str::to_string))
+        .unwrap_or_else(|| DEFAULT_PEERS_SORT.to_string())
+}
+
 #[tauri::command]
 pub async fn api_rnode_presets() -> AppResult<Value> {
     serde_json::to_value(ratspeak_core::radio::rnode_catalog())
@@ -824,7 +841,31 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
         "announce_ratspeak_usage": state.announce_ratspeak_usage_enabled(),
+        "peers_sort": persisted_peers_sort(&state),
     }))
+}
+
+#[tauri::command]
+pub async fn set_peers_sort(state: State<'_, Arc<AppState>>, sort: String) -> AppResult<Value> {
+    let normalized = normalize_peers_sort(&sort)
+        .ok_or_else(|| AppError::bad_request("peers sort must be name | hops | last_seen"))?;
+    let persisted = normalized.to_string();
+
+    db::spawn_db(state.db.clone(), move |p| {
+        db::set_setting(&p, "peers_sort", &persisted);
+    })
+    .await
+    .map_err(|_| AppError::internal("set_peers_sort db task panicked"))?;
+
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({
+            "auto_announce_interval": *state.announce_interval_rx.borrow(),
+            "announce_ratspeak_usage": state.announce_ratspeak_usage_enabled(),
+            "peers_sort": normalized,
+        }),
+    );
+    Ok(json!({ "sort": normalized }))
 }
 
 #[tauri::command]
@@ -850,6 +891,7 @@ pub async fn set_announce_ratspeak_usage(
         json!({
             "auto_announce_interval": *state.announce_interval_rx.borrow(),
             "announce_ratspeak_usage": enabled,
+            "peers_sort": persisted_peers_sort(&state),
         }),
     );
     Ok(json!({ "enabled": enabled }))

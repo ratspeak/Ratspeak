@@ -11,6 +11,10 @@ function openSettings() {
 }
 
 var _settingsVersionLabel = '';
+var _settingsVersionValue = '';
+var _settingsUpdateCheckInFlight = false;
+var RATSPEAK_RELEASE_LATEST_URL = 'https://api.github.com/repos/ratspeak/Ratspeak/releases/latest';
+var RATSPEAK_RELEASES_URL = 'https://github.com/ratspeak/Ratspeak/releases';
 
 function renderSettingsVersion() {
     var targets = [
@@ -19,15 +23,31 @@ function renderSettingsVersion() {
     ].filter(Boolean);
     if (!targets.length) return;
 
-    function paint(label) {
+    function paint(label, version) {
         targets.forEach(function(el) {
-            el.textContent = label || '';
+            el.innerHTML = '';
+            if (label) {
+                var versionLabel = document.createElement('span');
+                versionLabel.className = 'settings-version-label';
+                versionLabel.textContent = label;
+                el.appendChild(versionLabel);
+
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'settings-update-check-btn';
+                button.textContent = 'Check for updates';
+                button.disabled = _settingsUpdateCheckInFlight;
+                button.addEventListener('click', function() {
+                    promptRatspeakUpdateCheck(version);
+                });
+                el.appendChild(button);
+            }
             el.style.display = label ? '' : 'none';
         });
     }
 
     if (_settingsVersionLabel) {
-        paint(_settingsVersionLabel);
+        paint(_settingsVersionLabel, _settingsVersionValue);
         return;
     }
 
@@ -35,10 +55,130 @@ function renderSettingsVersion() {
         var name = (data && data.name) || 'Ratspeak';
         var version = (data && data.version) || '';
         if (!version) return;
+        _settingsVersionValue = version;
         _settingsVersionLabel = name + ' v.' + version;
-        paint(_settingsVersionLabel);
+        paint(_settingsVersionLabel, _settingsVersionValue);
     }).catch(function() {
-        paint('');
+        paint('', '');
+    });
+}
+
+function _settingsNormalizeVersion(version) {
+    return String(version || '')
+        .trim()
+        .replace(/^ratspeak\s+/i, '')
+        .replace(/^v/i, '')
+        .split(/[+\-\s]/)[0];
+}
+
+function _settingsVersionParts(version) {
+    return _settingsNormalizeVersion(version).split('.').map(function(part) {
+        var match = String(part || '').match(/^\d+/);
+        return match ? parseInt(match[0], 10) : 0;
+    });
+}
+
+function _settingsCompareVersions(left, right) {
+    var a = _settingsVersionParts(left);
+    var b = _settingsVersionParts(right);
+    var len = Math.max(a.length, b.length, 3);
+    for (var i = 0; i < len; i++) {
+        var av = a[i] || 0;
+        var bv = b[i] || 0;
+        if (av > bv) return 1;
+        if (av < bv) return -1;
+    }
+    return 0;
+}
+
+function _settingsSetUpdateButtonsBusy(busy) {
+    _settingsUpdateCheckInFlight = !!busy;
+    document.querySelectorAll('.settings-update-check-btn').forEach(function(btn) {
+        btn.disabled = _settingsUpdateCheckInFlight;
+        btn.textContent = _settingsUpdateCheckInFlight ? 'Checking...' : 'Check for updates';
+    });
+}
+
+function _settingsShowUpdateResult(title, message) {
+    if (typeof rsAlert === 'function') {
+        return rsAlert({ title: title, message: message, closeText: 'Close' });
+    }
+    showToast(title + ' ' + message, title === 'Update available!' ? 'toast-orange' : 'toast-blue', 6000);
+    return Promise.resolve();
+}
+
+function _settingsLatestReleaseVersion(signal) {
+    return fetch(RATSPEAK_RELEASE_LATEST_URL, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: signal,
+        headers: {
+            'Accept': 'application/vnd.github+json'
+        }
+    }).then(function(resp) {
+        if (!resp.ok) throw new Error('GitHub returned ' + resp.status);
+        return resp.json();
+    }).then(function(data) {
+        var latest = data && (data.tag_name || data.name);
+        latest = _settingsNormalizeVersion(latest);
+        if (!latest) throw new Error('No release version returned');
+        return latest;
+    });
+}
+
+function checkRatspeakUpdate(currentVersion) {
+    currentVersion = _settingsNormalizeVersion(currentVersion || _settingsVersionValue);
+    if (!currentVersion) {
+        return _settingsShowUpdateResult(
+            'Update check failed',
+            'Could not determine the current Ratspeak version.'
+        );
+    }
+
+    _settingsSetUpdateButtonsBusy(true);
+    var progress = typeof rsProgress === 'function'
+        ? rsProgress({ title: 'Checking for updates', message: 'Contacting GitHub...' })
+        : null;
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timeoutId = setTimeout(function() {
+        if (controller) controller.abort();
+    }, 12000);
+
+    return _settingsLatestReleaseVersion(controller ? controller.signal : undefined).then(function(latestVersion) {
+        if (progress) progress.close();
+        if (_settingsCompareVersions(latestVersion, currentVersion) > 0) {
+            return _settingsShowUpdateResult(
+                'Update available!',
+                "You're on version " + currentVersion + ', the latest version is ' + latestVersion + '. For privacy reasons, we do not currently auto-update. Please install the latest version for your device manually.'
+            );
+        }
+        return _settingsShowUpdateResult(
+            'Up to date!',
+            "You're on the latest version of Ratspeak, no update available."
+        );
+    }).catch(function(err) {
+        if (progress) progress.close();
+        window.RS.diag('warn', '[settings] update check failed:', err);
+        return _settingsShowUpdateResult(
+            'Update check failed',
+            'Could not check for updates. Confirm your internet connection and try again, or visit ' + RATSPEAK_RELEASES_URL + ' manually.'
+        );
+    }).finally(function() {
+        clearTimeout(timeoutId);
+        _settingsSetUpdateButtonsBusy(false);
+    });
+}
+
+function promptRatspeakUpdateCheck(currentVersion) {
+    if (_settingsUpdateCheckInFlight) return;
+    rsConfirm({
+        title: 'Check for updates?',
+        message: 'Checking for the latest version requires an internet connection and will compare your version with the current available version. Are you sure?',
+        confirmText: 'Yes',
+        cancelText: 'No'
+    }).then(function(ok) {
+        if (!ok) return;
+        return checkRatspeakUpdate(currentVersion);
     });
 }
 

@@ -268,10 +268,7 @@ class MainActivity : TauriActivity() {
         val bgColor = if (isDarkMode) "#18171a" else "#FAF7F3"
         window.decorView.setBackgroundColor(android.graphics.Color.parseColor(bgColor))
 
-        // Both bars transparent — WebView CSS renders the safe areas
-        window.statusBarColor = android.graphics.Color.TRANSPARENT
-        window.navigationBarColor = android.graphics.Color.TRANSPARENT
-        window.isNavigationBarContrastEnforced = false
+        setTransparentSystemBars()
 
         // Set initial bar icon appearance based on OS theme
         WindowCompat.getInsetsController(window, window.decorView).apply {
@@ -349,6 +346,14 @@ class MainActivity : TauriActivity() {
             // Service not running yet (first onCreate hasn't finished) — safe
             // to skip; the service will do its first poll as soon as it's up.
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setTransparentSystemBars() {
+        // Both bars transparent; WebView CSS renders the safe areas.
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        window.isNavigationBarContrastEnforced = false
     }
 
     override fun onDestroy() {
