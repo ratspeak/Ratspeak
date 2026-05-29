@@ -725,13 +725,20 @@ function createNewIdentity() {
         '</div>',
         function() {
             var nickname = document.getElementById('identity-modal-nickname').value.trim();
-            return RS.invoke('api_create_identity', { args: { nickname: nickname } }).then(function() {
-                showToast('Identity created', 'toast-green', 3000);
+            return RS.invoke('api_create_identity', { args: { nickname: nickname } }).then(function(data) {
                 closeIdentityModal();
+                var mnemonic = data && data.mnemonic;
+                if (mnemonic) {
+                    showRecoveryPhraseBackup(mnemonic, function() {
+                        showToast('Identity created', 'toast-green', 3000);
+                        loadIdentities();
+                    });
+                } else {
+                    showToast('Identity created', 'toast-green', 3000);
+                    loadIdentities();
+                }
             }).catch(function(err) {
                 showToast(err && err.message ? err.message : 'Failed to create identity', 'toast-red', 3000);
-            }).then(function() {
-                // Refresh even on error — core may have created the row before timing out.
                 loadIdentities();
             });
         }
@@ -741,6 +748,43 @@ function createNewIdentity() {
 // Restore a recoverable identity from its 24-word BIP-39 phrase as a SOFTWARE
 // identity. Distinct from the hardware wizard's restore (desktop-only, writes to
 // a token); this works on every platform via the `restore_seed_identity` command.
+// One-time recovery-phrase backup reveal (wallet-style). Standalone full-screen
+// overlay (reuses .hw-unlock-* styling) so it can't race the identity-modal button.
+// The phrase is shown once and never stored. TODO(P3): optionally re-display
+// behind the passcode once at-rest encryption lands.
+function showRecoveryPhraseBackup(mnemonic, onDone) {
+    var words = String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
+    if (words.length !== 24) {
+        if (typeof onDone === 'function') onDone();
+        return;
+    }
+    var grid = words.map(function(w, i) {
+        return '<div class="hw-mnemonic-word"><span class="hw-mnemonic-index">' + (i + 1) +
+            '</span><span class="hw-mnemonic-text">' + escapeHtml(w) + '</span></div>';
+    }).join('');
+    var existing = document.getElementById('recovery-backup-overlay');
+    if (existing) existing.remove();
+    var overlay = document.createElement('div');
+    overlay.id = 'recovery-backup-overlay';
+    overlay.className = 'hw-unlock-overlay';
+    overlay.style.display = 'flex';
+    overlay.innerHTML =
+        '<div class="hw-unlock-card recovery-backup-card">' +
+            '<div class="hw-unlock-title">Your Recovery Phrase</div>' +
+            '<p class="recovery-warn">Write these 24 words down and keep them somewhere safe. ' +
+            'They are the <strong>only</strong> way to recover this identity if you lose your device — ' +
+            'shown once, never stored. Anyone with them controls your identity.</p>' +
+            '<div class="hw-mnemonic-grid">' + grid + '</div>' +
+            '<button class="hw-unlock-btn" id="recovery-backup-done">I’ve saved it</button>' +
+        '</div>';
+    document.body.appendChild(overlay);
+    document.getElementById('recovery-backup-done').addEventListener('click', function() {
+        overlay.remove();
+        if (typeof onDone === 'function') onDone();
+    });
+}
+window.showRecoveryPhraseBackup = showRecoveryPhraseBackup;
+
 function openRestorePhraseModal(fromSetup) {
     showIdentityModal('Restore from Recovery Phrase',
         '<div class="modal-field">' +

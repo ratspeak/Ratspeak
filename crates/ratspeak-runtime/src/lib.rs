@@ -467,6 +467,17 @@ pub fn derive_identity_key_from_phrase(phrase: &str) -> Result<[u8; 64], String>
     Ok(key)
 }
 
+/// Generate a fresh recoverable identity: a new BIP-39 mnemonic + the 64-byte
+/// Reticulum private key derived from it. The caller shows the mnemonic once for
+/// backup (we never store it) and writes/imports the key as a software identity.
+#[cfg(feature = "seed")]
+pub fn generate_recoverable_key() -> Result<(String, [u8; 64]), String> {
+    let mnemonic = rns_ratkey::seed::generate_mnemonic()
+        .map_err(|e| format!("Could not generate recovery phrase: {e}"))?;
+    let key = derive_identity_key_from_phrase(&mnemonic)?;
+    Ok((mnemonic, key))
+}
+
 pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     propagation::seed_static_nodes(&state);
 

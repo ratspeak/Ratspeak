@@ -65,54 +65,76 @@ pub async fn api_setup_complete(
     let display_name = sanitize_announced_display_name(args.display_name.as_deref().unwrap_or(""))
         .map_err(AppError::bad_request)?;
 
-    match crate::lxmf::LxmfManager::load_or_create(&state.config.data_root, None, None) {
-        Ok(mgr) => {
-            let identity_hash = mgr.identity_hash.clone();
-            let lxmf_hash = mgr.lxmf_hash.clone();
+    // Idempotent: api_setup_complete is called twice (create, then "Connect" with
+    // a display name). Generate a recoverable (mnemonic-derived) identity only on
+    // the FIRST call; later calls load the existing one and just update the name.
+    // The mnemonic is returned once (first call) for backup and is never stored.
+    let existing = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|i| i.get("hash").and_then(|v| v.as_str()).map(str::to_string));
 
+    let (identity_hash, mnemonic) = if let Some(hash) = existing {
+        (hash, None)
+    } else {
+        let (m, key) = match ratspeak_runtime::generate_recoverable_key() {
+            Ok(v) => v,
+            Err(e) => return Ok(json!({ "ok": false, "error": e })),
+        };
+        let write_dir = state.config.data_dir.clone();
+        let write_db = state.db.clone();
+        let write_nick = display_name.clone();
+        let write = tokio::task::spawn_blocking(move || {
+            crate::lxmf::LxmfManager::import_identity_to_data_dir(
+                &write_dir, &key, &write_nick, &write_db,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|_| AppError::internal("setup write task panicked"))?;
+        let (hash, _lxmf) = match write {
+            Ok(t) => t,
+            Err(e) => {
+                return Ok(json!({ "ok": false, "error": format!("Failed to create identity: {e}") }));
+            }
+        };
+        let ih = hash.clone();
+        let _ = db::spawn_db(state.db.clone(), move |p| db::set_active_identity(&p, &ih)).await;
+        (hash, Some(m))
+    };
+
+    match crate::lxmf::LxmfManager::load_or_create(
+        &state.config.data_root,
+        Some(&identity_hash),
+        None,
+    ) {
+        Ok(mgr) => {
+            let lxmf_hash = mgr.lxmf_hash.clone();
             let dn = if display_name.is_empty() {
                 format!("!Ratspeak.org-{}", &lxmf_hash[..6.min(lxmf_hash.len())])
             } else {
                 display_name.clone()
             };
-
-            let ih_for_db = identity_hash.clone();
-            let lh_for_db = lxmf_hash.clone();
-            let dn_for_db = dn.clone();
+            let (ih, lh, dnc) = (identity_hash.clone(), lxmf_hash.clone(), dn.clone());
             db::spawn_db(state.db.clone(), move |p| {
-                db::save_identity(&p, &ih_for_db, &lh_for_db, "Default", &dn_for_db)
+                db::save_identity(&p, &ih, &lh, "Default", &dnc)
             })
             .await
             .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "save_identity db task panicked");
+                tracing::error!(error = %e, "setup save_identity task panicked");
                 Default::default()
             });
-            let ih_for_active = identity_hash.clone();
-            let activate_res = db::spawn_db(state.db.clone(), move |p| {
-                db::set_active_identity(&p, &ih_for_active)
-            })
-            .await
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "setup: set_active db task panicked");
-                Err(format!("db task panicked: {e}"))
-            });
-            if let Err(e) = activate_res {
-                tracing::error!("Failed to set active identity: {e}");
-            }
-
             state.set_lxmf(mgr);
-
             Ok(json!({
                 "ok": true,
                 "identity_hash": identity_hash,
                 "lxmf_hash": lxmf_hash,
                 "display_name": dn,
+                "mnemonic": mnemonic,
             }))
         }
-        Err(e) => Ok(json!({
-            "ok": false,
-            "error": format!("Failed to create identity: {e}"),
-        })),
+        Err(e) => Ok(json!({ "ok": false, "error": format!("Failed to load identity: {e}") })),
     }
 }
 

@@ -264,8 +264,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     document.getElementById('setup-lxmf-hash').textContent =
                         data.lxmf_hash || data.identity_hash || '--';
                     transitionStep(genStep, document.getElementById('setup-step-2'), null, function() {
-                        var nameInput = document.getElementById('setup-display-name');
-                        if (nameInput && !isMobile()) nameInput.focus();
+                        // New identities are mnemonic-derived — reveal the 24-word
+                        // backup once, over step-2, before the user names + connects.
+                        if (data.mnemonic && typeof showRecoveryPhraseBackup === 'function') {
+                            showRecoveryPhraseBackup(data.mnemonic);
+                        } else {
+                            var nameInput = document.getElementById('setup-display-name');
+                            if (nameInput && !isMobile()) nameInput.focus();
+                        }
                     });
                 })
                 .catch(function(err) {

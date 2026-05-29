@@ -786,7 +786,7 @@ fn rnode_radio_catalog_has_single_runtime_source() {
         read_source(root.join("crates/ratspeak-tauri/Cargo.toml")).expect("tauri cargo");
     assert!(tauri_cargo.contains("rnode-tcp = [\"ratspeak-runtime/rnode-tcp\""));
     let app_cargo = read_source(root.join("src-tauri/Cargo.toml")).expect("app cargo");
-    assert!(app_cargo.contains(r#"features = ["ble", "rnode-tcp", "mobile-throttle"]"#));
+    assert!(app_cargo.contains(r#"features = ["ble", "rnode-tcp", "mobile-throttle", "seed"]"#));
     assert!(!modals_js.contains("var RNODE_PRESETS = {"));
     assert!(!modals_js.contains("var RNODE_REGIONS = {"));
     assert!(!index.contains("<option value=\"americas\""));
@@ -2251,7 +2251,7 @@ fn identity_management_is_first_class_tab() {
     assert!(index.contains(r#"id="identity-import-btn""#));
     assert!(index.contains(r#"id="setup-import-identity-btn""#));
     assert!(index.contains("application/json,application/octet-stream,text/plain"));
-    assert!(index.contains("title=\"Import identity\""));
+    assert!(index.contains("title=\"Import or restore identity\""));
     assert!(index.contains(r#"<path d="M7 10l5 5 5-5"/>"#));
     assert!(!index.contains("Import identity backup"));
     assert!(!index.contains(r#"<path d="M7 8l5-5 5 5"/>"#));

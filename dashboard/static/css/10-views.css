@@ -4313,3 +4313,15 @@ body.setup-active .bottom-bar {
     text-decoration: underline;
 }
 .hw-unlock-cancel:hover { color: var(--text-primary); }
+
+/* One-time recovery-phrase backup reveal (reuses the unlock overlay shell). */
+.recovery-backup-card { max-width: 460px; }
+.recovery-backup-card .hw-mnemonic-grid { width: 100%; }
+.recovery-warn {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0;
+    text-align: left;
+}
+.recovery-warn strong { color: var(--status-error); }

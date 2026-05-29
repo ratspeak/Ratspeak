@@ -289,25 +289,16 @@ pub async fn api_create_identity(
     let nickname = sanitize_announced_display_name(args.nickname.as_deref().unwrap_or(""))
         .map_err(AppError::bad_request)?;
 
-    let st: Arc<AppState> = Arc::clone(&state);
-    let result = tokio::task::spawn_blocking(move || {
-        if let Ok(lxmf) = st.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_ref() {
-                mgr.create_identity(&nickname, &st.db).ok()
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
-    .await
-    .map_err(|_| AppError::internal("create_identity task panicked"))?;
-
-    match result {
-        Some((hash, lxmf_hash)) => Ok(json!({ "hash": hash, "lxmf_hash": lxmf_hash })),
-        None => Err(AppError::lxmf_not_initialized("LXMF not initialized")),
+    // New identities are recoverable: derived from a fresh BIP-39 mnemonic, which
+    // we return once for the user to back up (never stored). Reuses the import
+    // path for the duplicate-check, on-disk write, and activation.
+    let (mnemonic, key) =
+        ratspeak_runtime::generate_recoverable_key().map_err(AppError::internal)?;
+    let mut resp = import_identity_shared(state, key.to_vec(), Some(nickname)).await?;
+    if let Some(obj) = resp.as_object_mut() {
+        obj.insert("mnemonic".to_string(), json!(mnemonic));
     }
+    Ok(resp)
 }
 
 #[derive(Deserialize)]

@@ -6,7 +6,9 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
+# `seed` (BIP-39 derivation, pure-Rust) is on by default — new identities are
+# mnemonic-derived, so it's core, not optional.
+default = ["seed"]
 serial = ["dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
 rnode-tcp = ["rns-interface/rnode-tcp", "rns-runtime/rnode-tcp"]
 ble = ["dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
