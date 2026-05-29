@@ -1888,3 +1888,112 @@ function removeHardwareIdentity(target) {
         });
     });
 }
+
+// ---- Hardware identity unlock (PIN prompt) ----
+// Shown when the active identity is hardware-backed and the token is locked
+// (on boot, or after the auto-lock timeout). Unlocking re-inits the runtime.
+
+var _hwLockedHash = null;
+
+function showHwUnlock(hash) {
+    if (typeof hash === 'string' && hash) _hwLockedHash = hash;
+    var overlay = document.getElementById('hw-unlock-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'hw-unlock-overlay';
+        overlay.className = 'hw-unlock-overlay';
+        overlay.innerHTML =
+            '<div class="hw-unlock-card">' +
+                '<div class="hw-unlock-icon">' + HW_BADGE_ICON + '</div>' +
+                '<div class="hw-unlock-title">Unlock your hardware key</div>' +
+                '<div class="hw-unlock-sub">Enter your YubiKey PIN to continue. Keep the key plugged in.</div>' +
+                '<input id="hw-unlock-pin" class="hw-unlock-input" type="password" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="PIN">' +
+                '<div id="hw-unlock-error" class="hw-unlock-error" style="display:none"></div>' +
+                '<button id="hw-unlock-btn" class="hw-unlock-btn" disabled>Unlock</button>' +
+                '<button id="hw-unlock-cancel" class="hw-unlock-cancel">Use a different identity</button>' +
+            '</div>';
+        document.body.appendChild(overlay);
+        var input = overlay.querySelector('#hw-unlock-pin');
+        var btn = overlay.querySelector('#hw-unlock-btn');
+        input.addEventListener('input', function() {
+            btn.disabled = !(input.value.length >= 6 && input.value.length <= 8);
+        });
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !btn.disabled) _hwDoUnlock();
+        });
+        btn.addEventListener('click', _hwDoUnlock);
+        overlay.querySelector('#hw-unlock-cancel').addEventListener('click', _hwUnlockCancel);
+    }
+    overlay.style.display = 'flex';
+    var err = document.getElementById('hw-unlock-error');
+    if (err) err.style.display = 'none';
+    var pin = document.getElementById('hw-unlock-pin');
+    if (pin) { pin.value = ''; }
+    var b = document.getElementById('hw-unlock-btn');
+    if (b) { b.disabled = true; b.textContent = 'Unlock'; }
+    setTimeout(function() { if (pin && !isMobile()) pin.focus(); }, 120);
+}
+window.showHwUnlock = showHwUnlock;
+
+function _hwDoUnlock() {
+    var input = document.getElementById('hw-unlock-pin');
+    var btn = document.getElementById('hw-unlock-btn');
+    var err = document.getElementById('hw-unlock-error');
+    var pin = input ? input.value : '';
+    if (pin.length < 6 || pin.length > 8) return;
+    btn.disabled = true;
+    btn.textContent = 'Unlocking…';
+    if (err) err.style.display = 'none';
+    RS.invoke('hw_unlock', { pin: pin }).then(function(res) {
+        res = res || {};
+        if (res.ok) {
+            // Re-bootstrap the whole app on the now-unlocked identity.
+            window.location.reload();
+            return;
+        }
+        btn.disabled = false;
+        btn.textContent = 'Unlock';
+        if (input) input.value = '';
+        var msg;
+        if (res.locked) {
+            msg = 'This key is locked after too many wrong PINs. It needs a PUK reset.';
+            btn.disabled = true;
+        } else if (typeof res.remaining === 'number') {
+            msg = 'Incorrect PIN — ' + res.remaining + ' attempt' + (res.remaining === 1 ? '' : 's') + ' left.';
+        } else {
+            msg = res.error || 'Could not unlock. Is the key plugged in?';
+        }
+        if (err) { err.textContent = msg; err.style.display = ''; }
+    }).catch(function(e) {
+        btn.disabled = false;
+        btn.textContent = 'Unlock';
+        if (err) { err.textContent = (e && e.message) || 'Unlock failed.'; err.style.display = ''; }
+    });
+}
+
+// Escape hatch: switch to another identity (e.g. a key that can't be unlocked
+// because it was re-provisioned, or the wrong key is plugged in).
+function _hwUnlockCancel() {
+    var err = document.getElementById('hw-unlock-error');
+    RS.invoke('api_list_identities').then(function(list) {
+        list = list || [];
+        var other = null;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] && list[i].hash !== _hwLockedHash) { other = list[i]; break; }
+        }
+        if (!other) {
+            if (err) {
+                err.textContent = 'This is your only identity. Plug in the correct key, or remove it from Identity settings.';
+                err.style.display = '';
+            }
+            return;
+        }
+        RS.invoke('switch_identity', { hash: other.hash }).finally(function() {
+            window.location.reload();
+        });
+    }).catch(function() { window.location.reload(); });
+}
+
+if (typeof RS !== 'undefined' && RS.listen) {
+    RS.listen('hardware_locked', function(data) { showHwUnlock(data && data.hash); });
+}

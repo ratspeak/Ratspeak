@@ -4238,3 +4238,78 @@ body.setup-active .bottom-bar {
     font-family: var(--font-mono);
     line-height: 1.6;
 }
+
+/* Hardware key unlock prompt (PIN) — full-screen, blocks until unlocked. */
+.hw-unlock-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-16);
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+}
+.hw-unlock-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-4);
+    width: 100%;
+    max-width: 360px;
+    padding: var(--space-10) var(--space-8);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-lg);
+    background: var(--surface-page);
+    text-align: center;
+}
+.hw-unlock-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    color: var(--accent);
+    background: var(--accent-bg);
+}
+.hw-unlock-icon .identity-hardware-badge-icon { width: 24px; height: 24px; }
+.hw-unlock-title { font-size: var(--text-lg); font-weight: 700; color: var(--text-primary); }
+.hw-unlock-sub { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-2); }
+.hw-unlock-input {
+    width: 100%;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-md);
+    background: var(--surface-control);
+    color: var(--text-primary);
+    font-size: var(--text-base);
+    text-align: center;
+    letter-spacing: 0.3em;
+}
+.hw-unlock-input:focus { outline: none; border-color: var(--accent); }
+.hw-unlock-error { font-size: var(--text-sm); color: var(--status-error); }
+.hw-unlock-btn {
+    width: 100%;
+    padding: var(--space-3) var(--space-4);
+    border: none;
+    border-radius: var(--radius-md);
+    background: var(--accent);
+    color: var(--accent-fg, #fff);
+    font-size: var(--text-base);
+    font-weight: 600;
+    cursor: pointer;
+}
+.hw-unlock-btn:disabled { opacity: 0.5; cursor: default; }
+.hw-unlock-cancel {
+    margin-top: var(--space-1);
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    text-decoration: underline;
+}
+.hw-unlock-cancel:hover { color: var(--text-primary); }

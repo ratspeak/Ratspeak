@@ -11,6 +11,13 @@ function showConnectionSummary() {
 
 // One-shot bootstrap; subsequent updates arrive via push events.
 function _rsBootstrapOnLoad() {
+    // Race-free check for a locked hardware identity at boot (the hardware_locked
+    // event can fire before this listener attaches).
+    RS.invoke('api_startup_progress').then(function(data) {
+        if (data && data.stage === 'hw_locked' && typeof showHwUnlock === 'function') {
+            showHwUnlock(data.hw_locked);
+        }
+    }).catch(function() {});
     if (window.RS && RS.audioPlayback && typeof RS.audioPlayback.ensure === 'function') {
         RS.audioPlayback.ensure({ installUnlock: true }).catch(function() {});
     }

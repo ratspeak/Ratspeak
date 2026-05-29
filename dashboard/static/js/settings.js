@@ -1043,7 +1043,65 @@ function applyAppSettingsPayload(data) {
     if (usageToggle && data.announce_ratspeak_usage !== undefined) {
         usageToggle.checked = !!data.announce_ratspeak_usage;
     }
+    var hwBadge = document.getElementById('hw-lock-timeout-select');
+    if (hwBadge && data.hardware_session_timeout !== undefined) {
+        var t = parseInt(data.hardware_session_timeout, 10);
+        hwBadge.textContent = _hwLockLabel(t);
+        hwBadge.setAttribute('data-value', t);
+    }
 }
+
+function _hwLockLabel(secs) {
+    if (!secs || secs <= 0) return 'Off';
+    if (secs % 3600 === 0) { var h = secs / 3600; return h + (h === 1 ? ' hour' : ' hours'); }
+    if (secs % 60 === 0) return (secs / 60) + ' min';
+    return secs + 's';
+}
+
+// Reveal the Hardware Key Auto-Lock row only when a hardware identity exists.
+function _maybeRevealHwLockRow() {
+    var row = document.getElementById('hw-lock-row');
+    if (!row) return;
+    RS.invoke('api_list_identities').then(function(list) {
+        var hasHw = Array.isArray(list) && list.some(function(i) { return i && i.is_hardware; });
+        row.style.display = hasHw ? '' : 'none';
+    }).catch(function() {});
+}
+
+function _initHwLockSetting() {
+    var badge = document.getElementById('hw-lock-timeout-select');
+    if (!badge) return;
+    function open() {
+        rsChoice({
+            title: 'Hardware Key Auto-Lock',
+            message: 'Lock your hardware identity after this much idle time. You’ll re-enter the PIN to resume.',
+            choices: [
+                { label: 'Off', value: '0', hint: 'Only locks when you quit Ratspeak.' },
+                { label: '5 minutes', value: '300', hint: 'Tightest; frequent PIN prompts.' },
+                { label: '15 minutes', value: '900' },
+                { label: '30 minutes', value: '1800' },
+                { label: '1 hour', value: '3600' }
+            ]
+        }).then(function(val) {
+            if (val === null || val === undefined) return;
+            var secs = parseInt(val, 10);
+            badge.textContent = _hwLockLabel(secs);
+            badge.setAttribute('data-value', secs);
+            RS.invoke('set_hardware_lock_timeout', { seconds: secs }).catch(function(err) {
+                showToast((err && err.message) || 'Failed to update auto-lock', 'toast-red', 8000);
+            });
+        });
+    }
+    badge.addEventListener('click', open);
+    badge.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    _initHwLockSetting();
+    _maybeRevealHwLockRow();
+});
 
 (function() {
     var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
