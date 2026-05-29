@@ -452,6 +452,7 @@ function renderActiveIdentityCard() {
     var lxmfHash = identity.lxmf_hash || '';
     var identityHash = identity.hash || '';
     var isActive = !!identity.is_active;
+    var isHardware = !!identity.is_hardware;
     var isOriginal = isOriginalIdentity(identityHash);
     var canDelete = !isOriginal && (!isActive || identityList.length > 1);
     var activeLabel = isActive ? 'Active' : 'Stored';
@@ -482,7 +483,7 @@ function renderActiveIdentityCard() {
                 '<div class="identity-card-nickname">' + nickname + '</div>' +
                 '<div class="identity-status-row">' +
                     '<span class="identity-active-badge">' + activeLabel + '</span>' +
-                    '<span class="identity-private-badge">Private Key</span>' +
+                    (isHardware ? '<span class="identity-hardware-badge">' + HW_BADGE_ICON + 'Hardware Key</span>' : '<span class="identity-private-badge">Private Key</span>') +
                     (isOriginal ? '<span class="identity-private-badge">Original</span>' : '') +
                 '</div>' +
             '</div>' +
@@ -506,17 +507,18 @@ function renderActiveIdentityCard() {
         editorHtml +
         '<div class="identity-detail-actions">' +
             switchAction +
+            (isHardware ? '' :
             '<button class="identity-action-row" id="identity-export-detail-btn">' +
                 '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 21h14"/></svg></span>' +
                 '<span>Export Identity</span>' +
-            '</button>' +
+            '</button>') +
             '<button class="identity-action-row" id="identity-share-address-btn">' +
                 '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg></span>' +
                 '<span>Share Contact Card</span>' +
             '</button>' +
             '<button class="identity-action-row identity-action-row--danger" id="identity-delete-btn"' + (canDelete ? '' : ' disabled aria-disabled="true"') + ' title="' + escapeHtml(deleteTitle) + '">' +
                 '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></span>' +
-                '<span>Delete Identity</span>' +
+                '<span>' + (isHardware ? 'Remove Identity' : 'Delete Identity') + '</span>' +
             '</button>' +
         '</div>';
 
@@ -611,6 +613,9 @@ function renderIdentityList() {
         var badgeHtml = '';
         if (isOriginal) {
             badgeHtml += '<span class="identity-private-badge identity-private-badge--list">Original</span>';
+        }
+        if (ident.is_hardware) {
+            badgeHtml += '<span class="identity-hardware-badge identity-hardware-badge--list" title="Hardware key identity">' + HW_BADGE_ICON + 'HW</span>';
         }
         if (ident.is_active) {
             badgeHtml += '<span class="identity-active-badge">Active</span>';
@@ -910,6 +915,10 @@ function exportIdentityBackup(hash) {
         return;
     }
     var target = identityByHash(hash);
+    if (target && target.is_hardware) {
+        showPreConditionToast('Hardware-key identities cannot be exported — the private key never leaves the device');
+        return;
+    }
     var targetName = target ? identityDisplayName(target) : 'Identity';
     var chosenFormat = null;
     chooseIdentityExportFormat().then(function(format) {
@@ -957,10 +966,12 @@ function openIdentityActions(hash) {
     if (!target.is_active) {
         choices.push({ label: 'Switch to Identity', value: 'switch' });
     }
-    choices.push({ label: 'Export Identity', value: 'export', hint: 'Ratspeak or Reticulum format.' });
+    if (!target.is_hardware) {
+        choices.push({ label: 'Export Identity', value: 'export', hint: 'Ratspeak or Reticulum format.' });
+    }
     choices.push({ label: 'Share Contact Card', value: 'share' });
     if (!isOriginalIdentity(target.hash) && (!target.is_active || identityList.length > 1)) {
-        choices.push({ label: 'Delete Identity', value: 'delete', danger: true });
+        choices.push({ label: target.is_hardware ? 'Remove Identity' : 'Delete Identity', value: 'delete', danger: true });
     }
 
     rsChoice({
@@ -1002,6 +1013,11 @@ function deleteIdentityByHash(hash) {
     }
     if (isOriginalIdentity(hash)) {
         showPreConditionToast('Cannot remove the original identity');
+        return;
+    }
+
+    if (target.is_hardware) {
+        removeHardwareIdentity(target);
         return;
     }
 
@@ -1273,3 +1289,577 @@ RS.listen('identity_switched', function(data) {
 
     showToast('Identity switched', 'toast-green', 3000);
 });
+
+// ---------------------------------------------------------------------------
+// Hardware Key (YubiKey/Nitrokey PIV) identity flow
+// ---------------------------------------------------------------------------
+
+var HW_BADGE_ICON = '<svg class="identity-hardware-badge-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 7a4 4 0 1 0-3.9 5H15v3h3v3h3v-4l-3-3a4 4 0 0 0-1-4z"/><circle cx="7" cy="10" r="1.2"/></svg>';
+
+var HW_DETECT_ERROR_COPY = "YubiKey not detected. Please make sure it's a YubiKey 5+ running the latest firmware.";
+
+// Wizard state. `mnemonic` is held here only — never persisted, logged, or
+// echoed to storage. Cleared on close/verify.
+var _hwCtx = null;
+
+var HW_STEP_IDS = [
+    'hw-step-detect', 'hw-step-mode', 'hw-step-pin', 'hw-step-working',
+    'hw-step-mnemonic', 'hw-step-verify', 'hw-step-restore', 'hw-step-import'
+];
+
+function _hwSetTitle(text) {
+    var el = document.getElementById('hw-modal-title');
+    if (el) el.textContent = text;
+}
+
+function _hwShowStep(stepId) {
+    HW_STEP_IDS.forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = (id === stepId) ? '' : 'none';
+    });
+}
+
+function _hwClearSecrets() {
+    if (_hwCtx) {
+        _hwCtx.mnemonic = null;
+        _hwCtx.mnemonicWords = null;
+        _hwCtx.verify = null;
+    }
+    var grid = document.getElementById('hw-mnemonic-grid');
+    if (grid) grid.innerHTML = '';
+    var fields = document.getElementById('hw-verify-fields');
+    if (fields) fields.innerHTML = '';
+    ['hw-pin', 'hw-pin-confirm', 'hw-restore-pin', 'hw-restore-pin-confirm', 'hw-restore-phrase'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+}
+
+function _hwOpenSheet() {
+    if (RS.ui && typeof RS.ui.openExistingSheet === 'function') {
+        RS.ui.openExistingSheet('hw-modal', 'hw-modal-overlay');
+    } else {
+        var modal = document.getElementById('hw-modal');
+        var overlay = document.getElementById('hw-modal-overlay');
+        if (modal) modal.classList.add('open');
+        if (overlay) overlay.classList.add('active');
+    }
+}
+
+function closeHardwareWizard() {
+    _hwClearSecrets();
+    if (RS.ui && typeof RS.ui.closeExistingSheet === 'function') {
+        RS.ui.closeExistingSheet('hw-modal', 'hw-modal-overlay');
+    } else {
+        var modal = document.getElementById('hw-modal');
+        var overlay = document.getElementById('hw-modal-overlay');
+        if (modal) modal.classList.remove('open');
+        if (overlay) overlay.classList.remove('active');
+    }
+    _hwCtx = null;
+}
+
+// Entry point. opts.fromSetup routes completion through the setup restart flow.
+function openHardwareWizard(opts) {
+    opts = opts || {};
+    _hwCtx = { fromSetup: !!opts.fromSetup, device: null, mode: null, pin: null, nickname: '', mnemonic: null };
+
+    rsChoice({
+        title: 'Hardware Key',
+        message: 'Use a YubiKey 5+ security key as your identity. The private key is generated on the device and never leaves it.',
+        choices: [
+            { label: 'Set up a new key', value: 'new', hint: 'Provision a factory-fresh or reset security key.' },
+            { label: 'Use an existing key', value: 'import', hint: 'Register a key that is already provisioned.' },
+            { label: 'Restore from seed phrase', value: 'restore', hint: 'Write a 24-word phrase onto a fresh key.' }
+        ]
+    }).then(function(choice) {
+        if (!choice) { _hwCtx = null; return; }
+        if (choice === 'new') _hwBeginDetect('provision');
+        else if (choice === 'import') _hwBeginDetect('import');
+        else if (choice === 'restore') _hwBeginRestore();
+    });
+}
+window.openHardwareWizard = openHardwareWizard;
+
+// Detect device, then route to provision-mode or import-nickname step.
+function _hwBeginDetect(next) {
+    if (!_hwCtx) _hwCtx = { fromSetup: false };
+    _hwCtx.afterDetect = next;
+    _hwSetTitle('Hardware Key');
+    _hwShowStep('hw-step-detect');
+    _hwOpenSheet();
+    _hwRunDetect();
+}
+
+function _hwRunDetect() {
+    var textEl = document.getElementById('hw-detect-text');
+    var retryBtn = document.getElementById('hw-detect-retry-btn');
+    var panel = document.getElementById('hw-detect-panel');
+    if (panel) panel.classList.remove('hw-detect-error');
+    if (textEl) textEl.textContent = 'Looking for a security key…';
+    if (retryBtn) retryBtn.style.display = 'none';
+
+    RS.invoke('hw_detect').then(function(data) {
+        data = data || {};
+        if (!data.detected || !data.firmware_ok) {
+            _hwDetectFailed(data.error || HW_DETECT_ERROR_COPY);
+            return;
+        }
+        _hwCtx.device = data;
+        if (_hwCtx.afterDetect === 'import') _hwShowImportStep();
+        else _hwShowModeStep();
+    }).catch(function(err) {
+        _hwDetectFailed((err && err.message) || HW_DETECT_ERROR_COPY);
+    });
+}
+
+function _hwDetectFailed(message) {
+    var textEl = document.getElementById('hw-detect-text');
+    var retryBtn = document.getElementById('hw-detect-retry-btn');
+    var panel = document.getElementById('hw-detect-panel');
+    if (panel) panel.classList.add('hw-detect-error');
+    if (textEl) textEl.textContent = message;
+    if (retryBtn) retryBtn.style.display = '';
+}
+
+function _hwDeviceSummaryHtml(device) {
+    if (!device) return '';
+    var model = device.device_type || 'Security key';
+    var parts = [];
+    if (device.serial) parts.push('Serial ' + device.serial);
+    if (device.firmware) parts.push('Firmware ' + device.firmware);
+    return '<div class="hw-device-card">' +
+        '<span class="hw-device-icon">' + HW_BADGE_ICON + '</span>' +
+        '<span class="hw-device-meta">' +
+            '<span class="hw-device-name">' + escapeHtml(model) + '</span>' +
+            (parts.length ? '<span class="hw-device-detail">' + escapeHtml(parts.join('  ·  ')) + '</span>' : '') +
+        '</span>' +
+    '</div>';
+}
+
+function _hwShowModeStep() {
+    _hwSetTitle('Backup Mode');
+    var deviceEl = document.getElementById('hw-mode-device');
+    if (deviceEl) deviceEl.innerHTML = _hwDeviceSummaryHtml(_hwCtx.device);
+    _hwShowStep('hw-step-mode');
+}
+
+function _hwShowImportStep() {
+    _hwSetTitle('Use Existing Key');
+    var deviceEl = document.getElementById('hw-import-device');
+    if (deviceEl) deviceEl.innerHTML = _hwDeviceSummaryHtml(_hwCtx.device);
+    var err = document.getElementById('hw-import-error');
+    if (err) err.style.display = 'none';
+    var nick = document.getElementById('hw-import-nickname');
+    if (nick) nick.value = '';
+    _hwShowStep('hw-step-import');
+    setTimeout(function() { if (nick && !isMobile()) nick.focus(); }, 120);
+}
+
+function _hwShowPinStep() {
+    _hwSetTitle('Choose a PIN');
+    document.getElementById('hw-pin-nickname').value = _hwCtx.nickname || '';
+    document.getElementById('hw-pin').value = '';
+    document.getElementById('hw-pin-confirm').value = '';
+    var err = document.getElementById('hw-pin-error');
+    if (err) err.style.display = 'none';
+    _hwUpdatePinContinue();
+    _hwShowStep('hw-step-pin');
+    setTimeout(function() { var n = document.getElementById('hw-pin-nickname'); if (n && !isMobile()) n.focus(); }, 120);
+}
+
+function _hwPinValid(pin) {
+    return typeof pin === 'string' && pin.length >= 6 && pin.length <= 8;
+}
+
+function _hwUpdatePinContinue() {
+    var pin = document.getElementById('hw-pin').value;
+    var confirm = document.getElementById('hw-pin-confirm').value;
+    var btn = document.getElementById('hw-pin-continue-btn');
+    if (btn) btn.disabled = !(_hwPinValid(pin) && pin === confirm);
+}
+
+function _hwPinContinue() {
+    var pin = document.getElementById('hw-pin').value;
+    var confirm = document.getElementById('hw-pin-confirm').value;
+    var err = document.getElementById('hw-pin-error');
+    if (!_hwPinValid(pin)) {
+        if (err) { err.textContent = 'PIN must be 6–8 characters.'; err.style.display = ''; }
+        return;
+    }
+    if (pin !== confirm) {
+        if (err) { err.textContent = "PINs don't match."; err.style.display = ''; }
+        return;
+    }
+    if (err) err.style.display = 'none';
+    _hwCtx.pin = pin;
+    _hwCtx.nickname = document.getElementById('hw-pin-nickname').value.trim();
+    if (_hwCtx.mode === 'recoverable') _hwProvisionRecoverable();
+    else _hwProvisionHardwareOnly();
+}
+
+function _hwShowWorking(text) {
+    var t = document.getElementById('hw-working-text');
+    if (t) t.textContent = text || 'Provisioning your security key…';
+    _hwSetTitle('Working');
+    _hwShowStep('hw-step-working');
+}
+
+function _hwProvisionFailure(err) {
+    showToast((err && err.message) ? err.message : 'Provisioning failed', 'toast-red', 5000);
+    // Drop the held PIN back to the PIN step so the user can retry.
+    _hwShowPinStep();
+}
+
+function _hwProvisionRecoverable() {
+    _hwShowWorking('Provisioning your security key…');
+    RS.invoke('hw_provision_recoverable', { pin: _hwCtx.pin, nickname: _hwCtx.nickname })
+        .then(function(res) {
+            res = res || {};
+            _hwCtx.result = res;
+            _hwCtx.pin = null;
+            _hwShowMnemonic(res.mnemonic || '');
+        })
+        .catch(_hwProvisionFailure);
+}
+
+function _hwProvisionHardwareOnly() {
+    _hwShowWorking('Provisioning your security key…');
+    RS.invoke('hw_provision_hardware_only', { pin: _hwCtx.pin, nickname: _hwCtx.nickname })
+        .then(function(res) {
+            res = res || {};
+            _hwCtx.pin = null;
+            _hwFinish(res);
+        })
+        .catch(_hwProvisionFailure);
+}
+
+function _hwShowMnemonic(mnemonic) {
+    _hwSetTitle('Backup Phrase');
+    var words = String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
+    _hwCtx.mnemonic = mnemonic;
+    _hwCtx.mnemonicWords = words;
+
+    var grid = document.getElementById('hw-mnemonic-grid');
+    if (grid) {
+        grid.innerHTML = words.map(function(word, i) {
+            return '<div class="hw-mnemonic-word">' +
+                '<span class="hw-mnemonic-index">' + (i + 1) + '</span>' +
+                '<span class="hw-mnemonic-text">' + escapeHtml(word) + '</span>' +
+            '</div>';
+        }).join('');
+    }
+    var cover = document.getElementById('hw-mnemonic-cover');
+    if (cover) cover.style.display = '';
+    var shell = document.querySelector('.hw-mnemonic-shell');
+    if (shell) shell.classList.remove('revealed');
+
+    var confirmChk = document.getElementById('hw-mnemonic-confirm');
+    if (confirmChk) confirmChk.checked = false;
+    var continueBtn = document.getElementById('hw-mnemonic-continue-btn');
+    if (continueBtn) continueBtn.disabled = true;
+
+    _hwShowStep('hw-step-mnemonic');
+}
+
+// Pick two distinct word positions for the verify step.
+function _hwPickVerifyPositions(count) {
+    var a = Math.floor(Math.random() * count);
+    var b;
+    do { b = Math.floor(Math.random() * count); } while (b === a && count > 1);
+    return a <= b ? [a, b] : [b, a];
+}
+
+function _hwShowVerify() {
+    _hwSetTitle('Confirm Backup');
+    var words = _hwCtx.mnemonicWords || [];
+    if (words.length < 2) { _hwFinish(_hwCtx.result || {}); return; }
+    var positions = _hwPickVerifyPositions(words.length);
+    _hwCtx.verify = positions;
+
+    var fields = document.getElementById('hw-verify-fields');
+    if (fields) {
+        fields.innerHTML = positions.map(function(pos, idx) {
+            var ordinal = pos + 1;
+            return '<div class="modal-field"' + (idx > 0 ? ' style="margin-top:10px;"' : '') + '>' +
+                '<label>Word #' + ordinal + '</label>' +
+                '<input type="text" class="modal-input hw-verify-input" data-pos="' + pos + '" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Enter word ' + ordinal + '">' +
+            '</div>';
+        }).join('');
+    }
+    var err = document.getElementById('hw-verify-error');
+    if (err) err.style.display = 'none';
+    _hwShowStep('hw-step-verify');
+    setTimeout(function() {
+        var first = document.querySelector('#hw-verify-fields .hw-verify-input');
+        if (first && !isMobile()) first.focus();
+    }, 120);
+}
+
+function _hwVerifyAndFinish() {
+    var words = _hwCtx.mnemonicWords || [];
+    var inputs = document.querySelectorAll('#hw-verify-fields .hw-verify-input');
+    var ok = inputs.length > 0;
+    Array.prototype.forEach.call(inputs, function(input) {
+        var pos = parseInt(input.getAttribute('data-pos'), 10);
+        var expected = (words[pos] || '').toLowerCase();
+        if (input.value.trim().toLowerCase() !== expected) ok = false;
+    });
+    var err = document.getElementById('hw-verify-error');
+    if (!ok) {
+        if (err) { err.textContent = "Those words don't match. Check your written phrase and try again."; err.style.display = ''; }
+        return;
+    }
+    if (err) err.style.display = 'none';
+    var result = _hwCtx.result || {};
+    _hwClearSecrets();
+    _hwFinish(result);
+}
+
+// ---- Restore from phrase ----
+
+function _hwBeginRestore() {
+    if (!_hwCtx) _hwCtx = { fromSetup: false };
+    _hwSetTitle('Restore from Phrase');
+    ['hw-restore-phrase', 'hw-restore-nickname', 'hw-restore-pin', 'hw-restore-pin-confirm'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    var err = document.getElementById('hw-restore-error');
+    if (err) err.style.display = 'none';
+    _hwUpdateRestoreState();
+    _hwShowStep('hw-step-restore');
+    _hwOpenSheet();
+    setTimeout(function() { var p = document.getElementById('hw-restore-phrase'); if (p && !isMobile()) p.focus(); }, 120);
+}
+
+function _hwRestoreWordCount() {
+    var ta = document.getElementById('hw-restore-phrase');
+    var words = String(ta ? ta.value : '').trim().split(/\s+/).filter(Boolean);
+    return words.length;
+}
+
+function _hwUpdateRestoreState() {
+    var count = _hwRestoreWordCount();
+    var countEl = document.getElementById('hw-restore-word-count');
+    if (countEl) countEl.textContent = count + ' / 24 words';
+    var pin = document.getElementById('hw-restore-pin').value;
+    var confirm = document.getElementById('hw-restore-pin-confirm').value;
+    var btn = document.getElementById('hw-restore-btn');
+    if (btn) btn.disabled = !(count === 24 && _hwPinValid(pin) && pin === confirm);
+}
+
+function _hwDoRestore() {
+    var phrase = document.getElementById('hw-restore-phrase').value.trim().replace(/\s+/g, ' ');
+    var nickname = document.getElementById('hw-restore-nickname').value.trim();
+    var pin = document.getElementById('hw-restore-pin').value;
+    var confirm = document.getElementById('hw-restore-pin-confirm').value;
+    var err = document.getElementById('hw-restore-error');
+
+    var count = phrase ? phrase.split(' ').length : 0;
+    if (count !== 24) {
+        if (err) { err.textContent = 'Recovery phrase must be exactly 24 words.'; err.style.display = ''; }
+        return;
+    }
+    if (!_hwPinValid(pin)) {
+        if (err) { err.textContent = 'PIN must be 6–8 characters.'; err.style.display = ''; }
+        return;
+    }
+    if (pin !== confirm) {
+        if (err) { err.textContent = "PINs don't match."; err.style.display = ''; }
+        return;
+    }
+    if (err) err.style.display = 'none';
+
+    _hwShowWorking('Restoring identity onto your security key…');
+    RS.invoke('hw_restore', { phrase: phrase, pin: pin, nickname: nickname })
+        .then(function(res) {
+            _hwClearSecrets();
+            _hwFinish(res || {});
+        })
+        .catch(function(e) {
+            // Keep the typed phrase/name so the user can fix the PIN and retry.
+            var msg = (e && e.message) ? e.message : 'Restore failed';
+            showToast(msg, 'toast-red', 5000);
+            _hwShowStep('hw-step-restore');
+            var errEl = document.getElementById('hw-restore-error');
+            if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
+        });
+}
+
+// ---- Import existing ----
+
+function _hwDoImport() {
+    var nickname = document.getElementById('hw-import-nickname').value.trim();
+    var err = document.getElementById('hw-import-error');
+    if (err) err.style.display = 'none';
+    _hwShowWorking('Registering your security key…');
+    RS.invoke('hw_import_existing', { nickname: nickname })
+        .then(function(res) { _hwFinish(res || {}); })
+        .catch(function(e) {
+            showToast((e && e.message) ? e.message : 'Failed to register key', 'toast-red', 5000);
+            _hwShowImportStep();
+        });
+}
+
+// Completion: setup path reloads via the import-completion flow; running-app
+// path switches to the new identity and closes the sheet.
+function _hwFinish(result) {
+    // Read context before closing — closeHardwareWizard() nulls _hwCtx.
+    var fromSetup = _hwCtx && _hwCtx.fromSetup;
+    var newHash = result && result.hash;
+    closeHardwareWizard();
+    if (fromSetup) {
+        if (typeof completeSetupAfterIdentityImport === 'function') {
+            completeSetupAfterIdentityImport(result);
+        } else {
+            window.location.href = '/#dashboard';
+            window.location.reload();
+        }
+        return;
+    }
+    showToast('Hardware identity added', 'toast-green', 3000);
+    loadIdentities();
+    if (newHash) switchToIdentity(newHash);
+}
+
+function _hwCopyMnemonic() {
+    var phrase = _hwCtx && _hwCtx.mnemonic;
+    if (!phrase) return;
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(phrase).then(function() {
+            showCopyConfirmationToast('Recovery phrase');
+        }).catch(function() {});
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // iOS does not support USB PIV security keys; hide the hardware entry points
+    // there (mirrors the USB-gating convention used for RNode/Radio).
+    var hideHardware = (typeof isIOS === 'function') && isIOS();
+
+    var identityHwBtn = document.getElementById('identity-hardware-btn');
+    if (identityHwBtn) {
+        if (hideHardware) identityHwBtn.style.display = 'none';
+        identityHwBtn.addEventListener('click', function() {
+            openHardwareWizard({ fromSetup: false });
+        });
+    }
+
+    var hwClose = document.getElementById('hw-modal-close');
+    if (hwClose) hwClose.addEventListener('click', closeHardwareWizard);
+
+    var hwRetry = document.getElementById('hw-detect-retry-btn');
+    if (hwRetry) hwRetry.addEventListener('click', _hwRunDetect);
+
+    var modeRecoverable = document.getElementById('hw-mode-recoverable');
+    if (modeRecoverable) modeRecoverable.addEventListener('click', function() {
+        _hwCtx.mode = 'recoverable';
+        _hwShowPinStep();
+    });
+    var modeHardwareOnly = document.getElementById('hw-mode-hardware-only');
+    if (modeHardwareOnly) modeHardwareOnly.addEventListener('click', function() {
+        _hwCtx.mode = 'hardware-only';
+        _hwShowPinStep();
+    });
+
+    var pin = document.getElementById('hw-pin');
+    var pinConfirm = document.getElementById('hw-pin-confirm');
+    if (pin) pin.addEventListener('input', _hwUpdatePinContinue);
+    if (pinConfirm) {
+        pinConfirm.addEventListener('input', _hwUpdatePinContinue);
+        pinConfirm.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                var b = document.getElementById('hw-pin-continue-btn');
+                if (b && !b.disabled) b.click();
+            }
+        });
+    }
+    var pinContinue = document.getElementById('hw-pin-continue-btn');
+    if (pinContinue) pinContinue.addEventListener('click', _hwPinContinue);
+
+    var revealCover = document.getElementById('hw-mnemonic-cover');
+    if (revealCover) revealCover.addEventListener('click', function() {
+        revealCover.style.display = 'none';
+        var shell = document.querySelector('.hw-mnemonic-shell');
+        if (shell) shell.classList.add('revealed');
+    });
+    var copyBtn = document.getElementById('hw-mnemonic-copy-btn');
+    if (copyBtn) copyBtn.addEventListener('click', _hwCopyMnemonic);
+    var mnemonicConfirm = document.getElementById('hw-mnemonic-confirm');
+    if (mnemonicConfirm) mnemonicConfirm.addEventListener('change', function() {
+        var btn = document.getElementById('hw-mnemonic-continue-btn');
+        if (btn) btn.disabled = !mnemonicConfirm.checked;
+    });
+    var mnemonicContinue = document.getElementById('hw-mnemonic-continue-btn');
+    if (mnemonicContinue) mnemonicContinue.addEventListener('click', _hwShowVerify);
+
+    var verifyBtn = document.getElementById('hw-verify-btn');
+    if (verifyBtn) verifyBtn.addEventListener('click', _hwVerifyAndFinish);
+    var verifyBack = document.getElementById('hw-verify-back-btn');
+    if (verifyBack) verifyBack.addEventListener('click', function() {
+        if (_hwCtx && _hwCtx.mnemonic) _hwShowMnemonic(_hwCtx.mnemonic);
+    });
+
+    var restorePhrase = document.getElementById('hw-restore-phrase');
+    if (restorePhrase) restorePhrase.addEventListener('input', _hwUpdateRestoreState);
+    ['hw-restore-pin', 'hw-restore-pin-confirm'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('input', _hwUpdateRestoreState);
+    });
+    var restoreBtn = document.getElementById('hw-restore-btn');
+    if (restoreBtn) restoreBtn.addEventListener('click', _hwDoRestore);
+
+    var importBtn = document.getElementById('hw-import-btn');
+    if (importBtn) importBtn.addEventListener('click', _hwDoImport);
+
+    if (typeof initSheetSwipeDismiss === 'function') {
+        initSheetSwipeDismiss('hw-modal', 'hw-modal-overlay', closeHardwareWizard);
+    }
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            var modal = document.getElementById('hw-modal');
+            if (modal && modal.classList.contains('open')) closeHardwareWizard();
+        }
+    });
+});
+
+// Settings-tab utility: detect + import an existing hardware key directly.
+function removeHardwareIdentity(target) {
+    if (!target || !target.hash) return;
+    rsConfirm({
+        title: 'Remove Hardware Identity',
+        message: 'This removes the hardware identity "' + identityDisplayName(target) + '" from this device only. The security key itself is not modified — its keys stay on the device, and you can add it again later.',
+        confirmText: 'Remove',
+        danger: true
+    }).then(function(ok) {
+        if (!ok) return;
+        var removePromise;
+        if (target.is_active) {
+            var firstRemaining = null;
+            for (var j = 0; j < identityList.length; j++) {
+                if (identityList[j].hash !== target.hash) { firstRemaining = identityList[j]; break; }
+            }
+            if (!firstRemaining) {
+                showPreConditionToast('No other identity to switch to');
+                return;
+            }
+            removePromise = RS.invoke('api_activate_identity', { hashHex: firstRemaining.hash })
+                .then(function() {
+                    activeIdentityHash = firstRemaining.hash;
+                    return RS.invoke('hw_remove', { hash: target.hash });
+                });
+        } else {
+            removePromise = RS.invoke('hw_remove', { hash: target.hash });
+        }
+        removePromise.then(function() {
+            showToast('Hardware identity removed', 'toast-green', 3000);
+            selectedIdentityHash = null;
+            loadIdentities();
+        }).catch(function(err) {
+            showToast((err && err.message) ? err.message : 'Failed to remove identity', 'toast-red', 3000);
+        });
+    });
+}

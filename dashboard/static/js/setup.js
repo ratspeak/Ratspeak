@@ -283,6 +283,17 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    var hardwareKeyBtn = document.getElementById('setup-hardware-key-btn');
+    if (hardwareKeyBtn) {
+        // iOS lacks USB PIV support; hide the hardware-key option there.
+        if ((typeof isIOS === 'function') && isIOS()) {
+            hardwareKeyBtn.style.display = 'none';
+        }
+        hardwareKeyBtn.addEventListener('click', function() {
+            if (typeof openHardwareWizard === 'function') openHardwareWizard({ fromSetup: true });
+        });
+    }
+
     var copyBtn = document.getElementById('setup-copy-btn');
     if (copyBtn) {
         copyBtn.addEventListener('click', function() {

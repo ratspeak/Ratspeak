@@ -4012,3 +4012,229 @@ body.setup-active .bottom-bar {
 .view-grid-settings {
     grid-template-columns: 1fr;
 }
+
+/* ---------------------------------------------------------------------------
+   Hardware Key (YubiKey/Nitrokey) identity flow
+   --------------------------------------------------------------------------- */
+
+.identity-hardware-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 22px;
+    padding: 0 var(--space-4);
+    border-radius: var(--radius-lg-plus);
+    color: var(--accent);
+    background: var(--accent-bg-strong);
+    font-size: var(--type-badge-size);
+    font-weight: var(--type-badge-weight);
+    letter-spacing: var(--type-badge-tracking);
+    text-transform: uppercase;
+    flex-shrink: 0;
+}
+.identity-hardware-badge-icon {
+    width: 13px;
+    height: 13px;
+    fill: currentColor;
+    stroke: none;
+}
+.identity-hardware-badge--list {
+    min-height: 20px;
+    padding: 0 var(--space-3);
+    gap: var(--space-1);
+}
+
+/* Detect / working spinner panel */
+.hw-detect-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: var(--space-5);
+    padding: var(--space-12) var(--space-4);
+}
+.hw-detect-spinner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.hw-detect-text {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    line-height: 1.6;
+    max-width: 320px;
+}
+.hw-detect-sub {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+}
+.hw-detect-panel.hw-detect-error .hw-detect-spinner { display: none; }
+.hw-detect-panel.hw-detect-error .hw-detect-text { color: var(--status-error); }
+
+.hw-step-lead {
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    line-height: 1.65;
+    margin: 0 0 var(--space-6);
+}
+
+.hw-inline-hint {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.hw-error {
+    margin-top: var(--space-5);
+    padding: var(--space-4) var(--space-5);
+    border-radius: var(--radius-md);
+    background: var(--status-error-bg);
+    border: 1px solid var(--status-error-border);
+    color: var(--status-error);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+}
+
+/* Detected-device card */
+.hw-device-card,
+.hw-device-summary > .hw-device-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-5);
+    padding: var(--space-5) var(--space-6);
+    margin-bottom: var(--space-7);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-lg);
+    background: var(--surface-control);
+}
+.hw-device-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    color: var(--accent);
+    background: var(--accent-bg);
+    flex-shrink: 0;
+}
+.hw-device-icon .identity-hardware-badge-icon { width: 18px; height: 18px; }
+.hw-device-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.hw-device-name { font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
+.hw-device-detail { font-size: var(--text-xs); color: var(--text-muted); }
+
+/* Backup-mode selection cards */
+.hw-mode-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+    width: 100%;
+    text-align: left;
+    padding: var(--space-6) var(--space-6);
+    margin-bottom: var(--space-5);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-lg);
+    background: var(--surface-control);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+}
+.hw-mode-card:hover {
+    border-color: var(--accent);
+    background: var(--surface-control-hover);
+}
+.hw-mode-card-title { font-size: var(--text-base); font-weight: 700; color: var(--text-primary); }
+.hw-mode-card-sub {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.hw-mode-card-desc {
+    margin-top: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+/* Mnemonic reveal grid */
+.hw-mnemonic-shell {
+    position: relative;
+    border-radius: var(--radius-lg);
+}
+.hw-mnemonic-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-3);
+    filter: blur(7px);
+    transition: filter 0.2s ease;
+    pointer-events: none;
+}
+.hw-mnemonic-shell.revealed .hw-mnemonic-grid {
+    filter: none;
+    pointer-events: auto;
+}
+.hw-mnemonic-word {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-md);
+    background: var(--surface-control);
+    min-width: 0;
+}
+.hw-mnemonic-index {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    width: 18px;
+    text-align: right;
+    flex-shrink: 0;
+}
+.hw-mnemonic-text {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.hw-mnemonic-cover {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-4);
+    border: 1px dashed var(--border-control);
+    border-radius: var(--radius-lg);
+    background: var(--surface-control);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+.hw-mnemonic-cover:hover { color: var(--accent); border-color: var(--accent); }
+
+.hw-confirm-check {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-4);
+    margin-top: var(--space-6);
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    line-height: 1.5;
+    cursor: pointer;
+}
+.hw-confirm-check input { margin-top: 2px; flex-shrink: 0; }
+
+.hw-restore-textarea {
+    resize: vertical;
+    min-height: 72px;
+    font-family: var(--font-mono);
+    line-height: 1.6;
+}
