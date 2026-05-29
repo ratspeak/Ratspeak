@@ -261,6 +261,15 @@ function renderDiscoveredList(mode, favorStatic, activeHash) {
 }
 
 function renderHostingSettings() {
+    // Inbox hosting needs an always-available key; a hardware (PIV) identity can
+    // be unplugged or its session can lock, so hosting isn't offered for it.
+    var ai = (typeof activeIdentity === 'function') ? activeIdentity() : null;
+    if (ai && ai.is_hardware) {
+        return '<div class="relay-advanced-block">' +
+            '<div class="propagation-section-title">Hosted Offline Inbox</div>' +
+            '<div class="settings-row-desc">Not available for hardware-key identities — a hosted inbox would stop whenever the security key is removed or the session locks.</div>' +
+        '</div>';
+    }
     var enabled = !!propagationStatus.hosting_enabled;
     var nodeHash = propagationStatus.local_node_hash || '';
     var count = propagationStatus.local_node_message_count || 0;

@@ -13,6 +13,7 @@ rnode-tcp = ["ratspeak-runtime/rnode-tcp", "rns-interface/rnode-tcp", "rns-runti
 ble = ["ratspeak-runtime/ble", "dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
 mobile-throttle = ["ratspeak-runtime/mobile-throttle", "rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
 lxst-voice = ["ratspeak-runtime/lxst-voice"]
+hardware = ["ratspeak-runtime/hardware"]
 
 [dependencies]
 # Database

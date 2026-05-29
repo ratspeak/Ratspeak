@@ -216,6 +216,12 @@ pub async fn api_identity(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
             tracing::error!(error = %e, "db task panicked");
             Default::default()
         });
+    let is_hardware = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|l| l.as_ref().map(|m| m.is_hardware))
+        .unwrap_or(false);
     Ok(match active {
         Some(identity) => json!({
             "exists": true,
@@ -224,6 +230,7 @@ pub async fn api_identity(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
             "display_name": identity.get("display_name").and_then(|v| v.as_str()).unwrap_or(""),
             "status": identity.get("status").and_then(|v| v.as_str()).unwrap_or(""),
             "nickname": identity.get("nickname").and_then(|v| v.as_str()).unwrap_or(""),
+            "is_hardware": is_hardware,
         }),
         None => json!({
             "exists": false,
@@ -232,6 +239,7 @@ pub async fn api_identity(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
             "display_name": "",
             "status": "",
             "nickname": "",
+            "is_hardware": false,
         }),
     })
 }
@@ -244,7 +252,22 @@ pub async fn api_list_identities(state: State<'_, Arc<AppState>>) -> AppResult<V
             tracing::error!(error = %e, "list_identities db task panicked");
             Default::default()
         });
-    Ok(json!(identities))
+    // Tag each row hardware-backed if its on-disk artifact is a `.hwid`.
+    let dir = state.config.data_dir.join("identities");
+    let mut value = json!(identities);
+    if let Some(rows) = value.as_array_mut() {
+        for row in rows.iter_mut() {
+            let is_hw = row
+                .get("hash")
+                .and_then(|v| v.as_str())
+                .map(|h| dir.join(h).join("identity.hwid").exists())
+                .unwrap_or(false);
+            if let Some(obj) = row.as_object_mut() {
+                obj.insert("is_hardware".to_string(), json!(is_hw));
+            }
+        }
+    }
+    Ok(value)
 }
 
 #[derive(Deserialize)]
@@ -429,6 +452,11 @@ pub async fn api_export_identity_base64(
     if !validate_hex(&hash_hex, 16, 128) {
         return Err(AppError::bad_request("Invalid hash"));
     }
+    if is_hardware_identity(&state, &hash_hex) {
+        return Err(AppError::bad_request(
+            "Hardware-backed identity: the private key lives on the token and cannot be exported",
+        ));
+    }
     let key_bytes = state
         .lxmf
         .lock()
@@ -440,9 +468,25 @@ pub async fn api_export_identity_base64(
     }
 }
 
+/// A hardware-backed identity stores a `.hwid` instead of a private-key file.
+fn is_hardware_identity(state: &AppState, hash_hex: &str) -> bool {
+    state
+        .config
+        .data_dir
+        .join("identities")
+        .join(hash_hex)
+        .join("identity.hwid")
+        .exists()
+}
+
 pub(crate) fn export_identity_key_bytes(state: &AppState, hash_hex: &str) -> AppResult<Vec<u8>> {
     if !validate_hex(hash_hex, 16, 128) {
         return Err(AppError::bad_request("Invalid hash"));
+    }
+    if is_hardware_identity(state, hash_hex) {
+        return Err(AppError::bad_request(
+            "Hardware-backed identity: the private key lives on the token and cannot be exported",
+        ));
     }
     let key_bytes = state
         .lxmf
@@ -662,13 +706,13 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     })?
     .ok_or_else(|| AppError::not_found("Identity not found"))?;
 
-    let id_file = state
+    let id_dir = state
         .config
         .data_dir
         .join("identities")
-        .join(&hash_hex)
-        .join("identity");
-    if !id_file.exists() {
+        .join(&hash_hex);
+    // A hardware identity stores a `.hwid` (public metadata) instead of a key file.
+    if !id_dir.join("identity").exists() && !id_dir.join("identity.hwid").exists() {
         return Err(AppError::not_found("Identity file not found"));
     }
 
