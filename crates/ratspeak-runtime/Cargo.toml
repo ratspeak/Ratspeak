@@ -14,6 +14,8 @@ ble = ["dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
 mobile-throttle = ["rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
 # Native LXST call signalling and Opus audio bridge.
 lxst-voice = ["dep:cpal", "dep:lxst-core", "dep:lxst-rns", "dep:lxst-telephony"]
+# Hardware-backed (YubiKey/Nitrokey PIV) identities via rns-ratkey.
+hardware = ["dep:rns-ratkey", "rns-ratkey/hardware"]
 
 [dependencies]
 ratspeak-core = { workspace = true }
@@ -33,6 +35,7 @@ rns-link = { workspace = true }
 rns-protocol = { workspace = true }
 rns-interface = { workspace = true }
 rns-runtime = { workspace = true }
+rns-ratkey = { workspace = true, optional = true }
 lxmf-core = { workspace = true }
 lrgp = { workspace = true }
 lxst-core = { workspace = true, optional = true }

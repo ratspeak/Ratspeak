@@ -718,16 +718,15 @@ fn voice_runtime_inputs(
         .map(|mgr| mgr.handle.transport_tx.clone())
         .ok_or_else(|| "RNS is not initialized".to_string())?;
 
-    let private_key = state
+    // Clone is backend-aware: a hardware identity shares its PIV backend, so voice
+    // works whenever the session is unlocked (no extractable key required).
+    let identity = state
         .lxmf
         .lock()
         .map_err(|_| "LXMF state lock is poisoned".to_string())?
         .as_ref()
-        .and_then(|mgr| mgr.identity.get_private_key())
-        .ok_or_else(|| "Active identity private key is unavailable".to_string())?;
-
-    let identity = Identity::from_private_key(&*private_key)
-        .map_err(|e| format!("Failed to clone active identity for LXST voice: {e}"))?;
+        .map(|mgr| mgr.identity.clone())
+        .ok_or_else(|| "Active identity is unavailable".to_string())?;
 
     Ok((transport_tx, identity))
 }

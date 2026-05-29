@@ -808,7 +808,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         prop_rx,
                         &identity,
                         "lxmf.propagation",
-                        signing_key,
+                        Some(signing_key),
                     );
 
                     let offer_node = prop_node.clone();
@@ -1001,11 +1001,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             if let Some(link_rx) = lxmf_link_mgr_rx {
                 let link_info = state.lxmf.lock().ok().and_then(|l| {
                     let mgr = l.as_ref()?;
-                    let signing_key = mgr.identity.get_signing_key()?;
-                    let priv_key = mgr.identity.get_private_key()?;
-                    let identity =
-                        rns_identity::identity::Identity::from_private_key(&*priv_key).ok()?;
-                    Some((mgr.lxmf_dest_hash, identity, signing_key))
+                    // Backend-aware clone; signing_key is None for hardware identities
+                    // (link-mode proofs skip, opportunistic delivery still works).
+                    let signing_key = mgr.identity.get_signing_key();
+                    Some((mgr.lxmf_dest_hash, mgr.identity.clone(), signing_key))
                 });
 
                 if let Some((lxmf_dest_hash, identity, signing_key)) = link_info {

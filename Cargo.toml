@@ -24,6 +24,7 @@ rns-link = { path = "../rsReticulum/crates/rns-link" }
 rns-protocol = { path = "../rsReticulum/crates/rns-protocol" }
 rns-interface = { path = "../rsReticulum/crates/rns-interface" }
 rns-runtime = { path = "../rsReticulum/crates/rns-runtime" }
+rns-ratkey = { path = "../rsReticulum/crates/rns-ratkey" }
 
 # --- From rsLXMF (sibling directory) ---
 lxmf-core = { path = "../rsLXMF/crates/lxmf-core" }

@@ -708,6 +708,9 @@ struct PendingDirectLinkIdentification {
 
 pub struct LxmfManager {
     pub identity: Identity,
+    /// True when `identity` is backed by a hardware token (PIV). Gates features
+    /// such as propagation-node hosting and disables private-key export.
+    pub is_hardware: bool,
     pub identity_hash: String,
     pub lxmf_hash: String,
     pub lxmf_dest_hash: [u8; 16],
@@ -761,6 +764,31 @@ pub struct LxmfManager {
     direct_retry_started_at: HashMap<[u8; 32], f64>,
 }
 
+/// Loads a hardware (PIV-backed) identity from its `.hwid`. PIN comes from the
+/// `RATKEY_PIN` env var for now — a temporary stand-in until the UI prompts for it.
+#[cfg(feature = "hardware")]
+fn load_hwid_identity(
+    hwid_file: &Path,
+    hash: &str,
+) -> Result<Identity, Box<dyn std::error::Error + Send + Sync>> {
+    let cfg = rns_ratkey::HwidConfig::from_file(hwid_file)
+        .map_err(|e| format!("invalid .hwid for {hash}: {e}"))?;
+    // TODO(ratkey): replace the env-var PIN with a UI prompt at activation time.
+    let pin = std::env::var("RATKEY_PIN")
+        .map_err(|_| "hardware identity is active but RATKEY_PIN is not set".to_string())?;
+    tracing::info!(%hash, "loading hardware (PIV) identity");
+    Ok(rns_ratkey::load_hardware_identity(&cfg, &pin)
+        .map_err(|e| format!("hardware identity load failed: {e}"))?)
+}
+
+#[cfg(not(feature = "hardware"))]
+fn load_hwid_identity(
+    _hwid_file: &Path,
+    hash: &str,
+) -> Result<Identity, Box<dyn std::error::Error + Send + Sync>> {
+    Err(format!("identity {hash} is hardware-backed but this build lacks the `hardware` feature").into())
+}
+
 impl LxmfManager {
     pub fn load_or_create(
         data_dir: &Path,
@@ -773,9 +801,14 @@ impl LxmfManager {
         std::fs::create_dir_all(&identities_dir)?;
 
         let legacy_path = ratspeak_dir.join("identity");
+        let mut is_hardware = false;
         let identity = if let Some(hash) = preferred_identity_hash.filter(|h| !h.is_empty()) {
             let id_file = identities_dir.join(hash).join("identity");
-            if id_file.exists() {
+            let hwid_file = identities_dir.join(hash).join("identity.hwid");
+            if hwid_file.exists() {
+                is_hardware = true;
+                load_hwid_identity(&hwid_file, hash)?
+            } else if id_file.exists() {
                 tracing::info!(
                     "Loading active identity from profile: {}",
                     id_file.display()
@@ -932,6 +965,7 @@ impl LxmfManager {
 
         Ok(Self {
             identity,
+            is_hardware,
             identity_hash,
             lxmf_hash,
             lxmf_dest_hash,
