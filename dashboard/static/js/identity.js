@@ -1759,9 +1759,10 @@ function _hwCopyMnemonic() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    // iOS does not support USB PIV security keys; hide the hardware entry points
-    // there (mirrors the USB-gating convention used for RNode/Radio).
-    var hideHardware = (typeof isIOS === 'function') && isIOS();
+    // Hardware (YubiKey/PIV) identities are desktop-only for now: the `hardware`
+    // feature + hw_* commands are gated off on mobile. Hide the entry points there.
+    // TODO(ratkey-mobile): add the wrapped-session model — see HARDWARE_STATUS.md.
+    var hideHardware = (typeof isMobile === 'function') && isMobile();
 
     var identityHwBtn = document.getElementById('identity-hardware-btn');
     if (identityHwBtn) {

@@ -1,5 +1,11 @@
 //! YubiKey/Nitrokey (PIV) hardware-identity provisioning + app registration.
 //! Backs the ratspeak-tauri `hw_*` commands. Gated behind the `hardware` feature.
+//!
+//! **Desktop only at release.** `hardware` is off on mobile (pcsc is desktop-only);
+//! the hw_* commands and frontend entry points are gated to desktop too. A mobile
+//! hardware identity needs a different design — a wrapped software session unlocked
+//! via on-card ECDH — because transient NFC can't do always-on signing.
+//! TODO(ratkey-mobile): see rns-ratkey/HARDWARE_STATUS.md.
 
 use std::path::Path;
 

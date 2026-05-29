@@ -291,8 +291,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var hardwareKeyBtn = document.getElementById('setup-hardware-key-btn');
     if (hardwareKeyBtn) {
-        // iOS lacks USB PIV support; hide the hardware-key option there.
-        if ((typeof isIOS === 'function') && isIOS()) {
+        // Hardware (YubiKey/PIV) identities are desktop-only for now — the
+        // `hardware` feature + hw_* commands are gated off on mobile.
+        // TODO(ratkey-mobile): mobile needs the wrapped-session model (tap to
+        // unlock a software session via on-card ECDH) — see HARDWARE_STATUS.md.
+        if ((typeof isMobile === 'function') && isMobile()) {
             hardwareKeyBtn.style.display = 'none';
         }
         hardwareKeyBtn.addEventListener('click', function() {
