@@ -1635,7 +1635,7 @@ mod tests {
     }
 
     fn install_lxmf_manager(state: &Arc<AppState>, mode: &str, manual_node: &str) -> String {
-        let mgr = LxmfManager::load_or_create(&state.config.data_dir, None).unwrap();
+        let mgr = LxmfManager::load_or_create(&state.config.data_dir, None, None).unwrap();
         let identity_id = mgr.identity_hash.clone();
         crate::db::save_identity(&state.db, &identity_id, &mgr.lxmf_hash, "test", "Test");
         crate::db::set_active_identity(&state.db, &identity_id).unwrap();
@@ -2043,7 +2043,7 @@ mod tests {
         let node_hex = hex::encode(node);
         let remote = Identity::new();
         let mut mgr =
-            crate::lxmf::LxmfManager::load_or_create(&state.config.data_root, None).unwrap();
+            crate::lxmf::LxmfManager::load_or_create(&state.config.data_root, None, None).unwrap();
 
         assert!(!relay_send_metadata_ready(&state, &node));
 

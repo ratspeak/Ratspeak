@@ -801,6 +801,14 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     state.set_startup_stage("checking");
     crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
 
+    // Switching to a hardware identity comes up locked (awaiting PIN) — a valid
+    // intermediate state, not a failed switch. Keep it active and let the unlock
+    // prompt (driven by the hardware_locked event) take over; do not roll back.
+    if state.hw_locked_hash().as_deref() == Some(hash_hex.as_str()) {
+        state.emit_to_all("identity_switched", json!({ "hash": hash_hex, "locked": true }));
+        return Ok(json!({ "hash": hash_hex, "locked": true }));
+    }
+
     let (loaded_identity, loaded_lxmf, loaded_display, loaded_status) = {
         state
             .lxmf

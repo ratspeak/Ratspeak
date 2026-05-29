@@ -34,7 +34,10 @@ pub async fn api_version() -> AppResult<Value> {
 
 #[tauri::command]
 pub async fn api_startup_progress(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    Ok(json!({ "stage": state.get_startup_stage() }))
+    Ok(json!({
+        "stage": state.get_startup_stage(),
+        "hw_locked": state.hw_locked_hash(),
+    }))
 }
 
 #[tauri::command]
@@ -62,7 +65,7 @@ pub async fn api_setup_complete(
     let display_name = sanitize_announced_display_name(args.display_name.as_deref().unwrap_or(""))
         .map_err(AppError::bad_request)?;
 
-    match crate::lxmf::LxmfManager::load_or_create(&state.config.data_root, None) {
+    match crate::lxmf::LxmfManager::load_or_create(&state.config.data_root, None, None) {
         Ok(mgr) => {
             let identity_hash = mgr.identity_hash.clone();
             let lxmf_hash = mgr.lxmf_hash.clone();

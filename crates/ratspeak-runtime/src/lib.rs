@@ -345,12 +345,24 @@ fn seed_identity_rns_config_from_app_private(
 
 /// Soft-shutdown: stop RNS/LXMF tasks without re-init. App stays open.
 pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
+    // Supersede any pending auto-lock timer for the session being torn down.
+    state
+        .hw_lock_gen
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     state.emit_to_all("system_status", json!({"status": "stopping"}));
     #[cfg(feature = "lxst-voice")]
     voice::shutdown_voice_service(state).await;
     if let Ok(sig) = state.session_shutdown.read() {
         sig.trigger();
     }
+    // Hold a backend-preserving clone of a hardware identity so we can re-lock the
+    // token AFTER the signing loops stop — locking earlier would leave a window of
+    // failed/garbage signatures.
+    let hw_identity = state.lxmf.lock().ok().and_then(|lxmf| {
+        lxmf.as_ref()
+            .filter(|m| m.is_hardware)
+            .map(|m| m.identity.clone())
+    });
     let rns_mgr = state.rns.write().ok().and_then(|mut rns| rns.take());
     if let Some(mgr) = rns_mgr {
         teardown_rns_runtime_interfaces(&mgr.handle).await;
@@ -364,6 +376,10 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
     }
     if let Ok(mut lxmf) = state.lxmf.lock() {
         *lxmf = None;
+    }
+    // All signing loops are down — re-lock the token (drops the on-card PIN cache).
+    if let Some(id) = hw_identity {
+        id.lock();
     }
     state.clear_identity_scoped_runtime_state();
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -391,6 +407,49 @@ async fn teardown_rns_runtime_interfaces(handle: &rns_runtime::reticulum::Reticu
 }
 
 /// Initialize RNS runtime and LXMF manager.
+/// Arm the hardware auto-lock timer (no-op unless `hardware_session_timeout` > 0).
+/// The timer fires once; it locks the session only if its generation still matches
+/// (i.e. the session wasn't switched/unlocked/quit in the meantime).
+fn arm_hw_lock_timer(state: &Arc<AppState>) {
+    let secs = db::get_setting(&state.db, "hardware_session_timeout")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    if secs == 0 {
+        return;
+    }
+    let generation = state.hw_lock_gen.load(std::sync::atomic::Ordering::SeqCst);
+    let st = Arc::clone(state);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(secs)).await;
+        lock_hardware_session(st, generation).await;
+    });
+}
+
+/// Auto-lock fired: tear down the session (which re-locks the token) and enter the
+/// locked state so the UI prompts for the PIN again.
+async fn lock_hardware_session(state: Arc<AppState>, generation: u64) {
+    // Serialize with switch/unlock so two teardowns can't race on rns/lxmf.
+    let _guard = state.identity_switch_lock.lock().await;
+    // Superseded while we waited on the lock (switch / unlock / quit)?
+    if state.hw_lock_gen.load(std::sync::atomic::Ordering::SeqCst) != generation {
+        return;
+    }
+    let hash = state.lxmf.lock().ok().and_then(|l| {
+        l.as_ref()
+            .filter(|m| m.is_hardware)
+            .map(|m| m.identity_hash.clone())
+    });
+    let Some(hash) = hash else { return };
+    tracing::info!(%hash, "hardware session auto-lock timeout — locking");
+    shutdown_rns_lxmf(&state).await;
+    state.set_hw_locked(Some(hash.clone()));
+    state.set_startup_stage("hw_locked");
+    state.emit_to_all(
+        "hardware_locked",
+        serde_json::json!({ "hash": hash, "reason": "timeout" }),
+    );
+}
+
 pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     propagation::seed_static_nodes(&state);
 
@@ -424,8 +483,37 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 .map(str::to_string)
         });
 
-    match lxmf::LxmfManager::load_or_create(&data_dir, preferred_identity_hash.as_deref()) {
+    // Hardware identities need a PIN to unlock the token. If the active identity
+    // is hardware and no PIN is staged, enter the locked state and wait for
+    // `hw_unlock` rather than coming up with no identity.
+    let hw_pin = state.take_pending_hw_pin();
+    let active_is_hardware = preferred_identity_hash
+        .as_deref()
+        .map(|h| {
+            data_dir
+                .join(".ratspeak")
+                .join("identities")
+                .join(h)
+                .join("identity.hwid")
+                .exists()
+        })
+        .unwrap_or(false);
+    if active_is_hardware && hw_pin.is_none() {
+        let hash = preferred_identity_hash.clone().unwrap_or_default();
+        tracing::info!(%hash, "hardware identity locked — awaiting PIN");
+        state.set_hw_locked(Some(hash.clone()));
+        state.set_startup_stage("hw_locked");
+        state.emit_to_all(
+            "hardware_locked",
+            serde_json::json!({ "hash": hash, "reason": "pin_required" }),
+        );
+        return;
+    }
+
+    match lxmf::LxmfManager::load_or_create(&data_dir, preferred_identity_hash.as_deref(), hw_pin) {
         Ok(mut mgr) => {
+            state.set_hw_locked(None);
+            state.set_hw_last_error(None);
             if let Some(preferred) = preferred_identity_hash.as_deref()
                 && mgr.identity_hash != preferred
             {
@@ -550,6 +638,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 state.emit_to_all("contacts_update", serde_json::json!(contacts_list));
             }
 
+            let is_hw = mgr.is_hardware;
             state.set_lxmf(mgr);
 
             // Pre-warm conversations cache so first paint doesn't await DB.
@@ -559,10 +648,26 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 tracing::warn!("conversations pre-warm failed; tab will fetch on demand");
             }
             tracing::info!("LXMF manager initialized");
+            // Hardware identities can auto-lock after an idle timeout (off by default).
+            if is_hw {
+                arm_hw_lock_timer(&state);
+            }
             state.request_poll_now();
         }
         Err(e) => {
-            tracing::error!("Failed to initialize LXMF: {e}");
+            let msg = e.to_string();
+            tracing::error!("Failed to initialize LXMF: {msg}");
+            if active_is_hardware {
+                let hash = preferred_identity_hash.clone().unwrap_or_default();
+                state.set_hw_last_error(Some(msg.clone()));
+                state.set_hw_locked(Some(hash.clone()));
+                state.set_startup_stage("hw_locked");
+                state.emit_to_all(
+                    "hardware_locked",
+                    serde_json::json!({ "hash": hash, "error": msg }),
+                );
+                return;
+            }
         }
     }
 

@@ -844,11 +844,42 @@ pub async fn set_auto_announce(state: State<'_, Arc<AppState>>, interval: u64) -
 
 #[tauri::command]
 pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let hw_timeout = db::spawn_db(state.db.clone(), |p| {
+        db::get_setting(&p, "hardware_session_timeout")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    })
+    .await
+    .unwrap_or(0);
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
         "announce_ratspeak_usage": state.announce_ratspeak_usage_enabled(),
         "peers_sort": persisted_peers_sort(&state),
+        "hardware_session_timeout": hw_timeout,
     }))
+}
+
+/// Auto-lock timeout for hardware identities (seconds; 0 = off). Applies on the
+/// next unlock/boot — the running session keeps its current timer.
+#[tauri::command]
+pub async fn set_hardware_lock_timeout(
+    state: State<'_, Arc<AppState>>,
+    seconds: u64,
+) -> AppResult<Value> {
+    let seconds = if seconds == 0 { 0 } else { seconds.clamp(60, 86400) };
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, "hardware_session_timeout", &seconds.to_string())
+    })
+    .await
+    .map_err(|_| AppError::internal("set_hardware_lock_timeout db task panicked"))?
+    .map_err(|e| AppError::database_unavailable(format!("Failed to save lock timeout: {e}")))?;
+
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({ "hardware_session_timeout": seconds }),
+    );
+    tracing::info!("Hardware auto-lock timeout set to {seconds}s");
+    Ok(json!({ "hardware_session_timeout": seconds }))
 }
 
 #[tauri::command]

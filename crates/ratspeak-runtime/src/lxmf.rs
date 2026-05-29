@@ -770,14 +770,15 @@ pub struct LxmfManager {
 fn load_hwid_identity(
     hwid_file: &Path,
     hash: &str,
+    pin: Option<&str>,
 ) -> Result<Identity, Box<dyn std::error::Error + Send + Sync>> {
     let cfg = rns_ratkey::HwidConfig::from_file(hwid_file)
         .map_err(|e| format!("invalid .hwid for {hash}: {e}"))?;
-    // TODO(ratkey): replace the env-var PIN with a UI prompt at activation time.
-    let pin = std::env::var("RATKEY_PIN")
-        .map_err(|_| "hardware identity is active but RATKEY_PIN is not set".to_string())?;
+    let pin = pin.ok_or_else(|| "hardware identity is locked (no PIN provided)".to_string())?;
     tracing::info!(%hash, "loading hardware (PIV) identity");
-    Ok(rns_ratkey::load_hardware_identity(&cfg, &pin)
+    // Keep the RatkeyError Display in the message — the unlock UI parses it for
+    // remaining-attempts / blocked.
+    Ok(rns_ratkey::load_hardware_identity(&cfg, pin)
         .map_err(|e| format!("hardware identity load failed: {e}"))?)
 }
 
@@ -785,6 +786,7 @@ fn load_hwid_identity(
 fn load_hwid_identity(
     _hwid_file: &Path,
     hash: &str,
+    _pin: Option<&str>,
 ) -> Result<Identity, Box<dyn std::error::Error + Send + Sync>> {
     Err(format!("identity {hash} is hardware-backed but this build lacks the `hardware` feature").into())
 }
@@ -793,6 +795,7 @@ impl LxmfManager {
     pub fn load_or_create(
         data_dir: &Path,
         preferred_identity_hash: Option<&str>,
+        hw_pin: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let ratspeak_dir = data_dir.join(".ratspeak");
         std::fs::create_dir_all(&ratspeak_dir)?;
@@ -807,7 +810,7 @@ impl LxmfManager {
             let hwid_file = identities_dir.join(hash).join("identity.hwid");
             if hwid_file.exists() {
                 is_hardware = true;
-                load_hwid_identity(&hwid_file, hash)?
+                load_hwid_identity(&hwid_file, hash, hw_pin.as_deref())?
             } else if id_file.exists() {
                 tracing::info!(
                     "Loading active identity from profile: {}",
@@ -1018,13 +1021,14 @@ impl LxmfManager {
     pub fn load_identity(
         &mut self,
         hash_hex: &str,
+        hw_pin: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let switch_dir = self.data_dir.join("identities").join(hash_hex);
         let id_file = switch_dir.join("identity");
         let hwid_file = switch_dir.join("identity.hwid");
 
         let (identity, is_hardware) = if hwid_file.exists() {
-            (load_hwid_identity(&hwid_file, hash_hex)?, true)
+            (load_hwid_identity(&hwid_file, hash_hex, hw_pin)?, true)
         } else if id_file.exists() {
             (Identity::from_file(&id_file)?, false)
         } else {
@@ -4657,7 +4661,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        LxmfManager::load_or_create(&tmp, None).unwrap()
+        LxmfManager::load_or_create(&tmp, None, None).unwrap()
     }
 
     fn next_outbound(rx: &mut mpsc::Receiver<TransportMessage>) -> Vec<u8> {
@@ -4986,10 +4990,10 @@ mod tests {
                 .as_nanos()
         ));
         let pool = test_pool();
-        let mgr = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let mgr = LxmfManager::load_or_create(&tmp, None, None).unwrap();
         let (second_hash, _) = mgr.create_identity("Second", &pool).unwrap();
 
-        let loaded = LxmfManager::load_or_create(&tmp, Some(&second_hash)).unwrap();
+        let loaded = LxmfManager::load_or_create(&tmp, Some(&second_hash), None).unwrap();
         assert_eq!(loaded.identity_hash, second_hash);
     }
 
@@ -5004,9 +5008,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let _ = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let _ = LxmfManager::load_or_create(&tmp, None, None).unwrap();
 
-        match LxmfManager::load_or_create(&tmp, Some("missing")) {
+        match LxmfManager::load_or_create(&tmp, Some("missing"), None) {
             Ok(_) => panic!("missing preferred identity should fail"),
             Err(err) => assert!(err.to_string().contains("active identity file not found")),
         }
@@ -6553,7 +6557,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let mgr = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let mgr = LxmfManager::load_or_create(&tmp, None, None).unwrap();
         let id_dir = tmp
             .join(".ratspeak")
             .join("identities")
@@ -6581,7 +6585,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let mgr = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let mgr = LxmfManager::load_or_create(&tmp, None, None).unwrap();
         let id_dir = tmp
             .join(".ratspeak")
             .join("identities")
@@ -6932,7 +6936,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let mut mgr = LxmfManager::load_or_create(&tmp, None).unwrap();
+        let mut mgr = LxmfManager::load_or_create(&tmp, None, None).unwrap();
         let identity_hash = mgr.identity_hash.clone();
         let propagation_node = [0x66; 16];
 
@@ -6940,7 +6944,7 @@ mod tests {
         mgr.save_crypto_state();
         drop(mgr);
 
-        let restored = LxmfManager::load_or_create(&tmp, Some(&identity_hash)).unwrap();
+        let restored = LxmfManager::load_or_create(&tmp, Some(&identity_hash), None).unwrap();
         assert_eq!(restored.router.get_stamp_cost(&propagation_node), Some(19));
     }
 

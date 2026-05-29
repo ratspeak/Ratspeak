@@ -499,6 +499,7 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::set_auto_announce,
             ratspeak_tauri::commands::interfaces::api_app_settings,
             ratspeak_tauri::commands::interfaces::set_peers_sort,
+            ratspeak_tauri::commands::interfaces::set_hardware_lock_timeout,
             ratspeak_tauri::commands::interfaces::set_announce_ratspeak_usage,
             ratspeak_tauri::commands::interfaces::api_notification_settings,
             ratspeak_tauri::commands::interfaces::set_desktop_notifications,
@@ -610,6 +611,8 @@ pub fn run() {
             ratspeak_tauri::commands::hardware::hw_restore,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             ratspeak_tauri::commands::hardware::hw_remove,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ratspeak_tauri::commands::hardware::hw_unlock,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

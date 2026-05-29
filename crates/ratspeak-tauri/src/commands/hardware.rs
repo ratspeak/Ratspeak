@@ -126,3 +126,55 @@ pub async fn hw_remove(state: State<'_, Arc<AppState>>, hash: String) -> AppResu
         .map_err(AppError::bad_request)?;
     to_value(serde_json::json!({ "removed": true }))
 }
+
+/// Unlock the active hardware identity with the user's PIN. Uniformly tears down
+/// and re-initializes (full reload — the backend Arc is shared into the RNS link
+/// manager), then reports success or a structured failure (wrong PIN with
+/// remaining attempts, or PIN-blocked).
+#[tauri::command]
+pub async fn hw_unlock(state: State<'_, Arc<AppState>>, pin: String) -> AppResult<Value> {
+    check_pin(&pin)?;
+    let state = Arc::clone(&state);
+    let _guard = state.identity_switch_lock.lock().await;
+
+    crate::shutdown_rns_lxmf(&state).await;
+    state.clear_identity_scoped_runtime_state();
+    state.set_hw_last_error(None);
+    state.set_pending_hw_pin(Some(pin));
+    if let Ok(mut sig) = state.session_shutdown.write() {
+        *sig = rns_runtime::lifecycle::ShutdownSignal::new();
+    }
+    state.set_startup_stage("checking");
+    crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+
+    let unlocked = state.lxmf.lock().ok().map(|l| l.is_some()).unwrap_or(false);
+    if unlocked {
+        state.set_hw_locked(None);
+        return to_value(serde_json::json!({ "ok": true }));
+    }
+    let msg = state
+        .take_hw_last_error()
+        .unwrap_or_else(|| "Could not unlock the hardware identity.".to_string());
+    let locked = msg.contains("PIN locked");
+    to_value(serde_json::json!({
+        "ok": false,
+        "error": msg,
+        "locked": locked,
+        "remaining": parse_remaining(&msg),
+    }))
+}
+
+/// Pull N from RatkeyError::PinFailed's "(N attempts remaining)" Display.
+fn parse_remaining(msg: &str) -> Option<u8> {
+    let idx = msg.find(" attempts remaining")?;
+    msg[..idx]
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>()
+        .parse()
+        .ok()
+}

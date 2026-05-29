@@ -107,6 +107,16 @@ pub struct AppState {
     pub rns_config_lock: Mutex<()>,
     pub identity_switch_lock: tokio::sync::Mutex<()>,
     pub identity_session_generation: AtomicU64,
+    /// PIN handed to the next hardware-identity load (set by `hw_unlock`, consumed
+    /// by `init_rns_lxmf`). Never persisted.
+    pub hw_pending_pin: Mutex<Option<String>>,
+    /// Hash of a hardware identity that is active but locked (awaiting PIN).
+    pub hw_locked: RwLock<Option<String>>,
+    /// Last hardware-unlock failure message (wrong PIN / blocked / no device).
+    pub hw_last_error: Mutex<Option<String>>,
+    /// Bumped on every session teardown; an auto-lock timer no-ops if its captured
+    /// generation no longer matches (i.e. the session was switched/unlocked/quit).
+    pub hw_lock_gen: AtomicU64,
 }
 
 impl AppState {
@@ -208,7 +218,42 @@ impl AppState {
             rns_config_lock: Mutex::new(()),
             identity_switch_lock: tokio::sync::Mutex::new(()),
             identity_session_generation: AtomicU64::new(0),
+            hw_pending_pin: Mutex::new(None),
+            hw_locked: RwLock::new(None),
+            hw_last_error: Mutex::new(None),
+            hw_lock_gen: AtomicU64::new(0),
         }
+    }
+
+    /// Take the PIN staged for the next hardware-identity load (one-shot).
+    pub fn take_pending_hw_pin(&self) -> Option<String> {
+        self.hw_pending_pin.lock().ok().and_then(|mut p| p.take())
+    }
+
+    pub fn set_pending_hw_pin(&self, pin: Option<String>) {
+        if let Ok(mut p) = self.hw_pending_pin.lock() {
+            *p = pin;
+        }
+    }
+
+    pub fn set_hw_locked(&self, hash: Option<String>) {
+        if let Ok(mut h) = self.hw_locked.write() {
+            *h = hash;
+        }
+    }
+
+    pub fn hw_locked_hash(&self) -> Option<String> {
+        self.hw_locked.read().ok().and_then(|h| h.clone())
+    }
+
+    pub fn set_hw_last_error(&self, e: Option<String>) {
+        if let Ok(mut x) = self.hw_last_error.lock() {
+            *x = e;
+        }
+    }
+
+    pub fn take_hw_last_error(&self) -> Option<String> {
+        self.hw_last_error.lock().ok().and_then(|mut x| x.take())
     }
 
     pub fn request_poll_now(&self) {
