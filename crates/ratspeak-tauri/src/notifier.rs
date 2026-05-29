@@ -17,7 +17,8 @@ impl NativeNotifier for TauriNotifier {
         {
             let _ = notification;
             // TODO(iOS release): enable after App Store/TestFlight signing and
-            // notification entitlement review are finalized.
+            // notification entitlement review are finalized. When unstubbed, also
+            // wire the `route` extra for tap deep-linking (see non-iOS branch).
             tracing::debug!("iOS native notifications are stubbed until release signing is ready");
             return;
         }
@@ -55,7 +56,12 @@ impl NativeNotifier for TauriNotifier {
                 builder = builder.id(id);
             }
             if let Some(thread_id) = thread_id {
-                builder = builder.group(thread_id);
+                // `route` lets the frontend `onAction` handler deep-link a tapped
+                // notification to the right view (lxmf:<hash> / lrgp:<session>).
+                // Recoverable on Android via the serialized notification payload.
+                // TODO(desktop): notify-rust has no tap/action callback, so taps
+                // only focus the window; investigate a richer backend later.
+                builder = builder.extra("route", thread_id.clone()).group(thread_id);
             }
             #[cfg(target_os = "android")]
             {

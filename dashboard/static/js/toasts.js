@@ -39,14 +39,16 @@ function showToast(message, colorClass, duration, onClick) {
     var msgSpan = document.createElement('span');
     msgSpan.textContent = message;
     msgSpan.style.flex = '1';
+    toast.appendChild(msgSpan);
+
+    // Whole toast is the tap target so the click area matches the visual.
     if (onClick) {
-        msgSpan.style.cursor = 'pointer';
-        msgSpan.addEventListener('click', function() {
+        toast.style.cursor = 'pointer';
+        toast.addEventListener('click', function() {
             dismissToast();
             onClick();
         });
     }
-    toast.appendChild(msgSpan);
 
     var closeBtn = document.createElement('button');
     closeBtn.className = 'toast-close';
@@ -69,7 +71,10 @@ function showToast(message, colorClass, duration, onClick) {
     svg.appendChild(line1);
     svg.appendChild(line2);
     closeBtn.appendChild(svg);
-    closeBtn.addEventListener('click', dismissToast);
+    closeBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        dismissToast();
+    });
     toast.appendChild(closeBtn);
 
     RS.gestures.attachSwipe(toast, {

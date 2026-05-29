@@ -46,6 +46,52 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     document.addEventListener('DOMContentLoaded', _rsBootstrapOnLoad);
 }
 
+// Native notification tap routing. When the app is backgrounded and the user
+// taps a notification, deep-link to the originating conversation/game via the
+// `route` extra the backend attaches (lxmf:<hash> / lrgp:<session_id>).
+// Android-only in practice today: desktop notify-rust exposes no tap callback
+// and iOS notifications are stubbed pre-release (see ratspeak-tauri notifier.rs).
+function _routeNotificationTap(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    // Android delivers {inputValue, actionId, notification:{...,extra}}; a flat
+    // shape (extra at top level) is tolerated for other backends.
+    var extra = (payload.notification && payload.notification.extra) || payload.extra;
+    var route = extra && extra.route;
+    if (typeof route !== 'string') return;
+    var sep = route.indexOf(':');
+    if (sep < 0) return;
+    var kind = route.slice(0, sep);
+    var id = route.slice(sep + 1);
+    if (!id) return;
+    if (kind === 'lxmf') {
+        if (typeof openConversationWith === 'function') openConversationWith(id);
+    } else if (kind === 'lrgp') {
+        if (typeof window.openGameSession === 'function') window.openGameSession(id);
+    }
+    // TODO(call menu): route kind === 'lxst' once the dedicated call menu exists;
+    // for now an unhandled kind just focuses the app, which is the desired behavior.
+}
+
+function _initNotificationTapRouting() {
+    var core = window.__TAURI__ && window.__TAURI__.core;
+    if (!core || typeof core.addPluginListener !== 'function') return false;
+    var p = core.addPluginListener('notification', 'actionPerformed', _routeNotificationTap);
+    if (p && typeof p.catch === 'function') {
+        p.catch(function(e) { window.RS.diag('warn', '[notif-tap] register failed:', e); });
+    }
+    return true;
+}
+
+(function _armNotificationTapRouting() {
+    if (_initNotificationTapRouting()) return;
+    // Tauri globals can inject after DOMContentLoaded on iOS WKWebView; poll briefly.
+    var attempts = 0;
+    var iv = setInterval(function() {
+        attempts++;
+        if (_initNotificationTapRouting() || attempts >= 20) clearInterval(iv);
+    }, 50);
+})();
+
 RS.listen('stats_update', function(data) {
     if (!data || typeof data !== 'object') return;
     lastStats = data;

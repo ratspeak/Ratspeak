@@ -1686,7 +1686,7 @@
         var isNew = !prev;
         if (isNew && typeof currentView !== 'undefined' && currentView !== 'games') {
             if (record.status === 'pending' && !_isMe(record, record.challenger)) {
-                if (typeof showToast === 'function') showToast('\uD83C\uDFAE Game challenge from ' + _contactName(record.contact_hash), 'toast-green', 5000);
+                if (typeof showToast === 'function') showToast('\uD83C\uDFAE Game challenge from ' + _contactName(record.contact_hash), 'toast-green', 5000, function() { window.openGameSession(record.game_id); });
                 if (typeof haptic === 'function') haptic('success');
                 if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
                     rsNotify.send({
@@ -1703,7 +1703,7 @@
         var movedSinceLast = prev && record.move_count !== prev.move_count;
         var notViewingThisGame = !_isViewingSession(record.game_id);
         if (movedSinceLast && notViewingThisGame && record.status === 'active') {
-            if (typeof showToast === 'function') showToast('Game update from ' + _contactName(record.contact_hash), 'toast-blue', 3000);
+            if (typeof showToast === 'function') showToast('Game update from ' + _contactName(record.contact_hash), 'toast-blue', 3000, function() { window.openGameSession(record.game_id); });
             if (typeof haptic === 'function') haptic('light');
             if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
                 rsNotify.send({
@@ -1762,6 +1762,20 @@
                 updateGamesBadge();
             }
         }).catch(function() {});
+    };
+
+    // Deep-link entry point for notification taps (route lrgp:<session_id>).
+    // Switches to the games view, refreshes sessions, then opens the board.
+    window.openGameSession = function(sessionId) {
+        if (!sessionId) return;
+        if (typeof switchView === 'function') switchView('games');
+        RS.invoke('get_all_game_sessions').then(function(sessions) {
+            if (Array.isArray(sessions)) {
+                _allSessions = sessions;
+                renderSessionList();
+            }
+            selectSession(sessionId);
+        }).catch(function() { selectSession(sessionId); });
     };
 
     window.updateGamesBadge = updateGamesBadge;

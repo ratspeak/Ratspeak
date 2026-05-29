@@ -460,6 +460,10 @@ fn notify_incoming_call_if_background(
         crate::contact_label_from_db(&state.db, remote_lxmf_destination, &identity_id)
     };
     let link_hex = hex::encode(link_id);
+    // TODO(call menu): this only fires for an *incoming* call and the tap just
+    // focuses Ratspeak. Once the dedicated call menu lands, (1) emit an ongoing
+    // notification for the duration of an active call, and (2) deep-link the
+    // `lxst:` route to that menu (the frontend tap router currently ignores it).
     state.emit_native_notification(ratspeak_core::NativeNotification::call(
         format!("Incoming call from {label}"),
         "Tap to open Ratspeak",
