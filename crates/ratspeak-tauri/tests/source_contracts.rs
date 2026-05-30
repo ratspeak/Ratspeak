@@ -2406,6 +2406,40 @@ fn hardware_new_identity_reset_flow_handles_initialized_keys() {
 }
 
 #[test]
+fn software_identity_creation_uses_passcode_and_shared_backup_flow() {
+    let root = repo_root();
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    let setup_js = read_source(root.join("dashboard/static/js/setup.js")).expect("setup js");
+    let modals_css =
+        read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+
+    assert!(identity_js.contains("function identityPasscodeOptionHtml"));
+    assert!(identity_js.contains("identityPasscodeOptionHtml('identity-create')"));
+    assert!(identity_js.contains("bindIdentityPasscodeOption('identity-create')"));
+    assert!(identity_js.contains("readIdentityPasscodeOption('identity-create')"));
+    assert!(identity_js.contains("function protectIdentityWithPasscode"));
+    assert!(identity_js.contains("RS.invoke('set_identity_passcode'"));
+    assert!(identity_js.contains("identityPasscodeOptionHtml('restore-phrase')"));
+    assert!(identity_js.contains("} else {\n            restore();\n        }"));
+
+    assert!(identity_js.contains("Tap to reveal phrase"));
+    assert!(
+        identity_js.contains("I have written down my ' + RECOVERY_PHRASE_WORDS + '-word phrase")
+    );
+    assert!(identity_js.contains("id=\"recovery-backup-cover\""));
+    assert!(identity_js.contains("id=\"recovery-backup-copy\""));
+    assert!(identity_js.contains("opts.requireConfirm !== false"));
+    assert!(identity_js.contains("passcodeProtected: !!passcode"));
+    assert!(setup_js.contains("showRecoveryPhraseBackup(data.mnemonic, function()"));
+
+    assert!(modals_css.contains(".identity-passcode-option"));
+    assert!(views_css.contains(".recovery-backup-card .hw-mnemonic-shell"));
+    assert!(views_css.contains(".recovery-backup-copy"));
+}
+
+#[test]
 fn identity_switch_refreshes_interface_state_without_stale_public_servers() {
     let root = repo_root();
     let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");

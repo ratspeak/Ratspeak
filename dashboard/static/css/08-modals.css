@@ -270,6 +270,18 @@
 .modal-field + .recovery-warn,
 .recovery-warn + .modal-field { margin-top: var(--space-5); }
 
+.identity-passcode-option {
+    margin-top: var(--space-5);
+}
+
+.identity-passcode-fields {
+    margin-top: var(--space-5);
+}
+
+.identity-passcode-fields[hidden] {
+    display: none;
+}
+
 
 .hub-iface-row {
     display: flex;

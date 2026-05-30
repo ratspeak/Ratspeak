@@ -4336,16 +4336,35 @@ body.setup-active .bottom-bar {
 .hw-unlock-forget { color: var(--status-error); }
 .hw-unlock-forget:hover { color: var(--status-error); }
 
-/* One-time recovery-phrase backup reveal (reuses the unlock overlay shell). */
-.recovery-backup-card { max-width: 460px; }
-/* Shown directly (no .hw-mnemonic-shell.revealed wrapper), so override the
-   base grid's reveal-gated blur — the words must be readable and selectable. */
+/* One-time recovery-phrase backup reveal (reuses the hardware backup controls). */
+.recovery-backup-card {
+    max-width: 520px;
+    align-items: stretch;
+    text-align: left;
+}
+.recovery-backup-card .hw-unlock-title {
+    text-align: left;
+}
+.recovery-backup-card .hw-mnemonic-shell {
+    min-height: 188px;
+}
 .recovery-backup-card .hw-mnemonic-grid {
     width: 100%;
-    filter: none;
-    pointer-events: auto;
     user-select: text;
     -webkit-user-select: text;
+}
+.recovery-backup-card .hw-mnemonic-cover {
+    min-height: 188px;
+}
+.recovery-backup-copy,
+.recovery-backup-done {
+    margin-top: var(--space-3);
+}
+.recovery-backup-copy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
 }
 .recovery-warn {
     font-size: var(--text-sm);

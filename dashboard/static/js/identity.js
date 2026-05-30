@@ -68,6 +68,96 @@ function copyIdentityValue(value, noun) {
     }).catch(function() {});
 }
 
+function identitySetInlineError(id, message) {
+    var errEl = document.getElementById(id);
+    if (!errEl) return;
+    if (message) {
+        errEl.textContent = message;
+        errEl.style.display = '';
+    } else {
+        errEl.textContent = '';
+        errEl.style.display = 'none';
+    }
+}
+
+function identityPasscodeOptionHtml(prefix, opts) {
+    opts = opts || {};
+    var label = opts.label || 'Encrypt this identity on this device';
+    var help = opts.help || 'Require a passcode when Ratspeak opens. Keep your ' +
+        RECOVERY_PHRASE_WORDS + '-word phrase; forgotten passcodes cannot be recovered.';
+    return '' +
+        '<label class="rs-dialog-checkbox-wrap identity-passcode-option">' +
+            '<input type="checkbox" id="' + prefix + '-passcode-enable" class="rs-dialog-checkbox">' +
+            '<span class="rs-dialog-checkbox-label">' + escapeHtml(label) + '</span>' +
+            '<span class="rs-dialog-checkbox-help">' + escapeHtml(help) + '</span>' +
+        '</label>' +
+        '<div class="identity-passcode-fields" id="' + prefix + '-passcode-fields" hidden>' +
+            '<div class="modal-field">' +
+                '<label>Passcode</label>' +
+                '<input type="password" id="' + prefix + '-passcode-new" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters">' +
+            '</div>' +
+            '<div class="modal-field">' +
+                '<label>Confirm Passcode</label>' +
+                '<input type="password" id="' + prefix + '-passcode-confirm" class="modal-input" maxlength="128" autocomplete="off">' +
+            '</div>' +
+        '</div>' +
+        '<div class="modal-error" id="' + prefix + '-passcode-error" style="display:none;"></div>';
+}
+
+function bindIdentityPasscodeOption(prefix) {
+    var enabled = document.getElementById(prefix + '-passcode-enable');
+    var fields = document.getElementById(prefix + '-passcode-fields');
+    if (!enabled || !fields) return;
+    var sync = function() {
+        fields.hidden = !enabled.checked;
+        if (!enabled.checked) {
+            var pw = document.getElementById(prefix + '-passcode-new');
+            var confirm = document.getElementById(prefix + '-passcode-confirm');
+            if (pw) pw.value = '';
+            if (confirm) confirm.value = '';
+            identitySetInlineError(prefix + '-passcode-error', null);
+        }
+    };
+    enabled.addEventListener('change', sync);
+    sync();
+}
+
+function readIdentityPasscodeOption(prefix, errorId) {
+    var enabled = document.getElementById(prefix + '-passcode-enable');
+    if (!enabled || !enabled.checked) {
+        identitySetInlineError(errorId || (prefix + '-passcode-error'), null);
+        return { enabled: false, passcode: '' };
+    }
+    var pwEl = document.getElementById(prefix + '-passcode-new');
+    var confirmEl = document.getElementById(prefix + '-passcode-confirm');
+    var passcode = pwEl ? pwEl.value : '';
+    var confirm = confirmEl ? confirmEl.value : '';
+    var errId = errorId || (prefix + '-passcode-error');
+    if (passcode.length < 6) {
+        identitySetInlineError(errId, 'Passcode must be at least 6 characters.');
+        return null;
+    }
+    if (passcode !== confirm) {
+        identitySetInlineError(errId, "Passcodes don't match.");
+        return null;
+    }
+    identitySetInlineError(errId, null);
+    return { enabled: true, passcode: passcode };
+}
+
+function protectIdentityWithPasscode(hash, passcode) {
+    if (!passcode) return Promise.resolve();
+    if (!hash) return Promise.reject(new Error('Identity hash was not returned.'));
+    return RS.invoke('set_identity_passcode', {
+        args: { hash: hash, passcode: passcode }
+    });
+}
+
+window.identityPasscodeOptionHtml = identityPasscodeOptionHtml;
+window.bindIdentityPasscodeOption = bindIdentityPasscodeOption;
+window.readIdentityPasscodeOption = readIdentityPasscodeOption;
+window.protectIdentityWithPasscode = protectIdentityWithPasscode;
+
 function bytesToBase64(bytes) {
     var binary = '';
     for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
@@ -731,34 +821,45 @@ function createNewIdentity() {
         '<div class="modal-field">' +
             '<label>Display Name</label>' +
             '<input type="text" id="identity-modal-nickname" class="modal-input" placeholder="e.g. Rat King" maxlength="32">' +
-        '</div>',
+        '</div>' +
+        identityPasscodeOptionHtml('identity-create'),
         function() {
             var nickname = document.getElementById('identity-modal-nickname').value.trim();
+            var passcodeOption = readIdentityPasscodeOption('identity-create');
+            if (!passcodeOption) return;
+            var passcode = passcodeOption.passcode;
             return RS.invoke('api_create_identity', { args: { nickname: nickname } }).then(function(data) {
                 closeIdentityModal();
+                var hash = data && (data.hash || data.identity_hash);
+                var protect = passcode ? protectIdentityWithPasscode(hash, passcode).catch(function(err) {
+                    var msg = (err && err.message) ? err.message : 'Could not encrypt identity with passcode';
+                    showToast('Identity created, but passcode setup failed: ' + msg, 'toast-red', 7000);
+                }) : Promise.resolve();
                 var mnemonic = data && data.mnemonic;
-                if (mnemonic) {
-                    showRecoveryPhraseBackup(mnemonic, function() {
+                return protect.then(function() {
+                    if (mnemonic) {
+                        showRecoveryPhraseBackup(mnemonic, function() {
+                            showToast('Identity created', 'toast-green', 3000);
+                            loadIdentities();
+                        }, { passcodeProtected: !!passcode });
+                    } else {
                         showToast('Identity created', 'toast-green', 3000);
                         loadIdentities();
-                    });
-                } else {
-                    showToast('Identity created', 'toast-green', 3000);
-                    loadIdentities();
-                }
+                    }
+                });
             }).catch(function(err) {
                 showToast(err && err.message ? err.message : 'Failed to create identity', 'toast-red', 3000);
                 loadIdentities();
             });
         }
     );
+    bindIdentityPasscodeOption('identity-create');
 }
 
-// Recovery-phrase reveal (wallet-style), as a standalone full-screen overlay
-// (reuses .hw-unlock-* styling) so it can't race the identity-modal button. Used
-// both at creation (first backup) and later via "View Recovery Phrase" — `opts`
-// swaps the copy. The phrase is captured at create/import time; re-display reads
-// the plaintext sidecar or decrypts it from the passcode vault (see vault.rs).
+// Recovery-phrase reveal as a standalone full-screen overlay (reuses the same
+// reveal/copy/confirm pattern as the setup hardware-key backup step). Used both
+// at software creation/restore and later via "View Recovery Phrase"; re-display
+// reads the plaintext sidecar or decrypts it from the passcode vault.
 function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
     opts = opts || {};
     var words = String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
@@ -770,10 +871,20 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
         return '<div class="hw-mnemonic-word"><span class="hw-mnemonic-index">' + (i + 1) +
             '</span><span class="hw-mnemonic-text">' + escapeHtml(w) + '</span></div>';
     }).join('');
-    var defaultWarn = 'Write these ' + RECOVERY_PHRASE_WORDS + ' words down and keep them somewhere safe. ' +
-        'They are the <strong>only</strong> way to recover this identity if you lose your device — ' +
-        'anyone with them controls your identity. You can view this phrase again later from the ' +
-        'identity’s menu; set a passcode to encrypt it (and this identity) on this device.';
+    var storageWarn = opts.passcodeProtected
+        ? 'Ratspeak encrypts this identity and phrase with your passcode on this device.'
+        : 'Ratspeak stores this phrase on this device so you can view it again; set a passcode to encrypt it at rest.';
+    var defaultWarn = 'Write down these ' + RECOVERY_PHRASE_WORDS + ' words in order and store them somewhere safe. ' +
+        'Anyone with them controls your identity. ' + storageWarn;
+    var requireConfirm = opts.requireConfirm !== false;
+    var confirmHtml = requireConfirm
+        ? '<label class="hw-confirm-check">' +
+              '<input type="checkbox" id="recovery-backup-confirm">' +
+              '<span>I have written down my ' + RECOVERY_PHRASE_WORDS + '-word phrase and stored it safely.</span>' +
+          '</label>'
+        : '';
+    var doneLabel = opts.button || 'Continue';
+    var doneDisabled = requireConfirm ? ' disabled' : '';
     var existing = document.getElementById('recovery-backup-overlay');
     if (existing) existing.remove();
     var overlay = document.createElement('div');
@@ -781,14 +892,61 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
     overlay.className = 'hw-unlock-overlay';
     overlay.style.display = 'flex';
     overlay.innerHTML =
-        '<div class="hw-unlock-card recovery-backup-card">' +
-            '<div class="hw-unlock-title">' + escapeHtml(opts.title || 'Your Recovery Phrase') + '</div>' +
+        '<div class="hw-unlock-card recovery-backup-card" role="dialog" aria-modal="true" aria-labelledby="recovery-backup-title">' +
+            '<div class="hw-unlock-title" id="recovery-backup-title">' + escapeHtml(opts.title || 'Backup Phrase') + '</div>' +
             '<p class="recovery-warn">' + (opts.warn || defaultWarn) + '</p>' +
-            '<div class="hw-mnemonic-grid">' + grid + '</div>' +
-            '<button class="hw-unlock-btn" id="recovery-backup-done">' + escapeHtml(opts.button || 'I’ve saved it') + '</button>' +
+            '<div class="hw-mnemonic-shell" id="recovery-backup-shell">' +
+                '<div class="hw-mnemonic-grid" id="recovery-backup-grid" aria-hidden="true">' + grid + '</div>' +
+                '<button type="button" class="hw-mnemonic-cover" id="recovery-backup-cover" aria-label="Reveal recovery phrase">' +
+                    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>' +
+                    '<span>Tap to reveal phrase</span>' +
+                '</button>' +
+            '</div>' +
+            '<button type="button" class="nr-btn nr-btn-ghost w-full recovery-backup-copy" id="recovery-backup-copy">' +
+                '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
+                '<span>Copy phrase</span>' +
+            '</button>' +
+            confirmHtml +
+            '<button type="button" class="nr-btn w-full recovery-backup-done" id="recovery-backup-done"' + doneDisabled + '>' + escapeHtml(doneLabel) + '</button>' +
         '</div>';
     document.body.appendChild(overlay);
-    document.getElementById('recovery-backup-done').addEventListener('click', function() {
+
+    var cover = document.getElementById('recovery-backup-cover');
+    var shell = document.getElementById('recovery-backup-shell');
+    var gridEl = document.getElementById('recovery-backup-grid');
+    if (cover) {
+        cover.addEventListener('click', function() {
+            cover.style.display = 'none';
+            if (shell) shell.classList.add('revealed');
+            if (gridEl) gridEl.setAttribute('aria-hidden', 'false');
+        });
+        setTimeout(function() { cover.focus(); }, 50);
+    }
+
+    var copyBtn = document.getElementById('recovery-backup-copy');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', function() {
+            if (!navigator.clipboard) {
+                showToast('Clipboard is not available', 'toast-orange', 2000);
+                return;
+            }
+            navigator.clipboard.writeText(mnemonic).then(function() {
+                showCopyConfirmationToast('Recovery phrase');
+            }).catch(function() {
+                showToast('Could not copy phrase', 'toast-orange', 2000);
+            });
+        });
+    }
+
+    var confirm = document.getElementById('recovery-backup-confirm');
+    var done = document.getElementById('recovery-backup-done');
+    if (confirm && done) {
+        confirm.addEventListener('change', function() {
+            done.disabled = !confirm.checked;
+        });
+    }
+    if (done) done.addEventListener('click', function() {
+        if (done.disabled) return;
         overlay.remove();
         if (typeof onDone === 'function') onDone();
     });
@@ -804,7 +962,8 @@ function viewRecoveryPhrase(target) {
         title: 'Recovery Phrase',
         warn: 'These ' + RECOVERY_PHRASE_WORDS + ' words restore this identity on any device. Keep them secret and ' +
             'offline — anyone with them controls your identity. Make sure no one can see your screen.',
-        button: 'Done'
+        button: 'Done',
+        requireConfirm: false
     };
     if (target.passcode_protected) {
         showIdentityModal('View Recovery Phrase',
@@ -847,12 +1006,17 @@ function openRestorePhraseModal(fromSetup) {
             '<label>Display Name <span class="text-xs">(optional)</span></label>' +
             '<input type="text" id="restore-phrase-nickname" class="modal-input" placeholder="e.g. Rat King" maxlength="32">' +
         '</div>' +
+        identityPasscodeOptionHtml('restore-phrase') +
+        '<p class="recovery-warn">Restored software identities can be encrypted on this device with an optional passcode.</p>' +
         '<div class="modal-error" id="restore-phrase-error" style="display:none;"></div>',
         function() {
             var ta = document.getElementById('restore-phrase-input');
             var phrase = (ta ? ta.value : '').trim().replace(/\s+/g, ' ');
             var nickname = document.getElementById('restore-phrase-nickname').value.trim();
             var errEl = document.getElementById('restore-phrase-error');
+            var passcodeOption = readIdentityPasscodeOption('restore-phrase');
+            if (!passcodeOption) return;
+            var passcode = passcodeOption.passcode;
             var count = phrase ? phrase.split(' ').length : 0;
             if (count !== RECOVERY_PHRASE_WORDS) {
                 if (errEl) { errEl.textContent = 'Recovery phrase must be exactly ' + RECOVERY_PHRASE_WORDS + ' words.'; errEl.style.display = ''; }
@@ -862,21 +1026,28 @@ function openRestorePhraseModal(fromSetup) {
             return RS.invoke('restore_seed_identity', {
                 args: { phrase: phrase, nickname: nickname }
             }).then(function(data) {
-                closeIdentityModal();
-                if (fromSetup) {
-                    // Restore mirrors the import completion path: the restored
-                    // identity is active when setup has no identity, so restart
-                    // the core and transition to the connecting screen.
-                    if (typeof completeSetupAfterIdentityImport === 'function') {
-                        completeSetupAfterIdentityImport(data);
-                    } else {
-                        window.location.href = '/#dashboard';
-                        window.location.reload();
+                var hash = data && (data.hash || data.identity_hash);
+                var protect = passcode ? protectIdentityWithPasscode(hash, passcode).catch(function(err) {
+                    var msg = (err && err.message) ? err.message : 'Could not encrypt identity with passcode';
+                    showToast('Identity restored, but passcode setup failed: ' + msg, 'toast-red', 7000);
+                }) : Promise.resolve();
+                return protect.then(function() {
+                    closeIdentityModal();
+                    if (fromSetup) {
+                        // Restore mirrors the import completion path: the restored
+                        // identity is active when setup has no identity, so restart
+                        // the core and transition to the connecting screen.
+                        if (typeof completeSetupAfterIdentityImport === 'function') {
+                            completeSetupAfterIdentityImport(data);
+                        } else {
+                            window.location.href = '/#dashboard';
+                            window.location.reload();
+                        }
+                        return;
                     }
-                    return;
-                }
-                showToast('Identity restored', 'toast-green', 3000);
-                loadIdentities();
+                    showToast('Identity restored', 'toast-green', 3000);
+                    loadIdentities();
+                });
             }).catch(function(err) {
                 var msg = (err && err.message) ? err.message : 'Failed to restore identity';
                 if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
@@ -893,6 +1064,7 @@ function openRestorePhraseModal(fromSetup) {
             countEl.textContent = words.length + ' / ' + RECOVERY_PHRASE_WORDS + ' words';
         });
     }
+    bindIdentityPasscodeOption('restore-phrase');
 }
 
 function importIdentity() {
@@ -1350,6 +1522,8 @@ function showIdentityModal(title, bodyHtml, onConfirm, confirmClass) {
             var done = false;
             var settle = function() { if (!done) { done = true; restore(); } };
             result.then(settle, settle);
+        } else {
+            restore();
         }
     };
 
