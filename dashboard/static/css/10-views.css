@@ -4307,7 +4307,7 @@ body.setup-active .bottom-bar {
     border: none;
     border-radius: var(--radius-md);
     background: var(--accent);
-    color: var(--accent-fg, #fff);
+    color: var(--on-accent);
     font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
@@ -4341,5 +4341,6 @@ body.setup-active .bottom-bar {
     line-height: 1.5;
     margin: 0;
     text-align: left;
+    align-self: stretch; /* in the centered reveal card, match the grid/button width */
 }
 .recovery-warn strong { color: var(--status-error); }

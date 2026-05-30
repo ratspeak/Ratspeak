@@ -262,6 +262,14 @@
     line-height: 1.5;
 }
 
+/* Stacked modal fields/warnings need breathing room — the identity passcode,
+   restore-phrase, and view-recovery-phrase modals place these adjacently.
+   Scoped to siblings so single-field modals and margin-spaced wrappers
+   (e.g. .identity-import-preview) are untouched. */
+.modal-field + .modal-field,
+.modal-field + .recovery-warn,
+.recovery-warn + .modal-field { margin-top: var(--space-5); }
+
 
 .hub-iface-row {
     display: flex;
