@@ -236,20 +236,50 @@ function completeSetupAfterHardwareIdentity(result, pin) {
         }
         return;
     }
+
+    function isPinLockedMessage(message) {
+        message = String(message || '').toLowerCase();
+        return message.indexOf('pin is locked') >= 0 ||
+            message.indexOf('pin locked') >= 0 ||
+            message.indexOf('requires puk') >= 0 ||
+            message.indexOf('requires both retry counters') >= 0 ||
+            message.indexOf('reset the piv application') >= 0;
+    }
+
+    function failHardwareUnlock(detail, locked) {
+        if ((locked || isPinLockedMessage(detail)) && typeof window.resetHardwarePivWithConfirmation === 'function') {
+            resetSetupToStart();
+            window.resetHardwarePivWithConfirmation({
+                title: 'Reset security key?',
+                message: 'The YubiKey PIN is locked. Ratspeak can reset the key’s PIV application and return to setup. This erases the Ratspeak identity keys on this YubiKey, but does not affect passkeys, FIDO sign-ins, OTP, or other non-PIV features.'
+            }).then(function(reset) {
+                if (!reset) {
+                    if (typeof showToast === 'function') showToast(detail, 'toast-red', 7000);
+                    window.RS.diag('error', '[setup] Hardware identity unlock failed:', detail);
+                    return;
+                }
+                RS.invoke('hw_remove', { hash: hash }).catch(function() {}).finally(function() {
+                    resetSetupToStart();
+                    if (typeof showToast === 'function') showToast('Security key reset. Set up a new identity or restore from your recovery phrase.', 'toast-green', 7000);
+                });
+            });
+            return;
+        }
+        resetSetupToStart();
+        if (typeof showToast === 'function') showToast(detail, 'toast-red', 7000);
+        window.RS.diag('error', '[setup] Hardware identity unlock failed:', detail);
+    }
+
     RS.invoke('hw_activate_and_unlock', { hash: hash, pin: pin }).then(function(res) {
         if (res && res.ok) {
             runConnectingProgress();
             return;
         }
-        resetSetupToStart();
         var detail = (res && res.error) ? res.error : 'Could not unlock the hardware identity.';
-        if (typeof showToast === 'function') showToast(detail, 'toast-red', 7000);
-        window.RS.diag('error', '[setup] Hardware identity unlock failed:', detail);
+        failHardwareUnlock(detail, !!(res && res.locked));
     }).catch(function(err) {
-        resetSetupToStart();
         var detail = (err && err.message) ? err.message : 'Could not unlock the hardware identity.';
-        if (typeof showToast === 'function') showToast(detail, 'toast-red', 7000);
-        window.RS.diag('error', '[setup] Hardware identity unlock failed:', detail);
+        failHardwareUnlock(detail, false);
     });
 }
 

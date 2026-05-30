@@ -4318,6 +4318,11 @@ body.setup-active .bottom-bar {
     cursor: pointer;
 }
 .hw-unlock-btn:disabled { opacity: 0.5; cursor: default; }
+.hw-unlock-reset {
+    background: var(--surface-control);
+    color: var(--text-primary);
+    border: 1px solid var(--border-control);
+}
 .hw-unlock-cancel {
     margin-top: var(--space-1);
     background: none;

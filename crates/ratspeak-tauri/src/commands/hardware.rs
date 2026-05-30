@@ -16,11 +16,17 @@ fn to_value<T: serde::Serialize>(v: T) -> AppResult<Value> {
     serde_json::to_value(v).map_err(|e| AppError::internal(e.to_string()))
 }
 
-fn check_pin(pin: &str) -> AppResult<()> {
-    if pin.len() < 6 || pin.len() > 8 {
-        return Err(AppError::bad_request("PIN must be 6-8 characters"));
+fn check_piv_code(label: &str, value: &str) -> AppResult<()> {
+    if value.len() < 6 || value.len() > 8 {
+        return Err(AppError::bad_request(format!(
+            "{label} must be 6-8 characters"
+        )));
     }
     Ok(())
+}
+
+fn check_pin(pin: &str) -> AppResult<()> {
+    check_piv_code("PIN", pin)
 }
 
 fn clean_nickname(nickname: &str) -> AppResult<String> {
@@ -40,15 +46,26 @@ pub async fn hw_detect(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
 pub async fn hw_provision_recoverable(
     state: State<'_, Arc<AppState>>,
     pin: String,
+    current_pin: Option<String>,
     nickname: String,
     force: bool,
 ) -> AppResult<Value> {
     check_pin(&pin)?;
+    if let Some(current_pin) = current_pin.as_deref() {
+        check_pin(current_pin)?;
+    }
     let nickname = clean_nickname(&nickname)?;
     let data_dir = state.config.data_dir.clone();
     let db = state.db.clone();
     let res = tokio::task::spawn_blocking(move || {
-        ratspeak_runtime::hardware::provision_recoverable(&data_dir, &db, &pin, &nickname, force)
+        ratspeak_runtime::hardware::provision_recoverable(
+            &data_dir,
+            &db,
+            &pin,
+            current_pin.as_deref(),
+            &nickname,
+            force,
+        )
     })
     .await
     .map_err(|_| AppError::internal("provision task panicked"))?
@@ -60,15 +77,26 @@ pub async fn hw_provision_recoverable(
 pub async fn hw_provision_hardware_only(
     state: State<'_, Arc<AppState>>,
     pin: String,
+    current_pin: Option<String>,
     nickname: String,
     force: bool,
 ) -> AppResult<Value> {
     check_pin(&pin)?;
+    if let Some(current_pin) = current_pin.as_deref() {
+        check_pin(current_pin)?;
+    }
     let nickname = clean_nickname(&nickname)?;
     let data_dir = state.config.data_dir.clone();
     let db = state.db.clone();
     let res = tokio::task::spawn_blocking(move || {
-        ratspeak_runtime::hardware::provision_hardware_only(&data_dir, &db, &pin, &nickname, force)
+        ratspeak_runtime::hardware::provision_hardware_only(
+            &data_dir,
+            &db,
+            &pin,
+            current_pin.as_deref(),
+            &nickname,
+            force,
+        )
     })
     .await
     .map_err(|_| AppError::internal("provision task panicked"))?
@@ -98,15 +126,27 @@ pub async fn hw_restore(
     state: State<'_, Arc<AppState>>,
     phrase: String,
     pin: String,
+    current_pin: Option<String>,
     nickname: String,
     force: bool,
 ) -> AppResult<Value> {
     check_pin(&pin)?;
+    if let Some(current_pin) = current_pin.as_deref() {
+        check_pin(current_pin)?;
+    }
     let nickname = clean_nickname(&nickname)?;
     let data_dir = state.config.data_dir.clone();
     let db = state.db.clone();
     let res = tokio::task::spawn_blocking(move || {
-        ratspeak_runtime::hardware::restore(&data_dir, &db, &phrase, &pin, &nickname, force)
+        ratspeak_runtime::hardware::restore(
+            &data_dir,
+            &db,
+            &phrase,
+            &pin,
+            current_pin.as_deref(),
+            &nickname,
+            force,
+        )
     })
     .await
     .map_err(|_| AppError::internal("restore task panicked"))?
@@ -121,6 +161,15 @@ pub async fn hw_restore(
 pub async fn hw_stage_unlock(state: State<'_, Arc<AppState>>, pin: String) -> AppResult<Value> {
     check_pin(&pin)?;
     state.set_pending_hw_pin(Some(pin));
+    to_value(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn hw_reset_piv() -> AppResult<Value> {
+    tokio::task::spawn_blocking(ratspeak_runtime::hardware::reset_piv_application)
+        .await
+        .map_err(|_| AppError::internal("reset PIV task panicked"))?
+        .map_err(AppError::bad_request)?;
     to_value(serde_json::json!({ "ok": true }))
 }
 

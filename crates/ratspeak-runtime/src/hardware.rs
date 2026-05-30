@@ -162,6 +162,7 @@ pub fn provision_recoverable(
     data_dir: &Path,
     db: &DbPool,
     pin: &str,
+    current_pin: Option<&str>,
     nickname: &str,
     force: bool,
 ) -> Result<HwProvisioned, String> {
@@ -169,7 +170,7 @@ pub fn provision_recoverable(
     if !force {
         guard_overwrite(data_dir, &mut session)?;
     }
-    prepare_for_provisioning(&mut session, pin)?;
+    prepare_for_provisioning(&mut session, pin, current_pin)?;
     let cfg = base_config(data_dir, nickname);
     let (result, mnemonic) =
         provision::provision_recoverable(&mut session, &DEFAULT_MGMT_KEY, &cfg)
@@ -192,6 +193,7 @@ pub fn provision_hardware_only(
     data_dir: &Path,
     db: &DbPool,
     pin: &str,
+    current_pin: Option<&str>,
     nickname: &str,
     force: bool,
 ) -> Result<HwProvisioned, String> {
@@ -199,7 +201,7 @@ pub fn provision_hardware_only(
     if !force {
         guard_overwrite(data_dir, &mut session)?;
     }
-    prepare_for_provisioning(&mut session, pin)?;
+    prepare_for_provisioning(&mut session, pin, current_pin)?;
     let cfg = base_config(data_dir, nickname);
     let result = provision::provision_hardware_only(&mut session, &DEFAULT_MGMT_KEY, &cfg)
         .map_err(|e| e.to_string())?;
@@ -245,6 +247,7 @@ pub fn restore(
     db: &DbPool,
     phrase: &str,
     pin: &str,
+    current_pin: Option<&str>,
     nickname: &str,
     force: bool,
 ) -> Result<HwProvisioned, String> {
@@ -252,7 +255,7 @@ pub fn restore(
     if !force {
         guard_overwrite(data_dir, &mut session)?;
     }
-    prepare_for_provisioning(&mut session, pin)?;
+    prepare_for_provisioning(&mut session, pin, current_pin)?;
     let cfg = base_config(data_dir, nickname);
     let result = provision::restore(&mut session, &DEFAULT_MGMT_KEY, &cfg, phrase)
         .map_err(|e| e.to_string())?;
@@ -279,6 +282,13 @@ pub fn remove(data_dir: &Path, db: &DbPool, hash_hex: &str) -> Result<(), String
     Ok(())
 }
 
+pub fn reset_piv_application() -> Result<(), String> {
+    let mut session = connect()?;
+    block_pin_for_reset(&mut session)?;
+    block_recovery_counter_for_reset(&mut session)?;
+    session.reset_piv().map_err(format_reset_piv_error)
+}
+
 fn connect() -> Result<PcscPivSession, String> {
     PcscPivSession::connect().map_err(|_| NOT_DETECTED.to_string())
 }
@@ -293,14 +303,34 @@ fn base_config(data_dir: &Path, nickname: &str) -> ProvisionConfig {
     }
 }
 
-fn prepare_for_provisioning(session: &mut PcscPivSession, pin: &str) -> Result<(), String> {
+fn prepare_for_provisioning(
+    session: &mut PcscPivSession,
+    pin: &str,
+    current_pin: Option<&str>,
+) -> Result<(), String> {
     session
         .authenticate_management_key(&DEFAULT_MGMT_KEY)
         .map_err(|e| format!("could not authenticate YubiKey management key: {e}"))?;
-    set_pin(session, pin)
+    set_pin(session, pin, current_pin)
 }
 
-fn set_pin(session: &mut PcscPivSession, pin: &str) -> Result<(), String> {
+fn set_pin(
+    session: &mut PcscPivSession,
+    pin: &str,
+    current_pin: Option<&str>,
+) -> Result<(), String> {
+    if let Some(current_pin) = current_pin.filter(|p| !p.is_empty()) {
+        session
+            .verify_pin(current_pin)
+            .map_err(format_pin_setup_error)?;
+        if current_pin != pin {
+            session
+                .change_pin(current_pin, pin)
+                .map_err(format_pin_setup_error)?;
+        }
+        return Ok(());
+    }
+
     if pin == DEFAULT_PIN {
         return session
             .verify_pin(DEFAULT_PIN)
@@ -314,7 +344,7 @@ fn set_pin(session: &mut PcscPivSession, pin: &str) -> Result<(), String> {
 fn format_pin_setup_error(e: RatkeyError) -> String {
     match e {
         RatkeyError::PinLocked => {
-            "YubiKey PIV PIN is locked. Unblock it with the PUK or reset the PIV application before provisioning. Resetting PIV erases the Ratspeak keys on that YubiKey.".to_string()
+            "YubiKey PIV PIN is locked. Reset the PIV application before provisioning. Resetting PIV erases the Ratspeak keys on that YubiKey.".to_string()
         }
         RatkeyError::PinFailed { remaining } => format!(
             "YubiKey PIV PIN is not at the factory default ({} attempt{} remaining). Use a factory-reset YubiKey, or add it as an existing key with its current PIN.",
@@ -322,6 +352,62 @@ fn format_pin_setup_error(e: RatkeyError) -> String {
             if remaining == 1 { "" } else { "s" }
         ),
         other => format!("could not prepare YubiKey PIN: {other}"),
+    }
+}
+
+fn block_pin_for_reset(session: &mut PcscPivSession) -> Result<(), String> {
+    for _ in 0..260 {
+        match session.verify_pin(&wrong_piv_code()) {
+            Err(RatkeyError::PinLocked) => return Ok(()),
+            Err(RatkeyError::PinFailed { .. }) => continue,
+            Ok(()) => continue,
+            Err(e) => return Err(format!("could not prepare YubiKey PIN for reset: {e}")),
+        }
+    }
+    Err("could not prepare YubiKey PIN for reset".to_string())
+}
+
+fn block_recovery_counter_for_reset(session: &mut PcscPivSession) -> Result<(), String> {
+    for _ in 0..260 {
+        let wrong_recovery_code = wrong_piv_code();
+        let new_pin = wrong_piv_code();
+        match session.unblock_pin(&wrong_recovery_code, &new_pin) {
+            Err(RatkeyError::PukLocked) => return Ok(()),
+            Err(RatkeyError::PukFailed { .. }) => continue,
+            Ok(()) => {
+                // A random value unexpectedly matched the recovery code and reset
+                // the PIN. Re-block the PIN, then continue preparing for reset.
+                block_pin_for_reset(session)?;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "could not prepare YubiKey recovery counter for reset: {e}"
+                ));
+            }
+        }
+    }
+    Err("could not prepare YubiKey recovery counter for reset".to_string())
+}
+
+fn wrong_piv_code() -> String {
+    uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(8)
+        .collect()
+}
+
+fn format_reset_piv_error(e: RatkeyError) -> String {
+    match e {
+        RatkeyError::ResetRequiresBlockedPinAndPuk => {
+            "YubiKey refused PIV reset because the PIN and recovery counter were not locked."
+                .to_string()
+        }
+        RatkeyError::PukLocked => {
+            "YubiKey PIV recovery counter is locked, but reset did not complete.".to_string()
+        }
+        other => format!("could not reset YubiKey PIV application: {other}"),
     }
 }
 

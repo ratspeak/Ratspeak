@@ -1567,6 +1567,7 @@ function _hwShowStep(stepId) {
 function _hwClearSecrets() {
     if (_hwCtx) {
         _hwCtx.pin = null;
+        _hwCtx.currentPin = null;
         _hwCtx.mnemonic = null;
         _hwCtx.mnemonicWords = null;
         _hwCtx.verify = null;
@@ -1616,7 +1617,7 @@ function _hwReturnToChoice() {
 // Entry point. opts.fromSetup routes completion through the setup restart flow.
 function openHardwareWizard(opts) {
     opts = opts || {};
-    _hwCtx = { fromSetup: !!opts.fromSetup, device: null, mode: null, pin: null, nickname: '', mnemonic: null, existing: null, force: false };
+    _hwCtx = { fromSetup: !!opts.fromSetup, device: null, mode: null, pin: null, currentPin: null, nickname: '', mnemonic: null, existing: null, force: false };
 
     rsChoice({
         title: 'Hardware Key',
@@ -1797,6 +1798,7 @@ function _hwPinContinue() {
     }
     if (err) err.style.display = 'none';
     _hwCtx.pin = pin;
+    _hwCtx.currentPin = null;
     _hwCtx.nickname = document.getElementById('hw-pin-nickname').value.trim();
     _hwConfirmOverwriteThenProvision();
 }
@@ -1823,22 +1825,67 @@ function _hwIsPinLockedError(message) {
     message = String(message || '').toLowerCase();
     return message.indexOf('pin is locked') >= 0 ||
         message.indexOf('pin locked') >= 0 ||
-        message.indexOf('requires puk') >= 0;
+        message.indexOf('requires puk') >= 0 ||
+        message.indexOf('requires both retry counters') >= 0 ||
+        message.indexOf('reset the piv application') >= 0;
+}
+
+function _hwProvisionPayload() {
+    return {
+        pin: _hwCtx.pin,
+        currentPin: _hwCtx.currentPin || null,
+        nickname: _hwCtx.nickname,
+        force: !!_hwCtx.force
+    };
+}
+
+function _hwResetPivWithConfirmation(opts) {
+    opts = opts || {};
+    return new Promise(function(resolve) {
+        rsConfirm({
+            title: opts.title || 'Reset security key?',
+            message: opts.message || 'Ratspeak can reset the YubiKey PIV application and then continue. This erases the Ratspeak identity keys on this YubiKey, but does not affect passkeys, FIDO sign-ins, OTP, or other non-PIV YubiKey features.',
+            confirmText: opts.confirmText || 'Reset security key',
+            danger: true
+        }).then(function(ok) {
+            if (!ok) { resolve(false); return; }
+            if (typeof opts.beforeReset === 'function') opts.beforeReset();
+            RS.invoke('hw_reset_piv').then(function() {
+                resolve(true);
+            }).catch(function(e) {
+                showToast((e && e.message) ? e.message : 'Failed to reset security key', 'toast-red', 7000);
+                resolve(false);
+            });
+        });
+    });
+}
+window.resetHardwarePivWithConfirmation = _hwResetPivWithConfirmation;
+
+function _hwRecoverLockedPinForProvision(msg) {
+    _hwShowPinStep();
+    var errEl = document.getElementById('hw-pin-error');
+    if (errEl) {
+        errEl.textContent = msg;
+        errEl.style.display = '';
+    }
+    _hwResetPivWithConfirmation({
+        title: 'Reset security key?',
+        message: 'The YubiKey PIN is locked. Ratspeak can reset the key’s PIV application and continue setup. This erases any Ratspeak identity currently on this YubiKey, but does not affect passkeys, FIDO sign-ins, OTP, or other non-PIV features.',
+        beforeReset: function() { _hwShowWorking('Resetting your security key…'); }
+    }).then(function(reset) {
+        if (!reset || !_hwCtx) return;
+        _hwCtx.currentPin = null;
+        _hwDispatchProvision();
+    });
 }
 
 function _hwProvisionFailure(err) {
     var msg = (err && err.message) ? err.message : 'Provisioning failed';
-    if (_hwIsPinLockedError(msg) && typeof rsAlert === 'function') {
-        rsAlert({
-            title: 'YubiKey PIN locked',
-            message: 'The YubiKey PIV PIN is locked after too many incorrect attempts. Provisioning cannot continue until you unblock the PIV PIN with the PUK or reset the PIV application in YubiKey Manager. Resetting PIV erases the Ratspeak keys on that YubiKey.',
-            closeText: 'Back to setup'
-        }).then(function() {
-            closeHardwareWizard();
-        });
-    } else {
-        showToast(msg, 'toast-red', 5000);
+    if (_hwIsPinLockedError(msg)) {
+        _hwRecoverLockedPinForProvision(msg);
+        return;
     }
+    showToast(msg, 'toast-red', 5000);
     _hwShowPinStep();
     var errEl = document.getElementById('hw-pin-error');
     if (errEl) {
@@ -1849,7 +1896,7 @@ function _hwProvisionFailure(err) {
 
 function _hwProvisionRecoverable() {
     _hwShowWorking('Provisioning your security key…');
-    RS.invoke('hw_provision_recoverable', { pin: _hwCtx.pin, nickname: _hwCtx.nickname, force: !!_hwCtx.force })
+    RS.invoke('hw_provision_recoverable', _hwProvisionPayload())
         .then(function(res) {
             res = res || {};
             _hwCtx.result = res;
@@ -1860,7 +1907,7 @@ function _hwProvisionRecoverable() {
 
 function _hwProvisionHardwareOnly() {
     _hwShowWorking('Provisioning your security key…');
-    RS.invoke('hw_provision_hardware_only', { pin: _hwCtx.pin, nickname: _hwCtx.nickname, force: !!_hwCtx.force })
+    RS.invoke('hw_provision_hardware_only', _hwProvisionPayload())
         .then(function(res) {
             res = res || {};
             _hwFinish(res);
@@ -1953,6 +2000,7 @@ function _hwVerifyAndFinish() {
 
 function _hwBeginRestore() {
     if (!_hwCtx) _hwCtx = { fromSetup: false };
+    _hwCtx.currentPin = null;
     _hwSetTitle('Restore from Phrase');
     ['hw-restore-phrase', 'hw-restore-nickname', 'hw-restore-pin', 'hw-restore-pin-confirm'].forEach(function(id) {
         var el = document.getElementById(id);
@@ -2006,25 +2054,35 @@ function _hwDoRestore() {
     if (_hwCtx) _hwCtx.pin = pin;
 
     _hwShowWorking('Restoring identity onto your security key…');
-    RS.invoke('hw_restore', { phrase: phrase, pin: pin, nickname: nickname, force: false })
+    RS.invoke('hw_restore', {
+        phrase: phrase,
+        pin: pin,
+        currentPin: (_hwCtx && _hwCtx.currentPin) || null,
+        nickname: nickname,
+        force: false
+    })
         .then(function(res) {
             _hwFinish(res || {});
         })
         .catch(function(e) {
             // Keep the typed phrase/name so the user can fix the PIN and retry.
             var msg = (e && e.message) ? e.message : 'Restore failed';
-            if (_hwIsPinLockedError(msg) && typeof rsAlert === 'function') {
-                rsAlert({
-                    title: 'YubiKey PIN locked',
-                    message: 'The YubiKey PIV PIN is locked after too many incorrect attempts. Restore cannot continue until you unblock the PIV PIN with the PUK or reset the PIV application in YubiKey Manager. Resetting PIV erases the Ratspeak keys on that YubiKey.',
-                    closeText: 'Back'
-                });
-            } else {
-                showToast(msg, 'toast-red', 5000);
-            }
             _hwShowStep('hw-step-restore');
             var errEl = document.getElementById('hw-restore-error');
             if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
+            if (_hwIsPinLockedError(msg)) {
+                _hwResetPivWithConfirmation({
+                    title: 'Reset security key?',
+                    message: 'The YubiKey PIN is locked. Ratspeak can reset the key’s PIV application and then restore this phrase onto it. This erases any Ratspeak identity currently on this YubiKey, but does not affect passkeys, FIDO sign-ins, OTP, or other non-PIV features.',
+                    beforeReset: function() { _hwShowWorking('Resetting your security key…'); }
+                }).then(function(reset) {
+                    if (!reset || !_hwCtx) return;
+                    _hwCtx.currentPin = null;
+                    _hwDoRestore();
+                });
+                return;
+            }
+            showToast(msg, 'toast-red', 5000);
         });
 }
 
@@ -2307,6 +2365,7 @@ function showHwUnlock(hash, kind) {
             '<input id="hw-unlock-pin" class="hw-unlock-input" ' + inputAttrs + '>' +
             '<div id="hw-unlock-error" class="hw-unlock-error" style="display:none"></div>' +
             '<button id="hw-unlock-btn" class="hw-unlock-btn" disabled>Unlock</button>' +
+            '<button id="hw-unlock-reset" class="hw-unlock-btn hw-unlock-reset" style="display:none;">Reset security key</button>' +
             '<button id="hw-unlock-cancel" class="hw-unlock-cancel">Use a different identity</button>' +
             '<button id="hw-unlock-forget" class="hw-unlock-cancel hw-unlock-forget" style="display:none;">Remove this identity from this device</button>' +
         '</div>';
@@ -2319,6 +2378,7 @@ function showHwUnlock(hash, kind) {
         if (e.key === 'Enter' && !btn.disabled) _hwDoUnlock();
     });
     btn.addEventListener('click', _hwDoUnlock);
+    overlay.querySelector('#hw-unlock-reset').addEventListener('click', _hwResetLockedIdentity);
     overlay.querySelector('#hw-unlock-cancel').addEventListener('click', _hwUnlockCancel);
     overlay.querySelector('#hw-unlock-forget').addEventListener('click', _hwForgetLockedIdentity);
     setTimeout(function() { if (!isMobile()) input.focus(); }, 120);
@@ -2329,11 +2389,13 @@ function _hwDoUnlock() {
     var input = document.getElementById('hw-unlock-pin');
     var btn = document.getElementById('hw-unlock-btn');
     var err = document.getElementById('hw-unlock-error');
+    var resetBtn = document.getElementById('hw-unlock-reset');
     var secret = input ? input.value : '';
     var isPass = _hwLockedKind === 'passcode';
     if (secret.length < 6 || (!isPass && secret.length > 8)) return;
     btn.disabled = true;
     btn.textContent = 'Unlocking…';
+    if (resetBtn) resetBtn.style.display = 'none';
     if (err) err.style.display = 'none';
     RS.invoke('hw_unlock', { pin: secret }).then(function(res) {
         res = res || {};
@@ -2349,8 +2411,9 @@ function _hwDoUnlock() {
         if (isPass) {
             msg = 'Incorrect passcode.';
         } else if (res.locked) {
-            msg = 'This key is locked after too many wrong PINs. It needs a PUK reset.';
+            msg = 'This key is locked after too many wrong PINs. Reset the security key to use it again.';
             btn.disabled = true;
+            if (resetBtn) resetBtn.style.display = '';
         } else if (typeof res.remaining === 'number') {
             msg = 'Incorrect PIN — ' + res.remaining + ' attempt' + (res.remaining === 1 ? '' : 's') + ' left.';
         } else {
@@ -2361,6 +2424,49 @@ function _hwDoUnlock() {
         btn.disabled = false;
         btn.textContent = 'Unlock';
         if (err) { err.textContent = (e && e.message) || 'Unlock failed.'; err.style.display = ''; }
+    });
+}
+
+function _hwResetLockedIdentity() {
+    if (_hwLockedKind !== 'hardware') return;
+    var err = document.getElementById('hw-unlock-error');
+    _hwResetPivWithConfirmation({
+        title: 'Reset security key?',
+        message: 'This erases the Ratspeak identity keys on this YubiKey and removes the local registration from this device. Use this only if you have a recovery phrase or are willing to create a new identity. Passkeys, FIDO sign-ins, OTP, and other non-PIV features are not affected.',
+        beforeReset: function() {
+            var btn = document.getElementById('hw-unlock-reset');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Resetting...';
+            }
+        }
+    }).then(function(reset) {
+        if (!reset) {
+            var btn = document.getElementById('hw-unlock-reset');
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Reset security key';
+            }
+            return;
+        }
+        if (!_hwLockedHash) {
+            window.location.href = '/';
+            window.location.reload();
+            return;
+        }
+        RS.invoke('hw_remove', { hash: _hwLockedHash }).then(function() {
+            try {
+                localStorage.removeItem('ratspeak_identity_hash');
+                localStorage.removeItem('ratspeak_identity_name');
+            } catch (_) {}
+            window.location.href = '/';
+            window.location.reload();
+        }).catch(function(e) {
+            if (err) {
+                err.textContent = (e && e.message) ? e.message : 'Security key reset, but local identity removal failed.';
+                err.style.display = '';
+            }
+        });
     });
 }
 
