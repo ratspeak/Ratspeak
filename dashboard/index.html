@@ -797,8 +797,8 @@
                     <p class="hw-step-lead">How should this identity be backed up?</p>
                     <button type="button" class="hw-mode-card" id="hw-mode-recoverable">
                         <span class="hw-mode-card-title">Recoverable <span class="hw-recommended-note">(Recommended)</span></span>
-                        <span class="hw-mode-card-sub">24-word backup phrase</span>
-                        <span class="hw-mode-card-desc">A 24-word phrase lets you restore this identity if the key is lost. The phrase is a second secret — it is <strong>not</strong> protected by your PIN, and the keys briefly exist in this device's memory during setup.</span>
+                        <span class="hw-mode-card-sub">12-word backup phrase</span>
+                        <span class="hw-mode-card-desc">A 12-word phrase lets you restore this identity if the key is lost. The phrase is a second secret — it is <strong>not</strong> protected by your PIN, and the keys briefly exist in this device's memory during setup.</span>
                     </button>
                     <button type="button" class="hw-mode-card" id="hw-mode-hardware-only">
                         <span class="hw-mode-card-title">Hardware-only</span>
@@ -839,7 +839,7 @@
 
                 <!-- Step: reveal mnemonic -->
                 <div class="hw-step" id="hw-step-mnemonic" style="display:none;">
-                    <p class="hw-step-lead">Write down these 24 words in order and store them somewhere safe. This is the only time they will be shown — Ratspeak does not store them.</p>
+                    <p class="hw-step-lead">Write down these 12 words in order and store them somewhere safe. This is the only time they will be shown — Ratspeak does not store them.</p>
                     <div class="hw-mnemonic-shell">
                         <div class="hw-mnemonic-grid" id="hw-mnemonic-grid"></div>
                         <button type="button" class="hw-mnemonic-cover" id="hw-mnemonic-cover">
@@ -853,7 +853,7 @@
                     </button>
                     <label class="hw-confirm-check">
                         <input type="checkbox" id="hw-mnemonic-confirm">
-                        <span>I have written down my 24-word phrase and stored it safely.</span>
+                        <span>I have written down my 12-word phrase and stored it safely.</span>
                     </label>
                     <button class="nr-btn w-full mt-4" id="hw-mnemonic-continue-btn" disabled>Continue</button>
                 </div>
@@ -869,11 +869,11 @@
 
                 <!-- Step: restore from phrase -->
                 <div class="hw-step" id="hw-step-restore" style="display:none;">
-                    <p class="hw-step-lead">Enter your 24-word recovery phrase, then set the PIN to write it onto a factory-fresh or reset security key.</p>
+                    <p class="hw-step-lead">Enter your 12-word recovery phrase, then set the PIN to write it onto a factory-fresh or reset security key.</p>
                     <div class="modal-field">
                         <label>Recovery phrase</label>
                         <textarea id="hw-restore-phrase" class="modal-input hw-restore-textarea" rows="3" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="word1 word2 word3 …"></textarea>
-                        <span class="hw-inline-hint" id="hw-restore-word-count">0 / 24 words</span>
+                        <span class="hw-inline-hint" id="hw-restore-word-count">0 / 12 words</span>
                     </div>
                     <div class="modal-field" style="margin-top:10px;">
                         <label>Display name</label>

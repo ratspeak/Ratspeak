@@ -3402,7 +3402,7 @@
 }
 
 /* Identity full-screen overlays (unlock prompt + recovery-phrase backup):
-   reflow the 24-word grid, anchor scrolling to the top, and tighten padding so
+   reflow the recovery-word grid, anchor scrolling to the top, and tighten padding so
    nothing clips or truncates on small screens. */
 @media (max-width: 768px) {
     .hw-unlock-overlay {

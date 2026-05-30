@@ -367,7 +367,7 @@ pub struct RestoreSeedArgs {
     pub nickname: Option<String>,
 }
 
-/// Restore a *recoverable* identity's 24-word phrase as a SOFTWARE identity (no
+/// Restore a *recoverable* identity's 12-word phrase as a SOFTWARE identity (no
 /// hardware). Same derivation as the recoverable YubiKey scheme, so the restored
 /// Reticulum identity/address matches. Cross-platform (the one hardware-related
 /// path that works on mobile).
@@ -463,7 +463,7 @@ pub struct RevealMnemonicArgs {
     pub passcode: Option<String>,
 }
 
-/// Re-display a software identity's 24-word recovery phrase. Reads the plaintext
+/// Re-display a software identity's 12-word recovery phrase. Reads the plaintext
 /// sidecar, or decrypts it from the vault (Argon2 → spawn_blocking) when the
 /// identity is passcode-protected. Hardware identities have no stored phrase.
 #[tauri::command]

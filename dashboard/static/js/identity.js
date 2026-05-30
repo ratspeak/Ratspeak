@@ -1,6 +1,7 @@
 var identityList = [];
 var selectedIdentityHash = null;
 var activeIdentityHash = null;
+var RECOVERY_PHRASE_WORDS = 12;
 
 function shareAddress(address, displayName) {
     if (!navigator.share) {
@@ -121,7 +122,7 @@ function identityImportFormatChoices() {
         {
             label: 'Recovery Phrase',
             value: 'phrase',
-            hint: 'Restore from a 24-word recovery phrase (creates a software identity).'
+            hint: 'Restore from a 12-word recovery phrase (creates a software identity).'
         }
     ];
 }
@@ -761,7 +762,7 @@ function createNewIdentity() {
 function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
     opts = opts || {};
     var words = String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
-    if (words.length !== 24) {
+    if (words.length !== RECOVERY_PHRASE_WORDS) {
         if (typeof onDone === 'function') onDone();
         return;
     }
@@ -769,7 +770,7 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
         return '<div class="hw-mnemonic-word"><span class="hw-mnemonic-index">' + (i + 1) +
             '</span><span class="hw-mnemonic-text">' + escapeHtml(w) + '</span></div>';
     }).join('');
-    var defaultWarn = 'Write these 24 words down and keep them somewhere safe. ' +
+    var defaultWarn = 'Write these ' + RECOVERY_PHRASE_WORDS + ' words down and keep them somewhere safe. ' +
         'They are the <strong>only</strong> way to recover this identity if you lose your device — ' +
         'anyone with them controls your identity. You can view this phrase again later from the ' +
         'identity’s menu; set a passcode to encrypt it (and this identity) on this device.';
@@ -801,7 +802,7 @@ function viewRecoveryPhrase(target) {
     if (!target || target.is_hardware) return;
     var viewOpts = {
         title: 'Recovery Phrase',
-        warn: 'These 24 words restore this identity on any device. Keep them secret and ' +
+        warn: 'These ' + RECOVERY_PHRASE_WORDS + ' words restore this identity on any device. Keep them secret and ' +
             'offline — anyone with them controls your identity. Make sure no one can see your screen.',
         button: 'Done'
     };
@@ -809,7 +810,7 @@ function viewRecoveryPhrase(target) {
         showIdentityModal('View Recovery Phrase',
             '<div class="modal-field"><label>Passcode</label>' +
                 '<input type="password" id="reveal-passcode-input" class="modal-input" maxlength="128" autocomplete="off"></div>' +
-            '<p class="recovery-warn">Enter your passcode to reveal the 24-word recovery phrase for this identity.</p>' +
+            '<p class="recovery-warn">Enter your passcode to reveal the ' + RECOVERY_PHRASE_WORDS + '-word recovery phrase for this identity.</p>' +
             '<div class="modal-error" id="reveal-error" style="display:none"></div>',
             function() {
                 var pw = document.getElementById('reveal-passcode-input').value;
@@ -839,8 +840,8 @@ function openRestorePhraseModal(fromSetup) {
     showIdentityModal('Restore from Recovery Phrase',
         '<div class="modal-field">' +
             '<label>Recovery Phrase</label>' +
-            '<textarea id="restore-phrase-input" class="modal-input restore-phrase-textarea" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Enter your 24-word recovery phrase, separated by spaces"></textarea>' +
-            '<span class="restore-phrase-count" id="restore-phrase-count">0 / 24 words</span>' +
+            '<textarea id="restore-phrase-input" class="modal-input restore-phrase-textarea" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Enter your ' + RECOVERY_PHRASE_WORDS + '-word recovery phrase, separated by spaces"></textarea>' +
+            '<span class="restore-phrase-count" id="restore-phrase-count">0 / ' + RECOVERY_PHRASE_WORDS + ' words</span>' +
         '</div>' +
         '<div class="modal-field">' +
             '<label>Display Name <span class="text-xs">(optional)</span></label>' +
@@ -853,8 +854,8 @@ function openRestorePhraseModal(fromSetup) {
             var nickname = document.getElementById('restore-phrase-nickname').value.trim();
             var errEl = document.getElementById('restore-phrase-error');
             var count = phrase ? phrase.split(' ').length : 0;
-            if (count !== 24) {
-                if (errEl) { errEl.textContent = 'Recovery phrase must be exactly 24 words.'; errEl.style.display = ''; }
+            if (count !== RECOVERY_PHRASE_WORDS) {
+                if (errEl) { errEl.textContent = 'Recovery phrase must be exactly ' + RECOVERY_PHRASE_WORDS + ' words.'; errEl.style.display = ''; }
                 return;
             }
             if (errEl) errEl.style.display = 'none';
@@ -889,7 +890,7 @@ function openRestorePhraseModal(fromSetup) {
     if (ta && countEl) {
         ta.addEventListener('input', function() {
             var words = ta.value.trim().split(/\s+/).filter(Boolean);
-            countEl.textContent = words.length + ' / 24 words';
+            countEl.textContent = words.length + ' / ' + RECOVERY_PHRASE_WORDS + ' words';
         });
     }
 }
@@ -1136,7 +1137,7 @@ function openIdentityActions(hash) {
     if (!target.is_hardware) {
         choices.push({ label: 'Export Identity', value: 'export', hint: 'Ratspeak or Reticulum format.' });
         if (target.has_mnemonic) {
-            choices.push({ label: 'View Recovery Phrase', value: 'view-phrase', hint: 'Show this identity’s 24-word phrase.' });
+            choices.push({ label: 'View Recovery Phrase', value: 'view-phrase', hint: 'Show this identity’s 12-word phrase.' });
         }
         if (target.passcode_protected) {
             choices.push({ label: 'Change Passcode', value: 'passcode-change' });
@@ -1180,7 +1181,7 @@ function openSetPasscodeModal(target, isChange) {
             '<input type="password" id="passcode-new" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters"></div>' +
         '<div class="modal-field"><label>Confirm Passcode</label>' +
             '<input type="password" id="passcode-confirm" class="modal-input" maxlength="128" autocomplete="off"></div>' +
-        '<p class="recovery-warn">This identity will be encrypted on this device and require the passcode each time you open Ratspeak. There is <strong>no recovery</strong> if you forget it — keep your 24-word phrase as a backup.</p>' +
+        '<p class="recovery-warn">This identity will be encrypted on this device and require the passcode each time you open Ratspeak. There is <strong>no recovery</strong> if you forget it — keep your 12-word phrase as a backup.</p>' +
         '<div class="modal-error" id="passcode-error" style="display:none"></div>';
     showIdentityModal(isChange ? 'Change Passcode' : 'Set Passcode', body, function() {
         var cur = isChange ? document.getElementById('passcode-current').value : '';
@@ -1755,7 +1756,7 @@ function _hwOverwriteMessage() {
         return 'This YubiKey already contains keys in the Ratspeak PIV identity slots. Setting up a new identity permanently erases those keys. Only continue if you have a backup or are certain they are not needed.';
     }
     var name = (existing && existing.nickname) ? existing.nickname : 'an existing identity';
-    return 'This YubiKey already holds "' + name + '". Setting up a new identity permanently erases its keys — this cannot be undone unless you saved its 24-word backup phrase.';
+    return 'This YubiKey already holds "' + name + '". Setting up a new identity permanently erases its keys — this cannot be undone unless you saved its 12-word backup phrase.';
 }
 
 function _hwConfirmOverwriteIfNeeded(onConfirm, onCancel) {
@@ -2023,11 +2024,11 @@ function _hwRestoreWordCount() {
 function _hwUpdateRestoreState() {
     var count = _hwRestoreWordCount();
     var countEl = document.getElementById('hw-restore-word-count');
-    if (countEl) countEl.textContent = count + ' / 24 words';
+    if (countEl) countEl.textContent = count + ' / ' + RECOVERY_PHRASE_WORDS + ' words';
     var pin = document.getElementById('hw-restore-pin').value;
     var confirm = document.getElementById('hw-restore-pin-confirm').value;
     var btn = document.getElementById('hw-restore-btn');
-    if (btn) btn.disabled = !(count === 24 && _hwPinValid(pin) && pin === confirm);
+    if (btn) btn.disabled = !(count === RECOVERY_PHRASE_WORDS && _hwPinValid(pin) && pin === confirm);
 }
 
 function _hwDoRestore() {
@@ -2038,8 +2039,8 @@ function _hwDoRestore() {
     var err = document.getElementById('hw-restore-error');
 
     var count = phrase ? phrase.split(' ').length : 0;
-    if (count !== 24) {
-        if (err) { err.textContent = 'Recovery phrase must be exactly 24 words.'; err.style.display = ''; }
+    if (count !== RECOVERY_PHRASE_WORDS) {
+        if (err) { err.textContent = 'Recovery phrase must be exactly ' + RECOVERY_PHRASE_WORDS + ' words.'; err.style.display = ''; }
         return;
     }
     if (!_hwPinValid(pin)) {

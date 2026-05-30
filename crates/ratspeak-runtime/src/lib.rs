@@ -451,14 +451,14 @@ async fn lock_hardware_session(state: Arc<AppState>, generation: u64) {
     );
 }
 
-/// Validate a 24-word recovery phrase and derive the 64-byte Reticulum private
+/// Validate a 12-word recovery phrase and derive the 64-byte Reticulum private
 /// key (`X25519_prv || Ed25519_seed`) for a SOFTWARE identity. Same BIP-39 scheme
 /// as recoverable hardware provisioning, so the restored identity matches the
 /// YubiKey-backed one. Hardware-independent — works on every platform.
 #[cfg(feature = "seed")]
 pub fn derive_identity_key_from_phrase(phrase: &str) -> Result<[u8; 64], String> {
     if !rns_ratkey::seed::validate_mnemonic(phrase) {
-        return Err("Invalid recovery phrase — expected 24 valid BIP-39 words".into());
+        return Err("Invalid recovery phrase — expected 12 valid BIP-39 words".into());
     }
     let derived = rns_ratkey::seed::derive_identity(phrase)
         .map_err(|e| format!("Could not derive identity: {e}"))?;
