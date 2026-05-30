@@ -353,16 +353,6 @@ function saveBytesToUserFile(bytes, fileName, mimeType, backupBase64) {
     }
 
     var blob = new Blob([bytes], { type: mimeType || 'application/octet-stream' });
-    if (window.File && navigator.canShare && navigator.share) {
-        try {
-            var file = new File([blob], fileName, { type: blob.type });
-            if (navigator.canShare({ files: [file] })) {
-                return navigator.share({ files: [file], title: fileName }).then(function() {
-                    return { method: 'share', fileName: fileName };
-                });
-            }
-        } catch (_) {}
-    }
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
@@ -1284,8 +1274,6 @@ function exportIdentityBackup(hash) {
         if (!result) return;
         if (result.method === 'android-document') {
             showToast((result.label || 'Identity export') + ' saved', 'toast-green', 3000);
-        } else if (result.method === 'share') {
-            showToast((result.label || 'Identity export') + ' handed to destination', 'toast-green', 3000);
         } else {
             showToast('Save prompt opened for ' + result.fileName, 'toast-blue', 4000);
         }

@@ -2305,6 +2305,7 @@ fn identity_management_is_first_class_tab() {
     assert!(
         identity_js.contains("window.RatspeakAndroid.saveIdentityDocument(fileName, dataBase64")
     );
+    assert!(!identity_js.contains("navigator.share({ files"));
     assert!(!identity_js.contains("Identity backup ready"));
     assert!(!identity_js.contains("Export Backup"));
     assert!(identity_js.contains("function openIdentityActions(hash)"));
