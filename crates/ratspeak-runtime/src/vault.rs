@@ -14,6 +14,7 @@
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::Path;
 use zeroize::Zeroizing;
 
@@ -39,11 +40,19 @@ impl VaultParams {
     pub fn recommended() -> Self {
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
-            VaultParams { m_cost: 19 * 1024, t_cost: 2, p_cost: 1 }
+            VaultParams {
+                m_cost: 19 * 1024,
+                t_cost: 2,
+                p_cost: 1,
+            }
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
-            VaultParams { m_cost: 47 * 1024, t_cost: 3, p_cost: 1 }
+            VaultParams {
+                m_cost: 47 * 1024,
+                t_cost: 3,
+                p_cost: 1,
+            }
         }
     }
 }
@@ -87,9 +96,11 @@ pub enum VaultError {
 /// Bind version + kdf + params + salt into the KEK so unauthenticated file fields
 /// cannot be downgraded without breaking decryption.
 fn canonical_info(p: VaultParams, salt: &[u8]) -> Vec<u8> {
-    let mut v =
-        format!("ratspeak-vault-v{VERSION}|argon2id|{}|{}|{}|", p.m_cost, p.t_cost, p.p_cost)
-            .into_bytes();
+    let mut v = format!(
+        "ratspeak-vault-v{VERSION}|argon2id|{}|{}|{}|",
+        p.m_cost, p.t_cost, p.p_cost
+    )
+    .into_bytes();
     v.extend_from_slice(salt);
     v
 }
@@ -151,14 +162,21 @@ pub fn encrypt_identity(
 /// Recover the 64-byte private key from a vault. Wrong passcode / tamper → `Auth`.
 pub fn decrypt_key(passcode: &str, v: &EncryptedVault) -> Result<Zeroizing<[u8; 64]>, VaultError> {
     if v.version != VERSION {
-        return Err(VaultError::Invalid(format!("unsupported version {}", v.version)));
+        return Err(VaultError::Invalid(format!(
+            "unsupported version {}",
+            v.version
+        )));
     }
     if v.kdf != "argon2id" {
         return Err(VaultError::Invalid(format!("unsupported kdf {}", v.kdf)));
     }
     let salt = hex::decode(&v.salt).map_err(|_| VaultError::Invalid("salt".into()))?;
     let blob = hex::decode(&v.token).map_err(|_| VaultError::Invalid("token".into()))?;
-    let p = VaultParams { m_cost: v.m_cost, t_cost: v.t_cost, p_cost: v.p_cost };
+    let p = VaultParams {
+        m_cost: v.m_cost,
+        t_cost: v.t_cost,
+        p_cost: v.p_cost,
+    };
     let kek = derive_kek(passcode, &salt, p)?;
     let pt = token::decrypt(&blob, kek.as_ref()).map_err(|_| VaultError::Auth)?;
     if pt.len() != 64 {
@@ -179,14 +197,21 @@ pub fn decrypt_mnemonic(
         return Ok(None);
     };
     if v.version != VERSION {
-        return Err(VaultError::Invalid(format!("unsupported version {}", v.version)));
+        return Err(VaultError::Invalid(format!(
+            "unsupported version {}",
+            v.version
+        )));
     }
     if v.kdf != "argon2id" {
         return Err(VaultError::Invalid(format!("unsupported kdf {}", v.kdf)));
     }
     let salt = hex::decode(&v.salt).map_err(|_| VaultError::Invalid("salt".into()))?;
     let blob = hex::decode(mt).map_err(|_| VaultError::Invalid("mnemonic_token".into()))?;
-    let p = VaultParams { m_cost: v.m_cost, t_cost: v.t_cost, p_cost: v.p_cost };
+    let p = VaultParams {
+        m_cost: v.m_cost,
+        t_cost: v.t_cost,
+        p_cost: v.p_cost,
+    };
     let kek = derive_kek(passcode, &salt, p)?;
     let pt = token::decrypt(&blob, kek.as_ref()).map_err(|_| VaultError::Auth)?;
     let phrase = String::from_utf8(pt).map_err(|_| VaultError::Invalid("mnemonic utf8".into()))?;
@@ -197,9 +222,7 @@ pub fn write_vault(path: &Path, v: &EncryptedVault) -> Result<(), VaultError> {
     let json = serde_json::to_vec_pretty(v).map_err(|e| VaultError::Io(e.to_string()))?;
     // Atomic: write to a temp then rename, so a crash never leaves a partial vault.
     let tmp = path.with_extension("enc.tmp");
-    std::fs::write(&tmp, &json).map_err(|e| VaultError::Io(e.to_string()))?;
-    std::fs::rename(&tmp, path).map_err(|e| VaultError::Io(e.to_string()))?;
-    Ok(())
+    atomic_secret_write(path, &tmp, &json)
 }
 
 pub fn read_vault(path: &Path) -> Result<EncryptedVault, VaultError> {
@@ -217,7 +240,9 @@ pub fn protect_identity(
     current: Option<&str>,
 ) -> Result<(), VaultError> {
     if passcode.len() < 6 {
-        return Err(VaultError::Invalid("passcode must be at least 6 characters".into()));
+        return Err(VaultError::Invalid(
+            "passcode must be at least 6 characters".into(),
+        ));
     }
     if id_dir.join("identity.hwid").exists() {
         return Err(VaultError::Invalid(
@@ -276,7 +301,9 @@ pub fn unprotect_identity(id_dir: &Path, passcode: &str) -> Result<(), VaultErro
     let id_file = id_dir.join("identity");
     let seed_file = id_dir.join(SEED_FILE);
     if !enc_file.exists() {
-        return Err(VaultError::Invalid("identity is not passcode-protected".into()));
+        return Err(VaultError::Invalid(
+            "identity is not passcode-protected".into(),
+        ));
     }
     let vault = read_vault(&enc_file)?;
     let key = decrypt_key(passcode, &vault)?;
@@ -299,14 +326,46 @@ pub fn unprotect_identity(id_dir: &Path, passcode: &str) -> Result<(), VaultErro
 /// Write the plaintext recovery-phrase sidecar (atomic; 0600 on unix).
 fn write_seed_file(path: &Path, phrase: &str) -> Result<(), VaultError> {
     let tmp = path.with_extension("seed.tmp");
-    std::fs::write(&tmp, phrase.as_bytes()).map_err(|e| VaultError::Io(e.to_string()))?;
+    atomic_secret_write(path, &tmp, phrase.as_bytes())
+}
+
+fn atomic_secret_write(path: &Path, tmp: &Path, bytes: &[u8]) -> Result<(), VaultError> {
+    let _ = std::fs::remove_file(tmp);
+
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&tmp, path).map_err(|e| VaultError::Io(e.to_string()))?;
+    let mut file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(tmp)
+            .map_err(|e| VaultError::Io(e.to_string()))?
+    };
+
+    #[cfg(not(unix))]
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)
+        .map_err(|e| VaultError::Io(e.to_string()))?;
+
+    file.write_all(bytes)
+        .map_err(|e| VaultError::Io(e.to_string()))?;
+    file.sync_all().map_err(|e| VaultError::Io(e.to_string()))?;
+    drop(file);
+
+    std::fs::rename(tmp, path).map_err(|e| VaultError::Io(e.to_string()))?;
+    sync_parent_dir(path);
     Ok(())
+}
+
+fn sync_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = std::fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
 }
 
 /// Store a freshly-created/imported software identity's recovery phrase so it can
@@ -316,7 +375,9 @@ fn write_seed_file(path: &Path, phrase: &str) -> Result<(), VaultError> {
 /// (before any passcode) and `protect_identity` folds it in afterward.
 pub fn store_plaintext_seed(id_dir: &Path, mnemonic: &str) -> Result<(), VaultError> {
     if id_dir.join("identity.hwid").exists() {
-        return Err(VaultError::Invalid("hardware identity has no stored phrase".into()));
+        return Err(VaultError::Invalid(
+            "hardware identity has no stored phrase".into(),
+        ));
     }
     if id_dir.join("identity.enc").exists() {
         // Already protected: don't drop a plaintext copy beside the sealed one.
@@ -381,7 +442,11 @@ mod tests {
 
     // Cheap params so tests run fast (real defaults are memory-hard).
     fn fast() -> VaultParams {
-        VaultParams { m_cost: 8 * 1024, t_cost: 1, p_cost: 1 }
+        VaultParams {
+            m_cost: 8 * 1024,
+            t_cost: 1,
+            p_cost: 1,
+        }
     }
 
     fn encrypt_with(passcode: &str, key: &[u8; 64], p: VaultParams) -> EncryptedVault {
@@ -422,7 +487,10 @@ mod tests {
     #[test]
     fn wrong_passcode_fails() {
         let v = encrypt_with("right-passcode", &[3u8; 64], fast());
-        assert!(matches!(decrypt_key("wrong-passcode", &v), Err(VaultError::Auth)));
+        assert!(matches!(
+            decrypt_key("wrong-passcode", &v),
+            Err(VaultError::Auth)
+        ));
     }
 
     #[test]
@@ -432,14 +500,19 @@ mod tests {
         let v = encrypt_with("pw", &[9u8; 64], fast());
         let mut tampered = v.clone();
         tampered.t_cost = v.t_cost + 1; // valid but different
-        assert!(matches!(decrypt_key("pw", &tampered), Err(VaultError::Auth)));
+        assert!(matches!(
+            decrypt_key("pw", &tampered),
+            Err(VaultError::Auth)
+        ));
         let mut tampered2 = v.clone();
         tampered2.m_cost = v.m_cost * 2;
-        assert!(matches!(decrypt_key("pw", &tampered2), Err(VaultError::Auth)));
+        assert!(matches!(
+            decrypt_key("pw", &tampered2),
+            Err(VaultError::Auth)
+        ));
     }
 
-    const PHRASE: &str =
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+    const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon \
          abandon abandon abandon abandon abandon abandon abandon abandon abandon \
          abandon abandon abandon abandon abandon art";
 
@@ -461,7 +534,10 @@ mod tests {
     #[test]
     fn mnemonic_wrong_passcode_fails() {
         let v = encrypt_with_mnemonic("right", &[5u8; 64], Some(PHRASE), fast());
-        assert!(matches!(decrypt_mnemonic("wrong", &v), Err(VaultError::Auth)));
+        assert!(matches!(
+            decrypt_mnemonic("wrong", &v),
+            Err(VaultError::Auth)
+        ));
     }
 
     #[test]
@@ -509,6 +585,28 @@ mod tests {
         std::fs::write(dir.join(SEED_FILE), PHRASE.as_bytes()).unwrap();
         assert!(has_stored_mnemonic(&dir));
         assert_eq!(reveal_mnemonic(&dir, None).unwrap().as_str(), PHRASE);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_files_are_created_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_id_dir("mode");
+        let v = encrypt_with_mnemonic("pw", &[7u8; 64], Some(PHRASE), fast());
+        let enc_path = dir.join("identity.enc");
+        write_vault(&enc_path, &v).unwrap();
+        write_seed_file(&dir.join(SEED_FILE), PHRASE).unwrap();
+
+        let enc_mode = std::fs::metadata(&enc_path).unwrap().permissions().mode() & 0o777;
+        let seed_mode = std::fs::metadata(dir.join(SEED_FILE))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(enc_mode, 0o600);
+        assert_eq!(seed_mode, 0o600);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -195,6 +195,12 @@ fn parse_private_identity_bytes(bytes: &[u8]) -> Result<ParsedIdentityImport, St
     Err("Identity import must contain a private identity, not a public-only identity".into())
 }
 
+fn identity_material_exists(id_dir: &std::path::Path) -> bool {
+    id_dir.join("identity").exists()
+        || id_dir.join("identity.enc").exists()
+        || id_dir.join("identity.hwid").exists()
+}
+
 fn identity_preview_payload(key_bytes: &[u8], format: &str) -> Result<Value, String> {
     let identity =
         Identity::from_private_key(key_bytes).map_err(|e| format!("Invalid identity key: {e}"))?;
@@ -264,7 +270,9 @@ pub async fn api_list_identities(state: State<'_, Arc<AppState>>) -> AppResult<V
                 .map(|h| dir.join(h));
             let hwid_path = id_dir.as_ref().map(|d| d.join("identity.hwid"));
             let is_hw = hwid_path.as_ref().map(|p| p.exists()).unwrap_or(false);
-            let serial = is_hw.then(|| hwid_path.and_then(|p| read_hwid_serial(&p))).flatten();
+            let serial = is_hw
+                .then(|| hwid_path.and_then(|p| read_hwid_serial(&p)))
+                .flatten();
             // Software identity sealed with a passcode (at-rest encrypted)?
             let passcode_protected = id_dir
                 .as_ref()
@@ -371,8 +379,8 @@ pub async fn restore_seed_identity(
 ) -> AppResult<Value> {
     let phrase = args.phrase.trim().to_string();
     let identities_dir = state.config.data_dir.join("identities");
-    let key =
-        ratspeak_runtime::derive_identity_key_from_phrase(&phrase).map_err(AppError::bad_request)?;
+    let key = ratspeak_runtime::derive_identity_key_from_phrase(&phrase)
+        .map_err(AppError::bad_request)?;
     let resp = import_identity_shared(state, key.to_vec(), args.nickname).await?;
     // Persist the phrase so a restored identity can re-display it later too.
     if let Some(hash) = resp.get("hash").and_then(|v| v.as_str()) {
@@ -405,7 +413,9 @@ pub async fn set_identity_passcode(
         return Err(AppError::bad_request("Invalid hash"));
     }
     if args.passcode.len() < 6 || args.passcode.len() > 128 {
-        return Err(AppError::bad_request("Passcode must be at least 6 characters"));
+        return Err(AppError::bad_request(
+            "Passcode must be at least 6 characters",
+        ));
     }
     let id_dir = state.config.data_dir.join("identities").join(&args.hash);
     let (passcode, current) = (args.passcode, args.current);
@@ -865,13 +875,10 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     })?
     .ok_or_else(|| AppError::not_found("Identity not found"))?;
 
-    let id_dir = state
-        .config
-        .data_dir
-        .join("identities")
-        .join(&hash_hex);
-    // A hardware identity stores a `.hwid` (public metadata) instead of a key file.
-    if !id_dir.join("identity").exists() && !id_dir.join("identity.hwid").exists() {
+    let id_dir = state.config.data_dir.join("identities").join(&hash_hex);
+    // Hardware identities store `.hwid`; passcode-protected software identities
+    // store `identity.enc` until unlocked.
+    if !identity_material_exists(&id_dir) {
         return Err(AppError::not_found("Identity file not found"));
     }
 
@@ -944,7 +951,10 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     // intermediate state, not a failed switch. Keep it active and let the unlock
     // prompt (driven by the hardware_locked event) take over; do not roll back.
     if state.hw_locked_hash().as_deref() == Some(hash_hex.as_str()) {
-        state.emit_to_all("identity_switched", json!({ "hash": hash_hex, "locked": true }));
+        state.emit_to_all(
+            "identity_switched",
+            json!({ "hash": hash_hex, "locked": true }),
+        );
         return Ok(json!({ "hash": hash_hex, "locked": true }));
     }
 
@@ -1137,10 +1147,31 @@ pub async fn set_identity_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_IDENTITY_COMMAND_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn private_key_bytes() -> Vec<u8> {
         let identity = Identity::new();
         identity.get_private_key().unwrap().to_vec()
+    }
+
+    fn temp_identity_dir(tag: &str) -> std::path::PathBuf {
+        let n = TEMP_IDENTITY_COMMAND_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "ratspeak-identity-command-{tag}-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn identity_material_exists_accepts_encrypted_identity() {
+        let dir = temp_identity_dir("enc");
+        std::fs::write(dir.join("identity.enc"), b"{}").unwrap();
+        assert!(identity_material_exists(&dir));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

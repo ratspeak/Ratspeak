@@ -469,8 +469,9 @@ pub fn derive_identity_key_from_phrase(phrase: &str) -> Result<[u8; 64], String>
 }
 
 /// Generate a fresh recoverable identity: a new BIP-39 mnemonic + the 64-byte
-/// Reticulum private key derived from it. The caller shows the mnemonic once for
-/// backup (we never store it) and writes/imports the key as a software identity.
+/// Reticulum private key derived from it. The caller writes/imports the key as a
+/// software identity and stores the mnemonic with the same at-rest protection as
+/// the identity key so it can be re-displayed after re-authentication.
 #[cfg(feature = "seed")]
 pub fn generate_recoverable_key() -> Result<(String, [u8; 64]), String> {
     let mnemonic = rns_ratkey::seed::generate_mnemonic()
@@ -479,21 +480,29 @@ pub fn generate_recoverable_key() -> Result<(String, [u8; 64]), String> {
     Ok((mnemonic, key))
 }
 
+fn has_identity_material(ratspeak_dir: &std::path::Path) -> bool {
+    profile_has_identity_material(ratspeak_dir)
+        || (ratspeak_dir.join("identities").is_dir()
+            && std::fs::read_dir(ratspeak_dir.join("identities"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .any(|e| profile_has_identity_material(&e.path()))
+                })
+                .unwrap_or(false))
+}
+
+fn profile_has_identity_material(dir: &std::path::Path) -> bool {
+    dir.join("identity").exists()
+        || dir.join("identity.enc").exists()
+        || dir.join("identity.hwid").exists()
+}
+
 pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     propagation::seed_static_nodes(&state);
 
     let ratspeak_dir = data_dir.join(".ratspeak");
-    let has_identity = ratspeak_dir.join("identity").exists()
-        || (ratspeak_dir.join("identities").is_dir() && {
-            std::fs::read_dir(ratspeak_dir.join("identities"))
-                .map(|entries| {
-                    entries.flatten().any(|e| {
-                        e.path().join("identity").exists()
-                            || e.path().join("identity.hwid").exists()
-                    })
-                })
-                .unwrap_or(false)
-        });
+    let has_identity = has_identity_material(&ratspeak_dir);
 
     if !has_identity {
         tracing::info!("No identity found — starting in setup mode");
@@ -4306,6 +4315,43 @@ mod packet_dispatch_tests {
         );
 
         assert!(!inbound_packet_targets_destination(&raw, transport_id));
+    }
+}
+
+#[cfg(test)]
+mod identity_material_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_IDENTITY_MATERIAL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_ratspeak_dir(tag: &str) -> std::path::PathBuf {
+        let n = TEMP_IDENTITY_MATERIAL_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "ratspeak-identity-material-{tag}-{}-{n}",
+            std::process::id()
+        ));
+        let ratspeak_dir = dir.join(".ratspeak");
+        std::fs::create_dir_all(&ratspeak_dir).unwrap();
+        ratspeak_dir
+    }
+
+    #[test]
+    fn encrypted_root_identity_counts_as_identity_material() {
+        let dir = temp_ratspeak_dir("root-enc");
+        std::fs::write(dir.join("identity.enc"), b"{}").unwrap();
+        assert!(has_identity_material(&dir));
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn encrypted_profile_identity_counts_as_identity_material() {
+        let dir = temp_ratspeak_dir("profile-enc");
+        let profile_dir = dir.join("identities").join("abcdef");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::write(profile_dir.join("identity.enc"), b"{}").unwrap();
+        assert!(has_identity_material(&dir));
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
     }
 }
 

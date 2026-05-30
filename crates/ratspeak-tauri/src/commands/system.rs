@@ -78,7 +78,8 @@ pub async fn api_setup_complete(
     // Idempotent: api_setup_complete is called twice (create, then "Connect" with
     // a display name). Generate a recoverable (mnemonic-derived) identity only on
     // the FIRST call; later calls load the existing one and just update the name.
-    // The mnemonic is returned once (first call) for backup and is never stored.
+    // The mnemonic is returned on the first call and persisted with the same
+    // at-rest protection as the identity key for later re-display.
     let existing = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
         .await
         .ok()
@@ -97,7 +98,10 @@ pub async fn api_setup_complete(
         let write_nick = display_name.clone();
         let write = tokio::task::spawn_blocking(move || {
             crate::lxmf::LxmfManager::import_identity_to_data_dir(
-                &write_dir, &key, &write_nick, &write_db,
+                &write_dir,
+                &key,
+                &write_nick,
+                &write_db,
             )
             .map_err(|e| e.to_string())
         })
@@ -106,7 +110,9 @@ pub async fn api_setup_complete(
         let (hash, _lxmf) = match write {
             Ok(t) => t,
             Err(e) => {
-                return Ok(json!({ "ok": false, "error": format!("Failed to create identity: {e}") }));
+                return Ok(
+                    json!({ "ok": false, "error": format!("Failed to create identity: {e}") }),
+                );
             }
         };
         let ih = hash.clone();
