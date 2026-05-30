@@ -296,7 +296,9 @@ pub async fn hw_activate_and_unlock(
 
     let id_dir = state.config.data_dir.join("identities").join(&hash);
     if !id_dir.join("identity.hwid").exists() {
-        return Err(AppError::bad_request("Identity is not a hardware key identity"));
+        return Err(AppError::bad_request(
+            "Identity is not a hardware key identity",
+        ));
     }
 
     let hash_for_active = hash.clone();
@@ -332,12 +334,12 @@ pub async fn hw_activate_and_unlock(
         }));
     }
 
-    let msg = state.take_hw_last_error().unwrap_or_else(|| {
-        match loaded_identity {
+    let msg = state
+        .take_hw_last_error()
+        .unwrap_or_else(|| match loaded_identity {
             Some(other) => format!("Hardware unlock loaded a different identity ({other})."),
             None => "Could not unlock the hardware identity.".to_string(),
-        }
-    });
+        });
     state.set_hw_locked(Some(hash.clone()));
     state.set_startup_stage("hw_locked");
     let locked = msg.contains("PIN locked");

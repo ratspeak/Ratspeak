@@ -10,9 +10,9 @@
 use std::path::Path;
 
 use rns_identity::destination::Destination;
-use rns_ratkey::{PcscPivSession, RatkeyError};
 use rns_ratkey::mock::TouchPolicy;
 use rns_ratkey::provision::{self, ProvisionConfig};
+use rns_ratkey::{PcscPivSession, RatkeyError};
 
 use crate::state::DbPool;
 

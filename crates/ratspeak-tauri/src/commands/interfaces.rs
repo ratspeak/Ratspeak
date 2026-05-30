@@ -866,7 +866,11 @@ pub async fn set_hardware_lock_timeout(
     state: State<'_, Arc<AppState>>,
     seconds: u64,
 ) -> AppResult<Value> {
-    let seconds = if seconds == 0 { 0 } else { seconds.clamp(60, 86400) };
+    let seconds = if seconds == 0 {
+        0
+    } else {
+        seconds.clamp(60, 86400)
+    };
     db::spawn_db(state.db.clone(), move |p| {
         db::try_set_setting(&p, "hardware_session_timeout", &seconds.to_string())
     })

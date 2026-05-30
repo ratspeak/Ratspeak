@@ -788,7 +788,10 @@ fn load_hwid_identity(
     hash: &str,
     _pin: Option<&str>,
 ) -> Result<Identity, Box<dyn std::error::Error + Send + Sync>> {
-    Err(format!("identity {hash} is hardware-backed but this build lacks the `hardware` feature").into())
+    Err(
+        format!("identity {hash} is hardware-backed but this build lacks the `hardware` feature")
+            .into(),
+    )
 }
 
 /// Load a passcode-protected software identity from its `identity.enc` vault.
