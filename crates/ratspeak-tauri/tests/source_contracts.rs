@@ -2385,6 +2385,27 @@ fn identity_management_is_first_class_tab() {
 }
 
 #[test]
+fn hardware_new_identity_reset_flow_handles_initialized_keys() {
+    let root = repo_root();
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    let hardware_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/hardware.rs")).expect("hardware rs");
+
+    assert!(identity_js.contains("function _hwConfirmOverwriteIfNeeded"));
+    assert!(identity_js.contains("title: 'Reset this security key?'"));
+    assert!(identity_js.contains("RS.invoke('hw_reset_piv')"));
+    assert!(identity_js.contains("function _hwIsFactoryDefaultPinError"));
+    assert!(identity_js.contains("function _hwRecoverNonFactoryPinForProvision"));
+    assert!(identity_js.contains("_hwRecoverNonFactoryPinForProvision(msg);"));
+    assert!(!identity_js.contains("title: 'Overwrite this key?'"));
+    assert!(!identity_js.contains("confirmText: 'Overwrite'"));
+
+    assert!(hardware_rs.contains("not at the factory default"));
+    assert!(hardware_rs.contains("Reset the security key to set up a new Ratspeak identity"));
+}
+
+#[test]
 fn identity_switch_refreshes_interface_state_without_stale_public_servers() {
     let root = repo_root();
     let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");

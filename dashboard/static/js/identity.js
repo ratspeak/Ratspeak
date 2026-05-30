@@ -1753,10 +1753,10 @@ function _hwUpdatePinContinue() {
 function _hwOverwriteMessage() {
     var existing = _hwCtx && _hwCtx.existing;
     if (existing && existing.on_card_only) {
-        return 'This YubiKey already contains keys in the Ratspeak PIV identity slots. Setting up a new identity permanently erases those keys. Only continue if you have a backup or are certain they are not needed.';
+        return 'This YubiKey already contains keys in the Ratspeak PIV identity slots. Resetting the security key permanently erases those keys. Only continue if you have a backup or are certain they are not needed. Passkeys, FIDO sign-ins, OTP, and other non-PIV features are not affected.';
     }
     var name = (existing && existing.nickname) ? existing.nickname : 'an existing identity';
-    return 'This YubiKey already holds "' + name + '". Setting up a new identity permanently erases its keys — this cannot be undone unless you saved its 12-word backup phrase.';
+    return 'This YubiKey already holds "' + name + '". Resetting the security key permanently erases its Ratspeak keys — this cannot be undone unless you saved its 12-word backup phrase. Passkeys, FIDO sign-ins, OTP, and other non-PIV features are not affected.';
 }
 
 function _hwConfirmOverwriteIfNeeded(onConfirm, onCancel) {
@@ -1764,17 +1764,18 @@ function _hwConfirmOverwriteIfNeeded(onConfirm, onCancel) {
         if (onConfirm) onConfirm();
         return;
     }
-    rsConfirm({
-        title: 'Overwrite this key?',
+    _hwResetPivWithConfirmation({
+        title: 'Reset this security key?',
         message: _hwOverwriteMessage(),
-        confirmText: 'Overwrite',
-        danger: true
-    }).then(function(ok) {
-        if (!ok || !_hwCtx) {
+        beforeReset: function() { _hwShowWorking('Resetting your security key…'); }
+    }).then(function(reset) {
+        if (!reset || !_hwCtx) {
             if (onCancel) onCancel();
             return;
         }
-        _hwCtx.force = true;
+        _hwCtx.existing = null;
+        _hwCtx.currentPin = null;
+        _hwCtx.force = false;
         if (onConfirm) onConfirm();
     });
 }
@@ -1831,6 +1832,13 @@ function _hwIsPinLockedError(message) {
         message.indexOf('reset the piv application') >= 0;
 }
 
+function _hwIsFactoryDefaultPinError(message) {
+    message = String(message || '').toLowerCase();
+    return message.indexOf('not at the factory default') >= 0 ||
+        message.indexOf('not factory-default') >= 0 ||
+        message.indexOf('not factory default') >= 0;
+}
+
 function _hwProvisionPayload() {
     return {
         pin: _hwCtx.pin,
@@ -1880,10 +1888,34 @@ function _hwRecoverLockedPinForProvision(msg) {
     });
 }
 
+function _hwRecoverNonFactoryPinForProvision(msg) {
+    _hwShowPinStep();
+    var errEl = document.getElementById('hw-pin-error');
+    if (errEl) {
+        errEl.textContent = msg;
+        errEl.style.display = '';
+    }
+    _hwResetPivWithConfirmation({
+        title: 'Reset this security key?',
+        message: 'This YubiKey is already initialized, so Ratspeak cannot set it up as a new identity until the PIV application is reset. Resetting erases any Ratspeak identity keys on this YubiKey, but does not affect passkeys, FIDO sign-ins, OTP, or other non-PIV features.',
+        beforeReset: function() { _hwShowWorking('Resetting your security key…'); }
+    }).then(function(reset) {
+        if (!reset || !_hwCtx) return;
+        _hwCtx.existing = null;
+        _hwCtx.currentPin = null;
+        _hwCtx.force = false;
+        _hwDispatchProvision();
+    });
+}
+
 function _hwProvisionFailure(err) {
     var msg = (err && err.message) ? err.message : 'Provisioning failed';
     if (_hwIsPinLockedError(msg)) {
         _hwRecoverLockedPinForProvision(msg);
+        return;
+    }
+    if (_hwIsFactoryDefaultPinError(msg)) {
+        _hwRecoverNonFactoryPinForProvision(msg);
         return;
     }
     showToast(msg, 'toast-red', 5000);

@@ -347,7 +347,7 @@ fn format_pin_setup_error(e: RatkeyError) -> String {
             "YubiKey PIV PIN is locked. Reset the PIV application before provisioning. Resetting PIV erases the Ratspeak keys on that YubiKey.".to_string()
         }
         RatkeyError::PinFailed { remaining } => format!(
-            "YubiKey PIV PIN is not at the factory default ({} attempt{} remaining). Use a factory-reset YubiKey, or add it as an existing key with its current PIN.",
+            "YubiKey PIV PIN is not at the factory default ({} attempt{} remaining). Reset the security key to set up a new Ratspeak identity, or use it as an existing key with its current PIN.",
             remaining,
             if remaining == 1 { "" } else { "s" }
         ),
