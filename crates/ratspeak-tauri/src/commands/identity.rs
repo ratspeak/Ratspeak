@@ -319,10 +319,9 @@ pub async fn api_create_identity(
     let mut resp = import_identity_shared(state, key.to_vec(), Some(nickname)).await?;
     // Persist the phrase (software identity) so it can be re-displayed later.
     if let Some(hash) = resp.get("hash").and_then(|v| v.as_str()) {
-        if let Err(e) =
-            ratspeak_runtime::vault::store_plaintext_seed(&identities_dir.join(hash), &mnemonic)
-        {
-            tracing::warn!(error = %e, "could not store recovery-phrase sidecar");
+        match ratspeak_runtime::vault::store_plaintext_seed(&identities_dir.join(hash), &mnemonic) {
+            Ok(()) => {}
+            Err(e) => tracing::warn!(error = %e, "could not store recovery-phrase sidecar"),
         }
     }
     if let Some(obj) = resp.as_object_mut() {
@@ -384,10 +383,9 @@ pub async fn restore_seed_identity(
     let resp = import_identity_shared(state, key.to_vec(), args.nickname).await?;
     // Persist the phrase so a restored identity can re-display it later too.
     if let Some(hash) = resp.get("hash").and_then(|v| v.as_str()) {
-        if let Err(e) =
-            ratspeak_runtime::vault::store_plaintext_seed(&identities_dir.join(hash), &phrase)
-        {
-            tracing::warn!(error = %e, "could not store recovery-phrase sidecar");
+        match ratspeak_runtime::vault::store_plaintext_seed(&identities_dir.join(hash), &phrase) {
+            Ok(()) => {}
+            Err(e) => tracing::warn!(error = %e, "could not store recovery-phrase sidecar"),
         }
     }
     Ok(resp)
