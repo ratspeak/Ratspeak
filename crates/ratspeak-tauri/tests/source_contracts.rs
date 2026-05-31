@@ -2471,7 +2471,9 @@ fn software_identity_creation_uses_passcode_and_shared_backup_flow() {
     assert!(identity_js.contains("opts.requireConfirm !== false"));
     assert!(identity_js.contains("function renderRecoveryVerifyFields"));
     assert!(identity_js.contains("function validateRecoveryVerifyInputs"));
-    assert!(identity_js.contains("var requireVerify = requireConfirm && opts.requireVerify !== false;"));
+    assert!(
+        identity_js.contains("var requireVerify = requireConfirm && opts.requireVerify !== false;")
+    );
     assert!(identity_js.contains("showVerifyStep();"));
     assert!(identity_js.contains("passcodeProtected: !!passcode"));
     assert!(setup_js.contains("function showSetupRecoveryStep"));
