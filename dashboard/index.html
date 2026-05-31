@@ -239,6 +239,7 @@
                         <span class="setup-dot active"></span>
                         <span class="setup-dot"></span>
                         <span class="setup-dot"></span>
+                        <span class="setup-dot"></span>
                     </div>
                     <div class="setup-steps">
                         <div class="setup-step" id="setup-step-1">
@@ -268,6 +269,27 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                        <div class="setup-step" id="setup-step-backup" style="display:none;">
+                            <div class="setup-divider"></div>
+                            <h3 class="setup-step-title">Backup Phrase</h3>
+                            <p class="setup-recovery-warn">Write down these 12 words in order and store them somewhere safe. Anyone with them controls your identity.</p>
+                            <div class="hw-mnemonic-shell setup-mnemonic-shell" id="setup-mnemonic-shell">
+                                <div class="hw-mnemonic-grid" id="setup-mnemonic-grid" aria-hidden="true"></div>
+                                <button type="button" class="hw-mnemonic-cover" id="setup-mnemonic-cover" aria-label="Reveal recovery phrase">
+                                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    <span>Tap to reveal phrase</span>
+                                </button>
+                            </div>
+                            <button type="button" class="nr-btn nr-btn-ghost w-full mt-3" id="setup-mnemonic-copy-btn">
+                                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                Copy phrase
+                            </button>
+                            <label class="hw-confirm-check">
+                                <input type="checkbox" id="setup-mnemonic-confirm">
+                                <span>I have written down my 12-word phrase and stored it safely.</span>
+                            </label>
+                            <button class="nr-btn nr-btn-lg w-full" id="setup-mnemonic-continue-btn" disabled>Continue</button>
                         </div>
                         <div class="setup-step" id="setup-step-2" style="display:none;">
                             <div class="modal-field">

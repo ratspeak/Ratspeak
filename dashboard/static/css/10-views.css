@@ -2176,9 +2176,23 @@ body.setup-active .bottom-bar {
 .setup-step .modal-field {
     text-align: left;
 }
+.setup-step-title {
+    font-size: var(--text-xl);
+    line-height: 1.2;
+    color: var(--text-primary);
+    margin: 0 0 var(--space-4);
+    text-align: center;
+}
+.setup-recovery-warn {
+    margin-bottom: var(--space-6) !important;
+}
+.setup-mnemonic-shell {
+    margin-top: var(--space-5);
+}
 
 #setup-generate-btn,
-#setup-finish-btn {
+#setup-finish-btn,
+#setup-mnemonic-continue-btn {
     margin-top: var(--space-7);
     background: linear-gradient(135deg, var(--accent-dim), var(--accent-dark));
     color: #fff;
@@ -2188,10 +2202,16 @@ body.setup-active .bottom-bar {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
     transition: filter 0.15s, transform 0.1s;
 }
+#setup-mnemonic-continue-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
 #setup-generate-btn:hover,
-#setup-finish-btn:hover { filter: brightness(1.15); }
+#setup-finish-btn:hover,
+#setup-mnemonic-continue-btn:not(:disabled):hover { filter: brightness(1.15); }
 #setup-generate-btn:active,
-#setup-finish-btn:active { transform: scale(0.97); }
+#setup-finish-btn:active,
+#setup-mnemonic-continue-btn:not(:disabled):active { transform: scale(0.97); }
 
 .setup-crypto-anim {
     text-align: center;

@@ -21,12 +21,29 @@ use crate::helpers::{
 };
 use crate::state::AppState;
 
-const IDENTITY_BACKUP_FORMAT: &str = "ratspeak.identity.v1";
+const IDENTITY_BACKUP_FORMAT: &str = "ratspeak.identity.v2";
+const LEGACY_IDENTITY_BACKUP_FORMAT: &str = "ratspeak.identity.v1";
 const LXMF_APP_NAME: &str = "lxmf.delivery";
 const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 #[derive(Debug, Deserialize, Serialize)]
-struct IdentityBackupV1 {
+struct EncryptedIdentityBackupV2 {
+    format: String,
+    kind: String,
+    vault: ratspeak_runtime::vault::EncryptedVault,
+    identity_hash: String,
+    lxmf_hash: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    nickname: String,
+    exported_at: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct LegacyIdentityBackupV1 {
     format: String,
     kind: String,
     private_key: String,
@@ -45,6 +62,7 @@ struct IdentityBackupV1 {
 struct ParsedIdentityImport {
     key_bytes: Vec<u8>,
     format: &'static str,
+    mnemonic: Option<String>,
 }
 
 fn now_ts() -> f64 {
@@ -125,11 +143,15 @@ fn base32_encode_padded(bytes: &[u8]) -> String {
     out
 }
 
-fn parse_private_identity_bytes(bytes: &[u8]) -> Result<ParsedIdentityImport, String> {
+fn parse_private_identity_bytes(
+    bytes: &[u8],
+    passcode: Option<&str>,
+) -> Result<ParsedIdentityImport, String> {
     if bytes.len() == 64 {
         return Ok(ParsedIdentityImport {
             key_bytes: bytes.to_vec(),
             format: "raw-private-key",
+            mnemonic: None,
         });
     }
 
@@ -140,29 +162,65 @@ fn parse_private_identity_bytes(bytes: &[u8]) -> Result<ParsedIdentityImport, St
         return Err("Identity import is empty".into());
     }
 
-    if let Ok(backup) = serde_json::from_str::<IdentityBackupV1>(text) {
-        if backup.format != IDENTITY_BACKUP_FORMAT {
-            return Err("Unsupported identity backup format".into());
+    if text.starts_with('{') {
+        let value = serde_json::from_str::<Value>(text)
+            .map_err(|_| "Identity backup JSON is invalid".to_string())?;
+        let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("");
+        if format == IDENTITY_BACKUP_FORMAT {
+            let backup = serde_json::from_value::<EncryptedIdentityBackupV2>(value)
+                .map_err(|_| "Encrypted identity backup is invalid".to_string())?;
+            if backup.kind != "private" {
+                return Err("Public identity backups are not activatable identities".into());
+            }
+            let passcode = passcode
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .ok_or_else(|| "Backup PIN required".to_string())?;
+            let key = ratspeak_runtime::vault::decrypt_key(passcode, &backup.vault)
+                .map_err(|_| "Incorrect backup PIN or corrupt identity backup".to_string())?;
+            let mnemonic = ratspeak_runtime::vault::decrypt_mnemonic(passcode, &backup.vault)
+                .map_err(|_| "Incorrect backup PIN or corrupt identity backup".to_string())?
+                .map(|m| m.as_str().to_string());
+            let key_bytes = key.as_ref().to_vec();
+            let identity = Identity::from_private_key(&key_bytes)
+                .map_err(|e| format!("Invalid identity backup key: {e}"))?;
+            let hash_hex = hex::encode(identity.hash);
+            if !backup.identity_hash.is_empty() && backup.identity_hash != hash_hex {
+                return Err("Identity backup hash does not match private key".into());
+            }
+            return Ok(ParsedIdentityImport {
+                key_bytes,
+                format: IDENTITY_BACKUP_FORMAT,
+                mnemonic,
+            });
         }
-        if backup.kind != "private" {
-            return Err("Public identity backups are not activatable identities".into());
+
+        if format == LEGACY_IDENTITY_BACKUP_FORMAT {
+            let backup = serde_json::from_value::<LegacyIdentityBackupV1>(value)
+                .map_err(|_| "Legacy identity backup is invalid".to_string())?;
+            if backup.kind != "private" {
+                return Err("Public identity backups are not activatable identities".into());
+            }
+            let key_bytes = B64
+                .decode(backup.private_key.trim())
+                .map_err(|_| "Invalid identity backup key data")?;
+            if key_bytes.len() != 64 {
+                return Err("Identity backup key must be exactly 64 bytes".into());
+            }
+            let identity = Identity::from_private_key(&key_bytes)
+                .map_err(|e| format!("Invalid identity backup key: {e}"))?;
+            let hash_hex = hex::encode(identity.hash);
+            if !backup.identity_hash.is_empty() && backup.identity_hash != hash_hex {
+                return Err("Identity backup hash does not match private key".into());
+            }
+            return Ok(ParsedIdentityImport {
+                key_bytes,
+                format: LEGACY_IDENTITY_BACKUP_FORMAT,
+                mnemonic: None,
+            });
         }
-        let key_bytes = B64
-            .decode(backup.private_key.trim())
-            .map_err(|_| "Invalid identity backup key data")?;
-        if key_bytes.len() != 64 {
-            return Err("Identity backup key must be exactly 64 bytes".into());
-        }
-        let identity = Identity::from_private_key(&key_bytes)
-            .map_err(|e| format!("Invalid identity backup key: {e}"))?;
-        let hash_hex = hex::encode(identity.hash);
-        if !backup.identity_hash.is_empty() && backup.identity_hash != hash_hex {
-            return Err("Identity backup hash does not match private key".into());
-        }
-        return Ok(ParsedIdentityImport {
-            key_bytes,
-            format: IDENTITY_BACKUP_FORMAT,
-        });
+
+        return Err("Unsupported identity backup format".into());
     }
 
     if let Ok(key_bytes) = hex::decode(text)
@@ -171,6 +229,7 @@ fn parse_private_identity_bytes(bytes: &[u8]) -> Result<ParsedIdentityImport, St
         return Ok(ParsedIdentityImport {
             key_bytes,
             format: "hex-private-key",
+            mnemonic: None,
         });
     }
 
@@ -180,6 +239,7 @@ fn parse_private_identity_bytes(bytes: &[u8]) -> Result<ParsedIdentityImport, St
         return Ok(ParsedIdentityImport {
             key_bytes,
             format: "base64-private-key",
+            mnemonic: None,
         });
     }
 
@@ -189,6 +249,7 @@ fn parse_private_identity_bytes(bytes: &[u8]) -> Result<ParsedIdentityImport, St
         return Ok(ParsedIdentityImport {
             key_bytes,
             format: "base32-private-key",
+            mnemonic: None,
         });
     }
 
@@ -335,6 +396,8 @@ pub struct ImportIdentityArgs {
     pub key: String,
     #[serde(default)]
     pub nickname: Option<String>,
+    #[serde(default)]
+    pub passcode: Option<String>,
 }
 
 #[tauri::command]
@@ -355,7 +418,7 @@ pub async fn api_import_identity_base64(
     let key_bytes = B64
         .decode(args.key.trim())
         .map_err(|_| AppError::bad_request("Invalid base64 key data"))?;
-    import_identity_shared(state, key_bytes, args.nickname).await
+    import_identity_shared_with_passcode(state, key_bytes, args.nickname, args.passcode).await
 }
 
 #[cfg(feature = "seed")]
@@ -411,9 +474,7 @@ pub async fn set_identity_passcode(
         return Err(AppError::bad_request("Invalid hash"));
     }
     if args.passcode.len() < 6 || args.passcode.len() > 128 {
-        return Err(AppError::bad_request(
-            "Passcode must be at least 6 characters",
-        ));
+        return Err(AppError::bad_request("PIN must be at least 6 characters"));
     }
     let id_dir = state.config.data_dir.join("identities").join(&args.hash);
     let (passcode, current) = (args.passcode, args.current);
@@ -490,10 +551,21 @@ async fn import_identity_shared(
     key_bytes: Vec<u8>,
     nickname: Option<String>,
 ) -> AppResult<Value> {
+    import_identity_shared_with_passcode(state, key_bytes, nickname, None).await
+}
+
+async fn import_identity_shared_with_passcode(
+    state: State<'_, Arc<AppState>>,
+    key_bytes: Vec<u8>,
+    nickname: Option<String>,
+    passcode: Option<String>,
+) -> AppResult<Value> {
     let nickname = sanitize_announced_display_name(nickname.as_deref().unwrap_or(""))
         .map_err(AppError::bad_request)?;
-    let parsed = parse_private_identity_bytes(&key_bytes).map_err(AppError::bad_request)?;
+    let parsed = parse_private_identity_bytes(&key_bytes, passcode.as_deref())
+        .map_err(AppError::bad_request)?;
     let format = parsed.format;
+    let mnemonic = parsed.mnemonic.clone();
     let parsed_identity = Identity::from_private_key(&parsed.key_bytes)
         .map_err(|e| AppError::bad_request(format!("Invalid identity key: {e}")))?;
     let import_hash = hex::encode(parsed_identity.hash);
@@ -530,6 +602,12 @@ async fn import_identity_shared(
 
     match result {
         Ok((hash, lxmf_hash)) => {
+            if let Some(phrase) = mnemonic.as_deref() {
+                let seed_dir = state.config.data_dir.join("identities").join(&hash);
+                if let Err(e) = ratspeak_runtime::vault::store_plaintext_seed(&seed_dir, phrase) {
+                    tracing::warn!(error = %e, "could not store imported recovery-phrase sidecar");
+                }
+            }
             let active_missing = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
                 .await
                 .map_err(|_| AppError::internal("active identity db task panicked"))?
@@ -559,7 +637,8 @@ pub async fn api_preview_identity_import_base64(args: ImportIdentityArgs) -> App
     let bytes = B64
         .decode(args.key.trim())
         .map_err(|_| AppError::bad_request("Invalid base64 identity data"))?;
-    let parsed = parse_private_identity_bytes(&bytes).map_err(AppError::bad_request)?;
+    let parsed = parse_private_identity_bytes(&bytes, args.passcode.as_deref())
+        .map_err(AppError::bad_request)?;
     identity_preview_payload(&parsed.key_bytes, parsed.format).map_err(AppError::bad_request)
 }
 
@@ -717,9 +796,20 @@ pub async fn api_export_identity_reticulum_base32(
 pub async fn api_export_identity_backup_base64(
     state: State<'_, Arc<AppState>>,
     hash_hex: String,
+    passcode: String,
 ) -> AppResult<Value> {
+    let passcode = passcode.trim().to_string();
+    if passcode.len() < 6 || passcode.len() > 128 {
+        return Err(AppError::bad_request(
+            "Backup PIN must be at least 6 characters",
+        ));
+    }
     let key_bytes = export_identity_key_bytes(&state, &hash_hex)?;
     let (identity_hash, lxmf_hash) = identity_export_hashes(&key_bytes)?;
+    let key_array: [u8; 64] = key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::internal("identity key length mismatch"))?;
 
     let row_hash = hash_hex.clone();
     let identity_row = db::spawn_db(state.db.clone(), move |p| db::get_identity(&p, &row_hash))
@@ -742,10 +832,20 @@ pub async fn api_export_identity_backup_base64(
         .unwrap_or("")
         .to_string();
 
-    let backup = IdentityBackupV1 {
+    let mnemonic = ratspeak_runtime::vault::reveal_mnemonic(
+        &state.config.data_dir.join("identities").join(&hash_hex),
+        None,
+    )
+    .ok()
+    .map(|m| m.as_str().to_string());
+    let vault =
+        ratspeak_runtime::vault::encrypt_identity(&passcode, &key_array, mnemonic.as_deref())
+            .map_err(|e| AppError::internal(format!("failed to encrypt identity backup: {e}")))?;
+
+    let backup = EncryptedIdentityBackupV2 {
         format: IDENTITY_BACKUP_FORMAT.to_string(),
         kind: "private".to_string(),
-        private_key: B64.encode(&key_bytes),
+        vault,
         identity_hash: identity_hash.clone(),
         lxmf_hash: lxmf_hash.clone(),
         display_name,
@@ -1175,17 +1275,82 @@ mod tests {
     #[test]
     fn parse_private_identity_accepts_raw_key() {
         let key = private_key_bytes();
-        let parsed = parse_private_identity_bytes(&key).unwrap();
+        let parsed = parse_private_identity_bytes(&key, None).unwrap();
         assert_eq!(parsed.format, "raw-private-key");
         assert_eq!(parsed.key_bytes, key);
     }
 
     #[test]
-    fn parse_private_identity_accepts_backup_envelope() {
+    fn parse_private_identity_accepts_encrypted_backup_envelope() {
         let key = private_key_bytes();
         let preview = identity_preview_payload(&key, "test").unwrap();
-        let backup = IdentityBackupV1 {
+        let key_array: [u8; 64] = key.as_slice().try_into().unwrap();
+        let vault =
+            ratspeak_runtime::vault::encrypt_identity("123456", &key_array, Some("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")).unwrap();
+        let backup = EncryptedIdentityBackupV2 {
             format: IDENTITY_BACKUP_FORMAT.to_string(),
+            kind: "private".to_string(),
+            vault,
+            identity_hash: preview
+                .get("identity_hash")
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .to_string(),
+            lxmf_hash: preview
+                .get("lxmf_hash")
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .to_string(),
+            display_name: "Sir".to_string(),
+            status: "Away".to_string(),
+            nickname: "Sir".to_string(),
+            exported_at: 1.0,
+        };
+        let encoded = serde_json::to_vec(&backup).unwrap();
+
+        let parsed = parse_private_identity_bytes(&encoded, Some("123456")).unwrap();
+        assert_eq!(parsed.format, IDENTITY_BACKUP_FORMAT);
+        assert_eq!(parsed.key_bytes, key);
+        assert!(parsed.mnemonic.is_some());
+    }
+
+    #[test]
+    fn parse_private_identity_rejects_encrypted_backup_without_pin() {
+        let key = private_key_bytes();
+        let preview = identity_preview_payload(&key, "test").unwrap();
+        let key_array: [u8; 64] = key.as_slice().try_into().unwrap();
+        let vault = ratspeak_runtime::vault::encrypt_key("123456", &key_array).unwrap();
+        let backup = EncryptedIdentityBackupV2 {
+            format: IDENTITY_BACKUP_FORMAT.to_string(),
+            kind: "private".to_string(),
+            vault,
+            identity_hash: preview
+                .get("identity_hash")
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .to_string(),
+            lxmf_hash: preview
+                .get("lxmf_hash")
+                .and_then(|v| v.as_str())
+                .unwrap()
+                .to_string(),
+            display_name: String::new(),
+            status: String::new(),
+            nickname: String::new(),
+            exported_at: 1.0,
+        };
+        let encoded = serde_json::to_vec(&backup).unwrap();
+
+        let err = parse_private_identity_bytes(&encoded, None).unwrap_err();
+        assert!(err.contains("Backup PIN required"));
+    }
+
+    #[test]
+    fn parse_private_identity_accepts_legacy_backup_envelope() {
+        let key = private_key_bytes();
+        let preview = identity_preview_payload(&key, "test").unwrap();
+        let backup = LegacyIdentityBackupV1 {
+            format: LEGACY_IDENTITY_BACKUP_FORMAT.to_string(),
             kind: "private".to_string(),
             private_key: B64.encode(&key),
             identity_hash: preview
@@ -1205,8 +1370,8 @@ mod tests {
         };
         let encoded = serde_json::to_vec(&backup).unwrap();
 
-        let parsed = parse_private_identity_bytes(&encoded).unwrap();
-        assert_eq!(parsed.format, IDENTITY_BACKUP_FORMAT);
+        let parsed = parse_private_identity_bytes(&encoded, None).unwrap();
+        assert_eq!(parsed.format, LEGACY_IDENTITY_BACKUP_FORMAT);
         assert_eq!(parsed.key_bytes, key);
     }
 
@@ -1215,7 +1380,7 @@ mod tests {
         let key = private_key_bytes();
         let encoded = base32_encode_padded(&key);
 
-        let parsed = parse_private_identity_bytes(encoded.as_bytes()).unwrap();
+        let parsed = parse_private_identity_bytes(encoded.as_bytes(), None).unwrap();
         assert_eq!(parsed.format, "base32-private-key");
         assert_eq!(parsed.key_bytes, key);
     }
@@ -1231,7 +1396,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
 
-        let parsed = parse_private_identity_bytes(wrapped.as_bytes()).unwrap();
+        let parsed = parse_private_identity_bytes(wrapped.as_bytes(), None).unwrap();
         assert_eq!(parsed.format, "base32-private-key");
         assert_eq!(parsed.key_bytes, key);
     }
@@ -1239,8 +1404,8 @@ mod tests {
     #[test]
     fn parse_private_identity_rejects_public_backup() {
         let key = private_key_bytes();
-        let backup = IdentityBackupV1 {
-            format: IDENTITY_BACKUP_FORMAT.to_string(),
+        let backup = LegacyIdentityBackupV1 {
+            format: LEGACY_IDENTITY_BACKUP_FORMAT.to_string(),
             kind: "public".to_string(),
             private_key: B64.encode(&key),
             identity_hash: String::new(),
@@ -1252,15 +1417,15 @@ mod tests {
         };
         let encoded = serde_json::to_vec(&backup).unwrap();
 
-        let err = parse_private_identity_bytes(&encoded).unwrap_err();
+        let err = parse_private_identity_bytes(&encoded, None).unwrap_err();
         assert!(err.contains("Public identity backups are not activatable"));
     }
 
     #[test]
     fn parse_private_identity_rejects_hash_mismatch() {
         let key = private_key_bytes();
-        let backup = IdentityBackupV1 {
-            format: IDENTITY_BACKUP_FORMAT.to_string(),
+        let backup = LegacyIdentityBackupV1 {
+            format: LEGACY_IDENTITY_BACKUP_FORMAT.to_string(),
             kind: "private".to_string(),
             private_key: B64.encode(&key),
             identity_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -1272,7 +1437,7 @@ mod tests {
         };
         let encoded = serde_json::to_vec(&backup).unwrap();
 
-        let err = parse_private_identity_bytes(&encoded).unwrap_err();
+        let err = parse_private_identity_bytes(&encoded, None).unwrap_err();
         assert!(err.contains("hash does not match"));
     }
 }

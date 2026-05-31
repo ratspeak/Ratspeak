@@ -80,11 +80,18 @@ function identitySetInlineError(id, message) {
     }
 }
 
+function identityPinError(err, fallback) {
+    var msg = (err && err.message) ? err.message : (fallback || 'PIN failed.');
+    return String(msg)
+        .replace(/passcode/g, 'PIN')
+        .replace(/Passcode/g, 'PIN');
+}
+
 function identityPasscodeOptionHtml(prefix, opts) {
     opts = opts || {};
     var label = opts.label || 'Encrypt this identity on this device';
-    var help = opts.help || 'Require a passcode when Ratspeak opens. Keep your ' +
-        RECOVERY_PHRASE_WORDS + '-word phrase; forgotten passcodes cannot be recovered.';
+    var help = opts.help || 'Require a PIN when Ratspeak opens. Keep your ' +
+        RECOVERY_PHRASE_WORDS + '-word phrase; forgotten PINs cannot be recovered.';
     return '' +
         '<label class="rs-dialog-checkbox-wrap identity-passcode-option">' +
             '<input type="checkbox" id="' + prefix + '-passcode-enable" class="rs-dialog-checkbox">' +
@@ -93,11 +100,11 @@ function identityPasscodeOptionHtml(prefix, opts) {
         '</label>' +
         '<div class="identity-passcode-fields" id="' + prefix + '-passcode-fields" hidden>' +
             '<div class="modal-field">' +
-                '<label>Passcode</label>' +
+                '<label>PIN</label>' +
                 '<input type="password" id="' + prefix + '-passcode-new" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters">' +
             '</div>' +
             '<div class="modal-field">' +
-                '<label>Confirm Passcode</label>' +
+                '<label>Confirm PIN</label>' +
                 '<input type="password" id="' + prefix + '-passcode-confirm" class="modal-input" maxlength="128" autocomplete="off">' +
             '</div>' +
         '</div>' +
@@ -134,11 +141,11 @@ function readIdentityPasscodeOption(prefix, errorId) {
     var confirm = confirmEl ? confirmEl.value : '';
     var errId = errorId || (prefix + '-passcode-error');
     if (passcode.length < 6) {
-        identitySetInlineError(errId, 'Passcode must be at least 6 characters.');
+        identitySetInlineError(errId, 'PIN must be at least 6 characters.');
         return null;
     }
     if (passcode !== confirm) {
-        identitySetInlineError(errId, "Passcodes don't match.");
+        identitySetInlineError(errId, "PINs don't match.");
         return null;
     }
     identitySetInlineError(errId, null);
@@ -195,6 +202,7 @@ function hasAndroidIdentityImportBridge() {
 function resetPendingIdentityImport() {
     window._identityImportFromSetup = false;
     window._identityImportFormat = null;
+    window._identityImportPasscode = null;
 }
 
 function identityImportFormatChoices() {
@@ -202,7 +210,7 @@ function identityImportFormatChoices() {
         {
             label: 'Ratspeak Identity Backup',
             value: 'ratspeak',
-            hint: 'Import a .rsi identity backup created by Ratspeak.'
+            hint: 'Import a PIN-encrypted .rsi identity backup created by Ratspeak.'
         },
         {
             label: 'Reticulum Identity Key',
@@ -222,17 +230,17 @@ function identityExportFormatChoices() {
         {
             label: 'Ratspeak Identity Backup',
             value: 'ratspeak',
-            hint: 'Advanced: unencrypted .rsi private-key backup with display-name metadata.'
+            hint: 'PIN-encrypted .rsi private-key backup with display-name metadata.'
         },
         {
             label: 'Reticulum Identity File',
             value: 'reticulum',
-            hint: 'Advanced: raw unencrypted 64-byte Reticulum private identity key.'
+            hint: 'Raw unencrypted 64-byte Reticulum private identity key.'
         },
         {
             label: 'Reticulum Base32 Key',
             value: 'reticulum-base32',
-            hint: 'Advanced: unencrypted text form of the same private identity key.'
+            hint: 'Unencrypted text form of the same private identity key.'
         }
     ];
 }
@@ -248,9 +256,41 @@ function chooseIdentityImportFormat() {
 function chooseIdentityExportFormat() {
     return rsChoice({
         title: 'Export Identity',
-        message: 'Recovery phrases are preferred for normal backup. These exports create unencrypted private-key material.',
+        message: 'Ratspeak backups are PIN-encrypted. Reticulum exports are raw unencrypted private-key material.',
         choices: identityExportFormatChoices()
     });
+}
+
+function backupPinFieldsHtml(prefix, confirm) {
+    return '' +
+        '<div class="modal-field">' +
+            '<label>PIN</label>' +
+            '<input type="password" id="' + prefix + '-pin" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters">' +
+        '</div>' +
+        (confirm ? '<div class="modal-field">' +
+            '<label>Confirm PIN</label>' +
+            '<input type="password" id="' + prefix + '-pin-confirm" class="modal-input" maxlength="128" autocomplete="off">' +
+        '</div>' : '') +
+        '<div class="modal-error" id="' + prefix + '-pin-error" style="display:none;"></div>';
+}
+
+function readBackupPin(prefix, confirm) {
+    var pinEl = document.getElementById(prefix + '-pin');
+    var pin = pinEl ? pinEl.value : '';
+    var errEl = document.getElementById(prefix + '-pin-error');
+    if (pin.length < 6) {
+        if (errEl) { errEl.textContent = 'PIN must be at least 6 characters.'; errEl.style.display = ''; }
+        return null;
+    }
+    if (confirm) {
+        var confirmEl = document.getElementById(prefix + '-pin-confirm');
+        if (pin !== (confirmEl ? confirmEl.value : '')) {
+            if (errEl) { errEl.textContent = "PINs don't match."; errEl.style.display = ''; }
+            return null;
+        }
+    }
+    if (errEl) { errEl.textContent = ''; errEl.style.display = 'none'; }
+    return pin;
 }
 
 function androidIdentityExportError(message) {
@@ -561,6 +601,23 @@ function renderActiveIdentityCard() {
                 '</div>' +
             '</div>' +
         '</div>' : '';
+    var pinAction = '';
+    if (isHardware) {
+        var canChangeHardwarePin = (typeof isMobile !== 'function' || !isMobile());
+        if (canChangeHardwarePin) {
+            pinAction =
+                '<button class="identity-action-row" id="identity-change-pin-detail-btn">' +
+                    '<span class="identity-action-icon">' + HW_BADGE_ICON + '</span>' +
+                    '<span>Change PIN</span>' +
+                '</button>';
+        }
+    } else {
+        pinAction =
+            '<button class="identity-action-row" id="identity-change-pin-detail-btn">' +
+                '<span class="identity-action-icon">' + HW_BADGE_ICON + '</span>' +
+                '<span>' + (identity.passcode_protected ? 'Change PIN' : 'Set PIN') + '</span>' +
+            '</button>';
+    }
 
     container.innerHTML =
         '<div class="identity-detail-hero">' +
@@ -593,6 +650,7 @@ function renderActiveIdentityCard() {
         editorHtml +
         '<div class="identity-detail-actions">' +
             switchAction +
+            pinAction +
             (isHardware ? '' :
             '<button class="identity-action-row" id="identity-export-detail-btn">' +
                 '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 21h14"/></svg></span>' +
@@ -622,6 +680,12 @@ function renderActiveIdentityCard() {
 
     var switchBtn = document.getElementById('identity-switch-detail-btn');
     if (switchBtn) switchBtn.addEventListener('click', function() { switchToIdentity(identityHash); });
+
+    var pinBtn = document.getElementById('identity-change-pin-detail-btn');
+    if (pinBtn) pinBtn.addEventListener('click', function() {
+        if (isHardware) openHardwareChangePinModal(identity);
+        else openSetPasscodeModal(identity, !!identity.passcode_protected);
+    });
 
     var exportBtn = document.getElementById('identity-export-detail-btn');
     if (exportBtn) exportBtn.addEventListener('click', function() { exportIdentityBackup(identityHash); });
@@ -822,8 +886,8 @@ function createNewIdentity() {
                 closeIdentityModal();
                 var hash = data && (data.hash || data.identity_hash);
                 var protect = passcode ? protectIdentityWithPasscode(hash, passcode).catch(function(err) {
-                    var msg = (err && err.message) ? err.message : 'Could not encrypt identity with passcode';
-                    showToast('Identity created, but passcode setup failed: ' + msg, 'toast-red', 7000);
+                    var msg = identityPinError(err, 'Could not encrypt identity with PIN');
+                    showToast('Identity created, but PIN setup failed: ' + msg, 'toast-red', 7000);
                 }) : Promise.resolve();
                 var mnemonic = data && data.mnemonic;
                 return protect.then(function() {
@@ -862,8 +926,8 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
             '</span><span class="hw-mnemonic-text">' + escapeHtml(w) + '</span></div>';
     }).join('');
     var storageWarn = opts.passcodeProtected
-        ? 'Ratspeak encrypts this identity and phrase with your passcode on this device.'
-        : 'Ratspeak stores this phrase on this device so you can view it again; set a passcode to encrypt it at rest.';
+        ? 'Ratspeak encrypts this identity and phrase with your PIN on this device.'
+        : 'Ratspeak stores this phrase on this device so you can view it again; set a PIN to encrypt it at rest.';
     var defaultWarn = 'Write down these ' + RECOVERY_PHRASE_WORDS + ' words in order and store them somewhere safe. ' +
         'Anyone with them controls your identity. ' + storageWarn;
     var requireConfirm = opts.requireConfirm !== false;
@@ -957,19 +1021,19 @@ function viewRecoveryPhrase(target) {
     };
     if (target.passcode_protected) {
         showIdentityModal('View Recovery Phrase',
-            '<div class="modal-field"><label>Passcode</label>' +
+            '<div class="modal-field"><label>PIN</label>' +
                 '<input type="password" id="reveal-passcode-input" class="modal-input" maxlength="128" autocomplete="off"></div>' +
-            '<p class="recovery-warn">Enter your passcode to reveal the ' + RECOVERY_PHRASE_WORDS + '-word recovery phrase for this identity.</p>' +
+            '<p class="recovery-warn">Enter your PIN to reveal the ' + RECOVERY_PHRASE_WORDS + '-word recovery phrase for this identity.</p>' +
             '<div class="modal-error" id="reveal-error" style="display:none"></div>',
             function() {
                 var pw = document.getElementById('reveal-passcode-input').value;
                 var errEl = document.getElementById('reveal-error');
-                if (!pw) { if (errEl) { errEl.textContent = 'Enter your passcode.'; errEl.style.display = ''; } return; }
+                if (!pw) { if (errEl) { errEl.textContent = 'Enter your PIN.'; errEl.style.display = ''; } return; }
                 return RS.invoke('reveal_identity_mnemonic', { args: { hash: target.hash, passcode: pw } }).then(function(data) {
                     closeIdentityModal();
                     showRecoveryPhraseBackup(data && data.mnemonic, null, viewOpts);
                 }).catch(function(err) {
-                    if (errEl) { errEl.textContent = (err && err.message) || 'Could not reveal phrase'; errEl.style.display = ''; }
+                    if (errEl) { errEl.textContent = identityPinError(err, 'Could not reveal phrase'); errEl.style.display = ''; }
                 });
             }
         );
@@ -997,7 +1061,7 @@ function openRestorePhraseModal(fromSetup) {
             '<input type="text" id="restore-phrase-nickname" class="modal-input" placeholder="e.g. Rat King" maxlength="32">' +
         '</div>' +
         identityPasscodeOptionHtml('restore-phrase') +
-        '<p class="recovery-warn">Restored software identities can be encrypted on this device with an optional passcode.</p>' +
+        '<p class="recovery-warn">Restored software identities can be encrypted on this device with an optional PIN.</p>' +
         '<div class="modal-error" id="restore-phrase-error" style="display:none;"></div>',
         function() {
             var ta = document.getElementById('restore-phrase-input');
@@ -1018,8 +1082,8 @@ function openRestorePhraseModal(fromSetup) {
             }).then(function(data) {
                 var hash = data && (data.hash || data.identity_hash);
                 var protect = passcode ? protectIdentityWithPasscode(hash, passcode).catch(function(err) {
-                    var msg = (err && err.message) ? err.message : 'Could not encrypt identity with passcode';
-                    showToast('Identity restored, but passcode setup failed: ' + msg, 'toast-red', 7000);
+                    var msg = identityPinError(err, 'Could not encrypt identity with PIN');
+                    showToast('Identity restored, but PIN setup failed: ' + msg, 'toast-red', 7000);
                 }) : Promise.resolve();
                 return protect.then(function() {
                     closeIdentityModal();
@@ -1069,36 +1133,58 @@ function importIdentity() {
             openRestorePhraseModal(!!window._identityImportFromSetup);
             return;
         }
-        if (hasAndroidIdentityImportBridge()) {
-            openIdentityBackupWithAndroid().then(function(result) {
-                return handleImportBackupPayload(
-                    result.fileName,
-                    result.fileSize,
-                    result.backupBase64,
-                    format
-                );
-            }).catch(function(err) {
-                resetPendingIdentityImport();
-                if (err && err.cancelled) {
-                    showToast('Identity import cancelled', 'toast-orange', 2500);
-                } else {
-                    showToast(err && err.message ? err.message : 'Identity import failed', 'toast-red', 4000);
-                }
+        if (format === 'ratspeak') {
+            openRatspeakBackupImportPinModal(function(pin) {
+                window._identityImportPasscode = pin;
+                startIdentityFileImport(format);
             });
             return;
         }
-
-        var fileInput = document.getElementById('identity-file-input');
-        if (fileInput) {
-            if (format === 'ratspeak') {
-                fileInput.accept = '.rsi,application/octet-stream,application/json';
-            } else {
-                fileInput.accept = '.identity,.key,.bin,.txt,application/octet-stream,text/plain';
-            }
-            fileInput.value = '';
-            fileInput.click();
-        }
+        startIdentityFileImport(format);
     });
+}
+
+function openRatspeakBackupImportPinModal(onPin) {
+    var body = backupPinFieldsHtml('identity-import-backup', false) +
+        '<p class="recovery-warn">Enter the PIN that was set when this .rsi backup was exported. The imported identity will be encrypted on this device with the same PIN.</p>';
+    showIdentityModal('Unlock Backup', body, function() {
+        var pin = readBackupPin('identity-import-backup', false);
+        if (!pin) return;
+        closeIdentityModal();
+        onPin(pin);
+    });
+}
+
+function startIdentityFileImport(format) {
+    if (hasAndroidIdentityImportBridge()) {
+        openIdentityBackupWithAndroid().then(function(result) {
+            return handleImportBackupPayload(
+                result.fileName,
+                result.fileSize,
+                result.backupBase64,
+                format
+            );
+        }).catch(function(err) {
+            resetPendingIdentityImport();
+            if (err && err.cancelled) {
+                showToast('Identity import cancelled', 'toast-orange', 2500);
+            } else {
+                showToast(err && err.message ? err.message : 'Identity import failed', 'toast-red', 4000);
+            }
+        });
+        return;
+    }
+
+    var fileInput = document.getElementById('identity-file-input');
+    if (fileInput) {
+        if (format === 'ratspeak') {
+            fileInput.accept = '.rsi,application/octet-stream,application/json';
+        } else {
+            fileInput.accept = '.identity,.key,.bin,.txt,application/octet-stream,text/plain';
+        }
+        fileInput.value = '';
+        fileInput.click();
+    }
 }
 
 function handleImportFile(file) {
@@ -1122,15 +1208,22 @@ function handleImportBackupPayload(fileName, fileSize, b64, expectedFormat) {
     if (!b64) return Promise.reject(new Error('Identity import is empty'));
     var fromSetup = !!window._identityImportFromSetup;
     var importFormat = expectedFormat || window._identityImportFormat || 'ratspeak';
+    var importPasscode = importFormat === 'ratspeak' ? (window._identityImportPasscode || '') : '';
+    if (importFormat === 'ratspeak' && !importPasscode) {
+        resetPendingIdentityImport();
+        showToast('Backup PIN required', 'toast-red', 3000);
+        return Promise.resolve();
+    }
     return RS.invoke('api_preview_identity_import_base64', {
-        args: { key: b64, nickname: '' }
+        args: { key: b64, nickname: '', passcode: importPasscode }
     }).then(function(preview) {
-        if (importFormat === 'ratspeak' && preview.format !== 'ratspeak.identity.v1') {
+        var isRatspeakBackup = preview.format === 'ratspeak.identity.v2' || preview.format === 'ratspeak.identity.v1';
+        if (importFormat === 'ratspeak' && !isRatspeakBackup) {
             resetPendingIdentityImport();
             showToast('That is a Reticulum identity. Choose Reticulum Identity Key import.', 'toast-red', 4000);
             return;
         }
-        if (importFormat === 'reticulum' && preview.format === 'ratspeak.identity.v1') {
+        if (importFormat === 'reticulum' && isRatspeakBackup) {
             resetPendingIdentityImport();
             showToast('That is a Ratspeak backup. Choose Ratspeak Identity Backup import.', 'toast-red', 4000);
             return;
@@ -1165,23 +1258,32 @@ function handleImportBackupPayload(fileName, fileSize, b64, expectedFormat) {
                 var activateInput = document.getElementById('identity-import-activate');
                 var activate = fromSetup || !!(activateInput && activateInput.checked);
                 return RS.invoke('api_import_identity_base64', {
-                    args: { key: b64, nickname: nickname },
+                    args: { key: b64, nickname: nickname, passcode: importPasscode },
                 }).then(function(data) {
-                    showToast('Identity imported', 'toast-green', 3000);
-                    closeIdentityModal();
-                    loadIdentities();
-                    if (fromSetup || window._identityImportFromSetup) {
-                        resetPendingIdentityImport();
-                        if (typeof completeSetupAfterIdentityImport === 'function') {
-                            completeSetupAfterIdentityImport(data);
-                        } else {
-                            window.location.href = '/#dashboard';
-                            window.location.reload();
+                    var protect = (importFormat === 'ratspeak' && importPasscode && data && data.hash)
+                        ? protectIdentityWithPasscode(data.hash, importPasscode).catch(function(err) {
+                            var msg = (err && err.message) ? err.message : 'Could not encrypt identity on this device';
+                            showToast('Identity imported, but local PIN setup failed: ' + msg, 'toast-red', 7000);
+                        })
+                        : Promise.resolve();
+                    return protect.then(function() {
+                        showToast('Identity imported', 'toast-green', 3000);
+                        closeIdentityModal();
+                        loadIdentities();
+                        if (fromSetup || window._identityImportFromSetup) {
+                            resetPendingIdentityImport();
+                            if (typeof completeSetupAfterIdentityImport === 'function') {
+                                completeSetupAfterIdentityImport(data);
+                            } else {
+                                window.location.href = '/#dashboard';
+                                window.location.reload();
+                            }
+                            return;
                         }
-                        return;
-                    }
-                    window._identityImportFormat = null;
-                    if (activate && data && data.hash) switchToIdentity(data.hash);
+                        window._identityImportFormat = null;
+                        window._identityImportPasscode = null;
+                        if (activate && data && data.hash) switchToIdentity(data.hash);
+                    });
                 }).catch(function(err) {
                     resetPendingIdentityImport();
                     showToast(err && err.message ? err.message : 'Failed to import identity', 'toast-red', 3000);
@@ -1195,7 +1297,7 @@ function exportActiveIdentity() {
     exportIdentityBackup(activeIdentityHash);
 }
 
-function exportIdentityPayload(hash, format) {
+function exportIdentityPayload(hash, format, passcode) {
     if (format === 'reticulum') {
         return RS.invoke('api_export_identity_reticulum_base64', { hashHex: hash }).then(function(data) {
             return {
@@ -1218,7 +1320,7 @@ function exportIdentityPayload(hash, format) {
             };
         });
     }
-    return RS.invoke('api_export_identity_backup_base64', { hashHex: hash }).then(function(data) {
+    return RS.invoke('api_export_identity_backup_base64', { hashHex: hash, passcode: passcode || '' }).then(function(data) {
         return {
             bytes: base64ToBytes(data.backup_base64),
             base64: data.backup_base64,
@@ -1236,7 +1338,43 @@ function exportWarningForFormat(format, targetName) {
     if (format === 'reticulum-base32') {
         return 'This exports the unencrypted private Reticulum identity key for ' + targetName + ' as base32 text. Anyone with this text can use the identity. Ratspeak messages and settings are not included.';
     }
-    return 'This exports an unencrypted Ratspeak identity backup for ' + targetName + '. Anyone with this file can use the identity. It includes identity metadata, but not messages or app settings.';
+    return 'This exports a PIN-encrypted Ratspeak identity backup for ' + targetName + '. Anyone with the file and PIN can use the identity. It includes identity metadata, but not messages or app settings.';
+}
+
+function saveIdentityExportPayload(payload) {
+    return saveBytesToUserFile(payload.bytes, payload.fileName, payload.mimeType, payload.base64)
+        .then(function(result) {
+            if (result) result.label = payload.label;
+            return result;
+        }).then(function(result) {
+            if (!result) return;
+            if (result.method === 'android-document') {
+                showToast((result.label || 'Identity export') + ' saved', 'toast-green', 3000);
+            } else {
+                showToast('Save prompt opened for ' + result.fileName, 'toast-blue', 4000);
+            }
+        });
+}
+
+function handleIdentityExportError(err) {
+    if (err && err.cancelled) {
+        showToast('Identity export cancelled', 'toast-orange', 2500);
+    } else {
+        showToast(err && err.message ? err.message : 'Export failed', 'toast-red', 3000);
+    }
+}
+
+function openEncryptedIdentityExportModal(hash, targetName) {
+    var body = backupPinFieldsHtml('identity-export-backup', true) +
+        '<p class="recovery-warn">This PIN encrypts the .rsi backup file. You will need it to import this identity on another device.</p>';
+    showIdentityModal('Export Identity Backup', body, function() {
+        var pin = readBackupPin('identity-export-backup', true);
+        if (!pin) return;
+        closeIdentityModal();
+        return exportIdentityPayload(hash, 'ratspeak', pin)
+            .then(saveIdentityExportPayload)
+            .catch(handleIdentityExportError);
+    });
 }
 
 function exportIdentityBackup(hash) {
@@ -1253,6 +1391,10 @@ function exportIdentityBackup(hash) {
     var chosenFormat = null;
     chooseIdentityExportFormat().then(function(format) {
         if (!format) return null;
+        if (format === 'ratspeak') {
+            openEncryptedIdentityExportModal(hash, targetName);
+            return null;
+        }
         chosenFormat = format;
         return rsConfirm({
             title: 'Export Private Identity',
@@ -1265,25 +1407,8 @@ function exportIdentityBackup(hash) {
         return exportIdentityPayload(hash, chosenFormat || 'ratspeak');
     }).then(function(payload) {
         if (!payload) return;
-        return saveBytesToUserFile(payload.bytes, payload.fileName, payload.mimeType, payload.base64)
-            .then(function(result) {
-                if (result) result.label = payload.label;
-                return result;
-            });
-    }).then(function(result) {
-        if (!result) return;
-        if (result.method === 'android-document') {
-            showToast((result.label || 'Identity export') + ' saved', 'toast-green', 3000);
-        } else {
-            showToast('Save prompt opened for ' + result.fileName, 'toast-blue', 4000);
-        }
-    }).catch(function(err) {
-        if (err && err.cancelled) {
-            showToast('Identity export cancelled', 'toast-orange', 2500);
-        } else {
-            showToast(err && err.message ? err.message : 'Export failed', 'toast-red', 3000);
-        }
-    });
+        return saveIdentityExportPayload(payload);
+    }).catch(handleIdentityExportError);
 }
 
 function openIdentityActions(hash) {
@@ -1300,11 +1425,13 @@ function openIdentityActions(hash) {
             choices.push({ label: 'View Recovery Phrase', value: 'view-phrase', hint: 'Show this identity’s 12-word phrase.' });
         }
         if (target.passcode_protected) {
-            choices.push({ label: 'Change Passcode', value: 'passcode-change' });
-            choices.push({ label: 'Remove Passcode', value: 'passcode-remove', danger: true });
+            choices.push({ label: 'Change PIN', value: 'passcode-change' });
+            choices.push({ label: 'Remove PIN', value: 'passcode-remove', danger: true });
         } else {
-            choices.push({ label: 'Set Passcode', value: 'passcode-set', hint: 'Encrypt this identity at rest; required when you open Ratspeak.' });
+            choices.push({ label: 'Set PIN', value: 'passcode-set', hint: 'Encrypt this identity at rest; required when you open Ratspeak.' });
         }
+    } else if (typeof isMobile !== 'function' || !isMobile()) {
+        choices.push({ label: 'Change PIN', value: 'hardware-pin', hint: 'Change the YubiKey PIV PIN on this key.' });
     }
     choices.push({ label: 'Share Contact Card', value: 'share' });
     if (!isOriginalIdentity(target.hash) && (!target.is_active || identityList.length > 1)) {
@@ -1322,6 +1449,7 @@ function openIdentityActions(hash) {
         if (choice === 'passcode-set') openSetPasscodeModal(target, false);
         if (choice === 'passcode-change') openSetPasscodeModal(target, true);
         if (choice === 'passcode-remove') openRemovePasscodeModal(target);
+        if (choice === 'hardware-pin') openHardwareChangePinModal(target);
         if (choice === 'share') {
             if (typeof openIdentityShareScreen === 'function') openIdentityShareScreen(target.hash);
             else shareAddress(target.lxmf_hash || target.hash || '', identityDisplayName(target));
@@ -1334,61 +1462,100 @@ function openIdentityActions(hash) {
 function openSetPasscodeModal(target, isChange) {
     var body =
         (isChange
-            ? '<div class="modal-field"><label>Current Passcode</label>' +
+            ? '<div class="modal-field"><label>Current PIN</label>' +
               '<input type="password" id="passcode-current" class="modal-input" maxlength="128" autocomplete="off"></div>'
             : '') +
-        '<div class="modal-field"><label>' + (isChange ? 'New Passcode' : 'Passcode') + '</label>' +
+        '<div class="modal-field"><label>' + (isChange ? 'New PIN' : 'PIN') + '</label>' +
             '<input type="password" id="passcode-new" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters"></div>' +
-        '<div class="modal-field"><label>Confirm Passcode</label>' +
+        '<div class="modal-field"><label>Confirm PIN</label>' +
             '<input type="password" id="passcode-confirm" class="modal-input" maxlength="128" autocomplete="off"></div>' +
-        '<p class="recovery-warn">This identity will be encrypted on this device and require the passcode each time you open Ratspeak. There is <strong>no recovery</strong> if you forget it — keep your 12-word phrase as a backup.</p>' +
+        '<p class="recovery-warn">This identity will be encrypted on this device and require the PIN each time you open Ratspeak. There is <strong>no recovery</strong> if you forget it; keep your 12-word phrase as a backup.</p>' +
         '<div class="modal-error" id="passcode-error" style="display:none"></div>';
-    showIdentityModal(isChange ? 'Change Passcode' : 'Set Passcode', body, function() {
+    showIdentityModal(isChange ? 'Change PIN' : 'Set PIN', body, function() {
         var cur = isChange ? document.getElementById('passcode-current').value : '';
         var pw = document.getElementById('passcode-new').value;
         var confirm = document.getElementById('passcode-confirm').value;
         var errEl = document.getElementById('passcode-error');
         if (pw.length < 6) {
-            if (errEl) { errEl.textContent = 'Passcode must be at least 6 characters.'; errEl.style.display = ''; }
+            if (errEl) { errEl.textContent = 'PIN must be at least 6 characters.'; errEl.style.display = ''; }
             return;
         }
         if (pw !== confirm) {
-            if (errEl) { errEl.textContent = "Passcodes don't match."; errEl.style.display = ''; }
+            if (errEl) { errEl.textContent = "PINs don't match."; errEl.style.display = ''; }
             return;
         }
         var args = { hash: target.hash, passcode: pw };
         if (isChange) args.current = cur;
         return RS.invoke('set_identity_passcode', { args: args }).then(function() {
             closeIdentityModal();
-            showToast('Passcode set', 'toast-green', 3000);
+            showToast(isChange ? 'PIN changed' : 'PIN set', 'toast-green', 3000);
             loadIdentities();
         }).catch(function(err) {
-            if (errEl) { errEl.textContent = (err && err.message) || 'Could not set passcode'; errEl.style.display = ''; }
+            if (errEl) { errEl.textContent = identityPinError(err, 'Could not set PIN'); errEl.style.display = ''; }
         });
     });
     var btn = document.getElementById('identity-modal-confirm');
     if (btn) { var l = isChange ? 'Change' : 'Set'; btn.textContent = l; btn.dataset.baseLabel = l; }
 }
 
+function openHardwareChangePinModal(target) {
+    var name = identityDisplayName(target);
+    var body =
+        '<div class="modal-field"><label>Current PIN</label>' +
+            '<input type="password" id="hardware-pin-current" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off"></div>' +
+        '<div class="modal-field"><label>New PIN</label>' +
+            '<input type="password" id="hardware-pin-new" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="6-8 characters"></div>' +
+        '<div class="modal-field"><label>Confirm PIN</label>' +
+            '<input type="password" id="hardware-pin-confirm" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off"></div>' +
+        '<p class="recovery-warn">This changes the YubiKey PIV PIN for ' + escapeHtml(name) + '. Keep the key plugged in until it completes.</p>' +
+        '<div class="modal-error" id="hardware-pin-error" style="display:none"></div>';
+    showIdentityModal('Change PIN', body, function() {
+        var current = document.getElementById('hardware-pin-current').value;
+        var pin = document.getElementById('hardware-pin-new').value;
+        var confirm = document.getElementById('hardware-pin-confirm').value;
+        var errEl = document.getElementById('hardware-pin-error');
+        if (current.length < 6 || current.length > 8) {
+            if (errEl) { errEl.textContent = 'Current PIN must be 6-8 characters.'; errEl.style.display = ''; }
+            return;
+        }
+        if (pin.length < 6 || pin.length > 8) {
+            if (errEl) { errEl.textContent = 'New PIN must be 6-8 characters.'; errEl.style.display = ''; }
+            return;
+        }
+        if (pin !== confirm) {
+            if (errEl) { errEl.textContent = "PINs don't match."; errEl.style.display = ''; }
+            return;
+        }
+        return RS.invoke('hw_change_pin', { hash: target.hash, currentPin: current, newPin: pin }).then(function() {
+            closeIdentityModal();
+            showToast('PIN changed', 'toast-green', 3000);
+        }).catch(function(err) {
+            if (errEl) { errEl.textContent = identityPinError(err, 'Could not change PIN'); errEl.style.display = ''; }
+        });
+    });
+    var btn = document.getElementById('identity-modal-confirm');
+    if (btn) { btn.textContent = 'Change'; btn.dataset.baseLabel = 'Change'; }
+}
+
 function openRemovePasscodeModal(target) {
-    showIdentityModal('Remove Passcode',
-        '<div class="modal-field"><label>Passcode</label>' +
+    showIdentityModal('Remove PIN',
+        '<div class="modal-field"><label>PIN</label>' +
             '<input type="password" id="passcode-remove-input" class="modal-input" maxlength="128" autocomplete="off"></div>' +
-        '<p class="recovery-warn">This decrypts the identity on this device — it will no longer require a passcode when you open Ratspeak.</p>' +
+        '<p class="recovery-warn">This decrypts the identity on this device; it will no longer require a PIN when you open Ratspeak.</p>' +
         '<div class="modal-error" id="passcode-error" style="display:none"></div>',
         function() {
             var pw = document.getElementById('passcode-remove-input').value;
             var errEl = document.getElementById('passcode-error');
             if (!pw) {
-                if (errEl) { errEl.textContent = 'Enter your passcode.'; errEl.style.display = ''; }
+                if (errEl) { errEl.textContent = 'Enter your PIN.'; errEl.style.display = ''; }
                 return;
             }
             return RS.invoke('remove_identity_passcode', { args: { hash: target.hash, passcode: pw } }).then(function() {
                 closeIdentityModal();
-                showToast('Passcode removed', 'toast-green', 3000);
+                showToast('PIN removed', 'toast-green', 3000);
                 loadIdentities();
             }).catch(function(err) {
-                if (errEl) { errEl.textContent = (err && err.message) || 'Could not remove passcode'; errEl.style.display = ''; }
+                if (errEl) { errEl.textContent = identityPinError(err, 'Could not remove PIN'); errEl.style.display = ''; }
             });
         }
     );
@@ -1488,7 +1655,12 @@ function showIdentityModal(title, bodyHtml, onConfirm, confirmClass) {
     var confirmBtn = document.getElementById('identity-modal-confirm');
     confirmBtn.className = confirmClass || 'nr-btn';
     confirmBtn.disabled = false;
-    var baseLabel = title.indexOf('Delete') !== -1 ? 'Delete' : (title.indexOf('Remove') !== -1 ? 'Remove' : (title.indexOf('Import') !== -1 ? 'Import' : (title.indexOf('Restore') !== -1 ? 'Restore' : 'Create')));
+    var baseLabel = title.indexOf('Delete') !== -1 ? 'Delete' :
+        (title.indexOf('Remove') !== -1 ? 'Remove' :
+        (title.indexOf('Import') !== -1 ? 'Import' :
+        (title.indexOf('Restore') !== -1 ? 'Restore' :
+        (title.indexOf('Export') !== -1 ? 'Export' :
+        (title.indexOf('Unlock') !== -1 ? 'Unlock' : 'Create')))));
     confirmBtn.textContent = baseLabel;
     confirmBtn.dataset.baseLabel = baseLabel;
     confirmBtn.onclick = function() {
@@ -1575,7 +1747,10 @@ document.addEventListener('DOMContentLoaded', function() {
     if (identityAddBtn) identityAddBtn.addEventListener('click', createNewIdentity);
 
     var identityImportBtn = document.getElementById('identity-import-btn');
-    if (identityImportBtn) identityImportBtn.addEventListener('click', importIdentity);
+    if (identityImportBtn) identityImportBtn.addEventListener('click', function() {
+        window._identityImportFromSetup = false;
+        importIdentity();
+    });
 
     var identityExportBtn = document.getElementById('identity-export-btn');
     if (identityExportBtn) identityExportBtn.addEventListener('click', exportActiveIdentity);

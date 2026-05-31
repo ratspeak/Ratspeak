@@ -1,4 +1,6 @@
 var needsSetup = false;
+var SETUP_RECOVERY_PHRASE_WORDS = 12;
+var setupRecoveryMnemonic = '';
 
 function setSetupStep(stepIndex) {
     var dots = document.querySelectorAll('#setup-progress-dots .setup-dot');
@@ -90,6 +92,9 @@ function startCryptoAnimation() {
 
     var step1 = document.getElementById('prog-step-1');
     var step2 = document.getElementById('prog-step-2');
+    if (step1) step1.classList.remove('done');
+    if (step2) step2.classList.remove('active', 'done');
+    if (step1) step1.classList.add('active');
 
     function randomDelay() {
         return 675 + Math.floor(Math.random() * 676);
@@ -107,6 +112,69 @@ function startCryptoAnimation() {
                 resolve();
             }, randomDelay());
         }, randomDelay());
+    });
+}
+
+function setupRecoveryWords(mnemonic) {
+    return String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
+}
+
+function resetSetupRecoveryStep() {
+    setupRecoveryMnemonic = '';
+    var grid = document.getElementById('setup-mnemonic-grid');
+    if (grid) {
+        grid.innerHTML = '';
+        grid.setAttribute('aria-hidden', 'true');
+    }
+    var shell = document.getElementById('setup-mnemonic-shell');
+    if (shell) shell.classList.remove('revealed');
+    var cover = document.getElementById('setup-mnemonic-cover');
+    if (cover) cover.style.display = '';
+    var confirm = document.getElementById('setup-mnemonic-confirm');
+    if (confirm) confirm.checked = false;
+    var continueBtn = document.getElementById('setup-mnemonic-continue-btn');
+    if (continueBtn) continueBtn.disabled = true;
+}
+
+function showSetupRecoveryStep(mnemonic, fromEl) {
+    var words = setupRecoveryWords(mnemonic);
+    if (words.length !== SETUP_RECOVERY_PHRASE_WORDS) {
+        showSetupIdentityStep(fromEl);
+        return;
+    }
+
+    setupRecoveryMnemonic = mnemonic;
+    var grid = document.getElementById('setup-mnemonic-grid');
+    if (grid) {
+        grid.innerHTML = words.map(function(word, i) {
+            return '<div class="hw-mnemonic-word">' +
+                '<span class="hw-mnemonic-index">' + (i + 1) + '</span>' +
+                '<span class="hw-mnemonic-text">' + escapeHtml(word) + '</span>' +
+            '</div>';
+        }).join('');
+        grid.setAttribute('aria-hidden', 'true');
+    }
+
+    var shell = document.getElementById('setup-mnemonic-shell');
+    if (shell) shell.classList.remove('revealed');
+    var cover = document.getElementById('setup-mnemonic-cover');
+    if (cover) cover.style.display = '';
+    var confirm = document.getElementById('setup-mnemonic-confirm');
+    if (confirm) confirm.checked = false;
+    var continueBtn = document.getElementById('setup-mnemonic-continue-btn');
+    if (continueBtn) continueBtn.disabled = true;
+
+    setSetupStep(2);
+    transitionStep(fromEl, document.getElementById('setup-step-backup'), null, function() {
+        if (cover && !isMobile()) cover.focus();
+    });
+}
+
+function showSetupIdentityStep(fromEl) {
+    setSetupStep(3);
+    transitionStep(fromEl, document.getElementById('setup-step-2'), null, function() {
+        var nameInput = document.getElementById('setup-display-name');
+        if (nameInput && !isMobile()) nameInput.focus();
     });
 }
 
@@ -196,6 +264,7 @@ function resetSetupToStart() {
     needsSetup = true;
     document.body.classList.add('setup-active');
     setSetupStep(0);
+    resetSetupRecoveryStep();
     [
         document.querySelector('.setup-icon'),
         document.querySelector('.setup-title'),
@@ -346,22 +415,12 @@ document.addEventListener('DOMContentLoaded', function() {
             Promise.all([backendPromise, animPromise])
                 .then(function(results) {
                     var data = results[0] || {};
-                    setSetupStep(2);
+                    if (data.ok === false) {
+                        throw new Error(data.error || 'Failed to create identity');
+                    }
                     document.getElementById('setup-lxmf-hash').textContent =
                         data.lxmf_hash || data.identity_hash || '--';
-                    transitionStep(genStep, document.getElementById('setup-step-2'), null, function() {
-                        // New identities are mnemonic-derived - reveal the 12-word
-                        // backup once, over step-2, before the user names + connects.
-                        if (data.mnemonic && typeof showRecoveryPhraseBackup === 'function') {
-                            showRecoveryPhraseBackup(data.mnemonic, function() {
-                                var nameInput = document.getElementById('setup-display-name');
-                                if (nameInput && !isMobile()) nameInput.focus();
-                            });
-                        } else {
-                            var nameInput = document.getElementById('setup-display-name');
-                            if (nameInput && !isMobile()) nameInput.focus();
-                        }
-                    });
+                    showSetupRecoveryStep(data.mnemonic || '', genStep);
                 })
                 .catch(function(err) {
                     transitionStep(genStep, document.getElementById('setup-step-1'));
@@ -373,6 +432,51 @@ document.addEventListener('DOMContentLoaded', function() {
                         showToast('Request failed: ' + detail, 'toast-red', 5000);
                     }
                 });
+        });
+    }
+
+    var setupMnemonicCover = document.getElementById('setup-mnemonic-cover');
+    if (setupMnemonicCover) {
+        setupMnemonicCover.addEventListener('click', function() {
+            setupMnemonicCover.style.display = 'none';
+            var shell = document.getElementById('setup-mnemonic-shell');
+            if (shell) shell.classList.add('revealed');
+            var grid = document.getElementById('setup-mnemonic-grid');
+            if (grid) grid.setAttribute('aria-hidden', 'false');
+        });
+    }
+
+    var setupMnemonicCopy = document.getElementById('setup-mnemonic-copy-btn');
+    if (setupMnemonicCopy) {
+        setupMnemonicCopy.addEventListener('click', function() {
+            if (!setupRecoveryMnemonic) return;
+            if (!navigator.clipboard) {
+                if (typeof showToast === 'function') showToast('Clipboard is not available', 'toast-orange', 2000);
+                return;
+            }
+            navigator.clipboard.writeText(setupRecoveryMnemonic).then(function() {
+                if (typeof showCopyConfirmationToast === 'function') {
+                    showCopyConfirmationToast('Recovery phrase');
+                }
+            }).catch(function() {
+                if (typeof showToast === 'function') showToast('Could not copy phrase', 'toast-orange', 2000);
+            });
+        });
+    }
+
+    var setupMnemonicConfirm = document.getElementById('setup-mnemonic-confirm');
+    if (setupMnemonicConfirm) {
+        setupMnemonicConfirm.addEventListener('change', function() {
+            var continueBtn = document.getElementById('setup-mnemonic-continue-btn');
+            if (continueBtn) continueBtn.disabled = !setupMnemonicConfirm.checked;
+        });
+    }
+
+    var setupMnemonicContinue = document.getElementById('setup-mnemonic-continue-btn');
+    if (setupMnemonicContinue) {
+        setupMnemonicContinue.addEventListener('click', function() {
+            if (setupMnemonicContinue.disabled) return;
+            showSetupIdentityStep(document.getElementById('setup-step-backup'));
         });
     }
 

@@ -289,6 +289,42 @@ pub fn reset_piv_application() -> Result<(), String> {
     session.reset_piv().map_err(format_reset_piv_error)
 }
 
+pub fn change_pin(
+    data_dir: &Path,
+    hash_hex: &str,
+    current_pin: &str,
+    new_pin: &str,
+) -> Result<(), String> {
+    let hwid_path = data_dir
+        .join("identities")
+        .join(hash_hex)
+        .join("identity.hwid");
+    let cfg = rns_ratkey::HwidConfig::from_file(&hwid_path)
+        .map_err(|_| "Hardware identity not found on this device.".to_string())?;
+    let mut session = connect()?;
+    if session.serial() != Some(cfg.device.serial) {
+        return Err("Inserted YubiKey does not match this identity.".to_string());
+    }
+    let expected_ed = cfg
+        .ed25519_pub_bytes()
+        .map_err(|e| format!("Invalid hardware identity metadata: {e}"))?;
+    let expected_x = cfg
+        .x25519_pub_bytes()
+        .map_err(|e| format!("Invalid hardware identity metadata: {e}"))?;
+    let ed = session
+        .read_public_key(rns_ratkey::apdu::SLOT_AUTHENTICATION)
+        .map_err(|e| format!("could not verify YubiKey signing key: {e}"))?;
+    let x = session
+        .read_public_key(rns_ratkey::apdu::SLOT_KEY_MANAGEMENT)
+        .map_err(|e| format!("could not verify YubiKey encryption key: {e}"))?;
+    if ed != expected_ed || x != expected_x {
+        return Err("Inserted YubiKey does not match this identity.".to_string());
+    }
+    session
+        .change_pin(current_pin, new_pin)
+        .map_err(format_pin_change_error)
+}
+
 fn connect() -> Result<PcscPivSession, String> {
     PcscPivSession::connect().map_err(|_| NOT_DETECTED.to_string())
 }
@@ -352,6 +388,20 @@ fn format_pin_setup_error(e: RatkeyError) -> String {
             if remaining == 1 { "" } else { "s" }
         ),
         other => format!("could not prepare YubiKey PIN: {other}"),
+    }
+}
+
+fn format_pin_change_error(e: RatkeyError) -> String {
+    match e {
+        RatkeyError::PinLocked => {
+            "YubiKey PIV PIN is locked. Reset the security key to use it again.".to_string()
+        }
+        RatkeyError::PinFailed { remaining } => format!(
+            "Incorrect current YubiKey PIN ({} attempt{} remaining).",
+            remaining,
+            if remaining == 1 { "" } else { "s" }
+        ),
+        other => format!("could not change YubiKey PIN: {other}"),
     }
 }
 

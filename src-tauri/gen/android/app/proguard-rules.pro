@@ -12,6 +12,8 @@
 -keep class io.github.gedgygedgy.rust.** { *; }
 
 # Ratspeak BLE helpers (called from Rust JNI)
+-keep class org.ratspeak.android.MainActivity { *; }
+-keep class org.ratspeak.android.RatspeakService { *; }
 -keep class org.ratspeak.android.RatspeakBleServer { *; }
 -keep class org.ratspeak.android.RatspeakGattCallback { *; }
 -keep class org.ratspeak.android.RatspeakBlePeerClient { *; }

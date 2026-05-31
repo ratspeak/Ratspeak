@@ -174,6 +174,28 @@ pub async fn hw_reset_piv() -> AppResult<Value> {
 }
 
 #[tauri::command]
+pub async fn hw_change_pin(
+    state: State<'_, Arc<AppState>>,
+    hash: String,
+    current_pin: String,
+    new_pin: String,
+) -> AppResult<Value> {
+    if !validate_hex(&hash, 16, 128) {
+        return Err(AppError::bad_request("Invalid hash"));
+    }
+    check_piv_code("Current PIN", &current_pin)?;
+    check_piv_code("New PIN", &new_pin)?;
+    let data_dir = state.config.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        ratspeak_runtime::hardware::change_pin(&data_dir, &hash, &current_pin, &new_pin)
+    })
+    .await
+    .map_err(|_| AppError::internal("change PIN task panicked"))?
+    .map_err(AppError::bad_request)?;
+    to_value(serde_json::json!({ "ok": true }))
+}
+
+#[tauri::command]
 pub async fn hw_remove(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
     if !validate_hex(&hash, 16, 128) {
         return Err(AppError::bad_request("Invalid hash"));

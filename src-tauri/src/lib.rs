@@ -619,6 +619,8 @@ pub fn run() {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             ratspeak_tauri::commands::hardware::hw_reset_piv,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            ratspeak_tauri::commands::hardware::hw_change_pin,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             ratspeak_tauri::commands::hardware::hw_remove,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             ratspeak_tauri::commands::hardware::hw_unlock,

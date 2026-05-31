@@ -2282,6 +2282,12 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_js.contains("api_export_identity_reticulum_base32"));
     assert!(identity_js.contains("Export Private Identity"));
     assert!(identity_js.contains("function exportIdentityBackup(hash)"));
+    assert!(identity_js.contains("PIN-encrypted .rsi identity backup"));
+    assert!(identity_js.contains("function openRatspeakBackupImportPinModal"));
+    assert!(identity_js.contains("function openEncryptedIdentityExportModal"));
+    assert!(identity_js.contains("passcode: importPasscode"));
+    assert!(identity_js.contains("passcode: passcode || ''"));
+    assert!(identity_js.contains("protectIdentityWithPasscode(data.hash, importPasscode)"));
     assert!(identity_js.contains(r#"<path d="M7 14l5-5 5 5"/>"#));
     assert!(!identity_js.contains(r#"<path d="M7 16l5 5 5-5"/>"#));
     assert!(identity_js.contains("function identityImportFormatChoices()"));
@@ -2323,6 +2329,10 @@ fn identity_management_is_first_class_tab() {
     assert!(!identity_js.contains("Export Backup"));
     assert!(identity_js.contains("function openIdentityActions(hash)"));
     assert!(identity_js.contains("function deleteIdentityByHash(hash)"));
+    assert!(identity_js.contains("id=\"identity-change-pin-detail-btn\""));
+    assert!(identity_js.contains("Change PIN"));
+    assert!(identity_js.contains("function openHardwareChangePinModal"));
+    assert!(identity_js.contains("RS.invoke('hw_change_pin', { hash: target.hash"));
     assert!(identity_js.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
 
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
@@ -2389,6 +2399,7 @@ fn identity_management_is_first_class_tab() {
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     assert!(tauri_lib.contains("api_export_identity_reticulum_base64"));
     assert!(tauri_lib.contains("api_export_identity_reticulum_base32"));
+    assert!(tauri_lib.contains("hw_change_pin"));
 
     let identity_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/identity.rs"))
         .expect("identity command source");
@@ -2419,6 +2430,7 @@ fn hardware_new_identity_reset_flow_handles_initialized_keys() {
     assert!(identity_js.contains("msg = 'Incorrect PIN.';"));
     assert!(!identity_js.contains("title: 'Overwrite this key?'"));
     assert!(!identity_js.contains("confirmText: 'Overwrite'"));
+    assert!(identity_js.contains("RS.invoke('hw_change_pin', { hash: target.hash"));
 
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     assert!(views_css.contains(".hw-unlock-input:focus::placeholder { color: transparent; }"));
@@ -2426,6 +2438,8 @@ fn hardware_new_identity_reset_flow_handles_initialized_keys() {
 
     assert!(hardware_rs.contains("not at the factory default"));
     assert!(hardware_rs.contains("Reset the security key to set up a new Ratspeak identity"));
+    assert!(hardware_rs.contains("pub fn change_pin("));
+    assert!(hardware_rs.contains("Inserted YubiKey does not match this identity"));
 }
 
 #[test]
@@ -2434,6 +2448,7 @@ fn software_identity_creation_uses_passcode_and_shared_backup_flow() {
     let identity_js =
         read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
     let setup_js = read_source(root.join("dashboard/static/js/setup.js")).expect("setup js");
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     let modals_css =
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
@@ -2455,7 +2470,11 @@ fn software_identity_creation_uses_passcode_and_shared_backup_flow() {
     assert!(identity_js.contains("id=\"recovery-backup-copy\""));
     assert!(identity_js.contains("opts.requireConfirm !== false"));
     assert!(identity_js.contains("passcodeProtected: !!passcode"));
-    assert!(setup_js.contains("showRecoveryPhraseBackup(data.mnemonic, function()"));
+    assert!(setup_js.contains("function showSetupRecoveryStep"));
+    assert!(setup_js.contains("showSetupRecoveryStep(data.mnemonic || '', genStep)"));
+    assert!(index.contains(r#"id="setup-step-backup""#));
+    assert_eq!(index.matches(r#"class="setup-dot"#).count(), 4);
+    assert_eq!(index.matches(r#"class="setup-dot active"#).count(), 1);
 
     assert!(modals_css.contains(".identity-passcode-option"));
     assert!(views_css.contains(".recovery-backup-card .hw-mnemonic-shell"));
