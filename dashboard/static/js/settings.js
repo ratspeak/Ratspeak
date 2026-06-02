@@ -3,8 +3,10 @@ function openSettings() {
     initSettingsSectionNav();
     showSettingsMobileSectionIndex({ restoreFocus: false });
     initHapticsToggle();
+    initDeveloperModeToggle();
+    syncSettingsIdentityActions();
     renderSettingsVersion();
-    // Re-seal every System Data subsection on each visit. The collapse IS the
+    // Re-seal every System reset subsection on each visit. The collapse IS the
     // safety feature for destructive ops — a stale-open Delete Data section
     // from a previous visit would defeat it.
     resetSystemDataCollapse();
@@ -13,8 +15,43 @@ function openSettings() {
 var _settingsVersionLabel = '';
 var _settingsVersionValue = '';
 var _settingsUpdateCheckInFlight = false;
+var _settingsDeveloperModeBound = false;
+var _settingsDeveloperModeEnabled = false;
 var RATSPEAK_RELEASE_LATEST_URL = 'https://api.github.com/repos/ratspeak/Ratspeak/releases/latest';
 var RATSPEAK_RELEASES_URL = 'https://github.com/ratspeak/Ratspeak/releases';
+
+function syncDeveloperModeRadioState() {
+    var off = document.getElementById('settings-developer-mode-off');
+    var on = document.getElementById('settings-developer-mode-on');
+    if (off) off.checked = !_settingsDeveloperModeEnabled;
+    if (on) on.checked = _settingsDeveloperModeEnabled;
+}
+
+function rejectDeveloperModeEnable() {
+    _settingsDeveloperModeEnabled = false;
+    syncDeveloperModeRadioState();
+    if (typeof showToast === 'function') {
+        showToast('Developer mode is coming soon.', 'toast-info', 2500);
+    }
+}
+
+function initDeveloperModeToggle() {
+    var off = document.getElementById('settings-developer-mode-off');
+    var on = document.getElementById('settings-developer-mode-on');
+    if (!off || !on) return;
+    syncDeveloperModeRadioState();
+    if (_settingsDeveloperModeBound) return;
+    _settingsDeveloperModeBound = true;
+
+    off.addEventListener('click', function() {
+        _settingsDeveloperModeEnabled = false;
+        syncDeveloperModeRadioState();
+    });
+
+    on.addEventListener('change', function() {
+        if (on.checked) rejectDeveloperModeEnable();
+    });
+}
 
 function renderSettingsVersion() {
     var targets = [
@@ -199,7 +236,7 @@ function promptRatspeakUpdateCheck(currentVersion) {
     });
 }
 
-// Seal all System Data subsections. Called on every Settings open so the
+// Seal all System reset subsections. Called on every Settings open so the
 // destructive/nuclear sections never start expanded after a previous session.
 function resetSystemDataCollapse() {
     var sections = document.querySelectorAll('#panel-settings-system .system-subsection');
@@ -512,6 +549,112 @@ function openActiveIdentityContactCard() {
     }
 }
 
+function settingsCurrentActiveIdentity() {
+    if (typeof activeIdentity === 'function') {
+        var active = activeIdentity();
+        if (active) return active;
+    }
+    if (typeof activeIdentityHash !== 'undefined' && activeIdentityHash && typeof identityByHash === 'function') {
+        return identityByHash(activeIdentityHash);
+    }
+    return null;
+}
+
+function syncSettingsIdentityActions() {
+    var active = settingsCurrentActiveIdentity();
+    var desc = document.getElementById('settings-active-identity-desc');
+    var exportBtn = document.getElementById('settings-backup-identity-btn');
+    var phraseBtn = document.getElementById('settings-view-recovery-phrase-btn');
+    var activeName = active && typeof identityDisplayName === 'function'
+        ? identityDisplayName(active)
+        : (active && (active.display_name || active.nickname || active.hash));
+
+    if (desc) {
+        desc.textContent = active
+            ? ('Active: ' + (activeName || 'Unnamed'))
+            : 'No active identity loaded.';
+    }
+
+    if (exportBtn) {
+        var exportDisabled = !active || !!active.is_hardware;
+        exportBtn.disabled = exportDisabled;
+        exportBtn.title = !active
+            ? 'No active identity loaded'
+            : (active.is_hardware ? 'Hardware-key identities cannot be exported' : 'Export active identity');
+    }
+
+    if (phraseBtn) {
+        var phraseDisabled = !active || !!active.is_hardware || !active.has_mnemonic;
+        phraseBtn.disabled = phraseDisabled;
+        phraseBtn.title = !active
+            ? 'No active identity loaded'
+            : (active.is_hardware
+                ? 'Hardware-key identities do not have a recovery phrase on this device'
+                : (!active.has_mnemonic ? 'No recovery phrase is available for this identity' : 'View active recovery phrase'));
+    }
+
+    syncSettingsIdentityStatus();
+}
+window.syncSettingsIdentityActions = syncSettingsIdentityActions;
+
+function settingsCurrentStatusValue() {
+    if (typeof resolveActiveProfileStatus === 'function') {
+        return String(resolveActiveProfileStatus() || '').trim();
+    }
+    return '';
+}
+
+function syncSettingsIdentityStatus() {
+    var active = settingsCurrentActiveIdentity();
+    var desc = document.getElementById('settings-identity-status-desc');
+    var editBtn = document.getElementById('settings-edit-status-btn');
+    var clearBtn = document.getElementById('settings-clear-status-btn');
+    var status = active ? settingsCurrentStatusValue() : '';
+
+    if (desc) {
+        desc.textContent = active
+            ? (status || 'Not set.')
+            : 'No active identity loaded.';
+        desc.title = status || '';
+    }
+
+    if (editBtn) {
+        editBtn.disabled = !active;
+        editBtn.title = active ? 'Edit status' : 'No active identity loaded';
+    }
+
+    if (clearBtn) {
+        clearBtn.disabled = !active || !status;
+        clearBtn.title = !active
+            ? 'No active identity loaded'
+            : (status ? 'Clear status' : 'No status to clear');
+    }
+}
+
+function clearActiveIdentityStatus() {
+    if (!settingsCurrentActiveIdentity() || typeof saveIdentityStatus !== 'function') return;
+    var clearBtn = document.getElementById('settings-clear-status-btn');
+    var editBtn = document.getElementById('settings-edit-status-btn');
+    if (clearBtn && clearBtn.disabled) return;
+
+    if (clearBtn) clearBtn.disabled = true;
+    if (editBtn) editBtn.disabled = true;
+
+    saveIdentityStatus('').then(function(result) {
+        var savedStatus = typeof profileStatusFromPayload === 'function'
+            ? profileStatusFromPayload(result)
+            : '';
+        setActiveProfileStatus(savedStatus === null ? '' : savedStatus);
+        if (typeof showToast === 'function') showToast('Status cleared', 'toast-green', 2500);
+        if (typeof loadIdentities === 'function') loadIdentities();
+    }).catch(function(err) {
+        if (typeof showToast === 'function') {
+            showToast((err && err.message) ? err.message : 'Failed to clear status', 'toast-red', 3000);
+        }
+        syncSettingsIdentityStatus();
+    });
+}
+
 var PROFILE_STATUS_MAX_BYTES = 50;
 var _activeProfileStatus = '';
 
@@ -632,6 +775,7 @@ function renderActiveProfileStatus(status) {
     updateProfileStatusElement(document.getElementById('header-mobile-status'), value);
     updateProfileStatusElement(document.getElementById('sidebar-identity-status'), value);
     updateProfileStatusElement(document.getElementById('msg-profile-status'), value);
+    syncSettingsIdentityStatus();
 }
 
 function setActiveProfileStatus(status) {
@@ -1124,13 +1268,12 @@ RS.listen('app_settings_updated', applyAppSettingsPayload);
 
 // Keep this desktop-only until mobile has a user-facing notifications screen.
 (function() {
-    var _notifPanel = document.getElementById('panel-settings-notifications');
+    var _notifRow = document.getElementById('settings-row-notifications');
     var _notifToggle = document.getElementById('desktop-notifications-toggle');
-    if (!_notifPanel || !_notifToggle) return;
+    if (!_notifRow || !_notifToggle) return;
     var _isMobile = (typeof isMobile === 'function') ? isMobile() : !!window.__RATSPEAK_MOBILE__;
     if (_isMobile) return;
-    _notifPanel.style.display = '';
-    if (typeof syncSettingsNavVisibility === 'function') syncSettingsNavVisibility();
+    _notifRow.style.display = '';
     RS.invoke('api_notification_settings').then(function(data) {
         if (!data || data.enabled === undefined) return;
         _notifToggle.checked = !!data.enabled;
@@ -1172,12 +1315,29 @@ if (settingsBackupBtn) settingsBackupBtn.addEventListener('click', function() {
     if (typeof exportActiveIdentity === 'function') exportActiveIdentity();
 });
 
+var settingsViewPhraseBtn = document.getElementById('settings-view-recovery-phrase-btn');
+if (settingsViewPhraseBtn) settingsViewPhraseBtn.addEventListener('click', function() {
+    if (typeof viewActiveRecoveryPhrase === 'function') viewActiveRecoveryPhrase();
+    else if (typeof showToast === 'function') showToast('Recovery phrase is not ready yet', 'toast-orange', 2500);
+});
+
+var settingsEditStatusBtn = document.getElementById('settings-edit-status-btn');
+if (settingsEditStatusBtn) settingsEditStatusBtn.addEventListener('click', function() {
+    if (settingsEditStatusBtn.disabled) return;
+    if (typeof openIdentityStatusEditor === 'function') openIdentityStatusEditor();
+});
+
+var settingsClearStatusBtn = document.getElementById('settings-clear-status-btn');
+if (settingsClearStatusBtn) settingsClearStatusBtn.addEventListener('click', clearActiveIdentityStatus);
+
 var _manageIdentitiesBtn = document.getElementById('settings-manage-identities-btn');
 if (_manageIdentitiesBtn) {
     _manageIdentitiesBtn.addEventListener('click', function() {
-        switchView('identity');
+        if (typeof switchView === 'function') switchView('identity');
     });
 }
+
+syncSettingsIdentityActions();
 
 function clearWithConfirm(commandName, confirmMsg, successMsg, failMsg) {
     var errorMsg = failMsg || 'Operation failed.';

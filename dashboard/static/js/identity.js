@@ -552,6 +552,9 @@ function loadIdentities(retryCount) {
         try { renderNetworkIdentityCard(); }
         catch(e) {}
 
+        try { if (typeof syncSettingsIdentityActions === 'function') syncSettingsIdentityActions(); }
+        catch(e) {}
+
         try { if (typeof renderMsgProfileStrip === 'function') renderMsgProfileStrip(); }
         catch(e) {}
     }).catch(function(err) {
@@ -651,16 +654,6 @@ function renderActiveIdentityCard() {
         '<div class="identity-detail-actions">' +
             switchAction +
             pinAction +
-            (isHardware ? '' :
-            '<button class="identity-action-row" id="identity-export-detail-btn">' +
-                '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 21h14"/></svg></span>' +
-                '<span>Export Identity</span>' +
-            '</button>') +
-            (isHardware || !identity.has_mnemonic ? '' :
-            '<button class="identity-action-row" id="identity-view-phrase-btn">' +
-                '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></span>' +
-                '<span>View Recovery Phrase</span>' +
-            '</button>') +
             '<button class="identity-action-row" id="identity-share-address-btn">' +
                 '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg></span>' +
                 '<span>Share Contact Card</span>' +
@@ -686,12 +679,6 @@ function renderActiveIdentityCard() {
         if (isHardware) openHardwareChangePinModal(identity);
         else openSetPasscodeModal(identity, !!identity.passcode_protected);
     });
-
-    var exportBtn = document.getElementById('identity-export-detail-btn');
-    if (exportBtn) exportBtn.addEventListener('click', function() { exportIdentityBackup(identityHash); });
-
-    var viewPhraseBtn = document.getElementById('identity-view-phrase-btn');
-    if (viewPhraseBtn) viewPhraseBtn.addEventListener('click', function() { viewRecoveryPhrase(identity); });
 
     var shareBtn = document.getElementById('identity-share-address-btn');
     if (shareBtn) shareBtn.addEventListener('click', function() {
@@ -921,44 +908,11 @@ function renderRecoveryPhraseGrid(words) {
     }).join('');
 }
 
-function pickRecoveryVerifyPositions(count) {
-    var a = Math.floor(Math.random() * count);
-    var b;
-    do { b = Math.floor(Math.random() * count); } while (b === a && count > 1);
-    return a <= b ? [a, b] : [b, a];
-}
-
-function renderRecoveryVerifyFields(positions, inputClass) {
-    var cls = inputClass || 'recovery-verify-input';
-    return (positions || []).map(function(pos, idx) {
-        var ordinal = pos + 1;
-        return '<div class="modal-field recovery-verify-field"' + (idx > 0 ? ' style="margin-top:10px;"' : '') + '>' +
-            '<label>Word #' + ordinal + '</label>' +
-            '<input type="text" class="modal-input ' + cls + '" data-recovery-pos="' + pos + '" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Enter word ' + ordinal + '">' +
-        '</div>';
-    }).join('');
-}
-
-function validateRecoveryVerifyInputs(root, words) {
-    if (!root) return false;
-    var inputs = root.querySelectorAll('[data-recovery-pos]');
-    var ok = inputs.length > 0;
-    Array.prototype.forEach.call(inputs, function(input) {
-        var pos = parseInt(input.getAttribute('data-recovery-pos'), 10);
-        var expected = (words[pos] || '').toLowerCase();
-        if (input.value.trim().toLowerCase() !== expected) ok = false;
-    });
-    return ok;
-}
-
 window.recoveryPhraseWords = recoveryPhraseWords;
 window.renderRecoveryPhraseGrid = renderRecoveryPhraseGrid;
-window.pickRecoveryVerifyPositions = pickRecoveryVerifyPositions;
-window.renderRecoveryVerifyFields = renderRecoveryVerifyFields;
-window.validateRecoveryVerifyInputs = validateRecoveryVerifyInputs;
 
 // Recovery-phrase reveal as a standalone full-screen overlay. Software and
-// hardware setup flows share the reveal/copy/check/verify pattern so users learn
+// hardware setup flows share the reveal/copy/check pattern so users learn
 // one recovery ritual instead of separate backup flows.
 function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
     opts = opts || {};
@@ -974,7 +928,6 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
     var defaultWarn = 'Write down these ' + RECOVERY_PHRASE_WORDS + ' words in order and store them somewhere safe. ' +
         'Anyone with them controls your identity. ' + storageWarn;
     var requireConfirm = opts.requireConfirm !== false;
-    var requireVerify = requireConfirm && opts.requireVerify !== false;
     var confirmHtml = requireConfirm
         ? '<label class="hw-confirm-check">' +
               '<input type="checkbox" id="recovery-backup-confirm">' +
@@ -1052,51 +1005,8 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
         }
         if (done) done.addEventListener('click', function() {
             if (done.disabled) return;
-            if (requireVerify) showVerifyStep();
-            else finish();
+            finish();
         });
-    }
-
-    function showVerifyStep() {
-        var positions = pickRecoveryVerifyPositions(words.length);
-        overlay.innerHTML =
-            '<div class="hw-unlock-card recovery-backup-card" role="dialog" aria-modal="true" aria-labelledby="recovery-backup-title">' +
-                '<div class="hw-unlock-title" id="recovery-backup-title">' + escapeHtml(opts.verifyTitle || 'Confirm Backup') + '</div>' +
-                '<p class="recovery-warn">' + escapeHtml(opts.verifyWarn || 'Confirm your backup by entering the requested words.') + '</p>' +
-                '<div id="recovery-verify-fields">' + renderRecoveryVerifyFields(positions, 'recovery-verify-input') + '</div>' +
-                '<div class="hw-error" id="recovery-verify-error" style="display:none;"></div>' +
-                '<button type="button" class="nr-btn w-full recovery-backup-done" id="recovery-verify-btn">' + escapeHtml(opts.verifyButton || 'Verify & Finish') + '</button>' +
-                '<button type="button" class="nr-btn nr-btn-ghost w-full recovery-backup-back" id="recovery-verify-back-btn">Back to phrase</button>' +
-            '</div>';
-        var fields = document.getElementById('recovery-verify-fields');
-        var err = document.getElementById('recovery-verify-error');
-        var verify = document.getElementById('recovery-verify-btn');
-        function submitVerify() {
-            if (validateRecoveryVerifyInputs(fields, words)) {
-                if (err) err.style.display = 'none';
-                finish();
-                return;
-            }
-            if (err) {
-                err.textContent = "Those words don't match. Check your written phrase and try again.";
-                err.style.display = '';
-            }
-        }
-        if (verify) verify.addEventListener('click', submitVerify);
-        if (fields) {
-            fields.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    submitVerify();
-                }
-            });
-        }
-        var back = document.getElementById('recovery-verify-back-btn');
-        if (back) back.addEventListener('click', showPhraseStep);
-        setTimeout(function() {
-            var first = document.querySelector('#recovery-verify-fields .recovery-verify-input');
-            if (first && !isMobile()) first.focus();
-        }, 50);
     }
 
     showPhraseStep();
@@ -1144,6 +1054,24 @@ function viewRecoveryPhrase(target) {
     }
 }
 window.viewRecoveryPhrase = viewRecoveryPhrase;
+
+function viewActiveRecoveryPhrase() {
+    var active = activeIdentity();
+    if (!active) {
+        showPreConditionToast('No active identity to reveal');
+        return;
+    }
+    if (active.is_hardware) {
+        showPreConditionToast('Hardware-key identities do not have a recovery phrase on this device');
+        return;
+    }
+    if (!active.has_mnemonic) {
+        showPreConditionToast('No recovery phrase is available for this identity');
+        return;
+    }
+    viewRecoveryPhrase(active);
+}
+window.viewActiveRecoveryPhrase = viewActiveRecoveryPhrase;
 
 function openRestorePhraseModal(fromSetup) {
     showIdentityModal('Restore from Recovery Phrase',
@@ -1390,7 +1318,8 @@ function handleImportBackupPayload(fileName, fileSize, b64, expectedFormat) {
 }
 
 function exportActiveIdentity() {
-    exportIdentityBackup(activeIdentityHash);
+    var active = activeIdentity();
+    exportIdentityBackup((active && active.hash) || activeIdentityHash);
 }
 
 function exportIdentityPayload(hash, format, passcode) {
@@ -1516,10 +1445,6 @@ function openIdentityActions(hash) {
         choices.push({ label: 'Switch to Identity', value: 'switch' });
     }
     if (!target.is_hardware) {
-        choices.push({ label: 'Export Identity', value: 'export', hint: 'Ratspeak or Reticulum format.' });
-        if (target.has_mnemonic) {
-            choices.push({ label: 'View Recovery Phrase', value: 'view-phrase', hint: 'Show this identity’s 12-word phrase.' });
-        }
         if (target.passcode_protected) {
             choices.push({ label: 'Change PIN', value: 'passcode-change' });
             choices.push({ label: 'Remove PIN', value: 'passcode-remove', danger: true });
@@ -1540,8 +1465,6 @@ function openIdentityActions(hash) {
         choices: choices
     }).then(function(choice) {
         if (choice === 'switch') switchToIdentity(target.hash);
-        if (choice === 'export') exportIdentityBackup(target.hash);
-        if (choice === 'view-phrase') viewRecoveryPhrase(target);
         if (choice === 'passcode-set') openSetPasscodeModal(target, false);
         if (choice === 'passcode-change') openSetPasscodeModal(target, true);
         if (choice === 'passcode-remove') openRemovePasscodeModal(target);
@@ -1749,7 +1672,11 @@ function showIdentityModal(title, bodyHtml, onConfirm, confirmClass) {
     document.getElementById('identity-modal-body').innerHTML = bodyHtml;
 
     var confirmBtn = document.getElementById('identity-modal-confirm');
-    confirmBtn.className = confirmClass || 'nr-btn';
+    var confirmClasses = 'rs-dialog-confirm';
+    if (confirmClass && (confirmClass.indexOf('danger') !== -1 || confirmClass.indexOf('error') !== -1)) {
+        confirmClasses += ' rs-dialog-danger';
+    }
+    confirmBtn.className = confirmClasses;
     confirmBtn.disabled = false;
     var baseLabel = title.indexOf('Delete') !== -1 ? 'Delete' :
         (title.indexOf('Remove') !== -1 ? 'Remove' :
@@ -1977,12 +1904,12 @@ var HW_BADGE_ICON = '<svg class="identity-hardware-badge-icon" viewBox="0 0 24 2
 var HW_DETECT_ERROR_COPY = "YubiKey not detected. Please make sure it's a YubiKey 5+ running the latest firmware.";
 
 // Wizard state. `mnemonic` is held here only — never persisted, logged, or
-// echoed to storage. Cleared on close/verify.
+// echoed to storage. Cleared on close/finish.
 var _hwCtx = null;
 
 var HW_STEP_IDS = [
     'hw-step-detect', 'hw-step-mode', 'hw-step-pin', 'hw-step-working',
-    'hw-step-mnemonic', 'hw-step-verify', 'hw-step-restore', 'hw-step-import'
+    'hw-step-mnemonic', 'hw-step-restore', 'hw-step-import'
 ];
 
 function _hwSetTitle(text) {
@@ -2004,12 +1931,9 @@ function _hwClearSecrets() {
         _hwCtx.currentPin = null;
         _hwCtx.mnemonic = null;
         _hwCtx.mnemonicWords = null;
-        _hwCtx.verify = null;
     }
     var grid = document.getElementById('hw-mnemonic-grid');
     if (grid) grid.innerHTML = '';
-    var fields = document.getElementById('hw-verify-fields');
-    if (fields) fields.innerHTML = '';
     ['hw-pin', 'hw-pin-confirm', 'hw-restore-pin', 'hw-restore-pin-confirm', 'hw-restore-phrase'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.value = '';
@@ -2404,44 +2328,6 @@ function _hwShowMnemonic(mnemonic) {
     _hwShowStep('hw-step-mnemonic');
 }
 
-// Pick two distinct word positions for the verify step.
-function _hwPickVerifyPositions(count) {
-    return pickRecoveryVerifyPositions(count);
-}
-
-function _hwShowVerify() {
-    _hwSetTitle('Confirm Backup');
-    var words = _hwCtx.mnemonicWords || [];
-    if (words.length < 2) { _hwFinish(_hwCtx.result || {}); return; }
-    var positions = _hwPickVerifyPositions(words.length);
-    _hwCtx.verify = positions;
-
-    var fields = document.getElementById('hw-verify-fields');
-    if (fields) {
-        fields.innerHTML = renderRecoveryVerifyFields(positions, 'hw-verify-input');
-    }
-    var err = document.getElementById('hw-verify-error');
-    if (err) err.style.display = 'none';
-    _hwShowStep('hw-step-verify');
-    setTimeout(function() {
-        var first = document.querySelector('#hw-verify-fields .hw-verify-input');
-        if (first && !isMobile()) first.focus();
-    }, 120);
-}
-
-function _hwVerifyAndFinish() {
-    var words = _hwCtx.mnemonicWords || [];
-    var ok = validateRecoveryVerifyInputs(document.getElementById('hw-verify-fields'), words);
-    var err = document.getElementById('hw-verify-error');
-    if (!ok) {
-        if (err) { err.textContent = "Those words don't match. Check your written phrase and try again."; err.style.display = ''; }
-        return;
-    }
-    if (err) err.style.display = 'none';
-    var result = _hwCtx.result || {};
-    _hwFinish(result);
-}
-
 // ---- Restore from phrase ----
 
 function _hwBeginRestore() {
@@ -2678,20 +2564,9 @@ document.addEventListener('DOMContentLoaded', function() {
         if (btn) btn.disabled = !mnemonicConfirm.checked;
     });
     var mnemonicContinue = document.getElementById('hw-mnemonic-continue-btn');
-    if (mnemonicContinue) mnemonicContinue.addEventListener('click', _hwShowVerify);
-
-    var verifyBtn = document.getElementById('hw-verify-btn');
-    if (verifyBtn) verifyBtn.addEventListener('click', _hwVerifyAndFinish);
-    var verifyFields = document.getElementById('hw-verify-fields');
-    if (verifyFields) verifyFields.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            _hwVerifyAndFinish();
-        }
-    });
-    var verifyBack = document.getElementById('hw-verify-back-btn');
-    if (verifyBack) verifyBack.addEventListener('click', function() {
-        if (_hwCtx && _hwCtx.mnemonic) _hwShowMnemonic(_hwCtx.mnemonic);
+    if (mnemonicContinue) mnemonicContinue.addEventListener('click', function() {
+        if (mnemonicContinue.disabled) return;
+        _hwFinish((_hwCtx && _hwCtx.result) || {});
     });
 
     var restorePhrase = document.getElementById('hw-restore-phrase');

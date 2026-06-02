@@ -1074,29 +1074,9 @@
 .games-sheet-footer {
     align-items: center;
 }
-.games-sheet-send-btn,
-.games-sheet-cancel-btn {
-    font-family: inherit;
-    min-height: 38px;
-    padding: var(--space-2) var(--space-5);
-    border-radius: var(--radius-md);
-    font-size: var(--text-sm);
-    font-weight: var(--type-weight-semibold);
-    cursor: pointer;
-}
-.games-sheet-send-btn {
-    border: 1px solid var(--accent);
-    background: var(--accent);
-    color: var(--on-accent);
-}
 .games-sheet-send-btn:disabled {
     opacity: var(--opacity-disabled);
     cursor: not-allowed;
-}
-.games-sheet-cancel-btn {
-    border: 1px solid var(--border-control);
-    background: transparent;
-    color: var(--text-secondary);
 }
 .ttt-board-wrap {
     display: flex;

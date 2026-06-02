@@ -16,6 +16,7 @@
         flex-direction: column;
         flex: 1;
         min-height: 0;
+        overflow: hidden;
     }
     .network-subtabs { display: flex; }
     .network-main.subtab-connections .network-activity { display: none; }
@@ -83,8 +84,13 @@
         flex: 1;
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
-        padding-bottom: var(--space-4);
+        padding-bottom: calc(62px + var(--sab, env(safe-area-inset-bottom, 0px)) + var(--space-5));
+        scroll-padding-bottom: calc(62px + var(--sab, env(safe-area-inset-bottom, 0px)) + var(--space-5));
         gap: var(--space-2);
+    }
+    .conn-section:not(.collapsed) .conn-section-body {
+        max-height: none;
+        overflow: visible;
     }
     .conn-iface-row {
         padding: var(--space-4) var(--space-5);
@@ -320,7 +326,7 @@
     }
     .network-layout {
         grid-template-columns: 1fr;
-        overflow-y: auto;
+        overflow: hidden;
     }
     .settings-layout {
         grid-template-columns: 1fr;
@@ -637,6 +643,7 @@
     .theme-toggle-btn { min-width: 44px; min-height: 44px; }
     .selector-badge { min-height: 44px; padding: var(--space-4) var(--space-6); }
     .settings-row { min-height: 48px; }
+    .settings-radio-option span { min-height: 38px; min-width: 58px; }
 
     input[type="text"], input[type="number"], textarea, select, .modal-input {
         min-height: 44px;
@@ -1188,6 +1195,10 @@
         min-width: 0;
         flex: 1;
         gap: var(--space-2);
+    }
+    .settings-row-actions {
+        max-width: 48%;
+        flex-wrap: wrap;
     }
     .settings-row-label {
         font-size: 16px;

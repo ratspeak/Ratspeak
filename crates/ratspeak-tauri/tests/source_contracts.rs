@@ -381,11 +381,18 @@ fn games_new_sheet_uses_shared_mobile_bottom_sheet_width() {
     let root = repo_root();
     let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
     assert!(games_js.contains(r#"class="bottom-sheet games-new-dialog""#));
+    assert!(games_js.contains("rs-dialog-cancel games-sheet-cancel-btn"));
+    assert!(games_js.contains("rs-dialog-confirm games-sheet-send-btn"));
 
     let games_css = read_source(root.join("dashboard/static/css/11-games.css")).expect("games css");
     assert!(games_css.contains(
         "@media (min-width: 769px) {\n    .bottom-sheet.open.games-new-dialog {\n        width: min(520px, 92vw);\n    }\n}"
     ));
+    assert!(!games_css.contains(".games-sheet-send-btn {\n    border: 1px solid var(--accent);"));
+    assert!(
+        !games_css
+            .contains(".games-sheet-cancel-btn {\n    border: 1px solid var(--border-control);")
+    );
     assert!(
         !games_css
             .contains("\n.bottom-sheet.open.games-new-dialog {\n    width: min(520px, 92vw);\n}"),
@@ -425,6 +432,36 @@ fn process_diagnostics_are_explicit_opt_in() {
     assert!(source.contains("fn diagnostic_file_enabled()"));
     assert!(source.contains("RATSPEAK_DIAGNOSTIC_FILE"));
     assert!(!source.contains("const DEFAULT_FILTER"));
+}
+
+#[test]
+fn modal_action_footers_use_shared_dialog_buttons() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    let modals_css =
+        read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
+
+    let identity_modal = index
+        .split(r#"id="identity-modal""#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"id="identity-file-input""#).next())
+        .expect("identity modal markup");
+    assert!(identity_modal.contains(r#"class="bottom-sheet-footer""#));
+    assert!(identity_modal.contains(r#"class="rs-dialog-cancel" id="identity-modal-cancel""#));
+    assert!(identity_modal.contains(r#"class="rs-dialog-confirm" id="identity-modal-confirm""#));
+    assert!(!identity_modal.contains("u-flex gap-4"));
+    assert!(!identity_modal.contains("nr-btn flex-1"));
+    assert!(!identity_modal.contains("nr-btn nr-btn-ghost flex-1"));
+
+    assert!(identity_js.contains("var confirmClasses = 'rs-dialog-confirm';"));
+    assert!(identity_js.contains("confirmClasses += ' rs-dialog-danger';"));
+    assert!(!identity_js.contains("confirmBtn.className = confirmClass || 'nr-btn'"));
+
+    assert!(modals_css.contains(".bottom-sheet-footer {\n    display: flex;\n    justify-content: flex-end;\n    flex-wrap: wrap;"));
+    assert!(modals_css.contains("min-width: 96px;"));
+    assert!(modals_css.contains(".rs-dialog-cancel:disabled,"));
 }
 
 #[test]
@@ -1343,7 +1380,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.19");
+    assert_eq!(version_file.trim(), "1.0.19b");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -1362,17 +1399,27 @@ fn settings_version_display_uses_package_version_api() {
     assert!(index.contains("id=\"settings-version-sidebar\""));
     assert!(index.contains("id=\"settings-version-system\""));
     assert!(index.contains("class=\"system-data-tip\""));
-    assert!(index.contains("Tap and hold the send button in Messages"));
+    assert!(
+        index.contains("Click and hold the send button on a message to choose its delivery type.")
+    );
+    assert!(!index.contains("Tap and hold the send button in Messages"));
     let settings_sidebar = index
         .split("class=\"settings-sidebar-panel\"")
         .nth(1)
         .and_then(|tail| tail.split("class=\"settings-detail-pane\"").next())
         .expect("settings sidebar");
     assert!(settings_sidebar.contains("class=\"system-data-tip\""));
+    let sidebar_version = settings_sidebar
+        .find("id=\"settings-version-sidebar\"")
+        .expect("sidebar version");
+    let sidebar_tip = settings_sidebar
+        .find("class=\"system-data-tip\"")
+        .expect("settings tip");
+    assert!(sidebar_version < sidebar_tip);
     let system_panel = index
         .split("id=\"panel-settings-system\"")
         .nth(1)
-        .and_then(|tail| tail.split("id=\"panel-settings-notifications\"").next())
+        .and_then(|tail| tail.split("id=\"settings-version-system\"").next())
         .expect("system panel");
     assert!(!system_panel.contains("class=\"system-data-tip\""));
 
@@ -1419,13 +1466,100 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000022"#));
+    assert!(tauri_conf.contains(r#""versionCode": 1000023"#));
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
     assert!(android_gradle.contains("fun ratspeakDisplayVersionName()"));
     assert!(android_gradle.contains("../../../VERSION"));
     assert!(android_gradle.contains("versionName = ratspeakDisplayVersionName()"));
+}
+
+#[test]
+fn settings_information_architecture_groups_one_off_settings() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+
+    assert!(!index.contains(r#"data-settings-panel="panel-settings-blocked""#));
+    assert!(!index.contains(r#"id="panel-settings-blocked""#));
+    assert!(!index.contains(r#"<span class="settings-nav-label">Blocked Users</span>"#));
+    assert!(!index.contains(r#"data-settings-panel="panel-settings-notifications""#));
+    assert!(!index.contains(r#"id="panel-settings-notifications""#));
+    assert!(!index.contains(r#"id="settings-nav-notifications""#));
+
+    let general_panel = index
+        .split(r#"id="panel-settings-general""#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"id="panel-settings-identity""#).next())
+        .expect("general settings panel");
+    assert!(
+        general_panel.contains(r#"<span class="settings-row-label">Desktop Notifications</span>"#)
+    );
+    assert!(general_panel.contains(r#"id="settings-row-notifications""#));
+    assert!(general_panel.contains(r#"id="desktop-notifications-toggle""#));
+    assert!(general_panel.contains(r#"<span class="settings-row-label">Block List</span>"#));
+    assert!(general_panel.contains(
+        r#"class="selector-badge selector-badge-no-caret" id="settings-blocked-count">Manage</button>"#
+    ));
+
+    let identity_panel = index
+        .split(r#"id="panel-settings-identity""#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"id="panel-settings-privacy""#).next())
+        .expect("identity settings panel");
+    assert!(identity_panel.contains(r#"<span class="settings-row-label">Status</span>"#));
+    assert!(identity_panel.contains(r#"id="settings-identity-status-desc""#));
+    assert!(identity_panel.contains(r#"id="settings-edit-status-btn""#));
+    assert!(identity_panel.contains(r#"id="settings-clear-status-btn" disabled"#));
+    assert!(identity_panel.contains(
+        r#"class="selector-badge selector-badge-no-caret" id="settings-manage-identities-btn">Manage</button>"#
+    ));
+    assert!(identity_panel.contains(
+        r#"class="selector-badge selector-badge-no-caret" id="settings-backup-identity-btn">Export</button>"#
+    ));
+    assert!(identity_panel.contains(r#"<span class="settings-row-label">Backup Identity</span>"#));
+    assert!(
+        !identity_panel.contains(r#"<span class="settings-row-label">View Recovery Phrase</span>"#)
+    );
+    assert!(identity_panel.contains(
+        r#"class="selector-badge selector-badge-no-caret" id="settings-view-recovery-phrase-btn">View</button>"#
+    ));
+    assert!(
+        identity_panel
+            .contains(r#"<span class="settings-row-label">Hardware Key Auto-Lock</span>"#)
+    );
+    assert!(identity_panel.contains(r#"id="hw-lock-row""#));
+
+    let network_panel = index
+        .split(r#"id="panel-settings-network""#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"id="panel-settings-offline-inbox""#).next())
+        .expect("network settings panel");
+    assert!(network_panel.contains(r#"<span class="settings-row-label">Transport Mode</span>"#));
+    assert!(network_panel.contains(r#"<span class="settings-row-label">Auto-Announce</span>"#));
+    assert!(!network_panel.contains("Hardware Key Auto-Lock"));
+
+    assert!(
+        settings_js
+            .contains("var _notifRow = document.getElementById('settings-row-notifications');")
+    );
+    assert!(!settings_js.contains("document.getElementById('panel-settings-notifications')"));
+    assert!(settings_js.contains("function syncSettingsIdentityStatus()"));
+    assert!(settings_js.contains("function clearActiveIdentityStatus()"));
+    assert!(settings_js.contains("saveIdentityStatus('')"));
+    assert!(settings_js.contains("openIdentityStatusEditor()"));
+    assert!(
+        settings_js.contains("setActiveProfileStatus(savedStatus === null ? '' : savedStatus);")
+    );
+
+    assert!(views_css.contains(".settings-row-actions"));
+    assert!(views_css.contains(".selector-badge-no-caret::after"));
+    assert!(responsive_css.contains(".settings-row-actions"));
 }
 
 #[test]
@@ -1462,6 +1596,71 @@ fn mobile_settings_use_section_drilldown_instead_of_stacked_panels() {
         responsive_css.contains(".settings-detail-mode .settings-panel.settings-panel-selected")
     );
     assert!(responsive_css.contains(".settings-row-label {\n        font-size: 16px;"));
+}
+
+#[test]
+fn settings_system_panel_has_developer_mode_and_reset_group() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+
+    assert!(
+        index.contains(
+            r#"data-settings-panel="panel-settings-system" data-settings-title="System""#
+        )
+    );
+    assert!(index.contains(r#"<span class="settings-nav-label">System</span>"#));
+    assert!(!index.contains(r#"<span class="settings-nav-label">System Data</span>"#));
+    assert!(index.contains(r#"<div class="panel-header">System</div>"#));
+    assert!(index.contains(r#"<div class="settings-panel-section-title">System</div>"#));
+    assert!(index.contains(r#"<span class="settings-row-label">Developer Mode</span>"#));
+    assert!(index.contains(r#"role="radiogroup" aria-label="Developer Mode""#));
+    assert!(index.contains(r#"type="radio" name="settings-developer-mode" id="settings-developer-mode-off" value="off" checked"#));
+    assert!(index.contains(
+        r#"type="radio" name="settings-developer-mode" id="settings-developer-mode-on" value="on""#
+    ));
+    assert!(index.contains(r#"<div class="settings-panel-section-title">Reset</div>"#));
+
+    let system_title = index
+        .find(r#"<div class="settings-panel-section-title">System</div>"#)
+        .unwrap();
+    let developer_mode = index
+        .find(r#"<span class="settings-row-label">Developer Mode</span>"#)
+        .unwrap();
+    let reset_title = index
+        .find(r#"<div class="settings-panel-section-title">Reset</div>"#)
+        .unwrap();
+    let cache_section = index.find(r#"id="system-section-caches""#).unwrap();
+    assert!(
+        system_title < developer_mode
+            && developer_mode < reset_title
+            && reset_title < cache_section
+    );
+
+    assert!(settings_js.contains("function initDeveloperModeToggle()"));
+    assert!(settings_js.contains("initDeveloperModeToggle();"));
+    assert!(settings_js.contains("function rejectDeveloperModeEnable()"));
+    assert!(
+        settings_js.contains("showToast('Developer mode is coming soon.', 'toast-info', 2500);")
+    );
+    assert!(settings_js.contains("if (on.checked) rejectDeveloperModeEnable();"));
+    assert!(settings_js.contains("_settingsDeveloperModeEnabled = false;"));
+    assert!(!settings_js.contains("title: 'Enable Developer Mode?'"));
+    assert!(!settings_js.contains("confirmText: 'Enable'"));
+    assert!(!settings_js.contains("_settingsDeveloperModeEnabled = !!ok;"));
+    assert!(!settings_js.contains("RS.invoke('set_developer_mode'"));
+
+    assert!(views_css.contains(".settings-panel-section-title"));
+    assert!(views_css.contains(".settings-radio-group"));
+    assert!(views_css.contains(".settings-radio-option input:checked + span"));
+    assert!(
+        responsive_css
+            .contains(".settings-radio-option span { min-height: 38px; min-width: 58px; }")
+    );
 }
 
 #[test]
@@ -1520,6 +1719,41 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains("background: transparent;"));
     assert!(responsive_css.contains("border: 0;"));
     assert!(responsive_css.contains("--mobile-list-avatar-size: 42px;"));
+}
+
+#[test]
+fn network_interface_sections_scroll_without_compressing_rows() {
+    let root = repo_root();
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+
+    assert!(views_css.contains(".network-layout {\n    display: flex;"));
+    assert!(views_css.contains("box-sizing: border-box;\n    overflow: hidden;"));
+    assert!(views_css.contains(".network-main {\n    display: grid;"));
+    assert!(views_css.contains("min-height: 0;\n    min-width: 0;\n    overflow: hidden;"));
+    assert!(views_css.contains(".network-connections {\n    display: flex;"));
+    assert!(views_css.contains("min-height: 0;\n    min-width: 0;\n    overflow-y: auto;"));
+    assert!(views_css.contains("overscroll-behavior: contain;"));
+    assert!(views_css.contains("scrollbar-gutter: stable;"));
+    assert!(views_css.contains(".conn-section {\n    background: var(--surface-panel);"));
+    assert!(views_css.contains("flex-shrink: 0;"));
+    assert!(views_css.contains(".conn-section-body {\n    max-height: min(44vh, 420px);"));
+    assert!(views_css.contains("overflow-y: auto;"));
+    assert!(views_css.contains(
+        ".conn-section.collapsed .conn-section-body {\n    max-height: 0;\n    overflow: hidden;"
+    ));
+
+    assert!(responsive_css.contains(".network-main {\n        display: flex;"));
+    assert!(responsive_css.contains(
+        "padding-bottom: calc(62px + var(--sab, env(safe-area-inset-bottom, 0px)) + var(--space-5));"
+    ));
+    assert!(responsive_css.contains(
+        ".conn-section:not(.collapsed) .conn-section-body {\n        max-height: none;\n        overflow: visible;"
+    ));
+    assert!(responsive_css.contains(
+        ".network-layout {\n        grid-template-columns: 1fr;\n        overflow: hidden;"
+    ));
 }
 
 #[test]
@@ -2288,7 +2522,6 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_js.contains("passcode: importPasscode"));
     assert!(identity_js.contains("passcode: passcode || ''"));
     assert!(identity_js.contains("protectIdentityWithPasscode(data.hash, importPasscode)"));
-    assert!(identity_js.contains(r#"<path d="M7 14l5-5 5 5"/>"#));
     assert!(!identity_js.contains(r#"<path d="M7 16l5 5 5-5"/>"#));
     assert!(identity_js.contains("function identityImportFormatChoices()"));
     assert!(identity_js.contains("function identityExportFormatChoices()"));
@@ -2331,9 +2564,39 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_js.contains("function deleteIdentityByHash(hash)"));
     assert!(identity_js.contains("id=\"identity-change-pin-detail-btn\""));
     assert!(identity_js.contains("Change PIN"));
+    assert!(identity_js.contains("function viewActiveRecoveryPhrase()"));
+    assert!(identity_js.contains("var active = activeIdentity();"));
+    assert!(identity_js.contains("viewRecoveryPhrase(active);"));
+    assert!(identity_js.contains("function exportActiveIdentity()"));
+    assert!(
+        identity_js
+            .contains("exportIdentityBackup((active && active.hash) || activeIdentityHash);")
+    );
     assert!(identity_js.contains("function openHardwareChangePinModal"));
     assert!(identity_js.contains("RS.invoke('hw_change_pin', { hash: target.hash"));
     assert!(identity_js.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
+
+    let active_card_start = identity_js
+        .find("function renderActiveIdentityCard()")
+        .expect("active identity card renderer");
+    let active_card_tail = &identity_js[active_card_start..];
+    let active_card_end = active_card_tail
+        .find("function renderIdentityList()")
+        .expect("active card renderer end");
+    let active_card_source = &active_card_tail[..active_card_end];
+    assert!(!active_card_source.contains("id=\"identity-export-detail-btn\""));
+    assert!(!active_card_source.contains("id=\"identity-view-phrase-btn\""));
+
+    let actions_start = identity_js
+        .find("function openIdentityActions(hash)")
+        .expect("identity actions renderer");
+    let actions_tail = &identity_js[actions_start..];
+    let actions_end = actions_tail
+        .find("// Add or change a passcode")
+        .expect("identity actions renderer end");
+    let actions_source = &actions_tail[..actions_end];
+    assert!(!actions_source.contains("value: 'export'"));
+    assert!(!actions_source.contains("value: 'view-phrase'"));
 
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
@@ -2347,6 +2610,38 @@ fn identity_management_is_first_class_tab() {
     assert!(index.contains("Identity Detail"));
     assert!(!index.contains("id=\"identity-export-btn\""));
     assert!(!index.contains("identity-panel-actions"));
+    assert!(index.contains(r#"data-settings-panel="panel-settings-identity""#));
+    assert!(index.contains(r#"id="panel-settings-identity""#));
+    assert!(index.contains(r#"id="settings-active-identity-desc""#));
+    assert!(index.contains(r#"id="settings-identity-status-desc""#));
+    assert!(index.contains(r#"id="settings-edit-status-btn""#));
+    assert!(index.contains(r#"id="settings-clear-status-btn""#));
+    assert!(index.contains(r#"id="settings-backup-identity-btn""#));
+    assert!(index.contains(r#"id="settings-view-recovery-phrase-btn""#));
+    let general_nav = index
+        .find(r#"data-settings-panel="panel-settings-general""#)
+        .unwrap();
+    let identity_nav = index
+        .find(r#"data-settings-panel="panel-settings-identity""#)
+        .unwrap();
+    let privacy_nav = index
+        .find(r#"data-settings-panel="panel-settings-privacy""#)
+        .unwrap();
+    assert!(general_nav < identity_nav && identity_nav < privacy_nav);
+
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    assert!(settings_js.contains("function settingsCurrentActiveIdentity()"));
+    assert!(settings_js.contains("function syncSettingsIdentityActions()"));
+    assert!(settings_js.contains("settings-backup-identity-btn"));
+    assert!(settings_js.contains("settings-view-recovery-phrase-btn"));
+    assert!(settings_js.contains("viewActiveRecoveryPhrase();"));
+    assert!(settings_js.contains("settings-edit-status-btn"));
+    assert!(settings_js.contains("settings-clear-status-btn"));
+    assert!(settings_js.contains("saveIdentityStatus('')"));
+    assert!(
+        settings_js.contains("window.syncSettingsIdentityActions = syncSettingsIdentityActions;")
+    );
 
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     assert!(views_css.contains(".identity-page-header"));
@@ -2354,6 +2649,7 @@ fn identity_management_is_first_class_tab() {
     assert!(views_css.contains(".identity-detail-hero"));
     assert!(views_css.contains(".identity-address-row"));
     assert!(views_css.contains(".identity-detail-actions"));
+    assert!(views_css.contains(".selector-badge:disabled"));
 
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
@@ -2443,7 +2739,7 @@ fn hardware_new_identity_reset_flow_handles_initialized_keys() {
 }
 
 #[test]
-fn software_identity_creation_uses_passcode_and_shared_backup_flow() {
+fn software_identity_creation_uses_passcode_and_backup_acknowledgement_flow() {
     let root = repo_root();
     let identity_js =
         read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
@@ -2469,21 +2765,26 @@ fn software_identity_creation_uses_passcode_and_shared_backup_flow() {
     assert!(identity_js.contains("id=\"recovery-backup-cover\""));
     assert!(identity_js.contains("id=\"recovery-backup-copy\""));
     assert!(identity_js.contains("opts.requireConfirm !== false"));
-    assert!(identity_js.contains("function renderRecoveryVerifyFields"));
-    assert!(identity_js.contains("function validateRecoveryVerifyInputs"));
-    assert!(
-        identity_js.contains("var requireVerify = requireConfirm && opts.requireVerify !== false;")
-    );
-    assert!(identity_js.contains("showVerifyStep();"));
+    assert!(!identity_js.contains("function pickRecoveryVerifyPositions"));
+    assert!(!identity_js.contains("function renderRecoveryVerifyFields"));
+    assert!(!identity_js.contains("function validateRecoveryVerifyInputs"));
+    assert!(!identity_js.contains("requireVerify"));
+    assert!(!identity_js.contains("showVerifyStep"));
+    assert!(!identity_js.contains("recovery-verify-fields"));
     assert!(identity_js.contains("passcodeProtected: !!passcode"));
     assert!(setup_js.contains("function showSetupRecoveryStep"));
-    assert!(setup_js.contains("function showSetupRecoveryVerifyStep"));
-    assert!(setup_js.contains("window.renderRecoveryVerifyFields"));
-    assert!(setup_js.contains("window.validateRecoveryVerifyInputs"));
+    assert!(!setup_js.contains("function showSetupRecoveryVerifyStep"));
+    assert!(!setup_js.contains("window.renderRecoveryVerifyFields"));
+    assert!(!setup_js.contains("window.validateRecoveryVerifyInputs"));
+    assert!(
+        setup_js.contains("showSetupIdentityStep(document.getElementById('setup-step-backup'))")
+    );
     assert!(setup_js.contains("showSetupRecoveryStep(data.mnemonic || '', genStep)"));
     assert!(index.contains(r#"id="setup-step-backup""#));
-    assert!(index.contains(r#"id="setup-step-backup-verify""#));
-    assert!(index.contains(r#"id="setup-verify-fields""#));
+    assert!(!index.contains(r#"id="setup-step-backup-verify""#));
+    assert!(!index.contains(r#"id="setup-verify-fields""#));
+    assert!(!index.contains(r#"id="hw-step-verify""#));
+    assert!(!index.contains(r#"id="hw-verify-fields""#));
     assert_eq!(index.matches(r#"class="setup-dot"#).count(), 4);
     assert_eq!(index.matches(r#"class="setup-dot active"#).count(), 1);
 

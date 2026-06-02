@@ -1437,8 +1437,8 @@
                 '</div>' +
             '</div>' +
             '<div class="bottom-sheet-footer games-sheet-footer">' +
-                '<button type="button" class="games-sheet-cancel-btn" id="games-sheet-cancel">Cancel</button>' +
-                '<button type="button" class="games-sheet-send-btn" id="games-sheet-send" disabled>Send Challenge</button>' +
+                '<button type="button" class="rs-dialog-cancel games-sheet-cancel-btn" id="games-sheet-cancel">Cancel</button>' +
+                '<button type="button" class="rs-dialog-confirm games-sheet-send-btn" id="games-sheet-send" disabled>Send Challenge</button>' +
             '</div>' +
         '</div>';
 

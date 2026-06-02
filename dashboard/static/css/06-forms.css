@@ -337,7 +337,7 @@
 .system-data-tip-copy {
     min-width: 0;
 }
-/* === System Data panel — collapsible subsections =========================
+/* === System panel — collapsible reset subsections ========================
    Header is the only always-visible affordance; body collapses via
    grid-template-rows. Destructive/nuclear visual cues (left rule, tinted
    bg, error title color) live on the parent .system-subsection so they

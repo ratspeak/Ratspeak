@@ -291,15 +291,6 @@
                             </label>
                             <button class="nr-btn nr-btn-lg w-full" id="setup-mnemonic-continue-btn" disabled>Continue</button>
                         </div>
-                        <div class="setup-step" id="setup-step-backup-verify" style="display:none;">
-                            <div class="setup-divider"></div>
-                            <h3 class="setup-step-title">Confirm Backup</h3>
-                            <p class="setup-recovery-warn">Confirm your backup by entering the requested words.</p>
-                            <div id="setup-verify-fields"></div>
-                            <div class="hw-error" id="setup-verify-error" style="display:none;"></div>
-                            <button class="nr-btn nr-btn-lg w-full" id="setup-verify-btn">Verify &amp; Continue</button>
-                            <button class="nr-btn nr-btn-ghost nr-btn-lg w-full mt-3" id="setup-verify-back-btn">Back to phrase</button>
-                        </div>
                         <div class="setup-step" id="setup-step-2" style="display:none;">
                             <div class="modal-field">
                                 <label>Your Identity <span class="help-icon tooltip-trigger" tabindex="0" role="button" aria-label="What is this?" data-tooltip="This is your LXMF identity, it's the address others use to message you."><svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3.5" r="1.5"/><rect x="6.5" y="6.5" width="3" height="7" rx="1"/></svg></span></label>
@@ -796,10 +787,10 @@
             </div>
             <div class="bottom-sheet-body">
                 <div id="identity-modal-body"></div>
-                <div class="u-flex gap-4 mt-6">
-                    <button class="nr-btn flex-1" id="identity-modal-confirm">Create</button>
-                    <button class="nr-btn nr-btn-ghost flex-1" id="identity-modal-cancel">Cancel</button>
-                </div>
+            </div>
+            <div class="bottom-sheet-footer">
+                <button class="rs-dialog-cancel" id="identity-modal-cancel">Cancel</button>
+                <button class="rs-dialog-confirm" id="identity-modal-confirm">Create</button>
             </div>
         </div>
         <input type="file" id="identity-file-input" accept=".rsi,.rniid,.key,.identity,.bin,application/json,application/octet-stream,text/plain" style="display:none;">
@@ -887,15 +878,6 @@
                         <span>I have written down my 12-word phrase and stored it safely.</span>
                     </label>
                     <button class="nr-btn w-full mt-4" id="hw-mnemonic-continue-btn" disabled>Continue</button>
-                </div>
-
-                <!-- Step: verify mnemonic -->
-                <div class="hw-step" id="hw-step-verify" style="display:none;">
-                    <p class="hw-step-lead">Confirm your backup by entering the requested words.</p>
-                    <div id="hw-verify-fields"></div>
-                    <div class="hw-error" id="hw-verify-error" style="display:none;"></div>
-                    <button class="nr-btn w-full mt-4" id="hw-verify-btn">Verify &amp; Finish</button>
-                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-verify-back-btn">Back to phrase</button>
                 </div>
 
                 <!-- Step: restore from phrase -->
@@ -993,9 +975,13 @@
                             <span class="settings-sidebar-title">Settings</span>
                         </div>
                         <nav class="settings-nav" id="settings-section-nav">
-                            <button class="settings-nav-item active" type="button" aria-current="page" data-settings-panel="panel-settings-general" data-settings-title="General" data-settings-desc="Theme, haptics, and app preferences.">
+                            <button class="settings-nav-item active" type="button" aria-current="page" data-settings-panel="panel-settings-general" data-settings-title="General" data-settings-desc="Theme, haptics, notifications, and block list.">
                                 <span class="settings-nav-label">General</span>
-                                <span class="settings-nav-desc">Theme, vibration, and app preferences</span>
+                                <span class="settings-nav-desc">Theme, vibration, notifications, and blocks</span>
+                            </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-identity" data-settings-title="Identity" data-settings-desc="Active identity, status, backup, and recovery.">
+                                <span class="settings-nav-label">Identity</span>
+                                <span class="settings-nav-desc">Active identity, status, backup, and recovery</span>
                             </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-privacy" data-settings-title="Privacy" data-settings-desc="Privacy related preferences">
                                 <span class="settings-nav-label">Privacy</span>
@@ -1005,23 +991,16 @@
                                 <span class="settings-nav-label">Network</span>
                                 <span class="settings-nav-desc">Transport behavior and announce cadence</span>
                             </button>
-                            <button class="settings-nav-item" type="button" id="settings-nav-notifications" style="display:none;" data-settings-panel="panel-settings-notifications" data-settings-title="Notifications" data-settings-desc="Desktop notification delivery.">
-                                <span class="settings-nav-label">Notifications</span>
-                                <span class="settings-nav-desc">Desktop notification delivery</span>
-                            </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-offline-inbox" data-settings-title="Offline Inbox" data-settings-desc="Offline Inbox status and offline message storage.">
                                 <span class="settings-nav-label">Offline Inbox</span>
                                 <span class="settings-nav-desc">Offline message storage and relay status</span>
                             </button>
-                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-blocked" data-settings-title="Blocked Users" data-settings-desc="Blocked contacts and delivery filters.">
-                                <span class="settings-nav-label">Blocked Users</span>
-                                <span class="settings-nav-desc">Blocked contacts and delivery filters</span>
-                            </button>
-                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-system" data-settings-title="System Data" data-settings-desc="Cache, deletion, and reset actions.">
-                                <span class="settings-nav-label">System Data</span>
-                                <span class="settings-nav-desc">Cache, deletion, and reset actions</span>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-system" data-settings-title="System" data-settings-desc="Developer and reset controls.">
+                                <span class="settings-nav-label">System</span>
+                                <span class="settings-nav-desc">Developer and reset controls</span>
                             </button>
                         </nav>
+                        <div class="settings-sidebar-version" id="settings-version-sidebar" aria-label="App version"></div>
                         <div class="system-data-tip" role="note">
                             <span class="system-data-tip-icon" aria-hidden="true">
                                 <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor">
@@ -1029,9 +1008,8 @@
                                     <rect x="6.7" y="6.2" width="2.6" height="6.3" rx="1.1"/>
                                 </svg>
                             </span>
-                            <span class="system-data-tip-copy">Tip: Tap and hold the send button in Messages to choose its delivery method.</span>
+                            <span class="system-data-tip-copy">Tip: Click and hold the send button on a message to choose its delivery type.</span>
                         </div>
-                        <div class="settings-sidebar-version" id="settings-version-sidebar" aria-label="App version"></div>
                     </aside>
                     <section class="settings-detail-pane" aria-labelledby="settings-detail-title">
                         <div class="settings-mobile-detail-bar">
@@ -1084,6 +1062,67 @@
                                     <span class="prop-slider"></span>
                                 </label>
                             </div>
+                            <div class="settings-row" id="settings-row-notifications" style="display:none;">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Desktop Notifications</span>
+                                    <span class="settings-row-desc">Show a system notification when a new message arrives while Ratspeak is in the background</span>
+                                </div>
+                                <label class="prop-toggle" aria-label="Desktop Notifications">
+                                    <input type="checkbox" id="desktop-notifications-toggle" checked>
+                                    <span class="prop-slider"></span>
+                                </label>
+                            </div>
+                            <div class="settings-row" style="border-bottom:none;">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Block List</span>
+                                    <span class="settings-row-desc">Manage blocked users</span>
+                                </div>
+                                <button class="selector-badge selector-badge-no-caret" id="settings-blocked-count">Manage</button>
+                            </div>
+                        </div>
+                    </div>
+
+                            <div class="panel settings-panel" id="panel-settings-identity">
+                        <div class="panel-header">Identity</div>
+                        <div class="panel-body">
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Active Identity</span>
+                                    <span class="settings-row-desc" id="settings-active-identity-desc">Current identity used for messages, calls, and announces.</span>
+                                </div>
+                                <button class="selector-badge selector-badge-no-caret" id="settings-manage-identities-btn">Manage</button>
+                            </div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Status</span>
+                                    <span class="settings-row-desc" id="settings-identity-status-desc">Not set.</span>
+                                </div>
+                                <div class="settings-row-actions">
+                                    <button class="selector-badge selector-badge-no-caret" id="settings-edit-status-btn">Edit</button>
+                                    <button class="selector-badge selector-badge-no-caret" id="settings-clear-status-btn" disabled>Clear</button>
+                                </div>
+                            </div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Export Identity</span>
+                                    <span class="settings-row-desc">Export the active software identity as a Ratspeak backup or Reticulum key.</span>
+                                </div>
+                                <button class="selector-badge selector-badge-no-caret" id="settings-backup-identity-btn">Export</button>
+                            </div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Backup Identity</span>
+                                    <span class="settings-row-desc">Reveal the active identity's 12-word recovery phrase.</span>
+                                </div>
+                                <button class="selector-badge selector-badge-no-caret" id="settings-view-recovery-phrase-btn">View</button>
+                            </div>
+                            <div class="settings-row" id="hw-lock-row" style="display:none;border-bottom:none;">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Hardware Key Auto-Lock</span>
+                                    <span class="settings-row-desc">Lock a YubiKey identity after inactivity; PIN required to resume. Off relies on lock-on-quit. Applies on next unlock.</span>
+                                </div>
+                                <button class="selector-badge" id="hw-lock-timeout-select">Off</button>
+                            </div>
                         </div>
                     </div>
 
@@ -1120,29 +1159,6 @@
                                 </div>
                                 <button class="selector-badge" id="auto-announce-select">30 min</button>
                             </div>
-                            <div class="settings-row" id="hw-lock-row" style="display:none;">
-                                <div class="settings-row-info">
-                                    <span class="settings-row-label">Hardware Key Auto-Lock</span>
-                                    <span class="settings-row-desc">Lock a YubiKey identity after inactivity; PIN required to resume. Off relies on lock-on-quit. Applies on next unlock.</span>
-                                </div>
-                                <button class="selector-badge" id="hw-lock-timeout-select">Off</button>
-                            </div>
-                        </div>
-                    </div>
-
-                            <div class="panel settings-panel" id="panel-settings-notifications" style="display:none;">
-                        <div class="panel-header">Notifications</div>
-                        <div class="panel-body">
-                            <div class="settings-row" style="border-bottom:none;">
-                                <div class="settings-row-info">
-                                    <span class="settings-row-label">Desktop Notifications</span>
-                                    <span class="settings-row-desc">Show a system notification when a new message arrives while Ratspeak is in the background</span>
-                                </div>
-                                <label class="prop-toggle">
-                                    <input type="checkbox" id="desktop-notifications-toggle" checked>
-                                    <span class="prop-slider"></span>
-                                </label>
-                            </div>
                         </div>
                     </div>
 
@@ -1163,23 +1179,28 @@
                         </div>
                     </div>
 
-                            <div class="panel settings-panel" id="panel-settings-blocked">
-                        <div class="panel-header">Blocked Users</div>
-                        <div class="panel-body">
-                            <div class="settings-row" style="border-bottom:none;">
-                                <div class="settings-row-info">
-                                    <span class="settings-row-label">Block List</span>
-                                    <span class="settings-row-desc">Manage blocked users</span>
-                                </div>
-                                <button class="selector-badge" id="settings-blocked-count">0 blocked</button>
-                            </div>
-                        </div>
-                    </div>
-
                             <div class="panel settings-panel" id="panel-settings-system">
-                        <div class="panel-header">System Data</div>
+                        <div class="panel-header">System</div>
                         <div class="panel-body system-panel-body">
+                            <div class="settings-panel-section-title">System</div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Developer Mode</span>
+                                    <span class="settings-row-desc">Show advanced developer settings when available.</span>
+                                </div>
+                                <div class="settings-radio-group" role="radiogroup" aria-label="Developer Mode">
+                                    <label class="settings-radio-option">
+                                        <input type="radio" name="settings-developer-mode" id="settings-developer-mode-off" value="off" checked>
+                                        <span>Off</span>
+                                    </label>
+                                    <label class="settings-radio-option">
+                                        <input type="radio" name="settings-developer-mode" id="settings-developer-mode-on" value="on">
+                                        <span>On</span>
+                                    </label>
+                                </div>
+                            </div>
 
+                            <div class="settings-panel-section-title">Reset</div>
                             <div class="system-subsection system-subsection--cache collapsed" id="system-section-caches">
                                 <div class="system-subsection-header" role="button" tabindex="0" aria-expanded="false" aria-controls="system-body-caches">
                                     <div class="system-subsection-meta">

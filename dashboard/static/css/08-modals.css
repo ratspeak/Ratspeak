@@ -147,6 +147,7 @@
 .bottom-sheet-footer {
     display: flex;
     justify-content: flex-end;
+    flex-wrap: wrap;
     gap: var(--space-4);
     padding: var(--space-5) var(--space-8) var(--space-7);
     border-top: 1px solid var(--border-row);
@@ -1113,6 +1114,15 @@
     cursor: pointer;
     transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
     outline: none;
+    min-width: 96px;
+    text-align: center;
+    white-space: nowrap;
+}
+.rs-dialog-cancel:disabled,
+.rs-dialog-confirm:disabled {
+    opacity: var(--opacity-disabled);
+    cursor: not-allowed;
+    box-shadow: none;
 }
 
 .rs-dialog-cancel {
