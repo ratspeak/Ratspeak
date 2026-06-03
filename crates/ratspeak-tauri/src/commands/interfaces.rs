@@ -367,10 +367,25 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
     let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) =
         (false, vec!["ble feature not compiled".to_string()], None);
 
+    let peer_count = state
+        .ble_peer_count
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let peer_state = if !enabled {
+        "off"
+    } else if !available {
+        "unavailable"
+    } else if peer_count > 0 {
+        "on"
+    } else {
+        "starting"
+    };
+
     let mut body = json!({
         "enabled": enabled,
         "available": available,
         "missing": missing,
+        "state": peer_state,
+        "peer_count": peer_count,
     });
     if let Some(a) = auth_state {
         body["auth_state"] = json!(a);

@@ -315,6 +315,21 @@ async fn live_ble_peer_interface_id(
 }
 
 #[cfg_attr(not(feature = "ble"), allow(dead_code))]
+fn emit_ble_peer_enabled_status(state: &Arc<AppState>) {
+    let peer_count = state
+        .ble_peer_count
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let state_name = if peer_count > 0 { "on" } else { "starting" };
+    state.emit_to_all(
+        "ble_peer_status_changed",
+        json!({
+            "state": state_name,
+            "peer_count": peer_count,
+        }),
+    );
+}
+
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
 async fn persist_ble_peer_requested_state(state: &Arc<AppState>, expires_at: u64) {
     let db = state.db.clone();
     let _ = db::spawn_db(db, move |p| {
@@ -323,6 +338,7 @@ async fn persist_ble_peer_requested_state(state: &Arc<AppState>, expires_at: u64
     })
     .await;
     state.emit_to_all("ble_peer_status_update", json!({ "enabled": true }));
+    emit_ble_peer_enabled_status(state);
 }
 
 #[cfg_attr(not(feature = "ble"), allow(dead_code))]
@@ -471,6 +487,9 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
             .await
             {
                 Ok(Ok(_id)) => {
+                    state_arc
+                        .ble_peer_count
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
                     persist_ble_peer_requested_state(&state_arc, expires_at).await;
 
                     let state_relay: Arc<AppState> = Arc::clone(&state_arc);
@@ -497,10 +516,31 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                         fn store_logical_ble_peer_count(
                             state: &AppState,
                             address_to_identity: &std::collections::HashMap<String, String>,
+                        ) -> usize {
+                            let peer_count = logical_ble_peer_count(address_to_identity);
+                            state
+                                .ble_peer_count
+                                .store(peer_count, std::sync::atomic::Ordering::Relaxed);
+                            peer_count
+                        }
+
+                        fn emit_logical_ble_peer_status(
+                            state: &AppState,
+                            address_to_identity: &std::collections::HashMap<String, String>,
                         ) {
-                            state.ble_peer_count.store(
-                                logical_ble_peer_count(address_to_identity),
-                                std::sync::atomic::Ordering::Relaxed,
+                            let peer_count =
+                                store_logical_ble_peer_count(state, address_to_identity);
+                            let state_name = if peer_count > 0 {
+                                rns_interface::ble_peer::PeerState::On
+                            } else {
+                                rns_interface::ble_peer::PeerState::Starting
+                            };
+                            state.emit_to_all(
+                                "ble_peer_status_changed",
+                                json!({
+                                    "state": state_name,
+                                    "peer_count": peer_count,
+                                }),
                             );
                         }
 
@@ -527,7 +567,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                                 } => {
                                     address_to_identity
                                         .insert(address.clone(), identity_hash.clone());
-                                    store_logical_ble_peer_count(
+                                    emit_logical_ble_peer_status(
                                         &state_relay,
                                         &address_to_identity,
                                     );
@@ -592,7 +632,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                                             .await;
                                         });
                                     }
-                                    store_logical_ble_peer_count(
+                                    emit_logical_ble_peer_status(
                                         &state_relay,
                                         &address_to_identity,
                                     );
@@ -608,10 +648,10 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                                     address,
                                     identity_hash,
                                 } => {
-                                    // Disconnect path persists ble_recent_disconnects from this map.
+                                    // Disconnect path persists recent reconnect records from this map.
                                     address_to_identity
                                         .insert(address.clone(), identity_hash.clone());
-                                    store_logical_ble_peer_count(
+                                    emit_logical_ble_peer_status(
                                         &state_relay,
                                         &address_to_identity,
                                     );

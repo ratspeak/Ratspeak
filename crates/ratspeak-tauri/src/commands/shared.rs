@@ -534,6 +534,10 @@ pub(crate) async fn disable_ble_peer_inner(state: &Arc<AppState>) {
     state
         .ble_peer_count
         .store(0, std::sync::atomic::Ordering::Relaxed);
+    state.emit_to_all(
+        "ble_peer_status_changed",
+        json!({ "state": "off", "peer_count": 0 }),
+    );
 
     let rns_handle = {
         state

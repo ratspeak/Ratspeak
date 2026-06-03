@@ -528,7 +528,10 @@ if (connToggleBle) connToggleBle.addEventListener('click', toggleBlePeer);
 RS.invoke('api_ble_peer_status').then(function(data) {
     window._blePeerAvailable = !!data.available;
     window._blePeerEnabled = !!data.enabled;
+    if (data.state) window._blePeerState = data.state;
+    if (typeof data.peer_count === 'number') window._blePeerCount = data.peer_count;
     if (typeof updateBlePeerToggle === 'function') updateBlePeerToggle();
+    if (typeof _refreshBlePeerSectionState === 'function') _refreshBlePeerSectionState();
 }).catch(function() {});
 
 // Loads before identity.js — cross-file calls MUST use typeof guards.

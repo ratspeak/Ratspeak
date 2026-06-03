@@ -555,6 +555,9 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     assert!(ble_rs.contains("ble_recent_disconnect_seed_addresses"));
     assert!(ble_rs.contains("update_ble_recent_disconnect_records"));
     assert!(ble_rs.contains("seed_addresses"));
+    assert!(ble_rs.contains("PeerState::Starting"));
+    assert!(ble_rs.contains("emit_ble_peer_enabled_status"));
+    assert!(ble_rs.contains("emit_logical_ble_peer_status"));
 
     let state_rs =
         read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("state source");
@@ -563,6 +566,17 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     let shared_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
         .expect("shared source");
     assert!(shared_rs.contains("db::set_setting(&p, \"ble_peer_expires_at\", \"0\");"));
+    assert!(shared_rs.contains("\"ble_peer_status_changed\""));
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces source");
+    assert!(interfaces_rs.contains("\"state\": peer_state"));
+    assert!(interfaces_rs.contains("\"peer_count\": peer_count"));
+
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    assert!(settings_js.contains("window._blePeerState = data.state"));
+    assert!(settings_js.contains("window._blePeerCount = data.peer_count"));
 }
 
 #[test]

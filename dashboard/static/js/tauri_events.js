@@ -573,6 +573,7 @@ RS.listen('ble_peer_status_update', function(data) {
         window._blePeersByIdentity = {};
         window._bleOrphanIdentities = [];
         window._blePeerState = null;
+        window._blePeerCount = 0;
         // Re-enable should start clean; PeripheralUnavailable re-arms on recurrence.
         window._blePeerPeripheralUnavailable = null;
         if (typeof _renderConnectionsFromCache === 'function') _renderConnectionsFromCache();
