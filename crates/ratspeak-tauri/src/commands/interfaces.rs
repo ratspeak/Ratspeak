@@ -34,6 +34,35 @@ fn persisted_peers_sort(state: &AppState) -> String {
         .unwrap_or_else(|| DEFAULT_PEERS_SORT.to_string())
 }
 
+#[cfg(all(feature = "ble", target_os = "android"))]
+fn android_ble_peer_availability_payload() -> Value {
+    match rns_interface::ble_peer::android_ble_peer_availability_json()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string()))
+    {
+        Ok(value) => value,
+        Err(e) => json!({
+            "available": false,
+            "missing": [format!("Android BLE availability check failed: {e}")],
+            "error": e,
+        }),
+    }
+}
+
+#[cfg(all(feature = "ble", target_os = "android"))]
+fn availability_missing_strings(value: &Value) -> Vec<String> {
+    value
+        .get("missing")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub async fn api_rnode_presets() -> AppResult<Value> {
     serde_json::to_value(ratspeak_core::radio::rnode_catalog())
@@ -268,7 +297,7 @@ pub async fn api_ble_peer_available() -> AppResult<Value> {
         }
 
         #[cfg(target_os = "android")]
-        return Ok(json!({"available": true, "missing": []}));
+        return Ok(android_ble_peer_availability_payload());
 
         // macOS: skip btleplug probe (see `api_ble_available`).
         #[cfg(target_os = "macos")]
@@ -337,8 +366,17 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
     };
 
     #[cfg(all(feature = "ble", target_os = "android"))]
-    let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) =
-        (true, vec![], None);
+    let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) = {
+        let payload = android_ble_peer_availability_payload();
+        (
+            payload
+                .get("available")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            availability_missing_strings(&payload),
+            None,
+        )
+    };
 
     // macOS: skip btleplug probe (see `api_ble_available`).
     #[cfg(all(feature = "ble", target_os = "macos"))]

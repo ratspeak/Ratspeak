@@ -572,11 +572,36 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
         .expect("interfaces source");
     assert!(interfaces_rs.contains("\"state\": peer_state"));
     assert!(interfaces_rs.contains("\"peer_count\": peer_count"));
+    assert!(interfaces_rs.contains("fn android_ble_peer_availability_payload"));
+    assert!(interfaces_rs.contains("android_ble_peer_availability_json"));
+    assert!(interfaces_rs.contains(
+        "#[cfg(target_os = \"android\")]\n        return Ok(android_ble_peer_availability_payload());"
+    ));
 
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     assert!(settings_js.contains("window._blePeerState = data.state"));
     assert!(settings_js.contains("window._blePeerCount = data.peer_count"));
+
+    let android_availability = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBleAvailability.kt",
+    ))
+    .expect("android BLE availability source");
+    assert!(android_availability.contains("object RatspeakBleAvailability"));
+    assert!(android_availability.contains("BLUETOOTH_SCAN"));
+    assert!(android_availability.contains("BLUETOOTH_CONNECT"));
+    assert!(android_availability.contains("BLUETOOTH_ADVERTISE"));
+    assert!(android_availability.contains("bluetoothLeScanner"));
+
+    let android_activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("android main activity");
+    assert!(!android_activity.contains("fun startBlePeerMode"));
+    assert!(!android_activity.contains("fun stopBlePeerMode"));
+    assert!(!android_activity.contains("fun connectToBlePeer"));
+    assert!(!android_activity.contains("fun disconnectBlePeer"));
+    assert!(!android_activity.contains("fun scanForBlePeers"));
 }
 
 #[test]
