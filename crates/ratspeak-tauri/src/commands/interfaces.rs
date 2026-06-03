@@ -301,16 +301,24 @@ pub async fn api_ble_peer_available() -> AppResult<Value> {
 
 #[tauri::command]
 pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    let enabled = db::spawn_db(state.db.clone(), |p| {
-        db::get_setting(&p, "ble_peer_enabled")
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let enabled = db::spawn_db(state.db.clone(), move |p| {
+        let enabled = db::get_setting(&p, "ble_peer_enabled")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let expires_at = db::get_setting(&p, "ble_peer_expires_at")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        enabled && (expires_at == 0 || expires_at > now_secs)
     })
     .await
     .unwrap_or_else(|e| {
         tracing::error!(error = %e, "ble_peer_status db task panicked");
         Default::default()
-    })
-    .map(|v| v == "1")
-    .unwrap_or(false);
+    });
 
     #[cfg(all(feature = "ble", target_os = "ios"))]
     let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) = {

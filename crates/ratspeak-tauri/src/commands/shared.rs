@@ -527,6 +527,7 @@ pub(crate) async fn disable_ble_peer_inner(state: &Arc<AppState>) {
     tracing::info!("disable_ble_peer_inner: start");
     let _ = db::spawn_db(state.db.clone(), |p| {
         db::set_setting(&p, "ble_peer_enabled", "0");
+        db::set_setting(&p, "ble_peer_expires_at", "0");
     })
     .await;
     state.emit_to_all("ble_peer_status_update", json!({ "enabled": false }));

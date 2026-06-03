@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rns_identity::destination::Destination;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use state::AppState;
 
@@ -340,6 +340,171 @@ fn seed_identity_rns_config_from_app_private(
             target = %target.display(),
             error = %e,
             "failed to seed identity Reticulum config from app-private config"
+        );
+    }
+}
+
+fn normalize_startup_transport_mode(mode: &str) -> Option<&'static str> {
+    match mode.trim() {
+        "on" => Some("on"),
+        "off" => Some("off"),
+        "auto" => Some("auto"),
+        _ => None,
+    }
+}
+
+fn persisted_startup_transport_mode(state: &AppState, config_dir: &std::path::Path) -> String {
+    db::get_setting(&state.db, "transport_mode")
+        .and_then(|mode| normalize_startup_transport_mode(&mode).map(str::to_string))
+        .unwrap_or_else(|| {
+            if rns_config::transport_mode_enabled(config_dir) {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            }
+        })
+}
+
+fn persisted_startup_transport_network_type(state: &AppState) -> String {
+    db::get_setting(&state.db, "transport_network_type").unwrap_or_else(|| "unknown".to_string())
+}
+
+fn startup_cfg_str(entry: &Value, key: &str) -> Option<String> {
+    entry.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn startup_cfg_u16(entry: &Value, key: &str) -> Option<u16> {
+    entry
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<u16>().ok())
+}
+
+fn startup_cfg_bool_default_true(entry: &Value, key: &str) -> bool {
+    entry
+        .get(key)
+        .and_then(Value::as_str)
+        .map(|s| {
+            !matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "false" | "no" | "0" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn startup_transport_auto_network_allows(network_type: &str) -> bool {
+    match network_type.trim().to_ascii_lowercase().as_str() {
+        "wifi" | "ethernet" => true,
+        "unknown" => !cfg!(any(target_os = "android", target_os = "ios")),
+        _ => false,
+    }
+}
+
+fn startup_interface_group_has_enabled(ifaces: &Value, key: &str) -> bool {
+    ifaces
+        .get(key)
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| startup_cfg_bool_default_true(entry, "enabled"))
+        })
+}
+
+fn startup_has_enabled_lora_interface(ifaces: &Value) -> bool {
+    startup_interface_group_has_enabled(ifaces, "rnode")
+}
+
+fn startup_has_enabled_non_lora_transport_interface(ifaces: &Value) -> bool {
+    [
+        "auto",
+        "tcp_client",
+        "tcp_server",
+        "backbone_client",
+        "backbone_server",
+    ]
+    .into_iter()
+    .any(|key| startup_interface_group_has_enabled(ifaces, key))
+}
+
+const STARTUP_PUBLIC_TCP_ENDPOINTS: &[(&str, u16, &str)] = &[
+    ("1.ratspeak.org", 4141, "ratspeak-ruby"),
+    ("2.ratspeak.org", 4242, "ratspeak-emerald"),
+    ("rns.ratspeak.org", 4242, "ratspeak-emerald"),
+    ("3.ratspeak.org", 4343, "ratspeak-diamond"),
+    ("rns.beleth.net", 4242, "beleth"),
+    ("rmap.world", 4242, "rmap"),
+];
+
+fn startup_normalise_public_tcp_host(host: &str) -> String {
+    let mut value = host.trim().to_ascii_lowercase();
+    if let Some((_, tail)) = value.split_once("://") {
+        value = tail.to_string();
+    }
+    if let Some((head, _)) = value.split_once('/') {
+        value = head.to_string();
+    }
+    value.trim_end_matches('.').to_string()
+}
+
+fn startup_public_tcp_server_id(host: &str, port: u16) -> Option<&'static str> {
+    let host = startup_normalise_public_tcp_host(host);
+    STARTUP_PUBLIC_TCP_ENDPOINTS
+        .iter()
+        .find_map(|(public_host, public_port, id)| {
+            (host == *public_host && port == *public_port).then_some(*id)
+        })
+}
+
+fn startup_public_tcp_server_id_from_entry(entry: &Value) -> Option<&'static str> {
+    startup_public_tcp_server_id(
+        &startup_cfg_str(entry, "target_host")?,
+        startup_cfg_u16(entry, "target_port")?,
+    )
+}
+
+fn startup_enabled_public_tcp_server_count(ifaces: &Value) -> usize {
+    let mut ids = Vec::new();
+    if let Some(entries) = ifaces.get("tcp_client").and_then(Value::as_array) {
+        for entry in entries {
+            if !startup_cfg_bool_default_true(entry, "enabled") {
+                continue;
+            }
+            if let Some(id) = startup_public_tcp_server_id_from_entry(entry)
+                && !ids.contains(&id)
+            {
+                ids.push(id);
+            }
+        }
+    }
+    ids.len()
+}
+
+fn startup_auto_transport_enabled_for_interfaces(ifaces: &Value, network_type: &str) -> bool {
+    startup_transport_auto_network_allows(network_type)
+        && startup_has_enabled_non_lora_transport_interface(ifaces)
+        && !startup_has_enabled_lora_interface(ifaces)
+        && startup_enabled_public_tcp_server_count(ifaces) <= 1
+}
+
+fn reconcile_persisted_transport_mode_for_startup(state: &AppState, config_dir: &std::path::Path) {
+    let mode = persisted_startup_transport_mode(state, config_dir);
+    let enable = match mode.as_str() {
+        "on" => true,
+        "auto" => {
+            let ifaces = rns_config::get_all_interfaces(config_dir);
+            let network_type = persisted_startup_transport_network_type(state);
+            startup_auto_transport_enabled_for_interfaces(&ifaces, &network_type)
+        }
+        _ => false,
+    };
+
+    if !rns_config::set_transport_mode(config_dir, enable) {
+        tracing::warn!(
+            mode = %mode,
+            path = %config_dir.join("config").display(),
+            "failed to reconcile persisted transport mode before RNS startup"
         );
     }
 }
@@ -777,6 +942,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             }
         }
     }
+    reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
     let config_str = config_dir.to_string_lossy().to_string();
 
     // Android sandbox blocks /tmp — keep UDS under data_dir/cache.
@@ -4383,6 +4549,136 @@ mod identity_material_tests {
         assert!(has_identity_material(&dir));
         assert!(!has_plain_identity_material(&dir));
         std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+}
+
+#[cfg(test)]
+mod transport_startup_tests {
+    use super::*;
+    use crate::config::DashboardConfig;
+    use r2d2_sqlite::SqliteConnectionManager;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_TRANSPORT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let n = TEMP_TRANSPORT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "ratspeak-transport-startup-{tag}-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn memory_pool() -> ratspeak_db::DbPool {
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        db::init_schema(&pool).unwrap();
+        pool
+    }
+
+    fn state_for_root(root: std::path::PathBuf) -> AppState {
+        let data_dir = root.join(".ratspeak");
+        let rns_config_dir = data_dir.join("reticulum");
+        std::fs::create_dir_all(&rns_config_dir).unwrap();
+        AppState::new(
+            DashboardConfig {
+                data_root: root,
+                data_dir,
+                rns_config_dir,
+                rns_config_dir_overridden: false,
+                port: 5050,
+                api_token: String::new(),
+                poll_interval: 1.5,
+                max_log_entries: 200,
+            },
+            memory_pool(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        )
+    }
+
+    #[test]
+    fn startup_transport_on_rewrites_saved_config_before_rns_init() {
+        let root = temp_root("on");
+        let state = state_for_root(root.clone());
+        let config_dir = state.config.rns_config_dir.clone();
+        rns_config::write_config(
+            &config_dir,
+            "[reticulum]\nenable_transport = False\n\n[interfaces]\n",
+        );
+        db::set_setting(&state.db, "transport_mode", "on");
+
+        reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
+
+        assert!(rns_config::transport_mode_enabled(&config_dir));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn startup_transport_auto_recomputes_from_saved_network_and_interfaces() {
+        let root = temp_root("auto");
+        let state = state_for_root(root.clone());
+        let config_dir = state.config.rns_config_dir.clone();
+        rns_config::write_config(
+            &config_dir,
+            "[reticulum]\nenable_transport = False\n\n[interfaces]\n\
+             [[Local Network]]\n\
+             type = AutoInterface\n\
+             enabled = true\n",
+        );
+        db::set_setting(&state.db, "transport_mode", "auto");
+        db::set_setting(&state.db, "transport_network_type", "wifi");
+
+        reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
+
+        assert!(rns_config::transport_mode_enabled(&config_dir));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn startup_transport_auto_keeps_public_tcp_limit() {
+        let root = temp_root("public-limit");
+        let state = state_for_root(root.clone());
+        let config_dir = state.config.rns_config_dir.clone();
+        rns_config::write_config(
+            &config_dir,
+            "[reticulum]\nenable_transport = True\n\n[interfaces]\n\
+             [[Ruby]]\n\
+             type = TCPClientInterface\n\
+             enabled = true\n\
+             target_host = 1.ratspeak.org\n\
+             target_port = 4141\n\
+             [[Emerald]]\n\
+             type = TCPClientInterface\n\
+             enabled = true\n\
+             target_host = 2.ratspeak.org\n\
+             target_port = 4242\n",
+        );
+        db::set_setting(&state.db, "transport_mode", "auto");
+        db::set_setting(&state.db, "transport_network_type", "wifi");
+
+        reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
+
+        assert!(!rns_config::transport_mode_enabled(&config_dir));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn startup_transport_without_db_preserves_existing_enabled_config() {
+        let root = temp_root("config-fallback");
+        let state = state_for_root(root.clone());
+        let config_dir = state.config.rns_config_dir.clone();
+        rns_config::write_config(
+            &config_dir,
+            "[reticulum]\nenable_transport = True\n\n[interfaces]\n",
+        );
+
+        reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
+
+        assert!(rns_config::transport_mode_enabled(&config_dir));
+        std::fs::remove_dir_all(root).ok();
     }
 }
 

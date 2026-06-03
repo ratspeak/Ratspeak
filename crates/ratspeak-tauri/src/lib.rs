@@ -54,13 +54,6 @@ pub async fn init_core(
         .await
         .expect("db task panicked")?;
 
-    // Bluetooth Peer is never auto-restored; clear any stale flag.
-    db::spawn_db(db_pool.clone(), |p| {
-        db::set_setting(&p, "ble_peer_enabled", "0")
-    })
-    .await
-    .expect("db task panicked");
-
     let emitter: Arc<dyn ratspeak_core::Emitter> =
         Arc::new(emitter::TauriEmitter::new(app_handle.clone()));
     let notifier: Arc<dyn ratspeak_core::NativeNotifier> =
@@ -77,7 +70,8 @@ pub async fn init_core(
     let init_state = app_state.clone();
     let init_data_dir = data_dir.clone();
     tokio::spawn(async move {
-        init_rns_lxmf(init_state, init_data_dir).await;
+        init_rns_lxmf(Arc::clone(&init_state), init_data_dir).await;
+        commands::ble::restore_ble_peer_if_requested(init_state).await;
     });
 
     Ok(app_state)

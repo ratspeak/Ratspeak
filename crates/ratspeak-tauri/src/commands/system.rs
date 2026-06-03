@@ -181,7 +181,8 @@ pub async fn api_setup_restart(state: State<'_, Arc<AppState>>) -> AppResult<Val
     let data_dir = state.config.data_root.clone();
     let st: Arc<AppState> = Arc::clone(&state);
     tokio::spawn(async move {
-        crate::init_rns_lxmf(st, data_dir).await;
+        crate::init_rns_lxmf(Arc::clone(&st), data_dir).await;
+        crate::commands::ble::restore_ble_peer_if_requested(st).await;
     });
     Ok(json!({ "message": "Initializing..." }))
 }
@@ -285,7 +286,8 @@ pub async fn api_unread_count(state: State<'_, Arc<AppState>>) -> AppResult<Valu
 pub async fn api_system_restart(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let st: Arc<AppState> = Arc::clone(&state);
     tokio::spawn(async move {
-        crate::restart_rns_lxmf(st).await;
+        crate::restart_rns_lxmf(Arc::clone(&st)).await;
+        crate::commands::ble::restore_ble_peer_if_requested(st).await;
     });
     Ok(json!({ "message": "Restarting..." }))
 }

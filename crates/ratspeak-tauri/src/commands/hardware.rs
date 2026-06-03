@@ -259,6 +259,7 @@ pub async fn hw_unlock(state: State<'_, Arc<AppState>>, pin: String) -> AppResul
     }
     state.set_startup_stage("checking");
     crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+    crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
 
     let loaded_identity = state
         .lxmf
@@ -341,6 +342,7 @@ pub async fn hw_activate_and_unlock(
     }
     state.set_startup_stage("checking");
     crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+    crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
 
     let loaded_identity = state
         .lxmf

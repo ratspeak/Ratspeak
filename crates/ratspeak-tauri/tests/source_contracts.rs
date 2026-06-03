@@ -535,6 +535,26 @@ fn ble_peer_network_rows_are_identity_deduped() {
 }
 
 #[test]
+fn ble_peer_requested_state_survives_restart_when_valid() {
+    let root = repo_root();
+    let tauri_lib =
+        read_source(root.join("crates/ratspeak-tauri/src/lib.rs")).expect("tauri lib source");
+    assert!(!tauri_lib.contains("Bluetooth Peer is never auto-restored"));
+    assert!(tauri_lib.contains("commands::ble::restore_ble_peer_if_requested(init_state).await"));
+
+    let ble_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble source");
+    assert!(ble_rs.contains("const BLE_PEER_EXPIRES_AT_SETTING"));
+    assert!(ble_rs.contains("pub(crate) async fn restore_ble_peer_if_requested"));
+    assert!(ble_rs.contains("current_expires_at == expires_at"));
+    assert!(ble_rs.contains("spawn_enable_ble_peer_task(state, duration_secs, expires_at);"));
+
+    let shared_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
+        .expect("shared source");
+    assert!(shared_rs.contains("db::set_setting(&p, \"ble_peer_expires_at\", \"0\");"));
+}
+
+#[test]
 fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let root = repo_root();
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
@@ -2917,6 +2937,13 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     assert!(shared_rs.contains("\"transport\".to_string()"));
     assert!(shared_rs.contains("reconcile_auto_transport_after_interface_change"));
     assert!(network_rs.contains("hub_interfaces_payload"));
+
+    let runtime_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime source");
+    assert!(
+        runtime_rs.contains("reconcile_persisted_transport_mode_for_startup(&state, &config_dir);")
+    );
+    assert!(runtime_rs.contains("fn startup_auto_transport_enabled_for_interfaces"));
 }
 
 #[test]

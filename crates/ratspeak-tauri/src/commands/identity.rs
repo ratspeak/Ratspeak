@@ -1044,6 +1044,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     }
     state.set_startup_stage("checking");
     crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+    crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
 
     // Switching to a hardware identity comes up locked (awaiting PIN) — a valid
     // intermediate state, not a failed switch. Keep it active and let the unlock
@@ -1096,6 +1097,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
             }
             state.set_startup_stage("checking");
             crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+            crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
         } else {
             state.set_startup_stage("ready");
         }

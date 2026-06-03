@@ -11,7 +11,6 @@ use tauri::State;
 #[cfg(feature = "ble")]
 use crate::commands::shared::{active_rns_config_dir, emit_hub_interfaces, with_rns_config_lock};
 use crate::commands::shared::{disable_ble_peer_inner, emit_op_status_broadcast};
-#[cfg(feature = "ble")]
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::sanitize_text;
@@ -119,15 +118,86 @@ pub struct EnableBlePeerArgs {
     pub duration: u64,
 }
 
+const BLE_PEER_ENABLED_SETTING: &str = "ble_peer_enabled";
+const BLE_PEER_EXPIRES_AT_SETTING: &str = "ble_peer_expires_at";
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn ble_peer_expires_at_for_duration(duration_secs: u64) -> u64 {
+    if duration_secs == 0 {
+        0
+    } else {
+        now_unix_secs().saturating_add(duration_secs)
+    }
+}
+
+fn ble_peer_remaining_secs(expires_at: u64, now: u64) -> Option<u64> {
+    if expires_at == 0 {
+        Some(0)
+    } else {
+        expires_at
+            .checked_sub(now)
+            .filter(|remaining| *remaining > 0)
+    }
+}
+
+fn clear_ble_peer_requested_state(state: &Arc<AppState>) {
+    let db = state.db.clone();
+    tokio::spawn(async move {
+        let _ = db::spawn_db(db, |p| {
+            db::set_setting(&p, BLE_PEER_ENABLED_SETTING, "0");
+            db::set_setting(&p, BLE_PEER_EXPIRES_AT_SETTING, "0");
+        })
+        .await;
+    });
+}
+
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+fn schedule_ble_peer_expiry(state: &Arc<AppState>, duration_secs: u64, expires_at: u64) {
+    if duration_secs == 0 || expires_at == 0 {
+        return;
+    }
+
+    let state3: Arc<AppState> = Arc::clone(state);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
+        let still_this_request = db::spawn_db(state3.db.clone(), move |p| {
+            let enabled = db::get_setting(&p, BLE_PEER_ENABLED_SETTING)
+                .map(|v| v == "1")
+                .unwrap_or(false);
+            let current_expires_at = db::get_setting(&p, BLE_PEER_EXPIRES_AT_SETTING)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            enabled && current_expires_at == expires_at
+        })
+        .await
+        .unwrap_or(false);
+        if still_this_request {
+            disable_ble_peer_inner(&state3).await;
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn enable_ble_peer_interface(
     state: State<'_, Arc<AppState>>,
     args: EnableBlePeerArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
-    #[allow(unused_variables)]
     let duration_secs = args.duration;
+    let expires_at = ble_peer_expires_at_for_duration(duration_secs);
 
+    spawn_enable_ble_peer_task(state_arc, duration_secs, expires_at);
+    Ok(json!({ "queued": true }))
+}
+
+#[cfg_attr(not(feature = "ble"), allow(unused_variables))]
+fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expires_at: u64) {
     // Mark `ble_peer_enabled=1` only after spawn success.
     tokio::spawn(async move {
         let _rns_handle = state_arc
@@ -173,7 +243,8 @@ pub async fn enable_ble_peer_interface(
             // Zero/missing identity → Android startAdvertising SecurityException.
             if !rns_interface::ble_peer::is_valid_identity_hash(&identity_hash) {
                 let _ = db::spawn_db(state_arc.db.clone(), |p| {
-                    db::set_setting(&p, "ble_peer_enabled", "0");
+                    db::set_setting(&p, BLE_PEER_ENABLED_SETTING, "0");
+                    db::set_setting(&p, BLE_PEER_EXPIRES_AT_SETTING, "0");
                 })
                 .await;
                 state_arc.emit_to_all("ble_peer_status_update", json!({ "enabled": false }));
@@ -207,8 +278,9 @@ pub async fn enable_ble_peer_interface(
             .await
             {
                 Ok(Ok(_id)) => {
-                    let _ = db::spawn_db(state_arc.db.clone(), |p| {
-                        db::set_setting(&p, "ble_peer_enabled", "1");
+                    let _ = db::spawn_db(state_arc.db.clone(), move |p| {
+                        db::set_setting(&p, BLE_PEER_ENABLED_SETTING, "1");
+                        db::set_setting(&p, BLE_PEER_EXPIRES_AT_SETTING, &expires_at.to_string());
                     })
                     .await;
                     state_arc.emit_to_all("ble_peer_status_update", json!({ "enabled": true }));
@@ -424,27 +496,12 @@ pub async fn enable_ble_peer_interface(
                         None,
                     );
 
-                    // 0 = always on.
-                    if duration_secs > 0 {
-                        let state3: Arc<AppState> = Arc::clone(&state_arc);
-                        tokio::spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
-                            let still_enabled = db::spawn_db(state3.db.clone(), |p| {
-                                db::get_setting(&p, "ble_peer_enabled")
-                                    .map(|v| v == "1")
-                                    .unwrap_or(false)
-                            })
-                            .await
-                            .unwrap_or(false);
-                            if still_enabled {
-                                disable_ble_peer_inner(&state3).await;
-                            }
-                        });
-                    }
+                    schedule_ble_peer_expiry(&state_arc, duration_secs, expires_at);
                 }
                 Ok(Err(e)) => {
                     let _ = db::spawn_db(state_arc.db.clone(), |p| {
-                        db::set_setting(&p, "ble_peer_enabled", "0");
+                        db::set_setting(&p, BLE_PEER_ENABLED_SETTING, "0");
+                        db::set_setting(&p, BLE_PEER_EXPIRES_AT_SETTING, "0");
                     })
                     .await;
                     state_arc.emit_to_all("ble_peer_status_update", json!({ "enabled": false }));
@@ -459,7 +516,8 @@ pub async fn enable_ble_peer_interface(
                 }
                 Err(_) => {
                     let _ = db::spawn_db(state_arc.db.clone(), |p| {
-                        db::set_setting(&p, "ble_peer_enabled", "0");
+                        db::set_setting(&p, BLE_PEER_ENABLED_SETTING, "0");
+                        db::set_setting(&p, BLE_PEER_EXPIRES_AT_SETTING, "0");
                     })
                     .await;
                     state_arc.emit_to_all("ble_peer_status_update", json!({ "enabled": false }));
@@ -476,6 +534,8 @@ pub async fn enable_ble_peer_interface(
         }
         #[cfg(not(feature = "ble"))]
         {
+            clear_ble_peer_requested_state(&state_arc);
+            state_arc.emit_to_all("ble_peer_status_update", json!({ "enabled": false }));
             emit_op_status_broadcast(
                 &state_arc,
                 "enable_ble_peer",
@@ -486,7 +546,49 @@ pub async fn enable_ble_peer_interface(
             );
         }
     });
-    Ok(json!({ "queued": true }))
+}
+
+pub(crate) async fn restore_ble_peer_if_requested(state: Arc<AppState>) {
+    let (enabled, expires_at) = db::spawn_db(state.db.clone(), |p| {
+        let enabled = db::get_setting(&p, BLE_PEER_ENABLED_SETTING)
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let expires_at = db::get_setting(&p, BLE_PEER_EXPIRES_AT_SETTING)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        (enabled, expires_at)
+    })
+    .await
+    .unwrap_or((false, 0));
+
+    if !enabled {
+        return;
+    }
+
+    let Some(duration_secs) = ble_peer_remaining_secs(expires_at, now_unix_secs()) else {
+        tracing::info!("Bluetooth Peer saved enable request expired before startup restore");
+        clear_ble_peer_requested_state(&state);
+        state.emit_to_all("ble_peer_status_update", json!({ "enabled": false }));
+        return;
+    };
+
+    let rns_ready = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|r| r.as_ref().map(|_| ()))
+        .is_some();
+    if !rns_ready {
+        tracing::debug!("Bluetooth Peer restore deferred; RNS is not initialized");
+        return;
+    }
+
+    tracing::info!(
+        duration_secs,
+        expires_at,
+        "restoring persisted Bluetooth Peer interface request"
+    );
+    spawn_enable_ble_peer_task(state, duration_secs, expires_at);
 }
 
 #[tauri::command]
@@ -897,4 +999,25 @@ pub async fn disconnect_ble_rnode(
     #[cfg(not(feature = "ble"))]
     let _ = &name;
     Ok(json!({ "queued": true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ble_peer_remaining_secs_preserves_always_on() {
+        assert_eq!(ble_peer_remaining_secs(0, 100), Some(0));
+    }
+
+    #[test]
+    fn ble_peer_remaining_secs_drops_expired_timed_request() {
+        assert_eq!(ble_peer_remaining_secs(100, 100), None);
+        assert_eq!(ble_peer_remaining_secs(99, 100), None);
+    }
+
+    #[test]
+    fn ble_peer_remaining_secs_keeps_unexpired_timed_request() {
+        assert_eq!(ble_peer_remaining_secs(130, 100), Some(30));
+    }
 }
