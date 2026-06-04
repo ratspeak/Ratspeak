@@ -41,8 +41,12 @@ fn android_ble_peer_availability_payload() -> Value {
     {
         Ok(value) => value,
         Err(e) => json!({
-            "available": false,
-            "missing": [format!("Android BLE availability check failed: {e}")],
+            "available": true,
+            "missing": [],
+            "missing_permissions": [],
+            "permissions_granted": false,
+            "permission_required": false,
+            "probe_failed": true,
             "error": e,
         }),
     }
@@ -350,7 +354,12 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
     });
 
     #[cfg(all(feature = "ble", target_os = "ios"))]
-    let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) = {
+    let (available, missing, auth_state, permission_required): (
+        bool,
+        Vec<String>,
+        Option<&'static str>,
+        bool,
+    ) = {
         let auth = crate::platform_ios::bluetooth_authorization();
         let (avail, miss) = match auth {
             "denied" | "restricted" => (
@@ -362,32 +371,50 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
             ),
             _ => (true, vec![]),
         };
-        (avail, miss, Some(auth))
+        (avail, miss, Some(auth), false)
     };
 
     #[cfg(all(feature = "ble", target_os = "android"))]
-    let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) = {
+    let (available, missing, auth_state, permission_required): (
+        bool,
+        Vec<String>,
+        Option<&'static str>,
+        bool,
+    ) = {
         let payload = android_ble_peer_availability_payload();
         (
             payload
                 .get("available")
                 .and_then(Value::as_bool)
-                .unwrap_or(false),
+                .unwrap_or(true),
             availability_missing_strings(&payload),
             None,
+            payload
+                .get("permission_required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         )
     };
 
     // macOS: skip btleplug probe (see `api_ble_available`).
     #[cfg(all(feature = "ble", target_os = "macos"))]
-    let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) =
-        (true, vec![], None);
+    let (available, missing, auth_state, permission_required): (
+        bool,
+        Vec<String>,
+        Option<&'static str>,
+        bool,
+    ) = (true, vec![], None, false);
 
     #[cfg(all(
         feature = "ble",
         not(any(target_os = "ios", target_os = "android", target_os = "macos"))
     ))]
-    let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) = {
+    let (available, missing, auth_state, permission_required): (
+        bool,
+        Vec<String>,
+        Option<&'static str>,
+        bool,
+    ) = {
         let (avail, miss) = match tokio::time::timeout(
             std::time::Duration::from_secs(3),
             rns_interface::ble_rnode::ble_adapter_present(),
@@ -399,17 +426,28 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
             Ok(Err(e)) => (false, vec![e]),
             Err(_) => (false, vec!["BLE check timed out".to_string()]),
         };
-        (avail, miss, None)
+        (avail, miss, None, false)
     };
     #[cfg(not(feature = "ble"))]
-    let (available, missing, auth_state): (bool, Vec<String>, Option<&'static str>) =
-        (false, vec!["ble feature not compiled".to_string()], None);
+    let (available, missing, auth_state, permission_required): (
+        bool,
+        Vec<String>,
+        Option<&'static str>,
+        bool,
+    ) = (
+        false,
+        vec!["ble feature not compiled".to_string()],
+        None,
+        false,
+    );
 
     let peer_count = state
         .ble_peer_count
         .load(std::sync::atomic::Ordering::Relaxed);
     let peer_state = if !enabled {
         "off"
+    } else if permission_required {
+        "permission_needed"
     } else if !available {
         "unavailable"
     } else if peer_count > 0 {

@@ -574,6 +574,8 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     assert!(interfaces_rs.contains("\"peer_count\": peer_count"));
     assert!(interfaces_rs.contains("fn android_ble_peer_availability_payload"));
     assert!(interfaces_rs.contains("android_ble_peer_availability_json"));
+    assert!(interfaces_rs.contains("\"probe_failed\": true"));
+    assert!(interfaces_rs.contains("permission_required"));
     assert!(interfaces_rs.contains(
         "#[cfg(target_os = \"android\")]\n        return Ok(android_ble_peer_availability_payload());"
     ));
@@ -592,6 +594,8 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     assert!(android_availability.contains("BLUETOOTH_CONNECT"));
     assert!(android_availability.contains("BLUETOOTH_ADVERTISE"));
     assert!(android_availability.contains("bluetoothLeScanner"));
+    assert!(android_availability.contains("probe_failed"));
+    assert!(android_availability.contains("permission_required"));
 
     let android_activity = read_source(
         root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
@@ -602,6 +606,10 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     assert!(!android_activity.contains("fun connectToBlePeer"));
     assert!(!android_activity.contains("fun disconnectBlePeer"));
     assert!(!android_activity.contains("fun scanForBlePeers"));
+
+    let proguard = read_source(root.join("src-tauri/gen/android/app/proguard-rules.pro"))
+        .expect("android proguard rules");
+    assert!(proguard.contains("-keep class org.ratspeak.android.RatspeakBleAvailability"));
 }
 
 #[test]

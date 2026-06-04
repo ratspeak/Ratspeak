@@ -18,6 +18,7 @@
 -keep class org.ratspeak.android.RatspeakGattCallback { *; }
 -keep class org.ratspeak.android.RatspeakBlePeerClient { *; }
 -keep class org.ratspeak.android.RatspeakBlePeerClient$Companion { *; }
+-keep class org.ratspeak.android.RatspeakBleAvailability { *; }
 
 # LXST voice audio bridge (called from Rust JNI by class and method name)
 -keep class org.ratspeak.android.RatspeakVoiceAudio { *; }
