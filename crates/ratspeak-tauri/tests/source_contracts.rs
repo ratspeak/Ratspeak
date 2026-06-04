@@ -1483,7 +1483,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.19b");
+    assert_eq!(version_file.trim(), "1.0.20");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");

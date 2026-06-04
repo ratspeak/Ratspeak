@@ -16,9 +16,9 @@ permissions:
   contents: read
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.19
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.19
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.19
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.20
+  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.20
+  RATSPEAK_RSLXST_REF: ratspeak-v1.0.20
 
 jobs:
   build:
