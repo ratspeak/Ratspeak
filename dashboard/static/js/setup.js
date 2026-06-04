@@ -1,9 +1,30 @@
 var needsSetup = false;
 var SETUP_RECOVERY_PHRASE_WORDS = 12;
 var setupRecoveryMnemonic = '';
+var setupConnectingDotsTimer = null;
+var setupConnectingDotCount = 1;
 
 function setSetupBackupLayout(active) {
     document.body.classList.toggle('setup-backup-active', !!active);
+}
+
+function renderSetupConnectingDots() {
+    var dots = document.getElementById('setup-connecting-dots');
+    if (dots) dots.textContent = '.'.repeat(setupConnectingDotCount);
+}
+
+function setSetupConnectingDotsActive(active) {
+    if (setupConnectingDotsTimer) {
+        clearInterval(setupConnectingDotsTimer);
+        setupConnectingDotsTimer = null;
+    }
+    setupConnectingDotCount = 1;
+    renderSetupConnectingDots();
+    if (!active) return;
+    setupConnectingDotsTimer = setInterval(function() {
+        setupConnectingDotCount = setupConnectingDotCount >= 3 ? 1 : setupConnectingDotCount + 1;
+        renderSetupConnectingDots();
+    }, 450);
 }
 
 function setSetupStep(stepIndex) {
@@ -53,6 +74,7 @@ function checkSetupStatus() {
             } else {
                 document.body.classList.remove('setup-active');
                 setSetupBackupLayout(false);
+                setSetupConnectingDotsActive(false);
             }
             document.body.classList.remove('checking-setup');
         })
@@ -64,6 +86,7 @@ function checkSetupStatus() {
 function enterSetupMode() {
     document.body.classList.add('setup-active');
     setSetupBackupLayout(false);
+    setSetupConnectingDotsActive(false);
 
     var sidebar = document.querySelector('.sidebar');
     if (sidebar) sidebar.style.display = 'none';
@@ -158,6 +181,7 @@ function resetSetupRecoveryStep() {
 }
 
 function showSetupRecoveryStep(mnemonic, fromEl) {
+    setSetupConnectingDotsActive(false);
     var words = setupRecoveryWords(mnemonic);
     if (words.length !== SETUP_RECOVERY_PHRASE_WORDS) {
         showSetupIdentityStep(fromEl);
@@ -190,6 +214,7 @@ function showSetupRecoveryStep(mnemonic, fromEl) {
 function showSetupIdentityStep(fromEl) {
     setSetupStep(3);
     setSetupBackupLayout(false);
+    setSetupConnectingDotsActive(false);
     transitionStep(fromEl, document.getElementById('setup-step-2'), null, function() {
         var nameInput = document.getElementById('setup-display-name');
         if (nameInput && !isMobile()) nameInput.focus();
@@ -260,6 +285,7 @@ function runConnectingProgress() {
 function showSetupConnectingStep() {
     needsSetup = false;
     setSetupBackupLayout(false);
+    setSetupConnectingDotsActive(true);
     setSetupStep(3);
 
     var headerExtras = [
@@ -283,6 +309,7 @@ function resetSetupToStart() {
     needsSetup = true;
     document.body.classList.add('setup-active');
     setSetupBackupLayout(false);
+    setSetupConnectingDotsActive(false);
     setSetupStep(0);
     resetSetupRecoveryStep();
     [
@@ -424,6 +451,7 @@ document.addEventListener('DOMContentLoaded', function() {
             generateBtn.textContent = 'Creating...';
 
             setSetupBackupLayout(false);
+            setSetupConnectingDotsActive(false);
             setSetupStep(1);
             var step1El = document.getElementById('setup-step-1');
             var genStep = document.getElementById('setup-step-generating');
@@ -445,6 +473,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 })
                 .catch(function(err) {
                     setSetupBackupLayout(false);
+                    setSetupConnectingDotsActive(false);
                     transitionStep(genStep, document.getElementById('setup-step-1'));
                     generateBtn.disabled = false;
                     generateBtn.textContent = 'Create Identity';
@@ -556,6 +585,8 @@ document.addEventListener('DOMContentLoaded', function() {
             RS.invoke('api_setup_complete', { args: { display_name: displayName || '' } })
             .then(function() {
                 setSetupStep(3);
+                setSetupBackupLayout(false);
+                setSetupConnectingDotsActive(true);
                 var headerExtras = [
                     document.querySelector('.setup-icon'),
                     document.querySelector('.setup-title'),
@@ -574,6 +605,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 runConnectingProgress();
             })
             .catch(function() {
+                setSetupConnectingDotsActive(false);
                 finishBtn.disabled = false;
                 finishBtn.textContent = 'Connect';
                 if (typeof showToast === 'function') {
