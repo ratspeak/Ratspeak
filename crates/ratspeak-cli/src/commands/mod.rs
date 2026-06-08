@@ -1,5 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::{CliError, CliResult};
@@ -32,6 +33,7 @@ pub async fn run_ctl(args: Vec<String>) -> CliResult<()> {
         "system" => run_system(&profile, &args[1..], global.output),
         "profile" => run_profile(&profile, &args[1..], global.output),
         "status" => run_status(&profile, &args[1..], global.output),
+        "agent" | "agents" => run_agent(&profile, &args[1..], global.output),
         "identity" => run_identity(&profile, &args[1..], global.output),
         "contacts" => run_contacts(&profile, &args[1..], global.output),
         "peers" | "peer" => run_peers(&profile, &args[1..], global.output),
@@ -183,6 +185,209 @@ fn run_status(profile: &Profile, args: &[String], output: OutputFormat) -> CliRe
         }),
         output,
     )
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentManifest {
+    format: String,
+    version: u32,
+    name: String,
+    created_at_unix: f64,
+    profile_root: PathBuf,
+    profile_data_dir: PathBuf,
+    identity_hash: String,
+    lxmf_hash: String,
+    display_name: String,
+    requested_scopes: Vec<String>,
+    effective_scopes: Vec<String>,
+    pending_scopes: Vec<String>,
+    allowed_contacts: Vec<String>,
+    unknown_contacts: String,
+    enforcement: AgentEnforcement,
+    commands: AgentCommandHints,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentEnforcement {
+    local_daemon_api: bool,
+    contact_allowlist: bool,
+    write_actions: bool,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentCommandHints {
+    start_daemon: Vec<String>,
+    status: Vec<String>,
+    events_preview: Vec<String>,
+}
+
+fn run_agent(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "create" => run_agent_create(profile, &args[1..], output),
+        "list" => run_agent_list(profile, &args[1..], output),
+        "show" => run_agent_show(profile, &args[1..], output),
+        other => Err(CliError::usage(format!("unknown agent command: {other}"))),
+    }
+}
+
+fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    let name = args
+        .first()
+        .ok_or_else(|| CliError::usage("agent create requires <name>"))?;
+    validate_agent_name(name)?;
+
+    let mut rest = args.get(1..).unwrap_or_default().to_vec();
+    let identity_mode = take_option(&mut rest, "--identity")?.unwrap_or_else(|| "new".into());
+    if identity_mode != "new" {
+        return Err(CliError::usage(
+            "agent create currently supports only --identity new",
+        ));
+    }
+    let explicit_profile_dir = take_option(&mut rest, "--profile-dir")?.map(PathBuf::from);
+    let requested_scopes = take_repeated_option(&mut rest, "--scope")?;
+    let allowed_contacts = take_repeated_option(&mut rest, "--allow-contact")?;
+    let nickname = take_option(&mut rest, "--nickname")?.unwrap_or_else(|| name.to_string());
+    ensure_no_extra_args(&rest, "agent create")?;
+
+    for contact in &allowed_contacts {
+        if !ratspeak_runtime::helpers::validate_hex(contact, 16, 64) {
+            return Err(CliError::usage(format!(
+                "invalid --allow-contact hash: {contact}"
+            )));
+        }
+    }
+
+    let agent_root =
+        explicit_profile_dir.unwrap_or_else(|| profile.config.data_dir.join("agents").join(name));
+    let agent_manifest_path = agent_manifest_path(&agent_root);
+    if agent_manifest_path.exists() {
+        return Err(CliError::failed(format!(
+            "agent already exists: {}",
+            agent_manifest_path.display()
+        )));
+    }
+
+    let _owner_lock = ratspeak_runtime::profile_lock::try_acquire_profile_lock(
+        &profile.config.data_dir,
+        "ratspeakctl agent create",
+    )
+    .map_err(|e| CliError::failed(format!("failed to acquire owner profile lock: {e}")))?;
+
+    let agent_profile = profile::open_profile(agent_root.clone())?;
+    let _agent_lock = ratspeak_runtime::profile_lock::try_acquire_profile_lock(
+        &agent_profile.config.data_dir,
+        "ratspeakctl agent create",
+    )
+    .map_err(|e| CliError::failed(format!("failed to acquire agent profile lock: {e}")))?;
+
+    let created = ratspeak_runtime::identity_service::create_recoverable_identity(
+        &agent_profile.config.data_dir,
+        &agent_profile.db,
+        Some(&nickname),
+        true,
+    )
+    .map_err(|e| CliError::failed(format!("failed to create agent identity: {e}")))?;
+
+    let (effective_scopes, pending_scopes, normalized_requested) =
+        normalize_agent_scopes(requested_scopes)?;
+
+    let manifest = AgentManifest {
+        format: "ratspeak.agent.v1".into(),
+        version: 1,
+        name: name.to_string(),
+        created_at_unix: unix_now_secs(),
+        profile_root: agent_root.clone(),
+        profile_data_dir: agent_profile.config.data_dir.clone(),
+        identity_hash: created.hash.clone(),
+        lxmf_hash: created.lxmf_hash.clone(),
+        display_name: created.display_name.clone(),
+        requested_scopes: normalized_requested,
+        effective_scopes,
+        pending_scopes,
+        allowed_contacts,
+        unknown_contacts: "deny-when-daemon-policy-lands".into(),
+        enforcement: AgentEnforcement {
+            local_daemon_api: false,
+            contact_allowlist: false,
+            write_actions: false,
+            note: "preview manifest only; ratspeakd policy enforcement arrives with the local daemon API".into(),
+        },
+        commands: AgentCommandHints {
+            start_daemon: vec![
+                "ratspeakd".into(),
+                "--data-dir".into(),
+                agent_root.display().to_string(),
+                "--events-jsonl".into(),
+            ],
+            status: vec![
+                "ratspeakctl".into(),
+                "--data-dir".into(),
+                agent_root.display().to_string(),
+                "status".into(),
+            ],
+            events_preview: vec![
+                "ratspeakd".into(),
+                "--data-dir".into(),
+                agent_root.display().to_string(),
+                "--events-jsonl".into(),
+            ],
+        },
+    };
+    write_agent_manifest(&agent_manifest_path, &manifest)?;
+
+    let payload = json!({
+        "agent": manifest,
+        "identity": created,
+        "next": {
+            "start_daemon": format!("ratspeakd --data-dir {} --events-jsonl", agent_root.display()),
+            "inspect": format!("ratspeakctl --data-dir {} status --pretty", agent_root.display()),
+            "note": "message drafts/sends and scoped event streaming require the next daemon API milestone"
+        }
+    });
+    print_json(&payload, output)
+}
+
+fn run_agent_list(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    ensure_no_extra_args(args, "agent list")?;
+    let agents_dir = profile.config.data_dir.join("agents");
+    let mut records = Vec::new();
+    if agents_dir.is_dir() {
+        for entry in std::fs::read_dir(&agents_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let path = agent_manifest_path(&entry.path());
+            if let Some(manifest) = read_agent_manifest(&path)? {
+                records.push(serde_json::to_value(manifest)?);
+            }
+        }
+    }
+    records.sort_by(|a, b| {
+        a.get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(b.get("name").and_then(Value::as_str).unwrap_or(""))
+    });
+    if output.jsonl {
+        print_jsonl(&records)
+    } else {
+        print_json(&json!(records), output)
+    }
+}
+
+fn run_agent_show(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    let name = args
+        .first()
+        .ok_or_else(|| CliError::usage("agent show requires <name>"))?;
+    validate_agent_name(name)?;
+    ensure_no_extra_args(&args[1..], "agent show")?;
+    let agent_root = profile.config.data_dir.join("agents").join(name);
+    let path = agent_manifest_path(&agent_root);
+    let manifest = read_agent_manifest(&path)?
+        .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
+    print_json(&serde_json::to_value(manifest)?, output)
 }
 
 fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
@@ -554,6 +759,18 @@ fn take_option(args: &mut Vec<String>, name: &str) -> CliResult<Option<String>> 
     Ok(Some(args.remove(index)))
 }
 
+fn take_repeated_option(args: &mut Vec<String>, name: &str) -> CliResult<Vec<String>> {
+    let mut values = Vec::new();
+    while let Some(index) = args.iter().position(|arg| arg == name) {
+        args.remove(index);
+        if index >= args.len() {
+            return Err(CliError::usage(format!("{name} requires a value")));
+        }
+        values.push(args.remove(index));
+    }
+    Ok(values)
+}
+
 fn take_flag(args: &mut Vec<String>, name: &str) -> bool {
     let Some(index) = args.iter().position(|arg| arg == name) else {
         return false;
@@ -621,6 +838,93 @@ fn init_tracing() {
         .try_init();
 }
 
+fn validate_agent_name(name: &str) -> CliResult<()> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(CliError::usage(
+            "agent name must be between 1 and 64 characters",
+        ));
+    }
+    if !name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(CliError::usage(
+            "agent name may contain only ASCII letters, numbers, '.', '-', and '_'",
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(CliError::usage("agent name cannot be '.' or '..'"));
+    }
+    Ok(())
+}
+
+fn agent_manifest_path(agent_root: &Path) -> PathBuf {
+    agent_root.join(".ratspeak").join("agent.json")
+}
+
+fn write_agent_manifest(path: &Path, manifest: &AgentManifest) -> CliResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(manifest)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+fn read_agent_manifest(path: &Path) -> CliResult<Option<AgentManifest>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path)?;
+    let manifest = serde_json::from_slice(&bytes)?;
+    Ok(Some(manifest))
+}
+
+fn normalize_agent_scopes(
+    scopes: Vec<String>,
+) -> CliResult<(Vec<String>, Vec<String>, Vec<String>)> {
+    let scopes = if scopes.is_empty() {
+        vec!["status:read".into(), "identity:read".into()]
+    } else {
+        scopes
+    };
+    let mut requested = Vec::new();
+    let mut effective = Vec::new();
+    let mut pending = Vec::new();
+    for scope in scopes {
+        let normalized = normalize_scope_alias(&scope)
+            .ok_or_else(|| CliError::usage(format!("unsupported agent scope: {scope}")))?;
+        if !requested.contains(&normalized) {
+            requested.push(normalized.clone());
+        }
+        if agent_scope_is_effective_now(&normalized) {
+            if !effective.contains(&normalized) {
+                effective.push(normalized);
+            }
+        } else if !pending.contains(&normalized) {
+            pending.push(normalized);
+        }
+    }
+    Ok((effective, pending, requested))
+}
+
+fn normalize_scope_alias(scope: &str) -> Option<String> {
+    match scope.trim() {
+        "read:status" | "status:read" => Some("status:read".into()),
+        "read:identity" | "identity:read" => Some("identity:read".into()),
+        "read:contacts" | "contacts:read" => Some("contacts:read".into()),
+        "read:messages" | "messages:read" => Some("messages:read".into()),
+        "read:events" | "events:read" => Some("events:read".into()),
+        "read:network" | "network:read" => Some("network:read".into()),
+        "write:drafts" | "drafts:write" => Some("write:drafts".into()),
+        _ => None,
+    }
+}
+
+fn agent_scope_is_effective_now(scope: &str) -> bool {
+    matches!(scope, "status:read" | "identity:read")
+}
+
 fn unread_breakdown(profile: &Profile, identity_id: &str) -> Vec<Value> {
     ratspeak_db::get_unread_breakdown(&profile.db, identity_id)
         .into_iter()
@@ -679,6 +983,9 @@ Ratspeak CLI commands:
   system db-stats
   profile show
   status
+  agent create NAME [--identity new] [--scope SCOPE] [--allow-contact HASH]
+  agent list
+  agent show NAME
   identity get
   identity current
   identity list

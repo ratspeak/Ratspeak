@@ -37,6 +37,9 @@ ratspeakctl system unread [--identity HASH]
 ratspeakctl system db-stats
 ratspeakctl profile show
 ratspeakctl status
+ratspeakctl agent create NAME [--identity new] [--scope SCOPE] [--allow-contact HASH]
+ratspeakctl agent list
+ratspeakctl agent show NAME
 ratspeakctl identity get
 ratspeakctl identity current
 ratspeakctl identity list
@@ -60,6 +63,12 @@ normal Ratspeak startup behavior.
 `identity create` prints a recovery phrase once in JSON. Treat it as private
 key material. `identity activate` is an offline profile change; restart
 `ratspeakd` or the Tauri app if that profile is already running.
+
+`agent create` creates a separate agent profile under
+`.ratspeak/agents/NAME` by default, creates a recoverable identity for that
+profile, and writes `.ratspeak/agent.json` inside the agent profile. Requested
+scopes and allowed contacts are recorded for the future daemon policy layer;
+only local profile setup is active in this milestone.
 
 `ratspeakd` holds a cooperative lock at `.ratspeak/profile.lock`. Owner-run
 identity writes in `ratspeakctl` refuse to run while that lock exists. The
