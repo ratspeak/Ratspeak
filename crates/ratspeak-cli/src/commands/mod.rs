@@ -79,11 +79,14 @@ pub async fn run_daemon(args: Vec<String>) -> CliResult<()> {
         ratspeak_runtime::profile_lock::try_acquire_profile_lock(&lock_data_dir, "ratspeakd")
             .map_err(|e| CliError::failed(format!("failed to acquire profile lock: {e}")))?;
     let state = crate::runtime_host::init_headless_runtime(data_root.clone(), emit_jsonl).await?;
+    let api_server = crate::daemon_api::start_server(state.clone()).await?;
     if !quiet {
         eprintln!(
-            "ratspeakd running; data_root={}; lock={}; events_jsonl={}",
+            "ratspeakd running; data_root={}; lock={}; api_endpoint={}; endpoint_file={}; events_jsonl={}",
             data_root.display(),
             profile_lock.path().display(),
+            api_server.endpoint_label(),
+            api_server.endpoint_path().display(),
             emit_jsonl
         );
     }
@@ -163,6 +166,9 @@ fn run_system(profile: &Profile, args: &[String], output: OutputFormat) -> CliRe
 fn run_status(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
     if !args.is_empty() {
         return Err(CliError::usage("status does not take positional arguments"));
+    }
+    if let Some(payload) = daemon_read(profile, "status.get", json!({}))? {
+        return print_json(&payload, output);
     }
     let active_identity = ratspeak_db::get_active_identity(&profile.db);
     let identities = ratspeak_db::get_all_identities(&profile.db);
@@ -398,6 +404,9 @@ fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "identity get does not take positional arguments",
                 ));
             }
+            if let Some(payload) = daemon_read(profile, "identity.current", json!({}))? {
+                return print_json(&payload, output);
+            }
             let active = ratspeak_db::get_active_identity(&profile.db);
             print_json(
                 &json!({
@@ -413,6 +422,9 @@ fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "identity current does not take positional arguments",
                 ));
             }
+            if let Some(payload) = daemon_read(profile, "identity.current", json!({}))? {
+                return print_json(&payload, output);
+            }
             let active = ratspeak_db::get_active_identity(&profile.db);
             print_json(
                 &json!({
@@ -423,6 +435,9 @@ fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             )
         }
         "list" => {
+            if let Some(payload) = daemon_read(profile, "identity.list", json!({}))? {
+                return print_json_or_jsonl_array(&payload, output);
+            }
             let records = ratspeak_db::get_all_identities(&profile.db);
             if output.jsonl {
                 print_jsonl(&records)
@@ -493,6 +508,11 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
 
     match subcommand {
         "list" => {
+            if let Some(payload) =
+                daemon_read(profile, "contacts.list", json!({ "identity": identity_id }))?
+            {
+                return print_json_or_jsonl_field(&payload, output, "contacts");
+            }
             let records = ratspeak_db::get_all_contacts(&profile.db, &identity_id);
             if output.jsonl {
                 print_jsonl(&records)
@@ -507,6 +527,13 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             }
         }
         "blocked" => {
+            if let Some(payload) = daemon_read(
+                profile,
+                "contacts.blocked",
+                json!({ "identity": identity_id }),
+            )? {
+                return print_json_or_jsonl_field(&payload, output, "blocked");
+            }
             let records = ratspeak_db::get_blocked_contacts(&profile.db, &identity_id);
             if output.jsonl {
                 print_jsonl(&records)
@@ -536,6 +563,13 @@ fn run_peers(profile: &Profile, args: &[String], output: OutputFormat) -> CliRes
 
     match subcommand {
         "list" => {
+            if let Some(payload) = daemon_read(
+                profile,
+                "peers.list",
+                json!({ "identity": identity_id, "recency_secs": recency_secs }),
+            )? {
+                return print_json_or_jsonl_field(&payload, output, "peers");
+            }
             let cutoff = unix_now_secs() - recency_secs;
             let records: Vec<Value> =
                 ratspeak_db::get_peers_snapshot(&profile.db, cutoff, &identity_id)
@@ -570,6 +604,9 @@ async fn run_conversations(
                 return Err(CliError::usage(
                     "conversations list does not take positional arguments",
                 ));
+            }
+            if let Some(payload) = daemon_read(profile, "conversations.list", json!({}))? {
+                return print_json_or_jsonl_array(&payload, output);
             }
             let state = profile::offline_state(profile);
             let payload = ratspeak_runtime::messaging::build_conversations_payload(&state)
@@ -608,6 +645,13 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             if !ratspeak_runtime::helpers::validate_hex(&dest_hash, 16, 64) {
                 return Err(CliError::usage("invalid destination hash"));
             }
+            if let Some(payload) = daemon_read(
+                profile,
+                "messages.list",
+                json!({ "identity": identity_id, "dest_hash": dest_hash, "limit": limit }),
+            )? {
+                return print_json_or_jsonl_field(&payload, output, "messages");
+            }
             let records =
                 ratspeak_db::get_conversation(&profile.db, &dest_hash, &identity_id, limit);
             if output.jsonl {
@@ -634,6 +678,13 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "messages search query must be at least 2 characters",
                 ));
             }
+            if let Some(payload) = daemon_read(
+                profile,
+                "messages.search",
+                json!({ "identity": identity_id, "query": query, "limit": limit }),
+            )? {
+                return print_json_or_jsonl_field(&payload, output, "messages");
+            }
             let records = ratspeak_db::search_messages(&profile.db, &query, &identity_id, limit);
             if output.jsonl {
                 print_jsonl(&records)
@@ -658,6 +709,9 @@ fn run_propagation(profile: &Profile, args: &[String], output: OutputFormat) -> 
     match args.first().map(String::as_str).unwrap_or("status") {
         "status" => {
             ensure_no_extra_args(&args[1..], "propagation status")?;
+            if let Some(payload) = daemon_read(profile, "propagation.status", json!({}))? {
+                return print_json(&payload, output);
+            }
             let state = profile::offline_state(profile);
             print_json(
                 &ratspeak_runtime::propagation::get_status_payload(&state),
@@ -675,6 +729,9 @@ fn run_network(profile: &Profile, args: &[String], output: OutputFormat) -> CliR
     match args.first().map(String::as_str).unwrap_or("status") {
         "status" => {
             ensure_no_extra_args(&args[1..], "network status")?;
+            if let Some(payload) = daemon_read(profile, "network.status", json!({}))? {
+                return print_json(&payload, output);
+            }
             let last_stats = state.last_stats.read().ok().and_then(|stats| stats.clone());
             print_json(
                 &json!({
@@ -962,6 +1019,30 @@ fn print_array_as_jsonl(value: &Value) -> CliResult<()> {
     print_jsonl(records)
 }
 
+fn daemon_read(profile: &Profile, method: &str, params: Value) -> CliResult<Option<Value>> {
+    crate::daemon_api::request(&profile.config.data_dir, method, params)
+}
+
+fn print_json_or_jsonl_array(value: &Value, output: OutputFormat) -> CliResult<()> {
+    if output.jsonl {
+        print_array_as_jsonl(value)
+    } else {
+        print_json(value, output)
+    }
+}
+
+fn print_json_or_jsonl_field(value: &Value, output: OutputFormat, field: &str) -> CliResult<()> {
+    if output.jsonl {
+        let records = value
+            .get(field)
+            .and_then(Value::as_array)
+            .ok_or_else(|| CliError::failed(format!("expected array field for JSONL: {field}")))?;
+        print_jsonl(records)
+    } else {
+        print_json(value, output)
+    }
+}
+
 fn unix_now_secs() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1017,9 +1098,9 @@ Runs the Ratspeak runtime without the Tauri UI.
   --events-jsonl   emit runtime events and notifications as JSONL on stdout
   --quiet          suppress daemon lifecycle messages on stderr
 
-Milestone 1 does not expose a local control API yet; use ratspeakctl for
-read-only profile/database inspection and ratspeakd --events-jsonl for live
-runtime event streaming."
+ratspeakd publishes a profile-local daemon API endpoint at
+.ratspeak/ratspeakd-api.json. ratspeakctl discovers that endpoint and routes
+supported read commands through the live daemon when it is running."
     );
 }
 

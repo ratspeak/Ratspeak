@@ -26,7 +26,7 @@ for the current platform:
 State commands emit JSON by default. Use `--pretty` for formatted JSON and
 `--jsonl` for list-like record streams.
 
-Supported milestone-1 commands:
+Supported commands:
 
 ```sh
 ratspeakctl version
@@ -75,6 +75,21 @@ identity writes in `ratspeakctl` refuse to run while that lock exists. The
 Tauri app does not yet participate in this lock, so do not mutate the same
 profile from the CLI while the GUI is running.
 
+When `ratspeakd` is running for the selected profile, these read commands are
+served through the live daemon API instead of the offline database path:
+
+- `ratspeakctl status`
+- `ratspeakctl identity current`
+- `ratspeakctl identity list`
+- `ratspeakctl contacts list`
+- `ratspeakctl contacts blocked`
+- `ratspeakctl peers list`
+- `ratspeakctl conversations list`
+- `ratspeakctl messages list`
+- `ratspeakctl messages search`
+- `ratspeakctl propagation status`
+- `ratspeakctl network status`
+
 ## ratspeakd
 
 `ratspeakd` starts the same Tauri-free runtime used by the app:
@@ -87,15 +102,31 @@ ratspeakd --data-dir /path/to/profile run --events-jsonl
 `--events-jsonl` emits runtime events and notifications on stdout as JSONL.
 Daemon lifecycle messages go to stderr.
 
+`ratspeakd` also publishes a local daemon API endpoint manifest at
+`.ratspeak/ratspeakd-api.json`. The primary Unix transport is a domain socket at
+`.ratspeak/ratspeakd.sock` on macOS/Linux. If Unix sockets are unavailable or
+the profile path is too long for `sockaddr_un`, the daemon falls back to
+loopback TCP, then to a profile-local filesystem request/response transport.
+All transports use one JSON request per call and one JSON response:
+
+```json
+{"id":"request-id","version":1,"method":"status.get","params":{}}
+```
+
+Successful responses set `ok: true` and return `result`. Failed responses set
+`ok: false` and return `error.code` plus `error.message`. Current stable error
+codes are `invalid_json`, `version_mismatch`, `method_not_found`,
+`service_unavailable`, `bad_params`, and `internal`.
+
 ## Current Guardrails
 
-Milestone 1 does not support autonomous message sends, file sends, contact
-writes, propagation control, identity export, local daemon API access, or MCP
-access.
+The local daemon API currently supports read commands only. It does not support
+autonomous message sends, drafts, file sends, contact writes, propagation
+control, identity export, MCP access, or remote API access.
 
 The intended agent path is:
 
 1. Run one owner-controlled profile per agent identity.
-2. Use read-only CLI/status commands first.
-3. Add the local daemon API with scopes, audit, approvals, and durable event
-   cursors before adding write-capable agent operations.
+2. Use read-only CLI/status commands through `ratspeakd`.
+3. Add scoped agent grants, audit, approvals, and durable event cursors before
+   adding write-capable agent operations.

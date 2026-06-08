@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -16,6 +17,15 @@ fn ratspeakctl(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .expect("ratspeakctl should execute")
+}
+
+fn spawn_ratspeakd(data_dir: &Path) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_ratspeakd"))
+        .args(["--data-dir", &path_arg(data_dir), "--quiet"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("ratspeakd should spawn")
 }
 
 fn run_json(args: &[&str]) -> Value {
@@ -39,6 +49,17 @@ fn run_fail(args: &[&str]) -> String {
 
 fn path_arg(path: &Path) -> String {
     path.display().to_string()
+}
+
+fn wait_for_path(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
 }
 
 #[test]
@@ -140,6 +161,81 @@ fn agent_profile_bootstrap_smoke() {
     assert!(run_fail(&["--data-dir", &agent_profile, "contacts", "add"]).contains("unknown"));
     assert!(run_fail(&["--data-dir", &agent_profile, "identity", "export"]).contains("unknown"));
     assert!(run_fail(&["--data-dir", &agent_profile, "events"]).contains("requires the daemon"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn daemon_api_read_commands_smoke() {
+    let root = temp_root("daemon-api-read");
+    let profile = root.join("profile");
+    let profile_arg = path_arg(&profile);
+
+    let create = run_json(&[
+        "--data-dir",
+        &profile_arg,
+        "identity",
+        "create",
+        "--nickname",
+        "daemon-api-smoke",
+        "--activate",
+    ]);
+    assert_eq!(create["activated"], true);
+    let identity_hash = create["hash"].as_str().expect("identity hash").to_string();
+
+    let mut daemon = spawn_ratspeakd(&profile);
+    let endpoint = profile.join(".ratspeak").join("ratspeakd-api.json");
+    if !wait_for_path(&endpoint, Duration::from_secs(10)) {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        panic!("ratspeakd API endpoint did not appear");
+    }
+    let endpoint_json: Value =
+        serde_json::from_slice(&std::fs::read(&endpoint).expect("endpoint manifest should read"))
+            .expect("endpoint manifest should be JSON");
+    assert_eq!(endpoint_json["version"], 1);
+    assert!(
+        matches!(
+            endpoint_json["transport"].as_str(),
+            Some("unix" | "tcp" | "file")
+        ),
+        "unexpected daemon API transport: {endpoint_json}"
+    );
+
+    let status = run_json(&["--data-dir", &profile_arg, "status"]);
+    assert_eq!(status["mode"], "daemon");
+    assert_eq!(status["daemon_api"]["available"], true);
+    assert_eq!(
+        status["daemon_api"]["transport"],
+        endpoint_json["transport"]
+    );
+
+    let current = run_json(&["--data-dir", &profile_arg, "identity", "current"]);
+    assert_eq!(current["identity"]["hash"], identity_hash);
+
+    let identities = run_json(&["--data-dir", &profile_arg, "identity", "list"]);
+    assert_eq!(identities.as_array().expect("identity list").len(), 1);
+
+    for args in [
+        vec!["--data-dir", &profile_arg, "contacts", "list"],
+        vec!["--data-dir", &profile_arg, "peers", "list"],
+        vec!["--data-dir", &profile_arg, "conversations", "list"],
+        vec![
+            "--data-dir",
+            &profile_arg,
+            "messages",
+            "list",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+        vec!["--data-dir", &profile_arg, "messages", "search", "zz"],
+        vec!["--data-dir", &profile_arg, "propagation", "status"],
+        vec!["--data-dir", &profile_arg, "network", "status"],
+    ] {
+        let _ = run_json(&args);
+    }
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
 
     let _ = std::fs::remove_dir_all(root);
 }
