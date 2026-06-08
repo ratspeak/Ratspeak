@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use crate::error::{CliError, CliResult};
-use crate::output::{OutputFormat, print_json};
+use crate::output::{OutputFormat, print_json, print_jsonl};
 use crate::profile::{self, Profile};
+
+const PEER_RECENCY_SECS: f64 = 7.0 * 86400.0;
 
 #[derive(Debug, Default)]
 struct GlobalOptions {
@@ -18,7 +20,8 @@ pub async fn run_ctl(args: Vec<String>) -> CliResult<()> {
         print_ctl_help();
         return Ok(());
     }
-    if args[0] == "version" {
+    if args[0] == "version" || matches!(args.get(0..2), Some(pair) if pair == ["system", "version"])
+    {
         return print_json(&version_payload(), global.output);
     }
 
@@ -26,12 +29,16 @@ pub async fn run_ctl(args: Vec<String>) -> CliResult<()> {
     let profile = profile::open_profile(data_root)?;
 
     match args[0].as_str() {
+        "system" => run_system(&profile, &args[1..], global.output),
         "profile" => run_profile(&profile, &args[1..], global.output),
         "status" => run_status(&profile, &args[1..], global.output),
         "identity" => run_identity(&profile, &args[1..], global.output),
         "contacts" => run_contacts(&profile, &args[1..], global.output),
+        "peers" | "peer" => run_peers(&profile, &args[1..], global.output),
         "conversations" => run_conversations(&profile, &args[1..], global.output).await,
         "messages" => run_messages(&profile, &args[1..], global.output),
+        "propagation" => run_propagation(&profile, &args[1..], global.output),
+        "network" => run_network(&profile, &args[1..], global.output),
         "events" => Err(CliError::usage(
             "ratspeakctl events requires the daemon local API; use ratspeakd --events-jsonl for live events in milestone 1",
         )),
@@ -91,6 +98,61 @@ fn run_profile(profile: &Profile, args: &[String], output: OutputFormat) -> CliR
     }
 }
 
+fn run_system(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    match args.first().map(String::as_str).unwrap_or("status") {
+        "status" => run_status(profile, &args[1..], output),
+        "startup" => {
+            ensure_no_extra_args(&args[1..], "system startup")?;
+            print_json(
+                &json!({
+                    "stage": "offline",
+                    "hw_locked": null,
+                    "hw_locked_kind": null,
+                }),
+                output,
+            )
+        }
+        "setup-status" => {
+            ensure_no_extra_args(&args[1..], "system setup-status")?;
+            let identities = ratspeak_db::get_all_identities(&profile.db);
+            print_json(&json!({ "needs_setup": identities.is_empty() }), output)
+        }
+        "unread" => {
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            let identity = take_option(&mut rest, "--identity")?;
+            ensure_no_extra_args(&rest, "system unread")?;
+            let identity_id = profile::active_identity_id(profile, identity);
+            let senders = unread_breakdown(profile, &identity_id);
+            let total: i64 = senders
+                .iter()
+                .map(|sender| {
+                    sender
+                        .get("count")
+                        .and_then(|value| value.as_i64())
+                        .unwrap_or(0)
+                })
+                .sum();
+            if output.jsonl {
+                print_jsonl(&senders)
+            } else {
+                print_json(
+                    &json!({
+                        "identity_id": identity_id,
+                        "total": total,
+                        "senders": senders,
+                    }),
+                    output,
+                )
+            }
+        }
+        "db-stats" => {
+            ensure_no_extra_args(&args[1..], "system db-stats")?;
+            print_json(&ratspeak_db::get_database_stats(&profile.db), output)
+        }
+        other => Err(CliError::usage(format!("unknown system command: {other}"))),
+    }
+}
+
 fn run_status(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
     if !args.is_empty() {
         return Err(CliError::usage("status does not take positional arguments"));
@@ -135,7 +197,29 @@ fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                 output,
             )
         }
-        "list" => print_json(&json!(ratspeak_db::get_all_identities(&profile.db)), output),
+        "current" => {
+            if args.len() > 1 {
+                return Err(CliError::usage(
+                    "identity current does not take positional arguments",
+                ));
+            }
+            let active = ratspeak_db::get_active_identity(&profile.db);
+            print_json(
+                &json!({
+                    "exists": active.is_some(),
+                    "identity": active,
+                }),
+                output,
+            )
+        }
+        "list" => {
+            let records = ratspeak_db::get_all_identities(&profile.db);
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(&json!(records), output)
+            }
+        }
         other => Err(CliError::usage(format!(
             "unknown identity command: {other}"
         ))),
@@ -150,23 +234,70 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
     let identity_id = profile::active_identity_id(profile, identity);
 
     match subcommand {
-        "list" => print_json(
-            &json!({
-                "identity_id": identity_id,
-                "contacts": ratspeak_db::get_all_contacts(&profile.db, &identity_id),
-            }),
-            output,
-        ),
-        "blocked" => print_json(
-            &json!({
-                "identity_id": identity_id,
-                "blocked": ratspeak_db::get_blocked_contacts(&profile.db, &identity_id),
-            }),
-            output,
-        ),
+        "list" => {
+            let records = ratspeak_db::get_all_contacts(&profile.db, &identity_id);
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(
+                    &json!({
+                        "identity_id": identity_id,
+                        "contacts": records,
+                    }),
+                    output,
+                )
+            }
+        }
+        "blocked" => {
+            let records = ratspeak_db::get_blocked_contacts(&profile.db, &identity_id);
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(
+                    &json!({
+                        "identity_id": identity_id,
+                        "blocked": records,
+                    }),
+                    output,
+                )
+            }
+        }
         other => Err(CliError::usage(format!(
             "unknown contacts command: {other}"
         ))),
+    }
+}
+
+fn run_peers(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    let subcommand = args.first().map(String::as_str).unwrap_or("list");
+    let mut rest = args.get(1..).unwrap_or_default().to_vec();
+    let identity = take_option(&mut rest, "--identity")?;
+    let recency_secs = take_f64_option(&mut rest, "--recency-secs", PEER_RECENCY_SECS)?;
+    ensure_no_extra_args(&rest, "peers")?;
+    let identity_id = profile::active_identity_id(profile, identity);
+
+    match subcommand {
+        "list" => {
+            let cutoff = unix_now_secs() - recency_secs;
+            let records: Vec<Value> =
+                ratspeak_db::get_peers_snapshot(&profile.db, cutoff, &identity_id)
+                    .into_iter()
+                    .map(peer_to_json)
+                    .collect();
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(
+                    &json!({
+                        "identity_id": identity_id,
+                        "recency_secs": recency_secs,
+                        "peers": records,
+                    }),
+                    output,
+                )
+            }
+        }
+        other => Err(CliError::usage(format!("unknown peers command: {other}"))),
     }
 }
 
@@ -186,7 +317,11 @@ async fn run_conversations(
             let payload = ratspeak_runtime::messaging::build_conversations_payload(&state)
                 .await
                 .ok_or_else(|| CliError::failed("database temporarily unavailable"))?;
-            print_json(&payload, output)
+            if output.jsonl {
+                print_array_as_jsonl(&payload)
+            } else {
+                print_json(&payload, output)
+            }
         }
         other => Err(CliError::usage(format!(
             "unknown conversations command: {other}"
@@ -215,14 +350,20 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             if !ratspeak_runtime::helpers::validate_hex(&dest_hash, 16, 64) {
                 return Err(CliError::usage("invalid destination hash"));
             }
-            print_json(
-                &json!({
-                    "identity_id": identity_id,
-                    "dest_hash": dest_hash,
-                    "messages": ratspeak_db::get_conversation(&profile.db, &dest_hash, &identity_id, limit),
-                }),
-                output,
-            )
+            let records =
+                ratspeak_db::get_conversation(&profile.db, &dest_hash, &identity_id, limit);
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(
+                    &json!({
+                        "identity_id": identity_id,
+                        "dest_hash": dest_hash,
+                        "messages": records,
+                    }),
+                    output,
+                )
+            }
         }
         "search" => {
             let query = rest
@@ -235,18 +376,84 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "messages search query must be at least 2 characters",
                 ));
             }
-            print_json(
-                &json!({
-                    "identity_id": identity_id,
-                    "query": query,
-                    "messages": ratspeak_db::search_messages(&profile.db, &query, &identity_id, limit),
-                }),
-                output,
-            )
+            let records = ratspeak_db::search_messages(&profile.db, &query, &identity_id, limit);
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(
+                    &json!({
+                        "identity_id": identity_id,
+                        "query": query,
+                        "messages": records,
+                    }),
+                    output,
+                )
+            }
         }
         other => Err(CliError::usage(format!(
             "unknown messages command: {other}"
         ))),
+    }
+}
+
+fn run_propagation(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    match args.first().map(String::as_str).unwrap_or("status") {
+        "status" => {
+            ensure_no_extra_args(&args[1..], "propagation status")?;
+            let state = profile::offline_state(profile);
+            print_json(
+                &ratspeak_runtime::propagation::get_status_payload(&state),
+                output,
+            )
+        }
+        other => Err(CliError::usage(format!(
+            "unknown propagation command: {other}"
+        ))),
+    }
+}
+
+fn run_network(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    let state = profile::offline_state(profile);
+    match args.first().map(String::as_str).unwrap_or("status") {
+        "status" => {
+            ensure_no_extra_args(&args[1..], "network status")?;
+            let last_stats = state.last_stats.read().ok().and_then(|stats| stats.clone());
+            print_json(
+                &json!({
+                    "mode": "offline",
+                    "last_stats": last_stats,
+                    "propagation": ratspeak_runtime::propagation::get_status_payload(&state),
+                }),
+                output,
+            )
+        }
+        "alerts" => {
+            ensure_no_extra_args(&args[1..], "network alerts")?;
+            let records = state
+                .alerts
+                .lock()
+                .map(|alerts| alerts.clone())
+                .unwrap_or_default();
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(&json!(records), output)
+            }
+        }
+        "announces" => {
+            ensure_no_extra_args(&args[1..], "network announces")?;
+            let records: Vec<Value> = state
+                .announce_history
+                .read()
+                .map(|announces| announces.values().cloned().collect())
+                .unwrap_or_default();
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(&json!(records), output)
+            }
+        }
+        other => Err(CliError::usage(format!("unknown network command: {other}"))),
     }
 }
 
@@ -275,6 +482,7 @@ fn parse_global(args: Vec<String>) -> CliResult<(GlobalOptions, Vec<String>)> {
                 global.data_root = Some(PathBuf::from(value));
             }
             "--pretty" => global.output.pretty = true,
+            "--jsonl" => global.output.jsonl = true,
             "--json" => {}
             _ => rest.push(arg),
         }
@@ -311,6 +519,24 @@ fn take_limit(args: &mut Vec<String>, default_limit: i64) -> CliResult<i64> {
     Ok(parsed)
 }
 
+fn take_f64_option(args: &mut Vec<String>, name: &str, default_value: f64) -> CliResult<f64> {
+    let Some(index) = args.iter().position(|arg| arg == name) else {
+        return Ok(default_value);
+    };
+    args.remove(index);
+    if index >= args.len() {
+        return Err(CliError::usage(format!("{name} requires a value")));
+    }
+    let value = args.remove(index);
+    let parsed = value
+        .parse::<f64>()
+        .map_err(|_| CliError::usage(format!("{name} must be a number")))?;
+    if !parsed.is_finite() || parsed <= 0.0 {
+        return Err(CliError::usage(format!("{name} must be positive")));
+    }
+    Ok(parsed)
+}
+
 fn ensure_no_extra_args(args: &[String], context: &str) -> CliResult<()> {
     if let Some(extra) = args.first() {
         return Err(CliError::usage(format!(
@@ -334,24 +560,80 @@ fn init_tracing() {
         .try_init();
 }
 
+fn unread_breakdown(profile: &Profile, identity_id: &str) -> Vec<Value> {
+    ratspeak_db::get_unread_breakdown(&profile.db, identity_id)
+        .into_iter()
+        .map(|(hash, display_name, count, preview, timestamp)| {
+            json!({
+                "hash": hash,
+                "display_name": display_name,
+                "count": count,
+                "preview": preview,
+                "timestamp": timestamp,
+            })
+        })
+        .collect()
+}
+
+fn peer_to_json(row: ratspeak_db::PeerRow) -> Value {
+    json!({
+        "hash": row.hash,
+        "identity_hash": row.identity_hash,
+        "telephony_hash": ratspeak_runtime::telephony_hash_for_identity_hex(&row.identity_hash),
+        "last_seen": row.last_seen,
+        "first_seen": row.first_seen,
+        "display_name": row.display_name,
+        "profile_status": row.profile_status,
+        "is_contact": row.is_contact,
+        "last_interface": row.last_interface,
+        "services": row.services,
+    })
+}
+
+fn print_array_as_jsonl(value: &Value) -> CliResult<()> {
+    let records = value
+        .as_array()
+        .ok_or_else(|| CliError::failed("expected array payload for JSONL output"))?;
+    print_jsonl(records)
+}
+
+fn unix_now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
 fn print_ctl_help() {
     println!(
         "\
-ratspeakctl [--data-dir PATH] [--pretty] <command>
+ratspeakctl [--data-dir PATH] [--pretty] [--jsonl] <command>
 
 Read-only Ratspeak CLI commands:
   version
+  system status
+  system startup
+  system setup-status
+  system unread [--identity HASH]
+  system db-stats
   profile show
   status
   identity get
+  identity current
   identity list
   contacts list [--identity HASH]
   contacts blocked [--identity HASH]
+  peers list [--identity HASH] [--recency-secs N]
   conversations list
   messages list <dest_hash> [--identity HASH] [--limit N]
   messages search <query> [--identity HASH] [--limit N]
+  propagation status
+  network status
+  network alerts
+  network announces
 
-State commands emit JSON by default. Use --pretty for formatted JSON.
+State commands emit JSON by default. Use --pretty for formatted JSON, or
+--jsonl to stream list-like records one JSON object per line.
 Set RATSPEAK_DATA_DIR or --data-dir to target a specific Ratspeak profile."
     );
 }
@@ -394,5 +676,15 @@ mod tests {
         let mut args = vec!["abc".into(), "--limit".into(), "42".into()];
         assert_eq!(take_limit(&mut args, 100).unwrap(), 42);
         assert_eq!(args, vec!["abc"]);
+    }
+
+    #[test]
+    fn take_f64_option_removes_pair() {
+        let mut args = vec!["--recency-secs".into(), "10.5".into(), "tail".into()];
+        assert_eq!(
+            take_f64_option(&mut args, "--recency-secs", 20.0).unwrap(),
+            10.5
+        );
+        assert_eq!(args, vec!["tail"]);
     }
 }

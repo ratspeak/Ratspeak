@@ -23,21 +23,33 @@ for the current platform:
 
 ## ratspeakctl
 
-State commands emit JSON by default. Use `--pretty` for formatted JSON.
+State commands emit JSON by default. Use `--pretty` for formatted JSON and
+`--jsonl` for list-like record streams.
 
 Supported milestone-1 commands:
 
 ```sh
 ratspeakctl version
+ratspeakctl system status
+ratspeakctl system startup
+ratspeakctl system setup-status
+ratspeakctl system unread [--identity HASH]
+ratspeakctl system db-stats
 ratspeakctl profile show
 ratspeakctl status
 ratspeakctl identity get
+ratspeakctl identity current
 ratspeakctl identity list
 ratspeakctl contacts list [--identity HASH]
 ratspeakctl contacts blocked [--identity HASH]
+ratspeakctl peers list [--identity HASH] [--recency-secs N]
 ratspeakctl conversations list
 ratspeakctl messages list <dest_hash> [--identity HASH] [--limit N]
 ratspeakctl messages search <query> [--identity HASH] [--limit N]
+ratspeakctl propagation status
+ratspeakctl network status
+ratspeakctl network alerts
+ratspeakctl network announces
 ```
 
 These commands may initialize or migrate the selected profile database, matching
