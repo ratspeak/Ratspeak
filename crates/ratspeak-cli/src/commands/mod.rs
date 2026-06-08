@@ -220,6 +220,44 @@ fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                 print_json(&json!(records), output)
             }
         }
+        "create" => {
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            let nickname =
+                take_option(&mut rest, "--nickname")?.or(take_option(&mut rest, "--display-name")?);
+            let activate = take_flag(&mut rest, "--activate");
+            ensure_no_extra_args(&rest, "identity create")?;
+            let created = ratspeak_runtime::identity_service::create_recoverable_identity(
+                &profile.config.data_dir,
+                &profile.db,
+                nickname.as_deref(),
+                activate,
+            )
+            .map_err(|e| CliError::failed(format!("failed to create identity: {e}")))?;
+            let mut payload = serde_json::to_value(created)?;
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert(
+                    "runtime_note".to_string(),
+                    json!("restart ratspeakd or the Tauri app if this profile is already running"),
+                );
+            }
+            print_json(&payload, output)
+        }
+        "activate" => {
+            let hash = args
+                .get(1)
+                .ok_or_else(|| CliError::usage("identity activate requires <hash>"))?;
+            ensure_no_extra_args(&args[2..], "identity activate")?;
+            if !ratspeak_runtime::helpers::validate_hex(hash, 16, 128) {
+                return Err(CliError::usage("invalid identity hash"));
+            }
+            let activated = ratspeak_runtime::identity_service::activate_identity(
+                &profile.config.data_dir,
+                &profile.db,
+                hash,
+            )
+            .map_err(|e| CliError::failed(format!("failed to activate identity: {e}")))?;
+            print_json(&serde_json::to_value(activated)?, output)
+        }
         other => Err(CliError::usage(format!(
             "unknown identity command: {other}"
         ))),
@@ -501,6 +539,14 @@ fn take_option(args: &mut Vec<String>, name: &str) -> CliResult<Option<String>> 
     Ok(Some(args.remove(index)))
 }
 
+fn take_flag(args: &mut Vec<String>, name: &str) -> bool {
+    let Some(index) = args.iter().position(|arg| arg == name) else {
+        return false;
+    };
+    args.remove(index);
+    true
+}
+
 fn take_limit(args: &mut Vec<String>, default_limit: i64) -> CliResult<i64> {
     let Some(index) = args.iter().position(|arg| arg == "--limit") else {
         return Ok(default_limit);
@@ -609,7 +655,7 @@ fn print_ctl_help() {
         "\
 ratspeakctl [--data-dir PATH] [--pretty] [--jsonl] <command>
 
-Read-only Ratspeak CLI commands:
+Ratspeak CLI commands:
   version
   system status
   system startup
@@ -621,6 +667,8 @@ Read-only Ratspeak CLI commands:
   identity get
   identity current
   identity list
+  identity create [--nickname NAME] [--activate]
+  identity activate HASH
   contacts list [--identity HASH]
   contacts blocked [--identity HASH]
   peers list [--identity HASH] [--recency-secs N]
@@ -685,6 +733,14 @@ mod tests {
             take_f64_option(&mut args, "--recency-secs", 20.0).unwrap(),
             10.5
         );
+        assert_eq!(args, vec!["tail"]);
+    }
+
+    #[test]
+    fn take_flag_removes_flag() {
+        let mut args = vec!["--activate".into(), "tail".into()];
+        assert!(take_flag(&mut args, "--activate"));
+        assert!(!take_flag(&mut args, "--activate"));
         assert_eq!(args, vec!["tail"]);
     }
 }

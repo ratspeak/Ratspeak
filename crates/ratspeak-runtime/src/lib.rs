@@ -12,6 +12,7 @@ pub mod blackhole;
 pub mod hardware;
 pub mod helpers;
 pub mod identity_prune;
+pub mod identity_service;
 pub mod lxmf;
 pub mod messaging;
 pub mod propagation;

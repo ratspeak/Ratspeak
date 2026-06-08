@@ -40,6 +40,8 @@ ratspeakctl status
 ratspeakctl identity get
 ratspeakctl identity current
 ratspeakctl identity list
+ratspeakctl identity create [--nickname NAME] [--activate]
+ratspeakctl identity activate HASH
 ratspeakctl contacts list [--identity HASH]
 ratspeakctl contacts blocked [--identity HASH]
 ratspeakctl peers list [--identity HASH] [--recency-secs N]
@@ -55,6 +57,10 @@ ratspeakctl network announces
 These commands may initialize or migrate the selected profile database, matching
 normal Ratspeak startup behavior.
 
+`identity create` prints a recovery phrase once in JSON. Treat it as private
+key material. `identity activate` is an offline profile change; restart
+`ratspeakd` or the Tauri app if that profile is already running.
+
 ## ratspeakd
 
 `ratspeakd` starts the same Tauri-free runtime used by the app:
@@ -69,9 +75,9 @@ Daemon lifecycle messages go to stderr.
 
 ## Current Guardrails
 
-Milestone 1 is read-only for `ratspeakctl`. It does not support autonomous
-message sends, file sends, contact writes, propagation control, identity
-export, local daemon API access, or MCP access.
+Milestone 1 does not support autonomous message sends, file sends, contact
+writes, propagation control, identity export, local daemon API access, or MCP
+access.
 
 The intended agent path is:
 
