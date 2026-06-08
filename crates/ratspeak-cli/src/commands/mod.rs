@@ -72,11 +72,16 @@ pub async fn run_daemon(args: Vec<String>) -> CliResult<()> {
 
     init_tracing();
     let data_root = profile::resolve_data_root(global.data_root);
+    let lock_data_dir = data_root.join(".ratspeak");
+    let profile_lock =
+        ratspeak_runtime::profile_lock::try_acquire_profile_lock(&lock_data_dir, "ratspeakd")
+            .map_err(|e| CliError::failed(format!("failed to acquire profile lock: {e}")))?;
     let state = crate::runtime_host::init_headless_runtime(data_root.clone(), emit_jsonl).await?;
     if !quiet {
         eprintln!(
-            "ratspeakd running; data_root={}; events_jsonl={}",
+            "ratspeakd running; data_root={}; lock={}; events_jsonl={}",
             data_root.display(),
+            profile_lock.path().display(),
             emit_jsonl
         );
     }
@@ -226,6 +231,11 @@ fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                 take_option(&mut rest, "--nickname")?.or(take_option(&mut rest, "--display-name")?);
             let activate = take_flag(&mut rest, "--activate");
             ensure_no_extra_args(&rest, "identity create")?;
+            let _profile_lock = ratspeak_runtime::profile_lock::try_acquire_profile_lock(
+                &profile.config.data_dir,
+                "ratspeakctl identity create",
+            )
+            .map_err(|e| CliError::failed(format!("failed to acquire profile lock: {e}")))?;
             let created = ratspeak_runtime::identity_service::create_recoverable_identity(
                 &profile.config.data_dir,
                 &profile.db,
@@ -250,6 +260,11 @@ fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             if !ratspeak_runtime::helpers::validate_hex(hash, 16, 128) {
                 return Err(CliError::usage("invalid identity hash"));
             }
+            let _profile_lock = ratspeak_runtime::profile_lock::try_acquire_profile_lock(
+                &profile.config.data_dir,
+                "ratspeakctl identity activate",
+            )
+            .map_err(|e| CliError::failed(format!("failed to acquire profile lock: {e}")))?;
             let activated = ratspeak_runtime::identity_service::activate_identity(
                 &profile.config.data_dir,
                 &profile.db,

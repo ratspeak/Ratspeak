@@ -61,6 +61,11 @@ normal Ratspeak startup behavior.
 key material. `identity activate` is an offline profile change; restart
 `ratspeakd` or the Tauri app if that profile is already running.
 
+`ratspeakd` holds a cooperative lock at `.ratspeak/profile.lock`. Owner-run
+identity writes in `ratspeakctl` refuse to run while that lock exists. The
+Tauri app does not yet participate in this lock, so do not mutate the same
+profile from the CLI while the GUI is running.
+
 ## ratspeakd
 
 `ratspeakd` starts the same Tauri-free runtime used by the app:

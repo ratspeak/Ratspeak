@@ -15,6 +15,7 @@ pub mod identity_prune;
 pub mod identity_service;
 pub mod lxmf;
 pub mod messaging;
+pub mod profile_lock;
 pub mod propagation;
 pub mod rns;
 pub mod rns_config;
