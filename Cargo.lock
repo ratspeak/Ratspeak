@@ -4194,6 +4194,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratspeak-cli"
+version = "1.0.20"
+dependencies = [
+ "ratspeak-core",
+ "ratspeak-db",
+ "ratspeak-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ratspeak-core"
 version = "1.0.20"
 dependencies = [
