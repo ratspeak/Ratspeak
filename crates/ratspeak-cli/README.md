@@ -40,6 +40,9 @@ ratspeakctl status
 ratspeakctl agent create NAME [--identity new] [--scope SCOPE] [--allow-contact HASH]
 ratspeakctl agent list
 ratspeakctl agent show NAME
+ratspeakctl agent grant NAME [--scope SCOPE] [--allow-contact HASH] [--allow-conversation ID]
+ratspeakctl agent revoke NAME [--reason TEXT]
+ratspeakctl agent rotate-token NAME
 ratspeakctl identity get
 ratspeakctl identity current
 ratspeakctl identity list
@@ -49,8 +52,10 @@ ratspeakctl contacts list [--identity HASH]
 ratspeakctl contacts blocked [--identity HASH]
 ratspeakctl peers list [--identity HASH] [--recency-secs N]
 ratspeakctl conversations list
-ratspeakctl messages list <dest_hash> [--identity HASH] [--limit N]
+ratspeakctl conversations read <conversation-id> [--identity HASH] [--limit N]
+ratspeakctl messages list <conversation-id> [--identity HASH] [--limit N]
 ratspeakctl messages search <query> [--identity HASH] [--limit N]
+ratspeakctl events stream [--agent NAME] [--cursor N] [--limit N] [--once]
 ratspeakctl propagation status
 ratspeakctl network status
 ratspeakctl network alerts
@@ -66,9 +71,15 @@ key material. `identity activate` is an offline profile change; restart
 
 `agent create` creates a separate agent profile under
 `.ratspeak/agents/NAME` by default, creates a recoverable identity for that
-profile, and writes `.ratspeak/agent.json` inside the agent profile. Requested
-scopes and allowed contacts are recorded for the future daemon policy layer;
-only local profile setup is active in this milestone.
+profile, writes `.ratspeak/agent.json`, and writes a private
+`.ratspeak/agent.token` credential. The manifest stores only the token hash.
+When `ratspeakd` runs for that profile, local API calls must present the token
+and are enforced against the active grant scopes plus contact/conversation
+allowlists.
+
+`agent grant`, `agent revoke`, and `agent rotate-token` update the manifest and
+credential files from the owner profile. Restart `ratspeakd` for the agent
+profile after changing grants or credentials.
 
 `ratspeakd` holds a cooperative lock at `.ratspeak/profile.lock`. Owner-run
 identity writes in `ratspeakctl` refuse to run while that lock exists. The
@@ -85,10 +96,18 @@ served through the live daemon API instead of the offline database path:
 - `ratspeakctl contacts blocked`
 - `ratspeakctl peers list`
 - `ratspeakctl conversations list`
+- `ratspeakctl conversations read`
 - `ratspeakctl messages list`
 - `ratspeakctl messages search`
+- `ratspeakctl events stream`
 - `ratspeakctl propagation status`
 - `ratspeakctl network status`
+
+Agent-scoped conversation IDs are stable strings of the form
+`lxmf:<destination-hash>`. Agent message and conversation payloads wrap
+message text, titles, previews, and display names in explicit
+`{"text": "...", "untrusted": true}` objects so agent tooling does not confuse
+remote message content with trusted instructions.
 
 ## ratspeakd
 
@@ -99,8 +118,10 @@ ratspeakd --data-dir /path/to/profile run
 ratspeakd --data-dir /path/to/profile run --events-jsonl
 ```
 
-`--events-jsonl` emits runtime events and notifications on stdout as JSONL.
-Daemon lifecycle messages go to stderr.
+`--events-jsonl` mirrors durable runtime event envelopes and notifications on
+stdout as JSONL. Daemon lifecycle messages go to stderr. `ratspeakctl events
+stream` reads the same durable event log through the local daemon API using a
+monotonic cursor for reconnect/replay.
 
 `ratspeakd` also publishes a local daemon API endpoint manifest at
 `.ratspeak/ratspeakd-api.json`. The primary Unix transport is a domain socket at
@@ -116,17 +137,19 @@ All transports use one JSON request per call and one JSON response:
 Successful responses set `ok: true` and return `result`. Failed responses set
 `ok: false` and return `error.code` plus `error.message`. Current stable error
 codes are `invalid_json`, `version_mismatch`, `method_not_found`,
-`service_unavailable`, `bad_params`, and `internal`.
+`unauthorized`, `forbidden`, `grant_revoked`, `service_unavailable`,
+`bad_params`, and `internal`.
 
 ## Current Guardrails
 
-The local daemon API currently supports read commands only. It does not support
-autonomous message sends, drafts, file sends, contact writes, propagation
-control, identity export, MCP access, or remote API access.
+The local daemon API currently supports authenticated, grant-filtered reads and
+durable event replay only. It does not support autonomous message sends,
+drafts, file sends, contact writes, propagation control, identity export, MCP
+access, or remote API access.
 
 The intended agent path is:
 
 1. Run one owner-controlled profile per agent identity.
-2. Use read-only CLI/status commands through `ratspeakd`.
-3. Add scoped agent grants, audit, approvals, and durable event cursors before
-   adding write-capable agent operations.
+2. Use authenticated read-only CLI/status/event commands through `ratspeakd`.
+3. Add audit, approvals, and draft/send operations before enabling
+   write-capable agent actions.

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
+use crate::agent_policy::{AccessMode, AgentPrincipal};
 use crate::error::{CliError, CliResult};
+use crate::{agent_policy, event_store};
 
 pub const API_VERSION: u32 = 1;
 const ENDPOINT_FILE_NAME: &str = "ratspeakd-api.json";
@@ -21,8 +23,16 @@ pub struct ApiRequest {
     pub id: String,
     pub version: u32,
     pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<ApiAuth>,
     #[serde(default)]
     pub params: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiAuth {
+    pub agent: String,
+    pub token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -162,6 +172,7 @@ pub async fn start_server(
                     published_at_unix: unix_now_secs(),
                 };
                 publish_endpoint(&data_dir, &endpoint)?;
+                append_daemon_started_event(&data_dir, &endpoint);
                 let task = tokio::spawn(async move {
                     loop {
                         match listener.accept().await {
@@ -205,14 +216,25 @@ pub async fn start_server(
 }
 
 pub fn request(data_dir: &Path, method: &str, params: Value) -> CliResult<Option<Value>> {
+    let auth = request_auth(data_dir)?;
     if let Some(endpoint) = read_endpoint(data_dir)? {
-        match connect_endpoint(&endpoint, method, params.clone())? {
+        match connect_endpoint(&endpoint, method, params.clone(), auth.clone())? {
             Some(result) => return Ok(Some(result)),
             None => {}
         }
     }
 
-    connect_legacy_unix(data_dir, method, params)
+    connect_legacy_unix(data_dir, method, params, auth)
+}
+
+fn request_auth(data_dir: &Path) -> CliResult<Option<ApiAuth>> {
+    let Some(credential) = agent_policy::read_agent_credential_from_data_dir(data_dir)? else {
+        return Ok(None);
+    };
+    Ok(Some(ApiAuth {
+        agent: credential.agent_name,
+        token: credential.token,
+    }))
 }
 
 async fn start_tcp_server(
@@ -253,6 +275,7 @@ async fn start_tcp_server(
         published_at_unix: unix_now_secs(),
     };
     publish_endpoint(&data_dir, &endpoint)?;
+    append_daemon_started_event(&data_dir, &endpoint);
     let task = tokio::spawn(async move {
         loop {
             match listener.accept().await {
@@ -307,6 +330,7 @@ async fn start_file_server(
         published_at_unix: unix_now_secs(),
     };
     publish_endpoint(&data_dir, &endpoint)?;
+    append_daemon_started_event(&data_dir, &endpoint);
     let task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(FILE_POLL_INTERVAL);
         loop {
@@ -326,10 +350,23 @@ async fn start_file_server(
     })
 }
 
+fn append_daemon_started_event(data_dir: &Path, endpoint: &ApiEndpoint) {
+    let _ = event_store::EventStore::append_daemon_event(
+        data_dir,
+        "daemon.started",
+        json!({
+            "transport": endpoint.transport,
+            "pid": endpoint.pid,
+            "profile_data_dir": endpoint.profile_data_dir,
+        }),
+    );
+}
+
 fn connect_endpoint(
     endpoint: &ApiEndpoint,
     method: &str,
     params: Value,
+    auth: Option<ApiAuth>,
 ) -> CliResult<Option<Value>> {
     if endpoint.version != API_VERSION {
         return Err(CliError::failed(format!(
@@ -345,22 +382,27 @@ fn connect_endpoint(
                     "daemon API endpoint is missing socket_path",
                 ));
             };
-            connect_unix_path(path, method, params)
+            connect_unix_path(path, method, params, auth)
         }
         "tcp" => {
             let Some(address) = endpoint.address.as_ref() else {
                 return Err(CliError::failed("daemon API endpoint is missing address"));
             };
-            connect_tcp_address(address, method, params)
+            connect_tcp_address(address, method, params, auth)
         }
-        "file" => connect_file_endpoint(endpoint, method, params),
+        "file" => connect_file_endpoint(endpoint, method, params, auth),
         other => Err(CliError::failed(format!(
             "unsupported daemon API transport: {other}"
         ))),
     }
 }
 
-fn connect_tcp_address(address: &str, method: &str, params: Value) -> CliResult<Option<Value>> {
+fn connect_tcp_address(
+    address: &str,
+    method: &str,
+    params: Value,
+    auth: Option<ApiAuth>,
+) -> CliResult<Option<Value>> {
     let stream = match std::net::TcpStream::connect(address) {
         Ok(stream) => stream,
         Err(error)
@@ -379,13 +421,14 @@ fn connect_tcp_address(address: &str, method: &str, params: Value) -> CliResult<
             )));
         }
     };
-    Ok(Some(round_trip(stream, method, params)?))
+    Ok(Some(round_trip(stream, method, params, auth)?))
 }
 
 fn connect_file_endpoint(
     endpoint: &ApiEndpoint,
     method: &str,
     params: Value,
+    auth: Option<ApiAuth>,
 ) -> CliResult<Option<Value>> {
     let Some(request_dir) = endpoint.request_dir.as_ref() else {
         return Err(CliError::failed(
@@ -406,6 +449,7 @@ fn connect_file_endpoint(
         id: request_id.clone(),
         version: API_VERSION,
         method: method.to_string(),
+        auth,
         params,
     };
     write_rpc_file(request_dir, &request_id, &request)?;
@@ -431,7 +475,12 @@ fn connect_file_endpoint(
 }
 
 #[cfg(unix)]
-fn connect_unix_path(path: &Path, method: &str, params: Value) -> CliResult<Option<Value>> {
+fn connect_unix_path(
+    path: &Path,
+    method: &str,
+    params: Value,
+    auth: Option<ApiAuth>,
+) -> CliResult<Option<Value>> {
     use std::os::unix::net::UnixStream;
 
     if !path.exists() {
@@ -453,20 +502,35 @@ fn connect_unix_path(path: &Path, method: &str, params: Value) -> CliResult<Opti
             )));
         }
     };
-    Ok(Some(round_trip(stream, method, params)?))
+    Ok(Some(round_trip(stream, method, params, auth)?))
 }
 
 #[cfg(not(unix))]
-fn connect_unix_path(_path: &Path, _method: &str, _params: Value) -> CliResult<Option<Value>> {
+fn connect_unix_path(
+    _path: &Path,
+    _method: &str,
+    _params: Value,
+    _auth: Option<ApiAuth>,
+) -> CliResult<Option<Value>> {
     Ok(None)
 }
 
-fn connect_legacy_unix(data_dir: &Path, method: &str, params: Value) -> CliResult<Option<Value>> {
+fn connect_legacy_unix(
+    data_dir: &Path,
+    method: &str,
+    params: Value,
+    auth: Option<ApiAuth>,
+) -> CliResult<Option<Value>> {
     let path = socket_path(data_dir);
-    connect_unix_path(&path, method, params)
+    connect_unix_path(&path, method, params, auth)
 }
 
-fn round_trip<S>(mut stream: S, method: &str, params: Value) -> CliResult<Value>
+fn round_trip<S>(
+    mut stream: S,
+    method: &str,
+    params: Value,
+    auth: Option<ApiAuth>,
+) -> CliResult<Value>
 where
     S: Read + Write,
 {
@@ -475,6 +539,7 @@ where
         id: request_id.clone(),
         version: API_VERSION,
         method: method.to_string(),
+        auth,
         params,
     };
     serde_json::to_writer(&mut stream, &request)?;
@@ -669,7 +734,19 @@ async fn handle_request(
     if request.version != API_VERSION {
         return error_response(id, "version_mismatch", "unsupported daemon API version");
     }
-    match dispatch(state, &request.method, request.params).await {
+    let access = match authenticate(&state, request.auth.as_ref()) {
+        Ok(access) => access,
+        Err(error) => {
+            return ApiResponse {
+                id,
+                version: API_VERSION,
+                ok: false,
+                result: None,
+                error: Some(error),
+            };
+        }
+    };
+    match dispatch(state, &access, &request.method, request.params).await {
         Ok(result) => ApiResponse {
             id,
             version: API_VERSION,
@@ -689,21 +766,23 @@ async fn handle_request(
 
 async fn dispatch(
     state: Arc<ratspeak_runtime::state::AppState>,
+    access: &AccessMode,
     method: &str,
     params: Value,
 ) -> Result<Value, ApiError> {
+    authorize_method(access, method, &params)?;
     match method {
-        "status.get" => Ok(status_payload(&state)),
+        "status.get" => Ok(status_payload(&state, access)),
         "identity.current" => Ok(identity_current_payload(&state)),
-        "identity.list" => Ok(json!(ratspeak_db::get_all_identities(&state.db))),
-        "contacts.list" => Ok(contacts_payload(&state, params, false)?),
-        "contacts.blocked" => Ok(contacts_payload(&state, params, true)?),
-        "peers.list" => Ok(peers_payload(&state, params)?),
-        "conversations.list" => ratspeak_runtime::messaging::build_conversations_payload(&state)
-            .await
-            .ok_or_else(|| api_error("service_unavailable", "database temporarily unavailable")),
-        "messages.list" => Ok(messages_list_payload(&state, params)?),
-        "messages.search" => Ok(messages_search_payload(&state, params)?),
+        "identity.list" => Ok(identity_list_payload(&state, access)),
+        "contacts.list" => Ok(contacts_payload(&state, access, params, false)?),
+        "contacts.blocked" => Ok(contacts_payload(&state, access, params, true)?),
+        "peers.list" => Ok(peers_payload(&state, access, params)?),
+        "conversations.list" => Ok(conversations_list_payload(&state, access).await?),
+        "conversations.read" => Ok(conversations_read_payload(&state, access, params)?),
+        "messages.list" => Ok(messages_list_payload(&state, access, params)?),
+        "messages.search" => Ok(messages_search_payload(&state, access, params)?),
+        "events.read" => events_read_payload(&state, access, params).await,
         "propagation.status" => Ok(ratspeak_runtime::propagation::get_status_payload(&state)),
         "network.status" => Ok(network_status_payload(&state)),
         _ => Err(api_error(
@@ -713,7 +792,105 @@ async fn dispatch(
     }
 }
 
-fn status_payload(state: &ratspeak_runtime::state::AppState) -> Value {
+fn authenticate(
+    state: &ratspeak_runtime::state::AppState,
+    auth: Option<&ApiAuth>,
+) -> Result<AccessMode, ApiError> {
+    let manifest = agent_policy::read_agent_manifest_from_data_dir(&state.config.data_dir)
+        .map_err(|error| {
+            api_error(
+                "internal",
+                format!("failed to read agent manifest: {error}"),
+            )
+        })?;
+    let Some(manifest) = manifest else {
+        return Ok(AccessMode::Owner);
+    };
+    let grant = manifest.effective_grant();
+    if grant.status == "revoked" {
+        return Err(api_error("grant_revoked", "agent grant has been revoked"));
+    }
+    if grant.status != "active" {
+        return Err(api_error(
+            "forbidden",
+            format!("agent grant is not active: {}", grant.status),
+        ));
+    }
+    let Some(auth) = auth else {
+        return Err(api_error("unauthorized", "agent token required"));
+    };
+    if auth.agent != manifest.name {
+        return Err(api_error(
+            "unauthorized",
+            "agent token is for a different agent",
+        ));
+    }
+    if manifest.auth.token_hash.is_empty() {
+        return Err(api_error(
+            "unauthorized",
+            "agent manifest has no token hash",
+        ));
+    }
+    if !agent_policy::token_matches(&auth.token, &manifest.auth.token_hash) {
+        return Err(api_error("unauthorized", "invalid agent token"));
+    }
+    Ok(AccessMode::Agent(manifest.principal()))
+}
+
+fn authorize_method(access: &AccessMode, method: &str, params: &Value) -> Result<(), ApiError> {
+    let Some(principal) = access.principal() else {
+        return Ok(());
+    };
+    match method {
+        "status.get" => require_scope(principal, "status:read"),
+        "identity.current" | "identity.list" => require_scope(principal, "identity:read"),
+        "contacts.list" | "contacts.blocked" => require_scope(principal, "contacts:read"),
+        "peers.list" | "propagation.status" | "network.status" => {
+            require_scope(principal, "network:read")
+        }
+        "conversations.list" | "messages.search" => require_scope(principal, "messages:read"),
+        "conversations.read" | "messages.list" => {
+            require_scope(principal, "messages:read")?;
+            let subject = params
+                .get("conversation_id")
+                .and_then(Value::as_str)
+                .and_then(agent_policy::dest_hash_from_conversation_id)
+                .or_else(|| {
+                    params
+                        .get("dest_hash")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+            let Some(subject) = subject else {
+                return Err(api_error("bad_params", "missing conversation subject"));
+            };
+            require_subject(principal, &subject)
+        }
+        "events.read" => require_scope(principal, "events:read"),
+        _ => Ok(()),
+    }
+}
+
+fn require_scope(principal: &AgentPrincipal, scope: &str) -> Result<(), ApiError> {
+    if principal.has_scope(scope) {
+        Ok(())
+    } else {
+        Err(api_error("forbidden", format!("missing scope: {scope}")))
+    }
+}
+
+fn require_subject(principal: &AgentPrincipal, subject: &str) -> Result<(), ApiError> {
+    if principal.allows_subject(subject) {
+        Ok(())
+    } else {
+        Err(api_error(
+            "forbidden",
+            format!("agent grant does not allow contact/conversation: {subject}"),
+        ))
+    }
+}
+
+fn status_payload(state: &ratspeak_runtime::state::AppState, access: &AccessMode) -> Value {
     let active_identity = ratspeak_db::get_active_identity(&state.db);
     let identities = ratspeak_db::get_all_identities(&state.db);
     json!({
@@ -727,7 +904,25 @@ fn status_payload(state: &ratspeak_runtime::state::AppState) -> Value {
         "identity_count": identities.len(),
         "database": ratspeak_db::get_database_stats(&state.db),
         "daemon_api": daemon_api_status_payload(&state.config.data_dir),
+        "access": access_payload(access),
     })
+}
+
+fn access_payload(access: &AccessMode) -> Value {
+    match access {
+        AccessMode::Owner => json!({ "mode": "owner" }),
+        AccessMode::Agent(principal) => json!({
+            "mode": "agent",
+            "agent": principal.name,
+            "identity_hash": principal.identity_hash,
+            "grant_revision": principal.revision,
+            "scopes": principal.scopes.clone(),
+            "pending_scopes": principal.pending_scopes.clone(),
+            "allowed_contacts": principal.allowed_contacts.clone(),
+            "allowed_conversations": principal.allowed_conversations.clone(),
+            "unknown_contacts": principal.unknown_contacts.clone(),
+        }),
+    }
 }
 
 fn daemon_api_status_payload(data_dir: &Path) -> Value {
@@ -769,35 +964,64 @@ fn identity_current_payload(state: &ratspeak_runtime::state::AppState) -> Value 
     })
 }
 
+fn identity_list_payload(state: &ratspeak_runtime::state::AppState, access: &AccessMode) -> Value {
+    let identities = ratspeak_db::get_all_identities(&state.db);
+    match access {
+        AccessMode::Owner => json!(identities),
+        AccessMode::Agent(principal) => json!(
+            identities
+                .into_iter()
+                .filter(|identity| {
+                    identity
+                        .get("hash")
+                        .and_then(Value::as_str)
+                        .is_some_and(|hash| hash == principal.identity_hash)
+                })
+                .collect::<Vec<_>>()
+        ),
+    }
+}
+
 fn contacts_payload(
     state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
     params: Value,
     blocked: bool,
 ) -> Result<Value, ApiError> {
-    let identity_id = identity_param_or_active(state, &params);
+    let identity_id = identity_param_for_access(state, access, &params)?;
     if blocked {
+        let records = filter_contact_records(
+            access,
+            ratspeak_db::get_blocked_contacts(&state.db, &identity_id),
+        );
         Ok(json!({
             "identity_id": identity_id,
-            "blocked": ratspeak_db::get_blocked_contacts(&state.db, &identity_id),
+            "blocked": records,
         }))
     } else {
+        let records = filter_contact_records(
+            access,
+            ratspeak_db::get_all_contacts(&state.db, &identity_id),
+        );
         Ok(json!({
             "identity_id": identity_id,
-            "contacts": ratspeak_db::get_all_contacts(&state.db, &identity_id),
+            "contacts": records,
         }))
     }
 }
 
 fn peers_payload(
     state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
     params: Value,
 ) -> Result<Value, ApiError> {
-    let identity_id = identity_param_or_active(state, &params);
+    let identity_id = identity_param_for_access(state, access, &params)?;
     let recency_secs = optional_f64(&params, "recency_secs", 7.0 * 86400.0)?;
     let cutoff = unix_now_secs() - recency_secs;
     let peers: Vec<Value> = ratspeak_db::get_peers_snapshot(&state.db, cutoff, &identity_id)
         .into_iter()
         .map(peer_to_json)
+        .filter(|peer| value_subject_allowed(access, peer, "hash"))
         .collect();
     Ok(json!({
         "identity_id": identity_id,
@@ -806,25 +1030,72 @@ fn peers_payload(
     }))
 }
 
-fn messages_list_payload(
+async fn conversations_list_payload(
     state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+) -> Result<Value, ApiError> {
+    let payload = ratspeak_runtime::messaging::build_conversations_payload(state)
+        .await
+        .ok_or_else(|| api_error("service_unavailable", "database temporarily unavailable"))?;
+    let conversations = payload
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|conversation| value_subject_allowed(access, conversation, "hash"))
+        .map(|conversation| conversation_payload_for_access(access, conversation))
+        .collect::<Vec<_>>();
+    Ok(json!(conversations))
+}
+
+fn conversations_read_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
     params: Value,
 ) -> Result<Value, ApiError> {
-    let dest_hash = required_string(&params, "dest_hash")?;
+    let dest_hash = conversation_dest_param(&params)?;
+    let identity_id = identity_param_for_access(state, access, &params)?;
+    let limit = optional_i64(&params, "limit", 100)?;
+    let messages = ratspeak_db::get_conversation(&state.db, &dest_hash, &identity_id, limit)
+        .into_iter()
+        .map(|message| message_payload_for_access(access, message))
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "identity_id": identity_id,
+        "conversation": {
+            "conversation_id": agent_policy::conversation_id_for_dest(&dest_hash),
+            "peer_hash": dest_hash,
+        },
+        "messages": messages,
+    }))
+}
+
+fn messages_list_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let dest_hash = conversation_dest_param(&params)?;
     if !ratspeak_runtime::helpers::validate_hex(&dest_hash, 16, 64) {
         return Err(api_error("bad_params", "invalid destination hash"));
     }
-    let identity_id = identity_param_or_active(state, &params);
+    let identity_id = identity_param_for_access(state, access, &params)?;
     let limit = optional_i64(&params, "limit", 100)?;
+    let messages = ratspeak_db::get_conversation(&state.db, &dest_hash, &identity_id, limit)
+        .into_iter()
+        .map(|message| message_payload_for_access(access, message))
+        .collect::<Vec<_>>();
     Ok(json!({
         "identity_id": identity_id,
         "dest_hash": dest_hash,
-        "messages": ratspeak_db::get_conversation(&state.db, &dest_hash, &identity_id, limit),
+        "conversation_id": agent_policy::conversation_id_for_dest(&dest_hash),
+        "messages": messages,
     }))
 }
 
 fn messages_search_payload(
     state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
     params: Value,
 ) -> Result<Value, ApiError> {
     let query = required_string(&params, "query")?;
@@ -834,13 +1105,44 @@ fn messages_search_payload(
             "messages search query must be at least 2 characters",
         ));
     }
-    let identity_id = identity_param_or_active(state, &params);
+    let identity_id = identity_param_for_access(state, access, &params)?;
     let limit = optional_i64(&params, "limit", 100)?;
+    let messages = ratspeak_db::search_messages(&state.db, &query, &identity_id, limit)
+        .into_iter()
+        .filter(|message| message_allowed(access, message))
+        .map(|message| message_payload_for_access(access, message))
+        .collect::<Vec<_>>();
     Ok(json!({
         "identity_id": identity_id,
         "query": query,
-        "messages": ratspeak_db::search_messages(&state.db, &query, &identity_id, limit),
+        "messages": messages,
     }))
+}
+
+async fn events_read_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let after_id = optional_u64(&params, "after_id", 0)?;
+    let limit = optional_usize(&params, "limit", 100)?;
+    let wait_ms = optional_u64(&params, "wait_ms", 0)?.min(30_000);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+
+    loop {
+        let events = event_store::read_events(&state.config.data_dir, after_id, limit, access)
+            .map_err(|error| api_error("internal", format!("failed to read events: {error}")))?;
+        if !events.is_empty() || wait_ms == 0 || std::time::Instant::now() >= deadline {
+            let next_cursor = events.last().map(|event| event.id).unwrap_or(after_id);
+            let latest_id = event_store::latest_event_id(&state.config.data_dir).unwrap_or(0);
+            return Ok(json!({
+                "events": events,
+                "next_cursor": next_cursor,
+                "latest_id": latest_id,
+            }));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }
 
 fn network_status_payload(state: &ratspeak_runtime::state::AppState) -> Value {
@@ -850,6 +1152,130 @@ fn network_status_payload(state: &ratspeak_runtime::state::AppState) -> Value {
         "last_stats": last_stats,
         "propagation": ratspeak_runtime::propagation::get_status_payload(state),
     })
+}
+
+fn filter_contact_records(access: &AccessMode, records: Vec<Value>) -> Vec<Value> {
+    records
+        .into_iter()
+        .filter(|record| value_subject_allowed(access, record, "dest_hash"))
+        .collect()
+}
+
+fn value_subject_allowed(access: &AccessMode, value: &Value, field: &str) -> bool {
+    let Some(principal) = access.principal() else {
+        return true;
+    };
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .is_some_and(|hash| principal.allows_subject(hash))
+}
+
+fn message_allowed(access: &AccessMode, message: &Value) -> bool {
+    let Some(principal) = access.principal() else {
+        return true;
+    };
+    message_subject_hash(message).is_some_and(|hash| principal.allows_subject(&hash))
+}
+
+fn message_subject_hash(message: &Value) -> Option<String> {
+    let direction = message
+        .get("direction")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let field = if direction == "inbound" {
+        "source"
+    } else {
+        "destination"
+    };
+    message
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn conversation_payload_for_access(access: &AccessMode, mut conversation: Value) -> Value {
+    let hash = conversation
+        .get("hash")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if let Some(obj) = conversation.as_object_mut() {
+        obj.insert(
+            "conversation_id".into(),
+            json!(agent_policy::conversation_id_for_dest(&hash)),
+        );
+    }
+    if !access.is_agent() {
+        return conversation;
+    }
+    json!({
+        "conversation_id": agent_policy::conversation_id_for_dest(&hash),
+        "peer_hash": hash,
+        "display_name": untrusted_text(conversation.get("display_name")),
+        "last_message": untrusted_text(conversation.get("last_message")),
+        "last_direction": conversation.get("last_direction"),
+        "timestamp": conversation.get("timestamp"),
+        "unread": conversation.get("unread"),
+        "is_contact": conversation.get("is_contact"),
+        "agent_safety": {
+            "untrusted_fields": ["display_name.text", "last_message.text"]
+        }
+    })
+}
+
+fn message_payload_for_access(access: &AccessMode, message: Value) -> Value {
+    if !access.is_agent() {
+        return message;
+    }
+    let subject = message_subject_hash(&message).unwrap_or_default();
+    json!({
+        "id": message.get("id"),
+        "conversation_id": agent_policy::conversation_id_for_dest(&subject),
+        "peer_hash": subject,
+        "source": message.get("source"),
+        "destination": message.get("destination"),
+        "content": untrusted_text(message.get("content")),
+        "title": untrusted_text(message.get("title")),
+        "timestamp": message.get("timestamp"),
+        "state": message.get("state"),
+        "direction": message.get("direction"),
+        "rtt_ms": message.get("rtt_ms"),
+        "hops": message.get("hops"),
+        "reply_to_id": message.get("reply_to_id"),
+        "reply_to_preview": untrusted_text(message.get("reply_to_preview")),
+        "has_image": message.get("image").is_some(),
+        "attachment_count": message
+            .get("attachments")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0),
+        "delivery_method": message.get("delivery_method"),
+        "reactions": message.get("reactions").cloned().unwrap_or_else(|| json!([])),
+        "agent_safety": {
+            "untrusted_fields": [
+                "content.text",
+                "title.text",
+                "reply_to_preview.text"
+            ],
+            "stored_file_paths_redacted": true
+        }
+    })
+}
+
+fn untrusted_text(value: Option<&Value>) -> Value {
+    json!({
+        "text": value.and_then(Value::as_str).unwrap_or_default(),
+        "untrusted": true,
+    })
+}
+
+fn conversation_dest_param(params: &Value) -> Result<String, ApiError> {
+    if let Some(conversation_id) = params.get("conversation_id").and_then(Value::as_str) {
+        return agent_policy::dest_hash_from_conversation_id(conversation_id)
+            .ok_or_else(|| api_error("bad_params", "invalid conversation id"));
+    }
+    required_string(params, "dest_hash")
 }
 
 fn peer_to_json(row: ratspeak_db::PeerRow) -> Value {
@@ -875,6 +1301,23 @@ fn identity_param_or_active(state: &ratspeak_runtime::state::AppState, params: &
         .unwrap_or_else(|| ratspeak_runtime::helpers::active_identity_id(state))
 }
 
+fn identity_param_for_access(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: &Value,
+) -> Result<String, ApiError> {
+    let identity_id = identity_param_or_active(state, params);
+    if let Some(principal) = access.principal()
+        && identity_id != principal.identity_hash
+    {
+        return Err(api_error(
+            "forbidden",
+            "agent grant cannot access a different identity",
+        ));
+    }
+    Ok(identity_id)
+}
+
 fn required_string(params: &Value, key: &str) -> Result<String, ApiError> {
     params
         .get(key)
@@ -897,6 +1340,26 @@ fn optional_i64(params: &Value, key: &str, default_value: i64) -> Result<i64, Ap
         ));
     }
     Ok(parsed)
+}
+
+fn optional_u64(params: &Value, key: &str, default_value: u64) -> Result<u64, ApiError> {
+    let Some(value) = params.get(key) else {
+        return Ok(default_value);
+    };
+    value
+        .as_u64()
+        .ok_or_else(|| api_error("bad_params", format!("{key} must be an unsigned integer")))
+}
+
+fn optional_usize(params: &Value, key: &str, default_value: usize) -> Result<usize, ApiError> {
+    let parsed = optional_u64(params, key, default_value as u64)?;
+    if !(1..=1000).contains(&parsed) {
+        return Err(api_error(
+            "bad_params",
+            format!("{key} must be between 1 and 1000"),
+        ));
+    }
+    Ok(parsed as usize)
 }
 
 fn optional_f64(params: &Value, key: &str, default_value: f64) -> Result<f64, ApiError> {

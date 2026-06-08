@@ -62,6 +62,44 @@ fn wait_for_path(path: &Path, timeout: Duration) -> bool {
     false
 }
 
+fn seed_contact_and_message(
+    profile_root: &Path,
+    identity_id: &str,
+    peer_hash: &str,
+    display_name: &str,
+    content: &str,
+) {
+    let db = ratspeak_db::init_pool(profile_root).expect("test db pool");
+    ratspeak_db::init_schema(&db).expect("test db schema");
+    ratspeak_db::save_contact(&db, peer_hash, Some(display_name), "trusted", identity_id);
+    ratspeak_db::save_message(
+        &db,
+        &format!("msg-{peer_hash}"),
+        peer_hash,
+        identity_id,
+        content,
+        "",
+        now_secs(),
+        "received",
+        "inbound",
+        identity_id,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        None,
+    );
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 #[test]
 fn agent_profile_bootstrap_smoke() {
     let root = temp_root("agent-profile-bootstrap");
@@ -97,10 +135,18 @@ fn agent_profile_bootstrap_smoke() {
     ]);
     assert_eq!(create["agent"]["name"], "agent-smoke");
     assert_eq!(create["agent"]["requested_scopes"][0], "messages:read");
-    assert_eq!(create["agent"]["requested_scopes"][1], "write:drafts");
-    assert_eq!(create["agent"]["pending_scopes"][0], "messages:read");
-    assert_eq!(create["agent"]["pending_scopes"][1], "write:drafts");
-    assert_eq!(create["agent"]["enforcement"]["local_daemon_api"], false);
+    assert_eq!(create["agent"]["requested_scopes"][1], "drafts:write");
+    assert_eq!(create["agent"]["effective_scopes"][0], "messages:read");
+    assert_eq!(create["agent"]["pending_scopes"][0], "drafts:write");
+    assert_eq!(create["agent"]["grant"]["status"], "active");
+    assert_eq!(create["agent"]["grant"]["scopes"][0], "messages:read");
+    assert_eq!(create["agent"]["enforcement"]["local_daemon_api"], true);
+    assert_eq!(create["agent"]["enforcement"]["contact_allowlist"], true);
+    assert!(
+        create["credential"]["token_file"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
     assert_eq!(create["identity"]["activated"], true);
     assert!(
         create["identity"]["hash"]
@@ -160,7 +206,7 @@ fn agent_profile_bootstrap_smoke() {
     assert!(run_fail(&["--data-dir", &agent_profile, "messages", "send"]).contains("unknown"));
     assert!(run_fail(&["--data-dir", &agent_profile, "contacts", "add"]).contains("unknown"));
     assert!(run_fail(&["--data-dir", &agent_profile, "identity", "export"]).contains("unknown"));
-    assert!(run_fail(&["--data-dir", &agent_profile, "events"]).contains("requires the daemon"));
+    assert!(run_fail(&["--data-dir", &agent_profile, "events"]).contains("requires ratspeakd"));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -237,5 +283,174 @@ fn daemon_api_read_commands_smoke() {
     let _ = daemon.kill();
     let _ = daemon.wait();
 
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn daemon_agent_grants_auth_events_and_safe_reads_smoke() {
+    let root = temp_root("daemon-agent-policy");
+    let owner_profile = root.join("owner");
+    let owner_arg = path_arg(&owner_profile);
+    let allowed = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let denied = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    let create = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "create",
+        "agent-policy",
+        "--identity",
+        "new",
+        "--scope",
+        "read:status",
+        "--scope",
+        "read:identity",
+        "--scope",
+        "read:contacts",
+        "--scope",
+        "read:messages",
+        "--scope",
+        "read:network",
+    ]);
+    let agent_profile = create["agent"]["profile_root"]
+        .as_str()
+        .expect("agent profile")
+        .to_string();
+    let agent_hash = create["agent"]["identity_hash"]
+        .as_str()
+        .expect("agent hash")
+        .to_string();
+    let token_file = create["credential"]["token_file"]
+        .as_str()
+        .expect("token file")
+        .to_string();
+
+    let grant = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "grant",
+        "agent-policy",
+        "--scope",
+        "read:events",
+        "--allow-contact",
+        allowed,
+    ]);
+    assert_eq!(grant["grant"]["status"], "active");
+    assert_eq!(grant["grant"]["revision"], 2);
+    assert_eq!(grant["grant"]["allowed_contacts"][0], allowed);
+    assert!(
+        grant["grant"]["scopes"]
+            .as_array()
+            .expect("scopes")
+            .iter()
+            .any(|scope| scope == "events:read")
+    );
+
+    seed_contact_and_message(
+        Path::new(&agent_profile),
+        &agent_hash,
+        allowed,
+        "Allowed Human",
+        "allowed prompt-injection-looking text",
+    );
+    seed_contact_and_message(
+        Path::new(&agent_profile),
+        &agent_hash,
+        denied,
+        "Denied Human",
+        "denied private text",
+    );
+
+    let mut daemon = spawn_ratspeakd(Path::new(&agent_profile));
+    let endpoint = Path::new(&agent_profile)
+        .join(".ratspeak")
+        .join("ratspeakd-api.json");
+    if !wait_for_path(&endpoint, Duration::from_secs(10)) {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        panic!("ratspeakd API endpoint did not appear");
+    }
+
+    let status = run_json(&["--data-dir", &agent_profile, "status"]);
+    assert_eq!(status["mode"], "daemon");
+    assert_eq!(status["access"]["mode"], "agent");
+    assert_eq!(status["access"]["agent"], "agent-policy");
+
+    let contacts = run_json(&["--data-dir", &agent_profile, "contacts", "list"]);
+    let contact_rows = contacts["contacts"].as_array().expect("contacts array");
+    assert_eq!(contact_rows.len(), 1);
+    assert_eq!(contact_rows[0]["dest_hash"], allowed);
+
+    let conversations = run_json(&["--data-dir", &agent_profile, "conversations", "list"]);
+    let conversation_rows = conversations.as_array().expect("conversation array");
+    assert_eq!(conversation_rows.len(), 1);
+    assert_eq!(conversation_rows[0]["peer_hash"], allowed);
+    assert_eq!(
+        conversation_rows[0]["conversation_id"],
+        format!("lxmf:{allowed}")
+    );
+    assert_eq!(conversation_rows[0]["last_message"]["untrusted"], true);
+
+    let read = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "conversations",
+        "read",
+        &format!("lxmf:{allowed}"),
+    ]);
+    let message = &read["messages"][0];
+    assert_eq!(message["peer_hash"], allowed);
+    assert_eq!(message["content"]["untrusted"], true);
+    assert_eq!(message["agent_safety"]["stored_file_paths_redacted"], true);
+
+    assert!(
+        run_fail(&[
+            "--data-dir",
+            &agent_profile,
+            "messages",
+            "list",
+            &format!("lxmf:{denied}"),
+        ])
+        .contains("forbidden")
+    );
+
+    let events = run_json(&["--data-dir", &agent_profile, "events", "stream", "--once"]);
+    let event_rows = events["events"].as_array().expect("events array");
+    assert!(
+        event_rows
+            .iter()
+            .any(|event| event["event"] == "daemon.started")
+    );
+    let latest_id = events["latest_id"].as_u64().expect("latest id");
+    let replay = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "events",
+        "stream",
+        "--once",
+        "--cursor",
+        &latest_id.to_string(),
+    ]);
+    assert_eq!(replay["events"].as_array().expect("replay events").len(), 0);
+
+    let bad_credential = serde_json::json!({
+        "format": "ratspeak.agent-token.v1",
+        "version": 1,
+        "agent_name": "agent-policy",
+        "identity_hash": agent_hash,
+        "token": "wrong-token",
+        "created_at_unix": 0.0,
+    });
+    std::fs::write(
+        &token_file,
+        serde_json::to_vec_pretty(&bad_credential).expect("bad credential json"),
+    )
+    .expect("write bad credential");
+    assert!(run_fail(&["--data-dir", &agent_profile, "status"]).contains("unauthorized"));
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
     let _ = std::fs::remove_dir_all(root);
 }

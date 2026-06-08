@@ -1,21 +1,21 @@
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use ratspeak_core::{Emitter, NativeNotification, NativeNotifier, NoopEmitter, NoopNotifier};
+use ratspeak_core::{Emitter, NativeNotification, NativeNotifier};
 use ratspeak_runtime::state::AppState;
 use serde_json::{Value, json};
 
 use crate::error::{CliError, CliResult};
+use crate::event_store::EventStore;
 
 pub async fn init_headless_runtime(
     data_root: std::path::PathBuf,
     emit_jsonl: bool,
 ) -> CliResult<Arc<AppState>> {
-    let (emitter, notifier): (Arc<dyn Emitter>, Arc<dyn NativeNotifier>) = if emit_jsonl {
-        let sink = Arc::new(JsonlSink::default());
+    let event_store = EventStore::open(data_root.clone())?;
+    let (emitter, notifier): (Arc<dyn Emitter>, Arc<dyn NativeNotifier>) = {
+        let sink = Arc::new(HeadlessEventSink::new(event_store, emit_jsonl));
         (sink.clone(), sink)
-    } else {
-        (Arc::new(NoopEmitter), Arc::new(NoopNotifier))
     };
 
     ratspeak_runtime::bootstrap::init_headless(data_root, emitter, notifier)
@@ -23,13 +23,25 @@ pub async fn init_headless_runtime(
         .map_err(|e| CliError::failed(format!("failed to initialize Ratspeak runtime: {e}")))
 }
 
-#[derive(Default)]
-struct JsonlSink {
+struct HeadlessEventSink {
+    event_store: Arc<EventStore>,
+    emit_jsonl: bool,
     stdout_lock: Mutex<()>,
 }
 
-impl JsonlSink {
+impl HeadlessEventSink {
+    fn new(event_store: Arc<EventStore>, emit_jsonl: bool) -> Self {
+        Self {
+            event_store,
+            emit_jsonl,
+            stdout_lock: Mutex::new(()),
+        }
+    }
+
     fn write(&self, value: Value) {
+        if !self.emit_jsonl {
+            return;
+        }
         let Ok(_guard) = self.stdout_lock.lock() else {
             return;
         };
@@ -41,25 +53,41 @@ impl JsonlSink {
     }
 }
 
-impl Emitter for JsonlSink {
+impl Emitter for HeadlessEventSink {
     fn emit(&self, event: &str, payload: Value) {
-        self.write(json!({
-            "type": "event",
-            "event": event,
-            "payload": payload,
-        }));
+        match self
+            .event_store
+            .append_emitter_event(event, payload.clone())
+        {
+            Ok(record) => self.write(json!(record)),
+            Err(error) => {
+                tracing::warn!(%error, event, "failed to persist headless event");
+                self.write(json!({
+                    "type": "event",
+                    "event": event,
+                    "payload": payload,
+                }));
+            }
+        }
     }
 }
 
-impl NativeNotifier for JsonlSink {
+impl NativeNotifier for HeadlessEventSink {
     fn notify(&self, notification: NativeNotification) {
-        self.write(json!({
+        let payload = json!({
             "type": "notification",
             "kind": format!("{:?}", notification.kind),
             "title": notification.title,
             "body": notification.body,
             "thread_id": notification.thread_id,
             "notification_id": notification.notification_id,
-        }));
+        });
+        match self.event_store.append_notification(payload.clone()) {
+            Ok(record) => self.write(json!(record)),
+            Err(error) => {
+                tracing::warn!(%error, "failed to persist headless notification");
+                self.write(payload);
+            }
+        }
     }
 }
