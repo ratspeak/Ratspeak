@@ -8,6 +8,7 @@
 
 pub mod announce_handlers;
 pub mod blackhole;
+pub mod bootstrap;
 #[cfg(feature = "hardware")]
 pub mod hardware;
 pub mod helpers;

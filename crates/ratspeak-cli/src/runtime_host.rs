@@ -1,33 +1,16 @@
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ratspeak_core::{Emitter, NativeNotification, NativeNotifier, NoopEmitter, NoopNotifier};
-use ratspeak_runtime::config::DashboardConfig;
 use ratspeak_runtime::state::AppState;
 use serde_json::{Value, json};
 
 use crate::error::{CliError, CliResult};
 
 pub async fn init_headless_runtime(
-    data_root: PathBuf,
+    data_root: std::path::PathBuf,
     emit_jsonl: bool,
 ) -> CliResult<Arc<AppState>> {
-    std::fs::create_dir_all(&data_root)?;
-    let config = DashboardConfig::from_env_and_defaults(data_root.clone());
-
-    let pool_root = data_root.clone();
-    let db = tokio::task::spawn_blocking(move || ratspeak_db::init_pool(&pool_root))
-        .await
-        .map_err(|e| CliError::failed(format!("database task panicked: {e}")))?
-        .map_err(|e| CliError::failed(format!("failed to open Ratspeak database: {e}")))?;
-
-    let schema_db = db.clone();
-    tokio::task::spawn_blocking(move || ratspeak_db::init_schema(&schema_db))
-        .await
-        .map_err(|e| CliError::failed(format!("schema task panicked: {e}")))?
-        .map_err(|e| CliError::failed(format!("failed to initialize Ratspeak schema: {e}")))?;
-
     let (emitter, notifier): (Arc<dyn Emitter>, Arc<dyn NativeNotifier>) = if emit_jsonl {
         let sink = Arc::new(JsonlSink::default());
         (sink.clone(), sink)
@@ -35,15 +18,9 @@ pub async fn init_headless_runtime(
         (Arc::new(NoopEmitter), Arc::new(NoopNotifier))
     };
 
-    let state = Arc::new(AppState::new(config, db, emitter, notifier));
-    state.set_startup_stage("checking");
-
-    let init_state = state.clone();
-    tokio::spawn(async move {
-        ratspeak_runtime::init_rns_lxmf(init_state, data_root).await;
-    });
-
-    Ok(state)
+    ratspeak_runtime::bootstrap::init_headless(data_root, emitter, notifier)
+        .await
+        .map_err(|e| CliError::failed(format!("failed to initialize Ratspeak runtime: {e}")))
 }
 
 #[derive(Default)]
