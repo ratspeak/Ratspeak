@@ -49,6 +49,13 @@ fn now_ts() -> f64 {
 }
 
 pub fn init_pool(data_dir: &Path) -> Result<DbPool, Box<dyn std::error::Error + Send + Sync>> {
+    init_pool_with_max_size(data_dir, POOL_MAX_SIZE)
+}
+
+pub fn init_pool_with_max_size(
+    data_dir: &Path,
+    max_size: u32,
+) -> Result<DbPool, Box<dyn std::error::Error + Send + Sync>> {
     let ratspeak_dir = data_dir.join(".ratspeak");
     std::fs::create_dir_all(&ratspeak_dir)?;
 
@@ -76,7 +83,7 @@ pub fn init_pool(data_dir: &Path) -> Result<DbPool, Box<dyn std::error::Error + 
                  PRAGMA synchronous=NORMAL;",
         )
     });
-    let pool = Pool::builder().max_size(POOL_MAX_SIZE).build(manager)?;
+    let pool = Pool::builder().max_size(max_size.max(1)).build(manager)?;
 
     tracing::info!("Database pool initialized at {}", db_path.display());
     Ok(pool)

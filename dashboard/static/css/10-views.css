@@ -1851,6 +1851,129 @@
     overflow-wrap: anywhere;
 }
 
+.settings-agent-primary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+}
+
+.settings-agent-primary-panel {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: var(--space-4);
+    min-height: 132px;
+    padding: var(--space-4);
+    border: 1px solid var(--border-row);
+    border-radius: var(--radius-sm);
+    background: var(--surface-panel);
+}
+
+.settings-agent-primary-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.settings-agent-primary-copy strong {
+    color: var(--text-primary);
+    font-size: var(--type-row-title-size);
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
+.settings-agent-primary-copy span:last-child {
+    color: var(--text-muted);
+    font-size: var(--type-row-meta-size);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.settings-agent-primary-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+}
+
+.settings-agent-safety-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-row);
+    border-radius: var(--radius-sm);
+    background: var(--surface-control);
+}
+
+.settings-agent-safety-strip div {
+    min-width: 120px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.settings-agent-safety-strip span {
+    color: var(--text-muted);
+    font-size: var(--type-badge-size);
+    font-weight: var(--type-badge-weight);
+    text-transform: uppercase;
+}
+
+.settings-agent-safety-strip strong {
+    color: var(--text-primary);
+    font-size: var(--type-row-meta-size);
+    overflow-wrap: anywhere;
+}
+
+.settings-agent-technical,
+.settings-agent-advanced {
+    min-width: 0;
+    border: 1px solid var(--border-row);
+    border-radius: var(--radius-sm);
+    background: var(--surface-control);
+}
+
+.settings-agent-technical {
+    margin-top: var(--space-4);
+}
+
+.settings-agent-advanced {
+    padding: 0 var(--space-5);
+}
+
+.settings-agent-technical summary,
+.settings-agent-advanced summary {
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-size: var(--type-row-title-size);
+    font-weight: var(--type-row-title-weight);
+}
+
+.settings-agent-technical summary {
+    padding: 0 var(--space-4);
+}
+
+.settings-agent-technical .settings-agent-facts {
+    padding: 0 var(--space-4) var(--space-4);
+    margin-top: 0;
+}
+
+.settings-agent-advanced-copy {
+    color: var(--text-muted);
+    font-size: var(--type-row-meta-size);
+    line-height: 1.35;
+    padding-bottom: var(--space-4);
+}
+
 .settings-agent-fact {
     min-width: 0;
     display: flex;

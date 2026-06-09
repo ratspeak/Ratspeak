@@ -1249,6 +1249,18 @@
         grid-template-columns: 1fr;
     }
 
+    .settings-agent-primary-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .settings-agent-primary-panel {
+        min-height: 0;
+    }
+
+    .settings-agent-safety-strip {
+        align-items: flex-start;
+    }
+
     .settings-agent-facts {
         grid-template-columns: 1fr;
     }

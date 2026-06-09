@@ -3516,7 +3516,10 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
         "agentAdapterChoices",
         "configureSelectedAgentAdapter",
         "startSelectedAgentDaemon",
+        "setAgentAutonomyRoutine",
+        "editAgentQuickLimits",
         "renderAgentSetupChecklist",
+        "renderAgentAdvancedGuardrails",
         "agentPolicyListCopy",
     ] {
         assert!(
@@ -3584,19 +3587,16 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
     for required in [
         "AGENT_ADAPTER_ORDER",
         "openclaw",
-        "claude-codex-cli",
         "venice",
-        "openai-compatible",
-        "local-http",
-        "custom-cli",
+        "openrouter",
+        "OPENROUTER_API_KEY",
         "Agent Runtime",
-        "Configure Runtime",
-        "Start Daemon",
-        "Copy Kit",
+        "Start",
+        "Copy kit",
         "Agent connection kit",
-        "Runtime Adapter",
-        "Secret Environment",
-        "Runtime Command",
+        "API Key Variable",
+        "Advanced guardrails",
+        "settings-agent-primary-grid",
         "api_agent_runtime",
         "start_agent_daemon",
         "set_agent_adapter",
@@ -3604,6 +3604,17 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         assert!(
             settings_js.contains(required),
             "Settings > Agents is missing runtime onboarding UI token: {required}"
+        );
+    }
+    for removed in [
+        "claude-codex-cli",
+        "openai-compatible",
+        "local-http",
+        "custom-cli",
+    ] {
+        assert!(
+            !settings_js.contains(removed),
+            "launch UI should not expose unsupported provider: {removed}"
         );
     }
 
@@ -3621,8 +3632,12 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         "fallback_agent_summary",
         "health_error",
         "https://api.venice.ai/api/v1",
+        "https://openrouter.ai/api/v1",
         "VENICE_API_KEY",
+        "OPENROUTER_API_KEY",
         "adapter_public_payload",
+        "approval_target_data_dir",
+        "open_profile_with_pool_size",
     ] {
         assert!(
             agent_admin.contains(required),

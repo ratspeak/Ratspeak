@@ -459,12 +459,9 @@ var AGENT_PRESET_ORDER = [
 ];
 
 var AGENT_ADAPTER_ORDER = [
-    'openclaw',
-    'claude-codex-cli',
     'venice',
-    'openai-compatible',
-    'local-http',
-    'custom-cli'
+    'openrouter',
+    'openclaw'
 ];
 
 var AGENT_APPROVAL_STATES = [
@@ -640,6 +637,10 @@ function renderAgentDetail(payload) {
     var healthErrors = health && health.ok === false && Array.isArray(health.errors) ? health.errors : [];
     var tokenFile = agent.auth && agent.auth.token_file ? agent.auth.token_file : '';
     var endpoint = runtime && runtime.endpoint_file ? runtime.endpoint_file : (payload.connection && payload.connection.daemon ? payload.connection.daemon.endpoint_file : '');
+    var autoEnabled = !!(policy && policy.auto_approval_enabled);
+    var maxText = policy && policy.max_text_chars ? policy.max_text_chars : 4096;
+    var maxFile = policy && policy.max_file_bytes ? policy.max_file_bytes : 0;
+    var attachments = !!(policy && policy.allow_message_attachments);
     detail.innerHTML =
         '<div class="settings-agent-summary">' +
             '<div class="settings-agent-summary-head">' +
@@ -654,32 +655,46 @@ function renderAgentDetail(payload) {
             '</div>' +
             (healthErrors.length ? renderAgentHealth(healthErrors) : '') +
             renderAgentSetupChecklist(payload.setup || (summary && summary.setup)) +
-            '<div class="settings-agent-action-row">' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="configure-adapter">Configure Runtime</button>' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="start-daemon">Start Daemon</button>' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="refresh-runtime">Refresh Runtime</button>' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="copy-bundle">Copy Kit</button>' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="add-contact">Allow Contact</button>' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="edit-scopes">Preset</button>' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="rotate-token">Rotate Token</button>' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="revoke">Revoke</button>' +
+            '<div class="settings-agent-primary-grid">' +
+                agentPrimaryPanel('Provider', adapter.configured ? (adapter.label || adapter.provider || 'Configured') : 'Not configured', agentAdapterRuntimeCopy(adapter), [
+                    ['configure-adapter', adapter.configured ? 'Edit' : 'Set up']
+                ]) +
+                agentPrimaryPanel('Connection', runtime.running ? 'Running' : 'Stopped', endpoint || 'Agent daemon is not running.', [
+                    ['start-daemon', runtime.running ? 'Running' : 'Start'],
+                    ['refresh-runtime', 'Refresh'],
+                    ['copy-bundle', 'Copy kit']
+                ]) +
+                agentPrimaryPanel('Access', contacts.length ? (contacts.length + ' allowed contact' + (contacts.length === 1 ? '' : 's')) : 'No contacts allowed', conversations.length ? (conversations.length + ' conversation rules') : 'Limit the agent before it can reply.', [
+                    ['add-contact', 'Allow contact']
+                ]) +
+                agentPrimaryPanel('Autonomy', autoEnabled ? 'Trusted replies' : 'Manual review', autoEnabled ? 'Routine replies can auto-approve inside guardrails.' : 'Every send waits for owner approval.', [
+                    ['set-autonomy-manual', 'Manual'],
+                    ['set-autonomy-routine', 'Trusted replies']
+                ]) +
             '</div>' +
-            '<div class="settings-agent-facts">' +
-                agentFact('Runtime Adapter', adapter.configured ? (adapter.label || adapter.provider || 'Configured') : 'Not configured') +
-                agentFact('Provider', adapter.provider || 'Not set') +
-                agentFact('Model', adapter.model || 'Not set') +
-                agentFact('Base URL', adapter.base_url || 'Not set') +
-                agentFact('Secret', agentAdapterSecretLabel(adapter)) +
-                agentFact('Command', adapter.command && adapter.command.length ? adapter.command.join(' ') : 'Not set') +
-                agentFact('Daemon endpoint', endpoint || 'Not running') +
-                agentFact('Token file', tokenFile) +
-                agentFact('Scopes', scopes.length ? scopes.join(', ') : 'None') +
-                agentFact('Allowed contacts', contacts.length ? contacts.join(', ') : (grant.unknown_contacts === 'allow' ? 'All contacts' : 'None')) +
-                agentFact('Allowed conversations', conversations.length ? conversations.join(', ') : 'None') +
+            '<div class="settings-agent-safety-strip">' +
+                '<div><span>Message limit</span><strong>' + escapeHtml(String(maxText)) + ' chars</strong></div>' +
+                '<div><span>Files</span><strong>' + escapeHtml(attachments ? formatAgentBytes(maxFile) : 'Off') + '</strong></div>' +
+                '<div><span>Fallback</span><strong>' + escapeHtml(policy && policy.require_owner_approval ? 'Review' : 'Policy only') + '</strong></div>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="quick-limits">Edit limits</button>' +
             '</div>' +
+            '<details class="settings-agent-technical">' +
+                '<summary>Technical details</summary>' +
+                '<div class="settings-agent-facts">' +
+                    agentFact('Provider', adapter.provider || 'Not set') +
+                    agentFact('Model', adapter.model || 'Not set') +
+                    agentFact('Base URL', adapter.base_url || 'Not set') +
+                    agentFact('Secret', agentAdapterSecretLabel(adapter)) +
+                    agentFact('Command', adapter.command && adapter.command.length ? adapter.command.join(' ') : 'Not set') +
+                    agentFact('Daemon endpoint', endpoint || 'Not running') +
+                    agentFact('Token file', tokenFile) +
+                    agentFact('Scopes', scopes.length ? scopes.join(', ') : 'None') +
+                    agentFact('Allowed contacts', contacts.length ? contacts.join(', ') : (grant.unknown_contacts === 'allow' ? 'All contacts' : 'None')) +
+                    agentFact('Allowed conversations', conversations.length ? conversations.join(', ') : 'None') +
+                '</div>' +
+            '</details>' +
         '</div>' +
-        '<div class="settings-panel-section-title">Guardrails</div>' +
-        renderAgentPolicyControls(policy || {}, summary);
+        renderAgentAdvancedGuardrails(policy || {}, summary);
 }
 
 function agentFact(label, value) {
@@ -687,6 +702,30 @@ function agentFact(label, value) {
         '<span class="settings-agent-fact-label">' + escapeHtml(label) + '</span>' +
         '<span class="settings-agent-fact-value">' + escapeHtml(value || 'Not set') + '</span>' +
     '</div>';
+}
+
+function agentPrimaryPanel(title, value, detail, actions) {
+    return '<section class="settings-agent-primary-panel">' +
+        '<div class="settings-agent-primary-copy">' +
+            '<span class="settings-agent-fact-label">' + escapeHtml(title) + '</span>' +
+            '<strong>' + escapeHtml(value || 'Not set') + '</strong>' +
+            '<span>' + escapeHtml(detail || '') + '</span>' +
+        '</div>' +
+        '<div class="settings-agent-primary-actions">' +
+            (actions || []).map(function(action) {
+                return '<button class="selector-badge selector-badge-no-caret" data-agent-action="' + escapeHtml(action[0]) + '">' + escapeHtml(action[1]) + '</button>';
+            }).join('') +
+        '</div>' +
+    '</section>';
+}
+
+function agentAdapterRuntimeCopy(adapter) {
+    if (!adapter || !adapter.configured) return 'Choose Venice, OpenRouter, or OpenClaw.';
+    if (adapter.provider === 'openclaw') return 'Local OpenClaw adapter uses the copied connection kit.';
+    var parts = [];
+    if (adapter.model) parts.push(adapter.model);
+    if (adapter.secret && adapter.secret.env) parts.push(adapter.secret.env);
+    return parts.length ? parts.join(' via ') : 'API adapter configured.';
 }
 
 function renderAgentHealth(errors) {
@@ -717,6 +756,14 @@ function agentAdapterSecretLabel(adapter) {
     if (secret.env) return 'Environment: ' + secret.env;
     if (secret.file) return 'File: ' + secret.file;
     return 'External or none';
+}
+
+function renderAgentAdvancedGuardrails(policy, summary) {
+    return '<details class="settings-agent-advanced">' +
+        '<summary>Advanced guardrails</summary>' +
+        '<div class="settings-agent-advanced-copy">Most users should use the simple autonomy and limit controls above. These options exist for operators who need exact policy tuning.</div>' +
+        renderAgentPolicyControls(policy, summary) +
+    '</details>';
 }
 
 function renderAgentPolicyControls(policy, summary) {
@@ -939,6 +986,9 @@ function handleAgentDetailClick(e) {
     else if (action === 'copy-bundle') copyAgentConnectionBundle();
     else if (action === 'add-contact') addAgentAllowedContact();
     else if (action === 'edit-scopes') editAgentPreset();
+    else if (action === 'set-autonomy-manual') setAgentAutonomyManual();
+    else if (action === 'set-autonomy-routine') setAgentAutonomyRoutine();
+    else if (action === 'quick-limits') editAgentQuickLimits();
     else if (action === 'rotate-token') rotateSelectedAgentToken();
     else if (action === 'revoke') revokeSelectedAgent();
 }
@@ -987,6 +1037,81 @@ function setSelectedAgentPolicy(key, value) {
     }).catch(function(err) {
         showAgentError(err, 'Failed to update policy');
         loadAgentDetail(name);
+    });
+}
+
+function setSelectedAgentPolicyBatch(sets, toastLabel) {
+    var name = selectedAgentName();
+    if (!name) return Promise.resolve(null);
+    return RS.invoke('set_agent_policy', {
+        args: {
+            name: name,
+            set: sets
+        }
+    }).then(function(payload) {
+        if (payload && payload.policy) {
+            if (!_settingsAgentsState.detail) _settingsAgentsState.detail = {};
+            _settingsAgentsState.detail.policy = payload.policy;
+            renderAgentDetail(_settingsAgentsState.detail);
+        }
+        showToast(toastLabel || 'Agent policy updated', 'toast-green', 1800);
+        loadAgentSettings(false);
+        return payload;
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to update policy');
+        loadAgentDetail(name);
+    });
+}
+
+function setAgentAutonomyManual() {
+    setSelectedAgentPolicyBatch([
+        { key: 'require_owner_approval', value: true },
+        { key: 'auto_approval_enabled', value: false }
+    ], 'Manual review enabled');
+}
+
+function setAgentAutonomyRoutine() {
+    rsConfirm({
+        title: 'Trust Routine Replies',
+        message: 'Routine text replies to allowed contacts can skip approval when they fit message, rate, and causal-context guardrails. Anything outside that lane still waits for review.',
+        confirmText: 'Trust replies'
+    }).then(function(ok) {
+        if (!ok) return null;
+        return setSelectedAgentPolicyBatch([
+            { key: 'require_owner_approval', value: true },
+            { key: 'auto_approval_enabled', value: true },
+            { key: 'auto_approval_allowed_action_kinds', value: ['message.reply', 'message.send'] },
+            { key: 'auto_approval_requires_causal_context', value: true },
+            { key: 'auto_approval_requires_verified_causal_context', value: true },
+            { key: 'auto_approval_allow_attachments', value: false },
+            { key: 'auto_approval_max_text_chars', value: 1500 },
+            { key: 'auto_approval_max_actions_per_hour', value: 20 },
+            { key: 'auto_approval_max_messages_per_contact_hour', value: 10 }
+        ], 'Trusted replies enabled');
+    });
+}
+
+function editAgentQuickLimits() {
+    var detail = _settingsAgentsState.detail || {};
+    var policy = detail.policy || {};
+    rsChoice({
+        title: 'Agent Limits',
+        message: 'Choose the limit to change.',
+        choices: [
+            { label: 'Message length', value: 'max_text_chars', hint: (policy.max_text_chars || 4096) + ' chars' },
+            { label: 'File size', value: 'max_file_bytes', hint: formatAgentBytes(policy.max_file_bytes || 0) },
+            { label: 'Image size', value: 'max_image_bytes', hint: formatAgentBytes(policy.max_image_bytes || 0) },
+            { label: 'Attachments', value: 'allow_message_attachments', hint: policy.allow_message_attachments ? 'On' : 'Off' }
+        ]
+    }).then(function(choice) {
+        if (!choice) return null;
+        if (choice === 'allow_message_attachments') {
+            return setSelectedAgentPolicy(choice, !policy.allow_message_attachments);
+        }
+        if (choice === 'max_text_chars') {
+            return editAgentPolicyNumber(choice, String(policy.max_text_chars || 4096));
+        }
+        return editAgentPolicyBytes(choice);
     });
 }
 
@@ -1212,6 +1337,11 @@ function chooseAgentRuntimeProvider() {
     });
 }
 
+function defaultAgentPresetForProvider(provider) {
+    if (provider === 'openclaw') return 'openclaw-basic';
+    return 'reply-assistant';
+}
+
 function collectAgentAdapterConfig(name, provider) {
     var defaults = adapterDefaults(provider);
     var current = (_settingsAgentsState.detail && _settingsAgentsState.detail.adapter) || {};
@@ -1226,61 +1356,26 @@ function collectAgentAdapterConfig(name, provider) {
         secret_env: currentProvider.secret && currentProvider.secret.env ? currentProvider.secret.env : (defaults.secret_env || ''),
         notes: currentProvider.notes || ''
     };
+    if (provider === 'openclaw') return Promise.resolve(config);
     return rsPrompt({
-        title: 'Runtime Label',
-        message: 'Name shown in Settings.',
-        placeholder: defaults.label,
-        defaultValue: config.label,
+        title: 'API Key Variable',
+        message: 'Environment variable your local adapter will read.',
+        placeholder: provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'VENICE_API_KEY',
+        defaultValue: config.secret_env,
         confirmText: 'Next'
-    }).then(function(label) {
-        if (label === null) return null;
-        config.label = label.trim() || defaults.label;
-        if (provider === 'openclaw' || provider === 'custom-cli') {
-            return rsPrompt({
-                title: 'Runtime Command',
-                message: 'Command the adapter uses outside Ratspeak.',
-                placeholder: 'openclaw ratspeak run --connection-kit <connection-kit.json>',
-                defaultValue: config.command.join(' '),
-                confirmText: 'Save'
-            }).then(function(command) {
-                if (command === null) return null;
-                config.command = command.trim() ? command.trim().split(/\s+/) : [];
-                return config;
-            });
-        }
-        if (provider === 'venice' || provider === 'openai-compatible' || provider === 'local-http') {
-            return rsPrompt({
-                title: 'Base URL',
-                message: 'HTTP endpoint for the local bridge or compatible API.',
-                placeholder: provider === 'venice' ? 'https://api.venice.ai/api/v1' : 'http://127.0.0.1:11434/v1',
-                defaultValue: config.base_url,
-                confirmText: 'Next'
-            }).then(function(baseUrl) {
-                if (baseUrl === null) return null;
-                config.base_url = baseUrl.trim();
-                return rsPrompt({
-                    title: 'Model',
-                    message: 'Optional model name for the adapter.',
-                    placeholder: provider === 'venice' ? 'venice model id' : 'model id',
-                    defaultValue: config.model,
-                    confirmText: 'Next'
-                });
-            }).then(function(model) {
-                if (model === null) return null;
-                config.model = model.trim();
-                return rsPrompt({
-                    title: 'Secret Environment',
-                    message: 'Environment variable the adapter reads for its API key.',
-                    placeholder: provider === 'venice' ? 'VENICE_API_KEY' : 'OPENAI_API_KEY',
-                    defaultValue: config.secret_env,
-                    confirmText: 'Save'
-                });
-            }).then(function(secretEnv) {
-                if (secretEnv === null) return null;
-                config.secret_env = secretEnv.trim();
-                return config;
-            });
-        }
+    }).then(function(secretEnv) {
+        if (secretEnv === null) return null;
+        config.secret_env = secretEnv.trim();
+        return rsPrompt({
+            title: 'Model',
+            message: 'Optional model name. You can leave this blank and set it in the adapter.',
+            placeholder: provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'model id',
+            defaultValue: config.model,
+            confirmText: 'Save'
+        });
+    }).then(function(model) {
+        if (model === null) return null;
+        config.model = model.trim();
         return Promise.resolve(config);
     });
 }
@@ -1304,15 +1399,15 @@ function openAgentCreateFlow() {
     }).then(function(provider) {
         if (!provider) return null;
         providerValue = provider;
-        return rsChoice({
-            title: 'Agent Preset',
-            message: 'Choose the starting permission set.',
-            choices: agentPresetChoices()
-        });
-    }).then(function(preset) {
-        if (!preset) return null;
         return chooseAgentInitialContact().then(function(contact) {
-            return { preset: preset, contact: contact };
+            return collectAgentAdapterConfig(nameValue, providerValue).then(function(adapterArgs) {
+                if (!adapterArgs) return null;
+                return {
+                    preset: defaultAgentPresetForProvider(providerValue),
+                    contact: contact,
+                    adapter: adapterArgs
+                };
+            });
         });
     }).then(function(selection) {
         if (!selection) return;
@@ -1329,11 +1424,8 @@ function openAgentCreateFlow() {
             }
         }).then(function(payload) {
             _settingsAgentsState.selected = nameValue;
-            return collectAgentAdapterConfig(nameValue, providerValue).then(function(adapterArgs) {
-                if (!adapterArgs) return payload;
-                return RS.invoke('set_agent_adapter', { args: adapterArgs }).then(function() {
-                    return payload;
-                });
+            return RS.invoke('set_agent_adapter', { args: selection.adapter }).then(function() {
+                return payload;
             });
         }).then(function(payload) {
             showToast('Agent created', 'toast-green', 2500);

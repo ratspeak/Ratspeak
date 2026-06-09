@@ -151,7 +151,7 @@ pub fn create_agent(profile: &Profile, mut opts: AgentCreateOptions) -> CliResul
     )
     .map_err(|e| CliError::failed(format!("failed to acquire owner profile lock: {e}")))?;
 
-    let agent_profile = profile::open_profile(agent_root.clone())?;
+    let agent_profile = profile::open_profile_with_pool_size(agent_root.clone(), Some(2))?;
     let _agent_lock = ratspeak_runtime::profile_lock::try_acquire_profile_lock(
         &agent_profile.config.data_dir,
         "ratspeak owner agent create",
@@ -295,7 +295,7 @@ pub fn show_agent_manifest(profile: &Profile, name: &str) -> CliResult<AgentMani
 pub fn show_agent_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
     let manifest = show_agent_manifest(profile, name)?;
     let mut health_errors = Vec::new();
-    let summary = match agent_summary(profile, &manifest) {
+    let summary = match agent_summary(&manifest) {
         Ok(summary) => summary,
         Err(error) => {
             health_errors.push(health_error("summary", &error));
@@ -557,24 +557,26 @@ pub fn rotate_agent_token(profile: &Profile, name: &str) -> CliResult<Value> {
 }
 
 pub fn show_agent_policy(profile: &Profile, name: &str) -> CliResult<Value> {
-    let (manifest, agent_profile) = open_agent_profile(profile, name)?;
-    let policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
+    let manifest = show_agent_manifest(profile, name)?;
+    let data_dir = manifest.profile_data_dir.clone();
+    let policy = agent_actions::ensure_write_policy(&data_dir)?;
     Ok(json!({
         "agent": manifest.name,
         "policy": policy,
-        "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
+        "policy_file": agent_actions::write_policy_path(&data_dir),
     }))
 }
 
 pub fn validate_agent_policy(profile: &Profile, name: &str) -> CliResult<Value> {
-    let (manifest, agent_profile) = open_agent_profile(profile, name)?;
-    let policy = agent_actions::read_write_policy(&agent_profile.config.data_dir)?;
+    let manifest = show_agent_manifest(profile, name)?;
+    let data_dir = manifest.profile_data_dir.clone();
+    let policy = agent_actions::read_write_policy(&data_dir)?;
     agent_actions::validate_write_policy(&policy)?;
     Ok(json!({
         "agent": manifest.name,
         "ok": true,
         "policy_revision": policy.policy_revision,
-        "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
+        "policy_file": agent_actions::write_policy_path(&data_dir),
     }))
 }
 
@@ -583,8 +585,9 @@ pub fn set_agent_policy(
     name: &str,
     patch: AgentPolicyPatch,
 ) -> CliResult<Value> {
-    let (manifest, agent_profile) = open_agent_profile(profile, name)?;
-    let current = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
+    let manifest = show_agent_manifest(profile, name)?;
+    let data_dir = manifest.profile_data_dir.clone();
+    let current = agent_actions::ensure_write_policy(&data_dir)?;
     let mut policy = patch.policy.unwrap_or_else(|| current.clone());
     let before = serde_json::to_value(&current)?;
 
@@ -595,14 +598,14 @@ pub fn set_agent_policy(
     let changed = serde_json::to_value(&policy)? != before;
     if changed {
         policy.policy_revision += 1;
-        agent_actions::write_write_policy(&agent_profile.config.data_dir, &policy)?;
+        agent_actions::write_write_policy(&data_dir, &policy)?;
         append_agent_admin_audit(
             &manifest.profile_root,
             "policy.updated",
             json!({
                 "agent": manifest.name,
                 "policy_revision": policy.policy_revision,
-                "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
+                "policy_file": agent_actions::write_policy_path(&data_dir),
             }),
         );
     }
@@ -611,7 +614,7 @@ pub fn set_agent_policy(
         "agent": manifest.name,
         "changed": changed,
         "policy": policy,
-        "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
+        "policy_file": agent_actions::write_policy_path(&data_dir),
         "runtime_note": "policy changes are read by ratspeakd on the next action create/submit/execute",
     }))
 }
@@ -621,8 +624,8 @@ pub fn list_agent_approvals(
     agent: Option<&str>,
     state: Option<&str>,
 ) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    let records = agent_actions::list_actions(&target.config.data_dir, None, state)?
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    let records = agent_actions::list_actions(&data_dir, None, state)?
         .into_iter()
         .map(|record| agent_actions::public_action(record, false))
         .collect::<Vec<_>>();
@@ -630,8 +633,8 @@ pub fn list_agent_approvals(
 }
 
 pub fn show_agent_approval(profile: &Profile, agent: Option<&str>, id: &str) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    let record = agent_actions::read_action(&target.config.data_dir, id)?;
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    let record = agent_actions::read_action(&data_dir, id)?;
     Ok(agent_actions::public_action(record, true))
 }
 
@@ -642,8 +645,8 @@ pub fn inspect_agent_staged_file(
     file_id: Option<&str>,
     preview_bytes: usize,
 ) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    agent_actions::inspect_staged_file(&target.config.data_dir, id, file_id, preview_bytes)
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    agent_actions::inspect_staged_file(&data_dir, id, file_id, preview_bytes)
 }
 
 pub fn approve_agent_action(
@@ -653,23 +656,17 @@ pub fn approve_agent_action(
     note: Option<String>,
     execute: bool,
 ) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    let mut payload = agent_actions::public_action(
-        agent_actions::approve_action(&target.config.data_dir, id, note)?,
-        true,
-    );
-    append_owner_action_event(&target.config.data_dir, "agent.action.approved", id);
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    let mut payload =
+        agent_actions::public_action(agent_actions::approve_action(&data_dir, id, note)?, true);
+    append_owner_action_event(&data_dir, "agent.action.approved", id);
     if execute {
-        payload = crate::daemon_api::request(
-            &target.config.data_dir,
-            "actions.execute",
-            json!({ "id": id }),
-        )?
-        .ok_or_else(|| {
-            CliError::failed(
-                "actions.execute requires ratspeakd running for the selected agent profile",
-            )
-        })?;
+        payload = crate::daemon_api::request(&data_dir, "actions.execute", json!({ "id": id }))?
+            .ok_or_else(|| {
+                CliError::failed(
+                    "actions.execute requires ratspeakd running for the selected agent profile",
+                )
+            })?;
     }
     Ok(payload)
 }
@@ -680,9 +677,9 @@ pub fn reject_agent_action(
     id: &str,
     note: Option<String>,
 ) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    let record = agent_actions::reject_action(&target.config.data_dir, id, note)?;
-    append_owner_action_event(&target.config.data_dir, "agent.action.rejected", id);
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    let record = agent_actions::reject_action(&data_dir, id, note)?;
+    append_owner_action_event(&data_dir, "agent.action.rejected", id);
     Ok(agent_actions::public_action(record, true))
 }
 
@@ -692,35 +689,32 @@ pub fn cancel_agent_action(
     id: &str,
     note: Option<String>,
 ) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    let record = agent_actions::cancel_action(&target.config.data_dir, id, Actor::owner(), note)?;
-    append_owner_action_event(&target.config.data_dir, "agent.action.cancelled", id);
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    let record = agent_actions::cancel_action(&data_dir, id, Actor::owner(), note)?;
+    append_owner_action_event(&data_dir, "agent.action.cancelled", id);
     Ok(agent_actions::public_action(record, true))
 }
 
 pub fn execute_agent_action(profile: &Profile, agent: Option<&str>, id: &str) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    crate::daemon_api::request(
-        &target.config.data_dir,
-        "actions.execute",
-        json!({ "id": id }),
-    )?
-    .ok_or_else(|| {
-        CliError::failed(
-            "actions.execute requires ratspeakd running for the selected agent profile",
-        )
-    })
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    crate::daemon_api::request(&data_dir, "actions.execute", json!({ "id": id }))?.ok_or_else(
+        || {
+            CliError::failed(
+                "actions.execute requires ratspeakd running for the selected agent profile",
+            )
+        },
+    )
 }
 
 pub fn expire_agent_actions(profile: &Profile, agent: Option<&str>) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    let expired = agent_actions::expire_due_actions(&target.config.data_dir)?;
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    let expired = agent_actions::expire_due_actions(&data_dir)?;
     Ok(json!({ "expired": expired }))
 }
 
 pub fn list_agent_audit(profile: &Profile, agent: Option<&str>, limit: usize) -> CliResult<Value> {
-    let target = approval_target_profile(profile, agent)?;
-    let records = agent_actions::list_audit(&target.config.data_dir, limit)?
+    let data_dir = approval_target_data_dir(profile, agent)?;
+    let records = agent_actions::list_audit(&data_dir, limit)?
         .into_iter()
         .map(|record| serde_json::to_value(record).unwrap_or(Value::Null))
         .collect::<Vec<_>>();
@@ -1353,34 +1347,23 @@ fn credential_token_file(_owner_root_arg: &str, agent_root_arg: &str) -> PathBuf
         .join("agent.token")
 }
 
-fn agent_summary_or_fallback(profile: &Profile, manifest: &AgentManifest) -> Value {
-    match agent_summary(profile, manifest) {
+fn agent_summary_or_fallback(_profile: &Profile, manifest: &AgentManifest) -> Value {
+    match agent_summary(manifest) {
         Ok(summary) => summary,
         Err(error) => fallback_agent_summary(manifest, Some(&error)),
     }
 }
 
-fn agent_summary(profile: &Profile, manifest: &AgentManifest) -> CliResult<Value> {
-    let (_, agent_profile) = open_agent_profile(profile, &manifest.name)?;
-    let pending = agent_actions::list_actions(
-        &agent_profile.config.data_dir,
-        None,
-        Some(agent_actions::STATE_PENDING_APPROVAL),
-    )?
-    .len();
-    let approved = agent_actions::list_actions(
-        &agent_profile.config.data_dir,
-        None,
-        Some(agent_actions::STATE_APPROVED),
-    )?
-    .len();
-    let drafts = agent_actions::list_actions(
-        &agent_profile.config.data_dir,
-        None,
-        Some(agent_actions::STATE_DRAFT),
-    )?
-    .len();
-    let policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
+fn agent_summary(manifest: &AgentManifest) -> CliResult<Value> {
+    let data_dir = &manifest.profile_data_dir;
+    let pending =
+        agent_actions::list_actions(data_dir, None, Some(agent_actions::STATE_PENDING_APPROVAL))?
+            .len();
+    let approved =
+        agent_actions::list_actions(data_dir, None, Some(agent_actions::STATE_APPROVED))?.len();
+    let drafts =
+        agent_actions::list_actions(data_dir, None, Some(agent_actions::STATE_DRAFT))?.len();
+    let policy = agent_actions::ensure_write_policy(data_dir)?;
     let adapter = adapter_public_payload(agent_adapter_for_manifest(manifest)?);
     Ok(json!({
         "name": manifest.name,
@@ -1476,48 +1459,25 @@ fn onboarding_contract_payload(profile: &Profile) -> Value {
 
 pub fn agent_adapter_catalog_payload() -> Value {
     json!({
-        "order": [
-            "openclaw",
-            "claude-codex-cli",
-            "venice",
-            "openai-compatible",
-            "local-http",
-            "custom-cli"
-        ],
+        "order": ["venice", "openrouter", "openclaw"],
         "providers": {
-            "openclaw": {
-                "label": "OpenClaw",
-                "description": "Local OpenClaw bot or skill wrapper that reads the Ratspeak connection kit.",
-                "secret": "none",
-                "default_command": ["openclaw", "ratspeak", "run", "--connection-kit", "<connection-kit.json>"]
-            },
-            "claude-codex-cli": {
-                "label": "Claude/Codex CLI",
-                "description": "Local terminal agent process using the Ratspeak CLI/API contract.",
-                "secret": "external",
-                "default_command": []
-            },
             "venice": {
                 "label": "Venice API",
                 "description": "OpenAI-compatible Venice inference through a local bridge or agent runtime.",
                 "base_url": "https://api.venice.ai/api/v1",
                 "secret_env": "VENICE_API_KEY"
             },
-            "openai-compatible": {
-                "label": "OpenAI-compatible API",
-                "description": "Any OpenAI-compatible HTTP inference provider run by a local adapter.",
-                "secret_env": "OPENAI_API_KEY"
+            "openrouter": {
+                "label": "OpenRouter API",
+                "description": "OpenAI-compatible OpenRouter inference through a local bridge or agent runtime.",
+                "base_url": "https://openrouter.ai/api/v1",
+                "secret_env": "OPENROUTER_API_KEY"
             },
-            "local-http": {
-                "label": "Local HTTP model",
-                "description": "A local model server or bridge on this machine.",
-                "secret": "optional"
-            },
-            "custom-cli": {
-                "label": "Custom command",
-                "description": "A user-supplied command that consumes the connection kit.",
-                "secret": "external",
-                "default_command": []
+            "openclaw": {
+                "label": "OpenClaw",
+                "description": "Local OpenClaw bot or skill wrapper that reads the Ratspeak connection kit.",
+                "secret": "none",
+                "default_command": ["openclaw", "ratspeak", "run", "--connection-kit", "<connection-kit.json>"]
             }
         }
     })
@@ -1692,32 +1652,20 @@ fn adapter_defaults(provider: &str) -> AdapterDefaults {
                 "<connection-kit.json>".into(),
             ],
         },
-        "claude-codex-cli" => AdapterDefaults {
-            label: "Claude/Codex CLI",
-            base_url: None,
-            secret_env: None,
-            command: Vec::new(),
-        },
         "venice" => AdapterDefaults {
             label: "Venice API",
             base_url: Some("https://api.venice.ai/api/v1"),
             secret_env: Some("VENICE_API_KEY"),
             command: Vec::new(),
         },
-        "openai-compatible" => AdapterDefaults {
-            label: "OpenAI-compatible API",
-            base_url: None,
-            secret_env: Some("OPENAI_API_KEY"),
-            command: Vec::new(),
-        },
-        "local-http" => AdapterDefaults {
-            label: "Local HTTP model",
-            base_url: None,
-            secret_env: None,
+        "openrouter" => AdapterDefaults {
+            label: "OpenRouter API",
+            base_url: Some("https://openrouter.ai/api/v1"),
+            secret_env: Some("OPENROUTER_API_KEY"),
             command: Vec::new(),
         },
         _ => AdapterDefaults {
-            label: "Custom command",
+            label: "OpenClaw",
             base_url: None,
             secret_env: None,
             command: Vec::new(),
@@ -1728,8 +1676,7 @@ fn adapter_defaults(provider: &str) -> AdapterDefaults {
 fn normalize_adapter_provider(provider: &str) -> CliResult<String> {
     let provider = provider.trim().to_ascii_lowercase();
     match provider.as_str() {
-        "openclaw" | "claude-codex-cli" | "venice" | "openai-compatible" | "local-http"
-        | "custom-cli" => Ok(provider),
+        "openclaw" | "venice" | "openrouter" => Ok(provider),
         _ => Err(CliError::usage(format!(
             "unsupported agent adapter provider: {provider}"
         ))),
@@ -1864,19 +1811,13 @@ fn packaged_binary_path(name: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
-fn open_agent_profile(profile: &Profile, name: &str) -> CliResult<(AgentManifest, Profile)> {
-    let manifest = show_agent_manifest(profile, name)?;
-    let agent_profile = profile::open_profile(manifest.profile_root.clone())?;
-    Ok((manifest, agent_profile))
-}
-
-fn approval_target_profile(profile: &Profile, agent: Option<&str>) -> CliResult<Profile> {
+fn approval_target_data_dir(profile: &Profile, agent: Option<&str>) -> CliResult<PathBuf> {
     if let Some(agent_name) = agent {
         validate_agent_name(agent_name)?;
-        let (_, agent_profile) = open_agent_profile(profile, agent_name)?;
-        Ok(agent_profile)
+        let manifest = show_agent_manifest(profile, agent_name)?;
+        Ok(manifest.profile_data_dir)
     } else {
-        Ok(profile.clone())
+        Ok(profile.config.data_dir.clone())
     }
 }
 

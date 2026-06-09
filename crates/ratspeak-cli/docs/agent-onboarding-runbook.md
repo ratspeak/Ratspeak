@@ -9,11 +9,10 @@ OpenClaw-specific runtime.
 For non-developer owners, start in the Ratspeak app:
 
 1. Open Settings > Agents.
-2. Choose Add, name the agent, choose what will run it, pick a preset, and
-   optionally choose the first allowed contact.
+2. Choose Add, name the agent, choose what will run it, and optionally choose
+   the first allowed contact.
 3. Configure the runtime adapter profile. The current beta options are
-   OpenClaw, Claude/Codex CLI, Venice API, OpenAI-compatible API, local HTTP
-   model, and custom command.
+   Venice API, OpenRouter API, and OpenClaw.
 4. Start the agent daemon from the panel or with the command shown in the
    connection kit.
 5. Copy the redacted connection kit for the local adapter or supervisor.
@@ -27,7 +26,7 @@ The local agent process reads the private Ratspeak token file directly.
 Provider secrets should be passed to the adapter through an environment variable
 or private file reference. The Venice adapter default uses
 `https://api.venice.ai/api/v1` and the `VENICE_API_KEY` environment variable;
-generic OpenAI-compatible adapters default to `OPENAI_API_KEY`.
+OpenRouter uses `https://openrouter.ai/api/v1` and `OPENROUTER_API_KEY`.
 
 Desktop builds package `ratspeakd` and `ratspeakctl` as sidecars, so a kit
 copied from the app can point an adapter at the app-local binary paths instead
@@ -59,7 +58,12 @@ ratspeakctl --data-dir OWNER_PROFILE agent policy validate my-agent
 ratspeakctl --data-dir OWNER_PROFILE agent policy set my-agent --max-text-chars 1500
 ```
 
-The GUI exposes these same policy groups:
+The GUI shows common controls first: provider setup, daemon state, connection
+kit copy, allowed contacts, manual review vs trusted replies, message/file
+limits, approvals, file review, and audit. The full policy engine remains under
+Advanced guardrails for operators who need exact tuning.
+
+Advanced guardrails include:
 
 - Autonomy: owner approval fallback, auto-approval lane, allowed action kinds,
   allowed contacts/conversations, delivery methods, causal requirements, and

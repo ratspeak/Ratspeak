@@ -31,10 +31,20 @@ pub fn resolve_data_root(explicit: Option<PathBuf>) -> PathBuf {
 }
 
 pub fn open_profile(data_root: PathBuf) -> CliResult<Profile> {
+    open_profile_with_pool_size(data_root, None)
+}
+
+pub fn open_profile_with_pool_size(
+    data_root: PathBuf,
+    pool_size: Option<u32>,
+) -> CliResult<Profile> {
     std::fs::create_dir_all(&data_root)?;
     let config = DashboardConfig::from_env_and_defaults(data_root.clone());
-    let db = ratspeak_db::init_pool(&data_root)
-        .map_err(|e| CliError::failed(format!("failed to open Ratspeak database: {e}")))?;
+    let db = match pool_size {
+        Some(max_size) => ratspeak_db::init_pool_with_max_size(&data_root, max_size),
+        None => ratspeak_db::init_pool(&data_root),
+    }
+    .map_err(|e| CliError::failed(format!("failed to open Ratspeak database: {e}")))?;
     ratspeak_db::init_schema(&db)
         .map_err(|e| CliError::failed(format!("failed to initialize Ratspeak schema: {e}")))?;
     Ok(Profile {

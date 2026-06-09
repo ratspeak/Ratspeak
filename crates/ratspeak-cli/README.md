@@ -97,20 +97,19 @@ key material. `identity activate` is an offline profile change; restart
 For normal owner setup, use the Ratspeak app's Settings > Agents panel. It
 creates the same isolated agent profiles, grants, token files, policy
 guardrails, approval queues, and audit records as the CLI. It also stores the
-runtime adapter profile that tells the owner what will actually run the agent:
-OpenClaw, Claude/Codex CLI, Venice API, a generic OpenAI-compatible provider, a
-local HTTP model server, or a custom command. The copied connection kit includes
-the adapter metadata, daemon start command, stable CLI/API contract, and
-redacted credential references.
+runtime adapter profile that tells the owner what will actually run the agent.
+The first supported launch targets are Venice API, OpenRouter API, and
+OpenClaw. The copied connection kit includes the adapter metadata, daemon start
+command, stable CLI/API contract, and redacted credential references.
 
 The GUI never displays the raw token, agent recovery phrase, or LLM/API key.
 Local agent processes read the private Ratspeak token file directly. Provider
 keys should be supplied to the adapter through an environment variable or
-private file reference, for example `VENICE_API_KEY` for Venice. Desktop bundles
-include `ratspeakd` and `ratspeakctl` as packaged sidecars, and copied
-connection kits prefer those packaged binary paths when the app is running from
-a bundle. CLI-only installs continue to resolve `ratspeakd` and `ratspeakctl`
-from `PATH`.
+private file reference, for example `VENICE_API_KEY` for Venice or
+`OPENROUTER_API_KEY` for OpenRouter. Desktop bundles include `ratspeakd` and
+`ratspeakctl` as packaged sidecars, and copied connection kits prefer those
+packaged binary paths when the app is running from a bundle. CLI-only installs
+continue to resolve `ratspeakd` and `ratspeakctl` from `PATH`.
 
 `agent onboard` is the preferred CLI beta entry point for scripted setup. It
 defaults to the `reply-assistant` preset and returns machine-readable
@@ -135,12 +134,11 @@ the manifest, policy, and credential files from the owner profile. Restart
 `ratspeakd` for the agent profile after changing grants or credentials. Policy
 changes are read on the next action create/submit/execute.
 
-The Settings > Agents panel exposes the same owner controls for runtime adapter
-setup, daemon status/start, connection kit copy, presets, contact grants, token
-rotation, revocation, approval/action state inspection, file/image review,
-audit entries, auto-approval, rate limits, causal loop prevention, payload
-sizes, MIME filters, file path roots, contact/conversation mutations,
-announces, path requests, and propagation-node limits.
+The Settings > Agents panel exposes the common owner controls first: runtime
+adapter setup, daemon status/start, connection kit copy, contact grants,
+manual-review vs trusted-reply autonomy, message/file limits, approvals, file
+review, and audit entries. The full policy engine remains available under
+advanced guardrails for operators who need exact tuning.
 Keep manual review for unmatched actions enabled unless the agent has tight
 grants and a deliberately configured auto-approval lane.
 
