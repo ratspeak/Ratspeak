@@ -1274,12 +1274,12 @@ function chooseAgentProvider() {
         var venice = document.createElement('button');
         venice.type = 'button';
         venice.className = 'settings-agent-provider-card settings-agent-provider-card-active';
+        venice.setAttribute('aria-label', 'Venice.ai');
         venice.innerHTML = [
             '<span class="settings-agent-provider-logo settings-agent-provider-logo-venice" aria-hidden="true">',
-            '  <span>V</span>',
-            '</span>',
-            '<span class="settings-agent-provider-title">Venice.ai</span>',
-            '<span class="settings-agent-provider-hint">Supported now</span>'
+            '  <img class="settings-agent-provider-logo-img settings-agent-provider-logo-img-light" src="/static/assets/venice-logo-light.svg" alt="">',
+            '  <img class="settings-agent-provider-logo-img settings-agent-provider-logo-img-dark" src="/static/assets/venice-logo-dark.svg" alt="">',
+            '</span>'
         ].join('');
         venice.addEventListener('click', function() { built.dismiss('venice'); });
         grid.appendChild(venice);
@@ -1288,12 +1288,9 @@ function chooseAgentProvider() {
         soon.type = 'button';
         soon.className = 'settings-agent-provider-card settings-agent-provider-card-disabled';
         soon.disabled = true;
+        soon.setAttribute('aria-label', 'Coming soon...');
         soon.innerHTML = [
-            '<span class="settings-agent-provider-logo settings-agent-provider-logo-soon" aria-hidden="true">',
-            '  <span>+</span>',
-            '</span>',
-            '<span class="settings-agent-provider-title">More coming soon...</span>',
-            '<span class="settings-agent-provider-hint">OpenRouter and OpenClaw are planned.</span>'
+            '<span class="settings-agent-provider-title">Coming soon...</span>'
         ].join('');
         grid.appendChild(soon);
 
