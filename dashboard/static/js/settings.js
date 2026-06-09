@@ -1254,8 +1254,85 @@ function adapterDefaults(provider) {
     };
 }
 
+function chooseAgentProvider() {
+    return new Promise(function(resolve) {
+        var built = _rsBuildSheet({ title: 'Choose Agent Provider' }, resolve);
+        built.sheet.classList.add('settings-agent-provider-sheet');
+
+        built.overlay.addEventListener('click', function(e) {
+            if (e.target === built.overlay) built.dismiss(null);
+        });
+
+        var message = document.createElement('div');
+        message.className = 'rs-dialog-message';
+        message.textContent = 'Choose the service that will power this agent.';
+        built.body.appendChild(message);
+
+        var grid = document.createElement('div');
+        grid.className = 'settings-agent-provider-grid';
+
+        var venice = document.createElement('button');
+        venice.type = 'button';
+        venice.className = 'settings-agent-provider-card settings-agent-provider-card-active';
+        venice.innerHTML = [
+            '<span class="settings-agent-provider-logo settings-agent-provider-logo-venice" aria-hidden="true">',
+            '  <span>V</span>',
+            '</span>',
+            '<span class="settings-agent-provider-title">Venice.ai</span>',
+            '<span class="settings-agent-provider-hint">Supported now</span>'
+        ].join('');
+        venice.addEventListener('click', function() { built.dismiss('venice'); });
+        grid.appendChild(venice);
+
+        var soon = document.createElement('button');
+        soon.type = 'button';
+        soon.className = 'settings-agent-provider-card settings-agent-provider-card-disabled';
+        soon.disabled = true;
+        soon.innerHTML = [
+            '<span class="settings-agent-provider-logo settings-agent-provider-logo-soon" aria-hidden="true">',
+            '  <span>+</span>',
+            '</span>',
+            '<span class="settings-agent-provider-title">More coming soon...</span>',
+            '<span class="settings-agent-provider-hint">OpenRouter and OpenClaw are planned.</span>'
+        ].join('');
+        grid.appendChild(soon);
+
+        built.body.appendChild(grid);
+
+        var cancelBtn = document.createElement('button');
+        cancelBtn.className = 'rs-dialog-cancel';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', function() { built.dismiss(null); });
+        built.footer.appendChild(cancelBtn);
+
+        built.sheet.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') { e.stopPropagation(); built.dismiss(null); }
+            if (e.key === 'Tab') {
+                var focusable = built.sheet.querySelectorAll('button:not(:disabled)');
+                if (!focusable.length) return;
+                var first = focusable[0], last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+            }
+        });
+
+        RS.gestures.attachDragDismiss(built.sheet, {
+            axis: 'y',
+            blockIfScrolled: true,
+            skipIf: function(e) {
+                return !!(e.target.closest('button') || e.target.tagName === 'INPUT');
+            },
+            parallaxOverlay: built.overlay,
+            onCommit: function() { built.dismiss(null); }
+        });
+
+        built.present();
+        venice.focus();
+    });
+}
+
 function chooseAgentRuntimeProvider() {
-    return Promise.resolve('venice');
+    return chooseAgentProvider();
 }
 
 function defaultAgentPresetForProvider(provider) {
@@ -1343,12 +1420,16 @@ function collectAgentAdapterConfig(name, provider) {
 
 function openAgentCreateFlow() {
     var nameValue = '';
-    var providerValue = 'venice';
-    rsPrompt({
-        title: 'Add Agent',
-        message: 'Name this agent profile.',
-        placeholder: 'my-agent',
-        confirmText: 'Next'
+    var providerValue = '';
+    chooseAgentProvider().then(function(provider) {
+        if (!provider) return null;
+        providerValue = provider;
+        return rsPrompt({
+            title: 'Name Agent',
+            message: 'Give this Venice agent a local profile name.',
+            placeholder: 'my-agent',
+            confirmText: 'Next'
+        });
     }).then(function(name) {
         if (name === null) return null;
         nameValue = name.trim();
