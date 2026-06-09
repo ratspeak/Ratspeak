@@ -363,13 +363,17 @@ pub fn agent_scope_is_effective_now(scope: &str) -> bool {
 }
 
 pub fn conversation_id_for_dest(dest_hash: &str) -> String {
-    format!("lxmf:{dest_hash}")
+    format!("lxmf:{}", dest_hash.to_ascii_lowercase())
 }
 
 pub fn dest_hash_from_conversation_id(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    let dest = trimmed.strip_prefix("lxmf:").unwrap_or(trimmed);
-    ratspeak_runtime::helpers::validate_hex(dest, 16, 64).then(|| dest.to_string())
+    let dest = if trimmed.len() >= 5 && trimmed[..5].eq_ignore_ascii_case("lxmf:") {
+        &trimmed[5..]
+    } else {
+        trimmed
+    };
+    ratspeak_runtime::helpers::validate_hex(dest, 16, 64).then(|| dest.to_ascii_lowercase())
 }
 
 pub fn push_unique(values: &mut Vec<String>, value: String) {

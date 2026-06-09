@@ -141,7 +141,7 @@ fn agent_profile_bootstrap_smoke() {
         "--scope",
         "write:drafts",
         "--allow-contact",
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     ]);
     assert_eq!(create["agent"]["name"], "agent-smoke");
     assert_eq!(create["agent"]["requested_scopes"][0], "messages:read");
@@ -157,6 +157,10 @@ fn agent_profile_bootstrap_smoke() {
     );
     assert_eq!(create["agent"]["grant"]["status"], "active");
     assert_eq!(create["agent"]["grant"]["scopes"][0], "messages:read");
+    assert_eq!(
+        create["agent"]["grant"]["allowed_contacts"][0],
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
     assert_eq!(create["agent"]["enforcement"]["local_daemon_api"], true);
     assert_eq!(create["agent"]["enforcement"]["contact_allowlist"], true);
     assert!(
@@ -196,6 +200,53 @@ fn agent_profile_bootstrap_smoke() {
 
     let show = run_json(&["--data-dir", &owner_arg, "agent", "show", "agent-smoke"]);
     assert_eq!(show["identity_hash"], agent_hash);
+
+    let grant = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "grant",
+        "agent-smoke",
+        "--allow-contact",
+        "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        "--allow-conversation",
+        "LXMF:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    ]);
+    let contacts = grant["grant"]["allowed_contacts"]
+        .as_array()
+        .expect("allowed contacts");
+    assert!(
+        contacts
+            .iter()
+            .any(|value| value == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    );
+    let conversations = grant["grant"]["allowed_conversations"]
+        .as_array()
+        .expect("allowed conversations");
+    assert!(
+        conversations
+            .iter()
+            .any(|value| value == "lxmf:cccccccccccccccccccccccccccccccc")
+    );
+
+    assert!(
+        run_fail(&[
+            "--data-dir",
+            &owner_arg,
+            "approvals",
+            "list",
+            "--agent",
+            "missing-agent",
+        ])
+        .contains("agent not found")
+    );
+    assert!(
+        !owner_profile
+            .join(".ratspeak")
+            .join("agents")
+            .join("missing-agent")
+            .exists()
+    );
 
     let current = run_json(&["--data-dir", &agent_profile, "identity", "current"]);
     assert_eq!(current["exists"], true);

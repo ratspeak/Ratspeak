@@ -17,7 +17,8 @@ For non-developer owners, start in the Ratspeak app:
 
 The connection bundle includes the agent profile path, daemon start command,
 stable CLI contract, token file path, and token hash. It does not include the
-raw token; the local agent process reads the private token file directly.
+raw token or agent recovery phrase; the local agent process reads the private
+token file directly.
 
 For scripted setup, use the friendly onboarding command instead of hand-writing
 every scope:
@@ -132,6 +133,10 @@ Only actions matching that lane can auto-approve. Files, images, network
 announces, path requests, contact mutations, and conversation mutations still
 require owner approval by default. Policy and grant revisions are rechecked at
 send time, so tightening a policy blocks stale drafted actions.
+
+Keep manual review for unmatched actions enabled for first-run setups. Turning
+it off means actions that are allowed by grant and policy, but do not match the
+auto-approval lane, can run without owner review.
 
 ## Bot Contract Discovery
 

@@ -78,9 +78,7 @@ pub fn create_agent(profile: &Profile, mut opts: AgentCreateOptions) -> CliResul
             "--unknown-contacts must be either deny or allow",
         ));
     }
-    for contact in &opts.allowed_contacts {
-        validate_contact_hash(contact)?;
-    }
+    let allowed_contacts = normalize_contact_grants(opts.allowed_contacts)?;
     let allowed_conversations = normalize_conversation_grants(opts.allowed_conversations)?;
 
     for preset in &opts.presets {
@@ -127,7 +125,7 @@ pub fn create_agent(profile: &Profile, mut opts: AgentCreateOptions) -> CliResul
     let credential = create_agent_credential(&opts.name, &created.hash, now);
     let token_path = agent_token_path(&agent_root);
     let write_policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
-    let sorted_contacts = sorted_unique(opts.allowed_contacts);
+    let sorted_contacts = sorted_unique(allowed_contacts);
 
     let manifest = AgentManifest {
         format: AGENT_MANIFEST_FORMAT.into(),
@@ -302,13 +300,11 @@ pub fn update_agent_grant(profile: &Profile, update: AgentGrantUpdate) -> CliRes
     }
 
     if !update.contacts.is_empty() || update.replace_contacts {
-        for contact in &update.contacts {
-            validate_contact_hash(contact)?;
-        }
+        let normalized_contacts = normalize_contact_grants(update.contacts)?;
         if update.replace_contacts {
             grant.allowed_contacts.clear();
         }
-        for contact in update.contacts {
+        for contact in normalized_contacts {
             push_unique(&mut grant.allowed_contacts, contact);
         }
         grant.allowed_contacts = sorted_unique(grant.allowed_contacts);
@@ -415,6 +411,7 @@ pub fn rotate_agent_token(profile: &Profile, name: &str) -> CliResult<Value> {
     let path = agent_manifest_path(&agent_root);
     let mut manifest = read_agent_manifest(&path)?
         .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
+    let previous_manifest = manifest.clone();
     let now = unix_now_secs();
     let credential = create_agent_credential(name, &manifest.identity_hash, now);
     let token_path = agent_token_path(&agent_root);
@@ -428,7 +425,10 @@ pub fn rotate_agent_token(profile: &Profile, name: &str) -> CliResult<Value> {
     grant.updated_at_unix = now;
     manifest.grant = grant.clone();
     write_agent_manifest(&path, &manifest)?;
-    write_agent_credential(&token_path, &credential)?;
+    if let Err(error) = write_agent_credential(&token_path, &credential) {
+        let _ = write_agent_manifest(&path, &previous_manifest);
+        return Err(error);
+    }
     append_agent_admin_audit(
         &agent_root,
         "token.rotated",
@@ -658,6 +658,22 @@ pub fn connection_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
     }))
 }
 
+pub fn redact_agent_private_material(mut payload: Value) -> Value {
+    if let Some(identity) = payload.get_mut("identity").and_then(Value::as_object_mut) {
+        if identity.remove("mnemonic").is_some() {
+            identity.insert("mnemonic_redacted".into(), Value::Bool(true));
+            identity.insert(
+                "mnemonic_redaction_reason".into(),
+                Value::String(
+                    "agent recovery material is stored in the agent profile and is not exposed to the desktop settings UI"
+                        .into(),
+                ),
+            );
+        }
+    }
+    payload
+}
+
 pub fn agent_presets_payload() -> Value {
     json!({
         "inbox-reader": {
@@ -770,6 +786,16 @@ pub fn normalize_conversation_grants(values: Vec<String>) -> CliResult<Vec<Strin
             &mut normalized,
             crate::agent_policy::conversation_id_for_dest(&dest_hash),
         );
+    }
+    Ok(sorted_unique(normalized))
+}
+
+pub fn normalize_contact_grants(values: Vec<String>) -> CliResult<Vec<String>> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let contact = value.trim().to_ascii_lowercase();
+        validate_contact_hash(&contact)?;
+        push_unique(&mut normalized, contact);
     }
     Ok(sorted_unique(normalized))
 }
@@ -1172,8 +1198,8 @@ fn open_agent_profile(profile: &Profile, name: &str) -> CliResult<(AgentManifest
 fn approval_target_profile(profile: &Profile, agent: Option<&str>) -> CliResult<Profile> {
     if let Some(agent_name) = agent {
         validate_agent_name(agent_name)?;
-        let agent_root = agent_root_from_owner_data_dir(&profile.config.data_dir, agent_name);
-        profile::open_profile(agent_root)
+        let (_, agent_profile) = open_agent_profile(profile, agent_name)?;
+        Ok(agent_profile)
     } else {
         Ok(profile.clone())
     }

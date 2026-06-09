@@ -658,7 +658,7 @@ function renderAgentPolicyControls(policy, summary) {
         {
             title: 'Autonomy',
             controls: [
-                { type: 'toggle', key: 'require_owner_approval', label: 'Owner approval fallback', desc: 'Keep manual approval available for actions that miss auto-approval guardrails.' },
+                { type: 'toggle', key: 'require_owner_approval', label: 'Manual review for unmatched actions', desc: 'When on, actions that do not match auto-approval still wait for owner review. Keep this on for first-run setups.', dangerOff: true },
                 { type: 'toggle', key: 'auto_approval_enabled', label: 'Auto approval', desc: 'Allow low-risk matching actions to skip the approval queue.' },
                 { type: 'list', key: 'auto_approval_allowed_action_kinds', label: 'Auto-approved action kinds', desc: 'Only these action kinds can auto-approve.' },
                 { type: 'list', key: 'auto_approval_allowed_contacts', label: 'Auto-approved contacts', desc: 'Optional contact allowlist for auto-approved actions.' },
@@ -788,7 +788,7 @@ function renderAgentPolicyControls(policy, summary) {
 
 function policyControl(spec, policy) {
     var value = policy ? policy[spec.key] : undefined;
-    if (spec.type === 'toggle') return policyToggle(spec.key, spec.label, spec.desc, !!value);
+    if (spec.type === 'toggle') return policyToggle(spec.key, spec.label, spec.desc, !!value, !!spec.dangerOff);
     if (spec.type === 'bytes') return policyBytes(spec.key, spec.label, spec.desc, value || 0);
     if (spec.type === 'list') return policyList(spec.key, spec.label, spec.desc, Array.isArray(value) ? value : []);
     if (spec.type === 'choice') return policyChoice(spec.key, spec.label, spec.desc, value, spec.choices || []);
@@ -796,10 +796,11 @@ function policyControl(spec, policy) {
 }
 
 function policyToggle(key, label, desc, checked) {
+    var dangerOff = arguments.length > 4 && arguments[4];
     return '<div class="settings-row settings-agent-policy-row" data-policy-key="' + escapeHtml(key) + '">' +
         '<div class="settings-row-info"><span class="settings-row-label">' + escapeHtml(label) + '</span><span class="settings-row-desc">' + escapeHtml(desc) + '</span></div>' +
         '<label class="prop-toggle" aria-label="' + escapeHtml(label) + '">' +
-            '<input type="checkbox" data-agent-policy-toggle="' + escapeHtml(key) + '"' + (checked ? ' checked' : '') + '>' +
+            '<input type="checkbox" data-agent-policy-toggle="' + escapeHtml(key) + '"' + (dangerOff ? ' data-danger-off="1"' : '') + (checked ? ' checked' : '') + '>' +
             '<span class="prop-slider"></span>' +
         '</label>' +
     '</div>';
@@ -876,6 +877,20 @@ function handleAgentDetailClick(e) {
 function handleAgentPolicyToggle(e) {
     var input = e.target.closest('[data-agent-policy-toggle]');
     if (!input) return;
+    if (input.dataset.dangerOff === '1' && !input.checked) {
+        input.checked = true;
+        rsConfirm({
+            title: 'Disable Manual Review',
+            message: 'Actions that do not match auto-approval may run without owner review. Keep this on unless you have a controlled agent and tight grants.',
+            danger: true,
+            confirmText: 'Disable'
+        }).then(function(ok) {
+            if (!ok) return;
+            input.checked = false;
+            setSelectedAgentPolicy(input.dataset.agentPolicyToggle, false);
+        });
+        return;
+    }
     setSelectedAgentPolicy(input.dataset.agentPolicyToggle, !!input.checked);
 }
 
@@ -959,10 +974,11 @@ function editAgentPolicyList(key) {
     var detail = _settingsAgentsState.detail || {};
     var policy = detail.policy || {};
     var current = (policy[key] || []).map(function(value) { return String(value); }).join(', ');
+    var copy = agentPolicyListCopy(key);
     rsPrompt({
-        title: 'Agent Allowlist',
-        message: 'Comma-separated hashes. Leave blank for no allowlist.',
-        placeholder: 'hash1, hash2',
+        title: copy.title,
+        message: copy.message,
+        placeholder: copy.placeholder,
         defaultValue: current,
         confirmText: 'Save'
     }).then(function(input) {
@@ -970,6 +986,77 @@ function editAgentPolicyList(key) {
         var values = input.split(',').map(function(v) { return v.trim(); }).filter(Boolean);
         setSelectedAgentPolicy(key, values);
     });
+}
+
+function agentPolicyListCopy(key) {
+    var defaults = {
+        title: 'Agent Values',
+        message: 'Comma-separated values. Leave blank for none.',
+        placeholder: 'value1, value2'
+    };
+    var map = {
+        auto_approval_allowed_action_kinds: {
+            title: 'Auto Action Kinds',
+            message: 'Comma-separated action kinds allowed to auto-approve.',
+            placeholder: 'message.send, message.reply'
+        },
+        auto_approval_allowed_contacts: {
+            title: 'Auto Contacts',
+            message: 'Comma-separated contact hashes allowed for auto-approval.',
+            placeholder: '32 hex characters'
+        },
+        auto_approval_allowed_conversations: {
+            title: 'Auto Conversations',
+            message: 'Comma-separated conversation IDs allowed for auto-approval.',
+            placeholder: 'lxmf:32hex'
+        },
+        auto_approval_allowed_delivery_methods: {
+            title: 'Auto Delivery Methods',
+            message: 'Comma-separated delivery methods allowed for auto-approved sends.',
+            placeholder: 'auto, direct'
+        },
+        denied_text_substrings: {
+            title: 'Denied Text',
+            message: 'Comma-separated text fragments that block staging.',
+            placeholder: 'fragment1, fragment2'
+        },
+        allowed_source_roots: {
+            title: 'Source Roots',
+            message: 'Comma-separated local folders allowed for path-based file staging.',
+            placeholder: '/Users/name/Documents'
+        },
+        allowed_attachment_mime_prefixes: {
+            title: 'Allowed MIME Prefixes',
+            message: 'Comma-separated MIME prefixes accepted for attachments.',
+            placeholder: 'text/, image/'
+        },
+        denied_attachment_mime_prefixes: {
+            title: 'Denied MIME Prefixes',
+            message: 'Comma-separated MIME prefixes always blocked.',
+            placeholder: 'application/x-'
+        },
+        allowed_path_request_hashes: {
+            title: 'Path Request Hashes',
+            message: 'Comma-separated destination hashes the agent may request paths for.',
+            placeholder: '32 hex characters'
+        },
+        allowed_propagation_node_hashes: {
+            title: 'Propagation Nodes',
+            message: 'Comma-separated Offline Inbox node hashes allowed for forced propagation.',
+            placeholder: '32 hex characters'
+        },
+        blocked_action_kinds: {
+            title: 'Blocked Action Kinds',
+            message: 'Comma-separated action kinds denied before approval checks.',
+            placeholder: 'identity.announce'
+        },
+        allowed_delivery_methods: {
+            title: 'Delivery Methods',
+            message: 'Comma-separated delivery methods the agent may request.',
+            placeholder: 'auto, direct, propagated'
+        }
+    };
+    return map[key] || defaults;
 }
 
 function editAgentPolicyChoice(key) {
@@ -1098,9 +1185,9 @@ function chooseAgentInitialContact() {
                 message: 'Paste an LXMF destination hash.',
                 placeholder: '32 hex characters',
                 confirmText: 'Allow'
-            }).then(function(hash) { return hash ? hash.trim() : ''; });
+            }).then(function(hash) { return hash ? hash.trim().toLowerCase() : ''; });
         }
-        return value || '';
+        return value ? String(value).toLowerCase() : '';
     });
 }
 

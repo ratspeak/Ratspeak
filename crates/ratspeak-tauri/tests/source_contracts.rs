@@ -3488,6 +3488,8 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
 
     for required in [
         "function initAgentSettings",
+        "Disable Manual Review",
+        "data-danger-off=\"1\"",
         "api_agents",
         "api_agent",
         "api_agent_connection_bundle",
@@ -3505,6 +3507,7 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
         "agents_updated",
         "agent_actions_updated",
         "agentPresetChoices",
+        "agentPolicyListCopy",
     ] {
         assert!(
             settings_js.contains(required),
@@ -3514,6 +3517,7 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
 
     assert!(commands_mod.contains("pub mod agents;"));
     assert!(agents_rs.contains("ratspeak_cli::agent_admin"));
+    assert!(agents_rs.contains("redact_agent_private_material(payload)"));
     assert!(agents_rs.contains("tokio::task::spawn_blocking(move || task(profile))"));
     assert!(!agents_rs.contains("struct AgentManifest"));
 
@@ -3651,9 +3655,14 @@ fn agent_settings_connection_bundle_never_returns_raw_tokens_to_dashboard() {
     assert!(agent_admin.contains("\"redacted\": true"));
     assert!(agent_admin.contains("\"token_file\": manifest.auth.token_file"));
     assert!(agent_admin.contains("\"token_hash\": manifest.auth.token_hash"));
+    assert!(agent_admin.contains("pub fn redact_agent_private_material"));
+    assert!(agent_admin.contains("identity.remove(\"mnemonic\")"));
+    assert!(agent_admin.contains("mnemonic_redacted"));
     assert!(!agent_admin.contains("\"token\": credential.token"));
     assert!(!agent_admin.contains("\"token\": &credential.token"));
     assert!(!agent_admin.contains("include_token"));
     assert!(!agents_rs.contains("include_token"));
     assert!(!settings_js.contains("credential.token"));
+    assert!(!settings_js.contains("identity.mnemonic"));
+    assert!(!settings_js.contains("payload.identity.mnemonic"));
 }

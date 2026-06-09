@@ -98,7 +98,8 @@ For normal owner setup, use the Ratspeak app's Settings > Agents panel. It
 creates the same isolated agent profiles, grants, token files, policy
 guardrails, approval queues, and audit records as the CLI, then exposes a
 redacted connection bundle for the local agent adapter. The GUI never displays
-the raw token; local agent processes read the private token file directly.
+the raw token or agent recovery phrase; local agent processes read the private
+token file directly.
 
 `agent onboard` is the preferred CLI beta entry point for scripted setup. It
 defaults to the `reply-assistant` preset and returns machine-readable
@@ -124,6 +125,8 @@ contact grants, token rotation, revocation, approval/action state inspection,
 file/image review, audit entries, auto-approval, rate limits, causal loop
 prevention, payload sizes, MIME filters, file path roots, contact/conversation
 mutations, announces, path requests, and propagation-node limits.
+Keep manual review for unmatched actions enabled unless the agent has tight
+grants and a deliberately configured auto-approval lane.
 
 Read scopes are `status:read`, `identity:read`, `contacts:read`,
 `messages:read`, `events:read`, `network:read`, `actions:read`, and

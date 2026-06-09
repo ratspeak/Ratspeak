@@ -189,6 +189,7 @@ pub async fn create_agent(
         )
     })
     .await?;
+    let payload = agent_admin::redact_agent_private_material(payload);
     emit_agents_updated(&event_state, &payload);
     Ok(payload)
 }
