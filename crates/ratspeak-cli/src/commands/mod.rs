@@ -271,6 +271,7 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
     let unknown_contacts =
         take_option(&mut rest, "--unknown-contacts")?.unwrap_or_else(|| "deny".into());
     let nickname = take_option(&mut rest, "--nickname")?.unwrap_or_else(|| name.to_string());
+    let include_recovery = take_flag(&mut rest, "--show-recovery");
     ensure_no_extra_args(&rest, "agent create")?;
 
     let payload = agent_admin::create_agent(
@@ -285,6 +286,7 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
             allowed_conversations,
             unknown_contacts,
             nickname: Some(nickname),
+            include_recovery,
         },
     )?;
     print_json(&payload, output)

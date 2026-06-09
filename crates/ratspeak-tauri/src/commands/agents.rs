@@ -185,6 +185,7 @@ pub async fn create_agent(
                 allowed_conversations: args.allowed_conversations,
                 unknown_contacts: args.unknown_contacts.unwrap_or_else(|| "deny".into()),
                 nickname: args.nickname,
+                include_recovery: false,
             },
         )
     })

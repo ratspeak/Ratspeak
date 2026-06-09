@@ -29,6 +29,7 @@ pub struct AgentCreateOptions {
     pub allowed_conversations: Vec<String>,
     pub unknown_contacts: String,
     pub nickname: Option<String>,
+    pub include_recovery: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -187,13 +188,13 @@ pub fn create_agent(profile: &Profile, mut opts: AgentCreateOptions) -> CliResul
     );
 
     let created_payload = serde_json::to_value(&created)?;
-    Ok(agent_created_payload(
-        profile,
-        manifest,
-        credential,
-        write_policy,
-        created_payload,
-    ))
+    let payload =
+        agent_created_payload(profile, manifest, credential, write_policy, created_payload);
+    if opts.include_recovery {
+        Ok(payload)
+    } else {
+        Ok(redact_agent_private_material(payload))
+    }
 }
 
 pub fn list_agent_manifests(profile: &Profile) -> CliResult<Vec<Value>> {

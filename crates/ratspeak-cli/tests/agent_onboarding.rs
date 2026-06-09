@@ -179,11 +179,8 @@ fn agent_profile_bootstrap_smoke() {
             .as_str()
             .is_some_and(|s| !s.is_empty())
     );
-    assert!(
-        create["identity"]["mnemonic"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty())
-    );
+    assert_eq!(create["identity"]["mnemonic"], Value::Null);
+    assert_eq!(create["identity"]["mnemonic_redacted"], true);
 
     let agent_profile = create["agent"]["profile_root"]
         .as_str()

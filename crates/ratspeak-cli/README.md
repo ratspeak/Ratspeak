@@ -105,12 +105,16 @@ token file directly.
 defaults to the `reply-assistant` preset and returns machine-readable
 `next.steps[].argv` arrays that can be handed to an agent supervisor. Presets
 are `inbox-reader`, `reply-assistant`, `media-assistant`, `network-helper`, and
-`openclaw-basic`.
+`openclaw-basic`. Agent recovery material is redacted by default; owners who
+are capturing the recovery phrase for themselves can pass `--show-recovery`,
+but do not hand that output to an agent adapter.
 
 `agent create` creates a separate agent profile under
 `.ratspeak/agents/NAME` by default, creates a recoverable identity for that
 profile, writes `.ratspeak/agent.json`, and writes a private
 `.ratspeak/agent.token` credential. The manifest stores only the token hash.
+The recovery phrase is stored in the agent profile and omitted from default
+JSON output.
 When `ratspeakd` runs for that profile, local API calls must present the token
 and are enforced against the active grant scopes plus contact/conversation
 allowlists.

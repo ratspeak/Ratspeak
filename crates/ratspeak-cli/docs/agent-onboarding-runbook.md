@@ -33,7 +33,10 @@ ratspeakctl --data-dir OWNER_PROFILE agent onboard my-agent \
 agent token, enables owner approval, writes the action policy, and returns
 machine-readable `next.steps[].argv` arrays. For image/file-capable agents use
 `--preset media-assistant`. For OpenClaw-style text agents use
-`--preset openclaw-basic`.
+`--preset openclaw-basic`. Recovery material is redacted from default output so
+the JSON can be handed to a local adapter; owners can pass `--show-recovery`
+only when they are capturing the phrase for themselves and will not share that
+payload with the agent.
 
 Owners can inspect and tune the per-agent policy without editing JSON:
 

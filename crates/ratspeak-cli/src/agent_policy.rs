@@ -368,7 +368,10 @@ pub fn conversation_id_for_dest(dest_hash: &str) -> String {
 
 pub fn dest_hash_from_conversation_id(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    let dest = if trimmed.len() >= 5 && trimmed[..5].eq_ignore_ascii_case("lxmf:") {
+    let dest = if trimmed
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("lxmf:"))
+    {
         &trimmed[5..]
     } else {
         trimmed
