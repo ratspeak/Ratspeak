@@ -983,6 +983,10 @@
                                 <span class="settings-nav-label">Identity</span>
                                 <span class="settings-nav-desc">Active identity, status, backup, and recovery</span>
                             </button>
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-agents" data-settings-title="Agents" data-settings-desc="Agent onboarding, permissions, approvals, and guardrails.">
+                                <span class="settings-nav-label">Agents</span>
+                                <span class="settings-nav-desc">Onboarding, permissions, approvals, and guardrails</span>
+                            </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-privacy" data-settings-title="Privacy" data-settings-desc="Privacy related preferences">
                                 <span class="settings-nav-label">Privacy</span>
                                 <span class="settings-nav-desc">Privacy related preferences</span>
@@ -1122,6 +1126,51 @@
                                     <span class="settings-row-desc">Lock a YubiKey identity after inactivity; PIN required to resume. Off relies on lock-on-quit. Applies on next unlock.</span>
                                 </div>
                                 <button class="selector-badge" id="hw-lock-timeout-select">Off</button>
+                            </div>
+                        </div>
+                    </div>
+
+                            <div class="panel settings-panel" id="panel-settings-agents">
+                        <div class="panel-header">Agents</div>
+                        <div class="panel-body">
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Agent Access</span>
+                                    <span class="settings-row-desc" id="settings-agents-summary">Create an agent identity with scoped access to Ratspeak.</span>
+                                </div>
+                                <div class="settings-row-actions">
+                                    <button class="selector-badge selector-badge-no-caret" id="settings-refresh-agents-btn">Refresh</button>
+                                    <button class="selector-badge selector-badge-no-caret" id="settings-create-agent-btn">Add</button>
+                                </div>
+                            </div>
+                            <div id="settings-agents-list" class="settings-agents-list">
+                                <div class="inline-hint">Loading agents...</div>
+                            </div>
+
+                            <div class="settings-panel-section-title">Selected Agent</div>
+                            <div id="settings-agent-detail" class="settings-agent-detail">
+                                <div class="inline-hint">Select an agent to review permissions, approvals, and guardrails.</div>
+                            </div>
+
+                            <div class="settings-panel-section-title">Approvals</div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Approval Queue</span>
+                                    <span class="settings-row-desc" id="settings-agent-approvals-desc">Review pending agent actions before they run.</span>
+                                </div>
+                                <div class="settings-row-actions">
+                                    <button class="selector-badge" id="settings-agent-approval-state-btn">Pending</button>
+                                    <button class="selector-badge selector-badge-no-caret" id="settings-refresh-agent-approvals-btn">Refresh</button>
+                                    <button class="selector-badge selector-badge-no-caret" id="settings-expire-agent-actions-btn">Expire</button>
+                                </div>
+                            </div>
+                            <div id="settings-agent-approvals-list" class="settings-agent-approvals-list">
+                                <div class="inline-hint">No pending approvals.</div>
+                            </div>
+
+                            <div class="settings-panel-section-title">Audit</div>
+                            <div id="settings-agent-audit-list" class="settings-agent-audit-list">
+                                <div class="inline-hint">Agent audit entries appear here.</div>
                             </div>
                         </div>
                     </div>

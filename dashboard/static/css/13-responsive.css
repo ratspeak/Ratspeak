@@ -1222,6 +1222,42 @@
         transform: translateX(20px);
     }
 
+    .settings-agent-row,
+    .settings-agent-summary-head,
+    .settings-agent-approval-row,
+    .settings-agent-audit-row {
+        align-items: flex-start;
+    }
+
+    .settings-agent-row {
+        flex-wrap: wrap;
+    }
+
+    .settings-agent-row-status,
+    .settings-agent-row-count,
+    .settings-agent-state {
+        margin-top: var(--space-1);
+    }
+
+    .settings-agent-action-row,
+    .settings-agent-approval-row .settings-row-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .settings-agent-facts {
+        grid-template-columns: 1fr;
+    }
+
+    .settings-agent-policy-row {
+        align-items: flex-start;
+        gap: var(--space-3);
+    }
+
+    .settings-agent-policy-row .selector-badge {
+        max-width: 100%;
+    }
+
     .system-action-btn {
         min-height: 56px;
     }

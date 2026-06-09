@@ -2,6 +2,7 @@ function openSettings() {
     switchView('settings');
     initSettingsSectionNav();
     showSettingsMobileSectionIndex({ restoreFocus: false });
+    initAgentSettings();
     initHapticsToggle();
     initDeveloperModeToggle();
     syncSettingsIdentityActions();
@@ -434,6 +435,1006 @@ function showSettingsMobileSectionIndex(opts) {
             if (activeItem) requestAnimationFrame(function() { activeItem.focus({ preventScroll: true }); });
         }
     }
+}
+
+var _settingsAgentsBound = false;
+var _settingsAgentsLoading = false;
+var _settingsAgentsState = {
+    agents: [],
+    presets: {},
+    selected: null,
+    detail: null,
+    approvalState: 'pending_approval',
+    approvals: [],
+    audit: []
+};
+
+var AGENT_PRESET_ORDER = [
+    'reply-assistant',
+    'media-assistant',
+    'inbox-reader',
+    'network-helper',
+    'openclaw-basic'
+];
+
+var AGENT_APPROVAL_STATES = [
+    { label: 'Pending', value: 'pending_approval', hint: 'Needs owner review.' },
+    { label: 'Approved', value: 'approved', hint: 'Ready for the agent daemon to execute.' },
+    { label: 'Drafts', value: 'draft', hint: 'Created but not submitted.' },
+    { label: 'Rejected', value: 'rejected', hint: 'Denied by the owner or policy.' },
+    { label: 'Cancelled', value: 'cancelled', hint: 'Stopped before execution.' },
+    { label: 'Expired', value: 'expired', hint: 'Timed out before approval or execution.' },
+    { label: 'Sent', value: 'sent', hint: 'Message action completed.' },
+    { label: 'Applied', value: 'applied', hint: 'Non-message action completed.' },
+    { label: 'Failed', value: 'failed', hint: 'Execution failed.' }
+];
+
+function initAgentSettings() {
+    var panel = document.getElementById('panel-settings-agents');
+    if (!panel) return;
+
+    if (!_settingsAgentsBound) {
+        _settingsAgentsBound = true;
+
+        var refreshBtn = document.getElementById('settings-refresh-agents-btn');
+        if (refreshBtn) refreshBtn.addEventListener('click', function() { loadAgentSettings(true); });
+
+        var createBtn = document.getElementById('settings-create-agent-btn');
+        if (createBtn) createBtn.addEventListener('click', openAgentCreateFlow);
+
+        var approvalRefresh = document.getElementById('settings-refresh-agent-approvals-btn');
+        if (approvalRefresh) approvalRefresh.addEventListener('click', function() {
+            loadAgentApprovals(_settingsAgentsState.selected);
+        });
+
+        var approvalStateBtn = document.getElementById('settings-agent-approval-state-btn');
+        if (approvalStateBtn) approvalStateBtn.addEventListener('click', chooseAgentApprovalState);
+
+        var expireBtn = document.getElementById('settings-expire-agent-actions-btn');
+        if (expireBtn) expireBtn.addEventListener('click', expireAgentActions);
+
+        var list = document.getElementById('settings-agents-list');
+        if (list) list.addEventListener('click', handleAgentListClick);
+
+        var detail = document.getElementById('settings-agent-detail');
+        if (detail) detail.addEventListener('click', handleAgentDetailClick);
+        if (detail) detail.addEventListener('change', handleAgentPolicyToggle);
+
+        var approvals = document.getElementById('settings-agent-approvals-list');
+        if (approvals) approvals.addEventListener('click', handleAgentApprovalClick);
+
+        RS.listen('agents_updated', function() { loadAgentSettings(false); });
+        RS.listen('agent_actions_updated', function() {
+            loadAgentApprovals(_settingsAgentsState.selected);
+            if (_settingsAgentsState.selected) loadAgentDetail(_settingsAgentsState.selected);
+        });
+    }
+
+    loadAgentSettings(false);
+}
+
+function loadAgentSettings(force) {
+    if (_settingsAgentsLoading && !force) return;
+    _settingsAgentsLoading = true;
+    var summary = document.getElementById('settings-agents-summary');
+    var list = document.getElementById('settings-agents-list');
+    if (summary) summary.textContent = 'Loading agent access settings...';
+    if (list && !_settingsAgentsState.agents.length) {
+        list.innerHTML = '<div class="inline-hint">Loading agents...</div>';
+    }
+
+    RS.invoke('api_agents').then(function(payload) {
+        _settingsAgentsLoading = false;
+        _settingsAgentsState.agents = (payload && payload.agents) || [];
+        _settingsAgentsState.presets = (payload && payload.presets) || {};
+        if (summary) {
+            var count = _settingsAgentsState.agents.length;
+            summary.textContent = count
+                ? (count + ' agent' + (count === 1 ? '' : 's') + ' configured.')
+                : 'Create an agent identity with scoped access to Ratspeak.';
+        }
+        if (!_settingsAgentsState.selected && _settingsAgentsState.agents.length) {
+            _settingsAgentsState.selected = _settingsAgentsState.agents[0].name;
+        }
+        if (_settingsAgentsState.selected && !_settingsAgentsState.agents.some(function(a) { return a.name === _settingsAgentsState.selected; })) {
+            _settingsAgentsState.selected = _settingsAgentsState.agents.length ? _settingsAgentsState.agents[0].name : null;
+        }
+        renderAgentList();
+        if (_settingsAgentsState.selected) loadAgentDetail(_settingsAgentsState.selected);
+        else renderAgentEmptyDetail();
+        loadAgentApprovals(_settingsAgentsState.selected);
+    }).catch(function(err) {
+        _settingsAgentsLoading = false;
+        if (summary) summary.textContent = 'Agent settings failed to load.';
+        if (list) list.innerHTML = '<div class="inline-error">Failed to load agents.</div>';
+        showAgentError(err, 'Failed to load agents');
+    });
+}
+
+function renderAgentList() {
+    var list = document.getElementById('settings-agents-list');
+    if (!list) return;
+    if (!_settingsAgentsState.agents.length) {
+        list.innerHTML = '<div class="settings-agent-empty">' +
+            '<span class="settings-agent-empty-title">No agents yet</span>' +
+            '<span class="settings-agent-empty-copy">Add an agent to create its identity, scoped grant, local token file, and default guardrails.</span>' +
+        '</div>';
+        return;
+    }
+
+    list.innerHTML = _settingsAgentsState.agents.map(function(agent) {
+        var active = agent.name === _settingsAgentsState.selected;
+        var status = agent.status || 'active';
+        var pending = agent.counts && agent.counts.pending_approval ? agent.counts.pending_approval : 0;
+        var auto = agent.auto_approval_enabled ? 'auto allowed' : 'manual review';
+        return '<button class="settings-agent-row' + (active ? ' active' : '') + '" type="button" data-agent="' + escapeHtml(agent.name) + '">' +
+            '<span class="settings-agent-row-main">' +
+                '<span class="settings-agent-row-name">' + escapeHtml(agent.display_name || agent.name) + '</span>' +
+                '<span class="settings-agent-row-meta">' + escapeHtml(shortHash(agent.identity_hash || '', 8, 4)) + ' · ' + escapeHtml(auto) + '</span>' +
+            '</span>' +
+            '<span class="settings-agent-row-status status-' + escapeHtml(status) + '">' + escapeHtml(status) + '</span>' +
+            (pending ? '<span class="settings-agent-row-count">' + pending + '</span>' : '') +
+        '</button>';
+    }).join('');
+}
+
+function renderAgentEmptyDetail() {
+    var detail = document.getElementById('settings-agent-detail');
+    var approvals = document.getElementById('settings-agent-approvals-list');
+    var audit = document.getElementById('settings-agent-audit-list');
+    if (detail) detail.innerHTML = '<div class="inline-hint">Select or add an agent to review permissions, approvals, and guardrails.</div>';
+    if (approvals) approvals.innerHTML = '<div class="inline-hint">No pending approvals.</div>';
+    if (audit) audit.innerHTML = '<div class="inline-hint">Agent audit entries appear here.</div>';
+}
+
+function loadAgentDetail(name) {
+    if (!name) { renderAgentEmptyDetail(); return; }
+    var detail = document.getElementById('settings-agent-detail');
+    if (detail) detail.innerHTML = '<div class="inline-hint">Loading agent...</div>';
+    RS.invoke('api_agent', { name: name }).then(function(payload) {
+        _settingsAgentsState.selected = name;
+        _settingsAgentsState.detail = payload;
+        renderAgentList();
+        renderAgentDetail(payload);
+        loadAgentApprovals(name);
+        loadAgentAudit(name);
+    }).catch(function(err) {
+        if (detail) detail.innerHTML = '<div class="inline-error">Failed to load selected agent.</div>';
+        showAgentError(err, 'Failed to load agent');
+    });
+}
+
+function renderAgentDetail(payload) {
+    var detail = document.getElementById('settings-agent-detail');
+    if (!detail) return;
+    var agent = payload && payload.agent;
+    var summary = payload && payload.summary;
+    var policy = payload && payload.policy;
+    if (!agent || !policy) {
+        renderAgentEmptyDetail();
+        return;
+    }
+
+    var grant = agent.grant || {};
+    var scopes = grant.scopes || agent.effective_scopes || [];
+    var contacts = grant.allowed_contacts || agent.allowed_contacts || [];
+    var conversations = grant.allowed_conversations || agent.allowed_conversations || [];
+    detail.innerHTML =
+        '<div class="settings-agent-summary">' +
+            '<div class="settings-agent-summary-head">' +
+                '<div>' +
+                    '<div class="settings-agent-title">' + escapeHtml(agent.display_name || agent.name) + '</div>' +
+                    '<div class="settings-agent-subtitle">' + escapeHtml(agent.name) + ' · ' + escapeHtml(shortHash(agent.identity_hash || '', 8, 4)) + '</div>' +
+                '</div>' +
+                '<span class="settings-agent-state">' + escapeHtml(grant.status || 'active') + '</span>' +
+            '</div>' +
+            '<div class="settings-agent-action-row">' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="copy-bundle">Copy Bundle</button>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="add-contact">Allow Contact</button>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="edit-scopes">Preset</button>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="rotate-token">Rotate Token</button>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="revoke">Revoke</button>' +
+            '</div>' +
+            '<div class="settings-agent-facts">' +
+                agentFact('Token file', agent.auth && agent.auth.token_file ? agent.auth.token_file : '') +
+                agentFact('Scopes', scopes.length ? scopes.join(', ') : 'None') +
+                agentFact('Allowed contacts', contacts.length ? contacts.join(', ') : (grant.unknown_contacts === 'allow' ? 'All contacts' : 'None')) +
+                agentFact('Allowed conversations', conversations.length ? conversations.join(', ') : 'None') +
+            '</div>' +
+        '</div>' +
+        '<div class="settings-panel-section-title">Guardrails</div>' +
+        renderAgentPolicyControls(policy, summary);
+}
+
+function agentFact(label, value) {
+    return '<div class="settings-agent-fact">' +
+        '<span class="settings-agent-fact-label">' + escapeHtml(label) + '</span>' +
+        '<span class="settings-agent-fact-value">' + escapeHtml(value || 'Not set') + '</span>' +
+    '</div>';
+}
+
+function renderAgentPolicyControls(policy, summary) {
+    var groups = [
+        {
+            title: 'Autonomy',
+            controls: [
+                { type: 'toggle', key: 'require_owner_approval', label: 'Owner approval fallback', desc: 'Keep manual approval available for actions that miss auto-approval guardrails.' },
+                { type: 'toggle', key: 'auto_approval_enabled', label: 'Auto approval', desc: 'Allow low-risk matching actions to skip the approval queue.' },
+                { type: 'list', key: 'auto_approval_allowed_action_kinds', label: 'Auto-approved action kinds', desc: 'Only these action kinds can auto-approve.' },
+                { type: 'list', key: 'auto_approval_allowed_contacts', label: 'Auto-approved contacts', desc: 'Optional contact allowlist for auto-approved actions.' },
+                { type: 'list', key: 'auto_approval_allowed_conversations', label: 'Auto-approved conversations', desc: 'Optional conversation allowlist for auto-approved actions.' },
+                { type: 'list', key: 'auto_approval_allowed_delivery_methods', label: 'Auto delivery methods', desc: 'Delivery methods allowed for auto-approved sends.' },
+                { type: 'choice', key: 'auto_approval_unknown_contacts', label: 'Auto unknown contacts', desc: 'How auto-approval treats contacts outside the allowlist.', choices: ['deny', 'allow'] },
+                { type: 'toggle', key: 'auto_approval_requires_causal_context', label: 'Auto causal context', desc: 'Auto-approved replies must point back to an inbound event or message.' },
+                { type: 'toggle', key: 'auto_approval_requires_verified_causal_context', label: 'Verified auto context', desc: 'Require the referenced event/message to match the conversation being answered.' },
+                { type: 'toggle', key: 'auto_approval_allow_attachments', label: 'Auto attachments', desc: 'Allow attachments inside the auto-approval lane.' },
+                { type: 'number', key: 'auto_approval_max_text_chars', label: 'Auto text characters', desc: 'Maximum characters for auto-approved text.' },
+                { type: 'bytes', key: 'auto_approval_max_text_bytes', label: 'Auto text bytes', desc: 'Maximum UTF-8 bytes for auto-approved text.' },
+                { type: 'bytes', key: 'auto_approval_max_attachment_bytes', label: 'Auto attachment bytes', desc: 'Maximum attachment bytes for auto-approved actions.' },
+                { type: 'number', key: 'auto_approval_max_actions_per_hour', label: 'Auto actions per hour', desc: 'Hourly cap for auto-approved actions.' },
+                { type: 'number', key: 'auto_approval_max_actions_per_day', label: 'Auto actions per day', desc: 'Daily cap for auto-approved actions.' },
+                { type: 'number', key: 'auto_approval_max_messages_per_contact_hour', label: 'Auto messages/contact hour', desc: 'Per-contact hourly cap inside the auto-approval lane.' },
+                { type: 'number', key: 'auto_approval_max_messages_per_contact_day', label: 'Auto messages/contact day', desc: 'Per-contact daily cap inside the auto-approval lane.' }
+            ]
+        },
+        {
+            title: 'Loop Prevention',
+            controls: [
+                { type: 'number', key: 'max_pending_actions', label: 'Maximum pending actions', desc: 'Backpressure cap for unreviewed agent work.' },
+                { type: 'number', key: 'max_actions_per_hour', label: 'Actions per hour', desc: 'Global hourly action cap.' },
+                { type: 'number', key: 'max_actions_per_day', label: 'Actions per day', desc: 'Global daily action cap.' },
+                { type: 'number', key: 'max_messages_per_contact_hour', label: 'Messages/contact hour', desc: 'Per-contact hourly message cap.' },
+                { type: 'number', key: 'max_messages_per_contact_day', label: 'Messages/contact day', desc: 'Per-contact daily message cap.' },
+                { type: 'number', key: 'per_contact_cooldown_secs', label: 'Contact cooldown seconds', desc: 'Minimum delay between sends to the same contact.' },
+                { type: 'number', key: 'inbound_loop_window_secs', label: 'Loop window seconds', desc: 'Window for detecting inbound-to-outbound feedback loops.' },
+                { type: 'number', key: 'max_outbound_per_contact_window', label: 'Loop window outbound cap', desc: 'Maximum outbound messages per contact during the loop window.' },
+                { type: 'toggle', key: 'require_causal_context_for_outbound', label: 'Require causal context', desc: 'Every outbound action must identify the event or message that caused it.' },
+                { type: 'toggle', key: 'require_verified_causal_context', label: 'Verify causal context', desc: 'Causal references must exist and pass policy validation.' },
+                { type: 'number', key: 'max_causal_age_secs', label: 'Maximum causal age seconds', desc: 'Reject actions tied to stale inbound context.' },
+                { type: 'toggle', key: 'causal_subject_must_match', label: 'Causal subject must match', desc: 'Replies must stay bound to the same contact or conversation.' },
+                { type: 'toggle', key: 'causal_event_must_be_inbound', label: 'Causal event must be inbound', desc: 'Outbound chains cannot self-trigger from outbound events.' },
+                { type: 'number', key: 'max_actions_per_causal_event', label: 'Actions per causal event', desc: 'Maximum actions a single event can cause.' },
+                { type: 'number', key: 'max_actions_per_causal_message', label: 'Actions per causal message', desc: 'Maximum actions a single message can cause.' }
+            ]
+        },
+        {
+            title: 'Messages & Content',
+            controls: [
+                { type: 'number', key: 'max_text_chars', label: 'Message text characters', desc: 'Hard character cap for agent-authored text.' },
+                { type: 'bytes', key: 'max_text_bytes', label: 'Message text bytes', desc: 'Hard byte cap for agent-authored text.' },
+                { type: 'number', key: 'max_title_chars', label: 'Title characters', desc: 'Hard character cap for titles or subjects.' },
+                { type: 'bytes', key: 'max_title_bytes', label: 'Title bytes', desc: 'Hard byte cap for titles or subjects.' },
+                { type: 'list', key: 'denied_text_substrings', label: 'Denied text fragments', desc: 'Case-sensitive text fragments that block staging.' },
+                { type: 'toggle', key: 'reject_control_chars', label: 'Reject control characters', desc: 'Block unexpected control characters in text payloads.' },
+                { type: 'toggle', key: 'allow_message_reactions', label: 'Reactions', desc: 'Allow message reaction actions.' },
+                { type: 'number', key: 'max_reactions_per_hour', label: 'Reactions per hour', desc: 'Hourly cap for reactions.' },
+                { type: 'number', key: 'max_reactions_per_day', label: 'Reactions per day', desc: 'Daily cap for reactions.' },
+                { type: 'number', key: 'max_reactions_per_message', label: 'Reactions per message', desc: 'Per-message reaction cap.' },
+                { type: 'toggle', key: 'reply_requires_existing_message', label: 'Reply needs existing message', desc: 'Replies must target a known message.' },
+                { type: 'toggle', key: 'reply_to_must_match_causal_message', label: 'Reply target must match cause', desc: 'Reply-to targets must match the causal message.' }
+            ]
+        },
+        {
+            title: 'Files & Images',
+            controls: [
+                { type: 'toggle', key: 'allow_message_attachments', label: 'Attachments', desc: 'Allow file attachments.' },
+                { type: 'toggle', key: 'allow_message_images', label: 'Images', desc: 'Allow image attachments.' },
+                { type: 'toggle', key: 'require_owner_approval_for_attachments', label: 'Attachment approval', desc: 'Require owner review before attachment sends.' },
+                { type: 'bytes', key: 'max_attachment_bytes', label: 'Attachment bytes/action', desc: 'Hard total attachment cap per action.' },
+                { type: 'bytes', key: 'max_file_bytes', label: 'File size', desc: 'Hard cap for staged files.' },
+                { type: 'bytes', key: 'max_image_bytes', label: 'Image size', desc: 'Hard cap for staged images.' },
+                { type: 'number', key: 'max_attachments_per_action', label: 'Attachments per action', desc: 'Maximum number of staged attachments.' },
+                { type: 'bytes', key: 'max_attachment_name_bytes', label: 'Attachment name bytes', desc: 'Maximum file name length in bytes.' },
+                { type: 'toggle', key: 'allow_agent_file_paths', label: 'Agent file paths', desc: 'Allow the agent to stage local files by path.' },
+                { type: 'list', key: 'allowed_source_roots', label: 'Allowed source roots', desc: 'Optional local directories allowed for path-based staging.' },
+                { type: 'list', key: 'allowed_attachment_mime_prefixes', label: 'Allowed MIME prefixes', desc: 'MIME prefixes accepted for attachments.' },
+                { type: 'list', key: 'denied_attachment_mime_prefixes', label: 'Denied MIME prefixes', desc: 'MIME prefixes always blocked.' }
+            ]
+        },
+        {
+            title: 'Contacts & Conversations',
+            controls: [
+                { type: 'toggle', key: 'allow_contact_mutations', label: 'Contact changes', desc: 'Allow contact add/edit/remove actions.' },
+                { type: 'toggle', key: 'require_owner_approval_for_contact_mutations', label: 'Contact approval', desc: 'Require owner review for contact changes.' },
+                { type: 'number', key: 'max_contact_mutations_per_hour', label: 'Contact changes/hour', desc: 'Hourly cap for contact changes.' },
+                { type: 'number', key: 'max_contact_mutations_per_day', label: 'Contact changes/day', desc: 'Daily cap for contact changes.' },
+                { type: 'toggle', key: 'allow_conversation_mutations', label: 'Conversation changes', desc: 'Allow conversation metadata changes.' },
+                { type: 'toggle', key: 'allow_conversation_delete', label: 'Conversation delete', desc: 'Allow conversation deletion actions.' },
+                { type: 'toggle', key: 'require_owner_approval_for_conversation_mutations', label: 'Conversation approval', desc: 'Require owner review for conversation changes.' },
+                { type: 'number', key: 'max_conversation_mutations_per_hour', label: 'Conversation changes/hour', desc: 'Hourly cap for conversation changes.' },
+                { type: 'number', key: 'max_conversation_mutations_per_day', label: 'Conversation changes/day', desc: 'Daily cap for conversation changes.' }
+            ]
+        },
+        {
+            title: 'Network & Propagation',
+            controls: [
+                { type: 'toggle', key: 'allow_identity_announce', label: 'Identity announces', desc: 'Allow agent-triggered announces.' },
+                { type: 'toggle', key: 'allow_path_request', label: 'Path requests', desc: 'Allow agent-triggered path requests.' },
+                { type: 'toggle', key: 'require_owner_approval_for_network', label: 'Network approval', desc: 'Require owner review for network-facing actions.' },
+                { type: 'number', key: 'max_network_actions_per_hour', label: 'Network actions/hour', desc: 'Hourly cap for network actions.' },
+                { type: 'number', key: 'max_network_actions_per_day', label: 'Network actions/day', desc: 'Daily cap for network actions.' },
+                { type: 'number', key: 'max_announces_per_hour', label: 'Announces per hour', desc: 'Hourly cap for announces.' },
+                { type: 'number', key: 'max_announces_per_day', label: 'Announces per day', desc: 'Daily cap for announces.' },
+                { type: 'number', key: 'min_announce_interval_secs', label: 'Announce interval seconds', desc: 'Minimum delay between announces.' },
+                { type: 'number', key: 'max_path_requests_per_hour', label: 'Path requests per hour', desc: 'Hourly cap for path requests.' },
+                { type: 'number', key: 'max_path_requests_per_day', label: 'Path requests per day', desc: 'Daily cap for path requests.' },
+                { type: 'number', key: 'min_path_request_interval_secs', label: 'Path request interval seconds', desc: 'Minimum delay between path requests.' },
+                { type: 'toggle', key: 'allow_unknown_path_requests', label: 'Unknown path requests', desc: 'Allow path requests outside the explicit allowlist.' },
+                { type: 'list', key: 'allowed_path_request_hashes', label: 'Path request hashes', desc: 'Optional path-request destination allowlist.' },
+                { type: 'toggle', key: 'allow_forced_propagated_delivery', label: 'Propagated delivery', desc: 'Allow agent actions to force Offline Inbox delivery.' },
+                { type: 'toggle', key: 'allow_static_propagation_nodes_only', label: 'Static propagation nodes only', desc: 'Restrict forced propagation to configured static nodes.' },
+                { type: 'list', key: 'allowed_propagation_node_hashes', label: 'Propagation nodes', desc: 'Optional Offline Inbox node allowlist.' }
+            ]
+        },
+        {
+            title: 'Execution Boundaries',
+            controls: [
+                { type: 'toggle', key: 'deny_execute_on_policy_revision_change', label: 'Recheck policy revisions', desc: 'Block stale approved actions after policy changes.' },
+                { type: 'toggle', key: 'deny_execute_on_grant_revision_change', label: 'Recheck grant revisions', desc: 'Block stale approved actions after grant changes.' },
+                { type: 'list', key: 'blocked_action_kinds', label: 'Blocked action kinds', desc: 'Action kinds denied before approval checks.' },
+                { type: 'list', key: 'allowed_delivery_methods', label: 'Delivery methods', desc: 'Delivery methods agents may request.' },
+                { type: 'number', key: 'default_expires_secs', label: 'Default expiry seconds', desc: 'Default lifetime for new actions.' },
+                { type: 'number', key: 'max_expires_secs', label: 'Maximum expiry seconds', desc: 'Maximum lifetime an agent can request.' }
+            ]
+        }
+    ];
+    return '<div class="settings-agent-policy-list">' + groups.map(function(group) {
+        return '<div class="settings-agent-policy-group">' +
+            '<div class="settings-panel-section-title">' + escapeHtml(group.title) + '</div>' +
+            group.controls.map(function(spec) { return policyControl(spec, policy); }).join('') +
+        '</div>';
+    }).join('') + '</div>';
+}
+
+function policyControl(spec, policy) {
+    var value = policy ? policy[spec.key] : undefined;
+    if (spec.type === 'toggle') return policyToggle(spec.key, spec.label, spec.desc, !!value);
+    if (spec.type === 'bytes') return policyBytes(spec.key, spec.label, spec.desc, value || 0);
+    if (spec.type === 'list') return policyList(spec.key, spec.label, spec.desc, Array.isArray(value) ? value : []);
+    if (spec.type === 'choice') return policyChoice(spec.key, spec.label, spec.desc, value, spec.choices || []);
+    return policyNumber(spec.key, spec.label, spec.desc, value);
+}
+
+function policyToggle(key, label, desc, checked) {
+    return '<div class="settings-row settings-agent-policy-row" data-policy-key="' + escapeHtml(key) + '">' +
+        '<div class="settings-row-info"><span class="settings-row-label">' + escapeHtml(label) + '</span><span class="settings-row-desc">' + escapeHtml(desc) + '</span></div>' +
+        '<label class="prop-toggle" aria-label="' + escapeHtml(label) + '">' +
+            '<input type="checkbox" data-agent-policy-toggle="' + escapeHtml(key) + '"' + (checked ? ' checked' : '') + '>' +
+            '<span class="prop-slider"></span>' +
+        '</label>' +
+    '</div>';
+}
+
+function policyNumber(key, label, desc, value) {
+    return '<div class="settings-row settings-agent-policy-row" data-policy-key="' + escapeHtml(key) + '">' +
+        '<div class="settings-row-info"><span class="settings-row-label">' + escapeHtml(label) + '</span><span class="settings-row-desc">' + escapeHtml(desc) + '</span></div>' +
+        '<button class="selector-badge" data-agent-policy-number="' + escapeHtml(key) + '">' + escapeHtml(String(value == null ? 0 : value)) + '</button>' +
+    '</div>';
+}
+
+function policyBytes(key, label, desc, value) {
+    return '<div class="settings-row settings-agent-policy-row" data-policy-key="' + escapeHtml(key) + '">' +
+        '<div class="settings-row-info"><span class="settings-row-label">' + escapeHtml(label) + '</span><span class="settings-row-desc">' + escapeHtml(desc) + '</span></div>' +
+        '<button class="selector-badge" data-agent-policy-bytes="' + escapeHtml(key) + '">' + escapeHtml(formatAgentBytes(value || 0)) + '</button>' +
+    '</div>';
+}
+
+function policyList(key, label, desc, values) {
+    var count = values.length ? values.length + ' set' : 'Any';
+    return '<div class="settings-row settings-agent-policy-row" data-policy-key="' + escapeHtml(key) + '">' +
+        '<div class="settings-row-info"><span class="settings-row-label">' + escapeHtml(label) + '</span><span class="settings-row-desc">' + escapeHtml(desc) + '</span></div>' +
+        '<button class="selector-badge" data-agent-policy-list="' + escapeHtml(key) + '">' + escapeHtml(count) + '</button>' +
+    '</div>';
+}
+
+function policyChoice(key, label, desc, value, choices) {
+    return '<div class="settings-row settings-agent-policy-row" data-policy-key="' + escapeHtml(key) + '" data-policy-choices="' + escapeHtml(choices.join(',')) + '">' +
+        '<div class="settings-row-info"><span class="settings-row-label">' + escapeHtml(label) + '</span><span class="settings-row-desc">' + escapeHtml(desc) + '</span></div>' +
+        '<button class="selector-badge" data-agent-policy-choice="' + escapeHtml(key) + '">' + escapeHtml(String(value || '')) + '</button>' +
+    '</div>';
+}
+
+function handleAgentListClick(e) {
+    var row = e.target.closest('.settings-agent-row[data-agent]');
+    if (!row) return;
+    _settingsAgentsState.selected = row.dataset.agent;
+    renderAgentList();
+    loadAgentDetail(row.dataset.agent);
+}
+
+function handleAgentDetailClick(e) {
+    var numberBtn = e.target.closest('[data-agent-policy-number]');
+    if (numberBtn) {
+        editAgentPolicyNumber(numberBtn.dataset.agentPolicyNumber, numberBtn.textContent.trim());
+        return;
+    }
+    var bytesBtn = e.target.closest('[data-agent-policy-bytes]');
+    if (bytesBtn) {
+        editAgentPolicyBytes(bytesBtn.dataset.agentPolicyBytes);
+        return;
+    }
+    var listBtn = e.target.closest('[data-agent-policy-list]');
+    if (listBtn) {
+        editAgentPolicyList(listBtn.dataset.agentPolicyList);
+        return;
+    }
+    var choiceBtn = e.target.closest('[data-agent-policy-choice]');
+    if (choiceBtn) {
+        editAgentPolicyChoice(choiceBtn.dataset.agentPolicyChoice);
+        return;
+    }
+    var actionBtn = e.target.closest('[data-agent-action]');
+    if (!actionBtn) return;
+    var action = actionBtn.dataset.agentAction;
+    if (action === 'copy-bundle') copyAgentConnectionBundle();
+    else if (action === 'add-contact') addAgentAllowedContact();
+    else if (action === 'edit-scopes') editAgentPreset();
+    else if (action === 'rotate-token') rotateSelectedAgentToken();
+    else if (action === 'revoke') revokeSelectedAgent();
+}
+
+function handleAgentPolicyToggle(e) {
+    var input = e.target.closest('[data-agent-policy-toggle]');
+    if (!input) return;
+    setSelectedAgentPolicy(input.dataset.agentPolicyToggle, !!input.checked);
+}
+
+function selectedAgentName() {
+    return _settingsAgentsState.selected;
+}
+
+function setSelectedAgentPolicy(key, value) {
+    var name = selectedAgentName();
+    if (!name) return Promise.resolve(null);
+    return RS.invoke('set_agent_policy', {
+        args: {
+            name: name,
+            set: [{ key: key, value: value }]
+        }
+    }).then(function(payload) {
+        if (payload && payload.policy) {
+            if (!_settingsAgentsState.detail) _settingsAgentsState.detail = {};
+            _settingsAgentsState.detail.policy = payload.policy;
+            renderAgentDetail(_settingsAgentsState.detail);
+        }
+        showToast('Agent policy updated', 'toast-green', 1800);
+        loadAgentSettings(false);
+        return payload;
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to update policy');
+        loadAgentDetail(name);
+    });
+}
+
+function editAgentPolicyNumber(key, currentText) {
+    var detail = _settingsAgentsState.detail || {};
+    var policy = detail.policy || {};
+    rsPrompt({
+        title: 'Agent Guardrail',
+        message: key.replace(/_/g, ' '),
+        placeholder: 'Number',
+        defaultValue: String(policy[key] == null ? parseInt(currentText, 10) || 0 : policy[key]),
+        confirmText: 'Save'
+    }).then(function(input) {
+        if (input === null) return;
+        var value = parseInt(input, 10);
+        if (!isFinite(value) || value < 0) value = 0;
+        setSelectedAgentPolicy(key, value);
+    });
+}
+
+function editAgentPolicyBytes(key) {
+    var detail = _settingsAgentsState.detail || {};
+    var policy = detail.policy || {};
+    var current = policy[key] || 0;
+    rsChoice({
+        title: 'Size Guardrail',
+        message: key.replace(/_/g, ' '),
+        choices: [
+            { label: '64 KiB', value: String(64 * 1024) },
+            { label: '256 KiB', value: String(256 * 1024) },
+            { label: '1 MiB', value: String(1024 * 1024) },
+            { label: 'Current: ' + formatAgentBytes(current), value: String(current) },
+            { label: 'Custom...', value: 'custom' }
+        ]
+    }).then(function(value) {
+        if (value === null) return null;
+        if (value !== 'custom') return value;
+        return rsPrompt({
+            title: 'Custom Size',
+            message: 'Enter bytes.',
+            placeholder: '262144',
+            defaultValue: String(current),
+            confirmText: 'Save'
+        });
+    }).then(function(value) {
+        if (value === null || value === undefined) return;
+        var bytes = parseInt(value, 10);
+        if (!isFinite(bytes) || bytes < 0) bytes = 0;
+        setSelectedAgentPolicy(key, bytes);
+    });
+}
+
+function editAgentPolicyList(key) {
+    var detail = _settingsAgentsState.detail || {};
+    var policy = detail.policy || {};
+    var current = (policy[key] || []).map(function(value) { return String(value); }).join(', ');
+    rsPrompt({
+        title: 'Agent Allowlist',
+        message: 'Comma-separated hashes. Leave blank for no allowlist.',
+        placeholder: 'hash1, hash2',
+        defaultValue: current,
+        confirmText: 'Save'
+    }).then(function(input) {
+        if (input === null) return;
+        var values = input.split(',').map(function(v) { return v.trim(); }).filter(Boolean);
+        setSelectedAgentPolicy(key, values);
+    });
+}
+
+function editAgentPolicyChoice(key) {
+    var detail = _settingsAgentsState.detail || {};
+    var policy = detail.policy || {};
+    var row = document.querySelector('[data-policy-key="' + cssEscapeValue(key) + '"]');
+    var choices = row && row.dataset.policyChoices ? row.dataset.policyChoices.split(',').filter(Boolean) : [];
+    if (!choices.length) return;
+    rsChoice({
+        title: 'Agent Guardrail',
+        message: key.replace(/_/g, ' '),
+        choices: choices.map(function(choice) {
+            return {
+                label: choice,
+                value: choice,
+                hint: policy[key] === choice ? 'Current' : ''
+            };
+        })
+    }).then(function(value) {
+        if (value === null || value === undefined) return;
+        setSelectedAgentPolicy(key, value);
+    });
+}
+
+function cssEscapeValue(value) {
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+    return String(value).replace(/"/g, '\\"');
+}
+
+function agentPresetChoices() {
+    var presets = _settingsAgentsState.presets || {};
+    var keys = AGENT_PRESET_ORDER.filter(function(key) { return presets[key]; });
+    Object.keys(presets).sort().forEach(function(key) {
+        if (keys.indexOf(key) === -1) keys.push(key);
+    });
+    if (!keys.length) keys = AGENT_PRESET_ORDER.slice();
+    return keys.map(function(key) {
+        var preset = presets[key] || {};
+        return {
+            label: preset.label || key.replace(/-/g, ' '),
+            value: key,
+            hint: preset.description || ''
+        };
+    });
+}
+
+function openAgentCreateFlow() {
+    var nameValue = '';
+    rsPrompt({
+        title: 'Add Agent',
+        message: 'Name this agent profile.',
+        placeholder: 'my-agent',
+        confirmText: 'Next'
+    }).then(function(name) {
+        if (name === null) return null;
+        nameValue = name.trim();
+        if (!nameValue) {
+            showToast('Agent name is required', 'toast-red', 2500);
+            return null;
+        }
+        return rsChoice({
+            title: 'Agent Preset',
+            message: 'Choose the starting permission set.',
+            choices: agentPresetChoices()
+        });
+    }).then(function(preset) {
+        if (!preset) return null;
+        return chooseAgentInitialContact().then(function(contact) {
+            return { preset: preset, contact: contact };
+        });
+    }).then(function(selection) {
+        if (!selection) return;
+        var contacts = selection.contact ? [selection.contact] : [];
+        var createBtn = document.getElementById('settings-create-agent-btn');
+        if (createBtn) createBtn.disabled = true;
+        return RS.invoke('create_agent', {
+            args: {
+                name: nameValue,
+                nickname: nameValue,
+                preset: selection.preset,
+                allowed_contacts: contacts,
+                unknown_contacts: 'deny'
+            }
+        }).then(function(payload) {
+            _settingsAgentsState.selected = nameValue;
+            showToast('Agent created', 'toast-green', 2500);
+            loadAgentSettings(true);
+            return payload;
+        }).catch(function(err) {
+            showAgentError(err, 'Failed to create agent');
+        }).finally(function() {
+            if (createBtn) createBtn.disabled = false;
+        });
+    });
+}
+
+function chooseAgentInitialContact() {
+    return RS.invoke('api_contacts').then(function(list) {
+        var choices = [{ label: 'No contact yet', value: '', hint: 'Add allowed contacts later from this panel.' }];
+        (Array.isArray(list) ? list : []).slice(0, 12).forEach(function(contact) {
+            if (!contact || !contact.hash) return;
+            choices.push({
+                label: contact.display_name || shortHash(contact.hash, 8, 4),
+                value: contact.hash,
+                hint: shortHash(contact.hash, 8, 4)
+            });
+        });
+        choices.push({ label: 'Paste contact hash', value: 'paste', hint: 'Allow one LXMF destination hash now.' });
+        return rsChoice({
+            title: 'Allowed Contact',
+            message: 'Limit what the agent can read and write.',
+            choices: choices
+        });
+    }).catch(function() {
+        return rsChoice({
+            title: 'Allowed Contact',
+            choices: [
+                { label: 'No contact yet', value: '' },
+                { label: 'Paste contact hash', value: 'paste' }
+            ]
+        });
+    }).then(function(value) {
+        if (value === 'paste') {
+            return rsPrompt({
+                title: 'Contact Hash',
+                message: 'Paste an LXMF destination hash.',
+                placeholder: '32 hex characters',
+                confirmText: 'Allow'
+            }).then(function(hash) { return hash ? hash.trim() : ''; });
+        }
+        return value || '';
+    });
+}
+
+function addAgentAllowedContact() {
+    var name = selectedAgentName();
+    if (!name) return;
+    chooseAgentInitialContact().then(function(hash) {
+        if (!hash) return;
+        return RS.invoke('set_agent_grant', {
+            args: {
+                name: name,
+                contacts: [hash],
+                replace_contacts: false
+            }
+        });
+    }).then(function(payload) {
+        if (!payload) return;
+        showToast('Agent contact allowed', 'toast-green', 2000);
+        loadAgentDetail(name);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to update grant');
+    });
+}
+
+function editAgentPreset() {
+    var name = selectedAgentName();
+    if (!name) return;
+    rsChoice({
+        title: 'Agent Preset',
+        message: 'Replace the current scopes with a preset.',
+        choices: agentPresetChoices()
+    }).then(function(preset) {
+        if (!preset) return;
+        return RS.invoke('set_agent_grant', {
+            args: {
+                name: name,
+                preset: preset,
+                replace_scopes: true
+            }
+        });
+    }).then(function(payload) {
+        if (!payload) return;
+        showToast('Agent preset updated', 'toast-green', 2000);
+        loadAgentDetail(name);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to update preset');
+    });
+}
+
+function rotateSelectedAgentToken() {
+    var name = selectedAgentName();
+    if (!name) return;
+    rsConfirm({
+        title: 'Rotate Token',
+        message: 'Rotate this agent token? Existing agent processes will need to reload the token file.',
+        confirmText: 'Rotate'
+    }).then(function(ok) {
+        if (!ok) return;
+        return RS.invoke('rotate_agent_token', { name: name });
+    }).then(function(payload) {
+        if (!payload) return;
+        showToast('Agent token rotated', 'toast-green', 2500);
+        loadAgentDetail(name);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to rotate token');
+    });
+}
+
+function revokeSelectedAgent() {
+    var name = selectedAgentName();
+    if (!name) return;
+    rsConfirm({
+        title: 'Revoke Agent',
+        message: 'Revoke this agent grant? Its daemon API access will be denied after restart/reload.',
+        danger: true,
+        confirmText: 'Revoke'
+    }).then(function(ok) {
+        if (!ok) return;
+        return RS.invoke('revoke_agent', { name: name, reason: 'revoked from Settings' });
+    }).then(function(payload) {
+        if (!payload) return;
+        showToast('Agent revoked', 'toast-orange', 2500);
+        loadAgentSettings(true);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to revoke agent');
+    });
+}
+
+function copyAgentConnectionBundle() {
+    var name = selectedAgentName();
+    if (!name) return;
+    RS.invoke('api_agent_connection_bundle', { name: name }).then(function(bundle) {
+        return copyAgentText(JSON.stringify(bundle, null, 2), 'Agent connection bundle');
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to build connection bundle');
+    });
+}
+
+function agentApprovalStateLabel(value) {
+    var found = AGENT_APPROVAL_STATES.find(function(state) { return state.value === value; });
+    return found ? found.label : 'Actions';
+}
+
+function chooseAgentApprovalState() {
+    rsChoice({
+        title: 'Action Queue',
+        message: 'Choose which agent actions to inspect.',
+        choices: AGENT_APPROVAL_STATES.map(function(state) {
+            return {
+                label: state.label,
+                value: state.value,
+                hint: state.value === _settingsAgentsState.approvalState ? 'Current' : state.hint
+            };
+        })
+    }).then(function(value) {
+        if (!value) return;
+        _settingsAgentsState.approvalState = value;
+        loadAgentApprovals(_settingsAgentsState.selected);
+    });
+}
+
+function loadAgentApprovals(name) {
+    var list = document.getElementById('settings-agent-approvals-list');
+    var desc = document.getElementById('settings-agent-approvals-desc');
+    var stateBtn = document.getElementById('settings-agent-approval-state-btn');
+    var state = _settingsAgentsState.approvalState || 'pending_approval';
+    if (stateBtn) stateBtn.textContent = agentApprovalStateLabel(state);
+    if (list) list.innerHTML = '<div class="inline-hint">Loading actions...</div>';
+    RS.invoke('api_agent_approvals', {
+        agent: name || null,
+        stateFilter: state
+    }).then(function(payload) {
+        _settingsAgentsState.approvals = (payload && payload.actions) || [];
+        if (desc) {
+            var count = _settingsAgentsState.approvals.length;
+            desc.textContent = count
+                ? (count + ' ' + agentApprovalStateLabel(state).toLowerCase() + ' action' + (count === 1 ? '' : 's') + '.')
+                : 'Review pending, approved, cancelled, expired, sent, and failed agent actions.';
+        }
+        renderAgentApprovals();
+    }).catch(function(err) {
+        if (list) list.innerHTML = '<div class="inline-error">Failed to load approvals.</div>';
+        showAgentError(err, 'Failed to load approvals');
+    });
+}
+
+function renderAgentApprovals() {
+    var list = document.getElementById('settings-agent-approvals-list');
+    if (!list) return;
+    var approvals = _settingsAgentsState.approvals || [];
+    if (!approvals.length) {
+        list.innerHTML = '<div class="inline-hint">No matching agent actions.</div>';
+        return;
+    }
+    list.innerHTML = approvals.map(function(action) {
+        var files = action.staged_files || [];
+        var buttons = agentApprovalButtons(action, files.length > 0);
+        return '<div class="settings-agent-approval-row" data-action-id="' + escapeHtml(action.id) + '" data-agent="' + escapeHtml(action.agent || '') + '">' +
+            '<div class="settings-agent-approval-main">' +
+                '<span class="settings-agent-approval-kind">' + escapeHtml(action.kind || 'action') + '</span>' +
+                '<span class="settings-agent-approval-meta">' + escapeHtml(action.state || '') + ' · ' + escapeHtml(action.agent || 'agent') + ' · ' + escapeHtml(shortHash(action.id || '', 8, 4)) + '</span>' +
+            '</div>' +
+            '<div class="settings-row-actions">' +
+                buttons.join('') +
+            '</div>' +
+        '</div>';
+    }).join('');
+}
+
+function agentApprovalButtons(action, hasFiles) {
+    var state = action.state || _settingsAgentsState.approvalState;
+    var buttons = ['<button class="selector-badge selector-badge-no-caret" data-approval-action="review">Review</button>'];
+    if (hasFiles) buttons.push('<button class="selector-badge selector-badge-no-caret" data-approval-action="file">File</button>');
+    if (state === 'pending_approval') {
+        buttons.push('<button class="selector-badge selector-badge-no-caret" data-approval-action="approve">Approve</button>');
+        buttons.push('<button class="selector-badge selector-badge-no-caret" data-approval-action="approve-execute">Approve + Run</button>');
+        buttons.push('<button class="selector-badge selector-badge-no-caret" data-approval-action="reject">Reject</button>');
+        buttons.push('<button class="selector-badge selector-badge-no-caret" data-approval-action="cancel">Cancel</button>');
+    } else if (state === 'approved') {
+        buttons.push('<button class="selector-badge selector-badge-no-caret" data-approval-action="execute">Run</button>');
+        buttons.push('<button class="selector-badge selector-badge-no-caret" data-approval-action="cancel">Cancel</button>');
+    } else if (state === 'draft') {
+        buttons.push('<button class="selector-badge selector-badge-no-caret" data-approval-action="cancel">Cancel</button>');
+    }
+    return buttons;
+}
+
+function handleAgentApprovalClick(e) {
+    var btn = e.target.closest('[data-approval-action]');
+    if (!btn) return;
+    var row = btn.closest('.settings-agent-approval-row');
+    if (!row) return;
+    var action = btn.dataset.approvalAction;
+    var id = row.dataset.actionId;
+    var agent = row.dataset.agent || selectedAgentName();
+    if (action === 'review') reviewAgentAction(agent, id);
+    else if (action === 'file') inspectAgentActionFile(agent, id);
+    else if (action === 'approve') decideAgentAction('approve_agent_action', agent, id, 'Approve action?', false);
+    else if (action === 'approve-execute') decideAgentAction('approve_agent_action', agent, id, 'Approve and run this action now?', false, { execute: true });
+    else if (action === 'reject') decideAgentAction('reject_agent_action', agent, id, 'Reject action?', true);
+    else if (action === 'cancel') decideAgentAction('cancel_agent_action', agent, id, 'Cancel this action?', true);
+    else if (action === 'execute') decideAgentAction('execute_agent_action', agent, id, 'Run this approved action now?', false);
+}
+
+function reviewAgentAction(agent, id) {
+    RS.invoke('api_agent_approval', { agent: agent || null, id: id }).then(function(action) {
+        var payload = action && action.payload ? JSON.stringify(action.payload, null, 2) : 'No payload.';
+        rsAlert({
+            title: 'Agent Action',
+            message: (action.kind || 'action') + '\n' + (action.id || id) + '\n\n' + payload,
+            closeText: 'Done'
+        });
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to review action');
+    });
+}
+
+function inspectAgentActionFile(agent, id) {
+    RS.invoke('api_agent_file_inspection', {
+        args: {
+            agent: agent || null,
+            id: id,
+            preview_bytes: 2000
+        }
+    }).then(function(payload) {
+        var file = payload && payload.file ? payload.file : {};
+        var message = [
+            file.file_name || 'file',
+            file.mime || 'unknown type',
+            formatAgentBytes(file.size || 0),
+            file.sha256 ? ('sha256 ' + file.sha256) : '',
+            file.preview_text ? ('\n' + file.preview_text) : ''
+        ].filter(Boolean).join('\n');
+        rsAlert({ title: 'Staged File', message: message, closeText: 'Done' });
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to inspect file');
+    });
+}
+
+function decideAgentAction(command, agent, id, message, danger, extraArgs) {
+    rsConfirm({
+        title: danger ? 'Stop Action' : 'Agent Action',
+        message: message,
+        danger: !!danger,
+        confirmText: danger ? 'Continue' : 'Confirm'
+    }).then(function(ok) {
+        if (!ok) return null;
+        var args = {
+            agent: agent || null,
+            id: id
+        };
+        if (extraArgs) Object.keys(extraArgs).forEach(function(key) { args[key] = extraArgs[key]; });
+        return RS.invoke(command, {
+            args: args
+        });
+    }).then(function(payload) {
+        if (!payload) return;
+        showToast('Agent action updated', danger ? 'toast-orange' : 'toast-green', 2200);
+        loadAgentApprovals(selectedAgentName());
+        if (selectedAgentName()) loadAgentDetail(selectedAgentName());
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to update action');
+    });
+}
+
+function expireAgentActions() {
+    var name = selectedAgentName();
+    RS.invoke('expire_agent_actions', { agent: name || null }).then(function(payload) {
+        var expired = payload && payload.expired ? payload.expired : 0;
+        showToast(expired ? ('Expired ' + expired + ' action' + (expired === 1 ? '' : 's')) : 'No actions expired', expired ? 'toast-orange' : 'toast-blue', 2200);
+        loadAgentApprovals(name);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to expire actions');
+    });
+}
+
+function loadAgentAudit(name) {
+    var list = document.getElementById('settings-agent-audit-list');
+    if (!list) return;
+    if (!name) {
+        list.innerHTML = '<div class="inline-hint">Agent audit entries appear here.</div>';
+        return;
+    }
+    RS.invoke('api_agent_audit', { agent: name, limit: 8 }).then(function(payload) {
+        _settingsAgentsState.audit = (payload && payload.audit) || [];
+        renderAgentAudit();
+    }).catch(function() {
+        list.innerHTML = '<div class="inline-error">Failed to load audit entries.</div>';
+    });
+}
+
+function renderAgentAudit() {
+    var list = document.getElementById('settings-agent-audit-list');
+    if (!list) return;
+    var audit = _settingsAgentsState.audit || [];
+    if (!audit.length) {
+        list.innerHTML = '<div class="inline-hint">No audit entries yet.</div>';
+        return;
+    }
+    list.innerHTML = audit.slice().reverse().map(function(entry) {
+        return '<div class="settings-agent-audit-row">' +
+            '<span class="settings-agent-audit-event">' + escapeHtml(entry.event || 'event') + '</span>' +
+            '<span class="settings-agent-audit-meta">' + escapeHtml(entry.actor || '') + ' · ' + escapeHtml(formatAgentTime(entry.created_at_unix)) + '</span>' +
+        '</div>';
+    }).join('');
+}
+
+function formatAgentBytes(bytes) {
+    bytes = Number(bytes || 0);
+    if (bytes >= 1024 * 1024) return Math.round(bytes / 1024 / 1024) + ' MiB';
+    if (bytes >= 1024) return Math.round(bytes / 1024) + ' KiB';
+    return bytes + ' B';
+}
+
+function formatAgentTime(ts) {
+    if (!ts) return '';
+    try { return new Date(ts * 1000).toLocaleString(); } catch(e) { return ''; }
+}
+
+function copyAgentText(text, label) {
+    var done = function() { showToast((label || 'Text') + ' copied', 'toast-green', 1800); };
+    if (typeof _copyToClipboard === 'function') {
+        return _copyToClipboard(text).then(done);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(done);
+    }
+    showToast('Clipboard is not available', 'toast-orange', 2500);
+    return Promise.resolve(false);
+}
+
+function showAgentError(err, fallback) {
+    if (typeof showToast !== 'function') return;
+    showToast((err && err.message) || fallback || 'Agent request failed', 'toast-red', 5000);
 }
 
 function loadSettingsInterfaces() {
@@ -1672,6 +2673,7 @@ document.addEventListener('DOMContentLoaded', function() {
     initThemeToggle();
     initHapticsToggle();
     initSettingsSectionNav();
+    initAgentSettings();
     renderSettingsVersion();
 });
 

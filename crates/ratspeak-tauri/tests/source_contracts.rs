@@ -3458,3 +3458,202 @@ fn bundled_ratspeak_propagation_nodes_are_destination_hashes_with_sync_hub_prior
     assert!(announce_handlers.contains("mgr.router"));
     assert!(announce_handlers.contains("set_stamp_cost(event.destination_hash"));
 }
+
+#[test]
+fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let agents_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/agents.rs"))
+        .expect("agent commands");
+    let commands_mod =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/mod.rs")).expect("commands mod");
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+
+    for required in [
+        "data-settings-panel=\"panel-settings-agents\"",
+        "data-settings-title=\"Agents\"",
+        "id=\"settings-agents-summary\"",
+        "id=\"settings-agent-detail\"",
+        "id=\"settings-agent-approval-state-btn\"",
+        "id=\"settings-agent-approvals-list\"",
+        "id=\"settings-agent-audit-list\"",
+    ] {
+        assert!(
+            index.contains(required),
+            "missing Settings Agents markup: {required}"
+        );
+    }
+
+    for required in [
+        "function initAgentSettings",
+        "api_agents",
+        "api_agent",
+        "api_agent_connection_bundle",
+        "create_agent",
+        "set_agent_grant",
+        "set_agent_policy",
+        "api_agent_approvals",
+        "api_agent_file_inspection",
+        "approve_agent_action",
+        "reject_agent_action",
+        "cancel_agent_action",
+        "execute_agent_action",
+        "expire_agent_actions",
+        "api_agent_audit",
+        "agents_updated",
+        "agent_actions_updated",
+        "agentPresetChoices",
+    ] {
+        assert!(
+            settings_js.contains(required),
+            "missing Settings Agents JS: {required}"
+        );
+    }
+
+    assert!(commands_mod.contains("pub mod agents;"));
+    assert!(agents_rs.contains("ratspeak_cli::agent_admin"));
+    assert!(agents_rs.contains("tokio::task::spawn_blocking(move || task(profile))"));
+    assert!(!agents_rs.contains("struct AgentManifest"));
+
+    for command in [
+        "api_agents",
+        "api_agent",
+        "api_agent_connection_bundle",
+        "create_agent",
+        "set_agent_grant",
+        "revoke_agent",
+        "rotate_agent_token",
+        "api_agent_policy",
+        "api_agent_policy_defaults",
+        "set_agent_policy",
+        "api_agent_approvals",
+        "api_agent_approval",
+        "api_agent_file_inspection",
+        "approve_agent_action",
+        "reject_agent_action",
+        "cancel_agent_action",
+        "execute_agent_action",
+        "expire_agent_actions",
+        "api_agent_audit",
+    ] {
+        assert!(
+            tauri_lib.contains(command),
+            "missing Tauri command: {command}"
+        );
+    }
+}
+
+#[test]
+fn agent_settings_exposes_the_guardrails_users_need_before_auto_approval() {
+    let root = repo_root();
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let agent_admin =
+        read_source(root.join("crates/ratspeak-cli/src/agent_admin.rs")).expect("agent admin");
+
+    for policy_key in [
+        "require_owner_approval",
+        "auto_approval_enabled",
+        "auto_approval_allowed_action_kinds",
+        "auto_approval_allowed_contacts",
+        "auto_approval_allowed_conversations",
+        "auto_approval_allowed_delivery_methods",
+        "auto_approval_unknown_contacts",
+        "auto_approval_requires_causal_context",
+        "auto_approval_requires_verified_causal_context",
+        "auto_approval_allow_attachments",
+        "auto_approval_max_text_chars",
+        "auto_approval_max_text_bytes",
+        "auto_approval_max_attachment_bytes",
+        "auto_approval_max_actions_per_hour",
+        "auto_approval_max_actions_per_day",
+        "auto_approval_max_messages_per_contact_hour",
+        "auto_approval_max_messages_per_contact_day",
+        "max_pending_actions",
+        "max_actions_per_hour",
+        "max_actions_per_day",
+        "max_messages_per_contact_hour",
+        "max_messages_per_contact_day",
+        "per_contact_cooldown_secs",
+        "inbound_loop_window_secs",
+        "max_outbound_per_contact_window",
+        "require_causal_context_for_outbound",
+        "require_verified_causal_context",
+        "max_causal_age_secs",
+        "causal_subject_must_match",
+        "causal_event_must_be_inbound",
+        "max_actions_per_causal_event",
+        "max_actions_per_causal_message",
+        "max_text_chars",
+        "max_text_bytes",
+        "denied_text_substrings",
+        "reject_control_chars",
+        "allow_message_attachments",
+        "allow_message_images",
+        "require_owner_approval_for_attachments",
+        "max_attachment_bytes",
+        "max_file_bytes",
+        "max_image_bytes",
+        "max_attachments_per_action",
+        "allow_agent_file_paths",
+        "allowed_source_roots",
+        "allowed_attachment_mime_prefixes",
+        "denied_attachment_mime_prefixes",
+        "allow_contact_mutations",
+        "require_owner_approval_for_contact_mutations",
+        "allow_conversation_mutations",
+        "allow_conversation_delete",
+        "require_owner_approval_for_conversation_mutations",
+        "allow_identity_announce",
+        "allow_path_request",
+        "require_owner_approval_for_network",
+        "max_network_actions_per_hour",
+        "max_announces_per_hour",
+        "min_announce_interval_secs",
+        "max_path_requests_per_hour",
+        "min_path_request_interval_secs",
+        "allow_unknown_path_requests",
+        "allowed_path_request_hashes",
+        "allow_forced_propagated_delivery",
+        "allow_static_propagation_nodes_only",
+        "allowed_propagation_node_hashes",
+        "deny_execute_on_policy_revision_change",
+        "deny_execute_on_grant_revision_change",
+        "blocked_action_kinds",
+        "allowed_delivery_methods",
+        "default_expires_secs",
+        "max_expires_secs",
+    ] {
+        assert!(
+            settings_js.contains(policy_key),
+            "Settings > Agents is missing guardrail control for {policy_key}"
+        );
+        assert!(
+            agent_admin.contains(policy_key),
+            "shared agent policy setter is missing {policy_key}"
+        );
+    }
+}
+
+#[test]
+fn agent_settings_connection_bundle_never_returns_raw_tokens_to_dashboard() {
+    let root = repo_root();
+    let agent_admin =
+        read_source(root.join("crates/ratspeak-cli/src/agent_admin.rs")).expect("agent admin");
+    let agents_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/agents.rs"))
+        .expect("agent commands");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+
+    assert!(agent_admin.contains("\"credential\": {"));
+    assert!(agent_admin.contains("\"redacted\": true"));
+    assert!(agent_admin.contains("\"token_file\": manifest.auth.token_file"));
+    assert!(agent_admin.contains("\"token_hash\": manifest.auth.token_hash"));
+    assert!(!agent_admin.contains("\"token\": credential.token"));
+    assert!(!agent_admin.contains("\"token\": &credential.token"));
+    assert!(!agent_admin.contains("include_token"));
+    assert!(!agents_rs.contains("include_token"));
+    assert!(!settings_js.contains("credential.token"));
+}

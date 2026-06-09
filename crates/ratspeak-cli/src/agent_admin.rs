@@ -794,6 +794,21 @@ pub fn apply_policy_value(
         "auto_approval_allow_attachments" => {
             policy.auto_approval_allow_attachments = value_as_bool(&key, &value)?;
         }
+        "auto_approval_max_attachment_bytes" | "auto_max_attachment_bytes" => {
+            policy.auto_approval_max_attachment_bytes = value_as_usize(&key, &value)?;
+        }
+        "auto_approval_max_messages_per_contact_hour" | "auto_max_messages_per_contact_hour" => {
+            policy.auto_approval_max_messages_per_contact_hour = value_as_usize(&key, &value)?;
+        }
+        "auto_approval_max_messages_per_contact_day" | "auto_max_messages_per_contact_day" => {
+            policy.auto_approval_max_messages_per_contact_day = value_as_usize(&key, &value)?;
+        }
+        "deny_execute_on_policy_revision_change" => {
+            policy.deny_execute_on_policy_revision_change = value_as_bool(&key, &value)?;
+        }
+        "deny_execute_on_grant_revision_change" => {
+            policy.deny_execute_on_grant_revision_change = value_as_bool(&key, &value)?;
+        }
         "require_causal_context_for_outbound" | "require_causal_context" => {
             policy.require_causal_context_for_outbound = value_as_bool(&key, &value)?;
         }
@@ -823,17 +838,54 @@ pub fn apply_policy_value(
             policy.allow_identity_announce = value_as_bool(&key, &value)?;
         }
         "allow_path_request" => policy.allow_path_request = value_as_bool(&key, &value)?,
+        "require_owner_approval_for_attachments" => {
+            policy.require_owner_approval_for_attachments = value_as_bool(&key, &value)?;
+        }
+        "require_owner_approval_for_network" => {
+            policy.require_owner_approval_for_network = value_as_bool(&key, &value)?;
+        }
+        "require_owner_approval_for_contact_mutations" => {
+            policy.require_owner_approval_for_contact_mutations = value_as_bool(&key, &value)?;
+        }
+        "require_owner_approval_for_conversation_mutations" => {
+            policy.require_owner_approval_for_conversation_mutations = value_as_bool(&key, &value)?;
+        }
         "allow_forced_propagated_delivery" => {
             policy.allow_forced_propagated_delivery = value_as_bool(&key, &value)?;
         }
         "allow_static_propagation_nodes_only" | "static_propagation_nodes_only" => {
             policy.allow_static_propagation_nodes_only = value_as_bool(&key, &value)?;
         }
+        "allow_unknown_path_requests" => {
+            policy.allow_unknown_path_requests = value_as_bool(&key, &value)?;
+        }
+        "reply_requires_existing_message" => {
+            policy.reply_requires_existing_message = value_as_bool(&key, &value)?;
+        }
+        "reply_to_must_match_causal_message" => {
+            policy.reply_to_must_match_causal_message = value_as_bool(&key, &value)?;
+        }
+        "causal_subject_must_match" => {
+            policy.causal_subject_must_match = value_as_bool(&key, &value)?;
+        }
+        "causal_event_must_be_inbound" => {
+            policy.causal_event_must_be_inbound = value_as_bool(&key, &value)?;
+        }
         "max_text_chars" => policy.max_text_chars = value_as_usize(&key, &value)?,
         "max_text_bytes" => policy.max_text_bytes = value_as_usize(&key, &value)?,
+        "max_title_chars" => policy.max_title_chars = value_as_usize(&key, &value)?,
+        "max_title_bytes" => policy.max_title_bytes = value_as_usize(&key, &value)?,
         "max_attachment_bytes" => policy.max_attachment_bytes = value_as_usize(&key, &value)?,
         "max_file_bytes" => policy.max_file_bytes = value_as_usize(&key, &value)?,
         "max_image_bytes" => policy.max_image_bytes = value_as_usize(&key, &value)?,
+        "max_attachments_per_action" => {
+            policy.max_attachments_per_action = value_as_usize(&key, &value)?;
+        }
+        "max_attachment_name_bytes" => {
+            policy.max_attachment_name_bytes = value_as_usize(&key, &value)?;
+        }
+        "default_expires_secs" => policy.default_expires_secs = value_as_u64(&key, &value)?,
+        "max_expires_secs" => policy.max_expires_secs = value_as_u64(&key, &value)?,
         "max_actions_per_hour" => policy.max_actions_per_hour = value_as_usize(&key, &value)?,
         "max_actions_per_day" => policy.max_actions_per_day = value_as_usize(&key, &value)?,
         "max_pending_actions" => policy.max_pending_actions = value_as_usize(&key, &value)?,
@@ -843,11 +895,46 @@ pub fn apply_policy_value(
         "inbound_loop_window_secs" => {
             policy.inbound_loop_window_secs = value_as_u64(&key, &value)?;
         }
+        "max_outbound_per_contact_window" => {
+            policy.max_outbound_per_contact_window = value_as_usize(&key, &value)?;
+        }
+        "max_causal_age_secs" => policy.max_causal_age_secs = value_as_u64(&key, &value)?,
+        "max_actions_per_causal_event" => {
+            policy.max_actions_per_causal_event = value_as_usize(&key, &value)?;
+        }
+        "max_actions_per_causal_message" => {
+            policy.max_actions_per_causal_message = value_as_usize(&key, &value)?;
+        }
         "max_messages_per_contact_hour" => {
             policy.max_messages_per_contact_hour = value_as_usize(&key, &value)?;
         }
         "max_messages_per_contact_day" => {
             policy.max_messages_per_contact_day = value_as_usize(&key, &value)?;
+        }
+        "max_reactions_per_hour" => {
+            policy.max_reactions_per_hour = value_as_usize(&key, &value)?;
+        }
+        "max_reactions_per_day" => policy.max_reactions_per_day = value_as_usize(&key, &value)?,
+        "max_reactions_per_message" => {
+            policy.max_reactions_per_message = value_as_usize(&key, &value)?;
+        }
+        "max_contact_mutations_per_hour" => {
+            policy.max_contact_mutations_per_hour = value_as_usize(&key, &value)?;
+        }
+        "max_contact_mutations_per_day" => {
+            policy.max_contact_mutations_per_day = value_as_usize(&key, &value)?;
+        }
+        "max_conversation_mutations_per_hour" => {
+            policy.max_conversation_mutations_per_hour = value_as_usize(&key, &value)?;
+        }
+        "max_conversation_mutations_per_day" => {
+            policy.max_conversation_mutations_per_day = value_as_usize(&key, &value)?;
+        }
+        "max_network_actions_per_hour" => {
+            policy.max_network_actions_per_hour = value_as_usize(&key, &value)?;
+        }
+        "max_network_actions_per_day" => {
+            policy.max_network_actions_per_day = value_as_usize(&key, &value)?;
         }
         "max_announces_per_hour" => policy.max_announces_per_hour = value_as_usize(&key, &value)?,
         "max_announces_per_day" => policy.max_announces_per_day = value_as_usize(&key, &value)?,
@@ -890,6 +977,10 @@ pub fn apply_policy_value(
         "denied_attachment_mime_prefixes" => {
             policy.denied_attachment_mime_prefixes = value_as_string_list(&key, &value)?;
         }
+        "denied_text_substrings" => {
+            policy.denied_text_substrings = value_as_string_list(&key, &value)?;
+        }
+        "reject_control_chars" => policy.reject_control_chars = value_as_bool(&key, &value)?,
         "blocked_action_kinds" => {
             policy.blocked_action_kinds = value_as_string_list(&key, &value)?;
         }

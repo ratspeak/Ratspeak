@@ -94,7 +94,13 @@ normal Ratspeak startup behavior.
 key material. `identity activate` is an offline profile change; restart
 `ratspeakd` or the Tauri app if that profile is already running.
 
-`agent onboard` is the preferred beta entry point for non-developer setup. It
+For normal owner setup, use the Ratspeak app's Settings > Agents panel. It
+creates the same isolated agent profiles, grants, token files, policy
+guardrails, approval queues, and audit records as the CLI, then exposes a
+redacted connection bundle for the local agent adapter. The GUI never displays
+the raw token; local agent processes read the private token file directly.
+
+`agent onboard` is the preferred CLI beta entry point for scripted setup. It
 defaults to the `reply-assistant` preset and returns machine-readable
 `next.steps[].argv` arrays that can be handed to an agent supervisor. Presets
 are `inbox-reader`, `reply-assistant`, `media-assistant`, `network-helper`, and
@@ -112,6 +118,12 @@ allowlists.
 the manifest, policy, and credential files from the owner profile. Restart
 `ratspeakd` for the agent profile after changing grants or credentials. Policy
 changes are read on the next action create/submit/execute.
+
+The Settings > Agents panel exposes the same owner controls for presets,
+contact grants, token rotation, revocation, approval/action state inspection,
+file/image review, audit entries, auto-approval, rate limits, causal loop
+prevention, payload sizes, MIME filters, file path roots, contact/conversation
+mutations, announces, path requests, and propagation-node limits.
 
 Read scopes are `status:read`, `identity:read`, `contacts:read`,
 `messages:read`, `events:read`, `network:read`, `actions:read`, and

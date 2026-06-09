@@ -1589,6 +1589,199 @@
     padding-top: var(--space-4);
 }
 
+.settings-agents-list,
+.settings-agent-detail,
+.settings-agent-approvals-list,
+.settings-agent-audit-list,
+.settings-agent-policy-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+.settings-agent-empty,
+.settings-agent-row,
+.settings-agent-summary,
+.settings-agent-approval-row,
+.settings-agent-audit-row {
+    border: 1px solid var(--border-row);
+    border-radius: var(--radius-md);
+    background: var(--surface-control);
+}
+
+.settings-agent-empty {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-5);
+    color: var(--text-secondary);
+}
+
+.settings-agent-empty-title,
+.settings-agent-row-name,
+.settings-agent-title,
+.settings-agent-approval-kind,
+.settings-agent-audit-event {
+    color: var(--text-primary);
+    font-size: var(--type-row-title-size);
+    font-weight: var(--type-row-title-weight);
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
+.settings-agent-empty-copy,
+.settings-agent-row-meta,
+.settings-agent-subtitle,
+.settings-agent-approval-meta,
+.settings-agent-audit-meta,
+.settings-agent-fact-label {
+    color: var(--text-muted);
+    font-size: var(--type-row-meta-size);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.settings-agent-row {
+    width: 100%;
+    min-height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.settings-agent-row:hover,
+.settings-agent-row.active {
+    background: var(--surface-control-hover);
+    border-color: var(--accent-border);
+}
+
+.settings-agent-row-main,
+.settings-agent-approval-main {
+    min-width: 0;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.settings-agent-row-status,
+.settings-agent-row-count,
+.settings-agent-state {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--chip-height);
+    padding: var(--chip-padding-y) var(--chip-padding-x);
+    border-radius: var(--chip-radius);
+    background: var(--badge-neutral-bg);
+    color: var(--text-muted);
+    font-size: var(--type-badge-size);
+    font-weight: var(--type-badge-weight);
+    text-transform: uppercase;
+    letter-spacing: var(--type-badge-tracking);
+}
+
+.settings-agent-row-status.status-active,
+.settings-agent-state {
+    background: rgba(var(--status-online-rgb), 0.12);
+    color: var(--status-online);
+}
+
+.settings-agent-row-status.status-revoked {
+    background: var(--badge-neutral-bg);
+    color: var(--text-muted);
+}
+
+.settings-agent-row-count {
+    min-width: 24px;
+    background: var(--status-warning-bg);
+    color: var(--status-warning);
+}
+
+.settings-agent-summary {
+    padding: var(--space-5);
+}
+
+.settings-agent-summary-head,
+.settings-agent-action-row,
+.settings-agent-approval-row,
+.settings-agent-audit-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    min-width: 0;
+}
+
+.settings-agent-summary-head {
+    margin-bottom: var(--space-4);
+}
+
+.settings-agent-action-row {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    padding: var(--space-4) 0;
+    border-top: 1px solid var(--border-row);
+    border-bottom: 1px solid var(--border-row);
+}
+
+.settings-agent-facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+}
+
+.settings-agent-fact {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.settings-agent-fact-value {
+    color: var(--text-secondary);
+    font-size: var(--type-row-detail-size);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.settings-agent-policy-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-width: 0;
+}
+
+.settings-agent-policy-row {
+    min-height: 62px;
+    padding: var(--space-4) 0;
+}
+
+.settings-agent-policy-row .selector-badge {
+    max-width: min(280px, 42vw);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.settings-agent-approval-row,
+.settings-agent-audit-row {
+    padding: var(--space-4) var(--space-5);
+}
+
+.settings-agent-approval-row .settings-row-actions {
+    flex-wrap: wrap;
+}
+
 .settings-radio-group {
     display: inline-flex;
     align-items: center;

@@ -6,7 +6,21 @@ OpenClaw-specific runtime.
 
 ## Owner Setup
 
-Use the friendly onboarding command instead of hand-writing every scope:
+For non-developer owners, start in the Ratspeak app:
+
+1. Open Settings > Agents.
+2. Choose Add, name the agent, pick a preset, and optionally choose the first
+   allowed contact.
+3. Copy the redacted connection bundle for the local adapter or supervisor.
+4. Keep owner approval on until the guardrails match the owner's risk tolerance.
+5. Review approvals, staged files/images, and audit entries from the same panel.
+
+The connection bundle includes the agent profile path, daemon start command,
+stable CLI contract, token file path, and token hash. It does not include the
+raw token; the local agent process reads the private token file directly.
+
+For scripted setup, use the friendly onboarding command instead of hand-writing
+every scope:
 
 ```sh
 ratspeakctl --data-dir OWNER_PROFILE agent onboard my-agent \
@@ -27,6 +41,23 @@ ratspeakctl --data-dir OWNER_PROFILE agent policy show my-agent
 ratspeakctl --data-dir OWNER_PROFILE agent policy validate my-agent
 ratspeakctl --data-dir OWNER_PROFILE agent policy set my-agent --max-text-chars 1500
 ```
+
+The GUI exposes these same policy groups:
+
+- Autonomy: owner approval fallback, auto-approval lane, allowed action kinds,
+  allowed contacts/conversations, delivery methods, causal requirements, and
+  auto-approved text/attachment/rate caps.
+- Loop prevention: pending/action caps, per-contact cooldowns, inbound feedback
+  window, causal-context requirements, causal age, and max actions per causal
+  event/message.
+- Messages and files: text/title sizes, denied text fragments, control
+  character rejection, reactions, attachment/image gates, file/image size caps,
+  MIME prefixes, local path staging, and allowed source roots.
+- Contacts, conversations, and network: mutation permissions, owner-approval
+  requirements, hourly/daily caps, announces, path requests, unknown-path
+  behavior, propagation delivery, and propagation-node allowlists.
+- Execution boundaries: policy/grant revision rechecks, blocked action kinds,
+  delivery methods, default expiry, and maximum expiry.
 
 The owner starts or supervises the agent profile daemon:
 
@@ -72,6 +103,12 @@ ratspeakctl --data-dir OWNER_PROFILE approvals approve --agent my-agent ACTION_I
 
 After approval, the agent can run `messages send ACTION_ID` again. Owners may
 also use `approvals approve --execute --agent my-agent ACTION_ID`.
+
+In the app, Settings > Agents can filter pending, approved, draft, rejected,
+cancelled, expired, sent/applied, and failed actions. Pending actions can be
+reviewed, inspected for staged file/image metadata and text previews, approved,
+approved and executed, rejected, or cancelled. Approved actions can be executed
+or cancelled.
 
 ## Optional Auto-Approval
 
