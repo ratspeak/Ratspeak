@@ -195,6 +195,23 @@ fn agent_profile_bootstrap_smoke() {
     assert_eq!(list.as_array().expect("agent list array").len(), 1);
     assert_eq!(list[0]["name"], "agent-smoke");
 
+    let recovery = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "create",
+        "agent-recovery",
+        "--identity",
+        "new",
+        "--show-recovery",
+    ]);
+    assert!(
+        recovery["identity"]["mnemonic"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    assert_eq!(recovery["identity"]["mnemonic_redacted"], Value::Null);
+
     let show = run_json(&["--data-dir", &owner_arg, "agent", "show", "agent-smoke"]);
     assert_eq!(show["identity_hash"], agent_hash);
 
@@ -238,12 +255,54 @@ fn agent_profile_bootstrap_smoke() {
         .contains("agent not found")
     );
     assert!(
+        run_fail(&[
+            "--data-dir",
+            &owner_arg,
+            "audit",
+            "list",
+            "--agent",
+            "missing-agent",
+        ])
+        .contains("agent not found")
+    );
+    assert!(
         !owner_profile
             .join(".ratspeak")
             .join("agents")
             .join("missing-agent")
             .exists()
     );
+
+    let manifest_path = Path::new(&agent_profile)
+        .join(".ratspeak")
+        .join("agent.json");
+    let manifest_before: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("manifest before"))
+            .expect("manifest before json");
+    let token_hash_before = manifest_before["auth"]["token_hash"]
+        .as_str()
+        .expect("token hash before")
+        .to_string();
+    let token_file = create["credential"]["token_file"]
+        .as_str()
+        .expect("token file");
+    let token_bytes = std::fs::read(token_file).expect("read original token file");
+    std::fs::remove_file(token_file).expect("remove token file");
+    std::fs::create_dir(token_file).expect("replace token file with directory");
+    let _ = run_fail(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "rotate-token",
+        "agent-smoke",
+    ]);
+    let manifest_after: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("manifest after"))
+            .expect("manifest after json");
+    assert_eq!(manifest_after["auth"]["token_hash"], token_hash_before);
+    std::fs::remove_dir(token_file).expect("remove token directory");
+    std::fs::write(token_file, token_bytes).expect("restore token file");
+    set_private_file_permissions(Path::new(token_file));
 
     let current = run_json(&["--data-dir", &agent_profile, "identity", "current"]);
     assert_eq!(current["exists"], true);
