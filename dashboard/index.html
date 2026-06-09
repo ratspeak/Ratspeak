@@ -1514,6 +1514,17 @@
                     <select id="rnode-preset" class="nr-select"></select>
                     <span class="inline-hint-sm" id="rnode-preset-hint"></span>
                 </div>
+                <div class="modal-field" id="rnode-mode-field" style="display:none;">
+                    <label>Interface Mode</label>
+                    <select id="rnode-interface-mode" class="nr-select">
+                        <option value="full">Full</option>
+                        <option value="gateway">Gateway</option>
+                        <option value="access_point">Access Point (AP)</option>
+                        <option value="boundary">Boundary</option>
+                        <option value="roaming">Roaming</option>
+                    </select>
+                    <span class="inline-hint-sm">Mode affects routing and announce propagation.</span>
+                </div>
 
                 <details id="rnode-advanced" class="rnode-advanced-details">
                     <summary class="rs-dialog-advanced-summary">Advanced radio parameters</summary>

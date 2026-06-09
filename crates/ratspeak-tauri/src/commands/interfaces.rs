@@ -1086,6 +1086,8 @@ pub struct AddLoraArgs {
     #[serde(default)]
     pub preset_key: Option<String>,
     #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
     pub custom_params: bool,
     #[serde(default = "default_frequency")]
     pub frequency: u64,
@@ -1116,6 +1118,16 @@ fn default_cr() -> u8 {
 }
 fn default_tx() -> i8 {
     ratspeak_core::radio::default_rnode_params().tx_power
+}
+
+fn normalize_lora_interface_mode(mode: Option<&str>) -> AppResult<&'static str> {
+    crate::rns_config::normalize_rnode_interface_mode(mode)
+        .ok_or_else(|| AppError::bad_request("Invalid RNode interface mode"))
+}
+
+fn rnode_runtime_mode(mode: &str) -> rns_interface::traits::InterfaceMode {
+    crate::rns_config::rnode_interface_mode_value(Some(mode))
+        .unwrap_or(rns_interface::traits::InterfaceMode::Full)
 }
 
 const RNODE_TCP_SCHEME: &str = "tcp://";
@@ -1394,6 +1406,7 @@ enum EditableInterfaceConfig {
     RNode {
         name: String,
         port: String,
+        mode: String,
         frequency: u64,
         bandwidth: u64,
         spreading_factor: u8,
@@ -1499,6 +1512,13 @@ fn cfg_bool_default_true(entry: &Value, key: &str) -> bool {
             )
         })
         .unwrap_or(true)
+}
+
+fn cfg_rnode_mode(entry: &Value) -> String {
+    let raw = cfg_str(entry, "mode").or_else(|| cfg_str(entry, "interface_mode"));
+    crate::rns_config::normalize_rnode_interface_mode(raw.as_deref())
+        .unwrap_or(crate::rns_config::RNODE_DEFAULT_INTERFACE_MODE)
+        .to_string()
 }
 
 fn cfg_csv(entry: &Value, key: &str) -> Option<Vec<String>> {
@@ -1617,6 +1637,7 @@ fn rnode_config_from_entry(entry: &Value) -> Option<EditableInterfaceConfig> {
     Some(EditableInterfaceConfig::RNode {
         name: cfg_str(entry, "name")?,
         port: cfg_str(entry, "port")?,
+        mode: cfg_rnode_mode(entry),
         frequency: cfg_u64(entry, "frequency").unwrap_or_else(default_frequency),
         bandwidth: cfg_u64(entry, "bandwidth").unwrap_or_else(default_bandwidth),
         spreading_factor: cfg_u8(entry, "spreadingfactor").unwrap_or_else(default_sf),
@@ -1797,6 +1818,7 @@ async fn spawn_editable_interface(
         EditableInterfaceConfig::RNode {
             name,
             port,
+            mode,
             frequency,
             bandwidth,
             spreading_factor,
@@ -1816,6 +1838,7 @@ async fn spawn_editable_interface(
                 spreading_factor,
                 coding_rate,
                 tx_power,
+                mode,
             );
 
             if port.starts_with("ble://") {
@@ -1836,6 +1859,7 @@ async fn spawn_editable_interface(
                             "spreading_factor": spreading_factor,
                             "coding_rate": coding_rate,
                             "tx_power": tx_power,
+                            "mode": mode,
                             "rollback_on_error": false,
                         }),
                     );
@@ -1853,6 +1877,7 @@ async fn spawn_editable_interface(
                             spreading_factor: *spreading_factor,
                             coding_rate: *coding_rate,
                             tx_power: *tx_power,
+                            mode: rnode_runtime_mode(mode),
                         },
                     )
                     .await?;
@@ -1885,6 +1910,7 @@ async fn spawn_editable_interface(
                         *spreading_factor,
                         *coding_rate,
                         *tx_power,
+                        rnode_runtime_mode(mode),
                     )
                     .await?;
                     return Ok(format!("USB LoRa interface active (#{id})"));
@@ -1912,6 +1938,7 @@ async fn spawn_editable_interface(
                         spreading_factor: *spreading_factor,
                         coding_rate: *coding_rate,
                         tx_power: *tx_power,
+                        mode: rnode_runtime_mode(mode),
                     },
                 )
                 .await?;
@@ -2286,6 +2313,8 @@ pub async fn add_lora_interface(
         coding_rate: args.coding_rate,
         tx_power: args.tx_power,
     })?;
+    let mode = normalize_lora_interface_mode(args.mode.as_deref())?;
+    let runtime_mode = rnode_runtime_mode(mode);
 
     let config_dir = active_rns_config_dir(&state_arc);
     emit_op_status_broadcast(
@@ -2306,6 +2335,7 @@ pub async fn add_lora_interface(
             crate::rns_config::RnodeInterfaceArgs {
                 name: &name,
                 port: &port,
+                mode: Some(mode),
                 frequency: radio.frequency,
                 bandwidth: radio.bandwidth,
                 spreading_factor: radio.spreading_factor,
@@ -2407,6 +2437,7 @@ pub async fn add_lora_interface(
                     radio.spreading_factor,
                     radio.coding_rate,
                     radio.tx_power,
+                    runtime_mode,
                 )
                 .await
                 {
@@ -2497,6 +2528,7 @@ pub async fn add_lora_interface(
                         "spreading_factor": radio.spreading_factor,
                         "coding_rate": radio.coding_rate,
                         "tx_power": radio.tx_power,
+                        "mode": mode,
                         "rollback_on_error": true,
                     }),
                 );
@@ -2540,6 +2572,7 @@ pub async fn add_lora_interface(
                             spreading_factor: radio.spreading_factor,
                             coding_rate: radio.coding_rate,
                             tx_power: radio.tx_power,
+                            mode: runtime_mode,
                         },
                     )
                     .await
@@ -2671,6 +2704,7 @@ pub async fn add_lora_interface(
                         spreading_factor: radio.spreading_factor,
                         coding_rate: radio.coding_rate,
                         tx_power: radio.tx_power,
+                        mode: runtime_mode,
                     },
                 )
                 .await
@@ -2746,6 +2780,8 @@ pub struct UpdateLoraArgs {
     #[serde(default)]
     pub preset_key: Option<String>,
     #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
     pub custom_params: bool,
     #[serde(default = "default_frequency")]
     pub frequency: u64,
@@ -2789,6 +2825,7 @@ pub async fn update_lora_interface(
         coding_rate: args.coding_rate,
         tx_power: args.tx_power,
     })?;
+    let mode = normalize_lora_interface_mode(args.mode.as_deref())?;
 
     let config_dir = active_rns_config_dir(&state_arc);
     let (old_runtime, old_config_content, config_written) =
@@ -2805,6 +2842,7 @@ pub async fn update_lora_interface(
                 crate::rns_config::RnodeInterfaceArgs {
                     name: &name,
                     port: &port,
+                    mode: Some(mode),
                     frequency: radio.frequency,
                     bandwidth: radio.bandwidth,
                     spreading_factor: radio.spreading_factor,
@@ -2832,6 +2870,7 @@ pub async fn update_lora_interface(
     let new_runtime = EditableInterfaceConfig::RNode {
         name: name.clone(),
         port,
+        mode: mode.to_string(),
         frequency: radio.frequency,
         bandwidth: radio.bandwidth,
         spreading_factor: radio.spreading_factor,

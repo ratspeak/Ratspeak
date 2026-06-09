@@ -16,23 +16,47 @@ var _settingsVersionLabel = '';
 var _settingsVersionValue = '';
 var _settingsUpdateCheckInFlight = false;
 var _settingsDeveloperModeBound = false;
-var _settingsDeveloperModeEnabled = false;
+var _settingsDeveloperModeStorageKey = 'ratspeak-developer-mode-enabled';
+var _settingsDeveloperModeEnabled = readDeveloperModePreference();
 var RATSPEAK_RELEASE_LATEST_URL = 'https://api.github.com/repos/ratspeak/Ratspeak/releases/latest';
 var RATSPEAK_RELEASES_URL = 'https://github.com/ratspeak/Ratspeak/releases';
+
+function readDeveloperModePreference() {
+    try {
+        return window.localStorage.getItem(_settingsDeveloperModeStorageKey) === 'true';
+    } catch (e) {
+        return false;
+    }
+}
+
+function persistDeveloperModePreference(enabled) {
+    try {
+        window.localStorage.setItem(_settingsDeveloperModeStorageKey, enabled ? 'true' : 'false');
+    } catch (e) {}
+}
+
+function notifyDeveloperModeChanged() {
+    window.dispatchEvent(new CustomEvent('ratspeak-developer-mode-changed', {
+        detail: { enabled: _settingsDeveloperModeEnabled }
+    }));
+}
+
+function setDeveloperModeEnabled(enabled) {
+    _settingsDeveloperModeEnabled = !!enabled;
+    persistDeveloperModePreference(_settingsDeveloperModeEnabled);
+    syncDeveloperModeRadioState();
+    notifyDeveloperModeChanged();
+}
+
+window.ratspeakDeveloperModeEnabled = function() {
+    return !!_settingsDeveloperModeEnabled;
+};
 
 function syncDeveloperModeRadioState() {
     var off = document.getElementById('settings-developer-mode-off');
     var on = document.getElementById('settings-developer-mode-on');
     if (off) off.checked = !_settingsDeveloperModeEnabled;
     if (on) on.checked = _settingsDeveloperModeEnabled;
-}
-
-function rejectDeveloperModeEnable() {
-    _settingsDeveloperModeEnabled = false;
-    syncDeveloperModeRadioState();
-    if (typeof showToast === 'function') {
-        showToast('Developer mode is coming soon.', 'toast-info', 2500);
-    }
 }
 
 function initDeveloperModeToggle() {
@@ -44,12 +68,11 @@ function initDeveloperModeToggle() {
     _settingsDeveloperModeBound = true;
 
     off.addEventListener('click', function() {
-        _settingsDeveloperModeEnabled = false;
-        syncDeveloperModeRadioState();
+        setDeveloperModeEnabled(false);
     });
 
     on.addEventListener('change', function() {
-        if (on.checked) rejectDeveloperModeEnable();
+        if (on.checked) setDeveloperModeEnabled(true);
     });
 }
 

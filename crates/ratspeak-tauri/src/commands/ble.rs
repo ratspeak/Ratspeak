@@ -957,6 +957,8 @@ pub struct BleRnodeBridgeArgs {
     pub coding_rate: u8,
     #[serde(default = "default_tx")]
     pub tx_power: i8,
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 fn default_name() -> String {
@@ -993,6 +995,8 @@ pub async fn ble_rnode_bridge_ready(
     let sf = args.spreading_factor;
     let cr = args.coding_rate;
     let tx = args.tx_power;
+    let mode = crate::rns_config::rnode_interface_mode_value(args.mode.as_deref())
+        .ok_or_else(|| AppError::bad_request("Invalid RNode interface mode"))?;
 
     if tcp_port == 0 {
         emit_op_status_broadcast(
@@ -1035,6 +1039,7 @@ pub async fn ble_rnode_bridge_ready(
                         spreading_factor: sf,
                         coding_rate: cr,
                         tx_power: tx,
+                        mode,
                     },
                     tcp_port,
                 )
@@ -1098,7 +1103,7 @@ pub async fn ble_rnode_bridge_ready(
     }
     #[cfg(not(feature = "ble"))]
     {
-        let _ = (tcp_port, name, port, frequency, bandwidth, sf, cr, tx);
+        let _ = (tcp_port, name, port, frequency, bandwidth, sf, cr, tx, mode);
         emit_op_status_broadcast(
             &state_arc,
             "add_lora",

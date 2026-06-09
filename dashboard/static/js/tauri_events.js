@@ -1065,6 +1065,7 @@ RS.listen('ble_rnode_connect_native', function(data) {
                     spreading_factor: data.spreading_factor,
                     coding_rate: data.coding_rate,
                     tx_power: data.tx_power,
+                    mode: data.mode,
                 }
             }).catch(function() {});
         } else {

@@ -738,6 +738,44 @@ function _rnodeModeForPort(port) {
     return 'serial';
 }
 
+var _RNODE_INTERFACE_MODE_VALUES = {
+    full: true,
+    gateway: true,
+    access_point: true,
+    boundary: true,
+    roaming: true,
+};
+
+function _rnodeNormaliseInterfaceMode(mode) {
+    mode = String(mode || 'full').trim().toLowerCase();
+    if (mode === 'gw') mode = 'gateway';
+    if (mode === 'ap' || mode === 'accesspoint' || mode === 'access point') mode = 'access_point';
+    return _RNODE_INTERFACE_MODE_VALUES[mode] ? mode : 'full';
+}
+
+function _rnodeSetInterfaceMode(mode) {
+    var select = document.getElementById('rnode-interface-mode');
+    if (!select) return;
+    select.value = _rnodeNormaliseInterfaceMode(mode);
+}
+
+function _rnodeReadInterfaceMode() {
+    var select = document.getElementById('rnode-interface-mode');
+    return _rnodeNormaliseInterfaceMode(select ? select.value : 'full');
+}
+
+function _rnodeDeveloperModeEnabled() {
+    return typeof window.ratspeakDeveloperModeEnabled === 'function' &&
+        window.ratspeakDeveloperModeEnabled();
+}
+
+function _rnodeSyncInterfaceModeVisibility() {
+    var field = document.getElementById('rnode-mode-field');
+    if (field) field.style.display = _rnodeDeveloperModeEnabled() ? '' : 'none';
+}
+
+window.addEventListener('ratspeak-developer-mode-changed', _rnodeSyncInterfaceModeVisibility);
+
 function openRnodeModal(mode, editIface) {
     mode = mode || 'ble';
     _rnodeEditContext = null;
@@ -771,6 +809,8 @@ function openRnodeModal(mode, editIface) {
     if (tcpInput) tcpInput.value = '';
     var catalogReady = loadRnodePresetCatalog();
     _rnodeApplyDefaultRadioControls();
+    _rnodeSetInterfaceMode('full');
+    _rnodeSyncInterfaceModeVisibility();
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
 
@@ -800,6 +840,7 @@ function openRnodeModal(mode, editIface) {
     if (editIface) {
         var port = _ifaceString(editIface, 'port', '');
         _rnodeEditContext = { oldName: editIface.name || '', port: port };
+        _rnodeSetInterfaceMode(editIface.mode || editIface.interface_mode || 'full');
         if (port.indexOf('ble://') === 0) {
             var addr = port.substring(6);
             _bleSelectedDevice = { name: editIface.name || 'LoRa Radio', address: addr };
@@ -1395,6 +1436,7 @@ function submitRnodeInterface() {
         var loraArgs = {
             name: name,
             port: port,
+            mode: _rnodeReadInterfaceMode(),
             frequency: radioSettings.frequency,
             bandwidth: radioSettings.bandwidth,
             spreading_factor: radioSettings.spreadingFactor,

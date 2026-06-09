@@ -12,6 +12,10 @@ use serde_json::{Value, json};
 
 static CONFIG_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+pub const RNODE_DEFAULT_INTERFACE_MODE: &str = "full";
+pub const RNODE_INTERFACE_MODES: &[&str] =
+    &["full", "gateway", "access_point", "boundary", "roaming"];
+
 pub fn read_config(config_dir: &Path) -> Option<String> {
     let path = config_dir.join("config");
     std::fs::read_to_string(&path).ok()
@@ -585,8 +589,38 @@ fn safe_auto_options(opts: &AutoInterfaceOptions) -> bool {
 fn safe_rnode_args(args: RnodeInterfaceArgs<'_>) -> bool {
     safe_interface_name(args.name)
         && safe_config_scalar(args.port)
+        && normalize_rnode_interface_mode(args.mode).is_some()
         && safe_optional_scalar(args.region_key)
         && safe_optional_scalar(args.preset_key)
+}
+
+pub fn normalize_rnode_interface_mode(mode: Option<&str>) -> Option<&'static str> {
+    let mode = mode
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or(RNODE_DEFAULT_INTERFACE_MODE);
+    let key = mode.to_ascii_lowercase();
+    match key.as_str() {
+        "full" => Some("full"),
+        "gateway" | "gw" => Some("gateway"),
+        "access_point" | "accesspoint" | "access point" | "ap" => Some("access_point"),
+        "boundary" => Some("boundary"),
+        "roaming" => Some("roaming"),
+        _ => None,
+    }
+}
+
+pub fn rnode_interface_mode_value(
+    mode: Option<&str>,
+) -> Option<rns_interface::traits::InterfaceMode> {
+    match normalize_rnode_interface_mode(mode)? {
+        "full" => Some(rns_interface::traits::InterfaceMode::Full),
+        "gateway" => Some(rns_interface::traits::InterfaceMode::Gateway),
+        "access_point" => Some(rns_interface::traits::InterfaceMode::AccessPoint),
+        "boundary" => Some(rns_interface::traits::InterfaceMode::Boundary),
+        "roaming" => Some(rns_interface::traits::InterfaceMode::Roaming),
+        _ => None,
+    }
 }
 
 fn safe_backbone_client_args(args: BackboneClientArgs<'_>) -> bool {
@@ -607,6 +641,7 @@ pub fn add_rnode_interface(config_dir: &Path, args: RnodeInterfaceArgs<'_>) -> b
 pub struct RnodeInterfaceArgs<'a> {
     pub name: &'a str,
     pub port: &'a str,
+    pub mode: Option<&'a str>,
     pub frequency: u64,
     pub bandwidth: u64,
     pub spreading_factor: u8,
@@ -818,6 +853,7 @@ fn rnode_interface_block(args: RnodeInterfaceArgs<'_>) -> String {
     let RnodeInterfaceArgs {
         name,
         port,
+        mode,
         frequency,
         bandwidth,
         spreading_factor,
@@ -826,9 +862,10 @@ fn rnode_interface_block(args: RnodeInterfaceArgs<'_>) -> String {
         region_key,
         preset_key,
     } = args;
+    let mode = normalize_rnode_interface_mode(mode).unwrap_or(RNODE_DEFAULT_INTERFACE_MODE);
 
     let mut block = format!(
-        "\n  [[{name}]]\n    type = RNodeInterface\n    port = {port}\n    frequency = {frequency}\n    bandwidth = {bandwidth}\n    spreadingfactor = {spreading_factor}\n    codingrate = {coding_rate}\n    txpower = {tx_power}\n    enabled = true\n"
+        "\n  [[{name}]]\n    type = RNodeInterface\n    port = {port}\n    mode = {mode}\n    frequency = {frequency}\n    bandwidth = {bandwidth}\n    spreadingfactor = {spreading_factor}\n    codingrate = {coding_rate}\n    txpower = {tx_power}\n    enabled = true\n"
     );
     if let Some(region_key) = region_key {
         block.push_str(&format!("    ratspeak_region = {region_key}\n"));
@@ -1510,6 +1547,7 @@ mod tests {
             RnodeInterfaceArgs {
                 name: "Radio",
                 port: "/dev/ttyUSB0",
+                mode: None,
                 frequency: 915_000_000,
                 bandwidth: 125_000,
                 spreading_factor: 7,
@@ -1526,6 +1564,7 @@ mod tests {
             RnodeInterfaceArgs {
                 name: "Field Radio",
                 port: "/dev/ttyUSB1",
+                mode: Some("roaming"),
                 frequency: 917_000_000,
                 bandwidth: 250_000,
                 spreading_factor: 9,
@@ -1540,6 +1579,7 @@ mod tests {
         assert_eq!(count_header(&content, "Radio"), 0);
         assert_eq!(count_header(&content, "Field Radio"), 1);
         assert!(content.contains("port = /dev/ttyUSB1"));
+        assert!(content.contains("mode = roaming"));
         assert!(content.contains("frequency = 917000000"));
         assert!(content.contains("spreadingfactor = 9"));
         assert!(content.contains("ratspeak_region = americas"));
@@ -1556,6 +1596,7 @@ mod tests {
             RnodeInterfaceArgs {
                 name: "UHF Radio",
                 port: "/dev/ttyUSB0",
+                mode: Some("boundary"),
                 frequency: 433_000_000,
                 bandwidth: 125_000,
                 spreading_factor: 10,
@@ -1567,6 +1608,7 @@ mod tests {
         ));
 
         let content = read_config(&dir).unwrap();
+        assert!(content.contains("mode = boundary"));
         assert!(content.contains("frequency = 433000000"));
         assert!(content.contains("bandwidth = 125000"));
         assert!(content.contains("spreadingfactor = 10"));
@@ -1586,6 +1628,7 @@ mod tests {
             RnodeInterfaceArgs {
                 name: "TCP Radio",
                 port: "tcp://rnode.local:7633",
+                mode: Some("gw"),
                 frequency: 915_000_000,
                 bandwidth: 250_000,
                 spreading_factor: 9,
@@ -1598,6 +1641,87 @@ mod tests {
 
         let content = read_config(&dir).unwrap();
         assert!(content.contains("port = tcp://rnode.local:7633"));
+        assert!(content.contains("mode = gateway"));
         assert!(content.contains("type = RNodeInterface"));
+    }
+
+    #[test]
+    fn rnode_interface_defaults_to_full_mode() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(add_rnode_interface(
+            &dir,
+            RnodeInterfaceArgs {
+                name: "Default Mode Radio",
+                port: "/dev/ttyUSB0",
+                mode: None,
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: Some("americas"),
+                preset_key: Some("medium_fast"),
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("mode = full"));
+    }
+
+    #[test]
+    fn rnode_interface_rejects_unsupported_mode() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(!add_rnode_interface(
+            &dir,
+            RnodeInterfaceArgs {
+                name: "P2P Radio",
+                port: "/dev/ttyUSB0",
+                mode: Some("point_to_point"),
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: Some("americas"),
+                preset_key: Some("medium_fast"),
+            },
+        ));
+        assert!(read_config(&dir).unwrap().contains("[interfaces]"));
+    }
+
+    #[test]
+    fn rnode_mode_helpers_cover_exposed_modes() {
+        assert_eq!(normalize_rnode_interface_mode(None), Some("full"));
+        assert_eq!(normalize_rnode_interface_mode(Some("full")), Some("full"));
+        assert_eq!(
+            normalize_rnode_interface_mode(Some("gateway")),
+            Some("gateway")
+        );
+        assert_eq!(normalize_rnode_interface_mode(Some("gw")), Some("gateway"));
+        assert_eq!(
+            normalize_rnode_interface_mode(Some("Access Point")),
+            Some("access_point")
+        );
+        assert_eq!(
+            normalize_rnode_interface_mode(Some("ap")),
+            Some("access_point")
+        );
+        assert_eq!(
+            normalize_rnode_interface_mode(Some("boundary")),
+            Some("boundary")
+        );
+        assert_eq!(
+            normalize_rnode_interface_mode(Some("roaming")),
+            Some("roaming")
+        );
+        assert_eq!(normalize_rnode_interface_mode(Some("point_to_point")), None);
+
+        for mode in RNODE_INTERFACE_MODES {
+            assert!(rnode_interface_mode_value(Some(mode)).is_some());
+        }
     }
 }

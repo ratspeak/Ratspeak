@@ -897,8 +897,19 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    let tauri_events_js =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
     let core_radio =
         read_source(root.join("crates/ratspeak-core/src/radio.rs")).expect("radio source");
+    let rns_config_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces source");
+    let ble_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble source");
+    let rns_runtime_rs =
+        read_source(root.join("../rsReticulum/crates/rns-runtime/src/reticulum.rs"))
+            .expect("rns runtime source");
 
     assert!(core_radio.contains("pub const RNODE_PRESETS"));
     assert!(core_radio.contains("pub const RNODE_REGIONS"));
@@ -912,6 +923,9 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(modals_js.contains("function _normaliseRnodeTcpEndpoint(raw)"));
     assert!(modals_js.contains("if (_rnodeIsTcpPort(port)) return 'tcp';"));
     assert!(modals_js.contains("setRnodeConnectionType('tcp')"));
+    assert!(modals_js.contains("function _rnodeNormaliseInterfaceMode(mode)"));
+    assert!(modals_js.contains("mode: _rnodeReadInterfaceMode()"));
+    assert!(modals_js.contains("window.ratspeakDeveloperModeEnabled()"));
     assert!(modals_js.contains("built.sheet.classList.add('local-network-sheet')"));
     assert!(
         modals_js.contains("loraArgs.frequency = radioSettings.frequency")
@@ -922,6 +936,43 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(index.contains(r#"id="rnode-advanced""#));
     assert!(index.contains(r#"id="rnode-toggle-tcp""#));
     assert!(index.contains(r#"id="rnode-tcp-endpoint""#));
+    assert!(index.contains(r#"id="rnode-mode-field" style="display:none;""#));
+    assert!(index.contains(r#"id="rnode-interface-mode""#));
+    assert!(index.contains(r#"<option value="full">Full</option>"#));
+    assert!(index.contains(r#"<option value="gateway">Gateway</option>"#));
+    assert!(index.contains(r#"<option value="access_point">Access Point (AP)</option>"#));
+    assert!(index.contains(r#"<option value="boundary">Boundary</option>"#));
+    assert!(index.contains(r#"<option value="roaming">Roaming</option>"#));
+    assert!(index.contains("Mode affects routing and announce propagation."));
+    assert!(rns_config_rs.contains(
+        r#"pub const RNODE_INTERFACE_MODES: &[&str] =
+    &["full", "gateway", "access_point", "boundary", "roaming"];"#
+    ));
+    assert!(rns_config_rs.contains("pub fn normalize_rnode_interface_mode"));
+    assert!(rns_config_rs.contains("\"gateway\" | \"gw\" => Some(\"gateway\")"));
+    assert!(
+        rns_config_rs.contains("\"access_point\" | \"accesspoint\" | \"access point\" | \"ap\"")
+    );
+    assert!(rns_config_rs.contains("mode = {mode}"));
+    assert!(!rns_config_rs.contains("\"point_to_point\" => Some(\"point_to_point\")"));
+    assert!(interfaces_rs.contains("pub mode: Option<String>"));
+    assert!(
+        interfaces_rs.contains("let mode = normalize_lora_interface_mode(args.mode.as_deref())?;")
+    );
+    assert!(interfaces_rs.contains("mode: Some(mode)"));
+    assert!(interfaces_rs.contains("mode: runtime_mode"));
+    assert!(interfaces_rs.contains("fn cfg_rnode_mode(entry: &Value) -> String"));
+    assert!(
+        interfaces_rs
+            .contains("cfg_str(entry, \"mode\").or_else(|| cfg_str(entry, \"interface_mode\"))")
+    );
+    assert!(interfaces_rs.contains("\"mode\": mode"));
+    assert!(ble_rs.contains("pub mode: Option<String>"));
+    assert!(ble_rs.contains("rnode_interface_mode_value(args.mode.as_deref())"));
+    assert!(ble_rs.contains("mode,"));
+    assert!(tauri_events_js.contains("mode: data.mode"));
+    assert!(rns_runtime_rs.contains("pub mode: rns_interface::traits::InterfaceMode"));
+    assert!(rns_runtime_rs.matches("config.mode = mode;").count() >= 4);
     let tauri_cargo =
         read_source(root.join("crates/ratspeak-tauri/Cargo.toml")).expect("tauri cargo");
     assert!(tauri_cargo.contains("rnode-tcp = [\"ratspeak-runtime/rnode-tcp\""));
@@ -1746,12 +1797,15 @@ fn settings_system_panel_has_developer_mode_and_reset_group() {
 
     assert!(settings_js.contains("function initDeveloperModeToggle()"));
     assert!(settings_js.contains("initDeveloperModeToggle();"));
-    assert!(settings_js.contains("function rejectDeveloperModeEnable()"));
-    assert!(
-        settings_js.contains("showToast('Developer mode is coming soon.', 'toast-info', 2500);")
-    );
-    assert!(settings_js.contains("if (on.checked) rejectDeveloperModeEnable();"));
-    assert!(settings_js.contains("_settingsDeveloperModeEnabled = false;"));
+    assert!(settings_js.contains("var _settingsDeveloperModeStorageKey"));
+    assert!(settings_js.contains("function readDeveloperModePreference()"));
+    assert!(settings_js.contains("function setDeveloperModeEnabled(enabled)"));
+    assert!(settings_js.contains("window.ratspeakDeveloperModeEnabled = function()"));
+    assert!(settings_js.contains("ratspeak-developer-mode-changed"));
+    assert!(settings_js.contains("if (on.checked) setDeveloperModeEnabled(true);"));
+    assert!(settings_js.contains("setDeveloperModeEnabled(false);"));
+    assert!(!settings_js.contains("function rejectDeveloperModeEnable()"));
+    assert!(!settings_js.contains("Developer mode is coming soon."));
     assert!(!settings_js.contains("title: 'Enable Developer Mode?'"));
     assert!(!settings_js.contains("confirmText: 'Enable'"));
     assert!(!settings_js.contains("_settingsDeveloperModeEnabled = !!ok;"));
