@@ -3496,6 +3496,9 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
         "api_agents",
         "api_agent",
         "api_agent_connection_bundle",
+        "set_agent_adapter",
+        "api_agent_runtime",
+        "start_agent_daemon",
         "create_agent",
         "set_agent_grant",
         "set_agent_policy",
@@ -3510,6 +3513,10 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
         "agents_updated",
         "agent_actions_updated",
         "agentPresetChoices",
+        "agentAdapterChoices",
+        "configureSelectedAgentAdapter",
+        "startSelectedAgentDaemon",
+        "renderAgentSetupChecklist",
         "agentPolicyListCopy",
     ] {
         assert!(
@@ -3535,6 +3542,10 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
         "api_agents",
         "api_agent",
         "api_agent_connection_bundle",
+        "api_agent_adapter",
+        "set_agent_adapter",
+        "api_agent_runtime",
+        "start_agent_daemon",
         "create_agent",
         "set_agent_grant",
         "revoke_agent",
@@ -3555,6 +3566,83 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
         assert!(
             tauri_lib.contains(command),
             "missing Tauri command: {command}"
+        );
+    }
+}
+
+#[test]
+fn agent_settings_has_complete_runtime_onboarding_surface() {
+    let root = repo_root();
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let agent_admin =
+        read_source(root.join("crates/ratspeak-cli/src/agent_admin.rs")).expect("agent admin");
+    let agents_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/agents.rs"))
+        .expect("agent commands");
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+
+    for required in [
+        "AGENT_ADAPTER_ORDER",
+        "openclaw",
+        "claude-codex-cli",
+        "venice",
+        "openai-compatible",
+        "local-http",
+        "custom-cli",
+        "Agent Runtime",
+        "Configure Runtime",
+        "Start Daemon",
+        "Copy Kit",
+        "Agent connection kit",
+        "Runtime Adapter",
+        "Secret Environment",
+        "Runtime Command",
+        "api_agent_runtime",
+        "start_agent_daemon",
+        "set_agent_adapter",
+    ] {
+        assert!(
+            settings_js.contains(required),
+            "Settings > Agents is missing runtime onboarding UI token: {required}"
+        );
+    }
+
+    for required in [
+        "AGENT_ADAPTER_FORMAT",
+        "AGENT_ADAPTER_FILE",
+        "AgentAdapterUpdate",
+        "agent_adapter_catalog_payload",
+        "show_agent_adapter",
+        "set_agent_adapter",
+        "agent_runtime_status",
+        "start_agent_daemon",
+        "agent_setup_checklist",
+        "agent_summary_or_fallback",
+        "fallback_agent_summary",
+        "health_error",
+        "https://api.venice.ai/api/v1",
+        "VENICE_API_KEY",
+        "adapter_public_payload",
+    ] {
+        assert!(
+            agent_admin.contains(required),
+            "agent admin is missing runtime/adapter support: {required}"
+        );
+    }
+
+    for command in [
+        "api_agent_adapter",
+        "set_agent_adapter",
+        "api_agent_runtime",
+        "start_agent_daemon",
+    ] {
+        assert!(
+            agents_rs.contains(command),
+            "missing command wrapper: {command}"
+        );
+        assert!(
+            tauri_lib.contains(command),
+            "missing Tauri command registration: {command}"
         );
     }
 }
@@ -3675,4 +3763,9 @@ fn agent_settings_connection_bundle_never_returns_raw_tokens_to_dashboard() {
     assert!(!settings_js.contains("credential.token"));
     assert!(!settings_js.contains("identity.mnemonic"));
     assert!(!settings_js.contains("payload.identity.mnemonic"));
+    assert!(agent_admin.contains("\"adapter\": adapter"));
+    assert!(agent_admin.contains("\"redacted\": true"));
+    assert!(agent_admin.contains("\"secret_env\""));
+    assert!(!agent_admin.contains("\"api_key\""));
+    assert!(!settings_js.contains("api_key"));
 }

@@ -4,6 +4,8 @@
 //! for both `ratspeakctl` and the desktop Settings UI.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,6 +19,9 @@ use crate::agent_policy::{
 };
 use crate::error::{CliError, CliResult};
 use crate::profile::{self, Profile};
+
+const AGENT_ADAPTER_FORMAT: &str = "ratspeak.agent-adapter.v1";
+const AGENT_ADAPTER_FILE: &str = "agent-adapter.json";
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentCreateOptions {
@@ -58,6 +63,48 @@ pub struct AgentPolicyPatch {
 pub struct PolicySet {
     pub key: String,
     pub value: Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentAdapterUpdate {
+    pub name: String,
+    pub provider: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub secret_env: Option<String>,
+    #[serde(default)]
+    pub secret_file: Option<PathBuf>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentAdapterConfig {
+    format: String,
+    version: u32,
+    provider: String,
+    label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
+    #[serde(default)]
+    command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
+    created_at_unix: f64,
+    updated_at_unix: f64,
 }
 
 pub fn create_agent(profile: &Profile, mut opts: AgentCreateOptions) -> CliResult<Value> {
@@ -225,11 +272,12 @@ pub fn list_agent_summaries(profile: &Profile) -> CliResult<Value> {
     let mut agents = Vec::new();
     for manifest_value in list_agent_manifests(profile)? {
         let manifest: AgentManifest = serde_json::from_value(manifest_value)?;
-        agents.push(agent_summary(profile, &manifest)?);
+        agents.push(agent_summary_or_fallback(profile, &manifest));
     }
     Ok(json!({
         "agents": agents,
         "presets": agent_presets_payload(),
+        "adapters": agent_adapter_catalog_payload(),
         "policy_defaults": agent_actions::AgentWritePolicy::default(),
         "onboarding": onboarding_contract_payload(profile),
     }))
@@ -246,22 +294,77 @@ pub fn show_agent_manifest(profile: &Profile, name: &str) -> CliResult<AgentMani
 
 pub fn show_agent_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
     let manifest = show_agent_manifest(profile, name)?;
-    let summary = agent_summary(profile, &manifest)?;
-    let policy = show_agent_policy(profile, name)?;
-    let audit = list_agent_audit(profile, Some(name), 25)?;
-    let approvals = list_agent_approvals(
+    let mut health_errors = Vec::new();
+    let summary = match agent_summary(profile, &manifest) {
+        Ok(summary) => summary,
+        Err(error) => {
+            health_errors.push(health_error("summary", &error));
+            fallback_agent_summary(&manifest, Some(&error))
+        }
+    };
+    let (policy, policy_file) = match show_agent_policy(profile, name) {
+        Ok(payload) => (
+            payload
+                .get("policy")
+                .cloned()
+                .unwrap_or_else(|| json!(agent_actions::AgentWritePolicy::default())),
+            payload.get("policy_file").cloned().unwrap_or(Value::Null),
+        ),
+        Err(error) => {
+            health_errors.push(health_error("policy", &error));
+            (
+                json!(agent_actions::AgentWritePolicy::default()),
+                Value::Null,
+            )
+        }
+    };
+    let audit = match list_agent_audit(profile, Some(name), 25) {
+        Ok(payload) => payload
+            .get("audit")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        Err(error) => {
+            health_errors.push(health_error("audit", &error));
+            Value::Array(Vec::new())
+        }
+    };
+    let approvals = match list_agent_approvals(
         profile,
         Some(name),
         Some(agent_actions::STATE_PENDING_APPROVAL),
-    )?;
+    ) {
+        Ok(payload) => payload
+            .get("actions")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        Err(error) => {
+            health_errors.push(health_error("approvals", &error));
+            Value::Array(Vec::new())
+        }
+    };
+    let adapter = match agent_adapter_for_manifest(&manifest) {
+        Ok(adapter) => adapter_public_payload(adapter),
+        Err(error) => {
+            health_errors.push(health_error("adapter", &error));
+            adapter_public_payload(None)
+        }
+    };
     Ok(json!({
         "agent": manifest,
         "summary": summary,
-        "policy": policy["policy"].clone(),
-        "policy_file": policy["policy_file"].clone(),
-        "approvals": approvals["actions"].clone(),
-        "audit": audit["audit"].clone(),
+        "policy": policy,
+        "policy_file": policy_file,
+        "approvals": approvals,
+        "audit": audit,
+        "adapter": adapter,
+        "runtime": agent_runtime_status_for_manifest(&manifest),
+        "setup": agent_setup_checklist(&manifest),
         "connection": connection_bundle(profile, name)?,
+        "adapters": agent_adapter_catalog_payload(),
+        "health": {
+            "ok": health_errors.is_empty(),
+            "errors": health_errors,
+        },
     }))
 }
 
@@ -624,6 +727,146 @@ pub fn list_agent_audit(profile: &Profile, agent: Option<&str>, limit: usize) ->
     Ok(json!({ "audit": records }))
 }
 
+pub fn show_agent_adapter(profile: &Profile, name: &str) -> CliResult<Value> {
+    let manifest = show_agent_manifest(profile, name)?;
+    let adapter_result = agent_adapter_for_manifest(&manifest);
+    let (adapter, health) = match adapter_result {
+        Ok(adapter) => (
+            adapter_public_payload(adapter),
+            json!({ "ok": true, "errors": [] }),
+        ),
+        Err(error) => (
+            adapter_public_payload(None),
+            json!({ "ok": false, "errors": [health_error("adapter", &error)] }),
+        ),
+    };
+    Ok(json!({
+        "agent": manifest.name,
+        "adapter": adapter,
+        "catalog": agent_adapter_catalog_payload(),
+        "health": health,
+    }))
+}
+
+pub fn set_agent_adapter(profile: &Profile, update: AgentAdapterUpdate) -> CliResult<Value> {
+    validate_agent_name(&update.name)?;
+    let manifest = show_agent_manifest(profile, &update.name)?;
+    let provider = normalize_adapter_provider(&update.provider)?;
+    let now = unix_now_secs();
+    let existing = agent_adapter_for_manifest(&manifest).ok().flatten();
+    let defaults = adapter_defaults(&provider);
+    let config = AgentAdapterConfig {
+        format: AGENT_ADAPTER_FORMAT.into(),
+        version: 1,
+        provider: provider.clone(),
+        label: clean_optional(update.label).unwrap_or_else(|| defaults.label.into()),
+        model: clean_optional(update.model),
+        base_url: clean_optional(update.base_url).or_else(|| defaults.base_url.map(str::to_string)),
+        command: clean_command(update.command).unwrap_or_else(|| defaults.command),
+        secret_env: clean_optional(update.secret_env)
+            .or_else(|| defaults.secret_env.map(str::to_string)),
+        secret_file: update.secret_file,
+        notes: clean_optional(update.notes),
+        created_at_unix: existing
+            .as_ref()
+            .map(|config| config.created_at_unix)
+            .unwrap_or(now),
+        updated_at_unix: now,
+    };
+    validate_adapter_config(&config)?;
+    write_agent_adapter_config(&manifest.profile_root, &config)?;
+    append_agent_admin_audit(
+        &manifest.profile_root,
+        "adapter.updated",
+        json!({
+            "agent": manifest.name,
+            "provider": config.provider,
+            "base_url": config.base_url,
+            "model": config.model,
+            "secret_env": config.secret_env,
+            "secret_file": config.secret_file,
+        }),
+    );
+    Ok(json!({
+        "agent": manifest.name,
+        "changed": true,
+        "adapter": adapter_public_payload(Some(config)),
+        "setup": agent_setup_checklist(&manifest),
+        "connection": connection_bundle(profile, &manifest.name)?,
+    }))
+}
+
+pub fn agent_runtime_status(profile: &Profile, name: &str) -> CliResult<Value> {
+    let manifest = show_agent_manifest(profile, name)?;
+    Ok(agent_runtime_status_for_manifest(&manifest))
+}
+
+pub fn start_agent_daemon(profile: &Profile, name: &str) -> CliResult<Value> {
+    let manifest = show_agent_manifest(profile, name)?;
+    let current = agent_runtime_status_for_manifest(&manifest);
+    if current
+        .get("running")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(json!({
+            "agent": manifest.name,
+            "started": false,
+            "runtime": current,
+            "message": "agent daemon is already running",
+        }));
+    }
+
+    let commands = agent_binary_commands();
+    let child = Command::new(&commands.ratspeakd)
+        .arg("--data-dir")
+        .arg(&manifest.profile_root)
+        .arg("run")
+        .arg("--quiet")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            CliError::failed(format!(
+                "failed to start agent daemon with {}: {e}",
+                commands.ratspeakd
+            ))
+        })?;
+    let pid = child.id();
+
+    let mut runtime = agent_runtime_status_for_manifest(&manifest);
+    for _ in 0..30 {
+        if runtime
+            .get("running")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        runtime = agent_runtime_status_for_manifest(&manifest);
+    }
+
+    append_agent_admin_audit(
+        &manifest.profile_root,
+        "runtime.started",
+        json!({
+            "agent": manifest.name,
+            "pid": pid,
+            "runtime": runtime,
+        }),
+    );
+
+    Ok(json!({
+        "agent": manifest.name,
+        "started": true,
+        "pid": pid,
+        "runtime": runtime,
+        "connection": connection_bundle(profile, &manifest.name)?,
+    }))
+}
+
 pub fn connection_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
     let manifest = show_agent_manifest(profile, name)?;
     let owner_root_arg = profile.data_root.display().to_string();
@@ -631,6 +874,7 @@ pub fn connection_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
     let commands = agent_binary_commands();
     let ratspeakd = commands.ratspeakd.clone();
     let ratspeakctl = commands.ratspeakctl.clone();
+    let adapter = adapter_public_payload(agent_adapter_for_manifest(&manifest).ok().flatten());
     Ok(json!({
         "format": "ratspeak.agent-connection.v1",
         "agent": manifest.name,
@@ -651,9 +895,12 @@ pub fn connection_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
             "note": "desktop bundles include these sidecars; CLI-only installs may resolve ratspeakd/ratspeakctl from PATH"
         },
         "daemon": {
-            "start": [ratspeakd, "--data-dir", agent_root_arg.clone()],
+            "start": [ratspeakd, "--data-dir", agent_root_arg.clone(), "run", "--quiet"],
             "endpoint_file": manifest.profile_data_dir.join("ratspeakd-api.json"),
         },
+        "adapter": adapter,
+        "runtime": agent_runtime_status_for_manifest(&manifest),
+        "setup": agent_setup_checklist(&manifest),
         "cli_contract": {
             "events": [ratspeakctl, "--data-dir", agent_root_arg.clone(), "--jsonl", "events", "stream"],
             "read_conversation": [ratspeakctl, "--data-dir", agent_root_arg.clone(), "conversations", "read", "<conversation-id>", "--json"],
@@ -1106,6 +1353,13 @@ fn credential_token_file(_owner_root_arg: &str, agent_root_arg: &str) -> PathBuf
         .join("agent.token")
 }
 
+fn agent_summary_or_fallback(profile: &Profile, manifest: &AgentManifest) -> Value {
+    match agent_summary(profile, manifest) {
+        Ok(summary) => summary,
+        Err(error) => fallback_agent_summary(manifest, Some(&error)),
+    }
+}
+
 fn agent_summary(profile: &Profile, manifest: &AgentManifest) -> CliResult<Value> {
     let (_, agent_profile) = open_agent_profile(profile, &manifest.name)?;
     let pending = agent_actions::list_actions(
@@ -1127,6 +1381,7 @@ fn agent_summary(profile: &Profile, manifest: &AgentManifest) -> CliResult<Value
     )?
     .len();
     let policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
+    let adapter = adapter_public_payload(agent_adapter_for_manifest(manifest)?);
     Ok(json!({
         "name": manifest.name,
         "display_name": manifest.display_name,
@@ -1140,12 +1395,57 @@ fn agent_summary(profile: &Profile, manifest: &AgentManifest) -> CliResult<Value
         "policy_revision": policy.policy_revision,
         "auto_approval_enabled": policy.auto_approval_enabled,
         "require_owner_approval": policy.require_owner_approval,
+        "adapter": adapter,
+        "runtime": agent_runtime_status_for_manifest(manifest),
+        "setup": agent_setup_checklist(manifest),
+        "health": {
+            "ok": true,
+            "errors": [],
+        },
         "counts": {
             "pending_approval": pending,
             "approved": approved,
             "draft": drafts,
         },
     }))
+}
+
+fn fallback_agent_summary(manifest: &AgentManifest, error: Option<&CliError>) -> Value {
+    let grant = manifest.effective_grant();
+    json!({
+        "name": manifest.name,
+        "display_name": manifest.display_name,
+        "identity_hash": manifest.identity_hash,
+        "lxmf_hash": manifest.lxmf_hash,
+        "status": grant.status,
+        "grant_revision": grant.revision,
+        "profile_root": manifest.profile_root,
+        "token_file": manifest.auth.token_file,
+        "token_hash": manifest.auth.token_hash,
+        "policy_revision": Value::Null,
+        "auto_approval_enabled": false,
+        "require_owner_approval": true,
+        "adapter": adapter_public_payload(agent_adapter_for_manifest(manifest).ok().flatten()),
+        "runtime": agent_runtime_status_for_manifest(manifest),
+        "setup": agent_setup_checklist(manifest),
+        "health": {
+            "ok": false,
+            "errors": error.map(|err| vec![health_error("agent_profile", err)]).unwrap_or_default(),
+        },
+        "counts": {
+            "pending_approval": 0,
+            "approved": 0,
+            "draft": 0,
+        },
+    })
+}
+
+fn health_error(area: &str, error: &CliError) -> Value {
+    json!({
+        "area": area,
+        "code": error.code(),
+        "message": error.to_string(),
+    })
 }
 
 fn onboarding_contract_payload(profile: &Profile) -> Value {
@@ -1164,6 +1464,7 @@ fn onboarding_contract_payload(profile: &Profile) -> Value {
             "ratspeakd": commands.ratspeakd,
             "ratspeakctl": commands.ratspeakctl,
         },
+        "adapters": agent_adapter_catalog_payload(),
         "agent_contract": {
             "events": "ratspeakctl --data-dir <agent-profile> --jsonl events stream",
             "read": "ratspeakctl --data-dir <agent-profile> conversations read <conversation-id> --json",
@@ -1171,6 +1472,328 @@ fn onboarding_contract_payload(profile: &Profile) -> Value {
             "approval": "owner approves, rejects, cancels, expires, or executes action records",
         }
     })
+}
+
+pub fn agent_adapter_catalog_payload() -> Value {
+    json!({
+        "order": [
+            "openclaw",
+            "claude-codex-cli",
+            "venice",
+            "openai-compatible",
+            "local-http",
+            "custom-cli"
+        ],
+        "providers": {
+            "openclaw": {
+                "label": "OpenClaw",
+                "description": "Local OpenClaw bot or skill wrapper that reads the Ratspeak connection kit.",
+                "secret": "none",
+                "default_command": ["openclaw", "ratspeak", "run", "--connection-kit", "<connection-kit.json>"]
+            },
+            "claude-codex-cli": {
+                "label": "Claude/Codex CLI",
+                "description": "Local terminal agent process using the Ratspeak CLI/API contract.",
+                "secret": "external",
+                "default_command": []
+            },
+            "venice": {
+                "label": "Venice API",
+                "description": "OpenAI-compatible Venice inference through a local bridge or agent runtime.",
+                "base_url": "https://api.venice.ai/api/v1",
+                "secret_env": "VENICE_API_KEY"
+            },
+            "openai-compatible": {
+                "label": "OpenAI-compatible API",
+                "description": "Any OpenAI-compatible HTTP inference provider run by a local adapter.",
+                "secret_env": "OPENAI_API_KEY"
+            },
+            "local-http": {
+                "label": "Local HTTP model",
+                "description": "A local model server or bridge on this machine.",
+                "secret": "optional"
+            },
+            "custom-cli": {
+                "label": "Custom command",
+                "description": "A user-supplied command that consumes the connection kit.",
+                "secret": "external",
+                "default_command": []
+            }
+        }
+    })
+}
+
+fn agent_setup_checklist(manifest: &AgentManifest) -> Value {
+    let grant = manifest.effective_grant();
+    let adapter = agent_adapter_for_manifest(manifest).ok().flatten();
+    let runtime = agent_runtime_status_for_manifest(manifest);
+    let has_permission_target = !grant.allowed_contacts.is_empty()
+        || !grant.allowed_conversations.is_empty()
+        || grant.unknown_contacts == "allow";
+    json!({
+        "items": [
+            {
+                "key": "identity",
+                "label": "Agent identity",
+                "complete": !manifest.identity_hash.is_empty(),
+                "detail": short_hash_for_setup(&manifest.identity_hash),
+            },
+            {
+                "key": "permissions",
+                "label": "Contact or conversation permissions",
+                "complete": has_permission_target,
+                "detail": if has_permission_target { "scoped" } else { "no target allowlist" },
+            },
+            {
+                "key": "adapter",
+                "label": "Runtime adapter",
+                "complete": adapter.is_some(),
+                "detail": adapter.as_ref().map(|config| config.label.as_str()).unwrap_or("not configured"),
+            },
+            {
+                "key": "daemon",
+                "label": "Agent daemon",
+                "complete": runtime.get("running").and_then(Value::as_bool).unwrap_or(false),
+                "detail": runtime.get("state").and_then(Value::as_str).unwrap_or("unknown"),
+            },
+            {
+                "key": "guardrails",
+                "label": "Guardrails",
+                "complete": true,
+                "detail": "policy file active",
+            }
+        ]
+    })
+}
+
+fn short_hash_for_setup(hash: &str) -> String {
+    if hash.len() <= 12 {
+        return hash.to_string();
+    }
+    format!("{}...{}", &hash[..8], &hash[hash.len() - 4..])
+}
+
+fn agent_runtime_status_for_manifest(manifest: &AgentManifest) -> Value {
+    let endpoint_file = crate::daemon_api::endpoint_path(&manifest.profile_data_dir);
+    let had_endpoint = endpoint_file.exists();
+    match crate::daemon_api::request(&manifest.profile_data_dir, "status.get", json!({})) {
+        Ok(Some(status)) => json!({
+            "agent": manifest.name,
+            "running": true,
+            "state": "running",
+            "endpoint_file": endpoint_file,
+            "profile_data_dir": manifest.profile_data_dir,
+            "status": status,
+        }),
+        Ok(None) => json!({
+            "agent": manifest.name,
+            "running": false,
+            "state": if had_endpoint { "stale" } else { "stopped" },
+            "endpoint_file": endpoint_file,
+            "profile_data_dir": manifest.profile_data_dir,
+            "message": if had_endpoint {
+                "stale daemon endpoint was not reachable"
+            } else {
+                "agent daemon is not running"
+            },
+        }),
+        Err(error) => json!({
+            "agent": manifest.name,
+            "running": false,
+            "state": "error",
+            "endpoint_file": endpoint_file,
+            "profile_data_dir": manifest.profile_data_dir,
+            "error": {
+                "code": error.code(),
+                "message": error.to_string(),
+            },
+        }),
+    }
+}
+
+fn agent_adapter_path(agent_root: &Path) -> PathBuf {
+    agent_root.join(".ratspeak").join(AGENT_ADAPTER_FILE)
+}
+
+fn agent_adapter_for_manifest(manifest: &AgentManifest) -> CliResult<Option<AgentAdapterConfig>> {
+    let path = agent_adapter_path(&manifest.profile_root);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path)?;
+    let config: AgentAdapterConfig = serde_json::from_slice(&bytes)?;
+    validate_adapter_config(&config)?;
+    Ok(Some(config))
+}
+
+fn write_agent_adapter_config(agent_root: &Path, config: &AgentAdapterConfig) -> CliResult<()> {
+    let path = agent_adapter_path(agent_root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(config)?)?;
+    restrict_private_json_permissions(&tmp)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+fn adapter_public_payload(config: Option<AgentAdapterConfig>) -> Value {
+    match config {
+        Some(config) => json!({
+            "configured": true,
+            "format": config.format,
+            "version": config.version,
+            "provider": config.provider,
+            "label": config.label,
+            "model": config.model,
+            "base_url": config.base_url,
+            "command": config.command,
+            "secret": {
+                "redacted": true,
+                "env": config.secret_env,
+                "file": config.secret_file,
+                "note": "Ratspeak stores only a secret reference for adapters; raw LLM/API keys are not included in connection bundles."
+            },
+            "notes": config.notes,
+            "created_at_unix": config.created_at_unix,
+            "updated_at_unix": config.updated_at_unix,
+        }),
+        None => json!({
+            "configured": false,
+            "provider": Value::Null,
+            "label": "Not configured",
+            "secret": {
+                "redacted": true,
+                "note": "No LLM or bot runtime has been selected for this Ratspeak agent yet."
+            }
+        }),
+    }
+}
+
+struct AdapterDefaults {
+    label: &'static str,
+    base_url: Option<&'static str>,
+    secret_env: Option<&'static str>,
+    command: Vec<String>,
+}
+
+fn adapter_defaults(provider: &str) -> AdapterDefaults {
+    match provider {
+        "openclaw" => AdapterDefaults {
+            label: "OpenClaw",
+            base_url: None,
+            secret_env: None,
+            command: vec![
+                "openclaw".into(),
+                "ratspeak".into(),
+                "run".into(),
+                "--connection-kit".into(),
+                "<connection-kit.json>".into(),
+            ],
+        },
+        "claude-codex-cli" => AdapterDefaults {
+            label: "Claude/Codex CLI",
+            base_url: None,
+            secret_env: None,
+            command: Vec::new(),
+        },
+        "venice" => AdapterDefaults {
+            label: "Venice API",
+            base_url: Some("https://api.venice.ai/api/v1"),
+            secret_env: Some("VENICE_API_KEY"),
+            command: Vec::new(),
+        },
+        "openai-compatible" => AdapterDefaults {
+            label: "OpenAI-compatible API",
+            base_url: None,
+            secret_env: Some("OPENAI_API_KEY"),
+            command: Vec::new(),
+        },
+        "local-http" => AdapterDefaults {
+            label: "Local HTTP model",
+            base_url: None,
+            secret_env: None,
+            command: Vec::new(),
+        },
+        _ => AdapterDefaults {
+            label: "Custom command",
+            base_url: None,
+            secret_env: None,
+            command: Vec::new(),
+        },
+    }
+}
+
+fn normalize_adapter_provider(provider: &str) -> CliResult<String> {
+    let provider = provider.trim().to_ascii_lowercase();
+    match provider.as_str() {
+        "openclaw" | "claude-codex-cli" | "venice" | "openai-compatible" | "local-http"
+        | "custom-cli" => Ok(provider),
+        _ => Err(CliError::usage(format!(
+            "unsupported agent adapter provider: {provider}"
+        ))),
+    }
+}
+
+fn validate_adapter_config(config: &AgentAdapterConfig) -> CliResult<()> {
+    if config.format != AGENT_ADAPTER_FORMAT {
+        return Err(CliError::failed(format!(
+            "unsupported agent adapter format: {}",
+            config.format
+        )));
+    }
+    normalize_adapter_provider(&config.provider)?;
+    if config.label.trim().is_empty() {
+        return Err(CliError::usage("agent adapter label cannot be empty"));
+    }
+    if let Some(base_url) = &config.base_url {
+        let base_url = base_url.trim();
+        if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+            return Err(CliError::usage(
+                "agent adapter base_url must start with http:// or https://",
+            ));
+        }
+    }
+    if let Some(secret_env) = &config.secret_env {
+        if !secret_env
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(CliError::usage(
+                "agent adapter secret_env may contain only letters, numbers, and underscores",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn clean_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn clean_command(command: Vec<String>) -> Option<Vec<String>> {
+    let command = command
+        .into_iter()
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    (!command.is_empty()).then_some(command)
+}
+
+fn restrict_private_json_permissions(path: &Path) -> CliResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 fn command_hints_for_agent_root(agent_root: &Path) -> AgentCommandHints {

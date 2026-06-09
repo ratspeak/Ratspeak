@@ -96,13 +96,21 @@ key material. `identity activate` is an offline profile change; restart
 
 For normal owner setup, use the Ratspeak app's Settings > Agents panel. It
 creates the same isolated agent profiles, grants, token files, policy
-guardrails, approval queues, and audit records as the CLI, then exposes a
-redacted connection bundle for the local agent adapter. The GUI never displays
-the raw token or agent recovery phrase; local agent processes read the private
-token file directly. Desktop bundles include `ratspeakd` and `ratspeakctl` as
-packaged sidecars, and copied connection bundles prefer those packaged binary
-paths when the app is running from a bundle. CLI-only installs continue to
-resolve `ratspeakd` and `ratspeakctl` from `PATH`.
+guardrails, approval queues, and audit records as the CLI. It also stores the
+runtime adapter profile that tells the owner what will actually run the agent:
+OpenClaw, Claude/Codex CLI, Venice API, a generic OpenAI-compatible provider, a
+local HTTP model server, or a custom command. The copied connection kit includes
+the adapter metadata, daemon start command, stable CLI/API contract, and
+redacted credential references.
+
+The GUI never displays the raw token, agent recovery phrase, or LLM/API key.
+Local agent processes read the private Ratspeak token file directly. Provider
+keys should be supplied to the adapter through an environment variable or
+private file reference, for example `VENICE_API_KEY` for Venice. Desktop bundles
+include `ratspeakd` and `ratspeakctl` as packaged sidecars, and copied
+connection kits prefer those packaged binary paths when the app is running from
+a bundle. CLI-only installs continue to resolve `ratspeakd` and `ratspeakctl`
+from `PATH`.
 
 `agent onboard` is the preferred CLI beta entry point for scripted setup. It
 defaults to the `reply-assistant` preset and returns machine-readable
@@ -127,11 +135,12 @@ the manifest, policy, and credential files from the owner profile. Restart
 `ratspeakd` for the agent profile after changing grants or credentials. Policy
 changes are read on the next action create/submit/execute.
 
-The Settings > Agents panel exposes the same owner controls for presets,
-contact grants, token rotation, revocation, approval/action state inspection,
-file/image review, audit entries, auto-approval, rate limits, causal loop
-prevention, payload sizes, MIME filters, file path roots, contact/conversation
-mutations, announces, path requests, and propagation-node limits.
+The Settings > Agents panel exposes the same owner controls for runtime adapter
+setup, daemon status/start, connection kit copy, presets, contact grants, token
+rotation, revocation, approval/action state inspection, file/image review,
+audit entries, auto-approval, rate limits, causal loop prevention, payload
+sizes, MIME filters, file path roots, contact/conversation mutations,
+announces, path requests, and propagation-node limits.
 Keep manual review for unmatched actions enabled unless the agent has tight
 grants and a deliberately configured auto-approval lane.
 

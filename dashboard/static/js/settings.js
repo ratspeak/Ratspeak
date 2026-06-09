@@ -442,6 +442,7 @@ var _settingsAgentsLoading = false;
 var _settingsAgentsState = {
     agents: [],
     presets: {},
+    adapters: {},
     selected: null,
     detail: null,
     approvalState: 'pending_approval',
@@ -455,6 +456,15 @@ var AGENT_PRESET_ORDER = [
     'inbox-reader',
     'network-helper',
     'openclaw-basic'
+];
+
+var AGENT_ADAPTER_ORDER = [
+    'openclaw',
+    'claude-codex-cli',
+    'venice',
+    'openai-compatible',
+    'local-http',
+    'custom-cli'
 ];
 
 var AGENT_APPROVAL_STATES = [
@@ -527,6 +537,7 @@ function loadAgentSettings(force) {
         _settingsAgentsLoading = false;
         _settingsAgentsState.agents = (payload && payload.agents) || [];
         _settingsAgentsState.presets = (payload && payload.presets) || {};
+        _settingsAgentsState.adapters = (payload && payload.adapters) || {};
         if (summary) {
             var count = _settingsAgentsState.agents.length;
             summary.textContent = count
@@ -567,12 +578,16 @@ function renderAgentList() {
         var status = agent.status || 'active';
         var pending = agent.counts && agent.counts.pending_approval ? agent.counts.pending_approval : 0;
         var auto = agent.auto_approval_enabled ? 'auto allowed' : 'manual review';
+        var adapter = agent.adapter && agent.adapter.configured ? agent.adapter.label : 'runtime not set';
+        var runtime = agent.runtime && agent.runtime.running ? 'running' : (agent.runtime && agent.runtime.state ? agent.runtime.state : 'stopped');
+        var health = agent.health && agent.health.ok === false ? ' · needs attention' : '';
         return '<button class="settings-agent-row' + (active ? ' active' : '') + '" type="button" data-agent="' + escapeHtml(agent.name) + '">' +
             '<span class="settings-agent-row-main">' +
                 '<span class="settings-agent-row-name">' + escapeHtml(agent.display_name || agent.name) + '</span>' +
-                '<span class="settings-agent-row-meta">' + escapeHtml(shortHash(agent.identity_hash || '', 8, 4)) + ' · ' + escapeHtml(auto) + '</span>' +
+                '<span class="settings-agent-row-meta">' + escapeHtml(shortHash(agent.identity_hash || '', 8, 4)) + ' · ' + escapeHtml(adapter) + ' · ' + escapeHtml(auto) + health + '</span>' +
             '</span>' +
             '<span class="settings-agent-row-status status-' + escapeHtml(status) + '">' + escapeHtml(status) + '</span>' +
+            '<span class="settings-agent-row-status status-runtime-' + escapeHtml(runtime) + '">' + escapeHtml(runtime) + '</span>' +
             (pending ? '<span class="settings-agent-row-count">' + pending + '</span>' : '') +
         '</button>';
     }).join('');
@@ -610,7 +625,7 @@ function renderAgentDetail(payload) {
     var agent = payload && payload.agent;
     var summary = payload && payload.summary;
     var policy = payload && payload.policy;
-    if (!agent || !policy) {
+    if (!agent) {
         renderAgentEmptyDetail();
         return;
     }
@@ -619,6 +634,12 @@ function renderAgentDetail(payload) {
     var scopes = grant.scopes || agent.effective_scopes || [];
     var contacts = grant.allowed_contacts || agent.allowed_contacts || [];
     var conversations = grant.allowed_conversations || agent.allowed_conversations || [];
+    var adapter = (payload && payload.adapter) || (summary && summary.adapter) || {};
+    var runtime = (payload && payload.runtime) || (summary && summary.runtime) || {};
+    var health = payload && payload.health;
+    var healthErrors = health && health.ok === false && Array.isArray(health.errors) ? health.errors : [];
+    var tokenFile = agent.auth && agent.auth.token_file ? agent.auth.token_file : '';
+    var endpoint = runtime && runtime.endpoint_file ? runtime.endpoint_file : (payload.connection && payload.connection.daemon ? payload.connection.daemon.endpoint_file : '');
     detail.innerHTML =
         '<div class="settings-agent-summary">' +
             '<div class="settings-agent-summary-head">' +
@@ -626,24 +647,39 @@ function renderAgentDetail(payload) {
                     '<div class="settings-agent-title">' + escapeHtml(agent.display_name || agent.name) + '</div>' +
                     '<div class="settings-agent-subtitle">' + escapeHtml(agent.name) + ' · ' + escapeHtml(shortHash(agent.identity_hash || '', 8, 4)) + '</div>' +
                 '</div>' +
-                '<span class="settings-agent-state">' + escapeHtml(grant.status || 'active') + '</span>' +
+                '<div class="settings-agent-state-stack">' +
+                    '<span class="settings-agent-state">' + escapeHtml(grant.status || 'active') + '</span>' +
+                    '<span class="settings-agent-state status-runtime-' + escapeHtml(runtime.state || 'stopped') + '">' + escapeHtml(runtime.running ? 'running' : (runtime.state || 'stopped')) + '</span>' +
+                '</div>' +
             '</div>' +
+            (healthErrors.length ? renderAgentHealth(healthErrors) : '') +
+            renderAgentSetupChecklist(payload.setup || (summary && summary.setup)) +
             '<div class="settings-agent-action-row">' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="copy-bundle">Copy Bundle</button>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="configure-adapter">Configure Runtime</button>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="start-daemon">Start Daemon</button>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="refresh-runtime">Refresh Runtime</button>' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="copy-bundle">Copy Kit</button>' +
                 '<button class="selector-badge selector-badge-no-caret" data-agent-action="add-contact">Allow Contact</button>' +
                 '<button class="selector-badge selector-badge-no-caret" data-agent-action="edit-scopes">Preset</button>' +
                 '<button class="selector-badge selector-badge-no-caret" data-agent-action="rotate-token">Rotate Token</button>' +
                 '<button class="selector-badge selector-badge-no-caret" data-agent-action="revoke">Revoke</button>' +
             '</div>' +
             '<div class="settings-agent-facts">' +
-                agentFact('Token file', agent.auth && agent.auth.token_file ? agent.auth.token_file : '') +
+                agentFact('Runtime Adapter', adapter.configured ? (adapter.label || adapter.provider || 'Configured') : 'Not configured') +
+                agentFact('Provider', adapter.provider || 'Not set') +
+                agentFact('Model', adapter.model || 'Not set') +
+                agentFact('Base URL', adapter.base_url || 'Not set') +
+                agentFact('Secret', agentAdapterSecretLabel(adapter)) +
+                agentFact('Command', adapter.command && adapter.command.length ? adapter.command.join(' ') : 'Not set') +
+                agentFact('Daemon endpoint', endpoint || 'Not running') +
+                agentFact('Token file', tokenFile) +
                 agentFact('Scopes', scopes.length ? scopes.join(', ') : 'None') +
                 agentFact('Allowed contacts', contacts.length ? contacts.join(', ') : (grant.unknown_contacts === 'allow' ? 'All contacts' : 'None')) +
                 agentFact('Allowed conversations', conversations.length ? conversations.join(', ') : 'None') +
             '</div>' +
         '</div>' +
         '<div class="settings-panel-section-title">Guardrails</div>' +
-        renderAgentPolicyControls(policy, summary);
+        renderAgentPolicyControls(policy || {}, summary);
 }
 
 function agentFact(label, value) {
@@ -651,6 +687,36 @@ function agentFact(label, value) {
         '<span class="settings-agent-fact-label">' + escapeHtml(label) + '</span>' +
         '<span class="settings-agent-fact-value">' + escapeHtml(value || 'Not set') + '</span>' +
     '</div>';
+}
+
+function renderAgentHealth(errors) {
+    return '<div class="settings-agent-health">' +
+        '<span class="settings-agent-health-title">Needs attention</span>' +
+        errors.slice(0, 3).map(function(error) {
+            return '<span class="settings-agent-health-copy">' + escapeHtml((error.area || 'agent') + ': ' + (error.message || error.code || 'unavailable')) + '</span>';
+        }).join('') +
+    '</div>';
+}
+
+function renderAgentSetupChecklist(setup) {
+    var items = setup && Array.isArray(setup.items) ? setup.items : [];
+    if (!items.length) return '';
+    return '<div class="settings-agent-checklist">' + items.map(function(item) {
+        return '<div class="settings-agent-checkitem' + (item.complete ? ' complete' : '') + '">' +
+            '<span class="settings-agent-checkmark">' + (item.complete ? 'OK' : '--') + '</span>' +
+            '<span class="settings-agent-checkbody">' +
+                '<span class="settings-agent-checklabel">' + escapeHtml(item.label || item.key || 'Step') + '</span>' +
+                '<span class="settings-agent-checkdetail">' + escapeHtml(item.detail || '') + '</span>' +
+            '</span>' +
+        '</div>';
+    }).join('') + '</div>';
+}
+
+function agentAdapterSecretLabel(adapter) {
+    var secret = adapter && adapter.secret ? adapter.secret : {};
+    if (secret.env) return 'Environment: ' + secret.env;
+    if (secret.file) return 'File: ' + secret.file;
+    return 'External or none';
 }
 
 function renderAgentPolicyControls(policy, summary) {
@@ -867,7 +933,10 @@ function handleAgentDetailClick(e) {
     var actionBtn = e.target.closest('[data-agent-action]');
     if (!actionBtn) return;
     var action = actionBtn.dataset.agentAction;
-    if (action === 'copy-bundle') copyAgentConnectionBundle();
+    if (action === 'configure-adapter') configureSelectedAgentAdapter();
+    else if (action === 'start-daemon') startSelectedAgentDaemon();
+    else if (action === 'refresh-runtime') refreshSelectedAgentRuntime();
+    else if (action === 'copy-bundle') copyAgentConnectionBundle();
     else if (action === 'add-contact') addAgentAllowedContact();
     else if (action === 'edit-scopes') editAgentPreset();
     else if (action === 'rotate-token') rotateSelectedAgentToken();
@@ -1103,8 +1172,122 @@ function agentPresetChoices() {
     });
 }
 
+function agentAdapterCatalog() {
+    var catalog = _settingsAgentsState.adapters || {};
+    return catalog.providers || {};
+}
+
+function agentAdapterChoices() {
+    var providers = agentAdapterCatalog();
+    var keys = AGENT_ADAPTER_ORDER.filter(function(key) { return providers[key]; });
+    Object.keys(providers).sort().forEach(function(key) {
+        if (keys.indexOf(key) === -1) keys.push(key);
+    });
+    if (!keys.length) keys = AGENT_ADAPTER_ORDER.slice();
+    return keys.map(function(key) {
+        var provider = providers[key] || {};
+        return {
+            label: provider.label || key.replace(/-/g, ' '),
+            value: key,
+            hint: provider.description || ''
+        };
+    });
+}
+
+function adapterDefaults(provider) {
+    var meta = agentAdapterCatalog()[provider] || {};
+    return {
+        label: meta.label || provider.replace(/-/g, ' '),
+        base_url: meta.base_url || '',
+        secret_env: meta.secret_env || '',
+        command: Array.isArray(meta.default_command) ? meta.default_command : []
+    };
+}
+
+function chooseAgentRuntimeProvider() {
+    return rsChoice({
+        title: 'Agent Runtime',
+        message: 'Choose what will run this Ratspeak agent.',
+        choices: agentAdapterChoices()
+    });
+}
+
+function collectAgentAdapterConfig(name, provider) {
+    var defaults = adapterDefaults(provider);
+    var current = (_settingsAgentsState.detail && _settingsAgentsState.detail.adapter) || {};
+    var currentProvider = current.provider === provider ? current : {};
+    var config = {
+        name: name,
+        provider: provider,
+        label: currentProvider.label || defaults.label,
+        model: currentProvider.model || '',
+        base_url: currentProvider.base_url || defaults.base_url || '',
+        command: Array.isArray(currentProvider.command) && currentProvider.command.length ? currentProvider.command : defaults.command,
+        secret_env: currentProvider.secret && currentProvider.secret.env ? currentProvider.secret.env : (defaults.secret_env || ''),
+        notes: currentProvider.notes || ''
+    };
+    return rsPrompt({
+        title: 'Runtime Label',
+        message: 'Name shown in Settings.',
+        placeholder: defaults.label,
+        defaultValue: config.label,
+        confirmText: 'Next'
+    }).then(function(label) {
+        if (label === null) return null;
+        config.label = label.trim() || defaults.label;
+        if (provider === 'openclaw' || provider === 'custom-cli') {
+            return rsPrompt({
+                title: 'Runtime Command',
+                message: 'Command the adapter uses outside Ratspeak.',
+                placeholder: 'openclaw ratspeak run --connection-kit <connection-kit.json>',
+                defaultValue: config.command.join(' '),
+                confirmText: 'Save'
+            }).then(function(command) {
+                if (command === null) return null;
+                config.command = command.trim() ? command.trim().split(/\s+/) : [];
+                return config;
+            });
+        }
+        if (provider === 'venice' || provider === 'openai-compatible' || provider === 'local-http') {
+            return rsPrompt({
+                title: 'Base URL',
+                message: 'HTTP endpoint for the local bridge or compatible API.',
+                placeholder: provider === 'venice' ? 'https://api.venice.ai/api/v1' : 'http://127.0.0.1:11434/v1',
+                defaultValue: config.base_url,
+                confirmText: 'Next'
+            }).then(function(baseUrl) {
+                if (baseUrl === null) return null;
+                config.base_url = baseUrl.trim();
+                return rsPrompt({
+                    title: 'Model',
+                    message: 'Optional model name for the adapter.',
+                    placeholder: provider === 'venice' ? 'venice model id' : 'model id',
+                    defaultValue: config.model,
+                    confirmText: 'Next'
+                });
+            }).then(function(model) {
+                if (model === null) return null;
+                config.model = model.trim();
+                return rsPrompt({
+                    title: 'Secret Environment',
+                    message: 'Environment variable the adapter reads for its API key.',
+                    placeholder: provider === 'venice' ? 'VENICE_API_KEY' : 'OPENAI_API_KEY',
+                    defaultValue: config.secret_env,
+                    confirmText: 'Save'
+                });
+            }).then(function(secretEnv) {
+                if (secretEnv === null) return null;
+                config.secret_env = secretEnv.trim();
+                return config;
+            });
+        }
+        return Promise.resolve(config);
+    });
+}
+
 function openAgentCreateFlow() {
     var nameValue = '';
+    var providerValue = '';
     rsPrompt({
         title: 'Add Agent',
         message: 'Name this agent profile.',
@@ -1117,6 +1300,10 @@ function openAgentCreateFlow() {
             showToast('Agent name is required', 'toast-red', 2500);
             return null;
         }
+        return chooseAgentRuntimeProvider();
+    }).then(function(provider) {
+        if (!provider) return null;
+        providerValue = provider;
         return rsChoice({
             title: 'Agent Preset',
             message: 'Choose the starting permission set.',
@@ -1142,6 +1329,13 @@ function openAgentCreateFlow() {
             }
         }).then(function(payload) {
             _settingsAgentsState.selected = nameValue;
+            return collectAgentAdapterConfig(nameValue, providerValue).then(function(adapterArgs) {
+                if (!adapterArgs) return payload;
+                return RS.invoke('set_agent_adapter', { args: adapterArgs }).then(function() {
+                    return payload;
+                });
+            });
+        }).then(function(payload) {
             showToast('Agent created', 'toast-green', 2500);
             loadAgentSettings(true);
             return payload;
@@ -1237,6 +1431,62 @@ function editAgentPreset() {
     });
 }
 
+function configureSelectedAgentAdapter() {
+    var name = selectedAgentName();
+    if (!name) return;
+    chooseAgentRuntimeProvider().then(function(provider) {
+        if (!provider) return null;
+        return collectAgentAdapterConfig(name, provider);
+    }).then(function(args) {
+        if (!args) return null;
+        return RS.invoke('set_agent_adapter', { args: args });
+    }).then(function(payload) {
+        if (!payload) return;
+        showToast('Agent runtime configured', 'toast-green', 2200);
+        loadAgentDetail(name);
+        loadAgentSettings(false);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to configure runtime');
+    });
+}
+
+function startSelectedAgentDaemon() {
+    var name = selectedAgentName();
+    if (!name) return;
+    var detail = _settingsAgentsState.detail || {};
+    var runtime = detail.runtime || {};
+    if (runtime.running) {
+        showToast('Agent daemon is already running', 'toast-blue', 2000);
+        return;
+    }
+    RS.invoke('start_agent_daemon', { name: name }).then(function(payload) {
+        if (payload && payload.runtime) {
+            if (!_settingsAgentsState.detail) _settingsAgentsState.detail = {};
+            _settingsAgentsState.detail.runtime = payload.runtime;
+            if (payload.connection) _settingsAgentsState.detail.connection = payload.connection;
+            renderAgentDetail(_settingsAgentsState.detail);
+        }
+        showToast('Agent daemon started', 'toast-green', 2500);
+        loadAgentSettings(false);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to start daemon');
+    });
+}
+
+function refreshSelectedAgentRuntime() {
+    var name = selectedAgentName();
+    if (!name) return;
+    RS.invoke('api_agent_runtime', { name: name }).then(function(runtime) {
+        if (!_settingsAgentsState.detail) _settingsAgentsState.detail = {};
+        _settingsAgentsState.detail.runtime = runtime;
+        renderAgentDetail(_settingsAgentsState.detail);
+        showToast(runtime && runtime.running ? 'Agent daemon running' : 'Agent daemon stopped', runtime && runtime.running ? 'toast-green' : 'toast-blue', 1800);
+        loadAgentSettings(false);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to refresh runtime');
+    });
+}
+
 function rotateSelectedAgentToken() {
     var name = selectedAgentName();
     if (!name) return;
@@ -1280,9 +1530,9 @@ function copyAgentConnectionBundle() {
     var name = selectedAgentName();
     if (!name) return;
     RS.invoke('api_agent_connection_bundle', { name: name }).then(function(bundle) {
-        return copyAgentText(JSON.stringify(bundle, null, 2), 'Agent connection bundle');
+        return copyAgentText(JSON.stringify(bundle, null, 2), 'Agent connection kit');
     }).catch(function(err) {
-        showAgentError(err, 'Failed to build connection bundle');
+        showAgentError(err, 'Failed to build connection kit');
     });
 }
 

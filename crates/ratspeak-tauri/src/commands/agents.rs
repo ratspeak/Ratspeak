@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use ratspeak_cli::agent_actions;
-use ratspeak_cli::agent_admin::{self, AgentCreateOptions, AgentGrantUpdate, AgentPolicyPatch};
+use ratspeak_cli::agent_admin::{
+    self, AgentAdapterUpdate, AgentCreateOptions, AgentGrantUpdate, AgentPolicyPatch,
+};
 use ratspeak_cli::profile::Profile;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -89,6 +91,26 @@ pub struct AgentPolicySetArgs {
     pub policy: Option<agent_actions::AgentWritePolicy>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct AgentAdapterArgs {
+    pub name: String,
+    pub provider: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub secret_env: Option<String>,
+    #[serde(default)]
+    pub secret_file: Option<std::path::PathBuf>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
 fn owner_profile(state: &AppState) -> Profile {
     Profile {
         data_root: state.config.data_root.clone(),
@@ -160,6 +182,60 @@ pub async fn api_agent_connection_bundle(
         agent_admin::connection_bundle(&profile, &name)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn api_agent_adapter(state: State<'_, Arc<AppState>>, name: String) -> AppResult<Value> {
+    run_agent_task(state, move |profile| {
+        agent_admin::show_agent_adapter(&profile, &name)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_agent_adapter(
+    state: State<'_, Arc<AppState>>,
+    args: AgentAdapterArgs,
+) -> AppResult<Value> {
+    let event_state = state.inner().clone();
+    let payload = run_agent_task(state, move |profile| {
+        agent_admin::set_agent_adapter(
+            &profile,
+            AgentAdapterUpdate {
+                name: args.name,
+                provider: args.provider,
+                label: args.label,
+                model: args.model,
+                base_url: args.base_url,
+                command: args.command,
+                secret_env: args.secret_env,
+                secret_file: args.secret_file,
+                notes: args.notes,
+            },
+        )
+    })
+    .await?;
+    emit_agents_updated(&event_state, &payload);
+    Ok(payload)
+}
+
+#[tauri::command]
+pub async fn api_agent_runtime(state: State<'_, Arc<AppState>>, name: String) -> AppResult<Value> {
+    run_agent_task(state, move |profile| {
+        agent_admin::agent_runtime_status(&profile, &name)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_agent_daemon(state: State<'_, Arc<AppState>>, name: String) -> AppResult<Value> {
+    let event_state = state.inner().clone();
+    let payload = run_agent_task(state, move |profile| {
+        agent_admin::start_agent_daemon(&profile, &name)
+    })
+    .await?;
+    emit_agents_updated(&event_state, &payload);
+    Ok(payload)
 }
 
 #[tauri::command]

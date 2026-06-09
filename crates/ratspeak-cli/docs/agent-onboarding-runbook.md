@@ -9,19 +9,29 @@ OpenClaw-specific runtime.
 For non-developer owners, start in the Ratspeak app:
 
 1. Open Settings > Agents.
-2. Choose Add, name the agent, pick a preset, and optionally choose the first
-   allowed contact.
-3. Copy the redacted connection bundle for the local adapter or supervisor.
-4. Keep owner approval on until the guardrails match the owner's risk tolerance.
-5. Review approvals, staged files/images, and audit entries from the same panel.
+2. Choose Add, name the agent, choose what will run it, pick a preset, and
+   optionally choose the first allowed contact.
+3. Configure the runtime adapter profile. The current beta options are
+   OpenClaw, Claude/Codex CLI, Venice API, OpenAI-compatible API, local HTTP
+   model, and custom command.
+4. Start the agent daemon from the panel or with the command shown in the
+   connection kit.
+5. Copy the redacted connection kit for the local adapter or supervisor.
+6. Keep owner approval on until the guardrails match the owner's risk tolerance.
+7. Review approvals, staged files/images, and audit entries from the same panel.
 
-The connection bundle includes the agent profile path, daemon start command,
-stable CLI contract, token file path, and token hash. It does not include the
-raw token or agent recovery phrase; the local agent process reads the private
-token file directly. Desktop builds package `ratspeakd` and `ratspeakctl` as
-sidecars, so a bundle copied from the app can point an adapter at the app-local
-binary paths instead of assuming those commands are already installed on
-`PATH`.
+The connection kit includes the agent profile path, daemon start command,
+runtime adapter metadata, stable CLI contract, token file path, and token hash.
+It does not include the raw token, agent recovery phrase, or provider API key.
+The local agent process reads the private Ratspeak token file directly.
+Provider secrets should be passed to the adapter through an environment variable
+or private file reference. The Venice adapter default uses
+`https://api.venice.ai/api/v1` and the `VENICE_API_KEY` environment variable;
+generic OpenAI-compatible adapters default to `OPENAI_API_KEY`.
+
+Desktop builds package `ratspeakd` and `ratspeakctl` as sidecars, so a kit
+copied from the app can point an adapter at the app-local binary paths instead
+of assuming those commands are already installed on `PATH`.
 
 For scripted setup, use the friendly onboarding command instead of hand-writing
 every scope:
@@ -72,6 +82,11 @@ The owner starts or supervises the agent profile daemon:
 ratspeakd --data-dir AGENT_PROFILE run
 ratspeakctl --data-dir AGENT_PROFILE daemon wait-ready --timeout-secs 30
 ```
+
+The app's Settings > Agents detail view also shows the same daemon state. If a
+profile database or endpoint is temporarily unavailable, the panel should still
+show the agent manifest, adapter setup, and repair/start controls instead of
+collapsing the selected agent.
 
 ## Agent Loop
 

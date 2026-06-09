@@ -1245,6 +1245,10 @@
         justify-content: flex-start;
     }
 
+    .settings-agent-checklist {
+        grid-template-columns: 1fr;
+    }
+
     .settings-agent-facts {
         grid-template-columns: 1fr;
     }
