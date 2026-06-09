@@ -85,6 +85,12 @@ pub struct AgentEnforcement {
     pub local_daemon_api: bool,
     pub contact_allowlist: bool,
     pub write_actions: bool,
+    #[serde(default)]
+    pub owner_approval: bool,
+    #[serde(default)]
+    pub audit_log: bool,
+    #[serde(default)]
+    pub rate_limits: bool,
     pub note: String,
 }
 
@@ -181,6 +187,35 @@ impl AgentManifest {
             unknown_contacts: grant.unknown_contacts,
             revision: grant.revision,
         }
+    }
+}
+
+impl AgentPrincipal {
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|candidate| candidate == scope)
+    }
+
+    pub fn has_any_scope(&self, scopes: &[&str]) -> bool {
+        scopes.iter().any(|scope| self.has_scope(scope))
+    }
+
+    pub fn allows_subject(&self, hash: &str) -> bool {
+        if self
+            .allowed_contacts
+            .iter()
+            .any(|candidate| candidate == hash)
+        {
+            return true;
+        }
+        let conversation_id = conversation_id_for_dest(hash);
+        if self
+            .allowed_conversations
+            .iter()
+            .any(|candidate| candidate == hash || candidate == &conversation_id)
+        {
+            return true;
+        }
+        self.unknown_contacts == "allow"
     }
 }
 
@@ -286,8 +321,18 @@ pub fn normalize_scope_alias(scope: &str) -> Option<String> {
         "read:messages" | "messages:read" => Some("messages:read".into()),
         "read:events" | "events:read" => Some("events:read".into()),
         "read:network" | "network:read" => Some("network:read".into()),
+        "read:actions" | "actions:read" => Some("actions:read".into()),
+        "read:audit" | "audit:read" => Some("audit:read".into()),
         "write:drafts" | "drafts:write" => Some("drafts:write".into()),
         "write:messages" | "messages:write" => Some("messages:write".into()),
+        "write:attachments" | "attachments:write" => Some("attachments:write".into()),
+        "write:images" | "images:write" => Some("images:write".into()),
+        "write:reactions" | "reactions:write" => Some("reactions:write".into()),
+        "write:announces" | "announces:write" => Some("announces:write".into()),
+        "write:paths" | "paths:write" => Some("paths:write".into()),
+        "write:contacts" | "contacts:write" => Some("contacts:write".into()),
+        "write:conversations" | "conversations:write" => Some("conversations:write".into()),
+        "write:network" | "network:write" => Some("network:write".into()),
         _ => None,
     }
 }
@@ -301,6 +346,18 @@ pub fn agent_scope_is_effective_now(scope: &str) -> bool {
             | "messages:read"
             | "events:read"
             | "network:read"
+            | "actions:read"
+            | "audit:read"
+            | "drafts:write"
+            | "messages:write"
+            | "attachments:write"
+            | "images:write"
+            | "reactions:write"
+            | "announces:write"
+            | "paths:write"
+            | "contacts:write"
+            | "conversations:write"
+            | "network:write"
     )
 }
 

@@ -4197,11 +4197,14 @@ dependencies = [
 name = "ratspeak-cli"
 version = "1.0.20"
 dependencies = [
+ "base64 0.22.1",
  "hex",
  "rand 0.8.5",
  "ratspeak-core",
  "ratspeak-db",
  "ratspeak-runtime",
+ "rns-protocol",
+ "rns-transport",
  "serde",
  "serde_json",
  "sha2",

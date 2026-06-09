@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
 
+use crate::agent_actions::{self, Actor};
 use crate::agent_policy::{
     AGENT_MANIFEST_FORMAT, AgentAuth, AgentCommandHints, AgentEnforcement, AgentGrant,
     AgentManifest, agent_manifest_path, agent_root_from_owner_data_dir, agent_token_path,
@@ -44,6 +47,8 @@ pub async fn run_ctl(args: Vec<String>) -> CliResult<()> {
         "peers" | "peer" => run_peers(&profile, &args[1..], global.output),
         "conversations" => run_conversations(&profile, &args[1..], global.output).await,
         "messages" => run_messages(&profile, &args[1..], global.output),
+        "approvals" | "approval" => run_approvals(&profile, &args[1..], global.output),
+        "audit" => run_audit(&profile, &args[1..], global.output),
         "propagation" => run_propagation(&profile, &args[1..], global.output),
         "network" => run_network(&profile, &args[1..], global.output),
         "events" => run_events(&profile, &args[1..], global.output),
@@ -280,6 +285,7 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
     let now = unix_now_secs();
     let credential = create_agent_credential(name, &created.hash, now);
     let token_path = agent_token_path(&agent_root);
+    let write_policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
 
     let manifest = AgentManifest {
         format: AGENT_MANIFEST_FORMAT.into(),
@@ -317,8 +323,11 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
         enforcement: AgentEnforcement {
             local_daemon_api: true,
             contact_allowlist: true,
-            write_actions: false,
-            note: "ratspeakd enforces daemon API auth, read scopes, and contact/conversation allowlists; write actions remain disabled".into(),
+            write_actions: true,
+            owner_approval: true,
+            audit_log: true,
+            rate_limits: true,
+            note: "ratspeakd enforces daemon API auth, read/write scopes, contact/conversation allowlists, owner approval, audit logging, and profile-local rate limits".into(),
         },
         commands: AgentCommandHints {
             start_daemon: vec![
@@ -365,7 +374,8 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
             "start_daemon": format!("ratspeakd --data-dir {}", agent_root.display()),
             "inspect": format!("ratspeakctl --data-dir {} status --pretty", agent_root.display()),
             "events": format!("ratspeakctl --data-dir {} --jsonl events stream", agent_root.display()),
-            "note": "read scopes, daemon API auth, allowlists, and durable event replay are active; message drafts/sends remain disabled"
+            "write_policy": write_policy,
+            "note": "read scopes, daemon API auth, allowlists, durable events, write proposals, owner approvals, audit, and rate limits are active"
         }
     });
     print_json(&payload, output)
@@ -716,12 +726,12 @@ fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
 fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
     let subcommand = args.first().map(String::as_str).unwrap_or("list");
     let mut rest = args.get(1..).unwrap_or_default().to_vec();
-    let identity = take_option(&mut rest, "--identity")?;
-    ensure_no_extra_args(&rest, "contacts")?;
-    let identity_id = profile::active_identity_id(profile, identity);
 
     match subcommand {
         "list" => {
+            let identity = take_option(&mut rest, "--identity")?;
+            ensure_no_extra_args(&rest, "contacts list")?;
+            let identity_id = profile::active_identity_id(profile, identity);
             if let Some(payload) =
                 daemon_read(profile, "contacts.list", json!({ "identity": identity_id }))?
             {
@@ -741,6 +751,9 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             }
         }
         "blocked" => {
+            let identity = take_option(&mut rest, "--identity")?;
+            ensure_no_extra_args(&rest, "contacts blocked")?;
+            let identity_id = profile::active_identity_id(profile, identity);
             if let Some(payload) = daemon_read(
                 profile,
                 "contacts.blocked",
@@ -760,6 +773,76 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     output,
                 )
             }
+        }
+        "add" => {
+            let dest_hash = rest
+                .first()
+                .ok_or_else(|| CliError::usage("contacts add requires <dest-hash>"))?
+                .to_string();
+            rest.remove(0);
+            let display_name =
+                take_option(&mut rest, "--display-name")?.or(take_option(&mut rest, "--name")?);
+            let trust = take_option(&mut rest, "--trust")?.unwrap_or_else(|| "trusted".into());
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            ensure_no_extra_args(&rest, "contacts add")?;
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": "contact.add",
+                    "dest_hash": dest_hash,
+                    "display_name": display_name,
+                    "trust": trust,
+                    "expires_secs": expires_secs,
+                    "submit": true,
+                }),
+            )?;
+            print_json(&payload, output)
+        }
+        "remove" | "delete" => {
+            let dest_hash = rest
+                .first()
+                .ok_or_else(|| CliError::usage("contacts remove requires <dest-hash>"))?
+                .to_string();
+            rest.remove(0);
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            ensure_no_extra_args(&rest, "contacts remove")?;
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": "contact.remove",
+                    "dest_hash": dest_hash,
+                    "expires_secs": expires_secs,
+                    "submit": true,
+                }),
+            )?;
+            print_json(&payload, output)
+        }
+        "block" | "unblock" => {
+            let dest_hash = rest
+                .first()
+                .ok_or_else(|| {
+                    CliError::usage(format!("contacts {subcommand} requires <dest-hash>"))
+                })?
+                .to_string();
+            rest.remove(0);
+            let display_name =
+                take_option(&mut rest, "--display-name")?.or(take_option(&mut rest, "--name")?);
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            ensure_no_extra_args(&rest, &format!("contacts {subcommand}"))?;
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": if subcommand == "block" { "contact.block" } else { "contact.unblock" },
+                    "dest_hash": dest_hash,
+                    "display_name": display_name,
+                    "expires_secs": expires_secs,
+                    "submit": true,
+                }),
+            )?;
+            print_json(&payload, output)
         }
         other => Err(CliError::usage(format!(
             "unknown contacts command: {other}"
@@ -812,7 +895,8 @@ async fn run_conversations(
     args: &[String],
     output: OutputFormat,
 ) -> CliResult<()> {
-    match args.first().map(String::as_str).unwrap_or("list") {
+    let subcommand = args.first().map(String::as_str).unwrap_or("list");
+    match subcommand {
         "list" => {
             if args.len() > 1 {
                 return Err(CliError::usage(
@@ -869,6 +953,39 @@ async fn run_conversations(
                 output,
             )
         }
+        "mark-read" | "hide" | "unhide" | "delete" => {
+            let conversation = args
+                .get(1)
+                .ok_or_else(|| {
+                    CliError::usage(format!(
+                        "conversations {subcommand} requires <conversation-id>"
+                    ))
+                })?
+                .to_string();
+            let mut rest = args.get(2..).unwrap_or_default().to_vec();
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            ensure_no_extra_args(&rest, &format!("conversations {subcommand}"))?;
+            let dest_hash = crate::agent_policy::dest_hash_from_conversation_id(&conversation)
+                .ok_or_else(|| CliError::usage("invalid conversation id or destination hash"))?;
+            let kind = match subcommand {
+                "mark-read" => "conversation.mark_read",
+                "hide" => "conversation.hide",
+                "unhide" => "conversation.unhide",
+                "delete" => "conversation.delete",
+                _ => unreachable!(),
+            };
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": kind,
+                    "conversation_id": crate::agent_policy::conversation_id_for_dest(&dest_hash),
+                    "expires_secs": expires_secs,
+                    "submit": true,
+                }),
+            )?;
+            print_json(&payload, output)
+        }
         other => Err(CliError::usage(format!(
             "unknown conversations command: {other}"
         ))),
@@ -887,6 +1004,175 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
     let identity_id = profile::active_identity_id(profile, identity);
 
     match subcommand {
+        "draft" => {
+            let conversation = rest
+                .first()
+                .ok_or_else(|| CliError::usage("messages draft requires <conversation-id>"))?
+                .to_string();
+            rest.remove(0);
+            let text = take_option(&mut rest, "--text")?
+                .or(take_option(&mut rest, "--content")?)
+                .ok_or_else(|| CliError::usage("messages draft requires --text"))?;
+            let title = take_option(&mut rest, "--title")?;
+            let delivery_method =
+                take_option(&mut rest, "--delivery-method")?.unwrap_or_else(|| "auto".into());
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            let submit = take_flag(&mut rest, "--submit");
+            ensure_no_extra_args(&rest, "messages draft")?;
+            let dest_hash = crate::agent_policy::dest_hash_from_conversation_id(&conversation)
+                .ok_or_else(|| CliError::usage("invalid conversation id or destination hash"))?;
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": "message.send",
+                    "conversation_id": crate::agent_policy::conversation_id_for_dest(&dest_hash),
+                    "text": text,
+                    "title": title,
+                    "delivery_method": delivery_method,
+                    "client_action_id": client_action_id,
+                    "expires_secs": expires_secs,
+                    "submit": submit,
+                }),
+            )?;
+            print_json(&payload, output)
+        }
+        "send" => {
+            let id = rest
+                .first()
+                .ok_or_else(|| CliError::usage("messages send requires <action-id>"))?
+                .to_string();
+            ensure_no_extra_args(&rest[1..], "messages send")?;
+            let mut payload =
+                daemon_required(profile, "actions.submit", json!({ "id": id.clone() }))?;
+            if payload.get("state").and_then(Value::as_str) == Some("approved") {
+                payload = daemon_required(profile, "actions.execute", json!({ "id": id }))?;
+            }
+            print_json(&payload, output)
+        }
+        "reply" => {
+            let conversation = rest
+                .first()
+                .ok_or_else(|| CliError::usage("messages reply requires <conversation-id>"))?
+                .to_string();
+            rest.remove(0);
+            let reply_to_id = take_option(&mut rest, "--reply-to")?
+                .ok_or_else(|| CliError::usage("messages reply requires --reply-to"))?;
+            let text = take_option(&mut rest, "--text")?
+                .or(take_option(&mut rest, "--content")?)
+                .ok_or_else(|| CliError::usage("messages reply requires --text"))?;
+            let reply_to_preview = take_option(&mut rest, "--reply-preview")?;
+            let delivery_method =
+                take_option(&mut rest, "--delivery-method")?.unwrap_or_else(|| "auto".into());
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            let submit = take_flag(&mut rest, "--submit");
+            ensure_no_extra_args(&rest, "messages reply")?;
+            let dest_hash = crate::agent_policy::dest_hash_from_conversation_id(&conversation)
+                .ok_or_else(|| CliError::usage("invalid conversation id or destination hash"))?;
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": "message.reply",
+                    "conversation_id": crate::agent_policy::conversation_id_for_dest(&dest_hash),
+                    "text": text,
+                    "reply_to_id": reply_to_id,
+                    "reply_to_preview": reply_to_preview,
+                    "delivery_method": delivery_method,
+                    "client_action_id": client_action_id,
+                    "expires_secs": expires_secs,
+                    "submit": submit,
+                }),
+            )?;
+            print_json(&payload, output)
+        }
+        "send-file" | "send-image" => {
+            let is_image = subcommand == "send-image";
+            let conversation = rest
+                .first()
+                .ok_or_else(|| {
+                    CliError::usage(format!("messages {subcommand} requires <conversation-id>"))
+                })?
+                .to_string();
+            rest.remove(0);
+            let file = take_option(&mut rest, "--file")?
+                .or(take_option(&mut rest, "--path")?)
+                .ok_or_else(|| CliError::usage(format!("messages {subcommand} requires --file")))?;
+            let name = take_option(&mut rest, "--name")?.or_else(|| {
+                PathBuf::from(&file)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+            });
+            let mime = take_option(&mut rest, "--mime")?.unwrap_or_else(|| {
+                if is_image {
+                    "image/png".into()
+                } else {
+                    "application/octet-stream".into()
+                }
+            });
+            let text = take_option(&mut rest, "--text")?.unwrap_or_default();
+            let delivery_method =
+                take_option(&mut rest, "--delivery-method")?.unwrap_or_else(|| "auto".into());
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            let submit = take_flag(&mut rest, "--submit");
+            ensure_no_extra_args(&rest, &format!("messages {subcommand}"))?;
+            let bytes = std::fs::read(&file)?;
+            let dest_hash = crate::agent_policy::dest_hash_from_conversation_id(&conversation)
+                .ok_or_else(|| CliError::usage("invalid conversation id or destination hash"))?;
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": if is_image { "message.image" } else { "message.attachment" },
+                    "conversation_id": crate::agent_policy::conversation_id_for_dest(&dest_hash),
+                    "text": text,
+                    "file_name": name,
+                    "mime": mime,
+                    "file_data_b64": B64.encode(bytes),
+                    "delivery_method": delivery_method,
+                    "client_action_id": client_action_id,
+                    "expires_secs": expires_secs,
+                    "submit": submit,
+                }),
+            )?;
+            print_json(&payload, output)
+        }
+        "react" => {
+            let conversation = rest
+                .first()
+                .ok_or_else(|| CliError::usage("messages react requires <conversation-id>"))?
+                .to_string();
+            rest.remove(0);
+            let message_id = take_option(&mut rest, "--message-id")?
+                .ok_or_else(|| CliError::usage("messages react requires --message-id"))?;
+            let emoji = take_option(&mut rest, "--emoji")?
+                .ok_or_else(|| CliError::usage("messages react requires --emoji"))?;
+            let remove = take_flag(&mut rest, "--remove");
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            ensure_no_extra_args(&rest, "messages react")?;
+            let dest_hash = crate::agent_policy::dest_hash_from_conversation_id(&conversation)
+                .ok_or_else(|| CliError::usage("invalid conversation id or destination hash"))?;
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": "message.reaction",
+                    "conversation_id": crate::agent_policy::conversation_id_for_dest(&dest_hash),
+                    "message_id": message_id,
+                    "emoji": emoji,
+                    "action": if remove { "remove" } else { "add" },
+                    "client_action_id": client_action_id,
+                    "expires_secs": expires_secs,
+                    "submit": true,
+                }),
+            )?;
+            print_json(&payload, output)
+        }
+        "actions" => run_actions(profile, &rest, output),
         "list" => {
             let conversation = rest
                 .first()
@@ -1022,6 +1308,54 @@ fn run_network(profile: &Profile, args: &[String], output: OutputFormat) -> CliR
                 print_json(&json!(records), output)
             }
         }
+        "announce" => {
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            let reason = take_option(&mut rest, "--reason")?;
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+            ensure_no_extra_args(&rest, "network announce")?;
+            let payload = daemon_required(
+                profile,
+                "actions.create",
+                json!({
+                    "kind": "identity.announce",
+                    "reason": reason,
+                    "client_action_id": client_action_id,
+                    "expires_secs": expires_secs,
+                    "submit": true,
+                }),
+            )?;
+            print_json(&payload, output)
+        }
+        "path" => {
+            let action = args.get(1).map(String::as_str).unwrap_or("request");
+            match action {
+                "request" => {
+                    let hash = args
+                        .get(2)
+                        .ok_or_else(|| CliError::usage("network path request requires <hash>"))?;
+                    let mut rest = args.get(3..).unwrap_or_default().to_vec();
+                    let client_action_id = take_option(&mut rest, "--client-action-id")?;
+                    let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
+                    ensure_no_extra_args(&rest, "network path request")?;
+                    let payload = daemon_required(
+                        profile,
+                        "actions.create",
+                        json!({
+                            "kind": "network.path_request",
+                            "hash": hash,
+                            "client_action_id": client_action_id,
+                            "expires_secs": expires_secs,
+                            "submit": true,
+                        }),
+                    )?;
+                    print_json(&payload, output)
+                }
+                other => Err(CliError::usage(format!(
+                    "unknown network path command: {other}"
+                ))),
+            }
+        }
         other => Err(CliError::usage(format!("unknown network command: {other}"))),
     }
 }
@@ -1085,13 +1419,182 @@ fn run_events(profile: &Profile, args: &[String], output: OutputFormat) -> CliRe
     }
 }
 
+fn run_actions(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" => {
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            let state = take_option(&mut rest, "--state")?;
+            ensure_no_extra_args(&rest, "messages actions list")?;
+            let payload = daemon_required(
+                profile,
+                "actions.list",
+                json!({
+                    "state": state,
+                }),
+            )?;
+            print_json_or_jsonl_field(&payload, output, "actions")
+        }
+        "show" | "read" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| CliError::usage("messages actions show requires <action-id>"))?;
+            ensure_no_extra_args(&args[2..], "messages actions show")?;
+            let payload = daemon_required(profile, "actions.read", json!({ "id": id }))?;
+            print_json(&payload, output)
+        }
+        "cancel" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| CliError::usage("messages actions cancel requires <action-id>"))?;
+            let mut rest = args.get(2..).unwrap_or_default().to_vec();
+            let note = take_option(&mut rest, "--note")?;
+            ensure_no_extra_args(&rest, "messages actions cancel")?;
+            let payload =
+                daemon_required(profile, "actions.cancel", json!({ "id": id, "note": note }))?;
+            print_json(&payload, output)
+        }
+        other => Err(CliError::usage(format!(
+            "unknown messages actions command: {other}"
+        ))),
+    }
+}
+
+fn run_approvals(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    let subcommand = args.first().map(String::as_str).unwrap_or("list");
+    let mut rest = args.get(1..).unwrap_or_default().to_vec();
+    let agent = take_option(&mut rest, "--agent")?;
+    let target = approval_target_profile(profile, agent.as_deref())?;
+    match subcommand {
+        "list" => {
+            let state = take_option(&mut rest, "--state")?
+                .unwrap_or_else(|| agent_actions::STATE_PENDING_APPROVAL.into());
+            ensure_no_extra_args(&rest, "approvals list")?;
+            let records = agent_actions::list_actions(&target.config.data_dir, None, Some(&state))?
+                .into_iter()
+                .map(|record| agent_actions::public_action(record, false))
+                .collect::<Vec<_>>();
+            if output.jsonl {
+                print_jsonl(&records)
+            } else {
+                print_json(&json!({ "actions": records }), output)
+            }
+        }
+        "show" | "read" => {
+            let id = rest
+                .first()
+                .ok_or_else(|| CliError::usage("approvals show requires <action-id>"))?;
+            ensure_no_extra_args(&rest[1..], "approvals show")?;
+            let record = agent_actions::read_action(&target.config.data_dir, id)?;
+            print_json(&agent_actions::public_action(record, true), output)
+        }
+        "approve" => {
+            let id = rest
+                .first()
+                .ok_or_else(|| CliError::usage("approvals approve requires <action-id>"))?
+                .to_string();
+            rest.remove(0);
+            let note = take_option(&mut rest, "--note")?;
+            let execute = take_flag(&mut rest, "--execute");
+            ensure_no_extra_args(&rest, "approvals approve")?;
+            let mut payload = agent_actions::public_action(
+                agent_actions::approve_action(&target.config.data_dir, &id, note)?,
+                true,
+            );
+            append_owner_action_event(&target.config.data_dir, "agent.action.approved", &id);
+            if execute {
+                payload = daemon_required(&target, "actions.execute", json!({ "id": id }))?;
+            }
+            print_json(&payload, output)
+        }
+        "reject" | "deny" => {
+            let id = rest
+                .first()
+                .ok_or_else(|| CliError::usage("approvals reject requires <action-id>"))?
+                .to_string();
+            rest.remove(0);
+            let note = take_option(&mut rest, "--note")?;
+            ensure_no_extra_args(&rest, "approvals reject")?;
+            let record = agent_actions::reject_action(&target.config.data_dir, &id, note)?;
+            append_owner_action_event(&target.config.data_dir, "agent.action.rejected", &id);
+            print_json(&agent_actions::public_action(record, true), output)
+        }
+        "cancel" => {
+            let id = rest
+                .first()
+                .ok_or_else(|| CliError::usage("approvals cancel requires <action-id>"))?
+                .to_string();
+            rest.remove(0);
+            let note = take_option(&mut rest, "--note")?;
+            ensure_no_extra_args(&rest, "approvals cancel")?;
+            let record =
+                agent_actions::cancel_action(&target.config.data_dir, &id, Actor::owner(), note)?;
+            append_owner_action_event(&target.config.data_dir, "agent.action.cancelled", &id);
+            print_json(&agent_actions::public_action(record, true), output)
+        }
+        "execute" => {
+            let id = rest
+                .first()
+                .ok_or_else(|| CliError::usage("approvals execute requires <action-id>"))?;
+            ensure_no_extra_args(&rest[1..], "approvals execute")?;
+            let payload = daemon_required(&target, "actions.execute", json!({ "id": id }))?;
+            print_json(&payload, output)
+        }
+        "expire" => {
+            ensure_no_extra_args(&rest, "approvals expire")?;
+            let expired = agent_actions::expire_due_actions(&target.config.data_dir)?;
+            print_json(&json!({ "expired": expired }), output)
+        }
+        other => Err(CliError::usage(format!(
+            "unknown approvals command: {other}"
+        ))),
+    }
+}
+
+fn run_audit(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" => {
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            let agent = take_option(&mut rest, "--agent")?;
+            let limit = take_usize_option(&mut rest, "--limit", 100)?;
+            ensure_no_extra_args(&rest, "audit list")?;
+            if let Some(agent_name) = agent {
+                let target = approval_target_profile(profile, Some(&agent_name))?;
+                let records = agent_actions::list_audit(&target.config.data_dir, limit)?
+                    .into_iter()
+                    .map(|record| serde_json::to_value(record).unwrap_or(Value::Null))
+                    .collect::<Vec<_>>();
+                if output.jsonl {
+                    print_jsonl(&records)
+                } else {
+                    print_json(&json!({ "audit": records }), output)
+                }
+            } else if let Some(payload) =
+                daemon_read(profile, "audit.list", json!({ "limit": limit }))?
+            {
+                print_json_or_jsonl_field(&payload, output, "audit")
+            } else {
+                let records = agent_actions::list_audit(&profile.config.data_dir, limit)?
+                    .into_iter()
+                    .map(|record| serde_json::to_value(record).unwrap_or(Value::Null))
+                    .collect::<Vec<_>>();
+                if output.jsonl {
+                    print_jsonl(&records)
+                } else {
+                    print_json(&json!({ "audit": records }), output)
+                }
+            }
+        }
+        other => Err(CliError::usage(format!("unknown audit command: {other}"))),
+    }
+}
+
 fn version_payload() -> Value {
     json!({
         "name": "Ratspeak",
         "cli_crate": "ratspeak-cli",
         "version": env!("CARGO_PKG_VERSION"),
         "commands": {
-            "ratspeakctl": "read-only profile/status/identity/contact/conversation/message inspection",
+            "ratspeakctl": "profile inspection plus approval-gated agent read/write actions",
             "ratspeakd": "headless runtime owner with optional JSONL event emission"
         }
     })
@@ -1178,6 +1681,20 @@ fn take_u64_option(args: &mut Vec<String>, name: &str, default_value: u64) -> Cl
     args.remove(index)
         .parse::<u64>()
         .map_err(|_| CliError::usage(format!("{name} must be an unsigned integer")))
+}
+
+fn take_u64_option_opt(args: &mut Vec<String>, name: &str) -> CliResult<Option<u64>> {
+    let Some(index) = args.iter().position(|arg| arg == name) else {
+        return Ok(None);
+    };
+    args.remove(index);
+    if index >= args.len() {
+        return Err(CliError::usage(format!("{name} requires a value")));
+    }
+    let value = args.remove(index);
+    Ok(Some(value.parse::<u64>().map_err(|_| {
+        CliError::usage(format!("{name} must be an unsigned integer"))
+    })?))
 }
 
 fn take_usize_option(args: &mut Vec<String>, name: &str, default_value: usize) -> CliResult<usize> {
@@ -1308,6 +1825,35 @@ fn daemon_read(profile: &Profile, method: &str, params: Value) -> CliResult<Opti
     crate::daemon_api::request(&profile.config.data_dir, method, params)
 }
 
+fn daemon_required(profile: &Profile, method: &str, params: Value) -> CliResult<Value> {
+    daemon_read(profile, method, params)?.ok_or_else(|| {
+        CliError::failed(format!(
+            "{method} requires ratspeakd running for the selected profile"
+        ))
+    })
+}
+
+fn approval_target_profile(profile: &Profile, agent: Option<&str>) -> CliResult<Profile> {
+    if let Some(agent_name) = agent {
+        validate_agent_name(agent_name)?;
+        let agent_root = agent_root_from_owner_data_dir(&profile.config.data_dir, agent_name);
+        profile::open_profile(agent_root)
+    } else {
+        Ok(profile.clone())
+    }
+}
+
+fn append_owner_action_event(data_dir: &std::path::Path, event: &str, action_id: &str) {
+    let _ = crate::event_store::EventStore::append_daemon_event(
+        data_dir,
+        event,
+        json!({
+            "action_id": action_id,
+            "actor": "owner",
+        }),
+    );
+}
+
 fn print_json_or_jsonl_array(value: &Value, output: OutputFormat) -> CliResult<()> {
     if output.jsonl {
         print_array_as_jsonl(value)
@@ -1362,16 +1908,35 @@ Ratspeak CLI commands:
   identity activate HASH
   contacts list [--identity HASH]
   contacts blocked [--identity HASH]
+  contacts add <dest-hash> [--display-name NAME]
+  contacts remove <dest-hash>
+  contacts block <dest-hash> [--display-name NAME]
+  contacts unblock <dest-hash>
   peers list [--identity HASH] [--recency-secs N]
   conversations list
   conversations read <conversation-id> [--identity HASH] [--limit N]
+  conversations mark-read <conversation-id>
+  conversations hide <conversation-id>
+  conversations unhide <conversation-id>
+  conversations delete <conversation-id>
   messages list <conversation-id> [--identity HASH] [--limit N]
   messages search <query> [--identity HASH] [--limit N]
+  messages draft <conversation-id> --text TEXT [--submit]
+  messages send <action-id>
+  messages reply <conversation-id> --reply-to MSG --text TEXT [--submit]
+  messages send-file <conversation-id> --file PATH [--mime MIME]
+  messages send-image <conversation-id> --file PATH [--mime MIME]
+  messages react <conversation-id> --message-id MSG --emoji EMOJI
+  messages actions list|show|cancel
+  approvals list|show|approve|reject|cancel|execute --agent NAME
+  audit list [--agent NAME] [--limit N]
   events stream [--agent NAME] [--cursor N] [--limit N] [--once]
   propagation status
   network status
   network alerts
   network announces
+  network announce
+  network path request <hash>
 
 State commands emit JSON by default. Use --pretty for formatted JSON, or
 --jsonl to stream list-like records one JSON object per line.

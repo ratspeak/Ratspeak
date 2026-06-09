@@ -137,7 +137,14 @@ fn agent_profile_bootstrap_smoke() {
     assert_eq!(create["agent"]["requested_scopes"][0], "messages:read");
     assert_eq!(create["agent"]["requested_scopes"][1], "drafts:write");
     assert_eq!(create["agent"]["effective_scopes"][0], "messages:read");
-    assert_eq!(create["agent"]["pending_scopes"][0], "drafts:write");
+    assert_eq!(create["agent"]["effective_scopes"][1], "drafts:write");
+    assert_eq!(
+        create["agent"]["pending_scopes"]
+            .as_array()
+            .expect("pending scopes")
+            .len(),
+        0
+    );
     assert_eq!(create["agent"]["grant"]["status"], "active");
     assert_eq!(create["agent"]["grant"]["scopes"][0], "messages:read");
     assert_eq!(create["agent"]["enforcement"]["local_daemon_api"], true);
@@ -203,8 +210,8 @@ fn agent_profile_bootstrap_smoke() {
         let _ = run_json(&args);
     }
 
-    assert!(run_fail(&["--data-dir", &agent_profile, "messages", "send"]).contains("unknown"));
-    assert!(run_fail(&["--data-dir", &agent_profile, "contacts", "add"]).contains("unknown"));
+    assert!(run_fail(&["--data-dir", &agent_profile, "messages", "send"]).contains("requires"));
+    assert!(run_fail(&["--data-dir", &agent_profile, "contacts", "add"]).contains("requires"));
     assert!(run_fail(&["--data-dir", &agent_profile, "identity", "export"]).contains("unknown"));
     assert!(run_fail(&["--data-dir", &agent_profile, "events"]).contains("requires ratspeakd"));
 
@@ -433,7 +440,13 @@ fn daemon_agent_grants_auth_events_and_safe_reads_smoke() {
         "--cursor",
         &latest_id.to_string(),
     ]);
-    assert_eq!(replay["events"].as_array().expect("replay events").len(), 0);
+    assert!(
+        replay["events"]
+            .as_array()
+            .expect("replay events")
+            .iter()
+            .all(|event| event["id"].as_u64().unwrap_or(0) > latest_id)
+    );
 
     let bad_credential = serde_json::json!({
         "format": "ratspeak.agent-token.v1",
@@ -449,6 +462,192 @@ fn daemon_agent_grants_auth_events_and_safe_reads_smoke() {
     )
     .expect("write bad credential");
     assert!(run_fail(&["--data-dir", &agent_profile, "status"]).contains("unauthorized"));
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn daemon_agent_write_approval_audit_and_limits_smoke() {
+    let root = temp_root("daemon-agent-writes");
+    let owner_profile = root.join("owner");
+    let owner_arg = path_arg(&owner_profile);
+    let allowed_text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let allowed_image = "cccccccccccccccccccccccccccccccc";
+    let denied = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    let create = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "create",
+        "agent-writer",
+        "--identity",
+        "new",
+        "--scope",
+        "read:status",
+        "--scope",
+        "read:messages",
+        "--scope",
+        "read:actions",
+        "--scope",
+        "read:audit",
+        "--scope",
+        "write:drafts",
+        "--scope",
+        "write:messages",
+        "--scope",
+        "write:images",
+        "--scope",
+        "write:announces",
+        "--scope",
+        "write:contacts",
+        "--allow-contact",
+        allowed_text,
+        "--allow-contact",
+        allowed_image,
+    ]);
+    assert_eq!(create["agent"]["enforcement"]["write_actions"], true);
+    assert_eq!(create["agent"]["enforcement"]["owner_approval"], true);
+    assert_eq!(create["agent"]["enforcement"]["audit_log"], true);
+    assert_eq!(create["agent"]["enforcement"]["rate_limits"], true);
+    let agent_profile = create["agent"]["profile_root"]
+        .as_str()
+        .expect("agent profile")
+        .to_string();
+
+    let mut daemon = spawn_ratspeakd(Path::new(&agent_profile));
+    let endpoint = Path::new(&agent_profile)
+        .join(".ratspeak")
+        .join("ratspeakd-api.json");
+    if !wait_for_path(&endpoint, Duration::from_secs(10)) {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        panic!("ratspeakd API endpoint did not appear");
+    }
+
+    let draft = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "messages",
+        "draft",
+        &format!("lxmf:{allowed_text}"),
+        "--text",
+        "owner-reviewed outbound text",
+    ]);
+    assert_eq!(draft["kind"], "message.send");
+    assert_eq!(draft["state"], "draft");
+    assert_eq!(draft["subject_hash"], allowed_text);
+    assert_eq!(draft["policy"]["approval_required"], true);
+    let draft_id = draft["id"].as_str().expect("draft id").to_string();
+
+    let submitted = run_json(&["--data-dir", &agent_profile, "messages", "send", &draft_id]);
+    assert_eq!(submitted["state"], "pending_approval");
+
+    let queue = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "approvals",
+        "list",
+        "--agent",
+        "agent-writer",
+    ]);
+    let queued = queue["actions"].as_array().expect("approval queue");
+    assert!(queued.iter().any(|item| item["id"] == draft_id));
+    assert_eq!(queued[0]["payload"]["redacted"], true);
+
+    let approved = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "approvals",
+        "approve",
+        "--agent",
+        "agent-writer",
+        &draft_id,
+        "--note",
+        "smoke test",
+    ]);
+    assert_eq!(approved["state"], "approved");
+    assert_eq!(approved["approval"]["actor"], "owner");
+
+    let image_path = root.join("tiny.png");
+    std::fs::write(&image_path, b"not really a png but enough bytes").expect("write tiny image");
+    let image = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "messages",
+        "send-image",
+        &format!("lxmf:{allowed_image}"),
+        "--file",
+        &path_arg(&image_path),
+        "--name",
+        "tiny",
+        "--mime",
+        "image/png",
+    ]);
+    assert_eq!(image["kind"], "message.image");
+    assert_eq!(image["state"], "draft");
+    assert_eq!(image["staged_files"][0]["stored_path"], "<redacted>");
+    assert_eq!(image["staged_files"][0]["mime"], "image/png");
+
+    let announce = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "network",
+        "announce",
+        "--reason",
+        "smoke",
+    ]);
+    assert_eq!(announce["kind"], "identity.announce");
+    assert_eq!(announce["state"], "pending_approval");
+
+    let contact_add = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "contacts",
+        "add",
+        allowed_image,
+        "--display-name",
+        "new contact",
+    ]);
+    assert_eq!(contact_add["kind"], "contact.add");
+    assert_eq!(contact_add["state"], "pending_approval");
+
+    assert!(
+        run_fail(&[
+            "--data-dir",
+            &agent_profile,
+            "messages",
+            "draft",
+            &format!("lxmf:{denied}"),
+            "--text",
+            "not allowed",
+        ])
+        .contains("forbidden")
+    );
+
+    let audit = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "audit",
+        "list",
+        "--agent",
+        "agent-writer",
+        "--limit",
+        "20",
+    ]);
+    let audit_rows = audit["audit"].as_array().expect("audit rows");
+    assert!(
+        audit_rows
+            .iter()
+            .any(|row| row["event"] == "action.submitted")
+    );
+    assert!(
+        audit_rows
+            .iter()
+            .any(|row| row["event"] == "action.approved")
+    );
 
     let _ = daemon.kill();
     let _ = daemon.wait();

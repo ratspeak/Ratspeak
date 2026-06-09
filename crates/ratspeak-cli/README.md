@@ -2,7 +2,8 @@
 
 `ratspeak-cli` provides the first headless Ratspeak entry points:
 
-- `ratspeakctl` for scriptable, read-only profile inspection.
+- `ratspeakctl` for scriptable profile inspection and approval-gated agent
+  actions.
 - `ratspeakd` for running the Ratspeak runtime without the Tauri UI.
 
 This crate depends on `ratspeak-runtime`, `ratspeak-db`, and `ratspeak-core`.
@@ -50,16 +51,35 @@ ratspeakctl identity create [--nickname NAME] [--activate]
 ratspeakctl identity activate HASH
 ratspeakctl contacts list [--identity HASH]
 ratspeakctl contacts blocked [--identity HASH]
+ratspeakctl contacts add <dest-hash> [--display-name NAME]
+ratspeakctl contacts remove <dest-hash>
+ratspeakctl contacts block <dest-hash> [--display-name NAME]
+ratspeakctl contacts unblock <dest-hash>
 ratspeakctl peers list [--identity HASH] [--recency-secs N]
 ratspeakctl conversations list
 ratspeakctl conversations read <conversation-id> [--identity HASH] [--limit N]
+ratspeakctl conversations mark-read <conversation-id>
+ratspeakctl conversations hide <conversation-id>
+ratspeakctl conversations unhide <conversation-id>
+ratspeakctl conversations delete <conversation-id>
 ratspeakctl messages list <conversation-id> [--identity HASH] [--limit N]
 ratspeakctl messages search <query> [--identity HASH] [--limit N]
+ratspeakctl messages draft <conversation-id> --text TEXT [--submit]
+ratspeakctl messages send <action-id>
+ratspeakctl messages reply <conversation-id> --reply-to MSG --text TEXT [--submit]
+ratspeakctl messages send-file <conversation-id> --file PATH [--mime MIME]
+ratspeakctl messages send-image <conversation-id> --file PATH [--mime MIME]
+ratspeakctl messages react <conversation-id> --message-id MSG --emoji EMOJI
+ratspeakctl messages actions list|show|cancel
+ratspeakctl approvals list|show|approve|reject|cancel|execute --agent NAME
+ratspeakctl audit list [--agent NAME] [--limit N]
 ratspeakctl events stream [--agent NAME] [--cursor N] [--limit N] [--once]
 ratspeakctl propagation status
 ratspeakctl network status
 ratspeakctl network alerts
 ratspeakctl network announces
+ratspeakctl network announce
+ratspeakctl network path request <hash>
 ```
 
 These commands may initialize or migrate the selected profile database, matching
@@ -81,6 +101,13 @@ allowlists.
 credential files from the owner profile. Restart `ratspeakd` for the agent
 profile after changing grants or credentials.
 
+Write scopes are effective for approval-gated actions. Useful scopes include
+`drafts:write`, `messages:write`, `attachments:write`, `images:write`,
+`reactions:write`, `announces:write`, `paths:write`, `contacts:write`,
+`conversations:write`, `network:write`, `actions:read`, and `audit:read`.
+`messages:write` does not imply files/images, reactions, announces, contacts,
+or network actions.
+
 `ratspeakd` holds a cooperative lock at `.ratspeak/profile.lock`. Owner-run
 identity writes in `ratspeakctl` refuse to run while that lock exists. The
 Tauri app does not yet participate in this lock, so do not mutate the same
@@ -99,6 +126,18 @@ served through the live daemon API instead of the offline database path:
 - `ratspeakctl conversations read`
 - `ratspeakctl messages list`
 - `ratspeakctl messages search`
+- `ratspeakctl messages draft`
+- `ratspeakctl messages send`
+- `ratspeakctl messages reply`
+- `ratspeakctl messages send-file`
+- `ratspeakctl messages send-image`
+- `ratspeakctl messages react`
+- `ratspeakctl messages actions`
+- `ratspeakctl approvals execute`
+- `ratspeakctl contacts add/remove/block/unblock`
+- `ratspeakctl conversations mark-read/hide/unhide/delete`
+- `ratspeakctl network announce`
+- `ratspeakctl network path request`
 - `ratspeakctl events stream`
 - `ratspeakctl propagation status`
 - `ratspeakctl network status`
@@ -108,6 +147,68 @@ Agent-scoped conversation IDs are stable strings of the form
 message text, titles, previews, and display names in explicit
 `{"text": "...", "untrusted": true}` objects so agent tooling does not confuse
 remote message content with trusted instructions.
+
+## Agent Write Actions
+
+Agent write commands do not send directly. They create durable action records in
+the selected profile under `.ratspeak/agent-actions/actions/`. Attachments and
+images are copied into `.ratspeak/agent-actions/staged-files/`, and agent-facing
+JSON redacts the private staged path while preserving filename, MIME type, byte
+count, and SHA-256 digest.
+
+The standard flow is:
+
+```sh
+ratspeakctl --data-dir AGENT_PROFILE messages draft lxmf:<contact> --text "hello"
+ratspeakctl --data-dir AGENT_PROFILE messages send <action-id>
+ratspeakctl --data-dir OWNER_PROFILE approvals approve --agent NAME <action-id>
+ratspeakctl --data-dir AGENT_PROFILE messages send <action-id>
+```
+
+The first `messages send` moves the draft to `pending_approval`. After owner
+approval, running `messages send <action-id>` again executes the already
+approved action through `ratspeakd`. Owners may also run
+`approvals approve --execute --agent NAME <action-id>` or
+`approvals execute --agent NAME <action-id>`.
+
+Approval states are `draft`, `pending_approval`, `approved`, `rejected`,
+`cancelled`, `expired`, `executing`, `sent`, `applied`, and `failed`.
+`sent` is used for LXMF message/file/image actions. `applied` is used for local
+actions such as reactions, contact writes, conversation state changes, manual
+announces, and path requests.
+
+The profile-local write policy lives at
+`.ratspeak/agent-actions/agent-write-policy.json`. Defaults are intentionally
+conservative:
+
+- owner approval required: `true`
+- default approval expiry: 24 hours
+- max pending actions: 25
+- max actions per hour/day: 60 / 200
+- per-contact cooldown: 3 seconds
+- loop window: 10 minutes, max 6 outbound actions per contact
+- max text bytes: 4096
+- max attachment bytes: Reticulum efficient resource limit
+- allowed MIME prefixes: images, text, PDF, JSON, ZIP, and octet-stream
+
+These settings are user-configurable per agent profile. Raising attachment
+limits, disabling approval, or allowing broader MIME types should be treated as
+security-sensitive owner configuration.
+
+## Audit Log
+
+Agent grants, write action creation/submission, owner approvals/rejections,
+cancellations, expirations, execution attempts, and delivery/apply results are
+recorded in `.ratspeak/agent-actions/audit.jsonl`. Use:
+
+```sh
+ratspeakctl --data-dir OWNER_PROFILE audit list --agent NAME
+ratspeakctl --data-dir AGENT_PROFILE audit list
+```
+
+Audit records include actor type, actor, event, outcome, action ID, subject
+hash, and structured details. Tokens, raw attachment bytes, base64 payloads, and
+private staged paths are not logged.
 
 ## ratspeakd
 
@@ -142,14 +243,13 @@ codes are `invalid_json`, `version_mismatch`, `method_not_found`,
 
 ## Current Guardrails
 
-The local daemon API currently supports authenticated, grant-filtered reads and
-durable event replay only. It does not support autonomous message sends,
-drafts, file sends, contact writes, propagation control, identity export, MCP
-access, or remote API access.
+The local daemon API supports authenticated, grant-filtered reads, durable event
+replay, and approval-gated write actions. It does not support identity export,
+remote API access, direct MCP access, raw autonomous sends, blackhole
+escalation, propagation configuration changes, or arbitrary daemon filesystem
+access.
 
-The intended agent path is:
-
-1. Run one owner-controlled profile per agent identity.
-2. Use authenticated read-only CLI/status/event commands through `ratspeakd`.
-3. Add audit, approvals, and draft/send operations before enabling
-   write-capable agent actions.
+Run one owner-controlled profile per agent identity. The owner profile updates
+grants and approvals; the agent profile runs `ratspeakd` and executes only
+approved actions that still pass the active grant, allowlist, expiration, and
+rate policy checks.

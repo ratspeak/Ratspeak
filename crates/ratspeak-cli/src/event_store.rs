@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::agent_policy::{AccessMode, AgentPrincipal, dest_hash_from_conversation_id};
+use crate::agent_policy::{AccessMode, dest_hash_from_conversation_id};
 use crate::error::{CliError, CliResult};
 
 const EVENT_LOG_FILE: &str = "ratspeakd-events.jsonl";
@@ -335,29 +335,4 @@ fn unix_now_secs() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs_f64())
         .unwrap_or(0.0)
-}
-
-impl AgentPrincipal {
-    pub fn has_scope(&self, scope: &str) -> bool {
-        self.scopes.iter().any(|candidate| candidate == scope)
-    }
-
-    pub fn allows_subject(&self, hash: &str) -> bool {
-        if self
-            .allowed_contacts
-            .iter()
-            .any(|candidate| candidate == hash)
-        {
-            return true;
-        }
-        let conversation_id = crate::agent_policy::conversation_id_for_dest(hash);
-        if self
-            .allowed_conversations
-            .iter()
-            .any(|candidate| candidate == hash || candidate == &conversation_id)
-        {
-            return true;
-        }
-        self.unknown_contacts == "allow"
-    }
 }

@@ -3,10 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
+use crate::agent_actions::{self, Actor, NewAction, STATE_APPLIED, STATE_SENT};
 use crate::agent_policy::{AccessMode, AgentPrincipal};
 use crate::error::{CliError, CliResult};
 use crate::{agent_policy, event_store};
@@ -782,6 +785,13 @@ async fn dispatch(
         "conversations.read" => Ok(conversations_read_payload(&state, access, params)?),
         "messages.list" => Ok(messages_list_payload(&state, access, params)?),
         "messages.search" => Ok(messages_search_payload(&state, access, params)?),
+        "actions.create" => Ok(actions_create_payload(&state, access, params)?),
+        "actions.submit" => Ok(actions_submit_payload(&state, access, params)?),
+        "actions.list" => Ok(actions_list_payload(&state, access, params)?),
+        "actions.read" => Ok(actions_read_payload(&state, access, params)?),
+        "actions.cancel" => Ok(actions_cancel_payload(&state, access, params)?),
+        "actions.execute" => actions_execute_payload(&state, access, params).await,
+        "audit.list" => Ok(audit_list_payload(&state, access, params)?),
         "events.read" => events_read_payload(&state, access, params).await,
         "propagation.status" => Ok(ratspeak_runtime::propagation::get_status_payload(&state)),
         "network.status" => Ok(network_status_payload(&state)),
@@ -866,6 +876,52 @@ fn authorize_method(access: &AccessMode, method: &str, params: &Value) -> Result
             };
             require_subject(principal, &subject)
         }
+        "actions.create" => require_any_scope(
+            principal,
+            &[
+                "drafts:write",
+                "messages:write",
+                "attachments:write",
+                "images:write",
+                "reactions:write",
+                "announces:write",
+                "paths:write",
+                "contacts:write",
+                "conversations:write",
+                "network:write",
+            ],
+        ),
+        "actions.submit" | "actions.execute" => require_any_scope(
+            principal,
+            &[
+                "messages:write",
+                "attachments:write",
+                "images:write",
+                "reactions:write",
+                "announces:write",
+                "paths:write",
+                "contacts:write",
+                "conversations:write",
+                "network:write",
+            ],
+        ),
+        "actions.list" | "actions.read" | "actions.cancel" => require_any_scope(
+            principal,
+            &[
+                "actions:read",
+                "drafts:write",
+                "messages:write",
+                "attachments:write",
+                "images:write",
+                "reactions:write",
+                "announces:write",
+                "paths:write",
+                "contacts:write",
+                "conversations:write",
+                "network:write",
+            ],
+        ),
+        "audit.list" => require_scope(principal, "audit:read"),
         "events.read" => require_scope(principal, "events:read"),
         _ => Ok(()),
     }
@@ -876,6 +932,17 @@ fn require_scope(principal: &AgentPrincipal, scope: &str) -> Result<(), ApiError
         Ok(())
     } else {
         Err(api_error("forbidden", format!("missing scope: {scope}")))
+    }
+}
+
+fn require_any_scope(principal: &AgentPrincipal, scopes: &[&str]) -> Result<(), ApiError> {
+    if principal.has_any_scope(scopes) {
+        Ok(())
+    } else {
+        Err(api_error(
+            "forbidden",
+            format!("missing one of scopes: {}", scopes.join(", ")),
+        ))
     }
 }
 
@@ -1119,6 +1186,163 @@ fn messages_search_payload(
     }))
 }
 
+fn actions_create_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let principal = agent_principal(access)?;
+    let action = new_action_from_params(state, principal, params)?;
+    require_action_policy(principal, &action.kind, action.submit)?;
+    if let Some(subject) = action.subject_hash.as_deref() {
+        require_subject(principal, subject)?;
+    }
+    let record = agent_actions::create_action(&state.config.data_dir, principal, action)
+        .map_err(|error| api_error("policy_denied", error.to_string()))?;
+    append_action_event(&state.config.data_dir, "agent.action.created", &record);
+    Ok(agent_actions::public_action(record, true))
+}
+
+fn actions_submit_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let principal = agent_principal(access)?;
+    let id = required_string(&params, "id")?;
+    let record = agent_actions::read_action(&state.config.data_dir, &id)
+        .map_err(|error| api_error("not_found", error.to_string()))?;
+    ensure_action_owner(principal, &record)?;
+    require_action_policy_for_record(principal, &record, ActionPhase::Submit)?;
+    if let Some(subject) = record.subject_hash.as_deref() {
+        require_subject(principal, subject)?;
+    }
+    let record = agent_actions::submit_action(&state.config.data_dir, &id, principal)
+        .map_err(|error| api_error("policy_denied", error.to_string()))?;
+    append_action_event(&state.config.data_dir, "agent.action.submitted", &record);
+    Ok(agent_actions::public_action(record, true))
+}
+
+fn actions_list_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let state_filter = params.get("state").and_then(Value::as_str);
+    let agent_filter = match access {
+        AccessMode::Owner => params.get("agent").and_then(Value::as_str),
+        AccessMode::Agent(principal) => Some(principal.name.as_str()),
+    };
+    let records = agent_actions::list_actions(&state.config.data_dir, agent_filter, state_filter)
+        .map_err(|error| api_error("internal", error.to_string()))?
+        .into_iter()
+        .map(|record| agent_actions::public_action(record, false))
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "actions": records,
+    }))
+}
+
+fn actions_read_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let id = required_string(&params, "id")?;
+    let record = agent_actions::read_action(&state.config.data_dir, &id)
+        .map_err(|error| api_error("not_found", error.to_string()))?;
+    if let AccessMode::Agent(principal) = access {
+        ensure_action_owner(principal, &record)?;
+    }
+    Ok(agent_actions::public_action(record, true))
+}
+
+fn actions_cancel_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let id = required_string(&params, "id")?;
+    let note = params
+        .get("note")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let actor = match access {
+        AccessMode::Owner => Actor::owner(),
+        AccessMode::Agent(principal) => {
+            let record = agent_actions::read_action(&state.config.data_dir, &id)
+                .map_err(|error| api_error("not_found", error.to_string()))?;
+            ensure_action_owner(principal, &record)?;
+            Actor::agent(&principal.name)
+        }
+    };
+    let record = agent_actions::cancel_action(&state.config.data_dir, &id, actor, note)
+        .map_err(|error| api_error("policy_denied", error.to_string()))?;
+    append_action_event(&state.config.data_dir, "agent.action.cancelled", &record);
+    Ok(agent_actions::public_action(record, true))
+}
+
+async fn actions_execute_payload(
+    state: &Arc<ratspeak_runtime::state::AppState>,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    let id = required_string(&params, "id")?;
+    let record = agent_actions::read_action(&state.config.data_dir, &id)
+        .map_err(|error| api_error("not_found", error.to_string()))?;
+    if let AccessMode::Agent(principal) = access {
+        ensure_action_owner(principal, &record)?;
+        require_action_policy_for_record(principal, &record, ActionPhase::Execute)?;
+        if let Some(subject) = record.subject_hash.as_deref() {
+            require_subject(principal, subject)?;
+        }
+    }
+    agent_actions::mark_executing(&state.config.data_dir, &id)
+        .map_err(|error| api_error("policy_denied", error.to_string()))?;
+    match execute_action_record(state.clone(), &record).await {
+        Ok((final_state, result)) => {
+            let record = agent_actions::mark_execution_complete(
+                &state.config.data_dir,
+                &id,
+                final_state,
+                result,
+                None,
+            )
+            .map_err(|error| api_error("internal", error.to_string()))?;
+            append_action_event(&state.config.data_dir, "agent.action.executed", &record);
+            Ok(agent_actions::public_action(record, true))
+        }
+        Err(error) => {
+            let record = agent_actions::mark_execution_complete(
+                &state.config.data_dir,
+                &id,
+                agent_actions::STATE_FAILED,
+                Value::Null,
+                Some(error.message.clone()),
+            )
+            .map_err(|store_error| api_error("internal", store_error.to_string()))?;
+            append_action_event(&state.config.data_dir, "agent.action.failed", &record);
+            Err(error)
+        }
+    }
+}
+
+fn audit_list_payload(
+    state: &ratspeak_runtime::state::AppState,
+    access: &AccessMode,
+    params: Value,
+) -> Result<Value, ApiError> {
+    if let AccessMode::Agent(principal) = access {
+        require_scope(principal, "audit:read")?;
+    }
+    let limit = optional_usize(&params, "limit", 100)?;
+    let records = agent_actions::list_audit(&state.config.data_dir, limit)
+        .map_err(|error| api_error("internal", error.to_string()))?;
+    Ok(json!({
+        "audit": records,
+    }))
+}
+
 async fn events_read_payload(
     state: &ratspeak_runtime::state::AppState,
     access: &AccessMode,
@@ -1152,6 +1376,769 @@ fn network_status_payload(state: &ratspeak_runtime::state::AppState) -> Value {
         "last_stats": last_stats,
         "propagation": ratspeak_runtime::propagation::get_status_payload(state),
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ActionPhase {
+    Create,
+    Submit,
+    Execute,
+}
+
+fn agent_principal(access: &AccessMode) -> Result<&AgentPrincipal, ApiError> {
+    access
+        .principal()
+        .ok_or_else(|| api_error("forbidden", "agent action requires an agent grant"))
+}
+
+fn ensure_action_owner(
+    principal: &AgentPrincipal,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(), ApiError> {
+    if record.agent == principal.name {
+        Ok(())
+    } else {
+        Err(api_error(
+            "forbidden",
+            "agent cannot access another agent's action",
+        ))
+    }
+}
+
+fn new_action_from_params(
+    state: &ratspeak_runtime::state::AppState,
+    _principal: &AgentPrincipal,
+    params: Value,
+) -> Result<NewAction, ApiError> {
+    let kind = required_string(&params, "kind")?;
+    let submit = optional_bool(&params, "submit", false)?;
+    let expires_secs = match params.get("expires_secs") {
+        Some(Value::Number(_)) => {
+            let value = optional_u64(&params, "expires_secs", 0)?;
+            (value > 0).then_some(value)
+        }
+        Some(Value::Null) | None => None,
+        Some(_) => {
+            return Err(api_error(
+                "bad_params",
+                "expires_secs must be an unsigned integer",
+            ));
+        }
+    };
+    let required_scopes = action_scope_labels(
+        &kind,
+        if submit {
+            ActionPhase::Submit
+        } else {
+            ActionPhase::Create
+        },
+    )?;
+
+    let (subject_hash, conversation_id) = action_subject(&params, &kind)?;
+    let mut payload = json!({});
+    let mut staged_files = Vec::new();
+    let mut text_bytes = 0usize;
+    let mut attachment_bytes = 0usize;
+
+    match kind.as_str() {
+        "message.send" => {
+            let content =
+                sanitize_payload_text(&required_string_any(&params, &["text", "content"])?, 4096);
+            let title = sanitize_payload_text(
+                params.get("title").and_then(Value::as_str).unwrap_or(""),
+                256,
+            );
+            if content.is_empty() {
+                return Err(api_error("bad_params", "message text is required"));
+            }
+            text_bytes = content.len() + title.len();
+            payload = json!({
+                "content": content,
+                "title": title,
+                "delivery_method": delivery_method_param(&params),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+            });
+        }
+        "message.reply" => {
+            let content =
+                sanitize_payload_text(&required_string_any(&params, &["text", "content"])?, 4096);
+            let title = sanitize_payload_text(
+                params.get("title").and_then(Value::as_str).unwrap_or(""),
+                256,
+            );
+            let reply_to_id = sanitize_payload_text(&required_string(&params, "reply_to_id")?, 128);
+            let reply_to_preview = sanitize_payload_text(
+                params
+                    .get("reply_to_preview")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                200,
+            );
+            if content.is_empty() || reply_to_id.is_empty() {
+                return Err(api_error(
+                    "bad_params",
+                    "reply text and reply_to_id are required",
+                ));
+            }
+            text_bytes = content.len() + title.len() + reply_to_preview.len();
+            payload = json!({
+                "content": content,
+                "title": title,
+                "reply_to_id": reply_to_id,
+                "reply_to_preview": reply_to_preview,
+                "delivery_method": delivery_method_param(&params),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+            });
+        }
+        "message.attachment" | "message.image" => {
+            let file_data = required_string(&params, "file_data_b64")?;
+            let file_bytes = B64
+                .decode(file_data.as_bytes())
+                .map_err(|_| api_error("bad_params", "invalid base64 file data"))?;
+            let is_image = kind == "message.image";
+            let mime = sanitize_payload_text(
+                params
+                    .get("mime")
+                    .and_then(Value::as_str)
+                    .unwrap_or(if is_image {
+                        "image/png"
+                    } else {
+                        "application/octet-stream"
+                    }),
+                200,
+            );
+            if is_image && !mime.starts_with("image/") {
+                return Err(api_error(
+                    "bad_params",
+                    "message.image requires an image MIME type",
+                ));
+            }
+            let fallback = if is_image { "image" } else { "attachment" };
+            let file_name = sanitize_payload_text(
+                params
+                    .get("file_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(fallback),
+                200,
+            );
+            let content = sanitize_payload_text(
+                params.get("text").and_then(Value::as_str).unwrap_or(""),
+                4096,
+            );
+            text_bytes = content.len();
+            attachment_bytes = file_bytes.len();
+            let staged = agent_actions::stage_file(
+                &state.config.data_dir,
+                &file_name,
+                &mime,
+                if is_image { "image" } else { "attachment" },
+                &file_bytes,
+            )
+            .map_err(|error| {
+                api_error("internal", format!("failed to stage attachment: {error}"))
+            })?;
+            let staged_meta = json!({
+                "id": staged.id,
+                "kind": staged.kind,
+                "file_name": staged.file_name,
+                "mime": staged.mime,
+                "size": staged.size,
+                "sha256": staged.sha256,
+            });
+            staged_files.push(staged);
+            payload = json!({
+                "content": content,
+                "title": "",
+                "delivery_method": delivery_method_param(&params),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+                "file": staged_meta,
+            });
+        }
+        "message.reaction" => {
+            let message_id = sanitize_payload_text(&required_string(&params, "message_id")?, 128);
+            let emoji = sanitize_payload_text(&required_string(&params, "emoji")?, 16);
+            let action = sanitize_payload_text(
+                params
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .unwrap_or("add"),
+                16,
+            );
+            if message_id.is_empty() || emoji.is_empty() {
+                return Err(api_error("bad_params", "message_id and emoji are required"));
+            }
+            payload = json!({
+                "message_id": message_id,
+                "emoji": emoji,
+                "action": if action == "remove" { "remove" } else { "add" },
+                "delivery_method": delivery_method_param(&params),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+            });
+        }
+        "identity.announce" => {
+            payload = json!({
+                "reason": params.get("reason").and_then(Value::as_str).map(|value| sanitize_payload_text(value, 120)),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+            });
+        }
+        "network.path_request" => {
+            payload = json!({
+                "hash": subject_hash.clone().unwrap_or_default(),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+            });
+        }
+        "contact.add" => {
+            payload = json!({
+                "dest_hash": subject_hash.clone().unwrap_or_default(),
+                "display_name": params.get("display_name").and_then(Value::as_str).map(|value| sanitize_payload_text(value, 128)),
+                "trust": params.get("trust").and_then(Value::as_str).map(|value| sanitize_payload_text(value, 32)).unwrap_or_else(|| "trusted".into()),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+            });
+        }
+        "contact.remove" | "contact.block" | "contact.unblock" => {
+            payload = json!({
+                "dest_hash": subject_hash.clone().unwrap_or_default(),
+                "display_name": params.get("display_name").and_then(Value::as_str).map(|value| sanitize_payload_text(value, 128)),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+            });
+        }
+        "conversation.mark_read"
+        | "conversation.hide"
+        | "conversation.unhide"
+        | "conversation.delete" => {
+            payload = json!({
+                "conversation_id": conversation_id.clone(),
+                "dest_hash": subject_hash.clone().unwrap_or_default(),
+                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
+            });
+        }
+        _ => {
+            return Err(api_error(
+                "bad_params",
+                format!("unsupported action kind: {kind}"),
+            ));
+        }
+    }
+
+    Ok(NewAction {
+        kind,
+        conversation_id,
+        subject_hash,
+        payload,
+        staged_files,
+        required_scopes,
+        text_bytes,
+        attachment_bytes,
+        expires_secs,
+        submit,
+    })
+}
+
+fn action_subject(
+    params: &Value,
+    kind: &str,
+) -> Result<(Option<String>, Option<String>), ApiError> {
+    match kind {
+        "message.send"
+        | "message.reply"
+        | "message.attachment"
+        | "message.image"
+        | "message.reaction"
+        | "conversation.mark_read"
+        | "conversation.hide"
+        | "conversation.unhide"
+        | "conversation.delete" => {
+            let dest_hash = conversation_dest_param(params)?;
+            Ok((
+                Some(dest_hash.clone()),
+                Some(agent_policy::conversation_id_for_dest(&dest_hash)),
+            ))
+        }
+        "network.path_request"
+        | "contact.add"
+        | "contact.remove"
+        | "contact.block"
+        | "contact.unblock" => {
+            let dest_hash = required_string_any(params, &["dest_hash", "hash"])?;
+            if !ratspeak_runtime::helpers::validate_hex(&dest_hash, 16, 64) {
+                return Err(api_error("bad_params", "invalid destination hash"));
+            }
+            Ok((Some(dest_hash), None))
+        }
+        "identity.announce" => Ok((None, None)),
+        _ => Err(api_error(
+            "bad_params",
+            format!("unsupported action kind: {kind}"),
+        )),
+    }
+}
+
+fn action_scope_labels(kind: &str, phase: ActionPhase) -> Result<Vec<String>, ApiError> {
+    Ok(action_scope_groups(kind, phase)?
+        .into_iter()
+        .map(|group| group.join("|"))
+        .collect())
+}
+
+fn require_action_policy(
+    principal: &AgentPrincipal,
+    kind: &str,
+    submit: bool,
+) -> Result<(), ApiError> {
+    let phase = if submit {
+        ActionPhase::Submit
+    } else {
+        ActionPhase::Create
+    };
+    require_action_scope_groups(principal, action_scope_groups(kind, phase)?)
+}
+
+fn require_action_policy_for_record(
+    principal: &AgentPrincipal,
+    record: &agent_actions::AgentActionRecord,
+    phase: ActionPhase,
+) -> Result<(), ApiError> {
+    require_action_scope_groups(principal, action_scope_groups(&record.kind, phase)?)
+}
+
+fn require_action_scope_groups(
+    principal: &AgentPrincipal,
+    groups: Vec<Vec<&'static str>>,
+) -> Result<(), ApiError> {
+    for group in groups {
+        if !principal.has_any_scope(&group) {
+            return Err(api_error(
+                "forbidden",
+                format!("missing one of scopes: {}", group.join(", ")),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn action_scope_groups(kind: &str, phase: ActionPhase) -> Result<Vec<Vec<&'static str>>, ApiError> {
+    let groups = match kind {
+        "message.send" | "message.reply" => match phase {
+            ActionPhase::Create => vec![vec!["drafts:write"]],
+            ActionPhase::Submit | ActionPhase::Execute => vec![vec!["messages:write"]],
+        },
+        "message.attachment" => match phase {
+            ActionPhase::Create => vec![vec!["drafts:write"], vec!["attachments:write"]],
+            ActionPhase::Submit | ActionPhase::Execute => {
+                vec![vec!["messages:write"], vec!["attachments:write"]]
+            }
+        },
+        "message.image" => match phase {
+            ActionPhase::Create => vec![vec!["drafts:write"], vec!["images:write"]],
+            ActionPhase::Submit | ActionPhase::Execute => {
+                vec![vec!["messages:write"], vec!["images:write"]]
+            }
+        },
+        "message.reaction" => vec![vec!["reactions:write"]],
+        "identity.announce" => vec![vec!["announces:write", "network:write"]],
+        "network.path_request" => vec![vec!["paths:write", "network:write"]],
+        "contact.add" | "contact.remove" | "contact.block" | "contact.unblock" => {
+            vec![vec!["contacts:write"]]
+        }
+        "conversation.mark_read"
+        | "conversation.hide"
+        | "conversation.unhide"
+        | "conversation.delete" => vec![vec!["conversations:write"]],
+        _ => {
+            return Err(api_error(
+                "bad_params",
+                format!("unsupported action kind: {kind}"),
+            ));
+        }
+    };
+    Ok(groups)
+}
+
+async fn execute_action_record(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    match record.kind.as_str() {
+        "message.send" => execute_message_send(state, record).await,
+        "message.reply" => execute_message_reply(state, record).await,
+        "message.attachment" | "message.image" => execute_message_attachment(state, record).await,
+        "message.reaction" => execute_message_reaction(state, record).await,
+        "identity.announce" => execute_identity_announce(state, record).await,
+        "network.path_request" => execute_path_request(state, record).await,
+        "contact.add" | "contact.remove" | "contact.block" | "contact.unblock" => {
+            execute_contact_action(state, record).await
+        }
+        "conversation.mark_read"
+        | "conversation.hide"
+        | "conversation.unhide"
+        | "conversation.delete" => execute_conversation_action(state, record).await,
+        _ => Err(api_error(
+            "bad_params",
+            format!("unsupported action kind: {}", record.kind),
+        )),
+    }
+}
+
+async fn execute_message_send(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    use ratspeak_runtime::lxmf::{DeliveryPreference, DeliveryProfile, MessageSendRequest};
+
+    let dest_hash = record_subject(record)?;
+    let content = payload_string(&record.payload, "content");
+    if content.is_empty() {
+        return Err(api_error("bad_params", "message content is empty"));
+    }
+    let title = payload_string(&record.payload, "title");
+    let preference = DeliveryPreference::parse(
+        record
+            .payload
+            .get("delivery_method")
+            .and_then(Value::as_str),
+    );
+    let identity_id = ratspeak_runtime::helpers::active_identity_id(&state);
+    let st = state.clone();
+    let msg_id = tokio::task::spawn_blocking(move || {
+        let mut lxmf = st.lxmf.lock().ok()?;
+        let mgr = lxmf.as_mut()?;
+        mgr.send_message_with_preference(MessageSendRequest {
+            dest_hash_hex: &dest_hash,
+            content: &content,
+            title: &title,
+            db_pool: &st.db,
+            identity_id: &identity_id,
+            preference,
+            profile: DeliveryProfile::Message,
+        })
+    })
+    .await
+    .map_err(|_| api_error("internal", "send task panicked"))?;
+    let Some(msg_id) = msg_id else {
+        return Err(api_error("service_unavailable", "LXMF not initialized"));
+    };
+    state.lxmf_notify.notify_one();
+    Ok((STATE_SENT, json!({ "msg_id": msg_id })))
+}
+
+async fn execute_message_reply(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    use ratspeak_runtime::lxmf::{DeliveryPreference, DeliveryProfile, ReplyMessageSendRequest};
+
+    let dest_hash = record_subject(record)?;
+    let content = payload_string(&record.payload, "content");
+    let title = payload_string(&record.payload, "title");
+    let reply_to_id = payload_string(&record.payload, "reply_to_id");
+    let reply_to_preview = payload_string(&record.payload, "reply_to_preview");
+    let preference = DeliveryPreference::parse(
+        record
+            .payload
+            .get("delivery_method")
+            .and_then(Value::as_str),
+    );
+    let identity_id = ratspeak_runtime::helpers::active_identity_id(&state);
+    let st = state.clone();
+    let msg_id = tokio::task::spawn_blocking(move || {
+        let mut lxmf = st.lxmf.lock().ok()?;
+        let mgr = lxmf.as_mut()?;
+        mgr.send_reply_with_preference(ReplyMessageSendRequest {
+            dest_hash_hex: &dest_hash,
+            content: &content,
+            title: &title,
+            reply_to_id: &reply_to_id,
+            reply_to_preview: &reply_to_preview,
+            db_pool: &st.db,
+            identity_id: &identity_id,
+            preference,
+            profile: DeliveryProfile::Message,
+        })
+    })
+    .await
+    .map_err(|_| api_error("internal", "reply task panicked"))?;
+    let Some(msg_id) = msg_id else {
+        return Err(api_error("service_unavailable", "LXMF not initialized"));
+    };
+    state.lxmf_notify.notify_one();
+    Ok((STATE_SENT, json!({ "msg_id": msg_id })))
+}
+
+async fn execute_message_attachment(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    use ratspeak_runtime::lxmf::{AttachmentMessageRequest, DeliveryPreference};
+
+    let dest_hash = record_subject(record)?;
+    let staged = record
+        .staged_files
+        .first()
+        .ok_or_else(|| api_error("bad_params", "approved attachment has no staged file"))?
+        .clone();
+    let bytes = std::fs::read(&staged.stored_path)
+        .map_err(|error| api_error("internal", format!("failed to read staged file: {error}")))?;
+    let content = payload_string(&record.payload, "content");
+    let title = payload_string(&record.payload, "title");
+    let preference = DeliveryPreference::parse(
+        record
+            .payload
+            .get("delivery_method")
+            .and_then(Value::as_str),
+    );
+    let identity_id = ratspeak_runtime::helpers::active_identity_id(&state);
+    let is_image = record.kind == "message.image";
+    let st = state.clone();
+    let staged_for_send = staged.clone();
+    let msg_id = tokio::task::spawn_blocking(move || {
+        let mut lxmf = st.lxmf.lock().ok()?;
+        let mgr = lxmf.as_mut()?;
+        mgr.send_message_with_attachment_fields_preference(AttachmentMessageRequest {
+            dest_hash_hex: &dest_hash,
+            content: &content,
+            title: &title,
+            file_name: &staged_for_send.file_name,
+            file_bytes: &bytes,
+            is_image,
+            image_mime: &staged_for_send.mime,
+            db_pool: &st.db,
+            identity_id: &identity_id,
+            preference,
+        })
+    })
+    .await
+    .map_err(|_| api_error("internal", "attachment send task panicked"))?;
+    let Some(msg_id) = msg_id else {
+        return Err(api_error("service_unavailable", "LXMF not initialized"));
+    };
+    state.lxmf_notify.notify_one();
+    Ok((
+        STATE_SENT,
+        json!({
+            "msg_id": msg_id,
+            "file": {
+                "id": staged.id,
+                "file_name": staged.file_name,
+                "mime": staged.mime,
+                "size": staged.size,
+                "sha256": staged.sha256,
+            }
+        }),
+    ))
+}
+
+async fn execute_message_reaction(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    use ratspeak_runtime::lxmf::{DeliveryPreference, ReactionSendRequest};
+
+    let dest_hash = record_subject(record)?;
+    let message_id = payload_string(&record.payload, "message_id");
+    let emoji = payload_string(&record.payload, "emoji");
+    let action = payload_string(&record.payload, "action");
+    let preference = DeliveryPreference::parse(
+        record
+            .payload
+            .get("delivery_method")
+            .and_then(Value::as_str),
+    );
+    let identity_id = ratspeak_runtime::helpers::active_identity_id(&state);
+    let st = state.clone();
+    let send_message_id = message_id.clone();
+    let send_emoji = emoji.clone();
+    let send_action = action.clone();
+    let sent = tokio::task::spawn_blocking(move || {
+        let mut lxmf = st.lxmf.lock().ok()?;
+        let mgr = lxmf.as_mut()?;
+        mgr.send_reaction_with_preference(ReactionSendRequest {
+            dest_hash_hex: &dest_hash,
+            message_id: &send_message_id,
+            emoji: &send_emoji,
+            action: &send_action,
+            db_pool: &st.db,
+            identity_id: &identity_id,
+            preference,
+        });
+        Some(())
+    })
+    .await
+    .map_err(|_| api_error("internal", "reaction task panicked"))?;
+    if sent.is_none() {
+        return Err(api_error("service_unavailable", "LXMF not initialized"));
+    }
+    state.lxmf_notify.notify_one();
+    Ok((
+        STATE_APPLIED,
+        json!({ "message_id": message_id, "emoji": emoji, "action": action }),
+    ))
+}
+
+async fn execute_identity_announce(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    _record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    let report = ratspeak_runtime::send_manual_announce_from_state(&state).await;
+    Ok((
+        STATE_APPLIED,
+        json!({
+            "packets": report.packets,
+            "queued": report.queued,
+            "failed": report.failed,
+        }),
+    ))
+}
+
+async fn execute_path_request(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    let dest_hash = record_subject(record)?;
+    let bytes = hex::decode(&dest_hash).map_err(|_| api_error("bad_params", "invalid hash"))?;
+    if bytes.len() != 16 {
+        return Err(api_error("bad_params", "invalid hash"));
+    }
+    let mut destination_hash = [0u8; 16];
+    destination_hash.copy_from_slice(&bytes);
+    let success = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
+        .is_some_and(|tx| {
+            tx.try_send(rns_transport::messages::TransportMessage::RequestPath { destination_hash })
+                .is_ok()
+        });
+    Ok((
+        STATE_APPLIED,
+        json!({ "requested": success, "hash": dest_hash }),
+    ))
+}
+
+async fn execute_contact_action(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    let dest_hash = record_subject(record)?;
+    let identity_id = ratspeak_runtime::helpers::active_identity_id(&state);
+    match record.kind.as_str() {
+        "contact.add" => {
+            let display = record
+                .payload
+                .get("display_name")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty());
+            let trust = record
+                .payload
+                .get("trust")
+                .and_then(Value::as_str)
+                .unwrap_or("trusted");
+            ratspeak_db::save_contact(&state.db, &dest_hash, display, trust, &identity_id);
+        }
+        "contact.remove" => ratspeak_db::delete_contact(&state.db, &dest_hash, &identity_id),
+        "contact.block" => {
+            let display = record
+                .payload
+                .get("display_name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            ratspeak_db::block_contact(&state.db, &dest_hash, display, &identity_id);
+        }
+        "contact.unblock" => ratspeak_db::unblock_contact(&state.db, &dest_hash, &identity_id),
+        _ => return Err(api_error("bad_params", "unsupported contact action")),
+    }
+    Ok((
+        STATE_APPLIED,
+        json!({ "dest_hash": dest_hash, "kind": record.kind }),
+    ))
+}
+
+async fn execute_conversation_action(
+    state: Arc<ratspeak_runtime::state::AppState>,
+    record: &agent_actions::AgentActionRecord,
+) -> Result<(&'static str, Value), ApiError> {
+    let dest_hash = record_subject(record)?;
+    let identity_id = ratspeak_runtime::helpers::active_identity_id(&state);
+    match record.kind.as_str() {
+        "conversation.mark_read" => ratspeak_db::mark_read(&state.db, &dest_hash, &identity_id),
+        "conversation.hide" => ratspeak_db::hide_conversation(&state.db, &dest_hash, &identity_id),
+        "conversation.unhide" => {
+            ratspeak_db::unhide_conversation(&state.db, &dest_hash, &identity_id)
+        }
+        "conversation.delete" => {
+            let _ = ratspeak_db::delete_conversation(&state.db, &dest_hash, &identity_id);
+        }
+        _ => return Err(api_error("bad_params", "unsupported conversation action")),
+    }
+    Ok((
+        STATE_APPLIED,
+        json!({ "dest_hash": dest_hash, "kind": record.kind }),
+    ))
+}
+
+fn append_action_event(data_dir: &Path, event: &str, record: &agent_actions::AgentActionRecord) {
+    let _ = event_store::EventStore::append_daemon_event(
+        data_dir,
+        event,
+        json!({
+            "action_id": record.id,
+            "agent": record.agent,
+            "kind": record.kind,
+            "state": record.state,
+            "subject_hash": record.subject_hash,
+            "expires_at_unix": record.expires_at_unix,
+        }),
+    );
+}
+
+fn record_subject(record: &agent_actions::AgentActionRecord) -> Result<String, ApiError> {
+    record
+        .subject_hash
+        .clone()
+        .ok_or_else(|| api_error("bad_params", "action has no subject hash"))
+}
+
+fn payload_string(payload: &Value, key: &str) -> String {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn required_string_any(params: &Value, keys: &[&str]) -> Result<String, ApiError> {
+    for key in keys {
+        if let Some(value) = params.get(*key).and_then(Value::as_str) {
+            return Ok(value.to_string());
+        }
+    }
+    Err(api_error(
+        "bad_params",
+        format!("missing string parameter: {}", keys.join(" or ")),
+    ))
+}
+
+fn sanitize_payload_text(value: &str, max_chars: usize) -> String {
+    value
+        .replace('\0', "")
+        .chars()
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn delivery_method_param(params: &Value) -> String {
+    let value = params
+        .get("delivery_method")
+        .and_then(Value::as_str)
+        .unwrap_or("auto")
+        .trim()
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "opportunistic" | "direct" | "propagated" => value,
+        _ => "auto".into(),
+    }
 }
 
 fn filter_contact_records(access: &AccessMode, records: Vec<Value>) -> Vec<Value> {
@@ -1360,6 +2347,15 @@ fn optional_usize(params: &Value, key: &str, default_value: usize) -> Result<usi
         ));
     }
     Ok(parsed as usize)
+}
+
+fn optional_bool(params: &Value, key: &str, default_value: bool) -> Result<bool, ApiError> {
+    let Some(value) = params.get(key) else {
+        return Ok(default_value);
+    };
+    value
+        .as_bool()
+        .ok_or_else(|| api_error("bad_params", format!("{key} must be a boolean")))
 }
 
 fn optional_f64(params: &Value, key: &str, default_value: f64) -> Result<f64, ApiError> {
