@@ -48,6 +48,7 @@ ratspeakctl agent grant NAME [--scope SCOPE] [--allow-contact HASH] [--allow-con
 ratspeakctl agent policy show|validate|set NAME
 ratspeakctl agent policy defaults
 ratspeakctl agent revoke NAME [--reason TEXT]
+ratspeakctl agent remove NAME
 ratspeakctl agent rotate-token NAME
 ratspeakctl identity get
 ratspeakctl identity current
@@ -97,27 +98,27 @@ key material. `identity activate` is an offline profile change; restart
 For normal owner setup, use the Ratspeak app's Settings > Agents panel. It
 creates the same isolated agent profiles, grants, token files, policy
 guardrails, approval queues, and audit records as the CLI. It also stores the
-runtime adapter profile that tells the owner what will actually run the agent.
-The first supported launch targets are Venice API, OpenRouter API, and
-OpenClaw. The copied connection kit includes the adapter metadata, daemon start
-command, stable CLI/API contract, and redacted credential references.
+Venice adapter profile that tells the owner what model the agent should use.
+The first supported launch target is Venice API. OpenRouter and OpenClaw are
+deferred until the Venice setup path is stable for non-developer owners. The
+copied connection kit includes the adapter metadata, daemon start command,
+stable CLI/API contract, and redacted credential references.
 
 The GUI never displays the raw token, agent recovery phrase, or LLM/API key.
-Local agent processes read the private Ratspeak token file directly. Provider
+Local agent processes read the private Ratspeak token file directly. Venice API
 keys should be supplied to the adapter through an environment variable or
-private file reference, for example `VENICE_API_KEY` for Venice or
-`OPENROUTER_API_KEY` for OpenRouter. Desktop bundles include `ratspeakd` and
-`ratspeakctl` as packaged sidecars, and copied connection kits prefer those
-packaged binary paths when the app is running from a bundle. CLI-only installs
-continue to resolve `ratspeakd` and `ratspeakctl` from `PATH`.
+private file reference; the default is `VENICE_API_KEY`. Desktop bundles include
+`ratspeakd` and `ratspeakctl` as packaged sidecars, and copied connection kits
+prefer those packaged binary paths when the app is running from a bundle.
+CLI-only installs continue to resolve `ratspeakd` and `ratspeakctl` from `PATH`.
 
 `agent onboard` is the preferred CLI beta entry point for scripted setup. It
 defaults to the `reply-assistant` preset and returns machine-readable
 `next.steps[].argv` arrays that can be handed to an agent supervisor. Presets
-are `inbox-reader`, `reply-assistant`, `media-assistant`, `network-helper`, and
-`openclaw-basic`. Agent recovery material is redacted by default; owners who
-are capturing the recovery phrase for themselves can pass `--show-recovery`,
-but do not hand that output to an agent adapter.
+are `inbox-reader`, `reply-assistant`, `media-assistant`, and `network-helper`.
+Agent recovery material is redacted by default; owners who are capturing the
+recovery phrase for themselves can pass `--show-recovery`, but do not hand that
+output to an agent adapter.
 
 `agent create` creates a separate agent profile under
 `.ratspeak/agents/NAME` by default, creates a recoverable identity for that

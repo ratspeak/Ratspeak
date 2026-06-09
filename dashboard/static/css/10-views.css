@@ -1795,6 +1795,13 @@
     overflow: hidden;
 }
 
+.settings-agent-manage-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
+}
+
 .settings-agent-setup-row {
     min-width: 0;
     min-height: 72px;

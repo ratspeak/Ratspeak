@@ -454,14 +454,19 @@ var AGENT_PRESET_ORDER = [
     'reply-assistant',
     'media-assistant',
     'inbox-reader',
-    'network-helper',
-    'openclaw-basic'
+    'network-helper'
 ];
 
 var AGENT_ADAPTER_ORDER = [
-    'venice',
-    'openrouter',
-    'openclaw'
+    'venice'
+    // TODO(agent-runtimes): Re-enable OpenRouter/OpenClaw after Venice setup is stable.
+];
+
+var VENICE_TEXT_MODELS = [
+    { id: 'zai-org-glm-5', label: 'zai-org-glm-5', description: 'Default Venice text model for most replies.' },
+    { id: 'kimi-k2-6', label: 'kimi-k2-6', description: 'Stronger reasoning for complex replies.' },
+    { id: 'claude-opus-4-8', label: 'claude-opus-4-8', description: 'High-intelligence model for complex tasks.' },
+    { id: 'venice-uncensored-1-2', label: 'venice-uncensored-1-2', description: 'Venice uncensored text model.' }
 ];
 
 var AGENT_APPROVAL_STATES = [
@@ -565,7 +570,7 @@ function renderAgentList() {
     if (!_settingsAgentsState.agents.length) {
         list.innerHTML = '<div class="settings-agent-empty">' +
             '<span class="settings-agent-empty-title">No agents yet</span>' +
-            '<span class="settings-agent-empty-copy">Add an agent, choose Venice, OpenRouter, or OpenClaw, then choose who it can answer.</span>' +
+            '<span class="settings-agent-empty-copy">Add a Venice-backed agent, then choose who it can answer.</span>' +
         '</div>';
         return;
     }
@@ -603,9 +608,9 @@ function agentNeedsSetup(agent) {
 }
 
 function agentAdapterLabel(adapter) {
-    if (adapter && adapter.configured) return adapter.label || adapter.provider || 'Provider set';
-    if (adapter && adapter.legacy_provider) return 'finish provider setup';
-    return 'choose provider';
+    if (adapter && adapter.configured) return adapter.label || adapter.provider || 'Venice set';
+    if (adapter && adapter.legacy_provider) return 'update to Venice';
+    return 'set up Venice';
 }
 
 function agentPermissionListCopy(agent) {
@@ -667,7 +672,7 @@ function renderAgentDetail(payload) {
     var hasPermissionTarget = contacts.length || conversations.length || grant.unknown_contacts === 'allow';
     var setupNeeded = !adapter.configured || !hasPermissionTarget;
     var visibleHealth = healthErrors.filter(function(error) { return error.area !== 'adapter'; });
-    var providerValue = adapter.configured ? (adapter.label || adapter.provider || 'Provider set') : 'Choose provider';
+    var providerValue = adapter.configured ? (adapter.label || adapter.provider || 'Venice set') : 'Set up Venice';
     var accessValue = agentAccessValue(contacts, conversations, grant);
     var safetyValue = agentSafetySummary(policy || {});
     var connectionActions = runtime.running
@@ -703,14 +708,17 @@ function renderAgentDetail(payload) {
             (visibleHealth.length ? renderAgentHealth(visibleHealth) : '') +
             '<div class="settings-agent-setup-note">' +
                 '<strong>' + escapeHtml(setupNeeded ? 'Finish setup for this agent.' : 'This agent is ready for a first run.') + '</strong>' +
-                '<span>' + escapeHtml(setupNeeded ? 'Pick a provider and choose at least one contact or conversation before the agent can answer.' : 'The agent has a provider, scoped access, and guardrails. Start the connection when your agent is ready.') + '</span>' +
+                '<span>' + escapeHtml(setupNeeded ? 'Set up Venice and choose at least one contact or conversation before the agent can answer.' : 'The agent has Venice configured, scoped access, and guardrails. Start the connection when your agent is ready.') + '</span>' +
             '</div>' +
             '<div class="settings-agent-setup-list">' +
-                agentSetupRow('Provider', providerValue, agentAdapterRuntimeCopy(adapter), [['configure-adapter', adapter.configured ? 'Change' : 'Choose']], adapter.configured ? 'ready' : 'setup') +
+                agentSetupRow('Venice', providerValue, agentAdapterRuntimeCopy(adapter), [['configure-adapter', adapter.configured ? 'Change model' : 'Set up']], adapter.configured ? 'ready' : 'setup') +
                 agentSetupRow('Access', accessValue, hasPermissionTarget ? 'The agent is limited to the contacts or conversations you allow.' : 'Choose who this agent may read and answer.', [['add-contact', hasPermissionTarget ? 'Change' : 'Choose']], hasPermissionTarget ? 'ready' : 'setup') +
                 agentSetupRow('Autonomy', autoEnabled ? 'Trusted replies' : 'Review first', autoEnabled ? 'Routine replies can run inside guardrails. Riskier actions still wait.' : 'New actions wait for your approval until you trust this agent.', [['set-autonomy-manual', 'Review first'], ['set-autonomy-routine', 'Trusted replies']], autoEnabled ? 'ready' : 'review') +
                 agentSetupRow('Safety', safetyValue, 'Practical protections against loops, surprise sends, files, and network-facing actions.', [['quick-limits', 'Adjust']], 'ready') +
                 agentSetupRow('Connection', runtime.running ? 'Connected' : 'Not running', runtime.running ? 'The local agent daemon is running.' : 'Start the local daemon or copy the connection kit for your agent.', connectionActions, runtime.running ? 'ready' : 'review') +
+            '</div>' +
+            '<div class="settings-agent-manage-row">' +
+                '<button class="selector-badge selector-badge-no-caret" data-agent-action="remove">Remove agent</button>' +
             '</div>' +
         '</div>' +
         renderAgentAdvancedGuardrails(policy || {}, summary, technicalDetails);
@@ -761,14 +769,13 @@ function agentSafetySummary(policy) {
 
 function agentAdapterRuntimeCopy(adapter) {
     if (!adapter || !adapter.configured) {
-        if (adapter && adapter.legacy_provider) return 'This older setup needs to be updated to Venice, OpenRouter, or OpenClaw.';
-        return 'Choose Venice, OpenRouter, or OpenClaw.';
+        if (adapter && adapter.legacy_provider) return 'This older setup needs to be updated to Venice.';
+        return 'Connect this agent to Venice with an API key variable and model.';
     }
-    if (adapter.provider === 'openclaw') return 'Local OpenClaw adapter uses the copied connection kit.';
     var parts = [];
     if (adapter.model) parts.push(adapter.model);
     if (adapter.secret && adapter.secret.env) parts.push(adapter.secret.env);
-    return parts.length ? parts.join(' via ') : 'API adapter configured.';
+    return parts.length ? parts.join(' via ') : 'Venice adapter configured.';
 }
 
 function renderAgentHealth(errors) {
@@ -939,6 +946,7 @@ function handleAgentDetailClick(e) {
     else if (action === 'quick-limits') editAgentQuickLimits();
     else if (action === 'rotate-token') rotateSelectedAgentToken();
     else if (action === 'revoke') revokeSelectedAgent();
+    else if (action === 'remove') removeSelectedAgent();
 }
 
 function handleAgentPolicyToggle(e) {
@@ -1240,24 +1248,69 @@ function adapterDefaults(provider) {
         label: meta.label || provider.replace(/-/g, ' '),
         base_url: meta.base_url || '',
         secret_env: meta.secret_env || '',
+        model: meta.default_model || 'zai-org-glm-5',
+        models: Array.isArray(meta.models) ? meta.models : VENICE_TEXT_MODELS,
         command: Array.isArray(meta.default_command) ? meta.default_command : []
     };
 }
 
 function chooseAgentRuntimeProvider() {
-    return rsChoice({
-        title: 'Agent Runtime',
-        message: 'Choose what will run this Ratspeak agent.',
-        choices: agentAdapterChoices()
-    });
+    return Promise.resolve('venice');
 }
 
 function defaultAgentPresetForProvider(provider) {
-    if (provider === 'openclaw') return 'openclaw-basic';
     return 'reply-assistant';
 }
 
+function veniceModelChoices(currentModel) {
+    var defaults = adapterDefaults('venice');
+    var seen = {};
+    var choices = (defaults.models || VENICE_TEXT_MODELS).map(function(model) {
+        var id = model.id || model.value || '';
+        seen[id] = true;
+        return {
+            label: model.label || id,
+            value: id,
+            hint: model.description || ''
+        };
+    }).filter(function(choice) { return !!choice.value; });
+    if (currentModel && !seen[currentModel]) {
+        choices.push({
+            label: currentModel,
+            value: currentModel,
+            hint: 'Saved custom Venice model ID.'
+        });
+    }
+    choices.push({
+        label: 'Custom model ID...',
+        value: '__custom__',
+        hint: 'Use a model ID from Venice model discovery.'
+    });
+    return choices;
+}
+
+function chooseVeniceModel(currentModel) {
+    return rsChoice({
+        title: 'Venice Model',
+        message: 'Choose which Venice text model this agent should use.',
+        choices: veniceModelChoices(currentModel)
+    }).then(function(model) {
+        if (!model) return null;
+        if (model !== '__custom__') return model;
+        return rsPrompt({
+            title: 'Venice Model ID',
+            message: 'Paste a Venice text model ID.',
+            placeholder: 'zai-org-glm-5',
+            defaultValue: currentModel || 'zai-org-glm-5',
+            confirmText: 'Save'
+        }).then(function(custom) {
+            return custom === null ? null : custom.trim();
+        });
+    });
+}
+
 function collectAgentAdapterConfig(name, provider) {
+    provider = provider || 'venice';
     var defaults = adapterDefaults(provider);
     var current = (_settingsAgentsState.detail && _settingsAgentsState.detail.adapter) || {};
     var currentProvider = current.provider === provider ? current : {};
@@ -1265,29 +1318,22 @@ function collectAgentAdapterConfig(name, provider) {
         name: name,
         provider: provider,
         label: currentProvider.label || defaults.label,
-        model: currentProvider.model || '',
+        model: currentProvider.model || defaults.model || 'zai-org-glm-5',
         base_url: currentProvider.base_url || defaults.base_url || '',
         command: Array.isArray(currentProvider.command) && currentProvider.command.length ? currentProvider.command : defaults.command,
         secret_env: currentProvider.secret && currentProvider.secret.env ? currentProvider.secret.env : (defaults.secret_env || ''),
         notes: currentProvider.notes || ''
     };
-    if (provider === 'openclaw') return Promise.resolve(config);
     return rsPrompt({
-        title: 'API Key Variable',
-        message: 'Environment variable your local adapter will read.',
-        placeholder: provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'VENICE_API_KEY',
+        title: 'Venice API Key',
+        message: 'Environment variable your local adapter will read. Ratspeak stores only the variable name.',
+        placeholder: 'VENICE_API_KEY',
         defaultValue: config.secret_env,
         confirmText: 'Next'
     }).then(function(secretEnv) {
         if (secretEnv === null) return null;
         config.secret_env = secretEnv.trim();
-        return rsPrompt({
-            title: 'Model',
-            message: 'Optional model name. You can leave this blank and set it in the adapter.',
-            placeholder: provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'model id',
-            defaultValue: config.model,
-            confirmText: 'Save'
-        });
+        return chooseVeniceModel(config.model);
     }).then(function(model) {
         if (model === null) return null;
         config.model = model.trim();
@@ -1297,7 +1343,7 @@ function collectAgentAdapterConfig(name, provider) {
 
 function openAgentCreateFlow() {
     var nameValue = '';
-    var providerValue = '';
+    var providerValue = 'venice';
     rsPrompt({
         title: 'Add Agent',
         message: 'Name this agent profile.',
@@ -1310,10 +1356,6 @@ function openAgentCreateFlow() {
             showToast('Agent name is required', 'toast-red', 2500);
             return null;
         }
-        return chooseAgentRuntimeProvider();
-    }).then(function(provider) {
-        if (!provider) return null;
-        providerValue = provider;
         return chooseAgentInitialContact().then(function(contact) {
             return collectAgentAdapterConfig(nameValue, providerValue).then(function(adapterArgs) {
                 if (!adapterArgs) return null;
@@ -1441,19 +1483,16 @@ function editAgentPreset() {
 function configureSelectedAgentAdapter() {
     var name = selectedAgentName();
     if (!name) return;
-    chooseAgentRuntimeProvider().then(function(provider) {
-        if (!provider) return null;
-        return collectAgentAdapterConfig(name, provider);
-    }).then(function(args) {
+    collectAgentAdapterConfig(name, 'venice').then(function(args) {
         if (!args) return null;
         return RS.invoke('set_agent_adapter', { args: args });
     }).then(function(payload) {
         if (!payload) return;
-        showToast('Agent runtime configured', 'toast-green', 2200);
+        showToast('Venice configured', 'toast-green', 2200);
         loadAgentDetail(name);
         loadAgentSettings(false);
     }).catch(function(err) {
-        showAgentError(err, 'Failed to configure runtime');
+        showAgentError(err, 'Failed to configure Venice');
     });
 }
 
@@ -1530,6 +1569,28 @@ function revokeSelectedAgent() {
         loadAgentSettings(true);
     }).catch(function(err) {
         showAgentError(err, 'Failed to revoke agent');
+    });
+}
+
+function removeSelectedAgent() {
+    var name = selectedAgentName();
+    if (!name) return;
+    rsConfirm({
+        title: 'Remove Agent',
+        message: 'Remove this local agent profile, token, Venice setup, pending actions, and audit entries? This cannot be undone.',
+        danger: true,
+        confirmText: 'Remove'
+    }).then(function(ok) {
+        if (!ok) return;
+        return RS.invoke('remove_agent', { name: name });
+    }).then(function(payload) {
+        if (!payload) return;
+        showToast('Agent removed', 'toast-orange', 2500);
+        _settingsAgentsState.selected = null;
+        _settingsAgentsState.detail = null;
+        loadAgentSettings(true);
+    }).catch(function(err) {
+        showAgentError(err, 'Failed to remove agent');
     });
 }
 

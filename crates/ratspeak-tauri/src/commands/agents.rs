@@ -319,6 +319,17 @@ pub async fn revoke_agent(
 }
 
 #[tauri::command]
+pub async fn remove_agent(state: State<'_, Arc<AppState>>, name: String) -> AppResult<Value> {
+    let event_state = state.inner().clone();
+    let payload = run_agent_task(state, move |profile| {
+        agent_admin::remove_agent(&profile, &name)
+    })
+    .await?;
+    emit_agents_updated(&event_state, &payload);
+    Ok(payload)
+}
+
+#[tauri::command]
 pub async fn rotate_agent_token(state: State<'_, Arc<AppState>>, name: String) -> AppResult<Value> {
     let event_state = state.inner().clone();
     let payload = run_agent_task(state, move |profile| {

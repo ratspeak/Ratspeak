@@ -3515,6 +3515,7 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
         "agentPresetChoices",
         "agentAdapterChoices",
         "configureSelectedAgentAdapter",
+        "removeSelectedAgent",
         "startSelectedAgentDaemon",
         "setAgentAutonomyRoutine",
         "editAgentQuickLimits",
@@ -3552,6 +3553,7 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
         "create_agent",
         "set_agent_grant",
         "revoke_agent",
+        "remove_agent",
         "rotate_agent_token",
         "api_agent_policy",
         "api_agent_policy_defaults",
@@ -3587,24 +3589,29 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
 
     for required in [
         "AGENT_ADAPTER_ORDER",
-        "openclaw",
         "venice",
-        "openrouter",
-        "OPENROUTER_API_KEY",
+        "VENICE_TEXT_MODELS",
+        "zai-org-glm-5",
+        "kimi-k2-6",
+        "claude-opus-4-8",
+        "venice-uncensored-1-2",
         "Finish setup for this agent.",
-        "Provider",
+        "Venice",
+        "Venice API Key",
+        "Venice Model",
+        "Custom model ID",
+        "Remove Agent",
         "Access",
         "Autonomy",
         "Connection",
         "Start",
         "Copy kit",
         "Agent connection kit",
-        "API Key Variable",
-        "Advanced",
         "settings-agent-setup-list",
         "api_agent_runtime",
         "start_agent_daemon",
         "set_agent_adapter",
+        "remove_agent",
     ] {
         assert!(
             settings_js.contains(required),
@@ -3612,7 +3619,7 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         );
     }
     for required in [
-        "Connect Venice, OpenRouter, or OpenClaw",
+        "Connect Venice to a scoped Ratspeak identity",
         "Setup",
         "settings-agent-activity",
         "Activity",
@@ -3629,12 +3636,25 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         "openai-compatible",
         "local-http",
         "custom-cli",
+        "OPENROUTER_API_KEY",
     ] {
         assert!(
             !settings_js.contains(removed),
             "launch UI should not expose unsupported provider: {removed}"
         );
     }
+    assert!(
+        settings_js.contains("var AGENT_ADAPTER_ORDER = [\n    'venice'"),
+        "Settings > Agents should expose Venice as the only active runtime"
+    );
+    assert!(
+        agent_admin.contains("\"order\": [\"venice\"]"),
+        "agent adapter catalog should expose Venice as the only active provider"
+    );
+    assert!(
+        !agent_admin.contains("\"openrouter\": {") && !agent_admin.contains("\"openclaw\": {"),
+        "deferred runtimes should not be active provider catalog entries"
+    );
 
     for required in [
         "AGENT_ADAPTER_FORMAT",
@@ -3650,9 +3670,14 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         "fallback_agent_summary",
         "health_error",
         "https://api.venice.ai/api/v1",
-        "https://openrouter.ai/api/v1",
+        "https://api.venice.ai/api/v1/models",
         "VENICE_API_KEY",
-        "OPENROUTER_API_KEY",
+        "zai-org-glm-5",
+        "kimi-k2-6",
+        "claude-opus-4-8",
+        "venice-uncensored-1-2",
+        "TODO(agent-runtimes): Re-enable OpenRouter",
+        "TODO(agent-runtimes): Re-enable OpenClaw",
         "adapter_public_payload",
         "adapter_public_payload_for_manifest",
         "adapter_setup_needed_payload",
@@ -3670,6 +3695,7 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         "set_agent_adapter",
         "api_agent_runtime",
         "start_agent_daemon",
+        "remove_agent",
     ] {
         assert!(
             agents_rs.contains(command),

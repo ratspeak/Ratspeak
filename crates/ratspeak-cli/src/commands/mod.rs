@@ -251,6 +251,7 @@ fn run_agent(profile: &Profile, args: &[String], output: OutputFormat) -> CliRes
         "grant" => run_agent_grant(profile, &args[1..], output),
         "policy" => run_agent_policy(profile, &args[1..], output),
         "revoke" => run_agent_revoke(profile, &args[1..], output),
+        "remove" | "delete" => run_agent_remove(profile, &args[1..], output),
         "rotate-token" => run_agent_rotate_token(profile, &args[1..], output),
         other => Err(CliError::usage(format!("unknown agent command: {other}"))),
     }
@@ -610,6 +611,15 @@ fn run_agent_revoke(profile: &Profile, args: &[String], output: OutputFormat) ->
     ensure_no_extra_args(&rest, "agent revoke")?;
 
     print_json(&agent_admin::revoke_agent(profile, name, reason)?, output)
+}
+
+fn run_agent_remove(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    let name = args
+        .first()
+        .ok_or_else(|| CliError::usage("agent remove requires <name>"))?;
+    ensure_no_extra_args(&args[1..], "agent remove")?;
+
+    print_json(&agent_admin::remove_agent(profile, name)?, output)
 }
 
 fn run_agent_rotate_token(
@@ -1700,8 +1710,7 @@ fn daemon_contract_payload() -> Value {
             "inbox-reader": agent_admin::agent_preset_scopes("inbox-reader").unwrap_or_default(),
             "reply-assistant": agent_admin::agent_preset_scopes("reply-assistant").unwrap_or_default(),
             "media-assistant": agent_admin::agent_preset_scopes("media-assistant").unwrap_or_default(),
-            "network-helper": agent_admin::agent_preset_scopes("network-helper").unwrap_or_default(),
-            "openclaw-basic": agent_admin::agent_preset_scopes("openclaw-basic").unwrap_or_default()
+            "network-helper": agent_admin::agent_preset_scopes("network-helper").unwrap_or_default()
         },
         "daemon_methods": [
             {"method": "status.get", "scope": "status:read"},
@@ -2106,6 +2115,7 @@ Ratspeak CLI commands:
   agent policy show|validate|set NAME
   agent policy defaults
   agent revoke NAME [--reason TEXT]
+  agent remove NAME
   agent rotate-token NAME
   identity get
   identity current

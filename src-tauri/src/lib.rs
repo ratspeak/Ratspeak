@@ -534,6 +534,7 @@ pub fn run() {
             ratspeak_tauri::commands::agents::create_agent,
             ratspeak_tauri::commands::agents::set_agent_grant,
             ratspeak_tauri::commands::agents::revoke_agent,
+            ratspeak_tauri::commands::agents::remove_agent,
             ratspeak_tauri::commands::agents::rotate_agent_token,
             ratspeak_tauri::commands::agents::api_agent_policy,
             ratspeak_tauri::commands::agents::api_agent_policy_defaults,

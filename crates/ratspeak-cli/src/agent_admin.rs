@@ -503,6 +503,37 @@ pub fn revoke_agent(profile: &Profile, name: &str, reason: Option<String>) -> Cl
     }))
 }
 
+pub fn remove_agent(profile: &Profile, name: &str) -> CliResult<Value> {
+    validate_agent_name(name)?;
+    let agent_root = agent_root_from_owner_data_dir(&profile.config.data_dir, name);
+    let path = agent_manifest_path(&agent_root);
+    let manifest = read_agent_manifest(&path)?
+        .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
+    let runtime = agent_runtime_status_for_manifest(&manifest);
+    append_agent_admin_audit(
+        &agent_root,
+        "agent.removed",
+        json!({
+            "agent": manifest.name,
+            "profile_root": agent_root.clone(),
+            "identity_hash": manifest.identity_hash,
+            "runtime": runtime,
+        }),
+    );
+    std::fs::remove_dir_all(&agent_root).map_err(|e| {
+        CliError::failed(format!(
+            "failed to remove agent profile {}: {e}",
+            agent_root.display()
+        ))
+    })?;
+    Ok(json!({
+        "agent": manifest.name,
+        "removed": true,
+        "profile_root": agent_root.clone(),
+        "runtime_note": "agent profile, token, adapter config, action queue, and local audit were removed",
+    }))
+}
+
 pub fn rotate_agent_token(profile: &Profile, name: &str) -> CliResult<Value> {
     validate_agent_name(name)?;
     let agent_root = agent_root_from_owner_data_dir(&profile.config.data_dir, name);
@@ -931,11 +962,6 @@ pub fn agent_presets_payload() -> Value {
             "description": "Network status, announces, and path requests behind policy.",
             "scopes": agent_preset_scopes("network-helper").unwrap_or_default(),
         },
-        "openclaw-basic": {
-            "label": "OpenClaw basic",
-            "description": "OpenClaw-ready reply assistant contract.",
-            "scopes": agent_preset_scopes("openclaw-basic").unwrap_or_default(),
-        },
     })
 }
 
@@ -968,7 +994,9 @@ pub fn agent_preset_scopes(preset: &str) -> CliResult<Vec<String>> {
             "read:messages",
             "read:events",
         ],
-        "reply-assistant" | "openclaw-basic" => vec![
+        // TODO(agent-runtimes): Re-enable an OpenClaw-specific preset such as
+        // openclaw-basic when the adapter graduates to supported product.
+        "reply-assistant" => vec![
             "read:status",
             "read:identity",
             "read:contacts",
@@ -1002,7 +1030,7 @@ pub fn agent_preset_scopes(preset: &str) -> CliResult<Vec<String>> {
         ],
         other => {
             return Err(CliError::usage(format!(
-                "unsupported agent preset: {other}; expected inbox-reader, reply-assistant, media-assistant, network-helper, or openclaw-basic"
+                "unsupported agent preset: {other}; expected inbox-reader, reply-assistant, media-assistant, or network-helper"
             )));
         }
     };
@@ -1443,28 +1471,49 @@ fn onboarding_contract_payload(profile: &Profile) -> Value {
 
 pub fn agent_adapter_catalog_payload() -> Value {
     json!({
-        "order": ["venice", "openrouter", "openclaw"],
+        "order": ["venice"],
         "providers": {
             "venice": {
                 "label": "Venice API",
                 "description": "OpenAI-compatible Venice inference through a local bridge or agent runtime.",
                 "base_url": "https://api.venice.ai/api/v1",
-                "secret_env": "VENICE_API_KEY"
-            },
-            "openrouter": {
-                "label": "OpenRouter API",
-                "description": "OpenAI-compatible OpenRouter inference through a local bridge or agent runtime.",
-                "base_url": "https://openrouter.ai/api/v1",
-                "secret_env": "OPENROUTER_API_KEY"
-            },
-            "openclaw": {
-                "label": "OpenClaw",
-                "description": "Local OpenClaw bot or skill wrapper that reads the Ratspeak connection kit.",
-                "secret": "none",
-                "default_command": ["openclaw", "ratspeak", "run", "--connection-kit", "<connection-kit.json>"]
+                "secret_env": "VENICE_API_KEY",
+                "default_model": "zai-org-glm-5",
+                "models": venice_text_models_payload(),
+                "model_discovery": {
+                    "endpoint": "https://api.venice.ai/api/v1/models",
+                    "query": { "type": "text" },
+                    "requires_auth": true,
+                    "note": "Venice supports authenticated text model discovery; the Settings UI seeds the picker with Venice quickstart model IDs and allows a custom model ID."
+                }
             }
         }
     })
+}
+
+fn venice_text_models_payload() -> Value {
+    json!([
+        {
+            "id": "zai-org-glm-5",
+            "label": "zai-org-glm-5",
+            "description": "Venice quickstart default for most text use cases."
+        },
+        {
+            "id": "kimi-k2-6",
+            "label": "kimi-k2-6",
+            "description": "Venice quickstart reasoning choice for more complex tasks."
+        },
+        {
+            "id": "claude-opus-4-8",
+            "label": "claude-opus-4-8",
+            "description": "Venice quickstart high-intelligence model for complex tasks."
+        },
+        {
+            "id": "venice-uncensored-1-2",
+            "label": "venice-uncensored-1-2",
+            "description": "Venice quickstart uncensored text model."
+        }
+    ])
 }
 
 fn agent_setup_checklist(manifest: &AgentManifest) -> Value {
@@ -1623,19 +1672,13 @@ fn adapter_public_payload_for_manifest(manifest: &AgentManifest) -> Value {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(_) => {
-            return adapter_setup_needed_payload(
-                None,
-                "Choose Venice, OpenRouter, or OpenClaw to finish setup.",
-            );
+            return adapter_setup_needed_payload(None, "Choose Venice to finish setup.");
         }
     };
     let config: AgentAdapterConfig = match serde_json::from_slice(&bytes) {
         Ok(config) => config,
         Err(_) => {
-            return adapter_setup_needed_payload(
-                None,
-                "Choose Venice, OpenRouter, or OpenClaw to finish setup.",
-            );
+            return adapter_setup_needed_payload(None, "Choose Venice to finish setup.");
         }
     };
     match validate_adapter_config(&config) {
@@ -1644,7 +1687,7 @@ fn adapter_public_payload_for_manifest(manifest: &AgentManifest) -> Value {
             let legacy_provider = config.provider.trim();
             adapter_setup_needed_payload(
                 (!legacy_provider.is_empty()).then(|| legacy_provider.to_string()),
-                "Choose Venice, OpenRouter, or OpenClaw to finish setup.",
+                "Choose Venice to finish setup.",
             )
         }
     }
@@ -1671,34 +1714,20 @@ struct AdapterDefaults {
 
 fn adapter_defaults(provider: &str) -> AdapterDefaults {
     match provider {
-        "openclaw" => AdapterDefaults {
-            label: "OpenClaw",
-            base_url: None,
-            secret_env: None,
-            command: vec![
-                "openclaw".into(),
-                "ratspeak".into(),
-                "run".into(),
-                "--connection-kit".into(),
-                "<connection-kit.json>".into(),
-            ],
-        },
         "venice" => AdapterDefaults {
             label: "Venice API",
             base_url: Some("https://api.venice.ai/api/v1"),
             secret_env: Some("VENICE_API_KEY"),
             command: Vec::new(),
         },
-        "openrouter" => AdapterDefaults {
-            label: "OpenRouter API",
-            base_url: Some("https://openrouter.ai/api/v1"),
-            secret_env: Some("OPENROUTER_API_KEY"),
-            command: Vec::new(),
-        },
+        // TODO(agent-runtimes): Re-enable OpenRouter after Venice is stable and
+        // the owner-facing setup flow can explain multiple remote providers.
+        // TODO(agent-runtimes): Re-enable OpenClaw after the local adapter is a
+        // supported runtime rather than a generic connection-kit handoff.
         _ => AdapterDefaults {
-            label: "OpenClaw",
-            base_url: None,
-            secret_env: None,
+            label: "Venice API",
+            base_url: Some("https://api.venice.ai/api/v1"),
+            secret_env: Some("VENICE_API_KEY"),
             command: Vec::new(),
         },
     }
@@ -1707,9 +1736,9 @@ fn adapter_defaults(provider: &str) -> AdapterDefaults {
 fn normalize_adapter_provider(provider: &str) -> CliResult<String> {
     let provider = provider.trim().to_ascii_lowercase();
     match provider.as_str() {
-        "openclaw" | "venice" | "openrouter" => Ok(provider),
+        "venice" => Ok(provider),
         _ => Err(CliError::usage(format!(
-            "unsupported agent adapter provider: {provider}"
+            "unsupported agent adapter provider: {provider}; expected venice"
         ))),
     }
 }

@@ -1,18 +1,19 @@
 # Ratspeak Agent Onboarding Runbook
 
-This is the beta contract for local agents and bot adapters such as OpenClaw.
-Adapters should drive `ratspeakctl` and `ratspeakd`; Ratspeak does not embed an
-OpenClaw-specific runtime.
+This is the beta contract for Venice-backed local agents. Adapters should drive
+`ratspeakctl` and `ratspeakd`; Ratspeak stores the Venice adapter metadata and
+connection kit, but never stores a raw Venice API key.
+
+OpenRouter and OpenClaw are intentionally deferred until the Venice path is
+stable enough for non-developer owners.
 
 ## Owner Setup
 
 For non-developer owners, start in the Ratspeak app:
 
 1. Open Settings > Agents.
-2. Choose Add, name the agent, choose what will run it, and optionally choose
-   the first allowed contact.
-3. Configure the runtime adapter profile. The current beta options are
-   Venice API, OpenRouter API, and OpenClaw.
+2. Choose Add, name the agent, and optionally choose the first allowed contact.
+3. Configure Venice by choosing the API key environment variable and model.
 4. Start the agent daemon from the panel or with the command shown in the
    connection kit.
 5. Copy the redacted connection kit for the local adapter or supervisor.
@@ -25,8 +26,12 @@ It does not include the raw token, agent recovery phrase, or provider API key.
 The local agent process reads the private Ratspeak token file directly.
 Provider secrets should be passed to the adapter through an environment variable
 or private file reference. The Venice adapter default uses
-`https://api.venice.ai/api/v1` and the `VENICE_API_KEY` environment variable;
-OpenRouter uses `https://openrouter.ai/api/v1` and `OPENROUTER_API_KEY`.
+`https://api.venice.ai/api/v1`, the `VENICE_API_KEY` environment variable, and
+the `zai-org-glm-5` model. The Settings UI also offers `kimi-k2-6`,
+`claude-opus-4-8`, `venice-uncensored-1-2`, and a custom Venice model ID.
+Venice model discovery is available at `/api/v1/models?type=text` with bearer
+authentication; Ratspeak uses a static seed list for first beta setup so the
+owner does not need to expose the raw API key to the desktop UI.
 
 Desktop builds package `ratspeakd` and `ratspeakctl` as sidecars, so a kit
 copied from the app can point an adapter at the app-local binary paths instead
@@ -44,9 +49,8 @@ ratspeakctl --data-dir OWNER_PROFILE agent onboard my-agent \
 `agent onboard` creates an isolated agent profile and identity, writes a private
 agent token, enables owner approval, writes the action policy, and returns
 machine-readable `next.steps[].argv` arrays. For image/file-capable agents use
-`--preset media-assistant`. For OpenClaw-style text agents use
-`--preset openclaw-basic`. Recovery material is redacted from default output so
-the JSON can be handed to a local adapter; owners can pass `--show-recovery`
+`--preset media-assistant`. Recovery material is redacted from default output
+so the JSON can be handed to a local adapter; owners can pass `--show-recovery`
 only when they are capturing the phrase for themselves and will not share that
 payload with the agent.
 
@@ -58,10 +62,16 @@ ratspeakctl --data-dir OWNER_PROFILE agent policy validate my-agent
 ratspeakctl --data-dir OWNER_PROFILE agent policy set my-agent --max-text-chars 1500
 ```
 
-The GUI shows common controls first: provider setup, daemon state, connection
-kit copy, allowed contacts, manual review vs trusted replies, message/file
-limits, approvals, file review, and audit. The full policy engine remains under
-Advanced guardrails for operators who need exact tuning.
+Owners can remove a local agent profile when they are done testing:
+
+```sh
+ratspeakctl --data-dir OWNER_PROFILE agent remove my-agent
+```
+
+The GUI shows common controls first: Venice setup, daemon state, connection kit
+copy, allowed contacts, manual review vs trusted replies, practical safety,
+approvals, file review, audit, and remove agent. The full policy engine remains
+under Safety for operators who need exact tuning.
 
 Advanced guardrails include:
 
