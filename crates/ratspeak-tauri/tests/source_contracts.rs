@@ -3578,6 +3578,7 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
     let root = repo_root();
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let settings_html = read_source(root.join("dashboard/index.html")).expect("dashboard html");
     let agent_admin =
         read_source(root.join("crates/ratspeak-cli/src/agent_admin.rs")).expect("agent admin");
     let agents_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/agents.rs"))
@@ -3590,13 +3591,17 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         "venice",
         "openrouter",
         "OPENROUTER_API_KEY",
-        "Agent Runtime",
+        "Finish setup for this agent.",
+        "Provider",
+        "Access",
+        "Autonomy",
+        "Connection",
         "Start",
         "Copy kit",
         "Agent connection kit",
         "API Key Variable",
-        "Advanced guardrails",
-        "settings-agent-primary-grid",
+        "Advanced",
+        "settings-agent-setup-list",
         "api_agent_runtime",
         "start_agent_daemon",
         "set_agent_adapter",
@@ -3604,6 +3609,19 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         assert!(
             settings_js.contains(required),
             "Settings > Agents is missing runtime onboarding UI token: {required}"
+        );
+    }
+    for required in [
+        "Connect Venice, OpenRouter, or OpenClaw",
+        "Setup",
+        "settings-agent-activity",
+        "Activity",
+        "Approvals",
+        "Audit",
+    ] {
+        assert!(
+            settings_html.contains(required),
+            "Settings > Agents shell is missing lean onboarding token: {required}"
         );
     }
     for removed in [
@@ -3636,6 +3654,8 @@ fn agent_settings_has_complete_runtime_onboarding_surface() {
         "VENICE_API_KEY",
         "OPENROUTER_API_KEY",
         "adapter_public_payload",
+        "adapter_public_payload_for_manifest",
+        "adapter_setup_needed_payload",
         "approval_target_data_dir",
         "open_profile_with_pool_size",
     ] {
@@ -3670,86 +3690,69 @@ fn agent_settings_exposes_the_guardrails_users_need_before_auto_approval() {
     let agent_admin =
         read_source(root.join("crates/ratspeak-cli/src/agent_admin.rs")).expect("agent admin");
 
-    for policy_key in [
+    for ui_token in [
+        "Agent Safety",
+        "Trusted replies",
+        "Only reply after a message",
+        "Runaway protection",
+        "Review files and images",
+        "Review network actions",
+        "require_owner_approval",
+        "auto_approval_enabled",
+        "auto_approval_requires_causal_context",
+        "max_pending_actions",
+        "max_actions_per_hour",
+        "auto_approval_max_actions_per_hour",
+        "require_owner_approval_for_attachments",
+        "require_owner_approval_for_network",
+    ] {
+        assert!(
+            settings_js.contains(ui_token),
+            "Settings > Agents is missing lean safety control: {ui_token}"
+        );
+    }
+
+    for backend_key in [
         "require_owner_approval",
         "auto_approval_enabled",
         "auto_approval_allowed_action_kinds",
-        "auto_approval_allowed_contacts",
-        "auto_approval_allowed_conversations",
-        "auto_approval_allowed_delivery_methods",
-        "auto_approval_unknown_contacts",
         "auto_approval_requires_causal_context",
         "auto_approval_requires_verified_causal_context",
         "auto_approval_allow_attachments",
-        "auto_approval_max_text_chars",
-        "auto_approval_max_text_bytes",
-        "auto_approval_max_attachment_bytes",
         "auto_approval_max_actions_per_hour",
-        "auto_approval_max_actions_per_day",
-        "auto_approval_max_messages_per_contact_hour",
-        "auto_approval_max_messages_per_contact_day",
         "max_pending_actions",
         "max_actions_per_hour",
-        "max_actions_per_day",
-        "max_messages_per_contact_hour",
-        "max_messages_per_contact_day",
-        "per_contact_cooldown_secs",
-        "inbound_loop_window_secs",
-        "max_outbound_per_contact_window",
-        "require_causal_context_for_outbound",
-        "require_verified_causal_context",
-        "max_causal_age_secs",
-        "causal_subject_must_match",
-        "causal_event_must_be_inbound",
-        "max_actions_per_causal_event",
-        "max_actions_per_causal_message",
-        "max_text_chars",
-        "max_text_bytes",
-        "denied_text_substrings",
-        "reject_control_chars",
-        "allow_message_attachments",
-        "allow_message_images",
         "require_owner_approval_for_attachments",
-        "max_attachment_bytes",
-        "max_file_bytes",
-        "max_image_bytes",
-        "max_attachments_per_action",
-        "allow_agent_file_paths",
+        "require_owner_approval_for_network",
+    ] {
+        assert!(
+            agent_admin.contains(backend_key),
+            "shared agent policy setter is missing {backend_key}"
+        );
+    }
+
+    for hidden_from_settings in [
+        "max_text_bytes",
+        "max_title_chars",
+        "max_title_bytes",
+        "denied_text_substrings",
         "allowed_source_roots",
         "allowed_attachment_mime_prefixes",
         "denied_attachment_mime_prefixes",
-        "allow_contact_mutations",
-        "require_owner_approval_for_contact_mutations",
-        "allow_conversation_mutations",
-        "allow_conversation_delete",
-        "require_owner_approval_for_conversation_mutations",
-        "allow_identity_announce",
-        "allow_path_request",
-        "require_owner_approval_for_network",
-        "max_network_actions_per_hour",
-        "max_announces_per_hour",
-        "min_announce_interval_secs",
-        "max_path_requests_per_hour",
-        "min_path_request_interval_secs",
-        "allow_unknown_path_requests",
         "allowed_path_request_hashes",
-        "allow_forced_propagated_delivery",
-        "allow_static_propagation_nodes_only",
         "allowed_propagation_node_hashes",
-        "deny_execute_on_policy_revision_change",
-        "deny_execute_on_grant_revision_change",
         "blocked_action_kinds",
         "allowed_delivery_methods",
-        "default_expires_secs",
-        "max_expires_secs",
+        "max_messages_per_contact_hour",
+        "max_messages_per_contact_day",
+        "max_causal_age_secs",
+        "max_announces_per_hour",
+        "max_path_requests_per_hour",
+        "min_path_request_interval_secs",
     ] {
         assert!(
-            settings_js.contains(policy_key),
-            "Settings > Agents is missing guardrail control for {policy_key}"
-        );
-        assert!(
-            agent_admin.contains(policy_key),
-            "shared agent policy setter is missing {policy_key}"
+            !settings_js.contains(hidden_from_settings),
+            "Settings > Agents should not expose technical guardrail knob: {hidden_from_settings}"
         );
     }
 }

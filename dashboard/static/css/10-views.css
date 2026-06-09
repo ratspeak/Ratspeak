@@ -1603,6 +1603,7 @@
 .settings-agent-empty,
 .settings-agent-row,
 .settings-agent-summary,
+.settings-agent-activity,
 .settings-agent-approval-row,
 .settings-agent-audit-row {
     border: 1px solid var(--border-row);
@@ -1699,9 +1700,17 @@
 }
 
 .settings-agent-row-status.status-active,
-.settings-agent-state {
+.settings-agent-row-status.status-ready,
+.settings-agent-state,
+.settings-agent-state.status-ready {
     background: rgba(var(--status-online-rgb), 0.12);
     color: var(--status-online);
+}
+
+.settings-agent-row-status.status-setup,
+.settings-agent-state.status-setup {
+    background: var(--status-warning-bg);
+    color: var(--status-warning);
 }
 
 .settings-agent-row-status.status-runtime-running,
@@ -1752,6 +1761,78 @@
 
 .settings-agent-summary-head {
     margin-bottom: var(--space-4);
+}
+
+.settings-agent-setup-note {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-bottom: var(--space-4);
+    padding: var(--space-4);
+    border: 1px solid var(--border-row);
+    border-radius: var(--radius-sm);
+    background: var(--surface-panel);
+}
+
+.settings-agent-setup-note strong {
+    color: var(--text-primary);
+    font-size: var(--type-row-title-size);
+    line-height: 1.25;
+}
+
+.settings-agent-setup-note span {
+    color: var(--text-secondary);
+    font-size: var(--type-row-meta-size);
+    line-height: 1.4;
+}
+
+.settings-agent-setup-list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border-row);
+    border-radius: var(--radius-sm);
+    background: var(--surface-panel);
+    overflow: hidden;
+}
+
+.settings-agent-setup-row {
+    min-width: 0;
+    min-height: 72px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--border-row);
+}
+
+.settings-agent-setup-row:last-child {
+    border-bottom: none;
+}
+
+.settings-agent-setup-row.state-setup {
+    background: color-mix(in srgb, var(--status-warning-bg) 36%, transparent);
+}
+
+.settings-agent-setup-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.settings-agent-setup-copy strong {
+    color: var(--text-primary);
+    font-size: var(--type-row-title-size);
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
+.settings-agent-setup-copy span:last-child {
+    color: var(--text-muted);
+    font-size: var(--type-row-meta-size);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
 }
 
 .settings-agent-action-row {
@@ -1932,7 +2013,8 @@
 }
 
 .settings-agent-technical,
-.settings-agent-advanced {
+.settings-agent-advanced,
+.settings-agent-activity {
     min-width: 0;
     border: 1px solid var(--border-row);
     border-radius: var(--radius-sm);
@@ -1945,21 +2027,41 @@
 
 .settings-agent-advanced {
     padding: 0 var(--space-5);
+    margin-top: var(--space-3);
 }
 
 .settings-agent-technical summary,
-.settings-agent-advanced summary {
+.settings-agent-advanced summary,
+.settings-agent-activity summary {
     min-height: 48px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
     cursor: pointer;
     color: var(--text-primary);
     font-size: var(--type-row-title-size);
     font-weight: var(--type-row-title-weight);
 }
 
+.settings-agent-advanced summary span:last-child,
+.settings-agent-activity summary span:last-child {
+    color: var(--text-muted);
+    font-size: var(--type-row-meta-size);
+    font-weight: 500;
+    text-align: right;
+}
+
 .settings-agent-technical summary {
     padding: 0 var(--space-4);
+}
+
+.settings-agent-activity {
+    padding: 0 var(--space-5);
+}
+
+.settings-agent-activity-body {
+    padding-bottom: var(--space-5);
 }
 
 .settings-agent-technical .settings-agent-facts {
@@ -1967,11 +2069,15 @@
     margin-top: 0;
 }
 
+.settings-agent-advanced-body {
+    padding-bottom: var(--space-5);
+}
+
 .settings-agent-advanced-copy {
     color: var(--text-muted);
     font-size: var(--type-row-meta-size);
     line-height: 1.35;
-    padding-bottom: var(--space-4);
+    padding: var(--space-4) 0;
 }
 
 .settings-agent-fact {

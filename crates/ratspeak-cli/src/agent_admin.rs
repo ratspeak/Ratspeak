@@ -342,13 +342,7 @@ pub fn show_agent_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
             Value::Array(Vec::new())
         }
     };
-    let adapter = match agent_adapter_for_manifest(&manifest) {
-        Ok(adapter) => adapter_public_payload(adapter),
-        Err(error) => {
-            health_errors.push(health_error("adapter", &error));
-            adapter_public_payload(None)
-        }
-    };
+    let adapter = adapter_public_payload_for_manifest(&manifest);
     Ok(json!({
         "agent": manifest,
         "summary": summary,
@@ -723,22 +717,12 @@ pub fn list_agent_audit(profile: &Profile, agent: Option<&str>, limit: usize) ->
 
 pub fn show_agent_adapter(profile: &Profile, name: &str) -> CliResult<Value> {
     let manifest = show_agent_manifest(profile, name)?;
-    let adapter_result = agent_adapter_for_manifest(&manifest);
-    let (adapter, health) = match adapter_result {
-        Ok(adapter) => (
-            adapter_public_payload(adapter),
-            json!({ "ok": true, "errors": [] }),
-        ),
-        Err(error) => (
-            adapter_public_payload(None),
-            json!({ "ok": false, "errors": [health_error("adapter", &error)] }),
-        ),
-    };
+    let adapter = adapter_public_payload_for_manifest(&manifest);
     Ok(json!({
         "agent": manifest.name,
         "adapter": adapter,
         "catalog": agent_adapter_catalog_payload(),
-        "health": health,
+        "health": { "ok": true, "errors": [] },
     }))
 }
 
@@ -868,7 +852,7 @@ pub fn connection_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
     let commands = agent_binary_commands();
     let ratspeakd = commands.ratspeakd.clone();
     let ratspeakctl = commands.ratspeakctl.clone();
-    let adapter = adapter_public_payload(agent_adapter_for_manifest(&manifest).ok().flatten());
+    let adapter = adapter_public_payload_for_manifest(&manifest);
     Ok(json!({
         "format": "ratspeak.agent-connection.v1",
         "agent": manifest.name,
@@ -1364,7 +1348,7 @@ fn agent_summary(manifest: &AgentManifest) -> CliResult<Value> {
     let drafts =
         agent_actions::list_actions(data_dir, None, Some(agent_actions::STATE_DRAFT))?.len();
     let policy = agent_actions::ensure_write_policy(data_dir)?;
-    let adapter = adapter_public_payload(agent_adapter_for_manifest(manifest)?);
+    let adapter = adapter_public_payload_for_manifest(manifest);
     Ok(json!({
         "name": manifest.name,
         "display_name": manifest.display_name,
@@ -1408,7 +1392,7 @@ fn fallback_agent_summary(manifest: &AgentManifest, error: Option<&CliError>) ->
         "policy_revision": Value::Null,
         "auto_approval_enabled": false,
         "require_owner_approval": true,
-        "adapter": adapter_public_payload(agent_adapter_for_manifest(manifest).ok().flatten()),
+        "adapter": adapter_public_payload_for_manifest(manifest),
         "runtime": agent_runtime_status_for_manifest(manifest),
         "setup": agent_setup_checklist(manifest),
         "health": {
@@ -1629,6 +1613,53 @@ fn adapter_public_payload(config: Option<AgentAdapterConfig>) -> Value {
             }
         }),
     }
+}
+
+fn adapter_public_payload_for_manifest(manifest: &AgentManifest) -> Value {
+    let path = agent_adapter_path(&manifest.profile_root);
+    if !path.exists() {
+        return adapter_public_payload(None);
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return adapter_setup_needed_payload(
+                None,
+                "Choose Venice, OpenRouter, or OpenClaw to finish setup.",
+            );
+        }
+    };
+    let config: AgentAdapterConfig = match serde_json::from_slice(&bytes) {
+        Ok(config) => config,
+        Err(_) => {
+            return adapter_setup_needed_payload(
+                None,
+                "Choose Venice, OpenRouter, or OpenClaw to finish setup.",
+            );
+        }
+    };
+    match validate_adapter_config(&config) {
+        Ok(()) => adapter_public_payload(Some(config)),
+        Err(_) => {
+            let legacy_provider = config.provider.trim();
+            adapter_setup_needed_payload(
+                (!legacy_provider.is_empty()).then(|| legacy_provider.to_string()),
+                "Choose Venice, OpenRouter, or OpenClaw to finish setup.",
+            )
+        }
+    }
+}
+
+fn adapter_setup_needed_payload(legacy_provider: Option<String>, reason: &str) -> Value {
+    let mut payload = adapter_public_payload(None);
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("needs_setup".into(), Value::Bool(true));
+        object.insert("needs_setup_reason".into(), Value::String(reason.into()));
+        if let Some(provider) = legacy_provider {
+            object.insert("legacy_provider".into(), Value::String(provider));
+        }
+    }
+    payload
 }
 
 struct AdapterDefaults {

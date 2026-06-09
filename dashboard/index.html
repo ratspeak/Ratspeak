@@ -1136,7 +1136,7 @@
                             <div class="settings-row">
                                 <div class="settings-row-info">
                                     <span class="settings-row-label">Agent Access</span>
-                                    <span class="settings-row-desc" id="settings-agents-summary">Create an agent identity with scoped access to Ratspeak.</span>
+                                    <span class="settings-row-desc" id="settings-agents-summary">Connect Venice, OpenRouter, or OpenClaw to a scoped Ratspeak identity.</span>
                                 </div>
                                 <div class="settings-row-actions">
                                     <button class="selector-badge selector-badge-no-caret" id="settings-refresh-agents-btn">Refresh</button>
@@ -1147,31 +1147,38 @@
                                 <div class="inline-hint">Loading agents...</div>
                             </div>
 
-                            <div class="settings-panel-section-title">Selected Agent</div>
+                            <div class="settings-panel-section-title">Setup</div>
                             <div id="settings-agent-detail" class="settings-agent-detail">
-                                <div class="inline-hint">Select an agent to review permissions, approvals, and guardrails.</div>
+                                <div class="inline-hint">Select or add an agent to finish setup.</div>
                             </div>
 
-                            <div class="settings-panel-section-title">Approvals</div>
-                            <div class="settings-row">
-                                <div class="settings-row-info">
-                                    <span class="settings-row-label">Approval Queue</span>
-                                    <span class="settings-row-desc" id="settings-agent-approvals-desc">Review pending agent actions before they run.</span>
-                                </div>
-                                <div class="settings-row-actions">
-                                    <button class="selector-badge" id="settings-agent-approval-state-btn">Pending</button>
-                                    <button class="selector-badge selector-badge-no-caret" id="settings-refresh-agent-approvals-btn">Refresh</button>
-                                    <button class="selector-badge selector-badge-no-caret" id="settings-expire-agent-actions-btn">Expire</button>
-                                </div>
-                            </div>
-                            <div id="settings-agent-approvals-list" class="settings-agent-approvals-list">
-                                <div class="inline-hint">No pending approvals.</div>
-                            </div>
+                            <details class="settings-agent-activity" id="settings-agent-activity">
+                                <summary>
+                                    <span>Activity</span>
+                                    <span id="settings-agent-activity-summary">Approvals and recent agent events.</span>
+                                </summary>
+                                <div class="settings-agent-activity-body">
+                                    <div class="settings-row">
+                                        <div class="settings-row-info">
+                                            <span class="settings-row-label">Approvals</span>
+                                            <span class="settings-row-desc" id="settings-agent-approvals-desc">Review actions that are waiting for you.</span>
+                                        </div>
+                                        <div class="settings-row-actions">
+                                            <button class="selector-badge" id="settings-agent-approval-state-btn">Pending</button>
+                                            <button class="selector-badge selector-badge-no-caret" id="settings-refresh-agent-approvals-btn">Refresh</button>
+                                            <button class="selector-badge selector-badge-no-caret" id="settings-expire-agent-actions-btn">Expire</button>
+                                        </div>
+                                    </div>
+                                    <div id="settings-agent-approvals-list" class="settings-agent-approvals-list">
+                                        <div class="inline-hint">No pending approvals.</div>
+                                    </div>
 
-                            <div class="settings-panel-section-title">Audit</div>
-                            <div id="settings-agent-audit-list" class="settings-agent-audit-list">
-                                <div class="inline-hint">Agent audit entries appear here.</div>
-                            </div>
+                                    <div class="settings-panel-section-title">Audit</div>
+                                    <div id="settings-agent-audit-list" class="settings-agent-audit-list">
+                                        <div class="inline-hint">Agent audit entries appear here.</div>
+                                    </div>
+                                </div>
+                            </details>
                         </div>
                     </div>
 

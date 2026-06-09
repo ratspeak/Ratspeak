@@ -1224,12 +1224,14 @@
 
     .settings-agent-row,
     .settings-agent-summary-head,
+    .settings-agent-setup-row,
     .settings-agent-approval-row,
     .settings-agent-audit-row {
         align-items: flex-start;
     }
 
-    .settings-agent-row {
+    .settings-agent-row,
+    .settings-agent-setup-row {
         flex-wrap: wrap;
     }
 
@@ -1240,9 +1242,22 @@
     }
 
     .settings-agent-action-row,
+    .settings-agent-primary-actions,
     .settings-agent-approval-row .settings-row-actions {
         width: 100%;
         justify-content: flex-start;
+    }
+
+    .settings-agent-advanced summary,
+    .settings-agent-activity summary {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: var(--space-1);
+    }
+
+    .settings-agent-advanced summary span:last-child,
+    .settings-agent-activity summary span:last-child {
+        text-align: left;
     }
 
     .settings-agent-checklist {

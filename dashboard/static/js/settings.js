@@ -565,38 +565,64 @@ function renderAgentList() {
     if (!_settingsAgentsState.agents.length) {
         list.innerHTML = '<div class="settings-agent-empty">' +
             '<span class="settings-agent-empty-title">No agents yet</span>' +
-            '<span class="settings-agent-empty-copy">Add an agent to create its identity, scoped grant, local token file, and default guardrails.</span>' +
+            '<span class="settings-agent-empty-copy">Add an agent, choose Venice, OpenRouter, or OpenClaw, then choose who it can answer.</span>' +
         '</div>';
         return;
     }
 
     list.innerHTML = _settingsAgentsState.agents.map(function(agent) {
         var active = agent.name === _settingsAgentsState.selected;
-        var status = agent.status || 'active';
         var pending = agent.counts && agent.counts.pending_approval ? agent.counts.pending_approval : 0;
-        var auto = agent.auto_approval_enabled ? 'auto allowed' : 'manual review';
-        var adapter = agent.adapter && agent.adapter.configured ? agent.adapter.label : 'runtime not set';
-        var runtime = agent.runtime && agent.runtime.running ? 'running' : (agent.runtime && agent.runtime.state ? agent.runtime.state : 'stopped');
-        var health = agent.health && agent.health.ok === false ? ' · needs attention' : '';
+        var adapter = agent.adapter || {};
+        var needsSetup = agentNeedsSetup(agent);
+        var status = needsSetup ? 'setup' : (agent.status || 'ready');
+        var statusLabel = needsSetup ? 'setup' : (agent.status || 'ready');
+        var meta = [
+            shortHash(agent.identity_hash || '', 8, 4),
+            agentAdapterLabel(adapter),
+            agentPermissionListCopy(agent),
+            agent.auto_approval_enabled ? 'trusted replies' : 'review first'
+        ].filter(Boolean).join(' · ');
         return '<button class="settings-agent-row' + (active ? ' active' : '') + '" type="button" data-agent="' + escapeHtml(agent.name) + '">' +
             '<span class="settings-agent-row-main">' +
                 '<span class="settings-agent-row-name">' + escapeHtml(agent.display_name || agent.name) + '</span>' +
-                '<span class="settings-agent-row-meta">' + escapeHtml(shortHash(agent.identity_hash || '', 8, 4)) + ' · ' + escapeHtml(adapter) + ' · ' + escapeHtml(auto) + health + '</span>' +
+                '<span class="settings-agent-row-meta">' + escapeHtml(meta) + '</span>' +
             '</span>' +
-            '<span class="settings-agent-row-status status-' + escapeHtml(status) + '">' + escapeHtml(status) + '</span>' +
-            '<span class="settings-agent-row-status status-runtime-' + escapeHtml(runtime) + '">' + escapeHtml(runtime) + '</span>' +
+            '<span class="settings-agent-row-status status-' + escapeHtml(status) + '">' + escapeHtml(statusLabel) + '</span>' +
             (pending ? '<span class="settings-agent-row-count">' + pending + '</span>' : '') +
         '</button>';
     }).join('');
+}
+
+function agentNeedsSetup(agent) {
+    var adapter = agent && agent.adapter ? agent.adapter : {};
+    if (!adapter.configured) return true;
+    var items = agent && agent.setup && Array.isArray(agent.setup.items) ? agent.setup.items : [];
+    var permission = items.find(function(item) { return item.key === 'permissions'; });
+    return !!(permission && !permission.complete);
+}
+
+function agentAdapterLabel(adapter) {
+    if (adapter && adapter.configured) return adapter.label || adapter.provider || 'Provider set';
+    if (adapter && adapter.legacy_provider) return 'finish provider setup';
+    return 'choose provider';
+}
+
+function agentPermissionListCopy(agent) {
+    var items = agent && agent.setup && Array.isArray(agent.setup.items) ? agent.setup.items : [];
+    var permission = items.find(function(item) { return item.key === 'permissions'; });
+    if (permission && permission.complete) return 'access set';
+    return 'choose contacts';
 }
 
 function renderAgentEmptyDetail() {
     var detail = document.getElementById('settings-agent-detail');
     var approvals = document.getElementById('settings-agent-approvals-list');
     var audit = document.getElementById('settings-agent-audit-list');
-    if (detail) detail.innerHTML = '<div class="inline-hint">Select or add an agent to review permissions, approvals, and guardrails.</div>';
+    if (detail) detail.innerHTML = '<div class="inline-hint">Select or add an agent to finish setup.</div>';
     if (approvals) approvals.innerHTML = '<div class="inline-hint">No pending approvals.</div>';
     if (audit) audit.innerHTML = '<div class="inline-hint">Agent audit entries appear here.</div>';
+    updateAgentActivitySummary();
 }
 
 function loadAgentDetail(name) {
@@ -638,63 +664,56 @@ function renderAgentDetail(payload) {
     var tokenFile = agent.auth && agent.auth.token_file ? agent.auth.token_file : '';
     var endpoint = runtime && runtime.endpoint_file ? runtime.endpoint_file : (payload.connection && payload.connection.daemon ? payload.connection.daemon.endpoint_file : '');
     var autoEnabled = !!(policy && policy.auto_approval_enabled);
-    var maxText = policy && policy.max_text_chars ? policy.max_text_chars : 4096;
-    var maxFile = policy && policy.max_file_bytes ? policy.max_file_bytes : 0;
-    var attachments = !!(policy && policy.allow_message_attachments);
+    var hasPermissionTarget = contacts.length || conversations.length || grant.unknown_contacts === 'allow';
+    var setupNeeded = !adapter.configured || !hasPermissionTarget;
+    var visibleHealth = healthErrors.filter(function(error) { return error.area !== 'adapter'; });
+    var providerValue = adapter.configured ? (adapter.label || adapter.provider || 'Provider set') : 'Choose provider';
+    var accessValue = agentAccessValue(contacts, conversations, grant);
+    var safetyValue = agentSafetySummary(policy || {});
+    var connectionActions = runtime.running
+        ? [['refresh-runtime', 'Refresh'], ['copy-bundle', 'Copy kit']]
+        : [['start-daemon', 'Start'], ['copy-bundle', 'Copy kit'], ['refresh-runtime', 'Refresh']];
+    var technicalDetails =
+        '<details class="settings-agent-technical">' +
+            '<summary>Connection details</summary>' +
+            '<div class="settings-agent-facts">' +
+                agentFact('Provider', adapter.provider || adapter.legacy_provider || 'Not set') +
+                agentFact('Model', adapter.model || 'Not set') +
+                agentFact('Base URL', adapter.base_url || 'Not set') +
+                agentFact('Secret', agentAdapterSecretLabel(adapter)) +
+                agentFact('Command', adapter.command && adapter.command.length ? adapter.command.join(' ') : 'Not set') +
+                agentFact('Daemon endpoint', endpoint || 'Not running') +
+                agentFact('Token file', tokenFile) +
+                agentFact('Scopes', scopes.length ? scopes.join(', ') : 'None') +
+                agentFact('Allowed contacts', contacts.length ? contacts.join(', ') : (grant.unknown_contacts === 'allow' ? 'All contacts' : 'None')) +
+                agentFact('Allowed conversations', conversations.length ? conversations.join(', ') : 'None') +
+            '</div>' +
+        '</details>';
     detail.innerHTML =
         '<div class="settings-agent-summary">' +
             '<div class="settings-agent-summary-head">' +
                 '<div>' +
                     '<div class="settings-agent-title">' + escapeHtml(agent.display_name || agent.name) + '</div>' +
-                    '<div class="settings-agent-subtitle">' + escapeHtml(agent.name) + ' · ' + escapeHtml(shortHash(agent.identity_hash || '', 8, 4)) + '</div>' +
+                    '<div class="settings-agent-subtitle">' + escapeHtml(shortHash(agent.identity_hash || '', 8, 4)) + ' · ' + escapeHtml(setupNeeded ? 'finish setup' : (runtime.running ? 'connected' : 'ready to connect')) + '</div>' +
                 '</div>' +
                 '<div class="settings-agent-state-stack">' +
-                    '<span class="settings-agent-state">' + escapeHtml(grant.status || 'active') + '</span>' +
-                    '<span class="settings-agent-state status-runtime-' + escapeHtml(runtime.state || 'stopped') + '">' + escapeHtml(runtime.running ? 'running' : (runtime.state || 'stopped')) + '</span>' +
+                    '<span class="settings-agent-state status-' + escapeHtml(setupNeeded ? 'setup' : 'ready') + '">' + escapeHtml(setupNeeded ? 'setup' : 'ready') + '</span>' +
                 '</div>' +
             '</div>' +
-            (healthErrors.length ? renderAgentHealth(healthErrors) : '') +
-            renderAgentSetupChecklist(payload.setup || (summary && summary.setup)) +
-            '<div class="settings-agent-primary-grid">' +
-                agentPrimaryPanel('Provider', adapter.configured ? (adapter.label || adapter.provider || 'Configured') : 'Not configured', agentAdapterRuntimeCopy(adapter), [
-                    ['configure-adapter', adapter.configured ? 'Edit' : 'Set up']
-                ]) +
-                agentPrimaryPanel('Connection', runtime.running ? 'Running' : 'Stopped', endpoint || 'Agent daemon is not running.', [
-                    ['start-daemon', runtime.running ? 'Running' : 'Start'],
-                    ['refresh-runtime', 'Refresh'],
-                    ['copy-bundle', 'Copy kit']
-                ]) +
-                agentPrimaryPanel('Access', contacts.length ? (contacts.length + ' allowed contact' + (contacts.length === 1 ? '' : 's')) : 'No contacts allowed', conversations.length ? (conversations.length + ' conversation rules') : 'Limit the agent before it can reply.', [
-                    ['add-contact', 'Allow contact']
-                ]) +
-                agentPrimaryPanel('Autonomy', autoEnabled ? 'Trusted replies' : 'Manual review', autoEnabled ? 'Routine replies can auto-approve inside guardrails.' : 'Every send waits for owner approval.', [
-                    ['set-autonomy-manual', 'Manual'],
-                    ['set-autonomy-routine', 'Trusted replies']
-                ]) +
+            (visibleHealth.length ? renderAgentHealth(visibleHealth) : '') +
+            '<div class="settings-agent-setup-note">' +
+                '<strong>' + escapeHtml(setupNeeded ? 'Finish setup for this agent.' : 'This agent is ready for a first run.') + '</strong>' +
+                '<span>' + escapeHtml(setupNeeded ? 'Pick a provider and choose at least one contact or conversation before the agent can answer.' : 'The agent has a provider, scoped access, and guardrails. Start the connection when your agent is ready.') + '</span>' +
             '</div>' +
-            '<div class="settings-agent-safety-strip">' +
-                '<div><span>Message limit</span><strong>' + escapeHtml(String(maxText)) + ' chars</strong></div>' +
-                '<div><span>Files</span><strong>' + escapeHtml(attachments ? formatAgentBytes(maxFile) : 'Off') + '</strong></div>' +
-                '<div><span>Fallback</span><strong>' + escapeHtml(policy && policy.require_owner_approval ? 'Review' : 'Policy only') + '</strong></div>' +
-                '<button class="selector-badge selector-badge-no-caret" data-agent-action="quick-limits">Edit limits</button>' +
+            '<div class="settings-agent-setup-list">' +
+                agentSetupRow('Provider', providerValue, agentAdapterRuntimeCopy(adapter), [['configure-adapter', adapter.configured ? 'Change' : 'Choose']], adapter.configured ? 'ready' : 'setup') +
+                agentSetupRow('Access', accessValue, hasPermissionTarget ? 'The agent is limited to the contacts or conversations you allow.' : 'Choose who this agent may read and answer.', [['add-contact', hasPermissionTarget ? 'Change' : 'Choose']], hasPermissionTarget ? 'ready' : 'setup') +
+                agentSetupRow('Autonomy', autoEnabled ? 'Trusted replies' : 'Review first', autoEnabled ? 'Routine replies can run inside guardrails. Riskier actions still wait.' : 'New actions wait for your approval until you trust this agent.', [['set-autonomy-manual', 'Review first'], ['set-autonomy-routine', 'Trusted replies']], autoEnabled ? 'ready' : 'review') +
+                agentSetupRow('Safety', safetyValue, 'Practical protections against loops, surprise sends, files, and network-facing actions.', [['quick-limits', 'Adjust']], 'ready') +
+                agentSetupRow('Connection', runtime.running ? 'Connected' : 'Not running', runtime.running ? 'The local agent daemon is running.' : 'Start the local daemon or copy the connection kit for your agent.', connectionActions, runtime.running ? 'ready' : 'review') +
             '</div>' +
-            '<details class="settings-agent-technical">' +
-                '<summary>Technical details</summary>' +
-                '<div class="settings-agent-facts">' +
-                    agentFact('Provider', adapter.provider || 'Not set') +
-                    agentFact('Model', adapter.model || 'Not set') +
-                    agentFact('Base URL', adapter.base_url || 'Not set') +
-                    agentFact('Secret', agentAdapterSecretLabel(adapter)) +
-                    agentFact('Command', adapter.command && adapter.command.length ? adapter.command.join(' ') : 'Not set') +
-                    agentFact('Daemon endpoint', endpoint || 'Not running') +
-                    agentFact('Token file', tokenFile) +
-                    agentFact('Scopes', scopes.length ? scopes.join(', ') : 'None') +
-                    agentFact('Allowed contacts', contacts.length ? contacts.join(', ') : (grant.unknown_contacts === 'allow' ? 'All contacts' : 'None')) +
-                    agentFact('Allowed conversations', conversations.length ? conversations.join(', ') : 'None') +
-                '</div>' +
-            '</details>' +
         '</div>' +
-        renderAgentAdvancedGuardrails(policy || {}, summary);
+        renderAgentAdvancedGuardrails(policy || {}, summary, technicalDetails);
 }
 
 function agentFact(label, value) {
@@ -704,9 +723,9 @@ function agentFact(label, value) {
     '</div>';
 }
 
-function agentPrimaryPanel(title, value, detail, actions) {
-    return '<section class="settings-agent-primary-panel">' +
-        '<div class="settings-agent-primary-copy">' +
+function agentSetupRow(title, value, detail, actions, state) {
+    return '<div class="settings-agent-setup-row state-' + escapeHtml(state || 'ready') + '">' +
+        '<div class="settings-agent-setup-copy">' +
             '<span class="settings-agent-fact-label">' + escapeHtml(title) + '</span>' +
             '<strong>' + escapeHtml(value || 'Not set') + '</strong>' +
             '<span>' + escapeHtml(detail || '') + '</span>' +
@@ -716,11 +735,35 @@ function agentPrimaryPanel(title, value, detail, actions) {
                 return '<button class="selector-badge selector-badge-no-caret" data-agent-action="' + escapeHtml(action[0]) + '">' + escapeHtml(action[1]) + '</button>';
             }).join('') +
         '</div>' +
-    '</section>';
+    '</div>';
+}
+
+function agentAccessValue(contacts, conversations, grant) {
+    if (grant && grant.unknown_contacts === 'allow') return 'All contacts';
+    if (contacts.length && conversations.length) {
+        return contacts.length + ' contact' + (contacts.length === 1 ? '' : 's') + ' · ' +
+            conversations.length + ' conversation' + (conversations.length === 1 ? '' : 's');
+    }
+    if (contacts.length) return contacts.length + ' allowed contact' + (contacts.length === 1 ? '' : 's');
+    if (conversations.length) return conversations.length + ' conversation' + (conversations.length === 1 ? '' : 's');
+    return 'Choose contacts';
+}
+
+function agentSafetySummary(policy) {
+    var pieces = [
+        policy && policy.auto_approval_enabled ? 'trusted replies' : 'review first',
+        'runaway stop',
+        policy && policy.require_owner_approval_for_attachments === false ? 'files allowed' : 'files reviewed',
+        policy && policy.require_owner_approval_for_network === false ? 'network allowed' : 'network reviewed'
+    ];
+    return pieces.join(' · ');
 }
 
 function agentAdapterRuntimeCopy(adapter) {
-    if (!adapter || !adapter.configured) return 'Choose Venice, OpenRouter, or OpenClaw.';
+    if (!adapter || !adapter.configured) {
+        if (adapter && adapter.legacy_provider) return 'This older setup needs to be updated to Venice, OpenRouter, or OpenClaw.';
+        return 'Choose Venice, OpenRouter, or OpenClaw.';
+    }
     if (adapter.provider === 'openclaw') return 'Local OpenClaw adapter uses the copied connection kit.';
     var parts = [];
     if (adapter.model) parts.push(adapter.model);
@@ -758,154 +801,54 @@ function agentAdapterSecretLabel(adapter) {
     return 'External or none';
 }
 
-function renderAgentAdvancedGuardrails(policy, summary) {
+function renderAgentAdvancedGuardrails(policy, summary, technicalDetails) {
     return '<details class="settings-agent-advanced">' +
-        '<summary>Advanced guardrails</summary>' +
-        '<div class="settings-agent-advanced-copy">Most users should use the simple autonomy and limit controls above. These options exist for operators who need exact policy tuning.</div>' +
-        renderAgentPolicyControls(policy, summary) +
+        '<summary><span>Safety</span><span>Practical protections against loops, surprise sends, and risky actions.</span></summary>' +
+        '<div class="settings-agent-advanced-body">' +
+            '<div class="settings-agent-advanced-copy">Access is handled above by choosing who the agent can talk to. These safety controls focus on runaway bugs, usage spikes, files, and network-facing actions.</div>' +
+            renderAgentPolicyControls(policy, summary) +
+            (technicalDetails || '') +
+        '</div>' +
     '</details>';
 }
 
 function renderAgentPolicyControls(policy, summary) {
-    var groups = [
-        {
-            title: 'Autonomy',
-            controls: [
-                { type: 'toggle', key: 'require_owner_approval', label: 'Manual review for unmatched actions', desc: 'When on, actions that do not match auto-approval still wait for owner review. Keep this on for first-run setups.', dangerOff: true },
-                { type: 'toggle', key: 'auto_approval_enabled', label: 'Auto approval', desc: 'Allow low-risk matching actions to skip the approval queue.' },
-                { type: 'list', key: 'auto_approval_allowed_action_kinds', label: 'Auto-approved action kinds', desc: 'Only these action kinds can auto-approve.' },
-                { type: 'list', key: 'auto_approval_allowed_contacts', label: 'Auto-approved contacts', desc: 'Optional contact allowlist for auto-approved actions.' },
-                { type: 'list', key: 'auto_approval_allowed_conversations', label: 'Auto-approved conversations', desc: 'Optional conversation allowlist for auto-approved actions.' },
-                { type: 'list', key: 'auto_approval_allowed_delivery_methods', label: 'Auto delivery methods', desc: 'Delivery methods allowed for auto-approved sends.' },
-                { type: 'choice', key: 'auto_approval_unknown_contacts', label: 'Auto unknown contacts', desc: 'How auto-approval treats contacts outside the allowlist.', choices: ['deny', 'allow'] },
-                { type: 'toggle', key: 'auto_approval_requires_causal_context', label: 'Auto causal context', desc: 'Auto-approved replies must point back to an inbound event or message.' },
-                { type: 'toggle', key: 'auto_approval_requires_verified_causal_context', label: 'Verified auto context', desc: 'Require the referenced event/message to match the conversation being answered.' },
-                { type: 'toggle', key: 'auto_approval_allow_attachments', label: 'Auto attachments', desc: 'Allow attachments inside the auto-approval lane.' },
-                { type: 'number', key: 'auto_approval_max_text_chars', label: 'Auto text characters', desc: 'Maximum characters for auto-approved text.' },
-                { type: 'bytes', key: 'auto_approval_max_text_bytes', label: 'Auto text bytes', desc: 'Maximum UTF-8 bytes for auto-approved text.' },
-                { type: 'bytes', key: 'auto_approval_max_attachment_bytes', label: 'Auto attachment bytes', desc: 'Maximum attachment bytes for auto-approved actions.' },
-                { type: 'number', key: 'auto_approval_max_actions_per_hour', label: 'Auto actions per hour', desc: 'Hourly cap for auto-approved actions.' },
-                { type: 'number', key: 'auto_approval_max_actions_per_day', label: 'Auto actions per day', desc: 'Daily cap for auto-approved actions.' },
-                { type: 'number', key: 'auto_approval_max_messages_per_contact_hour', label: 'Auto messages/contact hour', desc: 'Per-contact hourly cap inside the auto-approval lane.' },
-                { type: 'number', key: 'auto_approval_max_messages_per_contact_day', label: 'Auto messages/contact day', desc: 'Per-contact daily cap inside the auto-approval lane.' }
-            ]
-        },
-        {
-            title: 'Loop Prevention',
-            controls: [
-                { type: 'number', key: 'max_pending_actions', label: 'Maximum pending actions', desc: 'Backpressure cap for unreviewed agent work.' },
-                { type: 'number', key: 'max_actions_per_hour', label: 'Actions per hour', desc: 'Global hourly action cap.' },
-                { type: 'number', key: 'max_actions_per_day', label: 'Actions per day', desc: 'Global daily action cap.' },
-                { type: 'number', key: 'max_messages_per_contact_hour', label: 'Messages/contact hour', desc: 'Per-contact hourly message cap.' },
-                { type: 'number', key: 'max_messages_per_contact_day', label: 'Messages/contact day', desc: 'Per-contact daily message cap.' },
-                { type: 'number', key: 'per_contact_cooldown_secs', label: 'Contact cooldown seconds', desc: 'Minimum delay between sends to the same contact.' },
-                { type: 'number', key: 'inbound_loop_window_secs', label: 'Loop window seconds', desc: 'Window for detecting inbound-to-outbound feedback loops.' },
-                { type: 'number', key: 'max_outbound_per_contact_window', label: 'Loop window outbound cap', desc: 'Maximum outbound messages per contact during the loop window.' },
-                { type: 'toggle', key: 'require_causal_context_for_outbound', label: 'Require causal context', desc: 'Every outbound action must identify the event or message that caused it.' },
-                { type: 'toggle', key: 'require_verified_causal_context', label: 'Verify causal context', desc: 'Causal references must exist and pass policy validation.' },
-                { type: 'number', key: 'max_causal_age_secs', label: 'Maximum causal age seconds', desc: 'Reject actions tied to stale inbound context.' },
-                { type: 'toggle', key: 'causal_subject_must_match', label: 'Causal subject must match', desc: 'Replies must stay bound to the same contact or conversation.' },
-                { type: 'toggle', key: 'causal_event_must_be_inbound', label: 'Causal event must be inbound', desc: 'Outbound chains cannot self-trigger from outbound events.' },
-                { type: 'number', key: 'max_actions_per_causal_event', label: 'Actions per causal event', desc: 'Maximum actions a single event can cause.' },
-                { type: 'number', key: 'max_actions_per_causal_message', label: 'Actions per causal message', desc: 'Maximum actions a single message can cause.' }
-            ]
-        },
-        {
-            title: 'Messages & Content',
-            controls: [
-                { type: 'number', key: 'max_text_chars', label: 'Message text characters', desc: 'Hard character cap for agent-authored text.' },
-                { type: 'bytes', key: 'max_text_bytes', label: 'Message text bytes', desc: 'Hard byte cap for agent-authored text.' },
-                { type: 'number', key: 'max_title_chars', label: 'Title characters', desc: 'Hard character cap for titles or subjects.' },
-                { type: 'bytes', key: 'max_title_bytes', label: 'Title bytes', desc: 'Hard byte cap for titles or subjects.' },
-                { type: 'list', key: 'denied_text_substrings', label: 'Denied text fragments', desc: 'Case-sensitive text fragments that block staging.' },
-                { type: 'toggle', key: 'reject_control_chars', label: 'Reject control characters', desc: 'Block unexpected control characters in text payloads.' },
-                { type: 'toggle', key: 'allow_message_reactions', label: 'Reactions', desc: 'Allow message reaction actions.' },
-                { type: 'number', key: 'max_reactions_per_hour', label: 'Reactions per hour', desc: 'Hourly cap for reactions.' },
-                { type: 'number', key: 'max_reactions_per_day', label: 'Reactions per day', desc: 'Daily cap for reactions.' },
-                { type: 'number', key: 'max_reactions_per_message', label: 'Reactions per message', desc: 'Per-message reaction cap.' },
-                { type: 'toggle', key: 'reply_requires_existing_message', label: 'Reply needs existing message', desc: 'Replies must target a known message.' },
-                { type: 'toggle', key: 'reply_to_must_match_causal_message', label: 'Reply target must match cause', desc: 'Reply-to targets must match the causal message.' }
-            ]
-        },
-        {
-            title: 'Files & Images',
-            controls: [
-                { type: 'toggle', key: 'allow_message_attachments', label: 'Attachments', desc: 'Allow file attachments.' },
-                { type: 'toggle', key: 'allow_message_images', label: 'Images', desc: 'Allow image attachments.' },
-                { type: 'toggle', key: 'require_owner_approval_for_attachments', label: 'Attachment approval', desc: 'Require owner review before attachment sends.' },
-                { type: 'bytes', key: 'max_attachment_bytes', label: 'Attachment bytes/action', desc: 'Hard total attachment cap per action.' },
-                { type: 'bytes', key: 'max_file_bytes', label: 'File size', desc: 'Hard cap for staged files.' },
-                { type: 'bytes', key: 'max_image_bytes', label: 'Image size', desc: 'Hard cap for staged images.' },
-                { type: 'number', key: 'max_attachments_per_action', label: 'Attachments per action', desc: 'Maximum number of staged attachments.' },
-                { type: 'bytes', key: 'max_attachment_name_bytes', label: 'Attachment name bytes', desc: 'Maximum file name length in bytes.' },
-                { type: 'toggle', key: 'allow_agent_file_paths', label: 'Agent file paths', desc: 'Allow the agent to stage local files by path.' },
-                { type: 'list', key: 'allowed_source_roots', label: 'Allowed source roots', desc: 'Optional local directories allowed for path-based staging.' },
-                { type: 'list', key: 'allowed_attachment_mime_prefixes', label: 'Allowed MIME prefixes', desc: 'MIME prefixes accepted for attachments.' },
-                { type: 'list', key: 'denied_attachment_mime_prefixes', label: 'Denied MIME prefixes', desc: 'MIME prefixes always blocked.' }
-            ]
-        },
-        {
-            title: 'Contacts & Conversations',
-            controls: [
-                { type: 'toggle', key: 'allow_contact_mutations', label: 'Contact changes', desc: 'Allow contact add/edit/remove actions.' },
-                { type: 'toggle', key: 'require_owner_approval_for_contact_mutations', label: 'Contact approval', desc: 'Require owner review for contact changes.' },
-                { type: 'number', key: 'max_contact_mutations_per_hour', label: 'Contact changes/hour', desc: 'Hourly cap for contact changes.' },
-                { type: 'number', key: 'max_contact_mutations_per_day', label: 'Contact changes/day', desc: 'Daily cap for contact changes.' },
-                { type: 'toggle', key: 'allow_conversation_mutations', label: 'Conversation changes', desc: 'Allow conversation metadata changes.' },
-                { type: 'toggle', key: 'allow_conversation_delete', label: 'Conversation delete', desc: 'Allow conversation deletion actions.' },
-                { type: 'toggle', key: 'require_owner_approval_for_conversation_mutations', label: 'Conversation approval', desc: 'Require owner review for conversation changes.' },
-                { type: 'number', key: 'max_conversation_mutations_per_hour', label: 'Conversation changes/hour', desc: 'Hourly cap for conversation changes.' },
-                { type: 'number', key: 'max_conversation_mutations_per_day', label: 'Conversation changes/day', desc: 'Daily cap for conversation changes.' }
-            ]
-        },
-        {
-            title: 'Network & Propagation',
-            controls: [
-                { type: 'toggle', key: 'allow_identity_announce', label: 'Identity announces', desc: 'Allow agent-triggered announces.' },
-                { type: 'toggle', key: 'allow_path_request', label: 'Path requests', desc: 'Allow agent-triggered path requests.' },
-                { type: 'toggle', key: 'require_owner_approval_for_network', label: 'Network approval', desc: 'Require owner review for network-facing actions.' },
-                { type: 'number', key: 'max_network_actions_per_hour', label: 'Network actions/hour', desc: 'Hourly cap for network actions.' },
-                { type: 'number', key: 'max_network_actions_per_day', label: 'Network actions/day', desc: 'Daily cap for network actions.' },
-                { type: 'number', key: 'max_announces_per_hour', label: 'Announces per hour', desc: 'Hourly cap for announces.' },
-                { type: 'number', key: 'max_announces_per_day', label: 'Announces per day', desc: 'Daily cap for announces.' },
-                { type: 'number', key: 'min_announce_interval_secs', label: 'Announce interval seconds', desc: 'Minimum delay between announces.' },
-                { type: 'number', key: 'max_path_requests_per_hour', label: 'Path requests per hour', desc: 'Hourly cap for path requests.' },
-                { type: 'number', key: 'max_path_requests_per_day', label: 'Path requests per day', desc: 'Daily cap for path requests.' },
-                { type: 'number', key: 'min_path_request_interval_secs', label: 'Path request interval seconds', desc: 'Minimum delay between path requests.' },
-                { type: 'toggle', key: 'allow_unknown_path_requests', label: 'Unknown path requests', desc: 'Allow path requests outside the explicit allowlist.' },
-                { type: 'list', key: 'allowed_path_request_hashes', label: 'Path request hashes', desc: 'Optional path-request destination allowlist.' },
-                { type: 'toggle', key: 'allow_forced_propagated_delivery', label: 'Propagated delivery', desc: 'Allow agent actions to force Offline Inbox delivery.' },
-                { type: 'toggle', key: 'allow_static_propagation_nodes_only', label: 'Static propagation nodes only', desc: 'Restrict forced propagation to configured static nodes.' },
-                { type: 'list', key: 'allowed_propagation_node_hashes', label: 'Propagation nodes', desc: 'Optional Offline Inbox node allowlist.' }
-            ]
-        },
-        {
-            title: 'Execution Boundaries',
-            controls: [
-                { type: 'toggle', key: 'deny_execute_on_policy_revision_change', label: 'Recheck policy revisions', desc: 'Block stale approved actions after policy changes.' },
-                { type: 'toggle', key: 'deny_execute_on_grant_revision_change', label: 'Recheck grant revisions', desc: 'Block stale approved actions after grant changes.' },
-                { type: 'list', key: 'blocked_action_kinds', label: 'Blocked action kinds', desc: 'Action kinds denied before approval checks.' },
-                { type: 'list', key: 'allowed_delivery_methods', label: 'Delivery methods', desc: 'Delivery methods agents may request.' },
-                { type: 'number', key: 'default_expires_secs', label: 'Default expiry seconds', desc: 'Default lifetime for new actions.' },
-                { type: 'number', key: 'max_expires_secs', label: 'Maximum expiry seconds', desc: 'Maximum lifetime an agent can request.' }
-            ]
-        }
+    var controls = [
+        { type: 'toggle', key: 'require_owner_approval', label: 'Review unusual actions', desc: 'Anything outside the trusted-reply lane waits for you. Keep this on for normal use.', dangerOff: true },
+        { type: 'toggle', key: 'auto_approval_enabled', label: 'Trusted replies', desc: 'Allowed contacts can receive routine text replies without approving each one.' },
+        { type: 'toggle', key: 'auto_approval_requires_causal_context', label: 'Only reply after a message', desc: 'Trusted replies must be caused by an inbound message or event, which prevents self-triggered loops.' },
+        { type: 'runaway', key: 'runaway_protection', label: 'Runaway protection', desc: 'A simple safety preset that pauses the agent if actions pile up unusually fast.' },
+        { type: 'toggle', key: 'require_owner_approval_for_attachments', label: 'Review files and images', desc: 'Text can be routine, but file and image sends still wait for you.' },
+        { type: 'toggle', key: 'require_owner_approval_for_network', label: 'Review network actions', desc: 'Announces, path requests, and Offline Inbox behavior stay owner-reviewed.' }
     ];
-    return '<div class="settings-agent-policy-list">' + groups.map(function(group) {
-        return '<div class="settings-agent-policy-group">' +
-            '<div class="settings-panel-section-title">' + escapeHtml(group.title) + '</div>' +
-            group.controls.map(function(spec) { return policyControl(spec, policy); }).join('') +
-        '</div>';
-    }).join('') + '</div>';
+    return '<div class="settings-agent-policy-list">' +
+        controls.map(function(spec) { return policyControl(spec, policy); }).join('') +
+    '</div>';
 }
 
 function policyControl(spec, policy) {
     var value = policy ? policy[spec.key] : undefined;
+    if (spec.type === 'runaway') return policyRunawayPreset(spec, policy || {});
     if (spec.type === 'toggle') return policyToggle(spec.key, spec.label, spec.desc, !!value, !!spec.dangerOff);
     if (spec.type === 'bytes') return policyBytes(spec.key, spec.label, spec.desc, value || 0);
     if (spec.type === 'list') return policyList(spec.key, spec.label, spec.desc, Array.isArray(value) ? value : []);
     if (spec.type === 'choice') return policyChoice(spec.key, spec.label, spec.desc, value, spec.choices || []);
     return policyNumber(spec.key, spec.label, spec.desc, value);
+}
+
+function policyRunawayPreset(spec, policy) {
+    return '<div class="settings-row settings-agent-policy-row" data-policy-key="' + escapeHtml(spec.key) + '">' +
+        '<div class="settings-row-info"><span class="settings-row-label">' + escapeHtml(spec.label) + '</span><span class="settings-row-desc">' + escapeHtml(spec.desc) + '</span></div>' +
+        '<button class="selector-badge" data-agent-safety-preset="runaway">' + escapeHtml(agentRunawayProtectionLabel(policy)) + '</button>' +
+    '</div>';
+}
+
+function agentRunawayProtectionLabel(policy) {
+    var pending = Number(policy.max_pending_actions || 0);
+    var hourly = Number(policy.max_actions_per_hour || 0);
+    if (pending <= 10 || hourly <= 20) return 'Strict';
+    if (pending >= 100 || hourly >= 240) return 'Relaxed';
+    return 'Normal';
 }
 
 function policyToggle(key, label, desc, checked) {
@@ -957,6 +900,11 @@ function handleAgentListClick(e) {
 }
 
 function handleAgentDetailClick(e) {
+    var safetyPresetBtn = e.target.closest('[data-agent-safety-preset]');
+    if (safetyPresetBtn) {
+        editAgentSafetyPreset(safetyPresetBtn.dataset.agentSafetyPreset);
+        return;
+    }
     var numberBtn = e.target.closest('[data-agent-policy-number]');
     if (numberBtn) {
         editAgentPolicyNumber(numberBtn.dataset.agentPolicyNumber, numberBtn.textContent.trim());
@@ -1064,16 +1012,16 @@ function setSelectedAgentPolicyBatch(sets, toastLabel) {
 }
 
 function setAgentAutonomyManual() {
-    setSelectedAgentPolicyBatch([
+    return setSelectedAgentPolicyBatch([
         { key: 'require_owner_approval', value: true },
         { key: 'auto_approval_enabled', value: false }
     ], 'Manual review enabled');
 }
 
 function setAgentAutonomyRoutine() {
-    rsConfirm({
+    return rsConfirm({
         title: 'Trust Routine Replies',
-        message: 'Routine text replies to allowed contacts can skip approval when they fit message, rate, and causal-context guardrails. Anything outside that lane still waits for review.',
+        message: 'Routine text replies to allowed contacts can skip approval when they are caused by an inbound message. Files, network actions, contact changes, and unusual actions still wait for review.',
         confirmText: 'Trust replies'
     }).then(function(ok) {
         if (!ok) return null;
@@ -1083,10 +1031,7 @@ function setAgentAutonomyRoutine() {
             { key: 'auto_approval_allowed_action_kinds', value: ['message.reply', 'message.send'] },
             { key: 'auto_approval_requires_causal_context', value: true },
             { key: 'auto_approval_requires_verified_causal_context', value: true },
-            { key: 'auto_approval_allow_attachments', value: false },
-            { key: 'auto_approval_max_text_chars', value: 1500 },
-            { key: 'auto_approval_max_actions_per_hour', value: 20 },
-            { key: 'auto_approval_max_messages_per_contact_hour', value: 10 }
+            { key: 'auto_approval_allow_attachments', value: false }
         ], 'Trusted replies enabled');
     });
 }
@@ -1095,23 +1040,56 @@ function editAgentQuickLimits() {
     var detail = _settingsAgentsState.detail || {};
     var policy = detail.policy || {};
     rsChoice({
-        title: 'Agent Limits',
-        message: 'Choose the limit to change.',
+        title: 'Agent Safety',
+        message: 'Choose the practical safety control to change.',
         choices: [
-            { label: 'Message length', value: 'max_text_chars', hint: (policy.max_text_chars || 4096) + ' chars' },
-            { label: 'File size', value: 'max_file_bytes', hint: formatAgentBytes(policy.max_file_bytes || 0) },
-            { label: 'Image size', value: 'max_image_bytes', hint: formatAgentBytes(policy.max_image_bytes || 0) },
-            { label: 'Attachments', value: 'allow_message_attachments', hint: policy.allow_message_attachments ? 'On' : 'Off' }
+            { label: 'Trusted replies', value: 'trusted_replies', hint: policy.auto_approval_enabled ? 'On' : 'Off' },
+            { label: 'Runaway protection', value: 'runaway', hint: agentRunawayProtectionLabel(policy) },
+            { label: 'Review files/images', value: 'require_owner_approval_for_attachments', hint: policy.require_owner_approval_for_attachments === false ? 'Off' : 'On' },
+            { label: 'Review network actions', value: 'require_owner_approval_for_network', hint: policy.require_owner_approval_for_network === false ? 'Off' : 'On' }
         ]
     }).then(function(choice) {
         if (!choice) return null;
-        if (choice === 'allow_message_attachments') {
-            return setSelectedAgentPolicy(choice, !policy.allow_message_attachments);
+        if (choice === 'trusted_replies') {
+            return policy.auto_approval_enabled ? setAgentAutonomyManual() : setAgentAutonomyRoutine();
         }
-        if (choice === 'max_text_chars') {
-            return editAgentPolicyNumber(choice, String(policy.max_text_chars || 4096));
+        if (choice === 'runaway') {
+            return editAgentSafetyPreset('runaway');
         }
-        return editAgentPolicyBytes(choice);
+        return setSelectedAgentPolicy(choice, !(policy[choice] !== false));
+    });
+}
+
+function editAgentSafetyPreset(kind) {
+    if (kind !== 'runaway') return;
+    rsChoice({
+        title: 'Runaway Protection',
+        message: 'Choose how quickly Ratspeak should pause an agent that starts piling up actions.',
+        choices: [
+            { label: 'Normal', value: 'normal', hint: 'Recommended for most agents.' },
+            { label: 'Strict', value: 'strict', hint: 'Use for a new or untrusted agent.' },
+            { label: 'Relaxed', value: 'relaxed', hint: 'Use only after the agent is behaving well.' }
+        ]
+    }).then(function(choice) {
+        if (!choice) return null;
+        var presets = {
+            strict: [
+                { key: 'max_pending_actions', value: 10 },
+                { key: 'max_actions_per_hour', value: 20 },
+                { key: 'auto_approval_max_actions_per_hour', value: 20 }
+            ],
+            normal: [
+                { key: 'max_pending_actions', value: 25 },
+                { key: 'max_actions_per_hour', value: 60 },
+                { key: 'auto_approval_max_actions_per_hour', value: 60 }
+            ],
+            relaxed: [
+                { key: 'max_pending_actions', value: 100 },
+                { key: 'max_actions_per_hour', value: 240 },
+                { key: 'auto_approval_max_actions_per_hour', value: 240 }
+            ]
+        };
+        return setSelectedAgentPolicyBatch(presets[choice] || presets.normal, 'Runaway protection updated');
     });
 }
 
@@ -1183,74 +1161,11 @@ function editAgentPolicyList(key) {
 }
 
 function agentPolicyListCopy(key) {
-    var defaults = {
+    return {
         title: 'Agent Values',
         message: 'Comma-separated values. Leave blank for none.',
         placeholder: 'value1, value2'
     };
-    var map = {
-        auto_approval_allowed_action_kinds: {
-            title: 'Auto Action Kinds',
-            message: 'Comma-separated action kinds allowed to auto-approve.',
-            placeholder: 'message.send, message.reply'
-        },
-        auto_approval_allowed_contacts: {
-            title: 'Auto Contacts',
-            message: 'Comma-separated contact hashes allowed for auto-approval.',
-            placeholder: '32 hex characters'
-        },
-        auto_approval_allowed_conversations: {
-            title: 'Auto Conversations',
-            message: 'Comma-separated conversation IDs allowed for auto-approval.',
-            placeholder: 'lxmf:32hex'
-        },
-        auto_approval_allowed_delivery_methods: {
-            title: 'Auto Delivery Methods',
-            message: 'Comma-separated delivery methods allowed for auto-approved sends.',
-            placeholder: 'auto, direct'
-        },
-        denied_text_substrings: {
-            title: 'Denied Text',
-            message: 'Comma-separated text fragments that block staging.',
-            placeholder: 'fragment1, fragment2'
-        },
-        allowed_source_roots: {
-            title: 'Source Roots',
-            message: 'Comma-separated local folders allowed for path-based file staging.',
-            placeholder: '/Users/name/Documents'
-        },
-        allowed_attachment_mime_prefixes: {
-            title: 'Allowed MIME Prefixes',
-            message: 'Comma-separated MIME prefixes accepted for attachments.',
-            placeholder: 'text/, image/'
-        },
-        denied_attachment_mime_prefixes: {
-            title: 'Denied MIME Prefixes',
-            message: 'Comma-separated MIME prefixes always blocked.',
-            placeholder: 'application/x-'
-        },
-        allowed_path_request_hashes: {
-            title: 'Path Request Hashes',
-            message: 'Comma-separated destination hashes the agent may request paths for.',
-            placeholder: '32 hex characters'
-        },
-        allowed_propagation_node_hashes: {
-            title: 'Propagation Nodes',
-            message: 'Comma-separated Offline Inbox node hashes allowed for forced propagation.',
-            placeholder: '32 hex characters'
-        },
-        blocked_action_kinds: {
-            title: 'Blocked Action Kinds',
-            message: 'Comma-separated action kinds denied before approval checks.',
-            placeholder: 'identity.announce'
-        },
-        allowed_delivery_methods: {
-            title: 'Delivery Methods',
-            message: 'Comma-separated delivery methods the agent may request.',
-            placeholder: 'auto, direct, propagated'
-        }
-    };
-    return map[key] || defaults;
 }
 
 function editAgentPolicyChoice(key) {
@@ -1670,8 +1585,10 @@ function loadAgentApprovals(name) {
                 : 'Review pending, approved, cancelled, expired, sent, and failed agent actions.';
         }
         renderAgentApprovals();
+        updateAgentActivitySummary();
     }).catch(function(err) {
         if (list) list.innerHTML = '<div class="inline-error">Failed to load approvals.</div>';
+        updateAgentActivitySummary();
         showAgentError(err, 'Failed to load approvals');
     });
 }
@@ -1816,8 +1733,10 @@ function loadAgentAudit(name) {
     RS.invoke('api_agent_audit', { agent: name, limit: 8 }).then(function(payload) {
         _settingsAgentsState.audit = (payload && payload.audit) || [];
         renderAgentAudit();
+        updateAgentActivitySummary();
     }).catch(function() {
         list.innerHTML = '<div class="inline-error">Failed to load audit entries.</div>';
+        updateAgentActivitySummary();
     });
 }
 
@@ -1835,6 +1754,20 @@ function renderAgentAudit() {
             '<span class="settings-agent-audit-meta">' + escapeHtml(entry.actor || '') + ' · ' + escapeHtml(formatAgentTime(entry.created_at_unix)) + '</span>' +
         '</div>';
     }).join('');
+}
+
+function updateAgentActivitySummary() {
+    var summary = document.getElementById('settings-agent-activity-summary');
+    if (!summary) return;
+    var approvals = (_settingsAgentsState.approvals || []).length;
+    var audit = (_settingsAgentsState.audit || []).length;
+    if (approvals) {
+        summary.textContent = approvals + ' action' + (approvals === 1 ? '' : 's') + ' in view.';
+    } else if (audit) {
+        summary.textContent = audit + ' recent audit event' + (audit === 1 ? '' : 's') + '.';
+    } else {
+        summary.textContent = 'Approvals and recent agent events.';
+    }
 }
 
 function formatAgentBytes(bytes) {
