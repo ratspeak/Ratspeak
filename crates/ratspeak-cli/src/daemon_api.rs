@@ -5,17 +5,21 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
-use crate::agent_actions::{self, Actor, NewAction, STATE_APPLIED, STATE_SENT};
+use crate::agent_actions::{self, Actor, NewAction, PendingStagedFile, STATE_APPLIED, STATE_SENT};
 use crate::agent_policy::{AccessMode, AgentPrincipal};
 use crate::error::{CliError, CliResult};
 use crate::{agent_policy, event_store};
 
 pub const API_VERSION: u32 = 1;
 const ENDPOINT_FILE_NAME: &str = "ratspeakd-api.json";
+const OWNER_TOKEN_FILE_NAME: &str = "ratspeakd-owner.token";
+const OWNER_TOKEN_FORMAT: &str = "ratspeak.daemon-owner-token.v1";
 const FILE_REQUEST_DIR_NAME: &str = "ratspeakd-api-requests";
 const FILE_RESPONSE_DIR_NAME: &str = "ratspeakd-api-responses";
 const FILE_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -70,6 +74,15 @@ pub struct ApiEndpoint {
     pub profile_data_dir: PathBuf,
     pub pid: u32,
     pub published_at_unix: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OwnerApiCredential {
+    format: String,
+    version: u32,
+    agent: String,
+    token: String,
+    created_at_unix: f64,
 }
 
 pub struct ApiServerGuard {
@@ -146,6 +159,7 @@ pub async fn start_server(
     state: Arc<ratspeak_runtime::state::AppState>,
 ) -> CliResult<ApiServerGuard> {
     let data_dir = state.config.data_dir.clone();
+    ensure_owner_api_credential(&data_dir)?;
     let endpoint_file = endpoint_path(&data_dir);
     if endpoint_file.exists() {
         std::fs::remove_file(&endpoint_file)?;
@@ -221,7 +235,7 @@ pub async fn start_server(
 pub fn request(data_dir: &Path, method: &str, params: Value) -> CliResult<Option<Value>> {
     let auth = request_auth(data_dir)?;
     if let Some(endpoint) = read_endpoint(data_dir)? {
-        match connect_endpoint(&endpoint, method, params.clone(), auth.clone())? {
+        match connect_endpoint(data_dir, &endpoint, method, params.clone(), auth.clone())? {
             Some(result) => return Ok(Some(result)),
             None => {}
         }
@@ -232,7 +246,12 @@ pub fn request(data_dir: &Path, method: &str, params: Value) -> CliResult<Option
 
 fn request_auth(data_dir: &Path) -> CliResult<Option<ApiAuth>> {
     let Some(credential) = agent_policy::read_agent_credential_from_data_dir(data_dir)? else {
-        return Ok(None);
+        return Ok(
+            read_owner_api_credential(data_dir)?.map(|credential| ApiAuth {
+                agent: credential.agent,
+                token: credential.token,
+            }),
+        );
     };
     Ok(Some(ApiAuth {
         agent: credential.agent_name,
@@ -366,6 +385,7 @@ fn append_daemon_started_event(data_dir: &Path, endpoint: &ApiEndpoint) {
 }
 
 fn connect_endpoint(
+    data_dir: &Path,
     endpoint: &ApiEndpoint,
     method: &str,
     params: Value,
@@ -378,7 +398,7 @@ fn connect_endpoint(
         )));
     }
 
-    match endpoint.transport.as_str() {
+    let result = match endpoint.transport.as_str() {
         "unix" => {
             let Some(path) = endpoint.socket_path.as_ref() else {
                 return Err(CliError::failed(
@@ -397,7 +417,11 @@ fn connect_endpoint(
         other => Err(CliError::failed(format!(
             "unsupported daemon API transport: {other}"
         ))),
+    }?;
+    if result.is_none() {
+        let _ = std::fs::remove_file(endpoint_path(data_dir));
     }
+    Ok(result)
 }
 
 fn connect_tcp_address(
@@ -603,6 +627,48 @@ fn publish_endpoint(data_dir: &Path, endpoint: &ApiEndpoint) -> CliResult<()> {
     Ok(())
 }
 
+fn owner_api_token_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(OWNER_TOKEN_FILE_NAME)
+}
+
+fn ensure_owner_api_credential(data_dir: &Path) -> CliResult<OwnerApiCredential> {
+    if let Some(credential) = read_owner_api_credential(data_dir)? {
+        return Ok(credential);
+    }
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let credential = OwnerApiCredential {
+        format: OWNER_TOKEN_FORMAT.into(),
+        version: 1,
+        agent: "owner".into(),
+        token: hex::encode(bytes),
+        created_at_unix: unix_now_secs(),
+    };
+    write_owner_api_credential(data_dir, &credential)?;
+    Ok(credential)
+}
+
+fn read_owner_api_credential(data_dir: &Path) -> CliResult<Option<OwnerApiCredential>> {
+    let path = owner_api_token_path(data_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    agent_policy::ensure_private_file_permissions(&path)?;
+    let bytes = std::fs::read(path)?;
+    Ok(Some(serde_json::from_slice(&bytes)?))
+}
+
+fn write_owner_api_credential(data_dir: &Path, credential: &OwnerApiCredential) -> CliResult<()> {
+    std::fs::create_dir_all(data_dir)?;
+    restrict_dir_permissions(data_dir)?;
+    let path = owner_api_token_path(data_dir);
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, serde_json::to_vec_pretty(credential)?)?;
+    restrict_file_permissions(&tmp_path)?;
+    std::fs::rename(tmp_path, path)?;
+    Ok(())
+}
+
 fn write_rpc_file<T: Serialize>(dir: &Path, id: &str, value: &T) -> CliResult<()> {
     if !valid_rpc_file_id(id) {
         return Err(CliError::failed("daemon API request id is not file-safe"));
@@ -734,12 +800,24 @@ async fn handle_request(
     request: ApiRequest,
 ) -> ApiResponse {
     let id = request.id.clone();
+    let method = request.method.clone();
+    let params_summary = audit_params_summary(&request.params);
     if request.version != API_VERSION {
         return error_response(id, "version_mismatch", "unsupported daemon API version");
     }
     let access = match authenticate(&state, request.auth.as_ref()) {
         Ok(access) => access,
         Err(error) => {
+            append_api_audit(
+                &state.config.data_dir,
+                Actor::daemon(),
+                "auth.failed",
+                "denied",
+                &method,
+                Some(&error),
+                params_summary,
+                request.auth.as_ref().map(|auth| auth.agent.clone()),
+            );
             return ApiResponse {
                 id,
                 version: API_VERSION,
@@ -749,7 +827,7 @@ async fn handle_request(
             };
         }
     };
-    match dispatch(state, &access, &request.method, request.params).await {
+    match dispatch(state.clone(), &access, &method, request.params).await {
         Ok(result) => ApiResponse {
             id,
             version: API_VERSION,
@@ -757,13 +835,34 @@ async fn handle_request(
             result: Some(result),
             error: None,
         },
-        Err(error) => ApiResponse {
-            id,
-            version: API_VERSION,
-            ok: false,
-            result: None,
-            error: Some(error),
-        },
+        Err(error) => {
+            let event = if is_policy_error(&error.code) {
+                "policy.denied"
+            } else {
+                "api.error"
+            };
+            append_api_audit(
+                &state.config.data_dir,
+                audit_actor_for_access(&access),
+                event,
+                if is_policy_error(&error.code) {
+                    "denied"
+                } else {
+                    "error"
+                },
+                &method,
+                Some(&error),
+                params_summary,
+                access.principal().map(|principal| principal.name.clone()),
+            );
+            ApiResponse {
+                id,
+                version: API_VERSION,
+                ok: false,
+                result: None,
+                error: Some(error),
+            }
+        }
     }
 }
 
@@ -802,6 +901,67 @@ async fn dispatch(
     }
 }
 
+fn append_api_audit(
+    data_dir: &Path,
+    actor: Actor,
+    event: &str,
+    outcome: &str,
+    method: &str,
+    error: Option<&ApiError>,
+    mut details: Value,
+    agent: Option<String>,
+) {
+    if let Some(obj) = details.as_object_mut() {
+        obj.insert("method".into(), json!(method));
+        if let Some(agent) = agent {
+            obj.insert("agent".into(), json!(agent));
+        }
+        if let Some(error) = error {
+            obj.insert("error_code".into(), json!(error.code));
+            obj.insert("error_message".into(), json!(error.message));
+        }
+    }
+    let _ = agent_actions::append_audit(data_dir, actor, event, outcome, None, details, vec![]);
+}
+
+fn audit_params_summary(params: &Value) -> Value {
+    let keys = params
+        .as_object()
+        .map(|object| {
+            object
+                .keys()
+                .filter(|key| key.as_str() != "file_data_b64")
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({
+        "param_keys": keys,
+        "kind": params.get("kind").and_then(Value::as_str),
+        "action_id": params.get("id").and_then(Value::as_str),
+        "conversation_id": params.get("conversation_id").and_then(Value::as_str),
+        "dest_hash": params
+            .get("dest_hash")
+            .or_else(|| params.get("hash"))
+            .and_then(Value::as_str),
+        "redacted_params": ["file_data_b64", "text", "content", "token"],
+    })
+}
+
+fn audit_actor_for_access(access: &AccessMode) -> Actor {
+    match access {
+        AccessMode::Owner => Actor::owner(),
+        AccessMode::Agent(principal) => Actor::agent(&principal.name),
+    }
+}
+
+fn is_policy_error(code: &str) -> bool {
+    matches!(
+        code,
+        "unauthorized" | "forbidden" | "grant_revoked" | "policy_denied" | "idempotency_conflict"
+    )
+}
+
 fn authenticate(
     state: &ratspeak_runtime::state::AppState,
     auth: Option<&ApiAuth>,
@@ -814,6 +974,27 @@ fn authenticate(
             )
         })?;
     let Some(manifest) = manifest else {
+        let Some(auth) = auth else {
+            return Err(api_error("unauthorized", "owner daemon token required"));
+        };
+        if auth.agent != "owner" {
+            return Err(api_error(
+                "unauthorized",
+                "daemon token is not an owner credential",
+            ));
+        }
+        let credential = read_owner_api_credential(&state.config.data_dir)
+            .map_err(|error| {
+                api_error(
+                    "internal",
+                    format!("failed to read owner daemon token: {error}"),
+                )
+            })?
+            .ok_or_else(|| api_error("unauthorized", "owner daemon token is missing"))?;
+        let expected_hash = token_hash(&credential.token);
+        if !constant_time_eq(token_hash(&auth.token).as_bytes(), expected_hash.as_bytes()) {
+            return Err(api_error("unauthorized", "invalid owner daemon token"));
+        }
         return Ok(AccessMode::Owner);
     };
     let grant = manifest.effective_grant();
@@ -1192,13 +1373,22 @@ fn actions_create_payload(
     params: Value,
 ) -> Result<Value, ApiError> {
     let principal = agent_principal(access)?;
-    let action = new_action_from_params(state, principal, params)?;
-    require_action_policy(principal, &action.kind, action.submit)?;
-    if let Some(subject) = action.subject_hash.as_deref() {
+    let kind = required_string(&params, "kind")?;
+    let submit = optional_bool(&params, "submit", false)?;
+    require_action_policy(principal, &kind, submit)?;
+    let (subject_hash, _) = action_subject(&params, &kind)?;
+    if let Some(subject) = subject_hash.as_deref() {
         require_subject(principal, subject)?;
     }
-    let record = agent_actions::create_action(&state.config.data_dir, principal, action)
-        .map_err(|error| api_error("policy_denied", error.to_string()))?;
+    let action = new_action_from_params(state, principal, params)?;
+    let record = agent_actions::create_action(&state.config.data_dir, principal, action).map_err(
+        |error| {
+            api_error(
+                action_store_error_code(&error.to_string()),
+                error.to_string(),
+            )
+        },
+    )?;
     append_action_event(&state.config.data_dir, "agent.action.created", &record);
     Ok(agent_actions::public_action(record, true))
 }
@@ -1359,6 +1549,21 @@ async fn events_read_payload(
         if !events.is_empty() || wait_ms == 0 || std::time::Instant::now() >= deadline {
             let next_cursor = events.last().map(|event| event.id).unwrap_or(after_id);
             let latest_id = event_store::latest_event_id(&state.config.data_dir).unwrap_or(0);
+            append_api_audit(
+                &state.config.data_dir,
+                audit_actor_for_access(access),
+                "events.read",
+                "ok",
+                "events.read",
+                None,
+                json!({
+                    "after_id": after_id,
+                    "next_cursor": next_cursor,
+                    "latest_id": latest_id,
+                    "count": events.len(),
+                }),
+                access.principal().map(|principal| principal.name.clone()),
+            );
             return Ok(json!({
                 "events": events,
                 "next_cursor": next_cursor,
@@ -1412,6 +1617,23 @@ fn new_action_from_params(
 ) -> Result<NewAction, ApiError> {
     let kind = required_string(&params, "kind")?;
     let submit = optional_bool(&params, "submit", false)?;
+    let client_action_id = optional_client_action_id(&params)?;
+    let causal_event_id = optional_u64_nullable(&params, "causal_event_id")?.or_else(|| {
+        params
+            .get("causal")
+            .and_then(|value| value.get("event_id"))
+            .and_then(Value::as_u64)
+    });
+    let causal_message_id = optional_string_nullable(&params, "causal_message_id")
+        .or_else(|| {
+            params
+                .get("causal")
+                .and_then(|value| value.get("message_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .map(|value| sanitize_payload_text(&value, 128))
+        .filter(|value| !value.is_empty());
     let expires_secs = match params.get("expires_secs") {
         Some(Value::Number(_)) => {
             let value = optional_u64(&params, "expires_secs", 0)?;
@@ -1436,6 +1658,7 @@ fn new_action_from_params(
 
     let (subject_hash, conversation_id) = action_subject(&params, &kind)?;
     let mut payload = json!({});
+    let mut fingerprint_payload = json!({});
     let mut staged_files = Vec::new();
     let mut text_bytes = 0usize;
     let mut attachment_bytes = 0usize;
@@ -1456,8 +1679,8 @@ fn new_action_from_params(
                 "content": content,
                 "title": title,
                 "delivery_method": delivery_method_param(&params),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
             });
+            fingerprint_payload = payload.clone();
         }
         "message.reply" => {
             let content =
@@ -1487,8 +1710,8 @@ fn new_action_from_params(
                 "reply_to_id": reply_to_id,
                 "reply_to_preview": reply_to_preview,
                 "delivery_method": delivery_method_param(&params),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
             });
+            fingerprint_payload = payload.clone();
         }
         "message.attachment" | "message.image" => {
             let file_data = required_string(&params, "file_data_b64")?;
@@ -1527,6 +1750,24 @@ fn new_action_from_params(
             );
             text_bytes = content.len();
             attachment_bytes = file_bytes.len();
+            let sha256 = sha256_hex(&file_bytes);
+            agent_actions::preflight_new_action(
+                &state.config.data_dir,
+                _principal,
+                &kind,
+                subject_hash.as_deref(),
+                text_bytes,
+                attachment_bytes,
+                &[PendingStagedFile {
+                    file_name: &file_name,
+                    mime: &mime,
+                    kind: if is_image { "image" } else { "attachment" },
+                    size: attachment_bytes,
+                }],
+                causal_event_id,
+                causal_message_id.as_deref(),
+            )
+            .map_err(|error| api_error("policy_denied", error.to_string()))?;
             let staged = agent_actions::stage_file(
                 &state.config.data_dir,
                 &file_name,
@@ -1537,6 +1778,18 @@ fn new_action_from_params(
             .map_err(|error| {
                 api_error("internal", format!("failed to stage attachment: {error}"))
             })?;
+            fingerprint_payload = json!({
+                "content": content,
+                "title": "",
+                "delivery_method": delivery_method_param(&params),
+                "file": {
+                    "kind": if is_image { "image" } else { "attachment" },
+                    "file_name": file_name,
+                    "mime": mime,
+                    "size": attachment_bytes,
+                    "sha256": sha256,
+                },
+            });
             let staged_meta = json!({
                 "id": staged.id,
                 "kind": staged.kind,
@@ -1550,7 +1803,6 @@ fn new_action_from_params(
                 "content": content,
                 "title": "",
                 "delivery_method": delivery_method_param(&params),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
                 "file": staged_meta,
             });
         }
@@ -1572,35 +1824,35 @@ fn new_action_from_params(
                 "emoji": emoji,
                 "action": if action == "remove" { "remove" } else { "add" },
                 "delivery_method": delivery_method_param(&params),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
             });
+            fingerprint_payload = payload.clone();
         }
         "identity.announce" => {
             payload = json!({
                 "reason": params.get("reason").and_then(Value::as_str).map(|value| sanitize_payload_text(value, 120)),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
             });
+            fingerprint_payload = payload.clone();
         }
         "network.path_request" => {
             payload = json!({
                 "hash": subject_hash.clone().unwrap_or_default(),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
             });
+            fingerprint_payload = payload.clone();
         }
         "contact.add" => {
             payload = json!({
                 "dest_hash": subject_hash.clone().unwrap_or_default(),
                 "display_name": params.get("display_name").and_then(Value::as_str).map(|value| sanitize_payload_text(value, 128)),
                 "trust": params.get("trust").and_then(Value::as_str).map(|value| sanitize_payload_text(value, 32)).unwrap_or_else(|| "trusted".into()),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
             });
+            fingerprint_payload = payload.clone();
         }
         "contact.remove" | "contact.block" | "contact.unblock" => {
             payload = json!({
                 "dest_hash": subject_hash.clone().unwrap_or_default(),
                 "display_name": params.get("display_name").and_then(Value::as_str).map(|value| sanitize_payload_text(value, 128)),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
             });
+            fingerprint_payload = payload.clone();
         }
         "conversation.mark_read"
         | "conversation.hide"
@@ -1609,8 +1861,8 @@ fn new_action_from_params(
             payload = json!({
                 "conversation_id": conversation_id.clone(),
                 "dest_hash": subject_hash.clone().unwrap_or_default(),
-                "client_action_id": params.get("client_action_id").and_then(Value::as_str),
             });
+            fingerprint_payload = payload.clone();
         }
         _ => {
             return Err(api_error(
@@ -1618,6 +1870,31 @@ fn new_action_from_params(
                 format!("unsupported action kind: {kind}"),
             ));
         }
+    }
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("client_action_id".into(), json!(client_action_id.clone()));
+        obj.insert(
+            "causal".into(),
+            json!({
+                "event_id": causal_event_id,
+                "message_id": causal_message_id.clone(),
+            }),
+        );
+    }
+    let fingerprint = agent_actions::fingerprint_json(&json!({
+        "kind": kind.clone(),
+        "conversation_id": conversation_id.clone(),
+        "subject_hash": subject_hash.clone(),
+        "payload": fingerprint_payload,
+        "causal": {
+            "event_id": causal_event_id,
+            "message_id": causal_message_id.clone(),
+        },
+        "text_bytes": text_bytes,
+        "attachment_bytes": attachment_bytes,
+    }));
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("client_action_fingerprint".into(), json!(fingerprint));
     }
 
     Ok(NewAction {
@@ -1627,6 +1904,10 @@ fn new_action_from_params(
         payload,
         staged_files,
         required_scopes,
+        client_action_id,
+        client_action_fingerprint: fingerprint,
+        causal_event_id,
+        causal_message_id,
         text_bytes,
         attachment_bytes,
         expires_secs,
@@ -2313,6 +2594,21 @@ fn required_string(params: &Value, key: &str) -> Result<String, ApiError> {
         .ok_or_else(|| api_error("bad_params", format!("missing string parameter: {key}")))
 }
 
+fn optional_client_action_id(params: &Value) -> Result<Option<String>, ApiError> {
+    let Some(value) = params.get("client_action_id") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(value) = value.as_str() else {
+        return Err(api_error("bad_params", "client_action_id must be a string"));
+    };
+    agent_actions::validate_client_action_id(value)
+        .map_err(|error| api_error("bad_params", error.to_string()))?;
+    Ok(Some(value.to_string()))
+}
+
 fn optional_i64(params: &Value, key: &str, default_value: i64) -> Result<i64, ApiError> {
     let Some(value) = params.get(key) else {
         return Ok(default_value);
@@ -2336,6 +2632,21 @@ fn optional_u64(params: &Value, key: &str, default_value: u64) -> Result<u64, Ap
     value
         .as_u64()
         .ok_or_else(|| api_error("bad_params", format!("{key} must be an unsigned integer")))
+}
+
+fn optional_u64_nullable(params: &Value, key: &str) -> Result<Option<u64>, ApiError> {
+    match params.get(key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Number(_)) => Ok(Some(optional_u64(params, key, 0)?)),
+        Some(_) => Err(api_error(
+            "bad_params",
+            format!("{key} must be an unsigned integer"),
+        )),
+    }
+}
+
+fn optional_string_nullable(params: &Value, key: &str) -> Option<String> {
+    params.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
 fn optional_usize(params: &Value, key: &str, default_value: usize) -> Result<usize, ApiError> {
@@ -2386,6 +2697,35 @@ fn api_error(code: impl Into<String>, message: impl Into<String>) -> ApiError {
         code: code.into(),
         message: message.into(),
     }
+}
+
+fn token_hash(token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    hex::encode(digest)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    hex::encode(digest)
+}
+
+fn action_store_error_code(message: &str) -> &'static str {
+    if message.contains("client_action_id") {
+        "idempotency_conflict"
+    } else {
+        "policy_denied"
+    }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (left, right) in a.iter().zip(b.iter()) {
+        diff |= left ^ right;
+    }
+    diff == 0
 }
 
 fn next_request_id() -> String {

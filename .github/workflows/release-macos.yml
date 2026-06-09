@@ -170,6 +170,14 @@ jobs:
             cargo tauri build --target x86_64-apple-darwin --bundles dmg --config "$ad_hoc_signing_config"
           fi
 
+      - name: Build Ratspeak CLI binaries
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          set -euo pipefail
+          cargo build -p ratspeak-cli --release --bins --target aarch64-apple-darwin
+          cargo build -p ratspeak-cli --release --bins --target x86_64-apple-darwin
+
       - name: Stage macOS release artifacts
         shell: bash
         working-directory: Ratspeak
@@ -211,6 +219,21 @@ jobs:
 
           stage_dmg aarch64-apple-darwin "Ratspeak-${release_version}-macos-arm64.dmg" arm64
           stage_dmg x86_64-apple-darwin "Ratspeak-${release_version}-macos-x64.dmg" x86_64
+
+          stage_cli() {
+            local target="$1"
+            local label="$2"
+            local cli_dir="$out_dir/ratspeak-cli-macos-$label"
+            mkdir -p "$cli_dir"
+            cp "target/$target/release/ratspeakctl" "target/$target/release/ratspeakd" "$cli_dir/"
+            chmod +x "$cli_dir/ratspeakctl" "$cli_dir/ratspeakd"
+            "$cli_dir/ratspeakctl" version >/dev/null
+            tar -C "$out_dir" -czf "$out_dir/Ratspeak-${release_version}-cli-macos-$label.tar.gz" "ratspeak-cli-macos-$label"
+            rm -rf "$cli_dir"
+          }
+
+          stage_cli aarch64-apple-darwin arm64
+          stage_cli x86_64-apple-darwin x64
 
       - name: Check for bundled dev URLs
         shell: bash

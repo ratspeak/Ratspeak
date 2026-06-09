@@ -4,6 +4,16 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .expect("set private permissions");
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) {}
+
 fn temp_root(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -461,7 +471,26 @@ fn daemon_agent_grants_auth_events_and_safe_reads_smoke() {
         serde_json::to_vec_pretty(&bad_credential).expect("bad credential json"),
     )
     .expect("write bad credential");
+    set_private_file_permissions(Path::new(&token_file));
     assert!(run_fail(&["--data-dir", &agent_profile, "status"]).contains("unauthorized"));
+
+    let audit = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "audit",
+        "list",
+        "--agent",
+        "agent-policy",
+        "--limit",
+        "50",
+    ]);
+    assert!(
+        audit["audit"]
+            .as_array()
+            .expect("audit rows")
+            .iter()
+            .any(|row| row["event"] == "auth.failed")
+    );
 
     let _ = daemon.kill();
     let _ = daemon.wait();
@@ -497,6 +526,8 @@ fn daemon_agent_write_approval_audit_and_limits_smoke() {
         "write:drafts",
         "--scope",
         "write:messages",
+        "--scope",
+        "write:attachments",
         "--scope",
         "write:images",
         "--scope",
@@ -535,12 +566,47 @@ fn daemon_agent_write_approval_audit_and_limits_smoke() {
         &format!("lxmf:{allowed_text}"),
         "--text",
         "owner-reviewed outbound text",
+        "--client-action-id",
+        "draft-allowed-text-1",
+        "--causal-event-id",
+        "100",
     ]);
     assert_eq!(draft["kind"], "message.send");
     assert_eq!(draft["state"], "draft");
     assert_eq!(draft["subject_hash"], allowed_text);
     assert_eq!(draft["policy"]["approval_required"], true);
     let draft_id = draft["id"].as_str().expect("draft id").to_string();
+
+    let retry = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "messages",
+        "draft",
+        &format!("lxmf:{allowed_text}"),
+        "--text",
+        "owner-reviewed outbound text",
+        "--client-action-id",
+        "draft-allowed-text-1",
+        "--causal-event-id",
+        "100",
+    ]);
+    assert_eq!(retry["id"], draft_id);
+    assert!(
+        run_fail(&[
+            "--data-dir",
+            &agent_profile,
+            "messages",
+            "draft",
+            &format!("lxmf:{allowed_text}"),
+            "--text",
+            "different text",
+            "--client-action-id",
+            "draft-allowed-text-1",
+            "--causal-event-id",
+            "100",
+        ])
+        .contains("idempotency_conflict")
+    );
 
     let submitted = run_json(&["--data-dir", &agent_profile, "messages", "send", &draft_id]);
     assert_eq!(submitted["state"], "pending_approval");
@@ -585,11 +651,74 @@ fn daemon_agent_write_approval_audit_and_limits_smoke() {
         "tiny",
         "--mime",
         "image/png",
+        "--client-action-id",
+        "image-allowed-1",
     ]);
     assert_eq!(image["kind"], "message.image");
     assert_eq!(image["state"], "draft");
     assert_eq!(image["staged_files"][0]["stored_path"], "<redacted>");
     assert_eq!(image["staged_files"][0]["mime"], "image/png");
+    let image_id = image["id"].as_str().expect("image action id").to_string();
+    let inspected = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "approvals",
+        "inspect-file",
+        "--agent",
+        "agent-writer",
+        &image_id,
+    ]);
+    assert_eq!(inspected["file"]["mime"], "image/png");
+    assert_eq!(
+        inspected["file"]["sha256"],
+        image["staged_files"][0]["sha256"]
+    );
+
+    let staged_root = Path::new(&agent_profile)
+        .join(".ratspeak")
+        .join("agent-actions")
+        .join("staged-files");
+    let staged_count = std::fs::read_dir(&staged_root)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    let image_retry = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "messages",
+        "send-image",
+        &format!("lxmf:{allowed_image}"),
+        "--file",
+        &path_arg(&image_path),
+        "--name",
+        "tiny",
+        "--mime",
+        "image/png",
+        "--client-action-id",
+        "image-allowed-1",
+    ]);
+    assert_eq!(image_retry["id"], image_id);
+    let staged_after_retry = std::fs::read_dir(&staged_root)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(staged_after_retry, staged_count);
+    assert!(
+        run_fail(&[
+            "--data-dir",
+            &agent_profile,
+            "messages",
+            "send-file",
+            &format!("lxmf:{allowed_image}"),
+            "--file",
+            &path_arg(&image_path),
+            "--mime",
+            "application/x-ratspeak-test",
+        ])
+        .contains("policy_denied")
+    );
+    let staged_after_reject = std::fs::read_dir(&staged_root)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(staged_after_reject, staged_count);
 
     let announce = run_json(&[
         "--data-dir",
@@ -635,7 +764,7 @@ fn daemon_agent_write_approval_audit_and_limits_smoke() {
         "--agent",
         "agent-writer",
         "--limit",
-        "20",
+        "100",
     ]);
     let audit_rows = audit["audit"].as_array().expect("audit rows");
     assert!(
@@ -648,6 +777,8 @@ fn daemon_agent_write_approval_audit_and_limits_smoke() {
             .iter()
             .any(|row| row["event"] == "action.approved")
     );
+    assert!(audit_rows.iter().any(|row| row["event"] == "grant.created"));
+    assert!(audit_rows.iter().any(|row| row["event"] == "policy.denied"));
 
     let _ = daemon.kill();
     let _ = daemon.wait();

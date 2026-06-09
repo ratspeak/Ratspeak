@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -39,6 +40,7 @@ pub async fn run_ctl(args: Vec<String>) -> CliResult<()> {
 
     match args[0].as_str() {
         "system" => run_system(&profile, &args[1..], global.output),
+        "daemon" => run_daemon_tools(&profile, &args[1..], global.output),
         "profile" => run_profile(&profile, &args[1..], global.output),
         "status" => run_status(&profile, &args[1..], global.output),
         "agent" | "agents" => run_agent(&profile, &args[1..], global.output),
@@ -113,6 +115,41 @@ fn run_profile(profile: &Profile, args: &[String], output: OutputFormat) -> CliR
     match args.first().map(String::as_str).unwrap_or("show") {
         "show" => print_json(&profile::profile_summary(profile), output),
         other => Err(CliError::usage(format!("unknown profile command: {other}"))),
+    }
+}
+
+fn run_daemon_tools(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    match args.first().map(String::as_str).unwrap_or("status") {
+        "status" => run_status(profile, &args[1..], output),
+        "wait-ready" => {
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            let timeout_secs = take_u64_option(&mut rest, "--timeout-secs", 30)?;
+            ensure_no_extra_args(&rest, "daemon wait-ready")?;
+            let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+            loop {
+                if let Some(payload) = daemon_read(profile, "status.get", json!({}))? {
+                    return print_json(
+                        &json!({
+                            "ok": true,
+                            "ready": true,
+                            "status": payload,
+                        }),
+                        output,
+                    );
+                }
+                if Instant::now() >= deadline {
+                    return Err(CliError::failed(
+                        "daemon did not become ready before timeout",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        "methods" | "contract" => {
+            ensure_no_extra_args(&args[1..], "daemon methods")?;
+            print_json(&daemon_contract_payload(), output)
+        }
+        other => Err(CliError::usage(format!("unknown daemon command: {other}"))),
     }
 }
 
@@ -194,7 +231,8 @@ fn run_status(profile: &Profile, args: &[String], output: OutputFormat) -> CliRe
             "database": ratspeak_db::get_database_stats(&profile.db),
             "daemon_api": {
                 "available": false,
-                "note": "local daemon API is planned after the read-only CLI foundation"
+                "expected_endpoint_path": profile.config.data_dir.join("ratspeakd-api.json"),
+                "reason": "ratspeakd is not running for this profile"
             }
         }),
         output,
@@ -203,6 +241,14 @@ fn run_status(profile: &Profile, args: &[String], output: OutputFormat) -> CliRe
 
 fn run_agent(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
     match args.first().map(String::as_str).unwrap_or("list") {
+        "onboard" => {
+            let mut onboard_args = args.get(1..).unwrap_or_default().to_vec();
+            if !onboard_args.iter().any(|arg| arg == "--preset") {
+                onboard_args.push("--preset".into());
+                onboard_args.push("reply-assistant".into());
+            }
+            run_agent_create(profile, &onboard_args, output)
+        }
         "create" => run_agent_create(profile, &args[1..], output),
         "list" => run_agent_list(profile, &args[1..], output),
         "show" => run_agent_show(profile, &args[1..], output),
@@ -227,7 +273,10 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
         ));
     }
     let explicit_profile_dir = take_option(&mut rest, "--profile-dir")?.map(PathBuf::from);
-    let requested_scopes = take_repeated_option(&mut rest, "--scope")?;
+    let mut requested_scopes = take_repeated_option(&mut rest, "--scope")?;
+    for preset in take_repeated_option(&mut rest, "--preset")? {
+        requested_scopes.extend(agent_preset_scopes(&preset)?);
+    }
     let allowed_contacts = take_repeated_option(&mut rest, "--allow-contact")?;
     let allowed_conversations = take_repeated_option(&mut rest, "--allow-conversation")?;
     let unknown_contacts =
@@ -360,7 +409,21 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
     };
     write_agent_manifest(&agent_manifest_path, &manifest)?;
     write_agent_credential(&token_path, &credential)?;
+    append_agent_admin_audit(
+        &agent_root,
+        "grant.created",
+        json!({
+            "agent": name,
+            "grant_revision": manifest.grant.revision,
+            "scopes": manifest.grant.scopes,
+            "allowed_contacts": manifest.grant.allowed_contacts,
+            "allowed_conversations": manifest.grant.allowed_conversations,
+            "unknown_contacts": manifest.grant.unknown_contacts,
+        }),
+    );
 
+    let owner_root_arg = profile.data_root.display().to_string();
+    let agent_root_arg = agent_root.display().to_string();
     let payload = json!({
         "agent": manifest,
         "credential": {
@@ -371,9 +434,31 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
         },
         "identity": created,
         "next": {
-            "start_daemon": format!("ratspeakd --data-dir {}", agent_root.display()),
-            "inspect": format!("ratspeakctl --data-dir {} status --pretty", agent_root.display()),
-            "events": format!("ratspeakctl --data-dir {} --jsonl events stream", agent_root.display()),
+            "start_daemon": format!("ratspeakd --data-dir {agent_root_arg}"),
+            "inspect": format!("ratspeakctl --data-dir {agent_root_arg} status --pretty"),
+            "events": format!("ratspeakctl --data-dir {agent_root_arg} --jsonl events stream"),
+            "steps": [
+                {
+                    "actor": "owner",
+                    "purpose": "review pending agent actions",
+                    "argv": ["ratspeakctl", "--data-dir", owner_root_arg.clone(), "approvals", "list", "--agent", name]
+                },
+                {
+                    "actor": "owner",
+                    "purpose": "approve an action after review",
+                    "argv": ["ratspeakctl", "--data-dir", owner_root_arg.clone(), "approvals", "approve", "--agent", name, "<action-id>"]
+                },
+                {
+                    "actor": "agent-runtime",
+                    "purpose": "run the Ratspeak daemon for the agent identity",
+                    "argv": ["ratspeakd", "--data-dir", agent_root_arg.clone(), "run"]
+                },
+                {
+                    "actor": "agent",
+                    "purpose": "stream grant-filtered events as JSONL",
+                    "argv": ["ratspeakctl", "--data-dir", agent_root_arg.clone(), "--jsonl", "events", "stream"]
+                }
+            ],
             "write_policy": write_policy,
             "note": "read scopes, daemon API auth, allowlists, durable events, write proposals, owner approvals, audit, and rate limits are active"
         }
@@ -432,6 +517,7 @@ fn run_agent_grant(profile: &Profile, args: &[String], output: OutputFormat) -> 
     let scopes = take_repeated_option(&mut rest, "--scope")?;
     let contacts = take_repeated_option(&mut rest, "--allow-contact")?;
     let conversations = take_repeated_option(&mut rest, "--allow-conversation")?;
+    let presets = take_repeated_option(&mut rest, "--preset")?;
     let unknown_contacts = take_option(&mut rest, "--unknown-contacts")?;
     let replace_scopes = take_flag(&mut rest, "--replace-scopes");
     let replace_contacts = take_flag(&mut rest, "--replace-contacts");
@@ -450,8 +536,12 @@ fn run_agent_grant(profile: &Profile, args: &[String], output: OutputFormat) -> 
     let mut grant = manifest.effective_grant();
     let mut changed = false;
 
-    if !scopes.is_empty() {
-        let (effective, pending, requested) = normalize_agent_scopes(scopes)?;
+    if !scopes.is_empty() || !presets.is_empty() {
+        let mut expanded_scopes = scopes;
+        for preset in presets {
+            expanded_scopes.extend(agent_preset_scopes(&preset)?);
+        }
+        let (effective, pending, requested) = normalize_agent_scopes(expanded_scopes)?;
         if replace_scopes {
             grant.scopes = effective.clone();
             grant.pending_scopes = pending.clone();
@@ -527,6 +617,19 @@ fn run_agent_grant(profile: &Profile, args: &[String], output: OutputFormat) -> 
         manifest.allowed_conversations = grant.allowed_conversations.clone();
         manifest.unknown_contacts = grant.unknown_contacts.clone();
         write_agent_manifest(&path, &manifest)?;
+        append_agent_admin_audit(
+            &agent_root_from_owner_data_dir(&profile.config.data_dir, name),
+            "grant.updated",
+            json!({
+                "agent": manifest.name,
+                "grant_revision": grant.revision,
+                "scopes": grant.scopes,
+                "pending_scopes": grant.pending_scopes,
+                "allowed_contacts": grant.allowed_contacts,
+                "allowed_conversations": grant.allowed_conversations,
+                "unknown_contacts": grant.unknown_contacts,
+            }),
+        );
     }
 
     print_json(
@@ -564,6 +667,15 @@ fn run_agent_revoke(profile: &Profile, args: &[String], output: OutputFormat) ->
     grant.revoke_reason = reason;
     manifest.grant = grant.clone();
     write_agent_manifest(&path, &manifest)?;
+    append_agent_admin_audit(
+        &agent_root_from_owner_data_dir(&profile.config.data_dir, name),
+        "grant.revoked",
+        json!({
+            "agent": manifest.name,
+            "grant_revision": grant.revision,
+            "reason": grant.revoke_reason,
+        }),
+    );
 
     print_json(
         &json!({
@@ -604,6 +716,16 @@ fn run_agent_rotate_token(
     manifest.grant = grant.clone();
     write_agent_manifest(&path, &manifest)?;
     write_agent_credential(&token_path, &credential)?;
+    append_agent_admin_audit(
+        &agent_root,
+        "token.rotated",
+        json!({
+            "agent": manifest.name,
+            "grant_revision": grant.revision,
+            "token_file": token_path,
+            "token_hash": token_hash(&credential.token),
+        }),
+    );
 
     print_json(
         &json!({
@@ -783,6 +905,9 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             let display_name =
                 take_option(&mut rest, "--display-name")?.or(take_option(&mut rest, "--name")?);
             let trust = take_option(&mut rest, "--trust")?.unwrap_or_else(|| "trusted".into());
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             ensure_no_extra_args(&rest, "contacts add")?;
             let payload = daemon_required(
@@ -793,6 +918,9 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "dest_hash": dest_hash,
                     "display_name": display_name,
                     "trust": trust,
+                    "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": true,
                 }),
@@ -805,6 +933,9 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                 .ok_or_else(|| CliError::usage("contacts remove requires <dest-hash>"))?
                 .to_string();
             rest.remove(0);
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             ensure_no_extra_args(&rest, "contacts remove")?;
             let payload = daemon_required(
@@ -813,6 +944,9 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                 json!({
                     "kind": "contact.remove",
                     "dest_hash": dest_hash,
+                    "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": true,
                 }),
@@ -829,6 +963,9 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             rest.remove(0);
             let display_name =
                 take_option(&mut rest, "--display-name")?.or(take_option(&mut rest, "--name")?);
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             ensure_no_extra_args(&rest, &format!("contacts {subcommand}"))?;
             let payload = daemon_required(
@@ -838,6 +975,9 @@ fn run_contacts(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "kind": if subcommand == "block" { "contact.block" } else { "contact.unblock" },
                     "dest_hash": dest_hash,
                     "display_name": display_name,
+                    "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": true,
                 }),
@@ -963,6 +1103,9 @@ async fn run_conversations(
                 })?
                 .to_string();
             let mut rest = args.get(2..).unwrap_or_default().to_vec();
+            let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             ensure_no_extra_args(&rest, &format!("conversations {subcommand}"))?;
             let dest_hash = crate::agent_policy::dest_hash_from_conversation_id(&conversation)
@@ -980,6 +1123,9 @@ async fn run_conversations(
                 json!({
                     "kind": kind,
                     "conversation_id": crate::agent_policy::conversation_id_for_dest(&dest_hash),
+                    "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": true,
                 }),
@@ -1017,6 +1163,8 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             let delivery_method =
                 take_option(&mut rest, "--delivery-method")?.unwrap_or_else(|| "auto".into());
             let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             let submit = take_flag(&mut rest, "--submit");
             ensure_no_extra_args(&rest, "messages draft")?;
@@ -1032,6 +1180,8 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "title": title,
                     "delivery_method": delivery_method,
                     "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": submit,
                 }),
@@ -1066,6 +1216,8 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             let delivery_method =
                 take_option(&mut rest, "--delivery-method")?.unwrap_or_else(|| "auto".into());
             let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             let submit = take_flag(&mut rest, "--submit");
             ensure_no_extra_args(&rest, "messages reply")?;
@@ -1082,6 +1234,8 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "reply_to_preview": reply_to_preview,
                     "delivery_method": delivery_method,
                     "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": submit,
                 }),
@@ -1116,6 +1270,8 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             let delivery_method =
                 take_option(&mut rest, "--delivery-method")?.unwrap_or_else(|| "auto".into());
             let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             let submit = take_flag(&mut rest, "--submit");
             ensure_no_extra_args(&rest, &format!("messages {subcommand}"))?;
@@ -1134,6 +1290,8 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "file_data_b64": B64.encode(bytes),
                     "delivery_method": delivery_method,
                     "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": submit,
                 }),
@@ -1152,6 +1310,8 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                 .ok_or_else(|| CliError::usage("messages react requires --emoji"))?;
             let remove = take_flag(&mut rest, "--remove");
             let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             ensure_no_extra_args(&rest, "messages react")?;
             let dest_hash = crate::agent_policy::dest_hash_from_conversation_id(&conversation)
@@ -1166,6 +1326,8 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
                     "emoji": emoji,
                     "action": if remove { "remove" } else { "add" },
                     "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": true,
                 }),
@@ -1312,6 +1474,8 @@ fn run_network(profile: &Profile, args: &[String], output: OutputFormat) -> CliR
             let mut rest = args.get(1..).unwrap_or_default().to_vec();
             let reason = take_option(&mut rest, "--reason")?;
             let client_action_id = take_option(&mut rest, "--client-action-id")?;
+            let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+            let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             ensure_no_extra_args(&rest, "network announce")?;
             let payload = daemon_required(
@@ -1321,6 +1485,8 @@ fn run_network(profile: &Profile, args: &[String], output: OutputFormat) -> CliR
                     "kind": "identity.announce",
                     "reason": reason,
                     "client_action_id": client_action_id,
+                    "causal_event_id": causal_event_id,
+                    "causal_message_id": causal_message_id,
                     "expires_secs": expires_secs,
                     "submit": true,
                 }),
@@ -1336,6 +1502,8 @@ fn run_network(profile: &Profile, args: &[String], output: OutputFormat) -> CliR
                         .ok_or_else(|| CliError::usage("network path request requires <hash>"))?;
                     let mut rest = args.get(3..).unwrap_or_default().to_vec();
                     let client_action_id = take_option(&mut rest, "--client-action-id")?;
+                    let causal_event_id = take_u64_option_opt(&mut rest, "--causal-event-id")?;
+                    let causal_message_id = take_option(&mut rest, "--causal-message-id")?;
                     let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
                     ensure_no_extra_args(&rest, "network path request")?;
                     let payload = daemon_required(
@@ -1345,6 +1513,8 @@ fn run_network(profile: &Profile, args: &[String], output: OutputFormat) -> CliR
                             "kind": "network.path_request",
                             "hash": hash,
                             "client_action_id": client_action_id,
+                            "causal_event_id": causal_event_id,
+                            "causal_message_id": causal_message_id,
                             "expires_secs": expires_secs,
                             "submit": true,
                         }),
@@ -1487,6 +1657,23 @@ fn run_approvals(profile: &Profile, args: &[String], output: OutputFormat) -> Cl
             let record = agent_actions::read_action(&target.config.data_dir, id)?;
             print_json(&agent_actions::public_action(record, true), output)
         }
+        "inspect-file" | "file" => {
+            let id = rest
+                .first()
+                .ok_or_else(|| CliError::usage("approvals inspect-file requires <action-id>"))?
+                .to_string();
+            rest.remove(0);
+            let file_id = take_option(&mut rest, "--file-id")?;
+            let preview_bytes = take_usize_option(&mut rest, "--preview-bytes", 1000)?;
+            ensure_no_extra_args(&rest, "approvals inspect-file")?;
+            let payload = agent_actions::inspect_staged_file(
+                &target.config.data_dir,
+                &id,
+                file_id.as_deref(),
+                preview_bytes,
+            )?;
+            print_json(&payload, output)
+        }
         "approve" => {
             let id = rest
                 .first()
@@ -1596,6 +1783,78 @@ fn version_payload() -> Value {
         "commands": {
             "ratspeakctl": "profile inspection plus approval-gated agent read/write actions",
             "ratspeakd": "headless runtime owner with optional JSONL event emission"
+        }
+    })
+}
+
+fn daemon_contract_payload() -> Value {
+    json!({
+        "ok": true,
+        "contract": {
+            "name": "ratspeak-agent-cli",
+            "version": 1,
+            "transport": "local profile daemon API discovered through .ratspeak/ratspeakd-api.json",
+            "error_envelope": {
+                "ok": false,
+                "error": { "code": "stable-code", "message": "human-readable text" },
+                "exit_code": 1
+            }
+        },
+        "cli": {
+            "onboard": "ratspeakctl agent onboard NAME --preset reply-assistant --allow-contact HASH",
+            "daemon_ready": "ratspeakctl daemon wait-ready --timeout-secs 30",
+            "events": "ratspeakctl --jsonl events stream",
+            "read_conversation": "ratspeakctl conversations read lxmf:<hash>",
+            "draft": "ratspeakctl messages draft lxmf:<hash> --text TEXT --client-action-id ID",
+            "submit_or_execute": "ratspeakctl messages send <action-id>",
+            "actions": "ratspeakctl messages actions list|show|cancel",
+            "approvals": "ratspeakctl approvals list|show|inspect-file|approve|reject|cancel|execute --agent NAME"
+        },
+        "presets": {
+            "inbox-reader": agent_preset_scopes("inbox-reader").unwrap_or_default(),
+            "reply-assistant": agent_preset_scopes("reply-assistant").unwrap_or_default(),
+            "media-assistant": agent_preset_scopes("media-assistant").unwrap_or_default(),
+            "network-helper": agent_preset_scopes("network-helper").unwrap_or_default(),
+            "openclaw-basic": agent_preset_scopes("openclaw-basic").unwrap_or_default()
+        },
+        "daemon_methods": [
+            {"method": "status.get", "scope": "status:read"},
+            {"method": "identity.current", "scope": "identity:read"},
+            {"method": "identity.list", "scope": "identity:read"},
+            {"method": "contacts.list", "scope": "contacts:read"},
+            {"method": "contacts.blocked", "scope": "contacts:read"},
+            {"method": "peers.list", "scope": "network:read"},
+            {"method": "conversations.list", "scope": "messages:read"},
+            {"method": "conversations.read", "scope": "messages:read + allowed contact/conversation"},
+            {"method": "messages.list", "scope": "messages:read + allowed contact/conversation"},
+            {"method": "messages.search", "scope": "messages:read"},
+            {"method": "events.read", "scope": "events:read"},
+            {"method": "actions.create", "scope": "action kind dependent"},
+            {"method": "actions.submit", "scope": "action kind dependent"},
+            {"method": "actions.list", "scope": "actions:read or write scope"},
+            {"method": "actions.read", "scope": "actions:read or write scope"},
+            {"method": "actions.cancel", "scope": "actions:read or write scope"},
+            {"method": "actions.execute", "scope": "action kind dependent"},
+            {"method": "audit.list", "scope": "audit:read"},
+            {"method": "propagation.status", "scope": "network:read"},
+            {"method": "network.status", "scope": "network:read"}
+        ],
+        "action_kinds": [
+            {"kind": "message.send", "create": ["drafts:write"], "submit_execute": ["messages:write"]},
+            {"kind": "message.reply", "create": ["drafts:write"], "submit_execute": ["messages:write"]},
+            {"kind": "message.attachment", "create": ["drafts:write", "attachments:write"], "submit_execute": ["messages:write", "attachments:write"]},
+            {"kind": "message.image", "create": ["drafts:write", "images:write"], "submit_execute": ["messages:write", "images:write"]},
+            {"kind": "message.reaction", "scopes": ["reactions:write"]},
+            {"kind": "identity.announce", "scopes": ["announces:write or network:write"]},
+            {"kind": "network.path_request", "scopes": ["paths:write or network:write"]},
+            {"kind": "contact.add/remove/block/unblock", "scopes": ["contacts:write"]},
+            {"kind": "conversation.mark_read/hide/unhide/delete", "scopes": ["conversations:write"]}
+        ],
+        "bot_requirements": {
+            "use_client_action_id": true,
+            "client_action_id": "required for safe retries; reuse only with identical payload",
+            "causal_metadata": "send --causal-event-id and/or --causal-message-id when reacting to inbound events",
+            "prompt_injection_boundary": "remote text appears under fields with {text, untrusted:true}"
         }
     })
 }
@@ -1768,6 +2027,56 @@ fn validate_agent_name(name: &str) -> CliResult<()> {
     Ok(())
 }
 
+fn agent_preset_scopes(preset: &str) -> CliResult<Vec<String>> {
+    let scopes = match preset {
+        "inbox-reader" => vec![
+            "read:status",
+            "read:identity",
+            "read:contacts",
+            "read:messages",
+            "read:events",
+        ],
+        "reply-assistant" | "openclaw-basic" => vec![
+            "read:status",
+            "read:identity",
+            "read:contacts",
+            "read:messages",
+            "read:events",
+            "read:actions",
+            "read:audit",
+            "write:drafts",
+            "write:messages",
+        ],
+        "media-assistant" => vec![
+            "read:status",
+            "read:identity",
+            "read:contacts",
+            "read:messages",
+            "read:events",
+            "read:actions",
+            "read:audit",
+            "write:drafts",
+            "write:messages",
+            "write:attachments",
+            "write:images",
+        ],
+        "network-helper" => vec![
+            "read:status",
+            "read:network",
+            "read:events",
+            "read:actions",
+            "write:announces",
+            "write:paths",
+        ],
+        other => {
+            return Err(CliError::usage(format!(
+                "unsupported agent preset: {other}; expected inbox-reader, reply-assistant, media-assistant, network-helper, or openclaw-basic"
+            )));
+        }
+    };
+    Ok(scopes.into_iter().map(str::to_string).collect())
+}
+
 fn normalize_conversation_grants(values: Vec<String>) -> CliResult<Vec<String>> {
     let mut normalized = Vec::new();
     for value in values {
@@ -1854,6 +2163,19 @@ fn append_owner_action_event(data_dir: &std::path::Path, event: &str, action_id:
     );
 }
 
+fn append_agent_admin_audit(agent_root: &Path, event: &str, details: Value) {
+    let data_dir = agent_root.join(".ratspeak");
+    let _ = agent_actions::append_audit(
+        &data_dir,
+        Actor::owner(),
+        event,
+        "ok",
+        None,
+        details,
+        vec!["token".into()],
+    );
+}
+
 fn print_json_or_jsonl_array(value: &Value, output: OutputFormat) -> CliResult<()> {
     if output.jsonl {
         print_array_as_jsonl(value)
@@ -1893,8 +2215,11 @@ Ratspeak CLI commands:
   system setup-status
   system unread [--identity HASH]
   system db-stats
+  daemon wait-ready [--timeout-secs N]
+  daemon methods
   profile show
   status
+  agent onboard NAME [--preset PRESET] [--allow-contact HASH]
   agent create NAME [--identity new] [--scope SCOPE] [--allow-contact HASH]
   agent list
   agent show NAME
@@ -1921,14 +2246,14 @@ Ratspeak CLI commands:
   conversations delete <conversation-id>
   messages list <conversation-id> [--identity HASH] [--limit N]
   messages search <query> [--identity HASH] [--limit N]
-  messages draft <conversation-id> --text TEXT [--submit]
+  messages draft <conversation-id> --text TEXT [--submit] [--client-action-id ID]
   messages send <action-id>
-  messages reply <conversation-id> --reply-to MSG --text TEXT [--submit]
+  messages reply <conversation-id> --reply-to MSG --text TEXT [--submit] [--client-action-id ID]
   messages send-file <conversation-id> --file PATH [--mime MIME]
   messages send-image <conversation-id> --file PATH [--mime MIME]
   messages react <conversation-id> --message-id MSG --emoji EMOJI
   messages actions list|show|cancel
-  approvals list|show|approve|reject|cancel|execute --agent NAME
+  approvals list|show|inspect-file|approve|reject|cancel|execute --agent NAME
   audit list [--agent NAME] [--limit N]
   events stream [--agent NAME] [--cursor N] [--limit N] [--once]
   propagation status

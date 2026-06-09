@@ -36,8 +36,11 @@ ratspeakctl system startup
 ratspeakctl system setup-status
 ratspeakctl system unread [--identity HASH]
 ratspeakctl system db-stats
+ratspeakctl daemon wait-ready [--timeout-secs N]
+ratspeakctl daemon methods
 ratspeakctl profile show
 ratspeakctl status
+ratspeakctl agent onboard NAME [--preset PRESET] [--allow-contact HASH]
 ratspeakctl agent create NAME [--identity new] [--scope SCOPE] [--allow-contact HASH]
 ratspeakctl agent list
 ratspeakctl agent show NAME
@@ -71,7 +74,7 @@ ratspeakctl messages send-file <conversation-id> --file PATH [--mime MIME]
 ratspeakctl messages send-image <conversation-id> --file PATH [--mime MIME]
 ratspeakctl messages react <conversation-id> --message-id MSG --emoji EMOJI
 ratspeakctl messages actions list|show|cancel
-ratspeakctl approvals list|show|approve|reject|cancel|execute --agent NAME
+ratspeakctl approvals list|show|inspect-file|approve|reject|cancel|execute --agent NAME
 ratspeakctl audit list [--agent NAME] [--limit N]
 ratspeakctl events stream [--agent NAME] [--cursor N] [--limit N] [--once]
 ratspeakctl propagation status
@@ -89,6 +92,12 @@ normal Ratspeak startup behavior.
 key material. `identity activate` is an offline profile change; restart
 `ratspeakd` or the Tauri app if that profile is already running.
 
+`agent onboard` is the preferred beta entry point for non-developer setup. It
+defaults to the `reply-assistant` preset and returns machine-readable
+`next.steps[].argv` arrays that can be handed to an agent supervisor. Presets
+are `inbox-reader`, `reply-assistant`, `media-assistant`, `network-helper`, and
+`openclaw-basic`.
+
 `agent create` creates a separate agent profile under
 `.ratspeak/agents/NAME` by default, creates a recoverable identity for that
 profile, writes `.ratspeak/agent.json`, and writes a private
@@ -101,12 +110,14 @@ allowlists.
 credential files from the owner profile. Restart `ratspeakd` for the agent
 profile after changing grants or credentials.
 
-Write scopes are effective for approval-gated actions. Useful scopes include
+Read scopes are `status:read`, `identity:read`, `contacts:read`,
+`messages:read`, `events:read`, `network:read`, `actions:read`, and
+`audit:read`. Write scopes are effective for approval-gated actions:
 `drafts:write`, `messages:write`, `attachments:write`, `images:write`,
 `reactions:write`, `announces:write`, `paths:write`, `contacts:write`,
-`conversations:write`, `network:write`, `actions:read`, and `audit:read`.
-`messages:write` does not imply files/images, reactions, announces, contacts,
-or network actions.
+`conversations:write`, and `network:write`. Aliases like `read:messages` and
+`write:drafts` are accepted. `messages:write` does not imply files/images,
+reactions, announces, contacts, or network actions.
 
 `ratspeakd` holds a cooperative lock at `.ratspeak/profile.lock`. Owner-run
 identity writes in `ratspeakctl` refuse to run while that lock exists. The
@@ -165,6 +176,12 @@ ratspeakctl --data-dir OWNER_PROFILE approvals approve --agent NAME <action-id>
 ratspeakctl --data-dir AGENT_PROFILE messages send <action-id>
 ```
 
+Bots should include `--client-action-id` on write commands. It is a durable
+idempotency key: retrying with the same ID and identical payload returns the
+original action, while reusing the ID with different payload is rejected. Bots
+should also include `--causal-event-id` or `--causal-message-id` when responding
+to event-stream input so the write policy can prevent feedback loops.
+
 The first `messages send` moves the draft to `pending_approval`. After owner
 approval, running `messages send <action-id>` again executes the already
 approved action through `ratspeakd`. Owners may also run
@@ -187,6 +204,7 @@ conservative:
 - max actions per hour/day: 60 / 200
 - per-contact cooldown: 3 seconds
 - loop window: 10 minutes, max 6 outbound actions per contact
+- max outbound actions per causal event/message: 3 / 2
 - max text bytes: 4096
 - max attachment bytes: Reticulum efficient resource limit
 - allowed MIME prefixes: images, text, PDF, JSON, ZIP, and octet-stream
@@ -198,8 +216,9 @@ security-sensitive owner configuration.
 ## Audit Log
 
 Agent grants, write action creation/submission, owner approvals/rejections,
-cancellations, expirations, execution attempts, and delivery/apply results are
-recorded in `.ratspeak/agent-actions/audit.jsonl`. Use:
+cancellations, expirations, execution attempts, delivery/apply results, daemon
+auth failures, policy denials, event reads, grant changes, and token rotations
+are recorded in `.ratspeak/agent-actions/audit.jsonl`. Use:
 
 ```sh
 ratspeakctl --data-dir OWNER_PROFILE audit list --agent NAME
@@ -209,6 +228,10 @@ ratspeakctl --data-dir AGENT_PROFILE audit list
 Audit records include actor type, actor, event, outcome, action ID, subject
 hash, and structured details. Tokens, raw attachment bytes, base64 payloads, and
 private staged paths are not logged.
+
+Use `approvals inspect-file --agent NAME ACTION_ID` before approving
+unexpected file or image actions. It returns the local staged path, size, MIME
+type, SHA-256 digest, and a text preview for text-like attachments.
 
 ## ratspeakd
 
@@ -253,3 +276,9 @@ Run one owner-controlled profile per agent identity. The owner profile updates
 grants and approvals; the agent profile runs `ratspeakd` and executes only
 approved actions that still pass the active grant, allowlist, expiration, and
 rate policy checks.
+
+For the beta Windows transport, Ratspeak uses loopback TCP or the profile-local
+filesystem request/response transport with mandatory daemon token auth. A
+named-pipe transport with OS ACLs remains the preferred future Windows shape.
+
+See `docs/agent-onboarding-runbook.md` for the full agent/bot onboarding flow.

@@ -139,6 +139,11 @@ jobs:
           unset TAURI_DEV_HOST
           cargo tauri build --bundles ${{ matrix.bundles }}
 
+      - name: Build Ratspeak CLI binaries
+        shell: bash
+        working-directory: Ratspeak
+        run: cargo build -p ratspeak-cli --release --bins
+
       - name: Check for bundled dev URLs
         shell: bash
         working-directory: Ratspeak
@@ -198,6 +203,14 @@ jobs:
               cp "$rpm" "$out_dir/$rpm_artifact"
             fi
           fi
+
+          cli_dir="$out_dir/ratspeak-cli-linux-${{ matrix.arch }}"
+          mkdir -p "$cli_dir"
+          cp target/release/ratspeakctl target/release/ratspeakd "$cli_dir/"
+          chmod +x "$cli_dir/ratspeakctl" "$cli_dir/ratspeakd"
+          "$cli_dir/ratspeakctl" version >/dev/null
+          tar -C "$out_dir" -czf "$out_dir/Ratspeak-${release_version}-cli-linux-${{ matrix.arch }}.tar.gz" "ratspeak-cli-linux-${{ matrix.arch }}"
+          rm -rf "$cli_dir"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

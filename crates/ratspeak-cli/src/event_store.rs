@@ -39,6 +39,7 @@ impl EventStore {
     pub fn open(data_root: PathBuf) -> CliResult<Arc<Self>> {
         let data_dir = data_root.join(".ratspeak");
         std::fs::create_dir_all(&data_dir)?;
+        restrict_dir_permissions(&data_dir)?;
         let cursor = read_cursor(&data_dir)?;
         Ok(Arc::new(Self {
             data_dir,
@@ -111,10 +112,15 @@ impl EventStore {
             payload,
         };
         let line = serde_json::to_string(&record)?;
+        let log_path = event_log_path(&self.data_dir);
+        let existed = log_path.exists();
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(event_log_path(&self.data_dir))?;
+            .open(&log_path)?;
+        if !existed {
+            restrict_file_permissions(&log_path)?;
+        }
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         file.flush()?;
@@ -326,7 +332,37 @@ fn read_cursor(data_dir: &Path) -> CliResult<u64> {
 }
 
 fn write_cursor(data_dir: &Path, cursor: u64) -> CliResult<()> {
-    std::fs::write(data_dir.join(EVENT_CURSOR_FILE), cursor.to_string())?;
+    let path = data_dir.join(EVENT_CURSOR_FILE);
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, cursor.to_string())?;
+    restrict_file_permissions(&tmp)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+fn restrict_file_permissions(path: &Path) -> CliResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+fn restrict_dir_permissions(path: &Path) -> CliResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
     Ok(())
 }
 

@@ -97,6 +97,11 @@ jobs:
           unset TAURI_DEV_HOST
           cargo tauri build --bundles msi nsis
 
+      - name: Build Ratspeak CLI binaries
+        shell: pwsh
+        working-directory: Ratspeak
+        run: cargo build -p ratspeak-cli --release --bins
+
       - name: Check for bundled dev URLs
         shell: bash
         working-directory: Ratspeak
@@ -146,7 +151,14 @@ jobs:
           Copy-Item $msi.FullName "$outDir/$msiName"
           Copy-Item $setup.FullName "$outDir/$setupName"
 
-          Get-Item "$outDir/$msiName", "$outDir/$setupName" |
+          $cliDir = "$outDir/ratspeak-cli-windows-x64"
+          New-Item -ItemType Directory -Path $cliDir | Out-Null
+          Copy-Item "target/release/ratspeakctl.exe", "target/release/ratspeakd.exe" $cliDir
+          & "$cliDir/ratspeakctl.exe" version | Out-Null
+          Compress-Archive -Path $cliDir -DestinationPath "$outDir/Ratspeak-$version-cli-windows-x64.zip" -Force
+          Remove-Item -Recurse -Force $cliDir
+
+          Get-Item "$outDir/$msiName", "$outDir/$setupName", "$outDir/Ratspeak-$version-cli-windows-x64.zip" |
             Format-Table Name, Length
 
       - name: Write Windows checksums

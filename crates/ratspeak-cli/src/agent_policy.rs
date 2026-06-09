@@ -265,6 +265,7 @@ pub fn read_agent_credential_from_data_dir(data_dir: &Path) -> CliResult<Option<
     if !path.exists() {
         return Ok(None);
     }
+    ensure_private_file_permissions(&path)?;
     let bytes = std::fs::read(path)?;
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
@@ -407,6 +408,27 @@ fn restrict_file_permissions(path: &Path) -> CliResult<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+pub fn ensure_private_file_permissions(path: &Path) -> CliResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = std::fs::metadata(path)?;
+        let mode = metadata.permissions().mode() & 0o777;
+        if metadata.is_file() && mode & 0o077 != 0 {
+            return Err(CliError::failed(format!(
+                "private credential file has insecure permissions: {} mode {:o}; expected 0600",
+                path.display(),
+                mode
+            )));
+        }
     }
     #[cfg(not(unix))]
     {

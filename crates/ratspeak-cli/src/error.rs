@@ -27,6 +27,30 @@ impl CliError {
     pub fn exit_code(&self) -> i32 {
         self.exit_code
     }
+
+    pub fn code(&self) -> String {
+        if let Some(rest) = self.message.strip_prefix("daemon API ")
+            && let Some((code, _message)) = rest.split_once(':')
+        {
+            return code.to_string();
+        }
+        if self.exit_code == 2 {
+            "usage".into()
+        } else {
+            "failed".into()
+        }
+    }
+
+    pub fn json_envelope(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ok": false,
+            "error": {
+                "code": self.code(),
+                "message": self.message,
+            },
+            "exit_code": self.exit_code,
+        })
+    }
 }
 
 impl Display for CliError {
