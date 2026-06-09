@@ -4,8 +4,9 @@
 //! `ratspeak-tauri`, so CLI and daemon work can grow without pulling in a UI
 //! host.
 
-mod agent_actions;
-mod agent_policy;
+pub mod agent_actions;
+pub mod agent_admin;
+pub mod agent_policy;
 pub mod commands;
 mod daemon_api;
 mod error;

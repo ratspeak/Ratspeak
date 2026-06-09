@@ -1,17 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
 
-use crate::agent_actions::{self, Actor};
-use crate::agent_policy::{
-    AGENT_MANIFEST_FORMAT, AgentAuth, AgentCommandHints, AgentEnforcement, AgentGrant,
-    AgentManifest, agent_manifest_path, agent_root_from_owner_data_dir, agent_token_path,
-    create_agent_credential, normalize_agent_scopes, push_unique, read_agent_manifest,
-    sorted_unique, token_hash, write_agent_credential, write_agent_manifest,
-};
+use crate::agent_actions;
+use crate::agent_admin;
+use crate::agent_policy::{agent_root_from_owner_data_dir, push_unique};
 use crate::error::{CliError, CliResult};
 use crate::output::{OutputFormat, print_json, print_jsonl};
 use crate::profile::{self, Profile};
@@ -264,20 +260,12 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
     let name = args
         .first()
         .ok_or_else(|| CliError::usage("agent create requires <name>"))?;
-    validate_agent_name(name)?;
 
     let mut rest = args.get(1..).unwrap_or_default().to_vec();
     let identity_mode = take_option(&mut rest, "--identity")?.unwrap_or_else(|| "new".into());
-    if identity_mode != "new" {
-        return Err(CliError::usage(
-            "agent create currently supports only --identity new",
-        ));
-    }
     let explicit_profile_dir = take_option(&mut rest, "--profile-dir")?.map(PathBuf::from);
-    let mut requested_scopes = take_repeated_option(&mut rest, "--scope")?;
-    for preset in take_repeated_option(&mut rest, "--preset")? {
-        requested_scopes.extend(agent_preset_scopes(&preset)?);
-    }
+    let requested_scopes = take_repeated_option(&mut rest, "--scope")?;
+    let presets = take_repeated_option(&mut rest, "--preset")?;
     let allowed_contacts = take_repeated_option(&mut rest, "--allow-contact")?;
     let allowed_conversations = take_repeated_option(&mut rest, "--allow-conversation")?;
     let unknown_contacts =
@@ -285,210 +273,26 @@ fn run_agent_create(profile: &Profile, args: &[String], output: OutputFormat) ->
     let nickname = take_option(&mut rest, "--nickname")?.unwrap_or_else(|| name.to_string());
     ensure_no_extra_args(&rest, "agent create")?;
 
-    for contact in &allowed_contacts {
-        if !ratspeak_runtime::helpers::validate_hex(contact, 16, 64) {
-            return Err(CliError::usage(format!(
-                "invalid --allow-contact hash: {contact}"
-            )));
-        }
-    }
-    if !matches!(unknown_contacts.as_str(), "deny" | "allow") {
-        return Err(CliError::usage(
-            "--unknown-contacts must be either deny or allow",
-        ));
-    }
-    let allowed_conversations = normalize_conversation_grants(allowed_conversations)?;
-
-    let agent_root =
-        explicit_profile_dir.unwrap_or_else(|| profile.config.data_dir.join("agents").join(name));
-    let agent_manifest_path = agent_manifest_path(&agent_root);
-    if agent_manifest_path.exists() {
-        return Err(CliError::failed(format!(
-            "agent already exists: {}",
-            agent_manifest_path.display()
-        )));
-    }
-
-    let _owner_lock = ratspeak_runtime::profile_lock::try_acquire_profile_lock(
-        &profile.config.data_dir,
-        "ratspeakctl agent create",
-    )
-    .map_err(|e| CliError::failed(format!("failed to acquire owner profile lock: {e}")))?;
-
-    let agent_profile = profile::open_profile(agent_root.clone())?;
-    let _agent_lock = ratspeak_runtime::profile_lock::try_acquire_profile_lock(
-        &agent_profile.config.data_dir,
-        "ratspeakctl agent create",
-    )
-    .map_err(|e| CliError::failed(format!("failed to acquire agent profile lock: {e}")))?;
-
-    let created = ratspeak_runtime::identity_service::create_recoverable_identity(
-        &agent_profile.config.data_dir,
-        &agent_profile.db,
-        Some(&nickname),
-        true,
-    )
-    .map_err(|e| CliError::failed(format!("failed to create agent identity: {e}")))?;
-
-    let (effective_scopes, pending_scopes, normalized_requested) =
-        normalize_agent_scopes(requested_scopes)?;
-    let now = unix_now_secs();
-    let credential = create_agent_credential(name, &created.hash, now);
-    let token_path = agent_token_path(&agent_root);
-    let write_policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
-
-    let manifest = AgentManifest {
-        format: AGENT_MANIFEST_FORMAT.into(),
-        version: 1,
-        name: name.to_string(),
-        created_at_unix: now,
-        profile_root: agent_root.clone(),
-        profile_data_dir: agent_profile.config.data_dir.clone(),
-        identity_hash: created.hash.clone(),
-        lxmf_hash: created.lxmf_hash.clone(),
-        display_name: created.display_name.clone(),
-        requested_scopes: normalized_requested,
-        effective_scopes: effective_scopes.clone(),
-        pending_scopes: pending_scopes.clone(),
-        allowed_contacts: sorted_unique(allowed_contacts.clone()),
-        allowed_conversations: allowed_conversations.clone(),
-        unknown_contacts: unknown_contacts.clone(),
-        grant: AgentGrant {
-            status: "active".into(),
-            revision: 1,
-            scopes: effective_scopes,
-            pending_scopes,
-            allowed_contacts: sorted_unique(allowed_contacts),
+    let payload = agent_admin::create_agent(
+        profile,
+        agent_admin::AgentCreateOptions {
+            name: name.clone(),
+            identity_mode,
+            explicit_profile_dir,
+            requested_scopes,
+            presets,
+            allowed_contacts,
             allowed_conversations,
             unknown_contacts,
-            updated_at_unix: now,
-            revoked_at_unix: None,
-            revoke_reason: None,
+            nickname: Some(nickname),
         },
-        auth: AgentAuth {
-            token_hash: token_hash(&credential.token),
-            token_file: token_path.clone(),
-            rotated_at_unix: now,
-        },
-        enforcement: AgentEnforcement {
-            local_daemon_api: true,
-            contact_allowlist: true,
-            write_actions: true,
-            owner_approval: true,
-            audit_log: true,
-            rate_limits: true,
-            note: "ratspeakd enforces daemon API auth, read/write scopes, contact/conversation allowlists, owner approval, audit logging, and profile-local rate limits".into(),
-        },
-        commands: AgentCommandHints {
-            start_daemon: vec![
-                "ratspeakd".into(),
-                "--data-dir".into(),
-                agent_root.display().to_string(),
-                "--events-jsonl".into(),
-            ],
-            status: vec![
-                "ratspeakctl".into(),
-                "--data-dir".into(),
-                agent_root.display().to_string(),
-                "status".into(),
-            ],
-            events_preview: vec![
-                "ratspeakd".into(),
-                "--data-dir".into(),
-                agent_root.display().to_string(),
-                "--events-jsonl".into(),
-            ],
-            events_stream: vec![
-                "ratspeakctl".into(),
-                "--data-dir".into(),
-                agent_root.display().to_string(),
-                "--jsonl".into(),
-                "events".into(),
-                "stream".into(),
-            ],
-        },
-    };
-    write_agent_manifest(&agent_manifest_path, &manifest)?;
-    write_agent_credential(&token_path, &credential)?;
-    append_agent_admin_audit(
-        &agent_root,
-        "grant.created",
-        json!({
-            "agent": name,
-            "grant_revision": manifest.grant.revision,
-            "scopes": manifest.grant.scopes,
-            "allowed_contacts": manifest.grant.allowed_contacts,
-            "allowed_conversations": manifest.grant.allowed_conversations,
-            "unknown_contacts": manifest.grant.unknown_contacts,
-        }),
-    );
-
-    let owner_root_arg = profile.data_root.display().to_string();
-    let agent_root_arg = agent_root.display().to_string();
-    let payload = json!({
-        "agent": manifest,
-        "credential": {
-            "format": credential.format,
-            "token_file": token_path,
-            "token_hash": token_hash(&credential.token),
-            "created_at_unix": credential.created_at_unix,
-        },
-        "identity": created,
-        "next": {
-            "start_daemon": format!("ratspeakd --data-dir {agent_root_arg}"),
-            "inspect": format!("ratspeakctl --data-dir {agent_root_arg} status --pretty"),
-            "events": format!("ratspeakctl --data-dir {agent_root_arg} --jsonl events stream"),
-            "steps": [
-                {
-                    "actor": "owner",
-                    "purpose": "review pending agent actions",
-                    "argv": ["ratspeakctl", "--data-dir", owner_root_arg.clone(), "approvals", "list", "--agent", name]
-                },
-                {
-                    "actor": "owner",
-                    "purpose": "approve an action after review",
-                    "argv": ["ratspeakctl", "--data-dir", owner_root_arg.clone(), "approvals", "approve", "--agent", name, "<action-id>"]
-                },
-                {
-                    "actor": "agent-runtime",
-                    "purpose": "run the Ratspeak daemon for the agent identity",
-                    "argv": ["ratspeakd", "--data-dir", agent_root_arg.clone(), "run"]
-                },
-                {
-                    "actor": "agent",
-                    "purpose": "stream grant-filtered events as JSONL",
-                    "argv": ["ratspeakctl", "--data-dir", agent_root_arg.clone(), "--jsonl", "events", "stream"]
-                }
-            ],
-            "write_policy": write_policy,
-            "note": "read scopes, daemon API auth, allowlists, durable events, write proposals, owner approvals, audit, and rate limits are active"
-        }
-    });
+    )?;
     print_json(&payload, output)
 }
 
 fn run_agent_list(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
     ensure_no_extra_args(args, "agent list")?;
-    let agents_dir = profile.config.data_dir.join("agents");
-    let mut records = Vec::new();
-    if agents_dir.is_dir() {
-        for entry in std::fs::read_dir(&agents_dir)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let path = agent_manifest_path(&entry.path());
-            if let Some(manifest) = read_agent_manifest(&path)? {
-                records.push(serde_json::to_value(manifest)?);
-            }
-        }
-    }
-    records.sort_by(|a, b| {
-        a.get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .cmp(b.get("name").and_then(Value::as_str).unwrap_or(""))
-    });
+    let records = agent_admin::list_agent_manifests(profile)?;
     if output.jsonl {
         print_jsonl(&records)
     } else {
@@ -500,12 +304,8 @@ fn run_agent_show(profile: &Profile, args: &[String], output: OutputFormat) -> C
     let name = args
         .first()
         .ok_or_else(|| CliError::usage("agent show requires <name>"))?;
-    validate_agent_name(name)?;
     ensure_no_extra_args(&args[1..], "agent show")?;
-    let agent_root = profile.config.data_dir.join("agents").join(name);
-    let path = agent_manifest_path(&agent_root);
-    let manifest = read_agent_manifest(&path)?
-        .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
+    let manifest = agent_admin::show_agent_manifest(profile, name)?;
     print_json(&serde_json::to_value(manifest)?, output)
 }
 
@@ -513,7 +313,6 @@ fn run_agent_grant(profile: &Profile, args: &[String], output: OutputFormat) -> 
     let name = args
         .first()
         .ok_or_else(|| CliError::usage("agent grant requires <name>"))?;
-    validate_agent_name(name)?;
     let mut rest = args.get(1..).unwrap_or_default().to_vec();
     let scopes = take_repeated_option(&mut rest, "--scope")?;
     let contacts = take_repeated_option(&mut rest, "--allow-contact")?;
@@ -526,122 +325,22 @@ fn run_agent_grant(profile: &Profile, args: &[String], output: OutputFormat) -> 
     let activate = take_flag(&mut rest, "--activate");
     ensure_no_extra_args(&rest, "agent grant")?;
 
-    let path = agent_manifest_path(&agent_root_from_owner_data_dir(
-        &profile.config.data_dir,
-        name,
-    ));
-    let mut manifest = read_agent_manifest(&path)?
-        .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
-
-    let now = unix_now_secs();
-    let mut grant = manifest.effective_grant();
-    let mut changed = false;
-
-    if !scopes.is_empty() || !presets.is_empty() {
-        let mut expanded_scopes = scopes;
-        for preset in presets {
-            expanded_scopes.extend(agent_preset_scopes(&preset)?);
-        }
-        let (effective, pending, requested) = normalize_agent_scopes(expanded_scopes)?;
-        if replace_scopes {
-            grant.scopes = effective.clone();
-            grant.pending_scopes = pending.clone();
-            manifest.requested_scopes = requested;
-        } else {
-            for scope in effective {
-                push_unique(&mut grant.scopes, scope);
-            }
-            for scope in pending {
-                push_unique(&mut grant.pending_scopes, scope);
-            }
-            for scope in requested {
-                push_unique(&mut manifest.requested_scopes, scope);
-            }
-        }
-        changed = true;
-    }
-
-    if !contacts.is_empty() || replace_contacts {
-        for contact in &contacts {
-            if !ratspeak_runtime::helpers::validate_hex(contact, 16, 64) {
-                return Err(CliError::usage(format!(
-                    "invalid --allow-contact hash: {contact}"
-                )));
-            }
-        }
-        if replace_contacts {
-            grant.allowed_contacts = Vec::new();
-        }
-        for contact in contacts {
-            push_unique(&mut grant.allowed_contacts, contact);
-        }
-        grant.allowed_contacts = sorted_unique(grant.allowed_contacts);
-        changed = true;
-    }
-
-    if !conversations.is_empty() || replace_conversations {
-        let normalized = normalize_conversation_grants(conversations)?;
-        if replace_conversations {
-            grant.allowed_conversations = Vec::new();
-        }
-        for conversation in normalized {
-            push_unique(&mut grant.allowed_conversations, conversation);
-        }
-        grant.allowed_conversations = sorted_unique(grant.allowed_conversations);
-        changed = true;
-    }
-
-    if let Some(value) = unknown_contacts {
-        if !matches!(value.as_str(), "deny" | "allow") {
-            return Err(CliError::usage(
-                "--unknown-contacts must be either deny or allow",
-            ));
-        }
-        grant.unknown_contacts = value;
-        changed = true;
-    }
-
-    if activate {
-        grant.status = "active".into();
-        grant.revoked_at_unix = None;
-        grant.revoke_reason = None;
-        changed = true;
-    }
-
-    if changed {
-        grant.revision += 1;
-        grant.updated_at_unix = now;
-        manifest.grant = grant.clone();
-        manifest.effective_scopes = grant.scopes.clone();
-        manifest.pending_scopes = grant.pending_scopes.clone();
-        manifest.allowed_contacts = grant.allowed_contacts.clone();
-        manifest.allowed_conversations = grant.allowed_conversations.clone();
-        manifest.unknown_contacts = grant.unknown_contacts.clone();
-        write_agent_manifest(&path, &manifest)?;
-        append_agent_admin_audit(
-            &agent_root_from_owner_data_dir(&profile.config.data_dir, name),
-            "grant.updated",
-            json!({
-                "agent": manifest.name,
-                "grant_revision": grant.revision,
-                "scopes": grant.scopes,
-                "pending_scopes": grant.pending_scopes,
-                "allowed_contacts": grant.allowed_contacts,
-                "allowed_conversations": grant.allowed_conversations,
-                "unknown_contacts": grant.unknown_contacts,
-            }),
-        );
-    }
-
-    print_json(
-        &json!({
-            "agent": manifest.name,
-            "grant": grant,
-            "changed": changed,
-            "runtime_note": "restart ratspeakd for this agent profile after changing grants",
-        }),
-        output,
-    )
+    let payload = agent_admin::update_agent_grant(
+        profile,
+        agent_admin::AgentGrantUpdate {
+            name: name.clone(),
+            scopes,
+            presets,
+            contacts,
+            conversations,
+            unknown_contacts,
+            replace_scopes,
+            replace_contacts,
+            replace_conversations,
+            activate,
+        },
+    )?;
+    print_json(&payload, output)
 }
 
 fn run_agent_policy(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
@@ -656,43 +355,21 @@ fn run_agent_policy(profile: &Profile, args: &[String], output: OutputFormat) ->
     let name = args
         .get(1)
         .ok_or_else(|| CliError::usage(format!("agent policy {subcommand} requires <name>")))?;
-    validate_agent_name(name)?;
-    let agent_root = agent_root_from_owner_data_dir(&profile.config.data_dir, name);
-    let manifest_path = agent_manifest_path(&agent_root);
-    let manifest = read_agent_manifest(&manifest_path)?
-        .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
-    let agent_profile = profile::open_profile(agent_root.clone())?;
+    agent_admin::validate_agent_name(name)?;
     match subcommand {
         "show" => {
             ensure_no_extra_args(&args[2..], "agent policy show")?;
-            let policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
-            print_json(
-                &json!({
-                    "agent": manifest.name,
-                    "policy": policy,
-                    "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
-                }),
-                output,
-            )
+            print_json(&agent_admin::show_agent_policy(profile, name)?, output)
         }
         "validate" => {
             ensure_no_extra_args(&args[2..], "agent policy validate")?;
-            let policy = agent_actions::read_write_policy(&agent_profile.config.data_dir)?;
-            agent_actions::validate_write_policy(&policy)?;
-            print_json(
-                &json!({
-                    "agent": manifest.name,
-                    "ok": true,
-                    "policy_revision": policy.policy_revision,
-                    "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
-                }),
-                output,
-            )
+            print_json(&agent_admin::validate_agent_policy(profile, name)?, output)
         }
         "set" => {
             let mut rest = args.get(2..).unwrap_or_default().to_vec();
-            let mut policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
-            let before = serde_json::to_value(&policy)?;
+            let current = agent_admin::show_agent_policy(profile, name)?;
+            let mut policy: agent_actions::AgentWritePolicy =
+                serde_json::from_value(current["policy"].clone())?;
 
             for pair in take_repeated_option(&mut rest, "--set")? {
                 let (key, value) = pair
@@ -906,30 +583,15 @@ fn run_agent_policy(profile: &Profile, args: &[String], output: OutputFormat) ->
             }
             ensure_no_extra_args(&rest, "agent policy set")?;
 
-            let changed = serde_json::to_value(&policy)? != before;
-            if changed {
-                policy.policy_revision += 1;
-                agent_actions::write_write_policy(&agent_profile.config.data_dir, &policy)?;
-                append_agent_admin_audit(
-                    &agent_root,
-                    "policy.updated",
-                    json!({
-                        "agent": manifest.name,
-                        "policy_revision": policy.policy_revision,
-                        "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
-                    }),
-                );
-            }
-            print_json(
-                &json!({
-                    "agent": manifest.name,
-                    "changed": changed,
-                    "policy": policy,
-                    "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
-                    "runtime_note": "policy changes are read by ratspeakd on the next action create/submit/execute",
-                }),
-                output,
-            )
+            let payload = agent_admin::set_agent_policy(
+                profile,
+                name,
+                agent_admin::AgentPolicyPatch {
+                    policy: Some(policy),
+                    set: Vec::new(),
+                },
+            )?;
+            print_json(&payload, output)
         }
         other => Err(CliError::usage(format!(
             "unknown agent policy command: {other}"
@@ -941,44 +603,11 @@ fn run_agent_revoke(profile: &Profile, args: &[String], output: OutputFormat) ->
     let name = args
         .first()
         .ok_or_else(|| CliError::usage("agent revoke requires <name>"))?;
-    validate_agent_name(name)?;
     let mut rest = args.get(1..).unwrap_or_default().to_vec();
     let reason = take_option(&mut rest, "--reason")?;
     ensure_no_extra_args(&rest, "agent revoke")?;
 
-    let path = agent_manifest_path(&agent_root_from_owner_data_dir(
-        &profile.config.data_dir,
-        name,
-    ));
-    let mut manifest = read_agent_manifest(&path)?
-        .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
-    let now = unix_now_secs();
-    let mut grant = manifest.effective_grant();
-    grant.status = "revoked".into();
-    grant.revision += 1;
-    grant.updated_at_unix = now;
-    grant.revoked_at_unix = Some(now);
-    grant.revoke_reason = reason;
-    manifest.grant = grant.clone();
-    write_agent_manifest(&path, &manifest)?;
-    append_agent_admin_audit(
-        &agent_root_from_owner_data_dir(&profile.config.data_dir, name),
-        "grant.revoked",
-        json!({
-            "agent": manifest.name,
-            "grant_revision": grant.revision,
-            "reason": grant.revoke_reason,
-        }),
-    );
-
-    print_json(
-        &json!({
-            "agent": manifest.name,
-            "grant": grant,
-            "runtime_note": "restart ratspeakd for this agent profile after revoking grants",
-        }),
-        output,
-    )
+    print_json(&agent_admin::revoke_agent(profile, name, reason)?, output)
 }
 
 fn run_agent_rotate_token(
@@ -989,51 +618,9 @@ fn run_agent_rotate_token(
     let name = args
         .first()
         .ok_or_else(|| CliError::usage("agent rotate-token requires <name>"))?;
-    validate_agent_name(name)?;
     ensure_no_extra_args(&args[1..], "agent rotate-token")?;
 
-    let agent_root = agent_root_from_owner_data_dir(&profile.config.data_dir, name);
-    let path = agent_manifest_path(&agent_root);
-    let mut manifest = read_agent_manifest(&path)?
-        .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
-    let now = unix_now_secs();
-    let credential = create_agent_credential(name, &manifest.identity_hash, now);
-    let token_path = agent_token_path(&agent_root);
-    manifest.auth = AgentAuth {
-        token_hash: token_hash(&credential.token),
-        token_file: token_path.clone(),
-        rotated_at_unix: now,
-    };
-    let mut grant = manifest.effective_grant();
-    grant.revision += 1;
-    grant.updated_at_unix = now;
-    manifest.grant = grant.clone();
-    write_agent_manifest(&path, &manifest)?;
-    write_agent_credential(&token_path, &credential)?;
-    append_agent_admin_audit(
-        &agent_root,
-        "token.rotated",
-        json!({
-            "agent": manifest.name,
-            "grant_revision": grant.revision,
-            "token_file": token_path,
-            "token_hash": token_hash(&credential.token),
-        }),
-    );
-
-    print_json(
-        &json!({
-            "agent": manifest.name,
-            "credential": {
-                "token_file": token_path,
-                "token_hash": token_hash(&credential.token),
-                "rotated_at_unix": now,
-            },
-            "grant": grant,
-            "runtime_note": "restart ratspeakd for this agent profile after rotating credentials",
-        }),
-        output,
-    )
+    print_json(&agent_admin::rotate_agent_token(profile, name)?, output)
 }
 
 fn run_identity(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
@@ -1837,7 +1424,7 @@ fn run_events(profile: &Profile, args: &[String], output: OutputFormat) -> CliRe
             ensure_no_extra_args(&rest, "events stream")?;
 
             let target_profile = if let Some(agent_name) = agent {
-                validate_agent_name(&agent_name)?;
+                agent_admin::validate_agent_name(&agent_name)?;
                 let agent_root =
                     agent_root_from_owner_data_dir(&profile.config.data_dir, &agent_name);
                 profile::open_profile(agent_root)?
@@ -1928,20 +1515,21 @@ fn run_approvals(profile: &Profile, args: &[String], output: OutputFormat) -> Cl
     let subcommand = args.first().map(String::as_str).unwrap_or("list");
     let mut rest = args.get(1..).unwrap_or_default().to_vec();
     let agent = take_option(&mut rest, "--agent")?;
-    let target = approval_target_profile(profile, agent.as_deref())?;
     match subcommand {
         "list" => {
             let state = take_option(&mut rest, "--state")?
                 .unwrap_or_else(|| agent_actions::STATE_PENDING_APPROVAL.into());
             ensure_no_extra_args(&rest, "approvals list")?;
-            let records = agent_actions::list_actions(&target.config.data_dir, None, Some(&state))?
-                .into_iter()
-                .map(|record| agent_actions::public_action(record, false))
-                .collect::<Vec<_>>();
+            let payload =
+                agent_admin::list_agent_approvals(profile, agent.as_deref(), Some(&state))?;
             if output.jsonl {
-                print_jsonl(&records)
+                let records = payload
+                    .get("actions")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| CliError::failed("expected actions array"))?;
+                print_jsonl(records)
             } else {
-                print_json(&json!({ "actions": records }), output)
+                print_json(&payload, output)
             }
         }
         "show" | "read" => {
@@ -1949,8 +1537,10 @@ fn run_approvals(profile: &Profile, args: &[String], output: OutputFormat) -> Cl
                 .first()
                 .ok_or_else(|| CliError::usage("approvals show requires <action-id>"))?;
             ensure_no_extra_args(&rest[1..], "approvals show")?;
-            let record = agent_actions::read_action(&target.config.data_dir, id)?;
-            print_json(&agent_actions::public_action(record, true), output)
+            print_json(
+                &agent_admin::show_agent_approval(profile, agent.as_deref(), id)?,
+                output,
+            )
         }
         "inspect-file" | "file" => {
             let id = rest
@@ -1961,8 +1551,9 @@ fn run_approvals(profile: &Profile, args: &[String], output: OutputFormat) -> Cl
             let file_id = take_option(&mut rest, "--file-id")?;
             let preview_bytes = take_usize_option(&mut rest, "--preview-bytes", 1000)?;
             ensure_no_extra_args(&rest, "approvals inspect-file")?;
-            let payload = agent_actions::inspect_staged_file(
-                &target.config.data_dir,
+            let payload = agent_admin::inspect_agent_staged_file(
+                profile,
+                agent.as_deref(),
                 &id,
                 file_id.as_deref(),
                 preview_bytes,
@@ -1978,14 +1569,8 @@ fn run_approvals(profile: &Profile, args: &[String], output: OutputFormat) -> Cl
             let note = take_option(&mut rest, "--note")?;
             let execute = take_flag(&mut rest, "--execute");
             ensure_no_extra_args(&rest, "approvals approve")?;
-            let mut payload = agent_actions::public_action(
-                agent_actions::approve_action(&target.config.data_dir, &id, note)?,
-                true,
-            );
-            append_owner_action_event(&target.config.data_dir, "agent.action.approved", &id);
-            if execute {
-                payload = daemon_required(&target, "actions.execute", json!({ "id": id }))?;
-            }
+            let payload =
+                agent_admin::approve_agent_action(profile, agent.as_deref(), &id, note, execute)?;
             print_json(&payload, output)
         }
         "reject" | "deny" => {
@@ -1996,9 +1581,10 @@ fn run_approvals(profile: &Profile, args: &[String], output: OutputFormat) -> Cl
             rest.remove(0);
             let note = take_option(&mut rest, "--note")?;
             ensure_no_extra_args(&rest, "approvals reject")?;
-            let record = agent_actions::reject_action(&target.config.data_dir, &id, note)?;
-            append_owner_action_event(&target.config.data_dir, "agent.action.rejected", &id);
-            print_json(&agent_actions::public_action(record, true), output)
+            print_json(
+                &agent_admin::reject_agent_action(profile, agent.as_deref(), &id, note)?,
+                output,
+            )
         }
         "cancel" => {
             let id = rest
@@ -2008,23 +1594,25 @@ fn run_approvals(profile: &Profile, args: &[String], output: OutputFormat) -> Cl
             rest.remove(0);
             let note = take_option(&mut rest, "--note")?;
             ensure_no_extra_args(&rest, "approvals cancel")?;
-            let record =
-                agent_actions::cancel_action(&target.config.data_dir, &id, Actor::owner(), note)?;
-            append_owner_action_event(&target.config.data_dir, "agent.action.cancelled", &id);
-            print_json(&agent_actions::public_action(record, true), output)
+            print_json(
+                &agent_admin::cancel_agent_action(profile, agent.as_deref(), &id, note)?,
+                output,
+            )
         }
         "execute" => {
             let id = rest
                 .first()
                 .ok_or_else(|| CliError::usage("approvals execute requires <action-id>"))?;
             ensure_no_extra_args(&rest[1..], "approvals execute")?;
-            let payload = daemon_required(&target, "actions.execute", json!({ "id": id }))?;
+            let payload = agent_admin::execute_agent_action(profile, agent.as_deref(), id)?;
             print_json(&payload, output)
         }
         "expire" => {
             ensure_no_extra_args(&rest, "approvals expire")?;
-            let expired = agent_actions::expire_due_actions(&target.config.data_dir)?;
-            print_json(&json!({ "expired": expired }), output)
+            print_json(
+                &agent_admin::expire_agent_actions(profile, agent.as_deref())?,
+                output,
+            )
         }
         other => Err(CliError::usage(format!(
             "unknown approvals command: {other}"
@@ -2040,15 +1628,15 @@ fn run_audit(profile: &Profile, args: &[String], output: OutputFormat) -> CliRes
             let limit = take_usize_option(&mut rest, "--limit", 100)?;
             ensure_no_extra_args(&rest, "audit list")?;
             if let Some(agent_name) = agent {
-                let target = approval_target_profile(profile, Some(&agent_name))?;
-                let records = agent_actions::list_audit(&target.config.data_dir, limit)?
-                    .into_iter()
-                    .map(|record| serde_json::to_value(record).unwrap_or(Value::Null))
-                    .collect::<Vec<_>>();
+                let payload = agent_admin::list_agent_audit(profile, Some(&agent_name), limit)?;
                 if output.jsonl {
-                    print_jsonl(&records)
+                    let records = payload
+                        .get("audit")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| CliError::failed("expected audit array"))?;
+                    print_jsonl(records)
                 } else {
-                    print_json(&json!({ "audit": records }), output)
+                    print_json(&payload, output)
                 }
             } else if let Some(payload) =
                 daemon_read(profile, "audit.list", json!({ "limit": limit }))?
@@ -2107,11 +1695,11 @@ fn daemon_contract_payload() -> Value {
             "policy": "ratspeakctl agent policy show|validate|set NAME"
         },
         "presets": {
-            "inbox-reader": agent_preset_scopes("inbox-reader").unwrap_or_default(),
-            "reply-assistant": agent_preset_scopes("reply-assistant").unwrap_or_default(),
-            "media-assistant": agent_preset_scopes("media-assistant").unwrap_or_default(),
-            "network-helper": agent_preset_scopes("network-helper").unwrap_or_default(),
-            "openclaw-basic": agent_preset_scopes("openclaw-basic").unwrap_or_default()
+            "inbox-reader": agent_admin::agent_preset_scopes("inbox-reader").unwrap_or_default(),
+            "reply-assistant": agent_admin::agent_preset_scopes("reply-assistant").unwrap_or_default(),
+            "media-assistant": agent_admin::agent_preset_scopes("media-assistant").unwrap_or_default(),
+            "network-helper": agent_admin::agent_preset_scopes("network-helper").unwrap_or_default(),
+            "openclaw-basic": agent_admin::agent_preset_scopes("openclaw-basic").unwrap_or_default()
         },
         "daemon_methods": [
             {"method": "status.get", "scope": "status:read"},
@@ -2334,122 +1922,7 @@ fn apply_policy_key_value(
     key: &str,
     value: &str,
 ) -> CliResult<()> {
-    match key.trim().replace('-', "_").as_str() {
-        "require_owner_approval" => {
-            policy.require_owner_approval = parse_bool_value(key, value)?;
-        }
-        "auto_approval_enabled" | "auto_approval" => {
-            policy.auto_approval_enabled = parse_bool_value(key, value)?;
-        }
-        "auto_approval_requires_causal_context" => {
-            policy.auto_approval_requires_causal_context = parse_bool_value(key, value)?;
-        }
-        "auto_approval_requires_verified_causal_context" => {
-            policy.auto_approval_requires_verified_causal_context = parse_bool_value(key, value)?;
-        }
-        "auto_approval_allow_attachments" => {
-            policy.auto_approval_allow_attachments = parse_bool_value(key, value)?;
-        }
-        "require_causal_context_for_outbound" | "require_causal_context" => {
-            policy.require_causal_context_for_outbound = parse_bool_value(key, value)?;
-        }
-        "require_verified_causal_context" => {
-            policy.require_verified_causal_context = parse_bool_value(key, value)?;
-        }
-        "allow_agent_file_paths" => {
-            policy.allow_agent_file_paths = parse_bool_value(key, value)?;
-        }
-        "allow_message_attachments" | "allow_attachments" => {
-            policy.allow_message_attachments = parse_bool_value(key, value)?;
-        }
-        "allow_message_images" | "allow_images" => {
-            policy.allow_message_images = parse_bool_value(key, value)?;
-        }
-        "allow_message_reactions" | "allow_reactions" => {
-            policy.allow_message_reactions = parse_bool_value(key, value)?;
-        }
-        "allow_contact_mutations" => {
-            policy.allow_contact_mutations = parse_bool_value(key, value)?;
-        }
-        "allow_conversation_mutations" => {
-            policy.allow_conversation_mutations = parse_bool_value(key, value)?;
-        }
-        "allow_identity_announce" => {
-            policy.allow_identity_announce = parse_bool_value(key, value)?;
-        }
-        "allow_path_request" => {
-            policy.allow_path_request = parse_bool_value(key, value)?;
-        }
-        "allow_forced_propagated_delivery" => {
-            policy.allow_forced_propagated_delivery = parse_bool_value(key, value)?;
-        }
-        "allow_static_propagation_nodes_only" | "static_propagation_nodes_only" => {
-            policy.allow_static_propagation_nodes_only = parse_bool_value(key, value)?;
-        }
-        "max_text_chars" => policy.max_text_chars = parse_usize_value(key, value)?,
-        "max_text_bytes" => policy.max_text_bytes = parse_usize_value(key, value)?,
-        "max_attachment_bytes" => {
-            policy.max_attachment_bytes = parse_usize_value(key, value)?;
-        }
-        "max_file_bytes" => policy.max_file_bytes = parse_usize_value(key, value)?,
-        "max_image_bytes" => policy.max_image_bytes = parse_usize_value(key, value)?,
-        "max_actions_per_hour" => {
-            policy.max_actions_per_hour = parse_usize_value(key, value)?;
-        }
-        "max_actions_per_day" => policy.max_actions_per_day = parse_usize_value(key, value)?,
-        "max_pending_actions" => policy.max_pending_actions = parse_usize_value(key, value)?,
-        "per_contact_cooldown_secs" => {
-            policy.per_contact_cooldown_secs = parse_u64_value(key, value)?;
-        }
-        "inbound_loop_window_secs" => {
-            policy.inbound_loop_window_secs = parse_u64_value(key, value)?;
-        }
-        "max_messages_per_contact_hour" => {
-            policy.max_messages_per_contact_hour = parse_usize_value(key, value)?;
-        }
-        "max_messages_per_contact_day" => {
-            policy.max_messages_per_contact_day = parse_usize_value(key, value)?;
-        }
-        "max_announces_per_hour" => {
-            policy.max_announces_per_hour = parse_usize_value(key, value)?;
-        }
-        "max_announces_per_day" => {
-            policy.max_announces_per_day = parse_usize_value(key, value)?;
-        }
-        "min_announce_interval_secs" => {
-            policy.min_announce_interval_secs = parse_u64_value(key, value)?;
-        }
-        "max_path_requests_per_hour" => {
-            policy.max_path_requests_per_hour = parse_usize_value(key, value)?;
-        }
-        "max_path_requests_per_day" => {
-            policy.max_path_requests_per_day = parse_usize_value(key, value)?;
-        }
-        "min_path_request_interval_secs" => {
-            policy.min_path_request_interval_secs = parse_u64_value(key, value)?;
-        }
-        "auto_approval_max_text_chars" | "auto_max_text_chars" => {
-            policy.auto_approval_max_text_chars = parse_usize_value(key, value)?;
-        }
-        "auto_approval_max_text_bytes" | "auto_max_text_bytes" => {
-            policy.auto_approval_max_text_bytes = parse_usize_value(key, value)?;
-        }
-        "auto_approval_unknown_contacts" => {
-            policy.auto_approval_unknown_contacts = value.trim().to_string();
-        }
-        "auto_approval_max_actions_per_hour" | "auto_max_actions_per_hour" => {
-            policy.auto_approval_max_actions_per_hour = parse_usize_value(key, value)?;
-        }
-        "auto_approval_max_actions_per_day" | "auto_max_actions_per_day" => {
-            policy.auto_approval_max_actions_per_day = parse_usize_value(key, value)?;
-        }
-        other => {
-            return Err(CliError::usage(format!(
-                "unsupported agent policy key: {other}"
-            )));
-        }
-    }
-    Ok(())
+    agent_admin::apply_policy_value(policy, key, json!(value))
 }
 
 fn parse_bool_value(name: &str, value: &str) -> CliResult<bool> {
@@ -2458,20 +1931,6 @@ fn parse_bool_value(name: &str, value: &str) -> CliResult<bool> {
         "false" | "no" | "0" | "off" => Ok(false),
         _ => Err(CliError::usage(format!("{name} must be true or false"))),
     }
-}
-
-fn parse_usize_value(name: &str, value: &str) -> CliResult<usize> {
-    value
-        .trim()
-        .parse::<usize>()
-        .map_err(|_| CliError::usage(format!("{name} must be an unsigned integer")))
-}
-
-fn parse_u64_value(name: &str, value: &str) -> CliResult<u64> {
-    value
-        .trim()
-        .parse::<u64>()
-        .map_err(|_| CliError::usage(format!("{name} must be an unsigned integer")))
 }
 
 fn push_unique_path(values: &mut Vec<PathBuf>, value: PathBuf) {
@@ -2501,92 +1960,6 @@ fn init_tracing() {
         .with_target(false)
         .with_writer(std::io::stderr)
         .try_init();
-}
-
-fn validate_agent_name(name: &str) -> CliResult<()> {
-    if name.is_empty() || name.len() > 64 {
-        return Err(CliError::usage(
-            "agent name must be between 1 and 64 characters",
-        ));
-    }
-    if !name
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-    {
-        return Err(CliError::usage(
-            "agent name may contain only ASCII letters, numbers, '.', '-', and '_'",
-        ));
-    }
-    if name == "." || name == ".." {
-        return Err(CliError::usage("agent name cannot be '.' or '..'"));
-    }
-    Ok(())
-}
-
-fn agent_preset_scopes(preset: &str) -> CliResult<Vec<String>> {
-    let scopes = match preset {
-        "inbox-reader" => vec![
-            "read:status",
-            "read:identity",
-            "read:contacts",
-            "read:messages",
-            "read:events",
-        ],
-        "reply-assistant" | "openclaw-basic" => vec![
-            "read:status",
-            "read:identity",
-            "read:contacts",
-            "read:messages",
-            "read:events",
-            "read:actions",
-            "read:audit",
-            "write:drafts",
-            "write:messages",
-        ],
-        "media-assistant" => vec![
-            "read:status",
-            "read:identity",
-            "read:contacts",
-            "read:messages",
-            "read:events",
-            "read:actions",
-            "read:audit",
-            "write:drafts",
-            "write:messages",
-            "write:attachments",
-            "write:images",
-        ],
-        "network-helper" => vec![
-            "read:status",
-            "read:network",
-            "read:events",
-            "read:actions",
-            "write:announces",
-            "write:paths",
-        ],
-        other => {
-            return Err(CliError::usage(format!(
-                "unsupported agent preset: {other}; expected inbox-reader, reply-assistant, media-assistant, network-helper, or openclaw-basic"
-            )));
-        }
-    };
-    Ok(scopes.into_iter().map(str::to_string).collect())
-}
-
-fn normalize_conversation_grants(values: Vec<String>) -> CliResult<Vec<String>> {
-    let mut normalized = Vec::new();
-    for value in values {
-        let Some(dest_hash) = crate::agent_policy::dest_hash_from_conversation_id(&value) else {
-            return Err(CliError::usage(format!(
-                "invalid --allow-conversation id or hash: {value}"
-            )));
-        };
-        push_unique(
-            &mut normalized,
-            crate::agent_policy::conversation_id_for_dest(&dest_hash),
-        );
-    }
-    Ok(sorted_unique(normalized))
 }
 
 fn unread_breakdown(profile: &Profile, identity_id: &str) -> Vec<Value> {
@@ -2638,16 +2011,6 @@ fn daemon_required(profile: &Profile, method: &str, params: Value) -> CliResult<
     })
 }
 
-fn approval_target_profile(profile: &Profile, agent: Option<&str>) -> CliResult<Profile> {
-    if let Some(agent_name) = agent {
-        validate_agent_name(agent_name)?;
-        let agent_root = agent_root_from_owner_data_dir(&profile.config.data_dir, agent_name);
-        profile::open_profile(agent_root)
-    } else {
-        Ok(profile.clone())
-    }
-}
-
 fn enforce_agent_file_source_policy(
     profile: &Profile,
     file: &str,
@@ -2688,30 +2051,6 @@ fn enforce_agent_file_source_policy(
             "local file is outside the agent policy allowed_source_roots",
         ))
     }
-}
-
-fn append_owner_action_event(data_dir: &std::path::Path, event: &str, action_id: &str) {
-    let _ = crate::event_store::EventStore::append_daemon_event(
-        data_dir,
-        event,
-        json!({
-            "action_id": action_id,
-            "actor": "owner",
-        }),
-    );
-}
-
-fn append_agent_admin_audit(agent_root: &Path, event: &str, details: Value) {
-    let data_dir = agent_root.join(".ratspeak");
-    let _ = agent_actions::append_audit(
-        &data_dir,
-        Actor::owner(),
-        event,
-        "ok",
-        None,
-        details,
-        vec!["token".into()],
-    );
 }
 
 fn print_json_or_jsonl_array(value: &Value, output: OutputFormat) -> CliResult<()> {
