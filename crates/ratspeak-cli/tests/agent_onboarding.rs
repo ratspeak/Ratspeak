@@ -637,6 +637,70 @@ fn daemon_agent_write_approval_audit_and_limits_smoke() {
     assert_eq!(approved["state"], "approved");
     assert_eq!(approved["approval"]["actor"], "owner");
 
+    let policy = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "policy",
+        "set",
+        "agent-writer",
+        "--auto-approval",
+        "true",
+        "--auto-allow-contact",
+        allowed_text,
+        "--set",
+        "auto_approval_requires_causal_context=false",
+        "--set",
+        "auto_approval_requires_verified_causal_context=false",
+        "--set",
+        "per_contact_cooldown_secs=0",
+        "--auto-max-actions-per-hour",
+        "5",
+    ]);
+    assert_eq!(policy["changed"], true);
+    assert_eq!(policy["policy"]["auto_approval_enabled"], true);
+    assert!(
+        policy["policy"]["policy_revision"]
+            .as_u64()
+            .expect("policy revision")
+            > 1
+    );
+    let policy_show = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "policy",
+        "show",
+        "agent-writer",
+    ]);
+    assert_eq!(policy_show["policy"]["auto_approval_enabled"], true);
+    let policy_validate = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "policy",
+        "validate",
+        "agent-writer",
+    ]);
+    assert_eq!(policy_validate["ok"], true);
+
+    let auto = run_json(&[
+        "--data-dir",
+        &agent_profile,
+        "messages",
+        "draft",
+        &format!("lxmf:{allowed_text}"),
+        "--text",
+        "auto approved text",
+        "--client-action-id",
+        "auto-allowed-text-1",
+        "--submit",
+    ]);
+    assert_eq!(auto["kind"], "message.send");
+    assert_eq!(auto["state"], "approved");
+    assert_eq!(auto["policy"]["approval_required"], false);
+    assert_eq!(auto["approval"]["actor"], "policy:auto");
+
     let image_path = root.join("tiny.png");
     std::fs::write(&image_path, b"not really a png but enough bytes").expect("write tiny image");
     let image = run_json(&[
@@ -719,6 +783,52 @@ fn daemon_agent_write_approval_audit_and_limits_smoke() {
         .map(|entries| entries.count())
         .unwrap_or(0);
     assert_eq!(staged_after_reject, staged_count);
+
+    let tightened = run_json(&[
+        "--data-dir",
+        &owner_arg,
+        "agent",
+        "policy",
+        "set",
+        "agent-writer",
+        "--max-text-chars",
+        "5",
+        "--allow-agent-file-paths",
+        "false",
+    ]);
+    assert_eq!(tightened["changed"], true);
+    assert!(
+        run_fail(&[
+            "--data-dir",
+            &agent_profile,
+            "messages",
+            "draft",
+            &format!("lxmf:{allowed_text}"),
+            "--text",
+            "too long for policy",
+            "--client-action-id",
+            "too-long-1",
+        ])
+        .contains("policy_denied")
+    );
+    assert!(
+        run_fail(&[
+            "--data-dir",
+            &agent_profile,
+            "messages",
+            "send-image",
+            &format!("lxmf:{allowed_image}"),
+            "--file",
+            &path_arg(&image_path),
+            "--name",
+            "tiny",
+            "--mime",
+            "image/png",
+            "--client-action-id",
+            "image-blocked-source-1",
+        ])
+        .contains("agent policy blocks reading local file paths")
+    );
 
     let announce = run_json(&[
         "--data-dir",

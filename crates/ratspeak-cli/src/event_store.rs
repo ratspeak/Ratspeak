@@ -168,6 +168,27 @@ pub fn read_events(
     Ok(records)
 }
 
+pub fn find_event_by_id(data_dir: &Path, id: u64) -> CliResult<Option<EventRecord>> {
+    let path = event_log_path(data_dir);
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: EventRecord = serde_json::from_str(&line)?;
+        if record.id == id {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
 pub fn latest_event_id(data_dir: &Path) -> CliResult<u64> {
     read_cursor(data_dir)
 }

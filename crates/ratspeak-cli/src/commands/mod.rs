@@ -253,6 +253,7 @@ fn run_agent(profile: &Profile, args: &[String], output: OutputFormat) -> CliRes
         "list" => run_agent_list(profile, &args[1..], output),
         "show" => run_agent_show(profile, &args[1..], output),
         "grant" => run_agent_grant(profile, &args[1..], output),
+        "policy" => run_agent_policy(profile, &args[1..], output),
         "revoke" => run_agent_revoke(profile, &args[1..], output),
         "rotate-token" => run_agent_rotate_token(profile, &args[1..], output),
         other => Err(CliError::usage(format!("unknown agent command: {other}"))),
@@ -641,6 +642,299 @@ fn run_agent_grant(profile: &Profile, args: &[String], output: OutputFormat) -> 
         }),
         output,
     )
+}
+
+fn run_agent_policy(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    let subcommand = args.first().map(String::as_str).unwrap_or("show");
+    if subcommand == "defaults" {
+        ensure_no_extra_args(&args[1..], "agent policy defaults")?;
+        return print_json(
+            &serde_json::to_value(agent_actions::AgentWritePolicy::default())?,
+            output,
+        );
+    }
+    let name = args
+        .get(1)
+        .ok_or_else(|| CliError::usage(format!("agent policy {subcommand} requires <name>")))?;
+    validate_agent_name(name)?;
+    let agent_root = agent_root_from_owner_data_dir(&profile.config.data_dir, name);
+    let manifest_path = agent_manifest_path(&agent_root);
+    let manifest = read_agent_manifest(&manifest_path)?
+        .ok_or_else(|| CliError::failed(format!("agent not found: {name}")))?;
+    let agent_profile = profile::open_profile(agent_root.clone())?;
+    match subcommand {
+        "show" => {
+            ensure_no_extra_args(&args[2..], "agent policy show")?;
+            let policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
+            print_json(
+                &json!({
+                    "agent": manifest.name,
+                    "policy": policy,
+                    "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
+                }),
+                output,
+            )
+        }
+        "validate" => {
+            ensure_no_extra_args(&args[2..], "agent policy validate")?;
+            let policy = agent_actions::read_write_policy(&agent_profile.config.data_dir)?;
+            agent_actions::validate_write_policy(&policy)?;
+            print_json(
+                &json!({
+                    "agent": manifest.name,
+                    "ok": true,
+                    "policy_revision": policy.policy_revision,
+                    "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
+                }),
+                output,
+            )
+        }
+        "set" => {
+            let mut rest = args.get(2..).unwrap_or_default().to_vec();
+            let mut policy = agent_actions::ensure_write_policy(&agent_profile.config.data_dir)?;
+            let before = serde_json::to_value(&policy)?;
+
+            for pair in take_repeated_option(&mut rest, "--set")? {
+                let (key, value) = pair
+                    .split_once('=')
+                    .ok_or_else(|| CliError::usage("--set requires key=value"))?;
+                apply_policy_key_value(&mut policy, key, value)?;
+            }
+
+            apply_policy_bool_option(
+                &mut rest,
+                "--require-owner-approval",
+                &mut policy.require_owner_approval,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--auto-approval",
+                &mut policy.auto_approval_enabled,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--require-causal-context",
+                &mut policy.require_causal_context_for_outbound,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--require-verified-causal-context",
+                &mut policy.require_verified_causal_context,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-agent-file-paths",
+                &mut policy.allow_agent_file_paths,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-attachments",
+                &mut policy.allow_message_attachments,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-images",
+                &mut policy.allow_message_images,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-reactions",
+                &mut policy.allow_message_reactions,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-contact-mutations",
+                &mut policy.allow_contact_mutations,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-conversation-mutations",
+                &mut policy.allow_conversation_mutations,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-conversation-delete",
+                &mut policy.allow_conversation_delete,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-identity-announce",
+                &mut policy.allow_identity_announce,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-path-request",
+                &mut policy.allow_path_request,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--allow-forced-propagated-delivery",
+                &mut policy.allow_forced_propagated_delivery,
+            )?;
+            apply_policy_bool_option(
+                &mut rest,
+                "--static-propagation-nodes-only",
+                &mut policy.allow_static_propagation_nodes_only,
+            )?;
+
+            apply_policy_usize_option(&mut rest, "--max-text-chars", &mut policy.max_text_chars)?;
+            apply_policy_usize_option(&mut rest, "--max-text-bytes", &mut policy.max_text_bytes)?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-attachment-bytes",
+                &mut policy.max_attachment_bytes,
+            )?;
+            apply_policy_usize_option(&mut rest, "--max-file-bytes", &mut policy.max_file_bytes)?;
+            apply_policy_usize_option(&mut rest, "--max-image-bytes", &mut policy.max_image_bytes)?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-actions-per-hour",
+                &mut policy.max_actions_per_hour,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-actions-per-day",
+                &mut policy.max_actions_per_day,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-messages-per-contact-hour",
+                &mut policy.max_messages_per_contact_hour,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-messages-per-contact-day",
+                &mut policy.max_messages_per_contact_day,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-announces-per-hour",
+                &mut policy.max_announces_per_hour,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-announces-per-day",
+                &mut policy.max_announces_per_day,
+            )?;
+            apply_policy_u64_option(
+                &mut rest,
+                "--min-announce-interval-secs",
+                &mut policy.min_announce_interval_secs,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-path-requests-per-hour",
+                &mut policy.max_path_requests_per_hour,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--max-path-requests-per-day",
+                &mut policy.max_path_requests_per_day,
+            )?;
+            apply_policy_u64_option(
+                &mut rest,
+                "--min-path-request-interval-secs",
+                &mut policy.min_path_request_interval_secs,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--auto-max-text-chars",
+                &mut policy.auto_approval_max_text_chars,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--auto-max-text-bytes",
+                &mut policy.auto_approval_max_text_bytes,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--auto-max-actions-per-hour",
+                &mut policy.auto_approval_max_actions_per_hour,
+            )?;
+            apply_policy_usize_option(
+                &mut rest,
+                "--auto-max-actions-per-day",
+                &mut policy.auto_approval_max_actions_per_day,
+            )?;
+
+            if take_flag(&mut rest, "--clear-source-roots") {
+                policy.allowed_source_roots.clear();
+            }
+            for root in take_repeated_option(&mut rest, "--allow-source-root")? {
+                push_unique_path(&mut policy.allowed_source_roots, PathBuf::from(root));
+            }
+            if take_flag(&mut rest, "--clear-delivery-methods") {
+                policy.allowed_delivery_methods.clear();
+            }
+            for method in take_repeated_option(&mut rest, "--allowed-delivery-method")? {
+                push_unique(&mut policy.allowed_delivery_methods, method);
+            }
+            if take_flag(&mut rest, "--clear-mime-prefixes") {
+                policy.allowed_attachment_mime_prefixes.clear();
+            }
+            for prefix in take_repeated_option(&mut rest, "--allow-mime-prefix")? {
+                push_unique(&mut policy.allowed_attachment_mime_prefixes, prefix);
+            }
+            for prefix in take_repeated_option(&mut rest, "--deny-mime-prefix")? {
+                push_unique(&mut policy.denied_attachment_mime_prefixes, prefix);
+            }
+            for kind in take_repeated_option(&mut rest, "--block-kind")? {
+                push_unique(&mut policy.blocked_action_kinds, kind);
+            }
+            for kind in take_repeated_option(&mut rest, "--unblock-kind")? {
+                policy
+                    .blocked_action_kinds
+                    .retain(|candidate| candidate != &kind);
+            }
+            for kind in take_repeated_option(&mut rest, "--auto-allow-kind")? {
+                push_unique(&mut policy.auto_approval_allowed_action_kinds, kind);
+            }
+            for contact in take_repeated_option(&mut rest, "--auto-allow-contact")? {
+                push_unique(&mut policy.auto_approval_allowed_contacts, contact);
+            }
+            for conversation in take_repeated_option(&mut rest, "--auto-allow-conversation")? {
+                push_unique(
+                    &mut policy.auto_approval_allowed_conversations,
+                    conversation,
+                );
+            }
+            for hash in take_repeated_option(&mut rest, "--allow-path-request-hash")? {
+                push_unique(&mut policy.allowed_path_request_hashes, hash);
+            }
+            for hash in take_repeated_option(&mut rest, "--allow-propagation-node-hash")? {
+                push_unique(&mut policy.allowed_propagation_node_hashes, hash);
+            }
+            ensure_no_extra_args(&rest, "agent policy set")?;
+
+            let changed = serde_json::to_value(&policy)? != before;
+            if changed {
+                policy.policy_revision += 1;
+                agent_actions::write_write_policy(&agent_profile.config.data_dir, &policy)?;
+                append_agent_admin_audit(
+                    &agent_root,
+                    "policy.updated",
+                    json!({
+                        "agent": manifest.name,
+                        "policy_revision": policy.policy_revision,
+                        "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
+                    }),
+                );
+            }
+            print_json(
+                &json!({
+                    "agent": manifest.name,
+                    "changed": changed,
+                    "policy": policy,
+                    "policy_file": agent_actions::write_policy_path(&agent_profile.config.data_dir),
+                    "runtime_note": "policy changes are read by ratspeakd on the next action create/submit/execute",
+                }),
+                output,
+            )
+        }
+        other => Err(CliError::usage(format!(
+            "unknown agent policy command: {other}"
+        ))),
+    }
 }
 
 fn run_agent_revoke(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
@@ -1275,6 +1569,7 @@ fn run_messages(profile: &Profile, args: &[String], output: OutputFormat) -> Cli
             let expires_secs = take_u64_option_opt(&mut rest, "--expires-secs")?;
             let submit = take_flag(&mut rest, "--submit");
             ensure_no_extra_args(&rest, &format!("messages {subcommand}"))?;
+            enforce_agent_file_source_policy(profile, &file, is_image)?;
             let bytes = std::fs::read(&file)?;
             let dest_hash = crate::agent_policy::dest_hash_from_conversation_id(&conversation)
                 .ok_or_else(|| CliError::usage("invalid conversation id or destination hash"))?;
@@ -1808,7 +2103,8 @@ fn daemon_contract_payload() -> Value {
             "draft": "ratspeakctl messages draft lxmf:<hash> --text TEXT --client-action-id ID",
             "submit_or_execute": "ratspeakctl messages send <action-id>",
             "actions": "ratspeakctl messages actions list|show|cancel",
-            "approvals": "ratspeakctl approvals list|show|inspect-file|approve|reject|cancel|execute --agent NAME"
+            "approvals": "ratspeakctl approvals list|show|inspect-file|approve|reject|cancel|execute --agent NAME",
+            "policy": "ratspeakctl agent policy show|validate|set NAME"
         },
         "presets": {
             "inbox-reader": agent_preset_scopes("inbox-reader").unwrap_or_default(),
@@ -1855,6 +2151,22 @@ fn daemon_contract_payload() -> Value {
             "client_action_id": "required for safe retries; reuse only with identical payload",
             "causal_metadata": "send --causal-event-id and/or --causal-message-id when reacting to inbound events",
             "prompt_injection_boundary": "remote text appears under fields with {text, untrusted:true}"
+        },
+        "write_policy": {
+            "default_auto_approval_enabled": false,
+            "auto_approval": "opt-in policy auto-approves only matching action kind, contact/conversation, delivery method, causal context, size, and rate limits",
+            "policy_commands": ["agent policy show NAME", "agent policy validate NAME", "agent policy set NAME"],
+            "guardrail_categories": [
+                "owner approval defaults and high-risk approval requirements",
+                "action-kind blocklists",
+                "text byte/char caps and denied substrings",
+                "file/image size, MIME, and source-root controls",
+                "delivery-method controls including forced propagated delivery",
+                "causal context verification and loop-prevention counters",
+                "per-contact, per-kind, announce, path-request, and network rate limits",
+                "path request and propagation node allowlists",
+                "grant/policy revision recheck at execute time"
+            ]
         }
     })
 }
@@ -1982,6 +2294,190 @@ fn take_f64_option(args: &mut Vec<String>, name: &str, default_value: f64) -> Cl
         return Err(CliError::usage(format!("{name} must be positive")));
     }
     Ok(parsed)
+}
+
+fn apply_policy_bool_option(
+    args: &mut Vec<String>,
+    name: &str,
+    target: &mut bool,
+) -> CliResult<()> {
+    if let Some(value) = take_option(args, name)? {
+        *target = parse_bool_value(name, &value)?;
+    }
+    Ok(())
+}
+
+fn apply_policy_usize_option(
+    args: &mut Vec<String>,
+    name: &str,
+    target: &mut usize,
+) -> CliResult<()> {
+    if let Some(value) = take_option(args, name)? {
+        *target = value
+            .parse::<usize>()
+            .map_err(|_| CliError::usage(format!("{name} must be an unsigned integer")))?;
+    }
+    Ok(())
+}
+
+fn apply_policy_u64_option(args: &mut Vec<String>, name: &str, target: &mut u64) -> CliResult<()> {
+    if let Some(value) = take_option(args, name)? {
+        *target = value
+            .parse::<u64>()
+            .map_err(|_| CliError::usage(format!("{name} must be an unsigned integer")))?;
+    }
+    Ok(())
+}
+
+fn apply_policy_key_value(
+    policy: &mut agent_actions::AgentWritePolicy,
+    key: &str,
+    value: &str,
+) -> CliResult<()> {
+    match key.trim().replace('-', "_").as_str() {
+        "require_owner_approval" => {
+            policy.require_owner_approval = parse_bool_value(key, value)?;
+        }
+        "auto_approval_enabled" | "auto_approval" => {
+            policy.auto_approval_enabled = parse_bool_value(key, value)?;
+        }
+        "auto_approval_requires_causal_context" => {
+            policy.auto_approval_requires_causal_context = parse_bool_value(key, value)?;
+        }
+        "auto_approval_requires_verified_causal_context" => {
+            policy.auto_approval_requires_verified_causal_context = parse_bool_value(key, value)?;
+        }
+        "auto_approval_allow_attachments" => {
+            policy.auto_approval_allow_attachments = parse_bool_value(key, value)?;
+        }
+        "require_causal_context_for_outbound" | "require_causal_context" => {
+            policy.require_causal_context_for_outbound = parse_bool_value(key, value)?;
+        }
+        "require_verified_causal_context" => {
+            policy.require_verified_causal_context = parse_bool_value(key, value)?;
+        }
+        "allow_agent_file_paths" => {
+            policy.allow_agent_file_paths = parse_bool_value(key, value)?;
+        }
+        "allow_message_attachments" | "allow_attachments" => {
+            policy.allow_message_attachments = parse_bool_value(key, value)?;
+        }
+        "allow_message_images" | "allow_images" => {
+            policy.allow_message_images = parse_bool_value(key, value)?;
+        }
+        "allow_message_reactions" | "allow_reactions" => {
+            policy.allow_message_reactions = parse_bool_value(key, value)?;
+        }
+        "allow_contact_mutations" => {
+            policy.allow_contact_mutations = parse_bool_value(key, value)?;
+        }
+        "allow_conversation_mutations" => {
+            policy.allow_conversation_mutations = parse_bool_value(key, value)?;
+        }
+        "allow_identity_announce" => {
+            policy.allow_identity_announce = parse_bool_value(key, value)?;
+        }
+        "allow_path_request" => {
+            policy.allow_path_request = parse_bool_value(key, value)?;
+        }
+        "allow_forced_propagated_delivery" => {
+            policy.allow_forced_propagated_delivery = parse_bool_value(key, value)?;
+        }
+        "allow_static_propagation_nodes_only" | "static_propagation_nodes_only" => {
+            policy.allow_static_propagation_nodes_only = parse_bool_value(key, value)?;
+        }
+        "max_text_chars" => policy.max_text_chars = parse_usize_value(key, value)?,
+        "max_text_bytes" => policy.max_text_bytes = parse_usize_value(key, value)?,
+        "max_attachment_bytes" => {
+            policy.max_attachment_bytes = parse_usize_value(key, value)?;
+        }
+        "max_file_bytes" => policy.max_file_bytes = parse_usize_value(key, value)?,
+        "max_image_bytes" => policy.max_image_bytes = parse_usize_value(key, value)?,
+        "max_actions_per_hour" => {
+            policy.max_actions_per_hour = parse_usize_value(key, value)?;
+        }
+        "max_actions_per_day" => policy.max_actions_per_day = parse_usize_value(key, value)?,
+        "max_pending_actions" => policy.max_pending_actions = parse_usize_value(key, value)?,
+        "per_contact_cooldown_secs" => {
+            policy.per_contact_cooldown_secs = parse_u64_value(key, value)?;
+        }
+        "inbound_loop_window_secs" => {
+            policy.inbound_loop_window_secs = parse_u64_value(key, value)?;
+        }
+        "max_messages_per_contact_hour" => {
+            policy.max_messages_per_contact_hour = parse_usize_value(key, value)?;
+        }
+        "max_messages_per_contact_day" => {
+            policy.max_messages_per_contact_day = parse_usize_value(key, value)?;
+        }
+        "max_announces_per_hour" => {
+            policy.max_announces_per_hour = parse_usize_value(key, value)?;
+        }
+        "max_announces_per_day" => {
+            policy.max_announces_per_day = parse_usize_value(key, value)?;
+        }
+        "min_announce_interval_secs" => {
+            policy.min_announce_interval_secs = parse_u64_value(key, value)?;
+        }
+        "max_path_requests_per_hour" => {
+            policy.max_path_requests_per_hour = parse_usize_value(key, value)?;
+        }
+        "max_path_requests_per_day" => {
+            policy.max_path_requests_per_day = parse_usize_value(key, value)?;
+        }
+        "min_path_request_interval_secs" => {
+            policy.min_path_request_interval_secs = parse_u64_value(key, value)?;
+        }
+        "auto_approval_max_text_chars" | "auto_max_text_chars" => {
+            policy.auto_approval_max_text_chars = parse_usize_value(key, value)?;
+        }
+        "auto_approval_max_text_bytes" | "auto_max_text_bytes" => {
+            policy.auto_approval_max_text_bytes = parse_usize_value(key, value)?;
+        }
+        "auto_approval_unknown_contacts" => {
+            policy.auto_approval_unknown_contacts = value.trim().to_string();
+        }
+        "auto_approval_max_actions_per_hour" | "auto_max_actions_per_hour" => {
+            policy.auto_approval_max_actions_per_hour = parse_usize_value(key, value)?;
+        }
+        "auto_approval_max_actions_per_day" | "auto_max_actions_per_day" => {
+            policy.auto_approval_max_actions_per_day = parse_usize_value(key, value)?;
+        }
+        other => {
+            return Err(CliError::usage(format!(
+                "unsupported agent policy key: {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_bool_value(name: &str, value: &str) -> CliResult<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" | "on" => Ok(true),
+        "false" | "no" | "0" | "off" => Ok(false),
+        _ => Err(CliError::usage(format!("{name} must be true or false"))),
+    }
+}
+
+fn parse_usize_value(name: &str, value: &str) -> CliResult<usize> {
+    value
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| CliError::usage(format!("{name} must be an unsigned integer")))
+}
+
+fn parse_u64_value(name: &str, value: &str) -> CliResult<u64> {
+    value
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| CliError::usage(format!("{name} must be an unsigned integer")))
+}
+
+fn push_unique_path(values: &mut Vec<PathBuf>, value: PathBuf) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 fn ensure_no_extra_args(args: &[String], context: &str) -> CliResult<()> {
@@ -2152,6 +2648,48 @@ fn approval_target_profile(profile: &Profile, agent: Option<&str>) -> CliResult<
     }
 }
 
+fn enforce_agent_file_source_policy(
+    profile: &Profile,
+    file: &str,
+    is_image: bool,
+) -> CliResult<()> {
+    let policy = agent_actions::ensure_write_policy(&profile.config.data_dir)?;
+    if !policy.allow_agent_file_paths {
+        return Err(CliError::failed(
+            "agent policy blocks reading local file paths",
+        ));
+    }
+    let path = PathBuf::from(file);
+    let metadata = std::fs::metadata(&path)?;
+    let size = metadata.len() as usize;
+    let cap = if is_image {
+        policy.max_image_bytes
+    } else {
+        policy.max_file_bytes
+    };
+    if size > cap {
+        return Err(CliError::failed(format!(
+            "local file exceeds policy cap ({cap} bytes)"
+        )));
+    }
+    if policy.allowed_source_roots.is_empty() {
+        return Ok(());
+    }
+    let canonical_file = path.canonicalize()?;
+    let allowed = policy.allowed_source_roots.iter().any(|root| {
+        root.canonicalize()
+            .map(|canonical_root| canonical_file.starts_with(canonical_root))
+            .unwrap_or(false)
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(CliError::failed(
+            "local file is outside the agent policy allowed_source_roots",
+        ))
+    }
+}
+
 fn append_owner_action_event(data_dir: &std::path::Path, event: &str, action_id: &str) {
     let _ = crate::event_store::EventStore::append_daemon_event(
         data_dir,
@@ -2224,6 +2762,8 @@ Ratspeak CLI commands:
   agent list
   agent show NAME
   agent grant NAME [--scope SCOPE] [--allow-contact HASH] [--allow-conversation ID]
+  agent policy show|validate|set NAME
+  agent policy defaults
   agent revoke NAME [--reason TEXT]
   agent rotate-token NAME
   identity get

@@ -20,6 +20,14 @@ machine-readable `next.steps[].argv` arrays. For image/file-capable agents use
 `--preset media-assistant`. For OpenClaw-style text agents use
 `--preset openclaw-basic`.
 
+Owners can inspect and tune the per-agent policy without editing JSON:
+
+```sh
+ratspeakctl --data-dir OWNER_PROFILE agent policy show my-agent
+ratspeakctl --data-dir OWNER_PROFILE agent policy validate my-agent
+ratspeakctl --data-dir OWNER_PROFILE agent policy set my-agent --max-text-chars 1500
+```
+
 The owner starts or supervises the agent profile daemon:
 
 ```sh
@@ -65,6 +73,29 @@ ratspeakctl --data-dir OWNER_PROFILE approvals approve --agent my-agent ACTION_I
 After approval, the agent can run `messages send ACTION_ID` again. Owners may
 also use `approvals approve --execute --agent my-agent ACTION_ID`.
 
+## Optional Auto-Approval
+
+Auto-approval is disabled by default. To let an agent send routine replies
+without approving every message, the owner opens a narrow policy lane:
+
+```sh
+ratspeakctl --data-dir OWNER_PROFILE agent policy set my-agent \
+  --auto-approval true \
+  --auto-allow-contact CONTACT_HASH \
+  --auto-allow-kind message.reply \
+  --clear-delivery-methods \
+  --allowed-delivery-method auto \
+  --auto-max-text-chars 1500 \
+  --auto-max-actions-per-hour 20 \
+  --require-causal-context true \
+  --require-verified-causal-context true
+```
+
+Only actions matching that lane can auto-approve. Files, images, network
+announces, path requests, contact mutations, and conversation mutations still
+require owner approval by default. Policy and grant revisions are rechecked at
+send time, so tightening a policy blocks stale drafted actions.
+
 ## Bot Contract Discovery
 
 Bots should inspect the current contract instead of scraping docs:
@@ -83,6 +114,12 @@ presets, and the bot requirements for idempotency and causal metadata.
   token.
 - Grants filter contacts/conversations, reads, events, action reads, and writes.
 - Write actions are durable, approval-gated, audited, and rechecked at send time.
+- Auto-approval is opt-in and constrained by action kind, contact/conversation,
+  delivery method, causal metadata, text/attachment size, and rate limits.
 - File/image bytes are validated before staging and can be inspected by owners.
+- Local file path reads can be disabled or restricted to `allowed_source_roots`.
+- Network actions have separate announce/path request caps and cooldowns.
+- Forced propagated delivery can be limited to explicit Offline Inbox node
+  hashes or Ratspeak static propagation nodes.
 - Windows beta uses loopback TCP/file fallback with mandatory token auth until a
   named-pipe transport with OS ACLs is implemented.

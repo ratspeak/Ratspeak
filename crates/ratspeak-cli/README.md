@@ -45,6 +45,8 @@ ratspeakctl agent create NAME [--identity new] [--scope SCOPE] [--allow-contact 
 ratspeakctl agent list
 ratspeakctl agent show NAME
 ratspeakctl agent grant NAME [--scope SCOPE] [--allow-contact HASH] [--allow-conversation ID]
+ratspeakctl agent policy show|validate|set NAME
+ratspeakctl agent policy defaults
 ratspeakctl agent revoke NAME [--reason TEXT]
 ratspeakctl agent rotate-token NAME
 ratspeakctl identity get
@@ -106,9 +108,10 @@ When `ratspeakd` runs for that profile, local API calls must present the token
 and are enforced against the active grant scopes plus contact/conversation
 allowlists.
 
-`agent grant`, `agent revoke`, and `agent rotate-token` update the manifest and
-credential files from the owner profile. Restart `ratspeakd` for the agent
-profile after changing grants or credentials.
+`agent grant`, `agent revoke`, `agent policy`, and `agent rotate-token` update
+the manifest, policy, and credential files from the owner profile. Restart
+`ratspeakd` for the agent profile after changing grants or credentials. Policy
+changes are read on the next action create/submit/execute.
 
 Read scopes are `status:read`, `identity:read`, `contacts:read`,
 `messages:read`, `events:read`, `network:read`, `actions:read`, and
@@ -182,11 +185,31 @@ original action, while reusing the ID with different payload is rejected. Bots
 should also include `--causal-event-id` or `--causal-message-id` when responding
 to event-stream input so the write policy can prevent feedback loops.
 
-The first `messages send` moves the draft to `pending_approval`. After owner
-approval, running `messages send <action-id>` again executes the already
-approved action through `ratspeakd`. Owners may also run
-`approvals approve --execute --agent NAME <action-id>` or
-`approvals execute --agent NAME <action-id>`.
+The first `messages send` usually moves the draft to `pending_approval`. After
+owner approval, running `messages send <action-id>` again executes the already
+approved action through `ratspeakd`. Owners may also run `approvals approve
+--execute --agent NAME <action-id>` or `approvals execute --agent NAME
+<action-id>`.
+
+Auto-approval exists but is disabled by default. Owners can enable a narrow
+lane for low-risk messages after setting guardrails:
+
+```sh
+ratspeakctl --data-dir OWNER_PROFILE agent policy set NAME \
+  --auto-approval true \
+  --auto-allow-contact CONTACT_HASH \
+  --auto-allow-kind message.reply \
+  --clear-delivery-methods \
+  --allowed-delivery-method auto \
+  --max-text-chars 1500 \
+  --auto-max-actions-per-hour 20 \
+  --require-causal-context true \
+  --require-verified-causal-context true
+```
+
+When an action matches the auto-approval policy, `messages send <action-id>`
+can move it to `approved` without an owner click and then execute it. Any
+action outside that box stays in the approval queue.
 
 Approval states are `draft`, `pending_approval`, `approved`, `rejected`,
 `cancelled`, `expired`, `executing`, `sent`, `applied`, and `failed`.
@@ -199,19 +222,37 @@ The profile-local write policy lives at
 conservative:
 
 - owner approval required: `true`
+- auto-approval enabled: `false`
+- auto-approval default kinds: `message.reply`, `message.send`
+- auto-approval default delivery method: `auto`
+- auto-approval requires causal context and verified causal events
 - default approval expiry: 24 hours
 - max pending actions: 25
 - max actions per hour/day: 60 / 200
+- max messages per contact hour/day: 60 / 200
 - per-contact cooldown: 3 seconds
 - loop window: 10 minutes, max 6 outbound actions per contact
 - max outbound actions per causal event/message: 3 / 2
-- max text bytes: 4096
-- max attachment bytes: Reticulum efficient resource limit
+- max text bytes/chars: 4096 / 4096
+- max attachment/file/image bytes: Reticulum efficient resource limit
+- max announces per hour/day: 2 / 12, minimum 15 minutes apart
+- max path requests per hour/day: 20 / 100, minimum 5 seconds apart
+- high-risk actions still require owner approval by default: files/images,
+  network announces/path requests, contact mutations, conversation mutations
+- delivery methods, forced propagated delivery, MIME prefixes, source roots,
+  denied text substrings, action-kind denylists, path-request allowlists, and
+  propagation-node allowlists are configurable
 - allowed MIME prefixes: images, text, PDF, JSON, ZIP, and octet-stream
 
-These settings are user-configurable per agent profile. Raising attachment
-limits, disabling approval, or allowing broader MIME types should be treated as
-security-sensitive owner configuration.
+Use `ratspeakctl --data-dir OWNER_PROFILE agent policy show NAME`,
+`agent policy validate NAME`, and `agent policy set NAME ...` instead of
+editing JSON by hand. `agent policy set` accepts common flags and
+`--set key=value` for advanced fields. Raising attachment limits, disabling
+approval, broadening delivery methods, allowing local source roots, or allowing
+network actions should be treated as security-sensitive owner configuration.
+If an agent is allowed to force `--delivery-method propagated`, owners can pin
+allowed Offline Inbox nodes with `--allow-propagation-node-hash HASH` or require
+Ratspeak static nodes with `--static-propagation-nodes-only true`.
 
 ## Audit Log
 

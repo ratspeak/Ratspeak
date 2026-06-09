@@ -1480,13 +1480,34 @@ async fn actions_execute_payload(
     let id = required_string(&params, "id")?;
     let record = agent_actions::read_action(&state.config.data_dir, &id)
         .map_err(|error| api_error("not_found", error.to_string()))?;
-    if let AccessMode::Agent(principal) = access {
-        ensure_action_owner(principal, &record)?;
-        require_action_policy_for_record(principal, &record, ActionPhase::Execute)?;
-        if let Some(subject) = record.subject_hash.as_deref() {
-            require_subject(principal, subject)?;
+    let recheck_principal = match access {
+        AccessMode::Agent(principal) => {
+            ensure_action_owner(principal, &record)?;
+            require_action_policy_for_record(principal, &record, ActionPhase::Execute)?;
+            if let Some(subject) = record.subject_hash.as_deref() {
+                require_subject(principal, subject)?;
+            }
+            Some(principal.clone())
         }
+        AccessMode::Owner => {
+            agent_policy::read_agent_manifest_from_data_dir(&state.config.data_dir)
+                .map_err(|error| api_error("internal", error.to_string()))?
+                .map(|manifest| manifest.principal())
+        }
+    };
+    if let Some(principal) = recheck_principal.as_ref() {
+        if principal.name != record.agent {
+            return Err(api_error(
+                "forbidden",
+                "action agent does not match current agent manifest",
+            ));
+        }
+        agent_actions::recheck_action_for_execute(&state.config.data_dir, principal, &record)
+            .map_err(|error| api_error("policy_denied", error.to_string()))?;
     }
+    let policy = agent_actions::ensure_write_policy(&state.config.data_dir)
+        .map_err(|error| api_error("policy_denied", error.to_string()))?;
+    validate_propagation_delivery_policy(state, &policy, &record.payload)?;
     agent_actions::mark_executing(&state.config.data_dir, &id)
         .map_err(|error| api_error("policy_denied", error.to_string()))?;
     match execute_action_record(state.clone(), &record).await {
@@ -1661,6 +1682,7 @@ fn new_action_from_params(
     let mut fingerprint_payload = json!({});
     let mut staged_files = Vec::new();
     let mut text_bytes = 0usize;
+    let mut text_chars = 0usize;
     let mut attachment_bytes = 0usize;
 
     match kind.as_str() {
@@ -1675,6 +1697,7 @@ fn new_action_from_params(
                 return Err(api_error("bad_params", "message text is required"));
             }
             text_bytes = content.len() + title.len();
+            text_chars = content.chars().count() + title.chars().count();
             payload = json!({
                 "content": content,
                 "title": title,
@@ -1704,6 +1727,8 @@ fn new_action_from_params(
                 ));
             }
             text_bytes = content.len() + title.len() + reply_to_preview.len();
+            text_chars =
+                content.chars().count() + title.chars().count() + reply_to_preview.chars().count();
             payload = json!({
                 "content": content,
                 "title": title,
@@ -1749,6 +1774,7 @@ fn new_action_from_params(
                 4096,
             );
             text_bytes = content.len();
+            text_chars = content.chars().count();
             attachment_bytes = file_bytes.len();
             let sha256 = sha256_hex(&file_bytes);
             agent_actions::preflight_new_action(
@@ -1757,6 +1783,7 @@ fn new_action_from_params(
                 &kind,
                 subject_hash.as_deref(),
                 text_bytes,
+                text_chars,
                 attachment_bytes,
                 &[PendingStagedFile {
                     file_name: &file_name,
@@ -1834,6 +1861,14 @@ fn new_action_from_params(
             fingerprint_payload = payload.clone();
         }
         "network.path_request" => {
+            if let Some(hash) = subject_hash.as_deref()
+                && !ratspeak_runtime::helpers::validate_hex(hash, 32, 32)
+            {
+                return Err(api_error(
+                    "bad_params",
+                    "network.path_request hash must be exactly 32 hex characters",
+                ));
+            }
             payload = json!({
                 "hash": subject_hash.clone().unwrap_or_default(),
             });
@@ -1871,6 +1906,10 @@ fn new_action_from_params(
             ));
         }
     }
+    let policy = agent_actions::ensure_write_policy(&state.config.data_dir)
+        .map_err(|error| api_error("policy_denied", error.to_string()))?;
+    validate_reply_target_policy(state, &policy, &kind, subject_hash.as_deref(), &payload)?;
+    validate_propagation_delivery_policy(state, &policy, &payload)?;
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("client_action_id".into(), json!(client_action_id.clone()));
         obj.insert(
@@ -1891,6 +1930,7 @@ fn new_action_from_params(
             "message_id": causal_message_id.clone(),
         },
         "text_bytes": text_bytes,
+        "text_chars": text_chars,
         "attachment_bytes": attachment_bytes,
     }));
     if let Some(obj) = payload.as_object_mut() {
@@ -1909,6 +1949,7 @@ fn new_action_from_params(
         causal_event_id,
         causal_message_id,
         text_bytes,
+        text_chars,
         attachment_bytes,
         expires_secs,
         submit,
@@ -2420,6 +2461,106 @@ fn delivery_method_param(params: &Value) -> String {
         "opportunistic" | "direct" | "propagated" => value,
         _ => "auto".into(),
     }
+}
+
+fn validate_reply_target_policy(
+    state: &ratspeak_runtime::state::AppState,
+    policy: &agent_actions::AgentWritePolicy,
+    kind: &str,
+    subject_hash: Option<&str>,
+    payload: &Value,
+) -> Result<(), ApiError> {
+    if kind != "message.reply" || !policy.reply_requires_existing_message {
+        return Ok(());
+    }
+    let dest_hash = subject_hash.ok_or_else(|| api_error("bad_params", "reply has no subject"))?;
+    let reply_to_id = payload
+        .get("reply_to_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if reply_to_id.is_empty() {
+        return Err(api_error("bad_params", "reply_to_id is required"));
+    }
+    let identity_id = ratspeak_runtime::helpers::active_identity_id(state);
+    let messages = ratspeak_db::get_conversation(&state.db, dest_hash, &identity_id, 1000);
+    let exists = messages.iter().any(|message| {
+        message.get("id").and_then(Value::as_str) == Some(reply_to_id)
+            && message
+                .get("direction")
+                .and_then(Value::as_str)
+                .is_none_or(|direction| !matches!(direction, "outbound" | "sent"))
+    });
+    if exists {
+        Ok(())
+    } else {
+        Err(api_error(
+            "policy_denied",
+            "reply target must be an existing inbound message by policy",
+        ))
+    }
+}
+
+fn validate_propagation_delivery_policy(
+    state: &ratspeak_runtime::state::AppState,
+    policy: &agent_actions::AgentWritePolicy,
+    payload: &Value,
+) -> Result<(), ApiError> {
+    let delivery_method = payload
+        .get("delivery_method")
+        .and_then(Value::as_str)
+        .unwrap_or("auto");
+    if delivery_method != "propagated"
+        || (policy.allowed_propagation_node_hashes.is_empty()
+            && !policy.allow_static_propagation_nodes_only)
+    {
+        return Ok(());
+    }
+    let status = ratspeak_runtime::propagation::get_status_payload(state);
+    let node = status
+        .get("node_hash")
+        .or_else(|| status.get("propagation_node"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            api_error(
+                "policy_denied",
+                "forced propagated delivery requires an active propagation node allowed by policy",
+            )
+        })?;
+    if !policy.allowed_propagation_node_hashes.is_empty()
+        && !policy
+            .allowed_propagation_node_hashes
+            .iter()
+            .any(|candidate| candidate == node)
+    {
+        return Err(api_error(
+            "policy_denied",
+            "active propagation node is not in the agent policy allowlist",
+        ));
+    }
+    if policy.allow_static_propagation_nodes_only {
+        let bytes = hex::decode(node).map_err(|_| {
+            api_error(
+                "policy_denied",
+                "active propagation node hash is not valid hex",
+            )
+        })?;
+        if bytes.len() != 16 {
+            return Err(api_error(
+                "policy_denied",
+                "active propagation node hash is not a Reticulum destination hash",
+            ));
+        }
+        let mut hash = [0u8; 16];
+        hash.copy_from_slice(&bytes);
+        if ratspeak_runtime::static_nodes::node_for(&hash).is_none() {
+            return Err(api_error(
+                "policy_denied",
+                "active propagation node is not a Ratspeak static node",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn filter_contact_records(access: &AccessMode, records: Vec<Value>) -> Vec<Value> {
