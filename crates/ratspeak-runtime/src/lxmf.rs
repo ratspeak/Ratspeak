@@ -2510,9 +2510,39 @@ impl LxmfManager {
         Value::Object(status)
     }
 
+    pub fn ratchets_dir(&self) -> std::path::PathBuf {
+        self.data_dir
+            .join("identities")
+            .join(&self.identity_hash)
+            .join("ratchets")
+    }
+
+    /// Binary: repeated [dest_hash:16][pubkey:64] records.
+    pub fn known_identities_blob(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(self.known_identities.len() * 80);
+        for (hash_hex, pk) in &self.known_identities {
+            if let Ok(hash_bytes) = hex::decode(hash_hex)
+                && hash_bytes.len() == 16
+            {
+                data.extend_from_slice(&hash_bytes);
+                data.extend_from_slice(pk);
+            }
+        }
+        data
+    }
+
+    pub fn save_router_state(&self) {
+        if let Err(e) = self.router.save_state(&self.lxmf_storage_dir) {
+            tracing::warn!(
+                path = %self.lxmf_storage_dir.display(),
+                error = %e,
+                "Failed to save LXMF router state"
+            );
+        }
+    }
+
     pub fn save_crypto_state(&self) {
-        let id_dir = self.data_dir.join("identities").join(&self.identity_hash);
-        let ratchet_dir = id_dir.join("ratchets");
+        let ratchet_dir = self.ratchets_dir();
         std::fs::create_dir_all(&ratchet_dir).ok();
 
         let ring_path = ratchet_dir.join("ring");
@@ -2538,41 +2568,39 @@ impl LxmfManager {
             }
         }
 
-        // Binary: repeated [dest_hash:16][pubkey:64] records.
         let ki_path = ratchet_dir.join("known_identities");
-        let mut data = Vec::with_capacity(self.known_identities.len() * 80);
-        for (hash_hex, pk) in &self.known_identities {
-            if let Ok(hash_bytes) = hex::decode(hash_hex)
-                && hash_bytes.len() == 16
-            {
-                data.extend_from_slice(&hash_bytes);
-                data.extend_from_slice(pk);
-            }
-        }
-        if let Err(e) = rns_identity::persistence::atomic_write(&ki_path, &data) {
+        if let Err(e) = rns_identity::persistence::atomic_write(&ki_path, &self.known_identities_blob()) {
             tracing::warn!("Failed to save known identities: {e}");
         }
 
-        if let Err(e) = self.router.save_state(&self.lxmf_storage_dir) {
-            tracing::warn!(
-                path = %self.lxmf_storage_dir.display(),
-                error = %e,
-                "Failed to save LXMF router state"
-            );
-        }
+        self.save_router_state();
     }
 
+    /// Returns `(identity_changed, ratchet_changed)`. No-op updates are
+    /// skipped so callers persist only real deltas, and an unchanged
+    /// ratchet keeps its original `received_at` (Python `_remember_ratchet`).
     pub fn update_remote_crypto(
         &mut self,
         dest_hash_hex: &str,
         pk: &[u8; 64],
         ratchet: Option<&[u8; 32]>,
-    ) {
-        self.known_identities.insert(dest_hash_hex.to_string(), *pk);
-        if let Some(r) = ratchet {
+    ) -> (bool, bool) {
+        let identity_changed = self.known_identities.get(dest_hash_hex) != Some(pk);
+        if identity_changed {
+            self.known_identities.insert(dest_hash_hex.to_string(), *pk);
+        }
+        let mut ratchet_changed = false;
+        if let Some(r) = ratchet
+            && self
+                .received_ratchets
+                .get(dest_hash_hex)
+                .is_none_or(|rr| rr.ratchet_pub != *r)
+        {
             self.received_ratchets
                 .insert(dest_hash_hex.to_string(), ReceivedRatchet::new(*r));
+            ratchet_changed = true;
         }
+        (identity_changed, ratchet_changed)
     }
 
     pub fn replace_route_hops_from_path_table(

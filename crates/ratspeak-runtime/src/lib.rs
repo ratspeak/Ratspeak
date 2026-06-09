@@ -3594,8 +3594,10 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                 if let Ok(mut lxmf) = state.lxmf.lock()
                     && let Some(mgr) = lxmf.as_mut()
                 {
-                    let mut changed = false;
+                    let mut identities_changed = false;
                     let mut router_changed = false;
+                    let mut changed_ratchets: Vec<(String, rns_identity::ratchet::ReceivedRatchet)> =
+                        Vec::new();
                     for a in &announces {
                         let dest_hex = hex::encode(a.dest_hash);
                         tracing::debug!(
@@ -3607,7 +3609,14 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                         );
                         if let Some(ref pk) = a.public_key {
                             let is_new = !mgr.known_identities.contains_key(&dest_hex);
-                            mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
+                            let (id_changed, ratchet_changed) =
+                                mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
+                            identities_changed |= id_changed;
+                            if ratchet_changed
+                                && let Some(rr) = mgr.received_ratchets.get(&dest_hex)
+                            {
+                                changed_ratchets.push((dest_hex.clone(), *rr));
+                            }
                             if is_new {
                                 tracing::debug!(
                                     dest = %dest_hex,
@@ -3629,7 +3638,6 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                         "standard",
                                     );
                                 }
-                                changed = true;
                             }
                         }
                         router_changed |= mgr.update_lxmf_announce_app_data(
@@ -3638,16 +3646,40 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             a.app_data.as_deref(),
                         );
                     }
-                    if changed || router_changed {
-                        // Coalesce announce-derived cache persistence to one
-                        // write per poll batch instead of one write per
-                        // announce on busy hubs.
-                        mgr.save_crypto_state();
+                    // Persist only announce-derived deltas, off the poll
+                    // loop; the ring and full rewrites stay on the
+                    // rotation/periodic/shutdown saves. Stamp costs persist
+                    // per batch like Python's delivery announce handler.
+                    if router_changed {
+                        mgr.save_router_state();
+                    }
+                    if identities_changed || !changed_ratchets.is_empty() {
+                        let ratchet_dir = mgr.ratchets_dir();
+                        let ki_blob = identities_changed.then(|| mgr.known_identities_blob());
                         tracing::debug!(
                             known_identities = mgr.known_identities.len(),
+                            changed_ratchets = changed_ratchets.len(),
                             router_state_changed = router_changed,
-                            "announce-derived crypto/router state persisted"
+                            "announce-derived crypto state persisted"
                         );
+                        tokio::task::spawn_blocking(move || {
+                            let received_dir = ratchet_dir.join("received");
+                            std::fs::create_dir_all(&received_dir).ok();
+                            for (hash_hex, rr) in &changed_ratchets {
+                                let path = received_dir.join(format!("{hash_hex}.ratchet"));
+                                if let Err(e) = rr.save(&path) {
+                                    tracing::warn!("Failed to persist received ratchet: {e}");
+                                }
+                            }
+                            if let Some(blob) = ki_blob {
+                                let ki_path = ratchet_dir.join("known_identities");
+                                if let Err(e) =
+                                    rns_identity::persistence::atomic_write(&ki_path, &blob)
+                                {
+                                    tracing::warn!("Failed to save known identities: {e}");
+                                }
+                            }
+                        });
                     }
                 }
 
