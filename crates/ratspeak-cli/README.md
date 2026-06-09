@@ -99,7 +99,10 @@ creates the same isolated agent profiles, grants, token files, policy
 guardrails, approval queues, and audit records as the CLI, then exposes a
 redacted connection bundle for the local agent adapter. The GUI never displays
 the raw token or agent recovery phrase; local agent processes read the private
-token file directly.
+token file directly. Desktop bundles include `ratspeakd` and `ratspeakctl` as
+packaged sidecars, and copied connection bundles prefer those packaged binary
+paths when the app is running from a bundle. CLI-only installs continue to
+resolve `ratspeakd` and `ratspeakctl` from `PATH`.
 
 `agent onboard` is the preferred CLI beta entry point for scripted setup. It
 defaults to the `reply-assistant` preset and returns machine-readable

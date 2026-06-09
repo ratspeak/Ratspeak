@@ -23,6 +23,7 @@ src-tauri/target/
 # Generated Tauri metadata and local icon source manifests
 /src-tauri/gen/schemas/
 /src-tauri/icon-manifest.json
+/src-tauri/binaries/
 
 # Runtime data
 .ratspeak/

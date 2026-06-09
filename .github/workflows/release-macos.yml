@@ -91,6 +91,11 @@ jobs:
         working-directory: Ratspeak
         run: bash dashboard/build-css.sh
 
+      - name: Prepare Tauri sidecars
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/prepare-tauri-sidecars.sh aarch64-apple-darwin x86_64-apple-darwin
+
       - name: Check Tauri desktop shell
         shell: bash
         working-directory: Ratspeak
@@ -169,14 +174,6 @@ jobs:
             cargo tauri build --target aarch64-apple-darwin --bundles dmg --config "$ad_hoc_signing_config"
             cargo tauri build --target x86_64-apple-darwin --bundles dmg --config "$ad_hoc_signing_config"
           fi
-
-      - name: Build Ratspeak CLI binaries
-        shell: bash
-        working-directory: Ratspeak
-        run: |
-          set -euo pipefail
-          cargo build -p ratspeak-cli --release --bins --target aarch64-apple-darwin
-          cargo build -p ratspeak-cli --release --bins --target x86_64-apple-darwin
 
       - name: Stage macOS release artifacts
         shell: bash

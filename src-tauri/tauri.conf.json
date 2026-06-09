@@ -9,6 +9,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/ratspeakctl",
+      "binaries/ratspeakd"
+    ],
     "publisher": "Ratspeak Contributors",
     "homepage": "https://github.com/ratspeak/Ratspeak",
     "category": "SocialNetworking",

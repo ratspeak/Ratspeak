@@ -628,6 +628,9 @@ pub fn connection_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
     let manifest = show_agent_manifest(profile, name)?;
     let owner_root_arg = profile.data_root.display().to_string();
     let agent_root_arg = manifest.profile_root.display().to_string();
+    let commands = agent_binary_commands();
+    let ratspeakd = commands.ratspeakd.clone();
+    let ratspeakctl = commands.ratspeakctl.clone();
     Ok(json!({
         "format": "ratspeak.agent-connection.v1",
         "agent": manifest.name,
@@ -641,16 +644,22 @@ pub fn connection_bundle(profile: &Profile, name: &str) -> CliResult<Value> {
             "redacted": true,
             "reason": "local agent processes read the private token file directly; the desktop settings UI exposes token_file and token_hash only"
         },
+        "binaries": {
+            "source": commands.source,
+            "ratspeakd": ratspeakd,
+            "ratspeakctl": ratspeakctl,
+            "note": "desktop bundles include these sidecars; CLI-only installs may resolve ratspeakd/ratspeakctl from PATH"
+        },
         "daemon": {
-            "start": ["ratspeakd", "--data-dir", agent_root_arg.clone()],
+            "start": [ratspeakd, "--data-dir", agent_root_arg.clone()],
             "endpoint_file": manifest.profile_data_dir.join("ratspeakd-api.json"),
         },
         "cli_contract": {
-            "events": ["ratspeakctl", "--data-dir", agent_root_arg.clone(), "--jsonl", "events", "stream"],
-            "read_conversation": ["ratspeakctl", "--data-dir", agent_root_arg.clone(), "conversations", "read", "<conversation-id>", "--json"],
-            "draft": ["ratspeakctl", "--data-dir", agent_root_arg.clone(), "messages", "draft", "<conversation-id>", "--text", "<text>", "--client-action-id", "<id>"],
-            "send": ["ratspeakctl", "--data-dir", agent_root_arg.clone(), "messages", "send", "<action-id>"],
-            "owner_approvals": ["ratspeakctl", "--data-dir", owner_root_arg, "approvals", "list", "--agent", name],
+            "events": [ratspeakctl, "--data-dir", agent_root_arg.clone(), "--jsonl", "events", "stream"],
+            "read_conversation": [ratspeakctl, "--data-dir", agent_root_arg.clone(), "conversations", "read", "<conversation-id>", "--json"],
+            "draft": [ratspeakctl, "--data-dir", agent_root_arg.clone(), "messages", "draft", "<conversation-id>", "--text", "<text>", "--client-action-id", "<id>"],
+            "send": [ratspeakctl, "--data-dir", agent_root_arg.clone(), "messages", "send", "<action-id>"],
+            "owner_approvals": [ratspeakctl, "--data-dir", owner_root_arg, "approvals", "list", "--agent", name],
         },
         "prompt_injection_boundary": {
             "remote_text_is_untrusted": true,
@@ -1140,6 +1149,7 @@ fn agent_summary(profile: &Profile, manifest: &AgentManifest) -> CliResult<Value
 }
 
 fn onboarding_contract_payload(profile: &Profile) -> Value {
+    let commands = agent_binary_commands();
     json!({
         "owner_profile_root": profile.data_root,
         "recommended_flow": [
@@ -1149,6 +1159,11 @@ fn onboarding_contract_payload(profile: &Profile) -> Value {
             "Give the connection bundle to the local agent process or adapter.",
             "Review approvals and audit entries from the same Settings panel."
         ],
+        "binaries": {
+            "source": commands.source,
+            "ratspeakd": commands.ratspeakd,
+            "ratspeakctl": commands.ratspeakctl,
+        },
         "agent_contract": {
             "events": "ratspeakctl --data-dir <agent-profile> --jsonl events stream",
             "read": "ratspeakctl --data-dir <agent-profile> conversations read <conversation-id> --json",
@@ -1159,28 +1174,29 @@ fn onboarding_contract_payload(profile: &Profile) -> Value {
 }
 
 fn command_hints_for_agent_root(agent_root: &Path) -> AgentCommandHints {
+    let commands = agent_binary_commands();
     let root = agent_root.display().to_string();
     AgentCommandHints {
         start_daemon: vec![
-            "ratspeakd".into(),
+            commands.ratspeakd.clone(),
             "--data-dir".into(),
             root.clone(),
             "--events-jsonl".into(),
         ],
         status: vec![
-            "ratspeakctl".into(),
+            commands.ratspeakctl.clone(),
             "--data-dir".into(),
             root.clone(),
             "status".into(),
         ],
         events_preview: vec![
-            "ratspeakd".into(),
+            commands.ratspeakd.clone(),
             "--data-dir".into(),
             root.clone(),
             "--events-jsonl".into(),
         ],
         events_stream: vec![
-            "ratspeakctl".into(),
+            commands.ratspeakctl,
             "--data-dir".into(),
             root,
             "--jsonl".into(),
@@ -1188,6 +1204,41 @@ fn command_hints_for_agent_root(agent_root: &Path) -> AgentCommandHints {
             "stream".into(),
         ],
     }
+}
+
+#[derive(Debug, Clone)]
+struct AgentBinaryCommands {
+    ratspeakd: String,
+    ratspeakctl: String,
+    source: &'static str,
+}
+
+fn agent_binary_commands() -> AgentBinaryCommands {
+    let ratspeakd = packaged_binary_path("ratspeakd");
+    let ratspeakctl = packaged_binary_path("ratspeakctl");
+    match (ratspeakd, ratspeakctl) {
+        (Some(ratspeakd), Some(ratspeakctl)) => AgentBinaryCommands {
+            ratspeakd: ratspeakd.display().to_string(),
+            ratspeakctl: ratspeakctl.display().to_string(),
+            source: "desktop_bundle",
+        },
+        _ => AgentBinaryCommands {
+            ratspeakd: "ratspeakd".into(),
+            ratspeakctl: "ratspeakctl".into(),
+            source: "path",
+        },
+    }
+}
+
+fn packaged_binary_path(name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    #[cfg(windows)]
+    let candidates = [dir.join(format!("{name}.exe")), dir.join(name)];
+    #[cfg(not(windows))]
+    let candidates = [dir.join(name)];
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 fn open_agent_profile(profile: &Profile, name: &str) -> CliResult<(AgentManifest, Profile)> {

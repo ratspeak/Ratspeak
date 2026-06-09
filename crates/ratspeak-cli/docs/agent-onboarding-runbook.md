@@ -18,7 +18,10 @@ For non-developer owners, start in the Ratspeak app:
 The connection bundle includes the agent profile path, daemon start command,
 stable CLI contract, token file path, and token hash. It does not include the
 raw token or agent recovery phrase; the local agent process reads the private
-token file directly.
+token file directly. Desktop builds package `ratspeakd` and `ratspeakctl` as
+sidecars, so a bundle copied from the app can point an adapter at the app-local
+binary paths instead of assuming those commands are already installed on
+`PATH`.
 
 For scripted setup, use the friendly onboarding command instead of hand-writing
 every scope:

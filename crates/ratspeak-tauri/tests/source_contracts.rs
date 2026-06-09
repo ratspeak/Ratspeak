@@ -3470,6 +3470,9 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
     let commands_mod =
         read_source(root.join("crates/ratspeak-tauri/src/commands/mod.rs")).expect("commands mod");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    let tauri_config = read_source(root.join("src-tauri/tauri.conf.json")).expect("tauri config");
+    let agent_admin =
+        read_source(root.join("crates/ratspeak-cli/src/agent_admin.rs")).expect("agent admin");
 
     for required in [
         "data-settings-panel=\"panel-settings-agents\"",
@@ -3520,6 +3523,13 @@ fn agent_settings_panel_is_wired_to_owner_side_agent_admin_api() {
     assert!(agents_rs.contains("redact_agent_private_material(payload)"));
     assert!(agents_rs.contains("tokio::task::spawn_blocking(move || task(profile))"));
     assert!(!agents_rs.contains("struct AgentManifest"));
+    assert!(tauri_config.contains("\"externalBin\""));
+    assert!(tauri_config.contains("\"binaries/ratspeakctl\""));
+    assert!(tauri_config.contains("\"binaries/ratspeakd\""));
+    assert!(agent_admin.contains("fn packaged_binary_path(name: &str) -> Option<PathBuf>"));
+    assert!(agent_admin.contains("\"source\": commands.source"));
+    assert!(agent_admin.contains("\"desktop_bundle\""));
+    assert!(agent_admin.contains("\"path\""));
 
     for command in [
         "api_agents",
