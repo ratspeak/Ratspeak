@@ -4309,6 +4309,7 @@ dependencies = [
  "objc2 0.6.4",
  "r2d2",
  "r2d2_sqlite",
+ "ratspeak-cli",
  "ratspeak-core",
  "ratspeak-db",
  "ratspeak-runtime",

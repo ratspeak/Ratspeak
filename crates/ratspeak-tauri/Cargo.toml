@@ -8,13 +8,13 @@ license.workspace = true
 [features]
 default = ["serial", "seed"]
 # Re-exported through ratspeak-runtime so user-visible flag names don't change.
-serial = ["ratspeak-runtime/serial", "dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
-rnode-tcp = ["ratspeak-runtime/rnode-tcp", "rns-interface/rnode-tcp", "rns-runtime/rnode-tcp"]
-ble = ["ratspeak-runtime/ble", "dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
-mobile-throttle = ["ratspeak-runtime/mobile-throttle", "rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
-lxst-voice = ["ratspeak-runtime/lxst-voice"]
-seed = ["ratspeak-runtime/seed"]
-hardware = ["seed", "ratspeak-runtime/hardware"]
+serial = ["ratspeak-runtime/serial", "ratspeak-cli/serial", "dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
+rnode-tcp = ["ratspeak-runtime/rnode-tcp", "ratspeak-cli/rnode-tcp", "rns-interface/rnode-tcp", "rns-runtime/rnode-tcp"]
+ble = ["ratspeak-runtime/ble", "ratspeak-cli/ble", "dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
+mobile-throttle = ["ratspeak-runtime/mobile-throttle", "ratspeak-cli/mobile-throttle", "rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
+lxst-voice = ["ratspeak-runtime/lxst-voice", "ratspeak-cli/lxst-voice"]
+seed = ["ratspeak-runtime/seed", "ratspeak-cli/seed"]
+hardware = ["seed", "ratspeak-runtime/hardware", "ratspeak-cli/hardware"]
 
 [dependencies]
 # Database
@@ -41,6 +41,7 @@ serde_json = { workspace = true }
 ratspeak-core = { workspace = true }
 ratspeak-db = { workspace = true }
 ratspeak-runtime = { workspace = true }
+ratspeak-cli = { path = "../ratspeak-cli", default-features = false }
 rns-crypto = { workspace = true }
 rns-runtime = { workspace = true }
 rns-identity = { workspace = true }

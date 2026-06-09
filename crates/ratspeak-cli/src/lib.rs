@@ -12,7 +12,7 @@ mod daemon_api;
 mod error;
 mod event_store;
 mod output;
-mod profile;
+pub mod profile;
 mod runtime_host;
 
 pub use error::{CliError, CliResult};
