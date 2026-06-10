@@ -10,7 +10,7 @@ default = ["serial", "seed"]
 # Re-exported through ratspeak-runtime so user-visible flag names don't change.
 serial = ["ratspeak-runtime/serial", "dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
 rnode-tcp = ["ratspeak-runtime/rnode-tcp", "rns-interface/rnode-tcp", "rns-runtime/rnode-tcp"]
-ble = ["ratspeak-runtime/ble", "dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
+ble = ["ratspeak-runtime/ble", "rns-interface/ble", "rns-runtime/ble"]
 mobile-throttle = ["ratspeak-runtime/mobile-throttle", "rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
 lxst-voice = ["ratspeak-runtime/lxst-voice"]
 seed = ["ratspeak-runtime/seed"]
@@ -18,9 +18,9 @@ hardware = ["seed", "ratspeak-runtime/hardware"]
 
 [dependencies]
 # Database
-rusqlite = { version = "0.32", features = ["bundled"] }
-r2d2 = "0.8"
-r2d2_sqlite = "0.25"
+rusqlite = { workspace = true }
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
 
 # Tauri IPC — #[tauri::command], AppHandle::emit, generate_handler!. The main
 # entry points (WebView, bundling) live in the sibling `src-tauri/` crate; this
@@ -45,7 +45,6 @@ rns-crypto = { workspace = true }
 rns-runtime = { workspace = true }
 rns-identity = { workspace = true }
 rns-transport = { workspace = true }
-rns-wire = { workspace = true }
 rns-protocol = { workspace = true }
 rns-interface = { workspace = true }
 lxmf-core = { workspace = true }
@@ -54,21 +53,12 @@ lrgp = { workspace = true }
 # MessagePack value type (for LRGP envelope bridging)
 rmpv = { workspace = true }
 
-# Utilities
-indexmap = "2"
 tracing = { workspace = true }
 hex = { workspace = true }
-sha2 = { workspace = true }
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
 mime_guess = "2"
 base64 = "0.22"
 glob = "0.3"
 serialport = { workspace = true, optional = true }
-btleplug = { workspace = true, optional = true }
-futures = "0.3"
-dirs = "6"
-tracing-subscriber = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # Reading CBManager.authorization without instantiating CBCentralManager

@@ -44,18 +44,9 @@ ratspeak-tauri = { path = "crates/ratspeak-tauri" }
 
 # --- External dependencies ---
 
-# BLE (RNode + mesh peer scanning)
-btleplug = "0.11"
-
-# Crypto
-sha2 = "0.10"
-rand = "0.8"
-
-# Encoding
 base64 = "0.22"
 
 # Serialization
-rmp-serde = "1"
 rmpv = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -72,16 +63,16 @@ serialport = "4"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
 
 # Error handling
 thiserror = "2"
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
 
 # Misc
 hex = "0.4"
 
 # Testing
-proptest = "1"

@@ -11,7 +11,7 @@ license.workspace = true
 default = ["seed"]
 serial = ["dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
 rnode-tcp = ["rns-interface/rnode-tcp", "rns-runtime/rnode-tcp"]
-ble = ["dep:btleplug", "rns-interface/ble", "rns-runtime/ble"]
+ble = ["rns-interface/ble", "rns-runtime/ble"]
 # Background-throttle gate for mobile builds.
 mobile-throttle = ["rns-transport/mobile-throttle", "rns-interface/mobile-throttle"]
 # Native LXST call signalling and Opus audio bridge.
@@ -27,8 +27,8 @@ ratspeak-db = { workspace = true }
 
 # Direct rusqlite use (params! macros, custom queries) inside runtime.
 rusqlite = { workspace = true }
-r2d2 = "0.8"
-r2d2_sqlite = "0.25"
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
 
 # Reticulum + LXMF + LRGP
 rns-crypto = { workspace = true }
@@ -59,22 +59,13 @@ tracing = { workspace = true }
 # Utilities
 indexmap = "2"
 hex = { workspace = true }
-sha2 = { workspace = true }
-chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
-mime_guess = "2"
-base64 = "0.22"
-glob = "0.3"
-futures = "0.3"
-dirs = "6"
 # Passcode at-rest encryption of software identities (P3).
 argon2 = "0.5"
 zeroize = "1"
 
 # Optional interface backends
 serialport = { workspace = true, optional = true }
-btleplug = { workspace = true, optional = true }
-
 # iOS-only: CoreBluetooth authorization probe in platform_ios.rs
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
