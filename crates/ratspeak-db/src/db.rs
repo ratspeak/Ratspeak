@@ -1883,14 +1883,20 @@ pub fn get_message_delivery_method(pool: &DbPool, msg_id: &str) -> Option<String
     .flatten()
 }
 
-pub fn update_message_delivery_method(pool: &DbPool, msg_id: &str, delivery_method: &str) {
+pub fn update_message_delivery_method(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+    delivery_method: &str,
+) {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
     };
     conn.execute(
-        "UPDATE messages SET delivery_method = ?1 WHERE id = ?2 AND direction = 'outbound'",
-        params![delivery_method, msg_id],
+        "UPDATE messages SET delivery_method = ?1 \
+         WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound'",
+        params![delivery_method, msg_id, identity_id],
     )
     .ok();
 }
@@ -1976,7 +1982,13 @@ pub fn save_message(
 /// cannot be regressed by later updates. `propagated` is terminal at the LXMF
 /// layer because the propagation path only confirms node-deposit, not end-to-end
 /// recipient delivery — there is no later signal that upgrades it to `delivered`.
-pub fn update_message_state(pool: &DbPool, msg_id: &str, state: &str, rtt_ms: Option<f64>) {
+pub fn update_message_state(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+    state: &str,
+    rtt_ms: Option<f64>,
+) {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
@@ -1984,29 +1996,29 @@ pub fn update_message_state(pool: &DbPool, msg_id: &str, state: &str, rtt_ms: Op
     if let Some(rtt) = rtt_ms {
         conn.execute(
             "UPDATE messages SET state = ?1, rtt_ms = ?2 \
-             WHERE id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
-            params![state, rtt, msg_id],
+             WHERE id = ?3 AND identity_id = ?4 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+            params![state, rtt, msg_id, identity_id],
         )
         .ok();
     } else {
         conn.execute(
             "UPDATE messages SET state = ?1 \
-             WHERE id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
-            params![state, msg_id],
+             WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+            params![state, msg_id, identity_id],
         )
         .ok();
     }
 }
 
-pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str) -> bool {
+pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &str) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
     };
     conn.execute(
         "UPDATE messages SET state = 'cancelled' \
-         WHERE id = ?1 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
-        params![msg_id],
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+        params![msg_id, identity_id],
     )
     .map(|n| n > 0)
     .unwrap_or(false)
@@ -3980,7 +3992,7 @@ mod unread_breakdown_tests {
             Some("direct"),
         );
 
-        update_message_delivery_method(&pool, "msg", "propagated");
+        update_message_delivery_method(&pool, "msg", "me", "propagated");
 
         assert_eq!(
             get_message_delivery_method(&pool, "msg").as_deref(),
@@ -4031,7 +4043,7 @@ mod unread_breakdown_tests {
             None,
         );
 
-        update_message_state(&pool, shared_id, "delivered", Some(12.0));
+        update_message_state(&pool, shared_id, "identity-a", "delivered", Some(12.0));
 
         let conn = pool.get().unwrap();
         let inbound_state: String = conn
@@ -4050,6 +4062,76 @@ mod unread_breakdown_tests {
             .unwrap();
         assert_eq!(inbound_state, "received");
         assert_eq!(outbound_state, "delivered");
+    }
+
+    /// T1-14: state updates are identity-scoped — a delivery proof, method
+    /// change, or cancel handled for identity A must not flip identity B's
+    /// row with the same message hash.
+    #[test]
+    fn message_state_updates_are_identity_scoped() {
+        let pool = test_pool();
+        let shared_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        for identity in ["identity-a", "identity-b"] {
+            save_message(
+                &pool,
+                shared_id,
+                "me",
+                "peer",
+                "content",
+                "",
+                10.0,
+                "sent",
+                "outbound",
+                identity,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Some("direct"),
+            );
+        }
+
+        update_message_state(&pool, shared_id, "identity-a", "delivered", Some(8.0));
+        update_message_delivery_method(&pool, shared_id, "identity-a", "propagated");
+
+        // Fresh connection per query: the test pool has max_size 1, so a held
+        // checkout would starve the update calls below.
+        let state_of = |identity: &str| -> String {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT state FROM messages WHERE id = ?1 AND identity_id = ?2",
+                    params![shared_id, identity],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(state_of("identity-a"), "delivered");
+        assert_eq!(state_of("identity-b"), "sent", "B's row must not flip");
+        let method_b: Option<String> = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT delivery_method FROM messages WHERE id = ?1 AND identity_id = 'identity-b'",
+                params![shared_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(method_b.as_deref(), Some("direct"));
+
+        assert!(
+            !cancel_outbound_message_state(&pool, shared_id, "identity-a"),
+            "A's row is terminal now"
+        );
+        assert!(cancel_outbound_message_state(
+            &pool,
+            shared_id,
+            "identity-b"
+        ));
+        assert_eq!(state_of("identity-a"), "delivered");
+        assert_eq!(state_of("identity-b"), "cancelled");
     }
 
     #[test]
@@ -4113,9 +4195,21 @@ mod unread_breakdown_tests {
             None,
         );
 
-        assert!(cancel_outbound_message_state(&pool, "cancel-me"));
-        assert!(!cancel_outbound_message_state(&pool, "already-done"));
-        assert!(!cancel_outbound_message_state(&pool, "inbound-row"));
+        assert!(cancel_outbound_message_state(
+            &pool,
+            "cancel-me",
+            "identity-a"
+        ));
+        assert!(!cancel_outbound_message_state(
+            &pool,
+            "already-done",
+            "identity-a"
+        ));
+        assert!(!cancel_outbound_message_state(
+            &pool,
+            "inbound-row",
+            "identity-a"
+        ));
 
         let conn = pool.get().unwrap();
         let cancel_state: String = conn

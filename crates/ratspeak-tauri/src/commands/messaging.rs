@@ -992,8 +992,9 @@ pub async fn cancel_lxmf_message(
     .map_err(|_| AppError::internal("cancel_lxmf_message task panicked"))?;
 
     let msg_id_for_db = msg_id.clone();
+    let identity_for_db = active_identity_id(&state);
     let db_cancelled = db::spawn_db(state.db.clone(), move |p| {
-        db::cancel_outbound_message_state(&p, &msg_id_for_db)
+        db::cancel_outbound_message_state(&p, &msg_id_for_db, &identity_for_db)
     })
     .await
     .map_err(|_| AppError::internal("cancel_lxmf_message db task panicked"))?;

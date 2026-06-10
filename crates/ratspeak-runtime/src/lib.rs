@@ -1640,19 +1640,38 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     }
                     // Persist before emit: a successful `lxmf_step` event
                     // must imply the DB has already accepted the transition.
+                    // State rows are keyed (id, identity_id); these events come
+                    // from the active identity's router.
+                    let identity_for_db = if results.is_empty() {
+                        String::new()
+                    } else {
+                        helpers::active_identity_id(&tick_state)
+                    };
                     let mut persisted: Vec<(String, &'static str)> =
                         Vec::with_capacity(results.len());
                     for (msg_id, new_state) in &results {
                         let msg_id_for_db = msg_id.clone();
+                        let identity_for_db = identity_for_db.clone();
                         let new_state_for_db = new_state.to_string();
                         let delivery_method_for_db =
                             matches!(*new_state, "propagating" | "propagated")
                                 .then_some("propagated".to_string());
                         match db::spawn_db(tick_state.db.clone(), move |p| {
                             if let Some(method) = delivery_method_for_db.as_deref() {
-                                db::update_message_delivery_method(&p, &msg_id_for_db, method);
+                                db::update_message_delivery_method(
+                                    &p,
+                                    &msg_id_for_db,
+                                    &identity_for_db,
+                                    method,
+                                );
                             }
-                            db::update_message_state(&p, &msg_id_for_db, &new_state_for_db, None);
+                            db::update_message_state(
+                                &p,
+                                &msg_id_for_db,
+                                &identity_for_db,
+                                &new_state_for_db,
+                                None,
+                            );
                         })
                         .await
                         {
@@ -2449,8 +2468,9 @@ async fn handle_inbound_lxmf(
         {
             let rtt_ms = rtt.map(|d| d.as_secs_f64() * 1000.0);
             let msg_id_for_db = msg_id.clone();
+            let identity_for_db = helpers::active_identity_id(&state);
             db::spawn_db(state.db.clone(), move |p| {
-                db::update_message_state(&p, &msg_id_for_db, "delivered", rtt_ms);
+                db::update_message_state(&p, &msg_id_for_db, &identity_for_db, "delivered", rtt_ms);
             })
             .await
             .expect("db task panicked");
@@ -4047,8 +4067,13 @@ fn check_message_timeouts(state: &AppState) {
         Vec::new()
     };
 
+    let identity_id = if timed_out.is_empty() {
+        String::new()
+    } else {
+        helpers::active_identity_id(state)
+    };
     for msg_id in &timed_out {
-        db::update_message_state(&state.db, msg_id, "failed", None);
+        db::update_message_state(&state.db, msg_id, &identity_id, "failed", None);
         let client_msg_id = state
             .msg_id_map
             .lock()
