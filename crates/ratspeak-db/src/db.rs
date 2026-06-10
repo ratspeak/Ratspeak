@@ -1399,33 +1399,60 @@ pub fn update_identity_status(pool: &DbPool, hash_hex: &str, status: &str) -> Re
     Ok(())
 }
 
+/// Every user-data table cleared by factory reset (`api_reset_database`).
+/// Inventory-checked in tests: a new user-data table must be added here (or
+/// explicitly exempted in the test) before it can ship.
+pub const RESET_TABLES: &[&str] = &[
+    "messages",
+    "contacts",
+    "identities",
+    "settings",
+    "connection_history",
+    "reactions",
+    "games",
+    "app_sessions",
+    "app_actions",
+    "hidden_conversations",
+    "blocked_contacts",
+    "identity_activity",
+    "pending_blackholes",
+];
+
+/// Per-identity cascade for `delete_identity`. Static DELETEs (no format!()
+/// interpolation), children before parents. Inventory-checked in tests
+/// against every table carrying an `identity_id` column.
+const IDENTITY_CASCADE: &[(&str, &str)] = &[
+    (
+        "app_actions",
+        "DELETE FROM app_actions WHERE identity_id = ?1",
+    ),
+    (
+        "app_sessions",
+        "DELETE FROM app_sessions WHERE identity_id = ?1",
+    ),
+    ("games", "DELETE FROM games WHERE identity_id = ?1"),
+    ("reactions", "DELETE FROM reactions WHERE identity_id = ?1"),
+    (
+        "hidden_conversations",
+        "DELETE FROM hidden_conversations WHERE identity_id = ?1",
+    ),
+    (
+        "blocked_contacts",
+        "DELETE FROM blocked_contacts WHERE identity_id = ?1",
+    ),
+    (
+        "pending_blackholes",
+        "DELETE FROM pending_blackholes WHERE identity_id = ?1",
+    ),
+    ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
+    ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
+];
+
 pub fn delete_identity(pool: &DbPool, hash_hex: &str, cascade: bool) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
     if cascade {
-        // Static DELETEs (no format!() interpolation), children before parents.
-        for (label, sql) in [
-            (
-                "app_actions",
-                "DELETE FROM app_actions WHERE identity_id = ?1",
-            ),
-            (
-                "app_sessions",
-                "DELETE FROM app_sessions WHERE identity_id = ?1",
-            ),
-            ("games", "DELETE FROM games WHERE identity_id = ?1"),
-            ("reactions", "DELETE FROM reactions WHERE identity_id = ?1"),
-            (
-                "hidden_conversations",
-                "DELETE FROM hidden_conversations WHERE identity_id = ?1",
-            ),
-            (
-                "blocked_contacts",
-                "DELETE FROM blocked_contacts WHERE identity_id = ?1",
-            ),
-            ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
-            ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
-        ] {
+        for (label, sql) in IDENTITY_CASCADE {
             tx.execute(sql, params![hash_hex])
                 .map_err(|e| format!("delete {label}: {e}"))?;
         }
@@ -4318,6 +4345,97 @@ mod migration_tests {
             .query_row("SELECT COUNT(*) FROM identities", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "data survives repeat init_schema calls");
+    }
+
+    /// T1-8: every user-data table must be wiped by factory reset, and every
+    /// identity-scoped table covered by the delete_identity cascade — new
+    /// tables cannot silently drift out of either list.
+    #[test]
+    fn test_reset_and_cascade_cover_all_user_data_tables() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        let conn = pool.get().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table'
+                 AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // schema_version survives reset by design; FTS shadow tables follow
+        // `messages` via triggers plus the explicit rebuild after the wipe.
+        for table in &tables {
+            if table == "schema_version" || table.starts_with("messages_fts") {
+                continue;
+            }
+            assert!(
+                RESET_TABLES.contains(&table.as_str()),
+                "table `{table}` is not wiped by factory reset — add it to RESET_TABLES or exempt it here"
+            );
+        }
+
+        // identities itself is keyed by hash and deleted separately.
+        for table in &tables {
+            if table == "identities" || table.starts_with("messages_fts") {
+                continue;
+            }
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let cols: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            if cols.iter().any(|c| c == "identity_id") {
+                assert!(
+                    IDENTITY_CASCADE.iter().any(|(label, _)| label == table),
+                    "table `{table}` has identity_id but is missing from the delete_identity cascade"
+                );
+            }
+        }
+    }
+
+    /// T1-8: blackhole requests queued for an identity do not survive its
+    /// deletion.
+    #[test]
+    fn test_delete_identity_cascades_pending_blackholes() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO identities (hash, created_at) VALUES ('idA', 0.0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pending_blackholes (dest_hash, identity_id, queued_at)
+                 VALUES ('peer1', 'idA', 1.0), ('peer2', 'idB', 1.0)",
+                [],
+            )
+            .unwrap();
+        }
+        delete_identity(&pool, "idA", true).unwrap();
+        let conn = pool.get().unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_blackholes", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 1, "only the other identity's row survives");
+        let who: String = conn
+            .query_row("SELECT identity_id FROM pending_blackholes", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(who, "idB");
     }
 
     /// T1-4: a crash between statements of one migration step must roll the
