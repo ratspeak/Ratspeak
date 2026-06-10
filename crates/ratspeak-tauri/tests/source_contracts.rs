@@ -115,6 +115,19 @@ fn ratspeak_capability_marker_drives_name_badge() {
 }
 
 #[test]
+fn reaction_emoji_is_escaped_and_validated() {
+    let root = repo_root();
+    // Render site escapes the peer-controlled emoji text (T0-5).
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf_js.contains("escapeHtml(emoji) + (count > 1"));
+
+    // Runtime rejects markup/control characters at ingest.
+    let runtime_rs = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
+    assert!(runtime_rs.contains("fn sanitize_reaction_emoji"));
+    assert!(runtime_rs.contains("let Some(emoji) = sanitize_reaction_emoji(emoji)"));
+}
+
+#[test]
 fn profile_status_frontend_contract_is_wired() {
     let root = repo_root();
     let settings_js =

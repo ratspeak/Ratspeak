@@ -2355,6 +2355,21 @@ fn clamp_chat_field(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
+/// Inbound reactions are peer-controlled and rendered in the UI. Reject
+/// markup-dangerous and control characters outright instead of trusting
+/// every render site to escape (the renderer escapes too — defense in depth).
+fn sanitize_reaction_emoji(value: &str) -> Option<String> {
+    let emoji = clamp_chat_field(value, 16);
+    if emoji.is_empty()
+        || emoji
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '<' | '>' | '&' | '"' | '\''))
+    {
+        return None;
+    }
+    Some(emoji)
+}
+
 fn inbound_reply_fields(ext: Option<&lxmf::RatspeakChatExtension>) -> (String, String) {
     match ext {
         Some(lxmf::RatspeakChatExtension::Reply {
@@ -2376,8 +2391,10 @@ async fn apply_inbound_ratspeak_reaction(
     action: &str,
 ) {
     let target = clamp_chat_field(target, 128);
-    let emoji = clamp_chat_field(emoji, 16);
-    if target.is_empty() || emoji.is_empty() {
+    let Some(emoji) = sanitize_reaction_emoji(emoji) else {
+        return;
+    };
+    if target.is_empty() {
         return;
     }
     let action = if action == "remove" {
@@ -4541,6 +4558,38 @@ mod packet_dispatch_tests {
         );
 
         assert!(!inbound_packet_targets_destination(&raw, transport_id));
+    }
+}
+
+#[cfg(test)]
+mod reaction_sanitizer_tests {
+    use super::*;
+
+    /// T0-5: peer-controlled reactions are rendered in the UI — markup and
+    /// control characters must be rejected at ingest.
+    #[test]
+    fn rejects_markup_and_control_characters() {
+        assert_eq!(sanitize_reaction_emoji("<b>x</b>"), None);
+        assert_eq!(sanitize_reaction_emoji("a&b"), None);
+        assert_eq!(sanitize_reaction_emoji("\"quote\""), None);
+        assert_eq!(sanitize_reaction_emoji("it's"), None);
+        assert_eq!(sanitize_reaction_emoji("a\nb"), None);
+        assert_eq!(sanitize_reaction_emoji("\u{7f}"), None);
+        assert_eq!(sanitize_reaction_emoji(""), None);
+    }
+
+    #[test]
+    fn accepts_plausible_reactions_and_clamps_length() {
+        assert_eq!(
+            sanitize_reaction_emoji("\u{1F44D}").as_deref(),
+            Some("\u{1F44D}")
+        );
+        assert_eq!(sanitize_reaction_emoji("+1").as_deref(), Some("+1"));
+        let long = "x".repeat(40);
+        assert_eq!(
+            sanitize_reaction_emoji(&long).as_deref(),
+            Some("xxxxxxxxxxxxxxxx")
+        );
     }
 }
 

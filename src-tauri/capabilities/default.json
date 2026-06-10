@@ -3,12 +3,6 @@
   "description": "Default capabilities for the main window",
   "windows": ["main"],
   "local": true,
-  "remote": {
-    "urls": [
-      "http://127.0.0.1:*",
-      "http://localhost:*"
-    ]
-  },
   "permissions": [
     "core:default",
     "core:window:allow-set-focus",

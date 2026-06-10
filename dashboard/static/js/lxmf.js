@@ -2873,7 +2873,7 @@ function renderConversation(options) {
                 var isMine = grouped[emoji].indexOf(ourHash) !== -1;
                 reactionHtml += '<span class="reaction-pill' + (isMine ? ' mine' : '') + '" ' +
                     'data-emoji="' + escapeHtml(emoji) + '" data-msg-id="' + escapeHtml(msg.id) + '">' +
-                    emoji + (count > 1 ? ' ' + count : '') + '</span>';
+                    escapeHtml(emoji) + (count > 1 ? ' ' + count : '') + '</span>';
             });
             reactionHtml += '</div>';
         }
