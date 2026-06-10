@@ -1102,6 +1102,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             .load(std::sync::atomic::Ordering::Relaxed),
                         ..lxmf_core::propagation_node::PropagationNodeConfig::default()
                     };
+                    // Captured before the config moves into the node: bounds
+                    // the wrapper decode in the deposit loop below.
+                    let max_transfer_bytes = prop_node_config.max_storage;
 
                     let prop_node = if let Some((storage_dir, dest_hash)) = prop_storage {
                         match lxmf_core::propagation_node::PropagationNode::with_storage(
@@ -1258,7 +1261,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 break;
                             };
                             let Ok((_timebase, entries)) =
-                                lxmf_core::message::LxMessage::unpack_propagation_wrapper(&data)
+                                lxmf_core::message::LxMessage::unpack_propagation_wrapper_bounded(
+                                    &data,
+                                    max_transfer_bytes,
+                                )
                             else {
                                 tracing::warn!("failed to unpack inbound propagation wrapper");
                                 continue;
