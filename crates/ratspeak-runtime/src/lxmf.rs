@@ -2569,7 +2569,9 @@ impl LxmfManager {
         }
 
         let ki_path = ratchet_dir.join("known_identities");
-        if let Err(e) = rns_identity::persistence::atomic_write(&ki_path, &self.known_identities_blob()) {
+        if let Err(e) =
+            rns_identity::persistence::atomic_write(&ki_path, &self.known_identities_blob())
+        {
             tracing::warn!("Failed to save known identities: {e}");
         }
 

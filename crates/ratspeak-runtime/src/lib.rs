@@ -3596,8 +3596,10 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                 {
                     let mut identities_changed = false;
                     let mut router_changed = false;
-                    let mut changed_ratchets: Vec<(String, rns_identity::ratchet::ReceivedRatchet)> =
-                        Vec::new();
+                    let mut changed_ratchets: Vec<(
+                        String,
+                        rns_identity::ratchet::ReceivedRatchet,
+                    )> = Vec::new();
                     for a in &announces {
                         let dest_hex = hex::encode(a.dest_hash);
                         tracing::debug!(
