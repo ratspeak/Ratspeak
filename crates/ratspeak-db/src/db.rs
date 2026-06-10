@@ -343,10 +343,32 @@ CREATE INDEX IF NOT EXISTS idx_blocked_identity ON blocked_contacts(identity_id)
 CREATE INDEX IF NOT EXISTS idx_identities_active ON identities(is_active) WHERE is_active = 1;
 "#;
 
+/// Run one schema-version step inside an explicit transaction so a crash
+/// mid-step (especially multi-statement table rebuilds) rolls back atomically
+/// instead of leaving a half-migrated schema with the version un-bumped.
+fn migration_step(
+    conn: &Connection,
+    to_version: i64,
+    apply: impl FnOnce(&Connection) -> Result<(), rusqlite::Error>,
+) -> Result<(), rusqlite::Error> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match apply(conn) {
+        Ok(()) => conn.execute_batch("COMMIT"),
+        Err(e) => {
+            if let Err(rollback_err) = conn.execute_batch("ROLLBACK") {
+                tracing::error!(to_version, error = %rollback_err, "migration rollback failed");
+            }
+            tracing::error!(to_version, error = %e, "migration step failed; rolled back");
+            Err(e)
+        }
+    }
+}
+
 fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::Error> {
     if from_version < 2 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS connection_history (
+        migration_step(conn, 2, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS connection_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 host TEXT NOT NULL,
                 port INTEGER NOT NULL,
@@ -356,13 +378,16 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 UNIQUE(host, port)
             );
             UPDATE schema_version SET version = 2;",
-        )?;
-        tracing::info!("Migrated to schema version 2 (connection_history)");
+            )?;
+            tracing::info!("Migrated to schema version 2 (connection_history)");
+            Ok(())
+        })?;
     }
 
     if from_version < 3 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS identities (
+        migration_step(conn, 3, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS identities (
                 hash TEXT PRIMARY KEY,
                 lxmf_hash TEXT,
                 nickname TEXT DEFAULT '',
@@ -373,19 +398,19 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 propagation_node TEXT DEFAULT '',
                 propagation_enabled INTEGER DEFAULT 0
             );",
-        )?;
+            )?;
 
-        let has_identity_id = {
-            let mut stmt = conn.prepare("PRAGMA table_info(contacts)")?;
-            let cols: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            cols.iter().any(|c| c == "identity_id")
-        };
+            let has_identity_id = {
+                let mut stmt = conn.prepare("PRAGMA table_info(contacts)")?;
+                let cols: Vec<String> = stmt
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                cols.iter().any(|c| c == "identity_id")
+            };
 
-        if !has_identity_id {
-            conn.execute_batch(
+            if !has_identity_id {
+                conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS contacts_new (
                     dest_hash TEXT NOT NULL,
                     identity_id TEXT DEFAULT '',
@@ -404,47 +429,53 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 DROP TABLE contacts;
                 ALTER TABLE contacts_new RENAME TO contacts;"
             )?;
-        }
+            }
 
-        let has_msg_identity = {
-            let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
-            let cols: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            cols.iter().any(|c| c == "identity_id")
-        };
-        if !has_msg_identity {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN identity_id TEXT DEFAULT ''")?;
-        }
+            let has_msg_identity = {
+                let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+                let cols: Vec<String> = stmt
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                cols.iter().any(|c| c == "identity_id")
+            };
+            if !has_msg_identity {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN identity_id TEXT DEFAULT ''")?;
+            }
 
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_id);
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_id);
              UPDATE schema_version SET version = 3;",
-        )?;
-        tracing::info!("Migrated to schema version 3 (identities)");
+            )?;
+            tracing::info!("Migrated to schema version 3 (identities)");
+            Ok(())
+        })?;
     }
 
     if from_version < 4 {
-        let msg_cols = get_column_names(conn, "messages")?;
-        for col in &[
-            "attachment_name",
-            "attachment_stored_name",
-            "image_name",
-            "image_stored_name",
-        ] {
-            if !msg_cols.iter().any(|c| c == col) {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE messages ADD COLUMN {col} TEXT DEFAULT ''"
-                ))?;
+        migration_step(conn, 4, |conn| {
+            let msg_cols = get_column_names(conn, "messages")?;
+            for col in &[
+                "attachment_name",
+                "attachment_stored_name",
+                "image_name",
+                "image_stored_name",
+            ] {
+                if !msg_cols.iter().any(|c| c == col) {
+                    conn.execute_batch(&format!(
+                        "ALTER TABLE messages ADD COLUMN {col} TEXT DEFAULT ''"
+                    ))?;
+                }
             }
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 4;")?;
-        tracing::info!("Migrated to schema version 4 (attachment columns)");
+            conn.execute_batch("UPDATE schema_version SET version = 4;")?;
+            tracing::info!("Migrated to schema version 4 (attachment columns)");
+            Ok(())
+        })?;
     }
 
     if from_version < 5 {
-        conn.execute_batch(
+        migration_step(conn, 5, |conn| {
+            conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 content, title, id UNINDEXED, identity_id UNINDEXED,
                 content='messages', content_rowid='rowid'
@@ -466,12 +497,15 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
             UPDATE schema_version SET version = 5;"
         )?;
-        tracing::info!("Migrated to schema version 5 (FTS5)");
+            tracing::info!("Migrated to schema version 5 (FTS5)");
+            Ok(())
+        })?;
     }
 
     if from_version < 6 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS reactions (
+        migration_step(conn, 6, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS reactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_id TEXT NOT NULL,
                 sender TEXT NOT NULL,
@@ -481,21 +515,26 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 UNIQUE(message_id, sender, emoji, identity_id)
             );
             CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(message_id);",
-        )?;
-        let msg_cols = get_column_names(conn, "messages")?;
-        if !msg_cols.iter().any(|c| c == "reply_to_id") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN reply_to_id TEXT DEFAULT ''")?;
-        }
-        if !msg_cols.iter().any(|c| c == "reply_to_preview") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN reply_to_preview TEXT DEFAULT ''")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 6;")?;
-        tracing::info!("Migrated to schema version 6 (reactions, reply-to)");
+            )?;
+            let msg_cols = get_column_names(conn, "messages")?;
+            if !msg_cols.iter().any(|c| c == "reply_to_id") {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN reply_to_id TEXT DEFAULT ''")?;
+            }
+            if !msg_cols.iter().any(|c| c == "reply_to_preview") {
+                conn.execute_batch(
+                    "ALTER TABLE messages ADD COLUMN reply_to_preview TEXT DEFAULT ''",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 6;")?;
+            tracing::info!("Migrated to schema version 6 (reactions, reply-to)");
+            Ok(())
+        })?;
     }
 
     if from_version < 7 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS games (
+        migration_step(conn, 7, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS games (
                 game_id TEXT PRIMARY KEY,
                 game TEXT NOT NULL,
                 contact_hash TEXT NOT NULL,
@@ -512,73 +551,82 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             );
             CREATE INDEX IF NOT EXISTS idx_games_contact ON games(contact_hash, identity_id);
             CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);",
-        )?;
-        let msg_cols = get_column_names(conn, "messages")?;
-        if !msg_cols.iter().any(|c| c == "game_id") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_id TEXT DEFAULT ''")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 7;")?;
-        tracing::info!("Migrated to schema version 7 (games)");
+            )?;
+            let msg_cols = get_column_names(conn, "messages")?;
+            if !msg_cols.iter().any(|c| c == "game_id") {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN game_id TEXT DEFAULT ''")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 7;")?;
+            tracing::info!("Migrated to schema version 7 (games)");
+            Ok(())
+        })?;
     }
 
     if from_version < 8 {
-        let game_cols = get_column_names(conn, "games")?;
-        if !game_cols.iter().any(|c| c == "first_turn") {
-            conn.execute_batch(
-                "ALTER TABLE games ADD COLUMN first_turn TEXT DEFAULT 'challenger'",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 8;")?;
-        tracing::info!("Migrated to schema version 8 (first_turn)");
+        migration_step(conn, 8, |conn| {
+            let game_cols = get_column_names(conn, "games")?;
+            if !game_cols.iter().any(|c| c == "first_turn") {
+                conn.execute_batch(
+                    "ALTER TABLE games ADD COLUMN first_turn TEXT DEFAULT 'challenger'",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 8;")?;
+            tracing::info!("Migrated to schema version 8 (first_turn)");
+            Ok(())
+        })?;
     }
 
     if from_version < 9 {
-        let mut stmt = conn.prepare(
+        migration_step(conn, 9, |conn| {
+            let mut stmt = conn.prepare(
             "SELECT game_id, identity_id, challenger, contact_hash, turn, first_turn, winner FROM games"
         )?;
-        let rows: Vec<(String, String, String, String, String, String, String)> = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2).unwrap_or_default(),
-                    row.get::<_, String>(3).unwrap_or_default(),
-                    row.get::<_, String>(4).unwrap_or_default(),
-                    row.get::<_, String>(5).unwrap_or_default(),
-                    row.get::<_, String>(6).unwrap_or_default(),
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            let rows: Vec<(String, String, String, String, String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2).unwrap_or_default(),
+                        row.get::<_, String>(3).unwrap_or_default(),
+                        row.get::<_, String>(4).unwrap_or_default(),
+                        row.get::<_, String>(5).unwrap_or_default(),
+                        row.get::<_, String>(6).unwrap_or_default(),
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        for (gid, iid, ch, co, turn, first_turn, winner) in rows {
-            let new_turn = match turn.as_str() {
-                "challenger" => &ch,
-                "opponent" => &co,
-                _ => &turn,
-            };
-            let new_first = match first_turn.as_str() {
-                "challenger" => &ch,
-                "opponent" => &co,
-                _ => &first_turn,
-            };
-            let new_winner = match winner.as_str() {
-                "challenger" => &ch,
-                "opponent" => &co,
-                _ => &winner,
-            };
-            conn.execute(
+            for (gid, iid, ch, co, turn, first_turn, winner) in rows {
+                let new_turn = match turn.as_str() {
+                    "challenger" => &ch,
+                    "opponent" => &co,
+                    _ => &turn,
+                };
+                let new_first = match first_turn.as_str() {
+                    "challenger" => &ch,
+                    "opponent" => &co,
+                    _ => &first_turn,
+                };
+                let new_winner = match winner.as_str() {
+                    "challenger" => &ch,
+                    "opponent" => &co,
+                    _ => &winner,
+                };
+                conn.execute(
                 "UPDATE games SET turn = ?1, first_turn = ?2, winner = ?3 WHERE game_id = ?4 AND identity_id = ?5",
                 params![new_turn, new_first, new_winner, gid, iid],
             )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 9;")?;
-        tracing::info!("Migrated to schema version 9 (role→hash)");
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 9;")?;
+            tracing::info!("Migrated to schema version 9 (role→hash)");
+            Ok(())
+        })?;
     }
 
     if from_version < 10 {
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS games;
+        migration_step(conn, 10, |conn| {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS games;
             CREATE TABLE IF NOT EXISTS games (
                 game_id TEXT NOT NULL,
                 game TEXT NOT NULL,
@@ -598,24 +646,32 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             CREATE INDEX IF NOT EXISTS idx_games_contact ON games(contact_hash, identity_id);
             CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
             UPDATE schema_version SET version = 10;",
-        )?;
-        tracing::info!("Migrated to schema version 10 (games composite PK)");
+            )?;
+            tracing::info!("Migrated to schema version 10 (games composite PK)");
+            Ok(())
+        })?;
     }
 
     if from_version < 11 {
-        let msg_cols = get_column_names(conn, "messages")?;
-        if !msg_cols.iter().any(|c| c == "game_action") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_action TEXT DEFAULT ''")?;
-        }
-        if !msg_cols.iter().any(|c| c == "game_move_san") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_move_san TEXT DEFAULT ''")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 11;")?;
-        tracing::info!("Migrated to schema version 11 (game_action columns)");
+        migration_step(conn, 11, |conn| {
+            let msg_cols = get_column_names(conn, "messages")?;
+            if !msg_cols.iter().any(|c| c == "game_action") {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN game_action TEXT DEFAULT ''")?;
+            }
+            if !msg_cols.iter().any(|c| c == "game_move_san") {
+                conn.execute_batch(
+                    "ALTER TABLE messages ADD COLUMN game_move_san TEXT DEFAULT ''",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 11;")?;
+            tracing::info!("Migrated to schema version 11 (game_action columns)");
+            Ok(())
+        })?;
     }
 
     if from_version < 12 {
-        conn.execute_batch(
+        migration_step(conn, 12, |conn| {
+            conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS app_sessions (
                 session_id    TEXT NOT NULL,
                 identity_id   TEXT NOT NULL DEFAULT '',
@@ -646,21 +702,27 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             );
             UPDATE schema_version SET version = 12;"
         )?;
-        tracing::info!("Migrated to schema version 12 (LRGP tables)");
+            tracing::info!("Migrated to schema version 12 (LRGP tables)");
+            Ok(())
+        })?;
     }
 
     if from_version < 13 {
-        conn.execute_batch(
+        migration_step(conn, 13, |conn| {
+            conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_contacts_dest_identity ON contacts(dest_hash, identity_id);
             CREATE INDEX IF NOT EXISTS idx_messages_identity_state ON messages(identity_id, state);
             UPDATE schema_version SET version = 13;"
         )?;
-        tracing::info!("Migrated to schema version 13 (additional indexes)");
+            tracing::info!("Migrated to schema version 13 (additional indexes)");
+            Ok(())
+        })?;
     }
 
     if from_version < 14 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS blocked_contacts (
+        migration_step(conn, 14, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS blocked_contacts (
                 dest_hash TEXT NOT NULL,
                 identity_id TEXT NOT NULL DEFAULT '',
                 display_name TEXT DEFAULT '',
@@ -668,22 +730,28 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 PRIMARY KEY (dest_hash, identity_id)
             );
             UPDATE schema_version SET version = 14;",
-        )?;
-        tracing::info!("Migrated to schema version 14 (blocked_contacts)");
+            )?;
+            tracing::info!("Migrated to schema version 14 (blocked_contacts)");
+            Ok(())
+        })?;
     }
 
     if from_version < 15 {
-        conn.execute_batch(
+        migration_step(conn, 15, |conn| {
+            conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_messages_source_identity ON messages(source, identity_id, timestamp ASC);
              CREATE INDEX IF NOT EXISTS idx_messages_dest_identity ON messages(destination, identity_id, timestamp ASC);
              UPDATE schema_version SET version = 15;"
         )?;
-        tracing::info!("Migrated to schema version 15 (conversation query indexes)");
+            tracing::info!("Migrated to schema version 15 (conversation query indexes)");
+            Ok(())
+        })?;
     }
 
     if from_version < 16 {
-        // Backfill last_seen/first_seen from messages table.
-        conn.execute_batch(
+        migration_step(conn, 16, |conn| {
+            // Backfill last_seen/first_seen from messages table.
+            conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS identity_activity (
                  dest_hash      TEXT PRIMARY KEY,
                  last_seen      REAL NOT NULL,
@@ -717,12 +785,15 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
 
              UPDATE schema_version SET version = 16;"
         )?;
-        tracing::info!("Migrated to schema version 16 (identity_activity + scaling indexes)");
+            tracing::info!("Migrated to schema version 16 (identity_activity + scaling indexes)");
+            Ok(())
+        })?;
     }
 
     if from_version < 17 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS lrgp_pending_sends (
+        migration_step(conn, 17, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS lrgp_pending_sends (
                 id                   INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id           TEXT NOT NULL,
                 identity_id          TEXT NOT NULL,
@@ -743,25 +814,32 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             CREATE INDEX IF NOT EXISTS idx_lrgp_pending_session
                 ON lrgp_pending_sends(session_id, identity_id);
             UPDATE schema_version SET version = 17;",
-        )?;
-        tracing::info!("Migrated to schema version 17 (lrgp_pending_sends)");
+            )?;
+            tracing::info!("Migrated to schema version 17 (lrgp_pending_sends)");
+            Ok(())
+        })?;
     }
 
     if from_version < 18 {
-        // Self-heal: empty session_id rows orphan the frontend `_allSessions` map.
-        let sessions_removed =
-            conn.execute("DELETE FROM app_sessions WHERE session_id = ''", [])?;
-        let actions_removed = conn.execute("DELETE FROM app_actions WHERE session_id = ''", [])?;
-        conn.execute_batch("UPDATE schema_version SET version = 18;")?;
-        tracing::info!(
-            "Migrated to schema version 18 (pruned {sessions_removed} empty-SID sessions, \
+        migration_step(conn, 18, |conn| {
+            // Self-heal: empty session_id rows orphan the frontend `_allSessions` map.
+            let sessions_removed =
+                conn.execute("DELETE FROM app_sessions WHERE session_id = ''", [])?;
+            let actions_removed =
+                conn.execute("DELETE FROM app_actions WHERE session_id = ''", [])?;
+            conn.execute_batch("UPDATE schema_version SET version = 18;")?;
+            tracing::info!(
+                "Migrated to schema version 18 (pruned {sessions_removed} empty-SID sessions, \
              {actions_removed} empty-SID actions)"
-        );
+            );
+            Ok(())
+        })?;
     }
 
     if from_version < 19 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS identity_interface_activity (
+        migration_step(conn, 19, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS identity_interface_activity (
                 dest_hash      TEXT NOT NULL,
                 interface_name TEXT NOT NULL,
                 last_seen      REAL NOT NULL,
@@ -771,23 +849,26 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             CREATE INDEX IF NOT EXISTS idx_iia_interface
                 ON identity_interface_activity(interface_name);
             UPDATE schema_version SET version = 19;",
-        )?;
-        tracing::info!(
-            "Migrated to schema version 19 (identity_interface_activity for per-interface peer tracking)"
-        );
+            )?;
+            tracing::info!(
+                "Migrated to schema version 19 (identity_interface_activity for per-interface peer tracking)"
+            );
+            Ok(())
+        })?;
     }
 
     if from_version < 20 {
-        // Unify peers on identity_activity; drop identity_interface_activity.
-        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-        if !cols.iter().any(|c| c == "display_name") {
-            conn.execute_batch(
-                "ALTER TABLE identity_activity
+        migration_step(conn, 20, |conn| {
+            // Unify peers on identity_activity; drop identity_interface_activity.
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "display_name") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
                     ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
-            )?;
-        }
-        conn.execute_batch(
-            "DROP INDEX IF EXISTS idx_iia_interface;
+                )?;
+            }
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS idx_iia_interface;
              DROP TABLE IF EXISTS identity_interface_activity;
 
              UPDATE identity_activity
@@ -804,107 +885,131 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 );
 
              UPDATE schema_version SET version = 20;",
-        )?;
-        tracing::info!(
-            "Migrated to schema version 20 (display_name on identity_activity, dropped identity_interface_activity)"
-        );
+            )?;
+            tracing::info!(
+                "Migrated to schema version 20 (display_name on identity_activity, dropped identity_interface_activity)"
+            );
+            Ok(())
+        })?;
     }
 
     if from_version < 21 {
-        // Add `last_interface`; required by v22's DROP COLUMN below.
-        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-        if !cols.iter().any(|c| c == "last_interface") {
-            conn.execute_batch(
-                "ALTER TABLE identity_activity
+        migration_step(conn, 21, |conn| {
+            // Add `last_interface`; required by v22's DROP COLUMN below.
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "last_interface") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
                     ADD COLUMN last_interface TEXT NOT NULL DEFAULT '';",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 21;")?;
-        tracing::info!("Migrated to schema version 21 (last_interface on identity_activity)");
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 21;")?;
+            tracing::info!("Migrated to schema version 21 (last_interface on identity_activity)");
+            Ok(())
+        })?;
     }
 
     if from_version < 22 {
-        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-        if cols.iter().any(|c| c == "last_interface") {
-            conn.execute_batch("ALTER TABLE identity_activity DROP COLUMN last_interface;")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 22;")?;
-        tracing::info!("Migrated to schema version 22 (dropped last_interface)");
+        migration_step(conn, 22, |conn| {
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if cols.iter().any(|c| c == "last_interface") {
+                conn.execute_batch("ALTER TABLE identity_activity DROP COLUMN last_interface;")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 22;")?;
+            tracing::info!("Migrated to schema version 22 (dropped last_interface)");
+            Ok(())
+        })?;
     }
 
     if from_version < 23 {
-        // Re-add `last_interface`; stamped atomically with `last_seen` per announce.
-        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-        if !cols.iter().any(|c| c == "last_interface") {
-            conn.execute_batch(
-                "ALTER TABLE identity_activity
+        migration_step(conn, 23, |conn| {
+            // Re-add `last_interface`; stamped atomically with `last_seen` per announce.
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "last_interface") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
                     ADD COLUMN last_interface TEXT NOT NULL DEFAULT '';",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 23;")?;
-        tracing::info!(
-            "Migrated to schema version 23 (last_interface restored, atomic with announce)"
-        );
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 23;")?;
+            tracing::info!(
+                "Migrated to schema version 23 (last_interface restored, atomic with announce)"
+            );
+            Ok(())
+        })?;
     }
 
     if from_version < 24 {
-        // Add propagation Off/Auto/Manual mode + favor_static.
-        // Pre-existing `propagation_node` and `propagation_enabled` preserved;
-        // `enable_propagation` becomes a shim mapping to mode.
-        let cols = get_column_names(conn, "identities").unwrap_or_default();
-        if !cols.iter().any(|c| c == "propagation_mode") {
-            conn.execute_batch(
-                "ALTER TABLE identities
+        migration_step(conn, 24, |conn| {
+            // Add propagation Off/Auto/Manual mode + favor_static.
+            // Pre-existing `propagation_node` and `propagation_enabled` preserved;
+            // `enable_propagation` becomes a shim mapping to mode.
+            let cols = get_column_names(conn, "identities").unwrap_or_default();
+            if !cols.iter().any(|c| c == "propagation_mode") {
+                conn.execute_batch(
+                    "ALTER TABLE identities
                     ADD COLUMN propagation_mode TEXT NOT NULL DEFAULT 'auto';",
-            )?;
-        }
-        if !cols.iter().any(|c| c == "propagation_auto_favor_static") {
-            conn.execute_batch(
-                "ALTER TABLE identities
+                )?;
+            }
+            if !cols.iter().any(|c| c == "propagation_auto_favor_static") {
+                conn.execute_batch(
+                    "ALTER TABLE identities
                     ADD COLUMN propagation_auto_favor_static INTEGER NOT NULL DEFAULT 1;",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 24;")?;
-        tracing::info!("Migrated to schema version 24 (propagation_mode + auto_favor_static)");
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 24;")?;
+            tracing::info!("Migrated to schema version 24 (propagation_mode + auto_favor_static)");
+            Ok(())
+        })?;
     }
 
     if from_version < 25 {
-        // Persist the chosen LXMF delivery method per outbound message so the
-        // UI can render proof-aware state icons (muted check for opportunistic,
-        // accent check for direct, envelope for propagated).
-        let cols = get_column_names(conn, "messages").unwrap_or_default();
-        if !cols.iter().any(|c| c == "delivery_method") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN delivery_method TEXT;")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 25;")?;
-        tracing::info!("Migrated to schema version 25 (messages.delivery_method)");
+        migration_step(conn, 25, |conn| {
+            // Persist the chosen LXMF delivery method per outbound message so the
+            // UI can render proof-aware state icons (muted check for opportunistic,
+            // accent check for direct, envelope for propagated).
+            let cols = get_column_names(conn, "messages").unwrap_or_default();
+            if !cols.iter().any(|c| c == "delivery_method") {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN delivery_method TEXT;")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 25;")?;
+            tracing::info!("Migrated to schema version 25 (messages.delivery_method)");
+            Ok(())
+        })?;
     }
 
     if from_version < 26 {
-        // LRGP application-layer retry queue removed — Direct's
-        // MAX_DELIVERY_ATTEMPTS=5 is the actual transport-layer reliability,
-        // and the queue's nonce-replay window (30 min) outran LRGP's per-
-        // session dedup TTL (10 min), risking duplicate move application.
-        conn.execute_batch("DROP TABLE IF EXISTS lrgp_pending_sends;")?;
-        conn.execute_batch("UPDATE schema_version SET version = 26;")?;
-        tracing::info!("Migrated to schema version 26 (drop lrgp_pending_sends)");
+        migration_step(conn, 26, |conn| {
+            // LRGP application-layer retry queue removed — Direct's
+            // MAX_DELIVERY_ATTEMPTS=5 is the actual transport-layer reliability,
+            // and the queue's nonce-replay window (30 min) outran LRGP's per-
+            // session dedup TTL (10 min), risking duplicate move application.
+            conn.execute_batch("DROP TABLE IF EXISTS lrgp_pending_sends;")?;
+            conn.execute_batch("UPDATE schema_version SET version = 26;")?;
+            tracing::info!("Migrated to schema version 26 (drop lrgp_pending_sends)");
+            Ok(())
+        })?;
     }
 
     if from_version < 27 {
-        // Persist the packed LRGP envelope per action so the manual "Resend
-        // last move" path can re-transmit the exact same envelope without
-        // re-dispatching through the LRGP router (which would reject the
-        // resend as `not_your_turn` because local state already advanced).
-        let cols = get_column_names(conn, "app_actions").unwrap_or_default();
-        if !cols.iter().any(|c| c == "envelope_mp") {
-            conn.execute_batch("ALTER TABLE app_actions ADD COLUMN envelope_mp BLOB;")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 27;")?;
-        tracing::info!("Migrated to schema version 27 (app_actions.envelope_mp)");
+        migration_step(conn, 27, |conn| {
+            // Persist the packed LRGP envelope per action so the manual "Resend
+            // last move" path can re-transmit the exact same envelope without
+            // re-dispatching through the LRGP router (which would reject the
+            // resend as `not_your_turn` because local state already advanced).
+            let cols = get_column_names(conn, "app_actions").unwrap_or_default();
+            if !cols.iter().any(|c| c == "envelope_mp") {
+                conn.execute_batch("ALTER TABLE app_actions ADD COLUMN envelope_mp BLOB;")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 27;")?;
+            tracing::info!("Migrated to schema version 27 (app_actions.envelope_mp)");
+            Ok(())
+        })?;
     }
 
     if from_version < 28 {
-        conn.execute_batch(
+        migration_step(conn, 28, |conn| {
+            conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS pending_blackholes (
                 dest_hash       TEXT NOT NULL,
                 identity_id     TEXT NOT NULL DEFAULT '',
@@ -917,26 +1022,29 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             CREATE INDEX IF NOT EXISTS idx_pending_blackholes_identity ON pending_blackholes(identity_id);
             UPDATE schema_version SET version = 28;",
         )?;
-        tracing::info!("Migrated to schema version 28 (pending_blackholes)");
+            tracing::info!("Migrated to schema version 28 (pending_blackholes)");
+            Ok(())
+        })?;
     }
 
     if from_version < 29 {
-        if table_exists(conn, "identity_activity")? {
-            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-            if !cols.iter().any(|c| c == "identity_hash") {
-                conn.execute_batch(
-                    "ALTER TABLE identity_activity
+        migration_step(conn, 29, |conn| {
+            if table_exists(conn, "identity_activity")? {
+                let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+                if !cols.iter().any(|c| c == "identity_hash") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
                         ADD COLUMN identity_hash TEXT NOT NULL DEFAULT '';",
-                )?;
-            }
-            if !cols.iter().any(|c| c == "services") {
-                conn.execute_batch(
-                    "ALTER TABLE identity_activity
+                    )?;
+                }
+                if !cols.iter().any(|c| c == "services") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
                         ADD COLUMN services TEXT NOT NULL DEFAULT '';",
-                )?;
-            }
-            conn.execute_batch(
-                "UPDATE identity_activity
+                    )?;
+                }
+                conn.execute_batch(
+                    "UPDATE identity_activity
                     SET services = 'lxmf.delivery'
                   WHERE services = ''
                     AND (
@@ -944,37 +1052,42 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                         OR dest_hash IN (SELECT destination FROM messages WHERE destination != '')
                         OR dest_hash IN (SELECT dest_hash FROM contacts)
                     );",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 29;")?;
-        tracing::info!("Migrated to schema version 29 (peer service aspects)");
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 29;")?;
+            tracing::info!("Migrated to schema version 29 (peer service aspects)");
+            Ok(())
+        })?;
     }
 
     if from_version < 30 {
-        if table_exists(conn, "messages")? {
-            let msg_cols = get_column_names(conn, "messages").unwrap_or_default();
-            for (col, ddl) in [
-                ("rtt_ms", "REAL"),
-                ("hops", "INTEGER"),
-                ("path", "TEXT"),
-                ("identity_id", "TEXT DEFAULT ''"),
-                ("attachment_name", "TEXT DEFAULT ''"),
-                ("attachment_stored_name", "TEXT DEFAULT ''"),
-                ("image_name", "TEXT DEFAULT ''"),
-                ("image_stored_name", "TEXT DEFAULT ''"),
-                ("reply_to_id", "TEXT DEFAULT ''"),
-                ("reply_to_preview", "TEXT DEFAULT ''"),
-                ("game_id", "TEXT DEFAULT ''"),
-                ("game_action", "TEXT DEFAULT ''"),
-                ("game_move_san", "TEXT DEFAULT ''"),
-                ("delivery_method", "TEXT"),
-            ] {
-                if !msg_cols.iter().any(|c| c == col) {
-                    conn.execute_batch(&format!("ALTER TABLE messages ADD COLUMN {col} {ddl}"))?;
+        migration_step(conn, 30, |conn| {
+            if table_exists(conn, "messages")? {
+                let msg_cols = get_column_names(conn, "messages").unwrap_or_default();
+                for (col, ddl) in [
+                    ("rtt_ms", "REAL"),
+                    ("hops", "INTEGER"),
+                    ("path", "TEXT"),
+                    ("identity_id", "TEXT DEFAULT ''"),
+                    ("attachment_name", "TEXT DEFAULT ''"),
+                    ("attachment_stored_name", "TEXT DEFAULT ''"),
+                    ("image_name", "TEXT DEFAULT ''"),
+                    ("image_stored_name", "TEXT DEFAULT ''"),
+                    ("reply_to_id", "TEXT DEFAULT ''"),
+                    ("reply_to_preview", "TEXT DEFAULT ''"),
+                    ("game_id", "TEXT DEFAULT ''"),
+                    ("game_action", "TEXT DEFAULT ''"),
+                    ("game_move_san", "TEXT DEFAULT ''"),
+                    ("delivery_method", "TEXT"),
+                ] {
+                    if !msg_cols.iter().any(|c| c == col) {
+                        conn.execute_batch(&format!(
+                            "ALTER TABLE messages ADD COLUMN {col} {ddl}"
+                        ))?;
+                    }
                 }
-            }
 
-            conn.execute_batch(
+                conn.execute_batch(
                 "DROP TRIGGER IF EXISTS messages_ai;
                  DROP TRIGGER IF EXISTS messages_ad;
                  DROP TRIGGER IF EXISTS messages_au;
@@ -1072,58 +1185,66 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                  END;
                  INSERT INTO messages_fts(messages_fts) VALUES('rebuild');",
             )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 30;")?;
-        tracing::info!("Migrated to schema version 30 (messages scoped by identity)");
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 30;")?;
+            tracing::info!("Migrated to schema version 30 (messages scoped by identity)");
+            Ok(())
+        })?;
     }
 
     if from_version < 31 {
-        if table_exists(conn, "identities")? {
-            let cols = get_column_names(conn, "identities").unwrap_or_default();
-            if !cols.iter().any(|c| c == "status") {
-                conn.execute_batch(
-                    "ALTER TABLE identities
+        migration_step(conn, 31, |conn| {
+            if table_exists(conn, "identities")? {
+                let cols = get_column_names(conn, "identities").unwrap_or_default();
+                if !cols.iter().any(|c| c == "status") {
+                    conn.execute_batch(
+                        "ALTER TABLE identities
                         ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-                )?;
+                    )?;
+                }
             }
-        }
-        if table_exists(conn, "identity_activity")? {
-            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-            if !cols.iter().any(|c| c == "status") {
-                conn.execute_batch(
-                    "ALTER TABLE identity_activity
+            if table_exists(conn, "identity_activity")? {
+                let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+                if !cols.iter().any(|c| c == "status") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
                         ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-                )?;
+                    )?;
+                }
             }
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 31;")?;
-        tracing::info!("Migrated to schema version 31 (announce status metadata)");
+            conn.execute_batch("UPDATE schema_version SET version = 31;")?;
+            tracing::info!("Migrated to schema version 31 (announce status metadata)");
+            Ok(())
+        })?;
     }
 
     if from_version < 32 {
-        // Repair databases that were marked v31 before both status columns were
-        // actually present. Without identities.status, identity reads fail and
-        // first-run setup incorrectly treats a populated profile as empty.
-        if table_exists(conn, "identities")? {
-            let cols = get_column_names(conn, "identities").unwrap_or_default();
-            if !cols.iter().any(|c| c == "status") {
-                conn.execute_batch(
-                    "ALTER TABLE identities
+        migration_step(conn, 32, |conn| {
+            // Repair databases that were marked v31 before both status columns were
+            // actually present. Without identities.status, identity reads fail and
+            // first-run setup incorrectly treats a populated profile as empty.
+            if table_exists(conn, "identities")? {
+                let cols = get_column_names(conn, "identities").unwrap_or_default();
+                if !cols.iter().any(|c| c == "status") {
+                    conn.execute_batch(
+                        "ALTER TABLE identities
                         ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-                )?;
+                    )?;
+                }
             }
-        }
-        if table_exists(conn, "identity_activity")? {
-            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-            if !cols.iter().any(|c| c == "status") {
-                conn.execute_batch(
-                    "ALTER TABLE identity_activity
+            if table_exists(conn, "identity_activity")? {
+                let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+                if !cols.iter().any(|c| c == "status") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
                         ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-                )?;
+                    )?;
+                }
             }
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 32;")?;
-        tracing::info!("Migrated to schema version 32 (repair identity status columns)");
+            conn.execute_batch("UPDATE schema_version SET version = 32;")?;
+            tracing::info!("Migrated to schema version 32 (repair identity status columns)");
+            Ok(())
+        })?;
     }
 
     Ok(())
@@ -4197,6 +4318,54 @@ mod migration_tests {
             .query_row("SELECT COUNT(*) FROM identities", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "data survives repeat init_schema calls");
+    }
+
+    /// T1-4: a crash between statements of one migration step must roll the
+    /// whole step back (schema + version bump) and re-run cleanly.
+    #[test]
+    fn test_migration_step_interrupt_rolls_back_and_rerun_succeeds() {
+        let pool = empty_pool();
+        let conn = pool.get().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (1);
+             CREATE TABLE t (x INTEGER);
+             INSERT INTO t VALUES (1);",
+        )
+        .unwrap();
+
+        // Step applies one statement, then dies before finishing the batch.
+        let result = migration_step(&conn, 2, |conn| {
+            conn.execute_batch(
+                "ALTER TABLE t RENAME TO t_old;
+                 UPDATE schema_version SET version = 2;",
+            )?;
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        });
+        assert!(result.is_err());
+
+        // Both the rename and the version bump rolled back.
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1, "version bump must roll back with the step");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "schema change must roll back with the step");
+
+        // Re-running the same step (without the injected interrupt) succeeds.
+        migration_step(&conn, 2, |conn| {
+            conn.execute_batch(
+                "ALTER TABLE t RENAME TO t_old;
+                 UPDATE schema_version SET version = 2;",
+            )
+        })
+        .unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
     }
 
     #[test]
