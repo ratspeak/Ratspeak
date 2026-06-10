@@ -523,26 +523,16 @@ z`,
     }
 
     function closeSheet(overlay, sheet, onClose) {
-        sheet.classList.remove('open');
-        overlay.classList.remove('active');
-        setTimeout(function() {
-            if (overlay.parentNode) overlay.remove();
-            if (sheet.parentNode) sheet.remove();
-            if (typeof onClose === 'function') onClose();
-        }, 180);
+        RS.sheetShell.dismiss({ overlay: overlay, sheet: sheet }, onClose);
     }
 
     function buildSheet(className) {
-        var overlay = document.createElement('div');
-        overlay.className = 'bottom-sheet-overlay contact-card-overlay';
-        var sheet = document.createElement('div');
-        sheet.className = className;
-        document.body.appendChild(overlay);
-        document.body.appendChild(sheet);
-        sheet.offsetHeight;
-        overlay.classList.add('active');
-        sheet.classList.add('open');
-        return { overlay: overlay, sheet: sheet };
+        var shell = RS.sheetShell.create({
+            overlayClass: 'contact-card-overlay',
+            sheetClass: className,
+        });
+        RS.sheetShell.present(shell);
+        return shell;
     }
 
     function showIdentityShareScreen(identityHash) {
@@ -1048,7 +1038,7 @@ z`,
     function addContactByAddress() {
         rsPromptContact({ title: 'Add Contact' }).then(function(result) {
             if (!result) return;
-            RS.invoke('add_contact', { args: { hash: result.hash, display_name: result.display_name } }).catch(function() {});
+            RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
             showToast('Adding contact...', 'toast-orange', 2000);
         });
     }

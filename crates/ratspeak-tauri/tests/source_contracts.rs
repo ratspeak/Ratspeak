@@ -115,6 +115,65 @@ fn ratspeak_capability_marker_drives_name_badge() {
 }
 
 #[test]
+fn frontend_shared_helpers_are_adopted() {
+    let root = repo_root();
+    // T2-4: one sheet shell, one peer-group builder, toast-surfaced actions.
+    let constants_js =
+        read_source(root.join("dashboard/static/js/constants.js")).expect("constants js");
+    assert!(constants_js.contains("RS.sheetShell = {"));
+    assert!(constants_js.contains("RS.invokeOrToast = function"));
+    assert!(constants_js.contains("RS.buildPeerGroupItems = function"));
+
+    for file in [
+        "dashboard/static/js/dialogs.js",
+        "dashboard/static/js/contact_card.js",
+        "dashboard/static/js/games_tab.js",
+    ] {
+        let source = read_source(root.join(file)).expect(file);
+        assert!(
+            source.contains("RS.sheetShell."),
+            "{file} must use the shared sheet shell"
+        );
+    }
+    for file in [
+        "dashboard/static/js/peers.js",
+        "dashboard/static/js/connections.js",
+    ] {
+        let source = read_source(root.join(file)).expect(file);
+        assert!(
+            source.contains("RS.buildPeerGroupItems("),
+            "{file} must use the shared peer grouping"
+        );
+    }
+
+    // User-initiated contact/block actions surface failures, never the silent
+    // `RS.invoke('add_contact'...).catch(function() {})` pattern.
+    for file in [
+        "dashboard/static/js/lxmf.js",
+        "dashboard/static/js/peers.js",
+        "dashboard/static/js/health.js",
+        "dashboard/static/js/contact_card.js",
+    ] {
+        let source = read_source(root.join(file)).expect(file);
+        for action in ["add_contact", "remove_contact", "block_contact"] {
+            assert!(
+                !source.contains(&format!("RS.invoke('{action}'")),
+                "{file}: {action} must go through RS.invokeOrToast"
+            );
+        }
+    }
+
+    // Portable CSS minify (BSD `sed -i ''` silently no-ops on GNU sed).
+    let build_css = read_source(root.join("dashboard/build-css.sh")).expect("build-css.sh");
+    assert!(!build_css.contains("sed -i ''"));
+    assert!(build_css.contains("perl -0777 -pi"));
+
+    // Peer-controlled data URL is escaped at the image render site.
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf_js.contains("escapeHtml(msg.image.data_url)"));
+}
+
+#[test]
 fn contact_list_renders_are_gated() {
     let root = repo_root();
     // T2-3: visibility gates per owning view + content-hash dedupe.
@@ -415,7 +474,7 @@ fn notifications_use_canonical_names_and_ignore_watched_game_unread() {
 fn games_new_sheet_uses_shared_mobile_bottom_sheet_width() {
     let root = repo_root();
     let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
-    assert!(games_js.contains(r#"class="bottom-sheet games-new-dialog""#));
+    assert!(games_js.contains("sheetClass: 'bottom-sheet games-new-dialog'"));
     assert!(games_js.contains("rs-dialog-cancel games-sheet-cancel-btn"));
     assert!(games_js.contains("rs-dialog-confirm games-sheet-send-btn"));
 

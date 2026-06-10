@@ -1407,9 +1407,10 @@
             }
         }
 
-        var overlayHtml = '<div class="bottom-sheet-overlay" id="games-new-sheet-overlay"></div>';
-        var sheetHtml = '<div class="bottom-sheet games-new-dialog" id="games-new-sheet">' +
-            '<div class="bottom-sheet-handle"></div>' +
+        var shell = RS.sheetShell.create({ sheetClass: 'bottom-sheet games-new-dialog' });
+        shell.overlay.id = 'games-new-sheet-overlay';
+        shell.sheet.id = 'games-new-sheet';
+        shell.sheet.innerHTML = '<div class="bottom-sheet-handle"></div>' +
             '<div class="bottom-sheet-header">' +
                 '<div>' +
                     '<div class="bottom-sheet-title">New game</div>' +
@@ -1439,19 +1440,11 @@
             '<div class="bottom-sheet-footer games-sheet-footer">' +
                 '<button type="button" class="rs-dialog-cancel games-sheet-cancel-btn" id="games-sheet-cancel">Cancel</button>' +
                 '<button type="button" class="rs-dialog-confirm games-sheet-send-btn" id="games-sheet-send" disabled>Send Challenge</button>' +
-            '</div>' +
-        '</div>';
+            '</div>';
 
-        document.body.insertAdjacentHTML('beforeend', overlayHtml);
-        document.body.insertAdjacentHTML('beforeend', sheetHtml);
-
-        var overlay = document.getElementById('games-new-sheet-overlay');
-        var sheet = document.getElementById('games-new-sheet');
-
-        requestAnimationFrame(function() {
-            if (overlay) overlay.classList.add('active');
-            if (sheet) sheet.classList.add('open');
-        });
+        RS.sheetShell.present(shell);
+        var overlay = shell.overlay;
+        var sheet = shell.sheet;
 
         var selectedHash = null;
         var selectedAppId = 'ttt';
@@ -1507,18 +1500,10 @@
     }
 
     function _closeNewGameSheet() {
-        var overlay = document.getElementById('games-new-sheet-overlay');
-        var sheet = document.getElementById('games-new-sheet');
-        if (overlay) overlay.classList.remove('active');
-        if (sheet) {
-            sheet.classList.remove('open');
-            setTimeout(function() {
-                if (overlay) overlay.remove();
-                if (sheet) sheet.remove();
-            }, 300);
-        } else if (overlay) {
-            overlay.remove();
-        }
+        RS.sheetShell.dismiss({
+            overlay: document.getElementById('games-new-sheet-overlay'),
+            sheet: document.getElementById('games-new-sheet'),
+        });
     }
 
     function startNewGame(appId, contactHash) {

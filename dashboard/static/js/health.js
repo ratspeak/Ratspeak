@@ -147,7 +147,7 @@ function renderDashboardPeersList() {
             var prefill = cd ? (cd.display_name || '') : '';
             rsPrompt({ message: 'Contact name (optional):', placeholder: 'Display name', defaultValue: prefill }).then(function(name) {
                 if (name === null) return;
-                RS.invoke('add_contact', { args: { hash: h, display_name: name.trim() || null } }).catch(function() {});
+                RS.invokeOrToast('add_contact', { args: { hash: h, display_name: name.trim() || null } }, 'Could not add contact');
             });
         });
     });

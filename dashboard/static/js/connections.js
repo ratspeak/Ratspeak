@@ -206,47 +206,7 @@ function renderConnectionsTable(contacts, scrollOnly) {
     });
 
     // Recent = recently-heard peer with a real name; Recent* = hash-only.
-    var contactItems = [];
-    var onlineItems = [];
-    var onlineStarItems = [];
-    var staleItems = [];
-    var offlineItems = [];
-
-    filtered.forEach(function(c) {
-        if (c.is_contact) {
-            contactItems.push(c);
-        } else if (c.status === 'reachable' || c.status === 'direct') {
-            if (hasRealDisplayName(c)) {
-                onlineItems.push(c);
-            } else {
-                onlineStarItems.push(c);
-            }
-        } else if (c.status === 'stale') {
-            staleItems.push(c);
-        } else {
-            offlineItems.push(c);
-        }
-    });
-
-    var flatItems = [];
-    var groupDefs = [
-        { items: contactItems, key: 'contacts', label: 'Contacts' },
-        { items: onlineItems, key: 'online', label: 'Recent' },
-        { items: onlineStarItems, key: 'online_star', label: 'Recent*' },
-        { items: staleItems, key: 'stale', label: 'Seen today' },
-        { items: offlineItems, key: 'offline', label: 'Older / unknown' }
-    ];
-
-    groupDefs.forEach(function(g) {
-        if (g.items.length > 0) {
-            flatItems.push({ type: 'header', group: g.key, label: g.label, count: g.items.length });
-            if (!collapsedGroups[g.key]) {
-                g.items.forEach(function(c) {
-                    flatItems.push({ type: 'row', data: c });
-                });
-            }
-        }
-    });
+    var flatItems = RS.buildPeerGroupItems(filtered, collapsedGroups, hasRealDisplayName);
 
     // Mobile uses native scroll; scroll events are no-ops there.
     if (window.innerWidth <= 768) {

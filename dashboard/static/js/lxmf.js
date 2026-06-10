@@ -2362,7 +2362,7 @@ function renderContactList() {
             var name = contact ? (contact.display_name || 'Anonymous') : (typeof shortHash === 'function' ? shortHash(hash, 8, 4) : hash.substring(0, 12));
             rsConfirm({ message: 'Remove contact "' + name + '"?', danger: true, confirmText: 'Remove' }).then(function(ok) {
                 if (!ok) return;
-                RS.invoke('remove_contact', { hash: hash }).catch(function() {});
+                RS.invokeOrToast('remove_contact', { hash: hash }, 'Could not remove contact');
                 if (lxmfActiveContact === hash) {
                     lxmfActiveContact = null;
                     lxmfConversation = [];
@@ -2505,7 +2505,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             rsPromptContact({ title: 'Add Contact' }).then(function(result) {
                 if (!result) return;
-                RS.invoke('add_contact', { args: { hash: result.hash, display_name: result.display_name } }).catch(function() {});
+                RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
                 showToast('Adding contact...', 'toast-orange', 2000);
             });
         });
@@ -2674,7 +2674,7 @@ function showContactDetailSheet(hash) {
             }).then(function(newName) {
                 if (newName === null) return;
                 var trimmed = newName.trim();
-                RS.invoke('add_contact', { args: { hash: hash, display_name: trimmed || null } }).catch(function() {});
+                RS.invokeOrToast('add_contact', { args: { hash: hash, display_name: trimmed || null } }, 'Could not add contact');
                 closeSheet();
             });
         });
@@ -2694,7 +2694,7 @@ function showContactDetailSheet(hash) {
         closeSheet();
         rsConfirm({ message: 'Remove contact "' + name + '"?', danger: true, confirmText: 'Remove' }).then(function(ok) {
             if (!ok) return;
-            RS.invoke('remove_contact', { hash: hash }).catch(function() {});
+            RS.invokeOrToast('remove_contact', { hash: hash }, 'Could not remove contact');
         });
     });
 
@@ -2709,7 +2709,7 @@ function showContactDetailSheet(hash) {
             defaultChecked: false
         }).then(function(result) {
             if (!result.confirmed) return;
-            RS.invoke('block_contact', { args: { hash: hash, escalate_to_blackhole: result.checked } })
+            RS.invokeOrToast('block_contact', { args: { hash: hash, escalate_to_blackhole: result.checked } }, 'Could not block contact')
                 .then(function(resp) {
                     if (resp && resp.blackhole_pending && typeof showToast === 'function') {
                         showToast('Blocked. Network blackhole will activate on their next announce.', 'toast-orange', 5000);
@@ -2737,7 +2737,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         rsPromptContact({ title: 'Add Contact' }).then(function(result) {
             if (!result) return;
-            RS.invoke('add_contact', { args: { hash: result.hash, display_name: result.display_name } }).catch(function() {});
+            RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
             showToast('Adding contact...', 'toast-orange', 2000);
         });
     }
@@ -2893,7 +2893,7 @@ function renderConversation(options) {
                     '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
                     'data-filename="' + escapeHtml(imageFilename) + '" ' +
                     'data-mime="' + escapeHtml(imageMime) + '">' +
-                    '<img src="' + msg.image.data_url + '" alt="Image" class="lxmf-clickable-img" ' +
+                    '<img src="' + escapeHtml(msg.image.data_url) + '" alt="Image" class="lxmf-clickable-img" ' +
                     'data-filename="' + escapeHtml(imageFilename) + '" ' +
                     'data-mime="' + escapeHtml(imageMime) + '">' +
                     '</button>' +
@@ -3784,6 +3784,8 @@ function _sendReactionForMessage(msgData, emoji, opts) {
             delivery_method: 'auto'
         }
     }).catch(function() {
+        // Roll the optimistic apply back so the pill reflects reality.
+        _optimisticApplyReaction(msgData.id, emoji, action === 'add' ? 'remove' : 'add');
         if (typeof showToast === 'function') showToast('Reaction failed', 'toast-red', 2500);
     });
 }
@@ -4097,12 +4099,12 @@ function addLxmfContact() {
         return;
     }
 
-    RS.invoke('add_contact', {
+    RS.invokeOrToast('add_contact', {
         args: {
             hash: hash,
             display_name: name || null,
         }
-    }).catch(function() {});
+    }, 'Could not add contact');
 
     hashInput.value = '';
     nameInput.value = '';
@@ -4750,7 +4752,7 @@ function openChatHeaderDropdown(triggerEl) {
             onSelect: function() {
                 rsPrompt({ message: contact ? 'New name:' : 'Contact name:', defaultValue: currentName || '', placeholder: 'Display name' }).then(function(newName) {
                     if (newName !== null) {
-                        RS.invoke('add_contact', { args: { hash: lxmfActiveContact, display_name: newName.trim() || null } }).catch(function() {});
+                        RS.invokeOrToast('add_contact', { args: { hash: lxmfActiveContact, display_name: newName.trim() || null } }, 'Could not rename contact');
                     }
                 });
             }
@@ -5133,7 +5135,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!lxmfActiveContact) return;
             rsPrompt({ message: 'Contact name (optional):', placeholder: 'Display name' }).then(function(name) {
                 if (name === null) return;
-                RS.invoke('add_contact', { args: { hash: lxmfActiveContact, display_name: name.trim() || null } }).catch(function() {});
+                RS.invokeOrToast('add_contact', { args: { hash: lxmfActiveContact, display_name: name.trim() || null } }, 'Could not save contact');
             });
         });
     }

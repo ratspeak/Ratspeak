@@ -126,13 +126,12 @@ function _rsBuildSheet(opts, onClose) {
     var resolved = false;
     var previousFocus = document.activeElement;
 
-    var overlay = document.createElement('div');
-    overlay.className = 'bottom-sheet-overlay';
+    var shell = RS.sheetShell.create();
+    var overlay = shell.overlay;
     // Stack above any open sheet — iOS mid-animation sheets bury confirmations otherwise.
     overlay.style.zIndex = '99999';
 
-    var sheet = document.createElement('div');
-    sheet.className = 'bottom-sheet';
+    var sheet = shell.sheet;
     sheet.setAttribute('role', 'dialog');
     sheet.setAttribute('aria-modal', 'true');
     sheet.style.zIndex = '100000';
@@ -178,26 +177,15 @@ function _rsBuildSheet(opts, onClose) {
         if (resolved) return;
         resolved = true;
 
-        sheet.classList.remove('open');
-        overlay.classList.remove('active');
-        overlay.classList.add('closing');
-        setTimeout(function() {
-            if (overlay.parentNode) overlay.remove();
-            if (sheet.parentNode) sheet.remove();
+        RS.sheetShell.dismiss(shell, function() {
             if (previousFocus && previousFocus.focus) previousFocus.focus();
-        }, 200);
+        });
 
         if (onClose) onClose(value);
     }
 
     function present() {
-        document.body.appendChild(overlay);
-        document.body.appendChild(sheet);
-        // Force layout flush so the .open transition runs from closed state.
-        // eslint-disable-next-line no-unused-expressions
-        sheet.offsetHeight;
-        sheet.classList.add('open');
-        overlay.classList.add('active');
+        RS.sheetShell.present(shell);
     }
 
     return {
