@@ -1435,11 +1435,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             // Link deliveries arrive already decrypted. Payload
                             // is the full LXMF wire format:
                             //   [dest:16][src:16][sig:64][msgpack].
-                            handle_link_delivered_lxmf(
+                            handle_decrypted_lxmf(
                                 &link_inbound_state,
                                 data,
-                                true,
-                                Some(link_id),
+                                InboundLxmfSource::Link {
+                                    link_id: Some(link_id),
+                                },
                             )
                             .await;
                         }
@@ -1793,7 +1794,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     }
 
                     for data in downloaded_propagation_messages {
-                        handle_link_delivered_lxmf(&tick_state, data, false, None).await;
+                        handle_decrypted_lxmf(&tick_state, data, InboundLxmfSource::Propagated)
+                            .await;
                     }
 
                     // Every ~30s: timeout sweep + evict >1h tracking entries.
@@ -2544,399 +2546,137 @@ async fn handle_inbound_lxmf(
 
         // Opportunistic LXMF omits dest_hash from the body (it's in the
         // RNS header). unpack() needs [dest_hash:16][src_hash:16][sig:64][msgpack];
-        // re-prepend it here.
-        let mut msg = if let Some(ref pt) = decrypted {
-            let mut lxmf_data = Vec::with_capacity(16 + pt.len());
-            lxmf_data.extend_from_slice(&dest_hash);
-            lxmf_data.extend_from_slice(pt);
-            match lxmf_core::message::LxMessage::unpack(&lxmf_data) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        decrypted_len = pt.len(),
-                        "Decrypted LXMF unpack failed — dropping"
-                    );
-                    continue;
-                }
-            }
-        } else {
-            // Plaintext broadcast: prepend dest_hash for unpack() layout.
-            let mut lxmf_data = Vec::with_capacity(16 + lxmf_payload.len());
-            lxmf_data.extend_from_slice(&dest_hash);
-            lxmf_data.extend_from_slice(lxmf_payload);
-            match lxmf_core::message::LxMessage::unpack(&lxmf_data) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!("Inbound LXMF message unpack failed: {e}");
-                    continue;
-                }
+        // re-prepend it here. Falls back to the plaintext-broadcast layout
+        // when decryption didn't apply.
+        let body: &[u8] = decrypted.as_deref().unwrap_or(lxmf_payload);
+        let mut lxmf_data = Vec::with_capacity(16 + body.len());
+        lxmf_data.extend_from_slice(&dest_hash);
+        lxmf_data.extend_from_slice(body);
+        let msg = match lxmf_core::message::LxMessage::unpack(&lxmf_data) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    decrypted = decrypted.is_some(),
+                    "inbound LXMF unpack failed — dropping"
+                );
+                continue;
             }
         };
 
-        let sig_valid = state.lxmf.lock().ok().and_then(|mut l| {
-            l.as_mut()
-                .and_then(|mgr| mgr.verify_inbound_signature(&mut msg))
-        });
-        match sig_valid {
-            Some(true) => tracing::debug!("inbound signature validated"),
-            Some(false) => {
-                tracing::warn!("inbound signature INVALID — dropping message");
-                continue;
-            }
-            None => tracing::debug!("sender unknown — signature not validated"),
-        }
-
-        // Stamp PoW check; must run after signature validation and before
-        // delivery-proof ACK. Ticket-store entries skip the check.
-        if state
-            .enforce_stamps
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            let required_cost = state
-                .required_stamp_cost
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if required_cost > 0 {
-                let stamp_ok = match (msg.stamp.as_deref(), msg.message_id.or(msg.hash)) {
-                    (Some(stamp), Some(message_id)) => state
-                        .lxmf
-                        .lock()
-                        .ok()
-                        .and_then(|l| {
-                            l.as_ref().map(|mgr| {
-                                mgr.router.validate_stamp_with_tickets(
-                                    &message_id,
-                                    stamp,
-                                    required_cost,
-                                    &msg.source_hash,
-                                )
-                            })
-                        })
-                        .unwrap_or(false),
-                    _ => false,
-                };
-                if !stamp_ok {
-                    tracing::warn!(
-                        from = %hex::encode(msg.source_hash),
-                        required_cost,
-                        has_stamp = msg.stamp.is_some(),
-                        "inbound message REJECTED: stamp missing or PoW invalid (enforce_stamps=true)"
-                    );
-                    continue;
-                }
-            }
-        }
-
-        // FIELD_TICKET 0x0C: `[expires_f64, token:16]` for stamp bypass.
-        if let Some(ticket_data) = msg.fields.get(&lxmf_core::constants::FIELD_TICKET)
-            && let Some((token, expires)) = decode_lxmf_ticket_field(ticket_data)
-            && let Ok(mut lxmf) = state.lxmf.lock()
-            && let Some(mgr) = lxmf.as_mut()
-        {
-            mgr.router.ticket_store.add(lxmf_core::ticket::Ticket::new(
-                token,
-                msg.source_hash,
-                expires,
-            ));
-            tracing::debug!(
-                from = %hex::encode(msg.source_hash),
-                "stored inbound ticket for future stamp bypass"
-            );
-        }
-
-        {
-            let proof_and_tx = state.lxmf.lock().ok().and_then(|l| {
-                let mgr = l.as_ref()?;
-                let proof = mgr.create_delivery_proof(&raw)?;
-                let tx = mgr.router.transport_tx.clone()?;
-                Some((proof, tx))
-            });
-            if let Some((proof_raw, tx)) = proof_and_tx
-                && let Ok((proof_hdr, _)) = rns_wire::header::PacketHeader::unpack(&proof_raw)
-            {
-                let _ = tx.try_send(rns_transport::messages::TransportMessage::Outbound(
-                    rns_transport::messages::OutboundRequest {
-                        raw: Bytes::from(proof_raw),
-                        destination_hash: proof_hdr.destination_hash,
-                    },
-                ));
-                tracing::debug!("sent delivery proof for inbound message");
-            }
-        }
-
-        let source_hash = hex::encode(msg.source_hash);
-        let dest_hash = hex::encode(msg.destination_hash);
-        let msg_id = msg
-            .hash
-            .map(hex::encode)
-            .unwrap_or_else(|| hex::encode(rns_crypto::sha::sha256(lxmf_payload)));
-
-        tracing::info!(
-            from = %source_hash,
-            title = %msg.title,
-            len = msg.content.len(),
-            "Inbound LXMF message received"
-        );
-        if state
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            state.emit_network_event(
-                "message",
-                &format!(
-                    "Message received from {}",
-                    &source_hash[..8.min(source_hash.len())]
-                ),
-                &source_hash,
-                "standard",
-            );
-        }
-
-        let identity_id = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
-            .await
-            .expect("db task panicked")
-            .and_then(|id| id.get("hash").and_then(|h| h.as_str()).map(String::from))
-            .unwrap_or_default();
-        if identity_id.is_empty() {
-            tracing::warn!("No active identity — dropping inbound message");
-            continue;
-        }
-
-        // Senders retry on missing proofs; duplicates are scoped to the local
-        // identity so two Ratspeak identities can hold the same LXMF hash.
-        let msg_id_for_exists = msg_id.clone();
-        let identity_id_for_exists = identity_id.clone();
-        let already_exists = db::spawn_db(state.db.clone(), move |p| {
-            db::message_exists_for_identity(&p, &msg_id_for_exists, &identity_id_for_exists)
-        })
-        .await
-        .expect("db task panicked");
-        if already_exists {
-            tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "inbound LXMF duplicate — skipping");
-            continue;
-        }
-
-        // Blocked senders silently discarded; proof already sent so we
-        // don't leak a "missing proof" signal.
-        let source_hash_for_blocked = source_hash.clone();
-        let identity_id_for_blocked = identity_id.clone();
-        let blocked = db::spawn_db(state.db.clone(), move |p| {
-            db::is_blocked(&p, &source_hash_for_blocked, &identity_id_for_blocked)
-        })
-        .await
-        .expect("db task panicked");
-        if blocked {
-            tracing::debug!(from = %source_hash, "inbound message from blocked user — discarding");
-            continue;
-        }
-
-        touch_peer_last_heard(state.as_ref(), &source_hash).await;
-
-        let chat_extension = lxmf::decode_ratspeak_chat_extension(&msg);
-        if let Some(lxmf::RatspeakChatExtension::Reaction {
-            target,
-            emoji,
-            action,
-        }) = chat_extension.as_ref()
-        {
-            apply_inbound_ratspeak_reaction(
-                state.as_ref(),
-                &source_hash,
-                &identity_id,
-                target,
-                emoji,
-                action,
-            )
-            .await;
-            continue;
-        }
-
-        // LRGP keys sessions by LXMF hash (not identity hash).
-        let lxmf_id = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
-            .await
-            .expect("db task panicked")
-            .and_then(|id| {
-                id.get("lxmf_hash")
-                    .and_then(|h| h.as_str())
-                    .map(String::from)
-            })
-            .unwrap_or_default();
-        let is_lrgp = !matches!(
-            chat_extension,
-            Some(lxmf::RatspeakChatExtension::Reply { .. })
-        ) && try_handle_inbound_lrgp(&state, &msg, &source_hash, &lxmf_id);
-
-        // LRGP tunnels over LXMF; don't surface in conversation UI.
-        if is_lrgp {
-            continue;
-        }
-
-        let received_at =
-            next_chat_observed_timestamp(state.as_ref(), &source_hash, &identity_id).await;
-        let attachment_file = extract_and_save_attachment(&state, &msg);
-        let (reply_to_id, reply_to_preview) = inbound_reply_fields(chat_extension.as_ref());
-        {
-            let msg_id_for_save = msg_id.clone();
-            let source_hash_for_save = source_hash.clone();
-            let dest_hash_for_save = dest_hash.clone();
-            let content_for_save = msg.content.clone();
-            let title_for_save = msg.title.clone();
-            let timestamp_for_save = received_at;
-            let identity_id_for_save = identity_id.clone();
-            let reply_to_id_for_save = reply_to_id.clone();
-            let reply_to_preview_for_save = reply_to_preview.clone();
-            let (att_name, att_stored, img_name, img_stored) = match attachment_file.as_ref() {
-                Some(a) if a.is_image => (
-                    String::new(),
-                    String::new(),
-                    a.file_name.clone(),
-                    a.stored_name.clone(),
-                ),
-                Some(a) => (
-                    a.file_name.clone(),
-                    a.stored_name.clone(),
-                    String::new(),
-                    String::new(),
-                ),
-                None => (String::new(), String::new(), String::new(), String::new()),
-            };
-            db::spawn_db(state.db.clone(), move |p| {
-                db::save_message(
-                    &p,
-                    &msg_id_for_save,
-                    &source_hash_for_save,
-                    &dest_hash_for_save,
-                    &content_for_save,
-                    &title_for_save,
-                    timestamp_for_save,
-                    "received",
-                    "inbound",
-                    &identity_id_for_save,
-                    &att_name,
-                    &att_stored,
-                    &img_name,
-                    &img_stored,
-                    &reply_to_id_for_save,
-                    &reply_to_preview_for_save,
-                    None,
-                );
-            })
-            .await
-            .expect("db task panicked");
-        }
-        {
-            // Inbound message un-hides the conversation.
-            let source_hash_for_unhide = source_hash.clone();
-            let identity_id_for_unhide = identity_id.clone();
-            db::spawn_db(state.db.clone(), move |p| {
-                db::unhide_conversation(&p, &source_hash_for_unhide, &identity_id_for_unhide);
-            })
-            .await
-            .expect("db task panicked");
-        }
-        notify_inbound_message_if_background(
-            state.as_ref(),
-            &source_hash,
-            &identity_id,
-            &msg.content,
-            attachment_file.is_some(),
+        process_inbound_lxmf(
+            &state,
+            msg,
+            &lxmf_data,
+            InboundLxmfSource::Opportunistic { raw },
         )
         .await;
-
-        let source_display_name = contact_label_from_db(&state.db, &source_hash, &identity_id);
-
-        // Frontend expects nested `image` / `attachments` matching history rows.
-        let mut event_data = json!({
-            "id": msg_id,
-            "source": source_hash,
-            "source_display_name": source_display_name,
-            "destination": dest_hash,
-            "content": msg.content,
-            "title": msg.title,
-            "timestamp": received_at,
-            "state": "received",
-            "direction": "inbound",
-            "reply_to_id": reply_to_id,
-            "reply_to_preview": reply_to_preview,
-        });
-        if let Some(ref att) = attachment_file {
-            let obj = event_data.as_object_mut().unwrap();
-            if att.is_image {
-                obj.insert(
-                    "image".to_string(),
-                    json!({ "stored_name": att.stored_name, "filename": att.file_name }),
-                );
-            } else {
-                obj.insert(
-                    "attachments".to_string(),
-                    json!([{ "filename": att.file_name, "stored_name": att.stored_name }]),
-                );
-            }
-        }
-        state.emit_to_all("lxmf_message", event_data);
-        messaging::broadcast_conversations(Arc::clone(&state));
-
-        // Post-emit UI refresh failures only mean stale sidebar counts.
-        let identity_id_for_contacts = identity_id.clone();
-        match db::spawn_db(state.db.clone(), move |p| {
-            db::get_all_contacts(&p, &identity_id_for_contacts)
-        })
-        .await
-        {
-            Ok(contacts) => {
-                let contacts_list: Vec<serde_json::Value> = contacts
-                    .into_iter()
-                    .map(|c| {
-                        json!({
-                            "hash": c.get("dest_hash"),
-                            "display_name": c.get("display_name"),
-                            "trust": c.get("trust"),
-                            "notes": c.get("notes"),
-                            "first_seen": c.get("first_seen"),
-                            "last_seen": c.get("last_seen"),
-                            "services": c.get("services"),
-                        })
-                    })
-                    .collect();
-                state.emit_to_all("contacts_update", contacts_list.into());
-            }
-            Err(e) => tracing::error!(error = %e, "contacts refresh after inbound message failed"),
-        }
-
-        let identity_id_for_counts = identity_id.clone();
-        match db::spawn_db(state.db.clone(), move |p| {
-            db::get_all_unread_counts(&p, &identity_id_for_counts)
-        })
-        .await
-        {
-            Ok(counts) => {
-                let total: i64 = counts.values().sum();
-                state.emit_to_all("unread_total", json!({"count": total}));
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "unread-total refresh after inbound message failed")
-            }
-        }
     }
 
     tracing::warn!("Inbound LXMF handler channel closed");
 }
 
-// Direct (link-decrypted) delivery: data = [dest:16][src:16][sig:64][msgpack].
-async fn handle_link_delivered_lxmf(
-    state: &AppState,
-    data: Vec<u8>,
-    mark_sender_seen: bool,
-    link_id: Option<[u8; 16]>,
-) {
-    let mut msg = match lxmf_core::message::LxMessage::unpack(&data) {
+/// Where an inbound LXMF message entered. Source only drives the
+/// source-specific steps (delivery proof, backchannel note, last-heard
+/// touch, log labels); everything else is the shared pipeline.
+enum InboundLxmfSource {
+    /// Opportunistic single-packet delivery; `raw` is the RNS packet the
+    /// delivery proof is derived from.
+    Opportunistic { raw: Bytes },
+    /// Link-delivered (direct); the link is noted for backchannel reuse.
+    Link { link_id: Option<[u8; 16]> },
+    /// Downloaded from a propagation node.
+    Propagated,
+}
+
+impl InboundLxmfSource {
+    fn label(&self) -> &'static str {
+        match self {
+            InboundLxmfSource::Opportunistic { .. } => "opportunistic",
+            InboundLxmfSource::Link { .. } => "link",
+            InboundLxmfSource::Propagated => "propagated",
+        }
+    }
+
+    /// Propagated messages say nothing about the sender being reachable now.
+    fn marks_sender_seen(&self) -> bool {
+        !matches!(self, InboundLxmfSource::Propagated)
+    }
+}
+
+/// Stamp PoW gate (T1-9): applies to every inbound source. Runs after
+/// signature validation and before the delivery-proof ACK; ticket-store
+/// entries bypass via `validate_stamp_with_tickets`.
+fn inbound_stamp_allowed(state: &AppState, msg: &lxmf_core::message::LxMessage) -> bool {
+    if !state
+        .enforce_stamps
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return true;
+    }
+    let required_cost = state
+        .required_stamp_cost
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if required_cost == 0 {
+        return true;
+    }
+    let stamp_ok = match (msg.stamp.as_deref(), msg.message_id.or(msg.hash)) {
+        (Some(stamp), Some(message_id)) => state
+            .lxmf
+            .lock()
+            .ok()
+            .and_then(|l| {
+                l.as_ref().map(|mgr| {
+                    mgr.router.validate_stamp_with_tickets(
+                        &message_id,
+                        stamp,
+                        required_cost,
+                        &msg.source_hash,
+                    )
+                })
+            })
+            .unwrap_or(false),
+        _ => false,
+    };
+    if !stamp_ok {
+        tracing::warn!(
+            from = %hex::encode(msg.source_hash),
+            required_cost,
+            has_stamp = msg.stamp.is_some(),
+            "inbound message REJECTED: stamp missing or PoW invalid (enforce_stamps=true)"
+        );
+    }
+    stamp_ok
+}
+
+/// Pre-decrypted inbound entry: `data` = [dest:16][src:16][sig:64][msgpack].
+async fn handle_decrypted_lxmf(state: &Arc<AppState>, data: Vec<u8>, source: InboundLxmfSource) {
+    let msg = match lxmf_core::message::LxMessage::unpack(&data) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(error = %e, data_len = data.len(), "link-delivered LXMF unpack failed");
+            tracing::warn!(
+                error = %e,
+                data_len = data.len(),
+                source = source.label(),
+                "inbound LXMF unpack failed"
+            );
             return;
         }
     };
+    process_inbound_lxmf(state, msg, &data, source).await;
+}
 
+/// The one inbound LXMF pipeline. `fallback_id_material` is the unpacked
+/// wire material; its hash is the msg-id fallback when the message carries
+/// no hash — deterministic across sender retries so dedupe still works
+/// (the old paths used the ciphertext hash / a fresh uuid4, both of which
+/// made every retry look new).
+async fn process_inbound_lxmf(
+    state: &Arc<AppState>,
+    mut msg: lxmf_core::message::LxMessage,
+    fallback_id_material: &[u8],
+    source: InboundLxmfSource,
+) {
     let source_hash = hex::encode(msg.source_hash);
     let dest_hash = hex::encode(msg.destination_hash);
 
@@ -2944,7 +2684,8 @@ async fn handle_link_delivered_lxmf(
         from = %source_hash,
         title = %msg.title,
         len = msg.content.len(),
-        "link-delivered LXMF message received (DIRECT)"
+        source = source.label(),
+        "inbound LXMF message received"
     );
     if state
         .network_log_enabled
@@ -2953,8 +2694,9 @@ async fn handle_link_delivered_lxmf(
         state.emit_network_event(
             "message",
             &format!(
-                "Direct message received from {}",
-                &source_hash[..8.min(source_hash.len())]
+                "Message received from {} ({})",
+                &source_hash[..8.min(source_hash.len())],
+                source.label()
             ),
             &source_hash,
             "standard",
@@ -2966,12 +2708,16 @@ async fn handle_link_delivered_lxmf(
             .and_then(|mgr| mgr.verify_inbound_signature(&mut msg))
     });
     match sig_valid {
-        Some(true) => {}
+        Some(true) => tracing::debug!("inbound signature validated"),
         Some(false) => {
-            tracing::warn!("link-delivered signature INVALID — dropping");
+            tracing::warn!("inbound signature INVALID — dropping message");
             return;
         }
-        None => {}
+        None => tracing::debug!("sender unknown — signature not validated"),
+    }
+
+    if !inbound_stamp_allowed(state, &msg) {
+        return;
     }
 
     // FIELD_TICKET 0x0C: `[expires_f64, token:16]` for stamp bypass.
@@ -2985,10 +2731,37 @@ async fn handle_link_delivered_lxmf(
             msg.source_hash,
             expires,
         ));
-        tracing::debug!(from = %hex::encode(msg.source_hash),
-            "stored inbound ticket (link-delivered)");
+        tracing::debug!(
+            from = %hex::encode(msg.source_hash),
+            "stored inbound ticket for future stamp bypass"
+        );
     }
 
+    // Opportunistic ACK; runs before the blocked check on purpose so a
+    // blocked sender doesn't learn anything from a missing proof.
+    if let InboundLxmfSource::Opportunistic { ref raw } = source {
+        let proof_and_tx = state.lxmf.lock().ok().and_then(|l| {
+            let mgr = l.as_ref()?;
+            let proof = mgr.create_delivery_proof(raw)?;
+            let tx = mgr.router.transport_tx.clone()?;
+            Some((proof, tx))
+        });
+        if let Some((proof_raw, tx)) = proof_and_tx
+            && let Ok((proof_hdr, _)) = rns_wire::header::PacketHeader::unpack(&proof_raw)
+        {
+            let _ = tx.try_send(rns_transport::messages::TransportMessage::Outbound(
+                rns_transport::messages::OutboundRequest {
+                    raw: Bytes::from(proof_raw),
+                    destination_hash: proof_hdr.destination_hash,
+                },
+            ));
+            tracing::debug!("sent delivery proof for inbound message");
+        }
+    }
+
+    // Active identity comes from the running LXMF manager for every source
+    // (the old opportunistic path re-read the DB; the manager IS the active
+    // identity and inbound traffic only exists while it runs).
     let (identity_id, lxmf_id) = state
         .lxmf
         .lock()
@@ -2999,16 +2772,17 @@ async fn handle_link_delivered_lxmf(
         })
         .unwrap_or_default();
     if identity_id.is_empty() {
-        tracing::warn!("No active LXMF identity — dropping link-delivered message");
+        tracing::warn!("No active LXMF identity — dropping inbound message");
         return;
     }
 
     let msg_id = msg
         .hash
         .map(hex::encode)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        .unwrap_or_else(|| hex::encode(rns_crypto::sha::sha256(fallback_id_material)));
 
-    // Skip duplicates (sender retries on missing proofs).
+    // Senders retry on missing proofs; duplicates are scoped to the local
+    // identity so two Ratspeak identities can hold the same LXMF hash.
     let msg_id_for_exists = msg_id.clone();
     let identity_id_for_exists = identity_id.clone();
     let already_exists = db::spawn_db(state.db.clone(), move |p| {
@@ -3017,10 +2791,12 @@ async fn handle_link_delivered_lxmf(
     .await
     .expect("db task panicked");
     if already_exists {
-        tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "link-delivered LXMF duplicate — skipping");
+        tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "inbound LXMF duplicate — skipping");
         return;
     }
 
+    // Blocked senders silently discarded; any source-level ACK already
+    // happened so we don't leak a "missing proof" signal.
     let source_hash_for_blocked = source_hash.clone();
     let identity_id_for_blocked = identity_id.clone();
     let blocked = db::spawn_db(state.db.clone(), move |p| {
@@ -3029,11 +2805,14 @@ async fn handle_link_delivered_lxmf(
     .await
     .expect("db task panicked");
     if blocked {
-        tracing::debug!(from = %source_hash, "link-delivered message from blocked user — discarding");
+        tracing::debug!(from = %source_hash, "inbound message from blocked user — discarding");
         return;
     }
 
-    if let Some(link_id) = link_id {
+    if let InboundLxmfSource::Link {
+        link_id: Some(link_id),
+    } = source
+    {
         let local_destination_matches = hex::decode(&lxmf_id)
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
@@ -3051,7 +2830,7 @@ async fn handle_link_delivered_lxmf(
         }
     }
 
-    if mark_sender_seen {
+    if source.marks_sender_seen() {
         touch_peer_last_heard(state, &source_hash).await;
     }
 
@@ -3067,7 +2846,7 @@ async fn handle_link_delivered_lxmf(
         return;
     }
 
-    // LRGP tunnels over LXMF (Direct or Opportunistic); don't surface in chat.
+    // LRGP tunnels over LXMF; don't surface in conversation UI.
     if !matches!(
         chat_extension,
         Some(lxmf::RatspeakChatExtension::Reply { .. })
@@ -3129,6 +2908,7 @@ async fn handle_link_delivered_lxmf(
         .expect("db task panicked");
     }
     {
+        // Inbound message un-hides the conversation.
         let source_hash_for_unhide = source_hash.clone();
         let identity_id_for_unhide = identity_id.clone();
         db::spawn_db(state.db.clone(), move |p| {
@@ -3148,8 +2928,7 @@ async fn handle_link_delivered_lxmf(
 
     let source_display_name = contact_label_from_db(&state.db, &source_hash, &identity_id);
 
-    // Frontend renderer expects nested `image` / `attachments` objects so
-    // the live emit matches what history-loaded rows produce.
+    // Frontend expects nested `image` / `attachments` matching history rows.
     let mut event_data = json!({
         "id": msg_id,
         "source": source_hash,
@@ -3178,8 +2957,9 @@ async fn handle_link_delivered_lxmf(
         }
     }
     state.emit_to_all("lxmf_message", event_data);
-    messaging::broadcast_conversations_now(state).await;
+    messaging::broadcast_conversations(Arc::clone(state));
 
+    // Post-emit UI refresh failures only mean stale sidebar counts.
     let identity_id_for_contacts = identity_id.clone();
     match db::spawn_db(state.db.clone(), move |p| {
         db::get_all_contacts(&p, &identity_id_for_contacts)
@@ -3203,9 +2983,7 @@ async fn handle_link_delivered_lxmf(
                 .collect();
             state.emit_to_all("contacts_update", contacts_list.into());
         }
-        Err(e) => {
-            tracing::error!(error = %e, "contacts refresh after link-delivered message failed")
-        }
+        Err(e) => tracing::error!(error = %e, "contacts refresh after inbound message failed"),
     }
 
     let identity_id_for_counts = identity_id.clone();
@@ -3219,7 +2997,7 @@ async fn handle_link_delivered_lxmf(
             state.emit_to_all("unread_total", json!({"count": total}));
         }
         Err(e) => {
-            tracing::error!(error = %e, "unread-total refresh after link-delivered message failed")
+            tracing::error!(error = %e, "unread-total refresh after inbound message failed")
         }
     }
 }
@@ -4583,6 +4361,260 @@ mod packet_dispatch_tests {
         );
 
         assert!(!inbound_packet_targets_destination(&raw, transport_id));
+    }
+}
+
+#[cfg(test)]
+mod inbound_pipeline_tests {
+    use super::*;
+    use crate::lxmf::LxmfManager;
+    use r2d2_sqlite::SqliteConnectionManager;
+    use ratspeak_core::config::DashboardConfig;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_PIPELINE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    }
+
+    impl ratspeak_core::Emitter for RecordingEmitter {
+        fn emit(&self, event: &str, payload: serde_json::Value) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((event.to_string(), payload));
+        }
+    }
+
+    impl RecordingEmitter {
+        fn count(&self, name: &str) -> usize {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(event, _)| event == name)
+                .count()
+        }
+    }
+
+    fn pipeline_state() -> (Arc<AppState>, Arc<RecordingEmitter>) {
+        let unique = TEMP_PIPELINE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "ratspeak-inbound-pipeline-{}-{}-{unique}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = root.join(".ratspeak");
+        let rns_config_dir = data_dir.join("reticulum");
+        std::fs::create_dir_all(&rns_config_dir).unwrap();
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(2).build(manager).unwrap();
+        db::init_schema(&pool).unwrap();
+        let emitter = Arc::new(RecordingEmitter::default());
+        let state = AppState::new(
+            DashboardConfig {
+                data_root: root.clone(),
+                data_dir,
+                rns_config_dir,
+                rns_config_dir_overridden: false,
+                max_log_entries: 200,
+            },
+            pool,
+            emitter.clone(),
+            Arc::new(ratspeak_core::NoopNotifier),
+        );
+        let mgr = LxmfManager::load_or_create(&root, None, None).unwrap();
+        *state.lxmf.lock().unwrap() = Some(mgr);
+        (Arc::new(state), emitter)
+    }
+
+    fn local_dest(state: &AppState) -> [u8; 16] {
+        let hex_hash = state
+            .lxmf
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .lxmf_hash
+            .clone();
+        hex::decode(hex_hash).unwrap().try_into().unwrap()
+    }
+
+    fn local_identity(state: &AppState) -> String {
+        state
+            .lxmf
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .identity_hash
+            .clone()
+    }
+
+    fn packed_inbound(dest: [u8; 16], src: [u8; 16], content: &str) -> Vec<u8> {
+        let mut msg = lxmf_core::message::LxMessage::new(
+            dest,
+            src,
+            "",
+            content,
+            lxmf_core::constants::DeliveryMethod::Direct,
+        );
+        // Unsigned-by-unknown-sender: verify returns None and the message is
+        // still delivered, so tests don't need real peer keys.
+        msg.signature = Some([0u8; 64]);
+        msg.pack().unwrap()
+    }
+
+    fn message_rows(state: &AppState) -> i64 {
+        state
+            .db
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn reaction_rows(state: &AppState) -> i64 {
+        state
+            .db
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM reactions", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn inbound_message_persists_and_emits() {
+        let (state, emitter) = pipeline_state();
+        let data = packed_inbound(local_dest(&state), [0xEE; 16], "hello");
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(message_rows(&state), 1);
+        assert_eq!(emitter.count("lxmf_message"), 1);
+        assert!(emitter.count("contacts_update") >= 1);
+        assert!(emitter.count("unread_total") >= 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_inbound_is_skipped() {
+        let (state, emitter) = pipeline_state();
+        let data = packed_inbound(local_dest(&state), [0xEE; 16], "once");
+
+        handle_decrypted_lxmf(&state, data.clone(), InboundLxmfSource::Propagated).await;
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(message_rows(&state), 1, "sender retry must dedupe");
+        assert_eq!(emitter.count("lxmf_message"), 1);
+    }
+
+    #[tokio::test]
+    async fn blocked_sender_is_discarded() {
+        let (state, emitter) = pipeline_state();
+        let src = [0xEE; 16];
+        db::block_contact(
+            &state.db,
+            &hex::encode(src),
+            "blocked peer",
+            &local_identity(&state),
+        );
+        let data = packed_inbound(local_dest(&state), src, "should vanish");
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(message_rows(&state), 0);
+        assert_eq!(emitter.count("lxmf_message"), 0);
+    }
+
+    /// T1-9: with enforce_stamps on, an unstamped message is rejected on
+    /// EVERY inbound source — the old link/propagated path skipped the check.
+    #[tokio::test]
+    async fn unstamped_message_rejected_on_all_sources_when_enforced() {
+        let (state, emitter) = pipeline_state();
+        state
+            .enforce_stamps
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+            .required_stamp_cost
+            .store(8, std::sync::atomic::Ordering::Relaxed);
+
+        let dest = local_dest(&state);
+        let link_data = packed_inbound(dest, [0xE1; 16], "via link");
+        handle_decrypted_lxmf(&state, link_data, InboundLxmfSource::Link { link_id: None }).await;
+
+        let prop_data = packed_inbound(dest, [0xE2; 16], "via propagation");
+        handle_decrypted_lxmf(&state, prop_data, InboundLxmfSource::Propagated).await;
+
+        let opp_data = packed_inbound(dest, [0xE3; 16], "via opportunistic");
+        let msg = lxmf_core::message::LxMessage::unpack(&opp_data).unwrap();
+        process_inbound_lxmf(
+            &state,
+            msg,
+            &opp_data,
+            InboundLxmfSource::Opportunistic { raw: Bytes::new() },
+        )
+        .await;
+
+        assert_eq!(message_rows(&state), 0, "all unstamped sources rejected");
+        assert_eq!(emitter.count("lxmf_message"), 0);
+
+        // Enforcement off again: the same wire bytes deliver.
+        state
+            .enforce_stamps
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let data = packed_inbound(dest, [0xE1; 16], "via link");
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        assert_eq!(message_rows(&state), 1);
+    }
+
+    /// The Link source persists like Propagated (shared pipeline).
+    #[tokio::test]
+    async fn link_source_persists_and_emits() {
+        let (state, emitter) = pipeline_state();
+        let data = packed_inbound(local_dest(&state), [0xEE; 16], "direct hello");
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+
+        assert_eq!(message_rows(&state), 1);
+        assert_eq!(emitter.count("lxmf_message"), 1);
+    }
+
+    #[tokio::test]
+    async fn reaction_routes_to_reaction_store_not_conversation() {
+        let (state, emitter) = pipeline_state();
+        let target_id = hex::encode([0xAB; 32]);
+
+        let mut msg = lxmf_core::message::LxMessage::new(
+            local_dest(&state),
+            [0xEE; 16],
+            "",
+            "",
+            lxmf_core::constants::DeliveryMethod::Direct,
+        );
+        for (field_id, bytes) in
+            lxmf::ratspeak_chat_custom_fields(&lxmf::RatspeakChatExtension::Reaction {
+                target: target_id.clone(),
+                emoji: "\u{1F44D}".to_string(),
+                action: "add".to_string(),
+            })
+            .unwrap()
+        {
+            msg.fields.insert(field_id, bytes);
+        }
+        msg.signature = Some([0u8; 64]);
+        let data = msg.pack().unwrap();
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(reaction_rows(&state), 1, "reaction recorded");
+        assert_eq!(message_rows(&state), 0, "reactions never hit the chat log");
+        assert_eq!(emitter.count("reaction_update"), 1);
+        assert_eq!(emitter.count("lxmf_message"), 0);
     }
 }
 
