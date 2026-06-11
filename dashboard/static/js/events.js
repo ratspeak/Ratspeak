@@ -5,15 +5,6 @@ var badgeLabelMap = {
     'status': 'status'
 };
 
-function relativeTime(ts) {
-    var diff = Math.floor(Date.now() / 1000 - ts);
-    if (diff < 5) return 'just now';
-    if (diff < 60) return diff + 's ago';
-    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-    return Math.floor(diff / 86400) + 'd ago';
-}
-
 function renderLog() {
     var container = document.getElementById('eventlog-container');
     if (!container) return;
@@ -38,7 +29,7 @@ function renderLog() {
 
     container.innerHTML = filtered.map(function(e) {
         var time = formatTime(e.timestamp);
-        var rel = relativeTime(e.timestamp);
+        var rel = RS.relativeTime(e.timestamp);
         var cat = e.category || e.type || 'system';
         var displayLabel = badgeLabelMap[cat] || cat;
 
@@ -85,7 +76,7 @@ function renderCockpitEvents() {
     }
 
     container.innerHTML = recent.map(function(e) {
-        var rel = relativeTime(e.timestamp);
+        var rel = RS.relativeTime(e.timestamp);
         var cat = e.category || e.type || 'system';
         var displayLabel = badgeLabelMap[cat] || cat;
         var msg = e.message || '';
