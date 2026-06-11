@@ -49,6 +49,7 @@ class RatspeakBleGatt(private val context: Context) {
         // Cardputer RNode keeps first-pair/manual pairing windows open longer
         // than this; time out first so the app can cleanly roll back.
         private const val BOND_TIMEOUT_SEC = 60L
+        private const val NONE_DEBOUNCE_SEC = 3L
         private const val BOND_POLL_INTERVAL_MS = 250L
         private const val POST_BOND_RECONNECT_DELAY_MS = 2600L
 
@@ -365,15 +366,29 @@ class RatspeakBleGatt(private val context: Context) {
     @SuppressLint("MissingPermission")
     private fun waitForBondState(device: BluetoothDevice): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(BOND_TIMEOUT_SEC)
+        // Android SMP can bounce BONDING→NONE transiently while the system
+        // pairing dialog is still up (first-attempt retries, security-request
+        // collisions). Treating that bounce as terminal fails the add flow
+        // while the user is still typing the passkey — only give up on NONE
+        // once it has persisted.
+        var noneSince = 0L
         while (System.nanoTime() < deadline) {
-            val state = device.bondState
-            if (state == BluetoothDevice.BOND_BONDED || state == BluetoothDevice.BOND_NONE) return true
+            when (device.bondState) {
+                BluetoothDevice.BOND_BONDED -> return true
+                BluetoothDevice.BOND_NONE -> {
+                    if (noneSince == 0L) {
+                        noneSince = System.nanoTime()
+                        Log.i(TAG, "Bond state NONE — debouncing ${NONE_DEBOUNCE_SEC}s before failing")
+                    } else if (System.nanoTime() - noneSince > TimeUnit.SECONDS.toNanos(NONE_DEBOUNCE_SEC)) {
+                        return true
+                    }
+                }
+                else -> noneSince = 0L
+            }
             val remainingMs = TimeUnit.NANOSECONDS
                 .toMillis(deadline - System.nanoTime())
                 .coerceAtLeast(1L)
-            if (bondLatch?.await(minOf(BOND_POLL_INTERVAL_MS, remainingMs), TimeUnit.MILLISECONDS) == true) {
-                return true
-            }
+            bondLatch?.await(minOf(BOND_POLL_INTERVAL_MS, remainingMs), TimeUnit.MILLISECONDS)
         }
         return false
     }
@@ -387,7 +402,9 @@ class RatspeakBleGatt(private val context: Context) {
                 val prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
                 Log.i(TAG, "Bond: ${bondStr(prev)} → ${bondStr(state)} (${dev?.address})")
                 if (dev?.address == address) {
-                    if (state == BluetoothDevice.BOND_BONDED || state == BluetoothDevice.BOND_NONE) {
+                    // Only BONDED releases the wait — NONE bounces are handled
+                    // (debounced) by the waitForBondState poll loop.
+                    if (state == BluetoothDevice.BOND_BONDED) {
                         bondLatch?.countDown()
                     }
                 }
