@@ -696,7 +696,7 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     assert!(interfaces_rs.contains("\"probe_failed\": true"));
     assert!(interfaces_rs.contains("permission_required"));
     assert!(interfaces_rs.contains(
-        "#[cfg(target_os = \"android\")]\n        return Ok(android_ble_peer_availability_payload());"
+        "#[cfg(all(feature = \"ble\", target_os = \"android\"))]\n    return Ok(android_ble_peer_availability_payload());"
     ));
 
     let settings_js =
@@ -2654,7 +2654,7 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("label: 'Opportunistic', icon: ICON_SEND_OPPORTUNISTIC"));
     assert!(lxmf.contains("label: 'Direct', icon: ICON_SEND_DIRECT"));
     assert!(!lxmf.contains("label: 'Direct', icon: ICON_ROUTE"));
-    assert!(lxmf.contains("function _copyToClipboardFallback(text)"));
+    assert!(lxmf.contains("function _copyToClipboard(text)"));
     assert!(lxmf.contains("function _messageMediaContextAction(msgData)"));
     assert!(lxmf.contains("function _resolveMessageImageFile(msgData)"));
     assert!(lxmf.contains("function _resolveMessageAttachmentFile(att)"));

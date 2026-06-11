@@ -52,19 +52,114 @@ fn android_ble_peer_availability_payload() -> Value {
     }
 }
 
-#[cfg(all(feature = "ble", target_os = "android"))]
-fn availability_missing_strings(value: &Value) -> Vec<String> {
-    value
-        .get("missing")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+/// Result of the shared BLE platform availability probe.
+struct BlePlatformProbe {
+    available: bool,
+    missing: Vec<String>,
+    /// iOS CoreBluetooth authorization state (iOS builds only).
+    auth_state: Option<&'static str>,
+    /// Android runtime permissions still outstanding (Android builds only).
+    permission_required: bool,
+}
+
+/// Five-way platform dispatch shared by the BLE availability commands: iOS
+/// auth-state mapping / Android JNI payload / macOS no-probe / desktop adapter
+/// probe / no-`ble`-feature stub. `api_ble_available` keeps its own Android
+/// and desktop arms where behavior diverges (hardcoded Android availability,
+/// Linux BlueZ hints).
+async fn ble_platform_probe() -> BlePlatformProbe {
+    #[cfg(all(feature = "ble", target_os = "ios"))]
+    {
+        let auth = crate::platform_ios::bluetooth_authorization();
+        let (available, missing) = match auth {
+            "denied" | "restricted" => (
+                false,
+                vec![
+                    "iOS Bluetooth permission denied — open Settings → Ratspeak → Bluetooth"
+                        .to_string(),
+                ],
+            ),
+            _ => (true, vec![]),
+        };
+        return BlePlatformProbe {
+            available,
+            missing,
+            auth_state: Some(auth),
+            permission_required: false,
+        };
+    }
+
+    #[cfg(all(feature = "ble", target_os = "android"))]
+    {
+        let payload = android_ble_peer_availability_payload();
+        let missing = payload
+            .get("missing")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        return BlePlatformProbe {
+            available: payload
+                .get("available")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            missing,
+            auth_state: None,
+            permission_required: payload
+                .get("permission_required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+    }
+
+    // macOS: skip btleplug probe; `Manager::new()` triggers the system
+    // Bluetooth permission prompt prematurely.
+    #[cfg(all(feature = "ble", target_os = "macos"))]
+    return BlePlatformProbe {
+        available: true,
+        missing: vec![],
+        auth_state: None,
+        permission_required: false,
+    };
+
+    #[cfg(all(
+        feature = "ble",
+        not(target_os = "ios"),
+        not(target_os = "android"),
+        not(target_os = "macos")
+    ))]
+    {
+        let (available, missing) = match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            rns_interface::ble_rnode::ble_adapter_present(),
+        )
+        .await
+        {
+            Ok(Ok(true)) => (true, vec![]),
+            Ok(Ok(false)) => (false, vec!["No BLE adapter found".to_string()]),
+            Ok(Err(e)) => (false, vec![e]),
+            Err(_) => (false, vec!["BLE check timed out".to_string()]),
+        };
+        return BlePlatformProbe {
+            available,
+            missing,
+            auth_state: None,
+            permission_required: false,
+        };
+    }
+
+    #[cfg(not(feature = "ble"))]
+    BlePlatformProbe {
+        available: false,
+        missing: vec!["ble feature not compiled".to_string()],
+        auth_state: None,
+        permission_required: false,
+    }
 }
 
 #[tauri::command]
@@ -160,101 +255,90 @@ pub async fn api_serial_ports() -> AppResult<Value> {
 
 #[tauri::command]
 pub async fn api_ble_available() -> AppResult<Value> {
-    #[cfg(feature = "ble")]
+    // Android: bridge BLE is always present; no probe.
+    #[cfg(all(feature = "ble", target_os = "android"))]
+    return Ok(json!({"available": true, "missing": [], "install_cmd": ""}));
+
+    // Linux/BSD desktop keeps its own adapter probe: BlueZ-specific hints the
+    // shared probe does not produce.
+    #[cfg(all(
+        feature = "ble",
+        not(target_os = "ios"),
+        not(target_os = "android"),
+        not(target_os = "macos")
+    ))]
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        rns_interface::ble_rnode::ble_adapter_present(),
+    )
+    .await
     {
-        #[cfg(target_os = "ios")]
-        {
-            let auth = crate::platform_ios::bluetooth_authorization();
-            let (available, missing): (bool, Vec<String>) = match auth {
-                "denied" | "restricted" => (
-                    false,
-                    vec![
-                        "iOS Bluetooth permission denied — open Settings → Ratspeak → Bluetooth"
-                            .to_string(),
-                    ],
-                ),
-                _ => (true, vec![]),
-            };
+        Ok(Ok(true)) => {
+            return Ok(json!({"available": true, "missing": [], "install_cmd": ""}));
+        }
+        Ok(Ok(false)) => {
+            #[cfg(target_os = "linux")]
             return Ok(json!({
-                "available": available,
-                "missing": missing,
+                "available": false,
+                "missing": [
+                    "No BLE adapter found. If your machine has Bluetooth, ensure bluetoothd is running: sudo systemctl start bluetooth"
+                ],
                 "install_cmd": "",
-                "auth_state": auth,
+            }));
+            #[cfg(not(target_os = "linux"))]
+            return Ok(json!({
+                "available": false,
+                "missing": ["No BLE adapter found"],
+                "install_cmd": "",
             }));
         }
-
-        #[cfg(target_os = "android")]
-        return Ok(json!({"available": true, "missing": [], "install_cmd": ""}));
-
-        // macOS: skip btleplug probe; `Manager::new()` triggers the system
-        // Bluetooth permission prompt prematurely.
-        #[cfg(target_os = "macos")]
-        return Ok(json!({"available": true, "missing": [], "install_cmd": ""}));
-
-        #[cfg(all(
-            not(target_os = "ios"),
-            not(target_os = "android"),
-            not(target_os = "macos")
-        ))]
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            rns_interface::ble_rnode::ble_adapter_present(),
-        )
-        .await
-        {
-            Ok(Ok(true)) => {
-                return Ok(json!({"available": true, "missing": [], "install_cmd": ""}));
-            }
-            Ok(Ok(false)) => {
-                #[cfg(target_os = "linux")]
-                return Ok(json!({
-                    "available": false,
-                    "missing": [
-                        "No BLE adapter found. If your machine has Bluetooth, ensure bluetoothd is running: sudo systemctl start bluetooth"
-                    ],
-                    "install_cmd": "",
-                }));
-                #[cfg(not(target_os = "linux"))]
-                return Ok(json!({
-                    "available": false,
-                    "missing": ["No BLE adapter found"],
-                    "install_cmd": "",
-                }));
-            }
-            Ok(Err(e)) => {
-                #[cfg(target_os = "linux")]
+        Ok(Err(e)) => {
+            #[cfg(target_os = "linux")]
+            {
+                let lower = e.to_lowercase();
+                let hint = if lower.contains("serviceunknown")
+                    || lower.contains("org.bluez")
+                    || lower.contains("not provided by any .service")
                 {
-                    let lower = e.to_lowercase();
-                    let hint = if lower.contains("serviceunknown")
-                        || lower.contains("org.bluez")
-                        || lower.contains("not provided by any .service")
-                    {
-                        Some("BlueZ daemon not running — try `sudo systemctl start bluetooth`")
-                    } else if lower.contains("permission") || lower.contains("not authorized") {
-                        Some(
-                            "BlueZ rejected the request — add your user to the `bluetooth` group (or matching polkit rule) and re-login",
-                        )
-                    } else {
-                        None
-                    };
-                    let missing = match hint {
-                        Some(h) => vec![format!("{e} — {h}")],
-                        None => vec![e],
-                    };
-                    return Ok(json!({"available": false, "missing": missing, "install_cmd": ""}));
-                }
-                #[cfg(not(target_os = "linux"))]
-                return Ok(json!({"available": false, "missing": [e], "install_cmd": ""}));
+                    Some("BlueZ daemon not running — try `sudo systemctl start bluetooth`")
+                } else if lower.contains("permission") || lower.contains("not authorized") {
+                    Some(
+                        "BlueZ rejected the request — add your user to the `bluetooth` group (or matching polkit rule) and re-login",
+                    )
+                } else {
+                    None
+                };
+                let missing = match hint {
+                    Some(h) => vec![format!("{e} — {h}")],
+                    None => vec![e],
+                };
+                return Ok(json!({"available": false, "missing": missing, "install_cmd": ""}));
             }
-            Err(_) => {
-                return Ok(
-                    json!({"available": false, "missing": ["BLE check timed out"], "install_cmd": ""}),
-                );
-            }
+            #[cfg(not(target_os = "linux"))]
+            return Ok(json!({"available": false, "missing": [e], "install_cmd": ""}));
+        }
+        Err(_) => {
+            return Ok(
+                json!({"available": false, "missing": ["BLE check timed out"], "install_cmd": ""}),
+            );
         }
     }
-    #[cfg(not(feature = "ble"))]
-    Ok(json!({"available": false, "missing": ["ble feature not compiled"], "install_cmd": ""}))
+
+    // Complement of the two arms above: iOS, macOS, and no-`ble` builds match
+    // the shared probe exactly.
+    #[cfg(any(not(feature = "ble"), target_os = "ios", target_os = "macos"))]
+    {
+        let probe = ble_platform_probe().await;
+        let mut body = json!({
+            "available": probe.available,
+            "missing": probe.missing,
+            "install_cmd": "",
+        });
+        if let Some(auth) = probe.auth_state {
+            body["auth_state"] = json!(auth);
+        }
+        Ok(body)
+    }
 }
 
 #[tauri::command]
@@ -278,58 +362,23 @@ pub async fn api_ble_scan() -> AppResult<Value> {
 
 #[tauri::command]
 pub async fn api_ble_peer_available() -> AppResult<Value> {
-    #[cfg(feature = "ble")]
+    // Android returns the raw JNI payload: extra permission-detail keys the
+    // shared probe does not model.
+    #[cfg(all(feature = "ble", target_os = "android"))]
+    return Ok(android_ble_peer_availability_payload());
+
+    #[cfg(not(all(feature = "ble", target_os = "android")))]
     {
-        #[cfg(target_os = "ios")]
-        {
-            let auth = crate::platform_ios::bluetooth_authorization();
-            let (available, missing): (bool, Vec<String>) = match auth {
-                "denied" | "restricted" => (
-                    false,
-                    vec![
-                        "iOS Bluetooth permission denied — open Settings → Ratspeak → Bluetooth"
-                            .to_string(),
-                    ],
-                ),
-                _ => (true, vec![]),
-            };
-            return Ok(json!({
-                "available": available,
-                "missing": missing,
-                "auth_state": auth,
-            }));
+        let probe = ble_platform_probe().await;
+        let mut body = json!({
+            "available": probe.available,
+            "missing": probe.missing,
+        });
+        if let Some(auth) = probe.auth_state {
+            body["auth_state"] = json!(auth);
         }
-
-        #[cfg(target_os = "android")]
-        return Ok(android_ble_peer_availability_payload());
-
-        // macOS: skip btleplug probe (see `api_ble_available`).
-        #[cfg(target_os = "macos")]
-        return Ok(json!({"available": true, "missing": []}));
-
-        #[cfg(all(
-            not(target_os = "ios"),
-            not(target_os = "android"),
-            not(target_os = "macos")
-        ))]
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            rns_interface::ble_rnode::ble_adapter_present(),
-        )
-        .await
-        {
-            Ok(Ok(true)) => return Ok(json!({"available": true, "missing": []})),
-            Ok(Ok(false)) => {
-                return Ok(json!({"available": false, "missing": ["No BLE adapter found"]}));
-            }
-            Ok(Err(e)) => return Ok(json!({"available": false, "missing": [e]})),
-            Err(_) => {
-                return Ok(json!({"available": false, "missing": ["BLE check timed out"]}));
-            }
-        }
+        Ok(body)
     }
-    #[cfg(not(feature = "ble"))]
-    Ok(json!({"available": false, "missing": ["ble feature not compiled"]}))
 }
 
 #[tauri::command]
@@ -353,102 +402,16 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
         Default::default()
     });
 
-    #[cfg(all(feature = "ble", target_os = "ios"))]
-    let (available, missing, auth_state, permission_required): (
-        bool,
-        Vec<String>,
-        Option<&'static str>,
-        bool,
-    ) = {
-        let auth = crate::platform_ios::bluetooth_authorization();
-        let (avail, miss) = match auth {
-            "denied" | "restricted" => (
-                false,
-                vec![
-                    "iOS Bluetooth permission denied — open Settings → Ratspeak → Bluetooth"
-                        .to_string(),
-                ],
-            ),
-            _ => (true, vec![]),
-        };
-        (avail, miss, Some(auth), false)
-    };
-
-    #[cfg(all(feature = "ble", target_os = "android"))]
-    let (available, missing, auth_state, permission_required): (
-        bool,
-        Vec<String>,
-        Option<&'static str>,
-        bool,
-    ) = {
-        let payload = android_ble_peer_availability_payload();
-        (
-            payload
-                .get("available")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-            availability_missing_strings(&payload),
-            None,
-            payload
-                .get("permission_required")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        )
-    };
-
-    // macOS: skip btleplug probe (see `api_ble_available`).
-    #[cfg(all(feature = "ble", target_os = "macos"))]
-    let (available, missing, auth_state, permission_required): (
-        bool,
-        Vec<String>,
-        Option<&'static str>,
-        bool,
-    ) = (true, vec![], None, false);
-
-    #[cfg(all(
-        feature = "ble",
-        not(any(target_os = "ios", target_os = "android", target_os = "macos"))
-    ))]
-    let (available, missing, auth_state, permission_required): (
-        bool,
-        Vec<String>,
-        Option<&'static str>,
-        bool,
-    ) = {
-        let (avail, miss) = match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            rns_interface::ble_rnode::ble_adapter_present(),
-        )
-        .await
-        {
-            Ok(Ok(true)) => (true, vec![]),
-            Ok(Ok(false)) => (false, vec!["No BLE adapter found".to_string()]),
-            Ok(Err(e)) => (false, vec![e]),
-            Err(_) => (false, vec!["BLE check timed out".to_string()]),
-        };
-        (avail, miss, None, false)
-    };
-    #[cfg(not(feature = "ble"))]
-    let (available, missing, auth_state, permission_required): (
-        bool,
-        Vec<String>,
-        Option<&'static str>,
-        bool,
-    ) = (
-        false,
-        vec!["ble feature not compiled".to_string()],
-        None,
-        false,
-    );
+    let probe = ble_platform_probe().await;
 
     let peer_count = state
         .ble_peer_count
         .load(std::sync::atomic::Ordering::Relaxed);
     let peer_state = if !enabled {
         "off"
-    } else if permission_required {
+    } else if probe.permission_required {
         "permission_needed"
-    } else if !available {
+    } else if !probe.available {
         "unavailable"
     } else if peer_count > 0 {
         "on"
@@ -458,12 +421,12 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
 
     let mut body = json!({
         "enabled": enabled,
-        "available": available,
-        "missing": missing,
+        "available": probe.available,
+        "missing": probe.missing,
         "state": peer_state,
         "peer_count": peer_count,
     });
-    if let Some(a) = auth_state {
+    if let Some(a) = probe.auth_state {
         body["auth_state"] = json!(a);
     }
     Ok(body)
@@ -5174,5 +5137,30 @@ mod backbone_args_tests {
             })
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod ble_probe_tests {
+    use super::*;
+
+    #[cfg(not(feature = "ble"))]
+    #[tokio::test]
+    async fn ble_probe_without_feature_reports_stub() {
+        let probe = ble_platform_probe().await;
+        assert!(!probe.available);
+        assert_eq!(probe.missing, vec!["ble feature not compiled".to_string()]);
+        assert_eq!(probe.auth_state, None);
+        assert!(!probe.permission_required);
+    }
+
+    #[cfg(all(feature = "ble", target_os = "macos"))]
+    #[tokio::test]
+    async fn ble_probe_macos_skips_probe_and_reports_available() {
+        let probe = ble_platform_probe().await;
+        assert!(probe.available);
+        assert!(probe.missing.is_empty());
+        assert_eq!(probe.auth_state, None);
+        assert!(!probe.permission_required);
     }
 }

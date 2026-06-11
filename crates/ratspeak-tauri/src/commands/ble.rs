@@ -1,4 +1,10 @@
-//! BLE commands; non-`ble` builds keep stub fns for stable registration.
+//! BLE commands.
+//!
+//! Convention: BLE commands are always registered with the invoke handler;
+//! builds without the `ble` feature stub out internally, so the frontend sees
+//! a uniform command surface on every platform. This is intentional —
+//! contrast with desktop-only `hardware`, which compile-gates the whole
+//! module and its registrations behind the `hardware` feature.
 
 use std::sync::Arc;
 
