@@ -1616,6 +1616,22 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             )
                         }
                     };
+                    // Hosted propagation node maintenance on the crypto-save
+                    // cadence (~5 min): age-cull, weight cap, orphan cleanup.
+                    // Previously never ran — the store only hard-rejected at
+                    // the ingest cap once full.
+                    if should_save_crypto_state {
+                        let hosted_node = tick_state
+                            .propagation_node
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.clone());
+                        if let Some(node) = hosted_node
+                            && let Ok(mut node) = node.lock()
+                        {
+                            node.tick();
+                        }
+                    }
                     let propagation_deposit_terminal = !completed_propagation_deposits.is_empty()
                         || !failed_propagation_deposits.is_empty();
                     for node in completed_propagation_deposits {

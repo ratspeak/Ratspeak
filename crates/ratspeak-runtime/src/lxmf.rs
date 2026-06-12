@@ -745,6 +745,7 @@ pub struct LxmfManager {
     pub client_propagation_enabled: bool,
     pub configured_propagation_node: Option<[u8; 16]>,
     last_ratchet_clean: f64,
+    last_router_cull: f64,
     pub received_ratchets_dir: PathBuf,
     /// Outbound message hashes routed via propagation. `LinkDeliveryManager`
     /// reports `Complete` for both propagation deposits and large-message
@@ -1021,6 +1022,7 @@ impl LxmfManager {
             propagation_sync: None,
             propagation_client: None,
             last_propagation_check: 0.0,
+            last_router_cull: 0.0,
             client_propagation_enabled: false,
             configured_propagation_node: None,
             last_ratchet_clean: SystemTime::now()
@@ -3282,6 +3284,14 @@ impl LxmfManager {
         if !actions.is_empty() {
             results.extend(self.execute_encrypted_actions(actions));
             self.drain_link_delivery_progress_updates();
+        }
+        // Advance the router jobloop (transient caches, store cull, peer
+        // rotation at Python cadences) — process_outbound_with_direct does
+        // not drive it. Internally time-gated, safe at the 500 ms tick rate.
+        self.router.run_jobs_tick();
+        if now - self.last_router_cull > 300.0 {
+            self.router.cull_stamp_costs();
+            self.last_router_cull = now;
         }
 
         if let Some(ref mut ld) = self.link_delivery {
