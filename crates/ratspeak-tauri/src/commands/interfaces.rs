@@ -1778,14 +1778,16 @@ async fn teardown_live_interface_by_name(
     )))]
     let _ = rnode_port;
 
-    // Android BLE GATT lives in the Kotlin bridge; without an explicit
-    // disconnect the link lingers and the RNode cannot advertise again.
     #[cfg(target_os = "android")]
-    if rnode_port.is_some_and(|p| p.starts_with("ble://")) {
-        state.emit_to_all("ble_rnode_disconnect_native", json!({}));
-    }
+    let native_ble_disconnect = rnode_port.is_some_and(|p| p.starts_with("ble://"));
 
     let Some(handle) = runtime_handle(state) else {
+        // Android BLE GATT lives in the Kotlin bridge; without an explicit
+        // disconnect the link lingers and the RNode cannot advertise again.
+        #[cfg(target_os = "android")]
+        if native_ble_disconnect {
+            state.emit_to_all("ble_rnode_disconnect_native", json!({}));
+        }
         return;
     };
     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -1798,21 +1800,37 @@ async fn teardown_live_interface_by_name(
         .await
         .is_err()
     {
+        #[cfg(target_os = "android")]
+        if native_ble_disconnect {
+            state.emit_to_all("ble_rnode_disconnect_native", json!({}));
+        }
         return;
     }
     let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) = resp_rx.await
     else {
+        #[cfg(target_os = "android")]
+        if native_ble_disconnect {
+            state.emit_to_all("ble_rnode_disconnect_native", json!({}));
+        }
         return;
     };
     for iface in stats {
         if iface.name == name {
             if let Some(port) = rnode_port {
                 teardown_rnode_interface_for_port(&handle, iface.id, port).await;
-                return;
+                break;
+            } else {
+                rns_runtime::reticulum::teardown_interface(&handle, iface.id).await;
+                break;
             }
-            rns_runtime::reticulum::teardown_interface(&handle, iface.id).await;
-            return;
         }
+    }
+
+    // Close Android's native GATT link after the Rust RNode driver has sent
+    // its normal detach/radio-off sequence through the still-open bridge.
+    #[cfg(target_os = "android")]
+    if native_ble_disconnect {
+        state.emit_to_all("ble_rnode_disconnect_native", json!({}));
     }
 }
 
@@ -3054,6 +3072,9 @@ pub async fn remove_lora_interface(
                 .unwrap_or_default()
         };
 
+        #[cfg(target_os = "android")]
+        let native_ble_disconnect = port.starts_with("ble://");
+
         let rns_handle = state_arc
             .rns
             .read()
@@ -3080,6 +3101,11 @@ pub async fn remove_lora_interface(
                     }
                 }
             }
+        }
+
+        #[cfg(target_os = "android")]
+        if native_ble_disconnect {
+            state_arc.emit_to_all("ble_rnode_disconnect_native", json!({}));
         }
 
         if with_rns_config_lock(&state_arc, || {

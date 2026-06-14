@@ -1045,6 +1045,7 @@ RS.listen('ble_rnode_connect_native', function(data) {
     var PHASE_MESSAGES = {
         starting: 'Starting BLE connection...',
         connecting: 'Connecting to RNode (GATT)...',
+        connecting_retry: 'Retrying paired BLE reconnect...',
         mtu: 'Negotiating MTU...',
         discovering: 'Discovering services...',
         bonding: "Pairing...\nThis may take a moment. Don't unplug or restart your device.",
@@ -1082,8 +1083,11 @@ RS.listen('ble_rnode_connect_native', function(data) {
         } else {
             var errRaw = result.error || 'Unknown error';
             var pairingMode = errRaw.indexOf('ERR_PAIRING_MODE') === 0;
+            var staleBond = errRaw.indexOf('ERR_STALE_BOND') === 0;
             var errMsg = pairingMode
                 ? 'Pairing failed. Fresh installs are ready briefly after boot; otherwise hold P or OK on the RNode, then retry.'
+                : staleBond
+                    ? 'Paired BLE reconnect failed. Android may have a stale pairing for this RNode; remove it from Android Bluetooth settings, put the RNode in pairing mode, then pair again.'
                 : 'BLE connect failed: ' + errRaw;
             if (typeof window.RatspeakAndroid !== 'undefined' &&
                 typeof window.RatspeakAndroid.disconnectBleDevice === 'function') {

@@ -1024,8 +1024,8 @@ fn failed_lora_reconnects_keep_persisted_interface_config() {
 
     // JS guards: auto-rollback only when Rust requested it; manual cancel
     // only invokes the cancel command for adds, never for edits.
-    let events_js = read_source(root.join("dashboard/static/js/tauri_events.js"))
-        .expect("tauri events js");
+    let events_js =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
     assert!(events_js.contains("if (data.rollback_on_error && data.name) {"));
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains(

@@ -1269,6 +1269,9 @@ pub async fn disconnect_ble_rnode(
                 }
             }
 
+            #[cfg(target_os = "android")]
+            state_arc.emit_to_all("ble_rnode_disconnect_native", json!({}));
+
             if with_rns_config_lock(&state_arc, || {
                 crate::rns_config::remove_interface(&config_dir, &name_clone)
             }) {
