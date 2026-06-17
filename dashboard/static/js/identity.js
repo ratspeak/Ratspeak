@@ -2637,15 +2637,15 @@ function removeHardwareIdentity(target) {
     });
 }
 
-// ---- Hardware identity unlock (PIN prompt) ----
-// Shown when the active identity is hardware-backed and the token is locked
+// ---- Protected identity unlock (PIN prompt) ----
+// Shown when the active identity is hardware-backed or software PIN-protected
 // (on boot, or after the auto-lock timeout). Unlocking re-inits the runtime.
 
 var _hwLockedHash = null;
 var _hwLockedKind = 'hardware'; // 'hardware' (YubiKey PIN) | 'passcode' (software)
 
 // Launch/timeout unlock prompt. Handles both a hardware-key PIN and a software
-// passcode (kind) — same flow, same `hw_unlock` command (the secret rides in `pin`).
+// passcode (kind) through the generic identity unlock command.
 function showHwUnlock(hash, kind) {
     if (typeof hash === 'string' && hash) _hwLockedHash = hash;
     if (kind === 'passcode' || kind === 'hardware') _hwLockedKind = kind;
@@ -2703,7 +2703,7 @@ function _hwDoUnlock() {
     btn.textContent = 'Unlocking…';
     if (resetBtn) resetBtn.style.display = 'none';
     if (err) err.style.display = 'none';
-    RS.invoke('hw_unlock', { pin: secret }).then(function(res) {
+    RS.invoke('unlock_identity', { secret: secret }).then(function(res) {
         res = res || {};
         if (res.ok) {
             // Re-bootstrap the whole app on the now-unlocked identity.

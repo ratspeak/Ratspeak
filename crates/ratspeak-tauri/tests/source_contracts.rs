@@ -732,6 +732,33 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
 }
 
 #[test]
+fn android_ble_gatt_close_targets_captured_connection() {
+    let root = repo_root();
+    let gatt =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBleGatt.kt",
+        ))
+        .expect("android BLE GATT source");
+
+    assert!(gatt.contains("val gattToClose = gatt"));
+    assert!(gatt.contains("val txCharToDisable = txChar"));
+    assert!(
+        gatt.contains("gattToClose?.setCharacteristicNotification(it, false)"),
+        "notification teardown should target the captured GATT handle"
+    );
+    assert!(gatt.contains("gattToClose?.disconnect()"));
+    assert!(gatt.contains("gattToClose?.close()"));
+    assert!(
+        gatt.contains("if (gatt === gattToClose) {\n                gatt = null\n            }"),
+        "delayed close must not clear a newer active GATT handle"
+    );
+    assert!(
+        !gatt.contains("try { gatt?.close() }"),
+        "delayed close must not dereference the mutable global GATT handle"
+    );
+}
+
+#[test]
 fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let root = repo_root();
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
@@ -1725,7 +1752,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.20");
+    assert_eq!(version_file.trim(), "1.1.0");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -1811,7 +1838,7 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000023"#));
+    assert!(tauri_conf.contains(r#""versionCode": 1000024"#));
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
@@ -3044,6 +3071,7 @@ fn identity_management_is_first_class_tab() {
     assert!(tauri_lib.contains("api_export_identity_reticulum_base64"));
     assert!(tauri_lib.contains("api_export_identity_reticulum_base32"));
     assert!(tauri_lib.contains("hw_change_pin"));
+    assert!(tauri_lib.contains("unlock_identity"));
 
     let identity_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/identity.rs"))
         .expect("identity command source");
@@ -3052,6 +3080,8 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_rs.contains("base32-private-key"));
     assert!(identity_rs.contains("api_export_identity_reticulum_base64"));
     assert!(identity_rs.contains("api_export_identity_reticulum_base32"));
+    assert!(identity_rs.contains("pub async fn unlock_identity"));
+    assert!(identity_rs.contains("pub(crate) async fn unlock_protected_identity"));
 }
 
 #[test]
@@ -3103,6 +3133,8 @@ fn software_identity_creation_uses_passcode_and_backup_acknowledgement_flow() {
     assert!(identity_js.contains("readIdentityPasscodeOption('identity-create')"));
     assert!(identity_js.contains("function protectIdentityWithPasscode"));
     assert!(identity_js.contains("RS.invoke('set_identity_passcode'"));
+    assert!(identity_js.contains("RS.invoke('unlock_identity', { secret: secret })"));
+    assert!(!identity_js.contains("RS.invoke('hw_unlock'"));
     assert!(identity_js.contains("identityPasscodeOptionHtml('restore-phrase')"));
     assert!(identity_js.contains("} else {\n            restore();\n        }"));
 

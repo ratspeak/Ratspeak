@@ -258,8 +258,8 @@ function runConnectingProgress() {
         pollAttempt++;
         RS.invoke('api_startup_progress').then(function(data) {
             if (data.stage === 'hw_locked') {
-                // Active identity is a locked hardware key — prompt for the PIN.
-                // Unlock re-inits the runtime and reloads the app.
+                // Active identity is locked — prompt for the PIN. Unlock
+                // re-inits the runtime and reloads the app.
                 if (typeof showHwUnlock === 'function') showHwUnlock(data.hw_locked, data.hw_locked_kind);
                 return;
             }

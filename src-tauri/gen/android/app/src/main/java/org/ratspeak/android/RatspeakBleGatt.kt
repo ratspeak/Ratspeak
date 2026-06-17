@@ -400,12 +400,16 @@ class RatspeakBleGatt(private val context: Context) {
     @SuppressLint("MissingPermission")
     private fun closeGattOnly(reason: String) {
         val done = CountDownLatch(1)
+        val gattToClose = gatt
+        val txCharToDisable = txChar
         val closeBlock = Runnable {
-            try { txChar?.let { gatt?.setCharacteristicNotification(it, false) } }
+            try { txCharToDisable?.let { gattToClose?.setCharacteristicNotification(it, false) } }
             catch (e: Exception) { logEx("setCharacteristicNotification", e) }
-            try { gatt?.disconnect() } catch (e: Exception) { logEx("gatt.disconnect", e) }
-            try { gatt?.close() } catch (e: Exception) { logEx("gatt.close", e) }
-            gatt = null
+            try { gattToClose?.disconnect() } catch (e: Exception) { logEx("gatt.disconnect", e) }
+            try { gattToClose?.close() } catch (e: Exception) { logEx("gatt.close", e) }
+            if (gatt === gattToClose) {
+                gatt = null
+            }
             done.countDown()
         }
         Log.i(TAG, "closeGattOnly($reason)")

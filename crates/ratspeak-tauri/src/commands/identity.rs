@@ -546,6 +546,109 @@ pub async fn reveal_identity_mnemonic(
     Ok(json!({ "mnemonic": phrase }))
 }
 
+fn protected_identity_kind(state: &AppState, hash: &str) -> Option<&'static str> {
+    let id_dir = state.config.data_dir.join("identities").join(hash);
+    if id_dir.join("identity.hwid").exists() {
+        Some("hardware")
+    } else if id_dir.join("identity.enc").exists() {
+        Some("passcode")
+    } else {
+        None
+    }
+}
+
+fn check_unlock_secret(kind: Option<&str>, secret: &str) -> AppResult<()> {
+    if secret.len() < 6 {
+        return Err(AppError::bad_request("PIN must be at least 6 characters"));
+    }
+    if kind == Some("hardware") && secret.len() > 8 {
+        return Err(AppError::bad_request("PIN must be 6-8 characters"));
+    }
+    if kind != Some("hardware") && secret.len() > 128 {
+        return Err(AppError::bad_request("PIN must be at most 128 characters"));
+    }
+    Ok(())
+}
+
+fn parse_remaining_attempts(msg: &str) -> Option<u8> {
+    let idx = msg.find(" attempts remaining")?;
+    msg[..idx]
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+pub(crate) async fn unlock_protected_identity(
+    state: Arc<AppState>,
+    secret: String,
+) -> AppResult<Value> {
+    let _guard = state.identity_switch_lock.lock().await;
+    let expected_hash = state.hw_locked_hash();
+    let kind = expected_hash
+        .as_deref()
+        .and_then(|hash| protected_identity_kind(&state, hash));
+    check_unlock_secret(kind, &secret)?;
+
+    crate::shutdown_rns_lxmf(&state).await;
+    state.clear_identity_scoped_runtime_state();
+    state.set_hw_last_error(None);
+    state.set_pending_hw_pin(Some(secret));
+    if let Ok(mut sig) = state.session_shutdown.write() {
+        *sig = rns_runtime::lifecycle::ShutdownSignal::new();
+    }
+    state.set_startup_stage("checking");
+    crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+    crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
+
+    let loaded_identity = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity_hash.clone()));
+    let unlocked = loaded_identity.is_some()
+        && expected_hash
+            .as_deref()
+            .is_none_or(|expected| loaded_identity.as_deref() == Some(expected));
+    if unlocked {
+        state.set_hw_locked(None);
+        state.set_hw_last_error(None);
+        return Ok(json!({
+            "ok": true,
+            "kind": kind.unwrap_or("unknown"),
+        }));
+    }
+
+    let msg = state.take_hw_last_error().unwrap_or_else(|| match kind {
+        Some("passcode") => "Could not unlock the identity.".to_string(),
+        _ => "Could not unlock the hardware identity.".to_string(),
+    });
+    if let Some(expected) = expected_hash {
+        state.set_hw_locked(Some(expected));
+        state.set_startup_stage("hw_locked");
+    }
+    let locked = kind == Some("hardware") && msg.contains("PIN locked");
+    Ok(json!({
+        "ok": false,
+        "kind": kind.unwrap_or("unknown"),
+        "error": msg,
+        "locked": locked,
+        "remaining": parse_remaining_attempts(&msg),
+    }))
+}
+
+/// Unlock the active protected identity. For software identities, `secret` is
+/// the at-rest encryption PIN; for hardware identities, it is the token PIN.
+#[tauri::command]
+pub async fn unlock_identity(state: State<'_, Arc<AppState>>, secret: String) -> AppResult<Value> {
+    unlock_protected_identity(Arc::clone(&state), secret).await
+}
+
 async fn import_identity_shared(
     state: State<'_, Arc<AppState>>,
     key_bytes: Vec<u8>,
@@ -1053,7 +1156,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
     crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
 
-    // Switching to a hardware identity comes up locked (awaiting PIN) — a valid
+    // Switching to a protected identity comes up locked (awaiting PIN) — a valid
     // intermediate state, not a failed switch. Keep it active and let the unlock
     // prompt (driven by the hardware_locked event) take over; do not roll back.
     if state.hw_locked_hash().as_deref() == Some(hash_hex.as_str()) {

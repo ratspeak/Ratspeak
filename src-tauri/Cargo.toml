@@ -1,6 +1,6 @@
 [package]
 name = "ratspeak"
-version = "1.0.20"
+version = "1.1.0"
 description = "Ratspeak: An all-in-one Reticulum & LXMF client in Rust."
 authors = ["Ratspeak Contributors"]
 license = "AGPL-3.0-or-later"

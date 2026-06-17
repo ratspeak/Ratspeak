@@ -1891,11 +1891,16 @@ pub fn clear_pending_blackhole(pool: &DbPool, dest_hash: &str, identity_id: &str
     .unwrap_or(false)
 }
 
-pub fn get_message_delivery_method(pool: &DbPool, msg_id: &str) -> Option<String> {
+pub fn get_message_delivery_method(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+) -> Option<String> {
     let conn = pool.get().ok()?;
     conn.query_row(
-        "SELECT delivery_method FROM messages WHERE id = ?1 AND direction = 'outbound' LIMIT 1",
-        params![msg_id],
+        "SELECT delivery_method FROM messages \
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' LIMIT 1",
+        params![msg_id, identity_id],
         |row| row.get::<_, Option<String>>(0),
     )
     .ok()
@@ -3495,14 +3500,15 @@ pub fn get_failed_messages_for_contact(
 }
 
 /// Bypasses the terminal-state guard for an intentional retry.
-pub fn mark_message_resent(pool: &DbPool, msg_id: &str) {
+pub fn mark_message_resent(pool: &DbPool, msg_id: &str, identity_id: &str) {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
     };
     conn.execute(
-        "UPDATE messages SET state = 'resent' WHERE id = ?1 AND direction = 'outbound' AND state = 'failed'",
-        params![msg_id],
+        "UPDATE messages SET state = 'resent' \
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state = 'failed'",
+        params![msg_id, identity_id],
     )
     .ok();
 }
@@ -4014,7 +4020,7 @@ mod unread_breakdown_tests {
         update_message_delivery_method(&pool, "msg", "me", "propagated");
 
         assert_eq!(
-            get_message_delivery_method(&pool, "msg").as_deref(),
+            get_message_delivery_method(&pool, "msg", "me").as_deref(),
             Some("propagated")
         );
     }
@@ -4129,6 +4135,14 @@ mod unread_breakdown_tests {
         };
         assert_eq!(state_of("identity-a"), "delivered");
         assert_eq!(state_of("identity-b"), "sent", "B's row must not flip");
+        assert_eq!(
+            get_message_delivery_method(&pool, shared_id, "identity-a").as_deref(),
+            Some("propagated")
+        );
+        assert_eq!(
+            get_message_delivery_method(&pool, shared_id, "identity-b").as_deref(),
+            Some("direct")
+        );
         let method_b: Option<String> = pool
             .get()
             .unwrap()
@@ -4151,6 +4165,48 @@ mod unread_breakdown_tests {
         ));
         assert_eq!(state_of("identity-a"), "delivered");
         assert_eq!(state_of("identity-b"), "cancelled");
+    }
+
+    #[test]
+    fn mark_message_resent_is_identity_scoped() {
+        let pool = test_pool();
+        let shared_id = "resent-duplicate-id";
+        for identity in ["identity-a", "identity-b"] {
+            save_message(
+                &pool,
+                shared_id,
+                "me",
+                "peer",
+                "failed outbound",
+                "",
+                10.0,
+                "failed",
+                "outbound",
+                identity,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Some("direct"),
+            );
+        }
+
+        mark_message_resent(&pool, shared_id, "identity-a");
+
+        let state_of = |identity: &str| -> String {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT state FROM messages WHERE id = ?1 AND identity_id = ?2",
+                    params![shared_id, identity],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(state_of("identity-a"), "resent");
+        assert_eq!(state_of("identity-b"), "failed");
     }
 
     #[test]

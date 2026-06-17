@@ -1033,8 +1033,10 @@ pub async fn cancel_lxmf_message(
 
     let msg_id_for_db = msg_id.clone();
     let identity_for_db = active_identity_id(&state);
-    let db_cancelled = db::spawn_db(state.db.clone(), move |p| {
-        db::cancel_outbound_message_state(&p, &msg_id_for_db, &identity_for_db)
+    let (db_cancelled, method) = db::spawn_db(state.db.clone(), move |p| {
+        let db_cancelled = db::cancel_outbound_message_state(&p, &msg_id_for_db, &identity_for_db);
+        let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
+        (db_cancelled, method)
     })
     .await
     .map_err(|_| AppError::internal("cancel_lxmf_message db task panicked"))?;
@@ -1047,7 +1049,6 @@ pub async fn cancel_lxmf_message(
         if let Ok(mut map) = state.msg_id_map.lock() {
             map.remove(&msg_id);
         }
-        let method = db::get_message_delivery_method(&state.db, &msg_id);
         state.emit_to_all(
             "lxmf_step",
             json!({

@@ -20,9 +20,10 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.20
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.20
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.20
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.1.0-rc.1
+  RATSPEAK_RSLXMF_REF: ratspeak-v1.1.0-rc.1
+  RATSPEAK_RSLXST_REF: ratspeak-v1.1.0-rc.1
+  RATSPEAK_LRGP_REF: ratspeak-v1.1.0-rc.1
 
 jobs:
   build:
@@ -59,6 +60,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
+          ref: ${{ env.RATSPEAK_LRGP_REF }}
           path: lrgp-rs
 
       - name: Install Rust toolchain

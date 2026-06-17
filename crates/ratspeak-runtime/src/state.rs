@@ -108,12 +108,12 @@ pub struct AppState {
     pub identity_switch_lock: tokio::sync::Mutex<()>,
     pub ble_peer_enable_lock: tokio::sync::Mutex<()>,
     pub identity_session_generation: AtomicU64,
-    /// PIN handed to the next hardware-identity load (set by `hw_unlock`, consumed
-    /// by `init_rns_lxmf`). Never persisted.
+    /// Secret handed to the next protected-identity load (hardware PIN or
+    /// software passcode, consumed by `init_rns_lxmf`). Never persisted.
     pub hw_pending_pin: Mutex<Option<String>>,
-    /// Hash of a hardware identity that is active but locked (awaiting PIN).
+    /// Hash of a protected identity that is active but locked (awaiting PIN).
     pub hw_locked: RwLock<Option<String>>,
-    /// Last hardware-unlock failure message (wrong PIN / blocked / no device).
+    /// Last protected-identity unlock failure message.
     pub hw_last_error: Mutex<Option<String>>,
     /// Bumped on every session teardown; an auto-lock timer no-ops if its captured
     /// generation no longer matches (i.e. the session was switched/unlocked/quit).

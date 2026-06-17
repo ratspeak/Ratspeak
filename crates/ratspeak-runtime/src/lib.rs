@@ -704,9 +704,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         return;
     }
 
-    // Hardware identities need a PIN to unlock the token. If the active identity
-    // is hardware and no PIN is staged, enter the locked state and wait for
-    // `hw_unlock` rather than coming up with no identity.
+    // Protected identities need a secret to unlock. If the active identity is
+    // hardware or passcode-encrypted and no secret is staged, enter the locked
+    // state and wait for `unlock_identity` rather than coming up with no identity.
     let hw_pin = state.take_pending_hw_pin();
     // Detect whether the active identity is protected (needs a secret to unlock):
     // hardware (.hwid → YubiKey PIN) or passcode-encrypted (.enc → passcode).
@@ -1707,7 +1707,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 &new_state_for_db,
                                 None,
                             );
-                            db::get_message_delivery_method(&p, &msg_id_for_db)
+                            db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db)
                         })
                         .await
                         {
@@ -2516,7 +2516,7 @@ async fn handle_inbound_lxmf(
             // One hop: flip the state and read the method back for the emit.
             let method = db::spawn_db(state.db.clone(), move |p| {
                 db::update_message_state(&p, &msg_id_for_db, &identity_for_db, "delivered", rtt_ms);
-                db::get_message_delivery_method(&p, &msg_id_for_db)
+                db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db)
             })
             .await
             .expect("db task panicked");
@@ -3899,7 +3899,7 @@ async fn check_message_timeouts(state: &AppState) {
             .iter()
             .map(|msg_id| {
                 db::update_message_state(&p, msg_id, &identity_id, "failed", None);
-                db::get_message_delivery_method(&p, msg_id)
+                db::get_message_delivery_method(&p, msg_id, &identity_id)
             })
             .collect::<Vec<Option<String>>>()
     })

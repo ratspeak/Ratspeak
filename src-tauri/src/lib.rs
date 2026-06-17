@@ -568,6 +568,7 @@ pub fn run() {
             ratspeak_tauri::commands::identity::set_identity_passcode,
             ratspeak_tauri::commands::identity::remove_identity_passcode,
             ratspeak_tauri::commands::identity::reveal_identity_mnemonic,
+            ratspeak_tauri::commands::identity::unlock_identity,
             ratspeak_tauri::commands::identity::api_preview_identity_import_base64,
             ratspeak_tauri::commands::identity::api_activate_identity,
             ratspeak_tauri::commands::identity::api_export_identity,
