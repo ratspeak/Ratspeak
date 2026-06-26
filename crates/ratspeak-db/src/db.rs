@@ -8,13 +8,15 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 32;
+const SCHEMA_VERSION: i64 = 33;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = "lxmf.delivery";
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
 pub const PEER_SERVICE_RATSPEAK_CLIENT: &str = "ratspeak.client";
 pub const PEER_SERVICE_RATSPEAK_GAMES: &str = "ratspeak.games";
 pub const PEER_SERVICE_RATSPEAK_CHAT: &str = "ratspeak.chat";
+pub const LXMF_COMPRESSION_SUPPORT_SUPPORTED: &str = "supported";
+pub const LXMF_COMPRESSION_SUPPORT_UNSUPPORTED: &str = "unsupported";
 
 const IDENTITY_SELECT_COLUMNS: &str = "hash,
     lxmf_hash,
@@ -333,7 +335,8 @@ CREATE TABLE IF NOT EXISTS identity_activity (
     display_name   TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT '',
     last_interface TEXT NOT NULL DEFAULT '',
-    services       TEXT NOT NULL DEFAULT ''
+    services       TEXT NOT NULL DEFAULT '',
+    lxmf_compression_support TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
 
@@ -1243,6 +1246,23 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             }
             conn.execute_batch("UPDATE schema_version SET version = 32;")?;
             tracing::info!("Migrated to schema version 32 (repair identity status columns)");
+            Ok(())
+        })?;
+    }
+
+    if from_version < 33 {
+        migration_step(conn, 33, |conn| {
+            if table_exists(conn, "identity_activity")? {
+                let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+                if !cols.iter().any(|c| c == "lxmf_compression_support") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
+                        ADD COLUMN lxmf_compression_support TEXT NOT NULL DEFAULT '';",
+                    )?;
+                }
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 33;")?;
+            tracing::info!("Migrated to schema version 33 (LXMF peer compression capability)");
             Ok(())
         })?;
     }
@@ -2437,6 +2457,14 @@ fn normalized_peer_services<'a>(services: impl IntoIterator<Item = &'a str>) -> 
     out
 }
 
+fn normalized_lxmf_compression_support(value: &str) -> Option<&'static str> {
+    match value.trim() {
+        LXMF_COMPRESSION_SUPPORT_SUPPORTED => Some(LXMF_COMPRESSION_SUPPORT_SUPPORTED),
+        LXMF_COMPRESSION_SUPPORT_UNSUPPORTED => Some(LXMF_COMPRESSION_SUPPORT_UNSUPPORTED),
+        _ => None,
+    }
+}
+
 /// Same as `touch_identity_activity`, but records the service aspect that made
 /// the destination actionable for Ratspeak.
 pub fn touch_identity_activity_for_service(
@@ -2458,6 +2486,7 @@ pub struct IdentityActivityUpdate {
     pub identity_hash: Option<String>,
     pub services: Vec<String>,
     pub clear_ratspeak_services: bool,
+    pub lxmf_compression_support: Option<String>,
 }
 
 /// Same as `touch_identity_activity_for_service`, but merges multiple service
@@ -2486,6 +2515,7 @@ pub fn touch_identity_activity_for_services(
             identity_hash: identity_hash.map(str::to_owned),
             services: services.clone(),
             clear_ratspeak_services,
+            lxmf_compression_support: None,
         })
         .collect();
     touch_identity_activity_updates(pool, &updates)
@@ -2514,8 +2544,8 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
             Err(_) => return 0,
         };
         let mut stmt = match tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services)
-             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7)
+            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services, lxmf_compression_support)
+             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7, COALESCE(?8, ''))
              ON CONFLICT(dest_hash) DO UPDATE SET
                  last_seen = MAX(excluded.last_seen, last_seen),
                  announce_count = announce_count + 1,
@@ -2535,7 +2565,11 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                      WHEN excluded.last_interface != '' THEN excluded.last_interface
                      ELSE last_interface
                  END,
-                 services = excluded.services",
+                 services = excluded.services,
+                 lxmf_compression_support = CASE
+                     WHEN ?8 IS NOT NULL AND ?8 != '' THEN excluded.lxmf_compression_support
+                     ELSE lxmf_compression_support
+                 END",
         ) {
             Ok(s) => s,
             Err(_) => return 0,
@@ -2561,6 +2595,10 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                 }
             }
             let merged_services = merged.join(",");
+            let lxmf_compression_support = update
+                .lxmf_compression_support
+                .as_deref()
+                .and_then(normalized_lxmf_compression_support);
             let ok = stmt
                 .execute(params![
                     update.dest_hash,
@@ -2569,7 +2607,8 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                     n,
                     update.status.as_deref(),
                     i,
-                    merged_services
+                    merged_services,
+                    lxmf_compression_support,
                 ])
                 .is_ok();
             if ok {
@@ -2579,6 +2618,38 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
     }
     tx.commit().ok();
     touched
+}
+
+pub fn get_identity_lxmf_compression_support(pool: &DbPool, dest_hash: &str) -> Option<String> {
+    let conn = pool.get().ok()?;
+    let raw: String = conn
+        .query_row(
+            "SELECT COALESCE(lxmf_compression_support, '') FROM identity_activity WHERE dest_hash = ?1",
+            params![dest_hash],
+            |row| row.get(0),
+        )
+        .ok()?;
+    normalized_lxmf_compression_support(&raw).map(str::to_owned)
+}
+
+pub fn set_identity_lxmf_compression_support(
+    pool: &DbPool,
+    dest_hash: &str,
+    support: &str,
+) -> bool {
+    let Some(support) = normalized_lxmf_compression_support(support) else {
+        return false;
+    };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.execute(
+        "UPDATE identity_activity SET lxmf_compression_support = ?1 WHERE dest_hash = ?2",
+        params![support, dest_hash],
+    )
+    .map(|rows| rows > 0)
+    .unwrap_or(false)
 }
 
 pub fn touch_identity_last_heard(pool: &DbPool, dest_hash: &str, timestamp: f64) -> bool {
@@ -4490,6 +4561,14 @@ mod migration_tests {
                 .unwrap();
             assert!(exists > 0, "expected index `{index}` after init_schema");
         }
+
+        let activity_cols = get_column_names(&conn, "identity_activity").unwrap();
+        assert!(
+            activity_cols
+                .iter()
+                .any(|c| c == "lxmf_compression_support"),
+            "fresh schema should include LXMF compression capability metadata"
+        );
     }
 
     #[test]
@@ -4886,6 +4965,16 @@ mod peers_snapshot_tests {
         .unwrap()
     }
 
+    fn lxmf_compression_support_for(pool: &DbPool, hash: &str) -> String {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT lxmf_compression_support FROM identity_activity WHERE dest_hash = ?1",
+            params![hash],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn touch_identity_activity_merges_multiple_services_once_and_clears_ratspeak() {
         let pool = test_pool();
@@ -4935,6 +5024,7 @@ mod peers_snapshot_tests {
                     identity_hash: Some("11111111111111111111111111111111".into()),
                     services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
                     clear_ratspeak_services: true,
+                    lxmf_compression_support: None,
                 },
                 IdentityActivityUpdate {
                     dest_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
@@ -4945,6 +5035,7 @@ mod peers_snapshot_tests {
                     identity_hash: Some("22222222222222222222222222222222".into()),
                     services: vec![PEER_SERVICE_LXST_TELEPHONY.into()],
                     clear_ratspeak_services: false,
+                    lxmf_compression_support: None,
                 },
             ],
         );
@@ -4960,6 +5051,67 @@ mod peers_snapshot_tests {
         assert_eq!(
             services_for(&pool, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             PEER_SERVICE_LXST_TELEPHONY
+        );
+    }
+
+    #[test]
+    fn touch_identity_activity_updates_merges_lxmf_compression_support() {
+        let pool = test_pool();
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        touch_identity_activity_updates(
+            &pool,
+            &[IdentityActivityUpdate {
+                dest_hash: hash.into(),
+                timestamp: 100.0,
+                display_name: Some("Alice".into()),
+                status: None,
+                last_interface: None,
+                identity_hash: None,
+                services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
+                clear_ratspeak_services: false,
+                lxmf_compression_support: Some(LXMF_COMPRESSION_SUPPORT_UNSUPPORTED.into()),
+            }],
+        );
+        assert_eq!(
+            get_identity_lxmf_compression_support(&pool, hash).as_deref(),
+            Some(LXMF_COMPRESSION_SUPPORT_UNSUPPORTED)
+        );
+
+        touch_identity_activity_updates(
+            &pool,
+            &[IdentityActivityUpdate {
+                dest_hash: hash.into(),
+                timestamp: 101.0,
+                display_name: None,
+                status: None,
+                last_interface: None,
+                identity_hash: None,
+                services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
+                clear_ratspeak_services: false,
+                lxmf_compression_support: None,
+            }],
+        );
+        assert_eq!(
+            lxmf_compression_support_for(&pool, hash),
+            LXMF_COMPRESSION_SUPPORT_UNSUPPORTED
+        );
+
+        assert!(set_identity_lxmf_compression_support(
+            &pool,
+            hash,
+            LXMF_COMPRESSION_SUPPORT_SUPPORTED
+        ));
+        assert_eq!(
+            get_identity_lxmf_compression_support(&pool, hash).as_deref(),
+            Some(LXMF_COMPRESSION_SUPPORT_SUPPORTED)
+        );
+        assert!(!set_identity_lxmf_compression_support(
+            &pool, hash, "unknown"
+        ));
+        assert_eq!(
+            lxmf_compression_support_for(&pool, hash),
+            LXMF_COMPRESSION_SUPPORT_SUPPORTED
         );
     }
 
@@ -5447,5 +5599,79 @@ mod pending_blackhole_tests {
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert_eq!(active.get("status").and_then(|v| v.as_str()), Some(""));
+    }
+
+    #[test]
+    fn migration_from_v32_adds_lxmf_compression_support_column() {
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version (version) VALUES (32);
+
+                CREATE TABLE identity_activity (
+                    dest_hash TEXT PRIMARY KEY,
+                    identity_hash TEXT NOT NULL DEFAULT '',
+                    last_seen REAL NOT NULL,
+                    first_seen REAL NOT NULL,
+                    announce_count INTEGER NOT NULL DEFAULT 1,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    last_interface TEXT NOT NULL DEFAULT '',
+                    services TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO identity_activity
+                    (dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services)
+                VALUES
+                    ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     10.0,
+                     5.0,
+                     3,
+                     'Peer',
+                     'Ready',
+                     'RNode',
+                     'lxmf.delivery');
+                "#,
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        let activity_cols = get_column_names(&conn, "identity_activity").unwrap();
+        assert!(
+            activity_cols
+                .iter()
+                .any(|c| c == "lxmf_compression_support")
+        );
+        let row: (String, String, String, String) = conn
+            .query_row(
+                "SELECT display_name, status, services, lxmf_compression_support
+                 FROM identity_activity
+                 WHERE dest_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "Peer".into(),
+                "Ready".into(),
+                "lxmf.delivery".into(),
+                "".into()
+            )
+        );
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }

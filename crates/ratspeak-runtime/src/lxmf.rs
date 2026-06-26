@@ -13,6 +13,7 @@ use lxmf_core::constants::{
     DeliveryMethod, DeliveryRepresentation, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES,
     PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
+use lxmf_core::handlers::CompressionSupport;
 use lxmf_core::link_delivery::{
     BackchannelSendCommand, BackchannelSendError, BackchannelSendReceipt, DeliveryResult,
     DeliveryState, DirectLinkStartKind, LxmfDeliveryEvent, LxmfDeliveryEventKind,
@@ -592,8 +593,8 @@ impl DeliveryPreference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryProfile {
-    /// Chat-like payloads. Ratspeak Auto uses proof-backed Direct by default;
-    /// Opportunistic is an explicit user choice.
+    /// Chat-like payloads. Ratspeak Auto uses proof-backed Direct by default,
+    /// except for peers that explicitly advertise constrained no-bz2 support.
     Message,
     /// Payloads that usually need proof-backed link/resource delivery.
     Attachment,
@@ -701,6 +702,20 @@ pub fn peer_last_seen(db_pool: &DbPool, dest_hash_hex: &str) -> Option<f64> {
     .ok()
 }
 
+pub fn lxmf_compression_support_db_value(support: CompressionSupport) -> Option<&'static str> {
+    match support {
+        CompressionSupport::Unknown => None,
+        CompressionSupport::Unsupported => Some(db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED),
+        CompressionSupport::Supported => Some(db::LXMF_COMPRESSION_SUPPORT_SUPPORTED),
+    }
+}
+
+pub fn lxmf_compression_support_db_value_from_app_data(app_data: &[u8]) -> Option<&'static str> {
+    lxmf_compression_support_db_value(
+        lxmf_core::handlers::compression_support_state_from_app_data(app_data),
+    )
+}
+
 struct PendingDirectLinkIdentification {
     link_id: [u8; 16],
     observed_at: Instant,
@@ -724,6 +739,7 @@ pub struct LxmfManager {
     pub ratchet_ring: RatchetRing,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
     pub known_identities: HashMap<String, [u8; 64]>,
+    peer_lxmf_compression_support: HashMap<[u8; 16], CompressionSupport>,
     route_hops: HashMap<[u8; 16], u8>,
     route_entries: HashMap<[u8; 16], PathTableRpcEntry>,
     /// Held so identity-switch can re-register with the transport actor.
@@ -1007,6 +1023,7 @@ impl LxmfManager {
             ratchet_ring,
             received_ratchets,
             known_identities,
+            peer_lxmf_compression_support: HashMap::new(),
             route_hops: HashMap::new(),
             route_entries: HashMap::new(),
             delivery_tx: None,
@@ -1267,6 +1284,54 @@ impl LxmfManager {
         self.client_propagation_enabled && !self.peer_recently_seen(db_pool, dest_hash_hex)
     }
 
+    fn peer_lxmf_compression_support(
+        &self,
+        db_pool: Option<&DbPool>,
+        dest_hash_hex: &str,
+    ) -> CompressionSupport {
+        let dest_bytes = match hex::decode(dest_hash_hex) {
+            Ok(bytes) if bytes.len() == 16 => bytes,
+            _ => return CompressionSupport::Unknown,
+        };
+        let mut dest = [0u8; 16];
+        dest.copy_from_slice(&dest_bytes);
+        if let Some(support) = self.peer_lxmf_compression_support.get(&dest).copied() {
+            return support;
+        }
+
+        db_pool
+            .and_then(|pool| db::get_identity_lxmf_compression_support(pool, dest_hash_hex))
+            .as_deref()
+            .map(|support| match support {
+                db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED => CompressionSupport::Unsupported,
+                db::LXMF_COMPRESSION_SUPPORT_SUPPORTED => CompressionSupport::Supported,
+                _ => CompressionSupport::Unknown,
+            })
+            .unwrap_or(CompressionSupport::Unknown)
+    }
+
+    fn peer_explicitly_lacks_lxmf_compression(
+        &self,
+        db_pool: &DbPool,
+        dest_hash_hex: &str,
+    ) -> bool {
+        self.peer_lxmf_compression_support(Some(db_pool), dest_hash_hex)
+            == CompressionSupport::Unsupported
+    }
+
+    fn apply_peer_lxmf_compression_support(
+        &self,
+        msg: &mut LxMessage,
+        db_pool: Option<&DbPool>,
+        dest_hash_hex: &str,
+    ) {
+        if self.peer_lxmf_compression_support(db_pool, dest_hash_hex)
+            == CompressionSupport::Unsupported
+        {
+            msg.auto_compress = false;
+        }
+    }
+
     /// Pick the most truthful `DeliveryMethod` for an outbound send so the
     /// persisted `messages.delivery_method` and the wire method reflect the
     /// user's choice or Ratspeak's Auto policy.
@@ -1282,7 +1347,11 @@ impl LxmfManager {
             DeliveryPreference::Direct => DeliveryMethod::Direct,
             DeliveryPreference::Propagated => DeliveryMethod::Propagated,
             DeliveryPreference::Auto => {
-                if self.should_use_propagation_fallback(db_pool, dest_hash_hex) {
+                if profile == DeliveryProfile::Message
+                    && self.peer_explicitly_lacks_lxmf_compression(db_pool, dest_hash_hex)
+                {
+                    DeliveryMethod::Opportunistic
+                } else if self.should_use_propagation_fallback(db_pool, dest_hash_hex) {
                     DeliveryMethod::Propagated
                 } else {
                     match profile {
@@ -1326,6 +1395,7 @@ impl LxmfManager {
         dest.copy_from_slice(&dest_bytes);
 
         let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, title, content, delivery_method);
+        self.apply_peer_lxmf_compression_support(&mut msg, None, dest_hash_hex);
 
         // Attach our outbound ticket and mint one for the peer to use.
         let now = SystemTime::now()
@@ -1504,6 +1574,7 @@ impl LxmfManager {
             delivery_method,
             &custom_fields,
         )?;
+        self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
         normalize_protocol_delivery_method(&mut msg);
         if !message_within_resource_limit(&msg) {
             return None;
@@ -1613,6 +1684,7 @@ impl LxmfManager {
             DeliveryProfile::Attachment,
         );
         let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, title, content, method);
+        self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
 
         if is_image {
             let image_format = image_mime
@@ -1767,6 +1839,7 @@ impl LxmfManager {
         let method =
             self.pick_delivery_method(db_pool, dest_hash_hex, preference, DeliveryProfile::Lrgp);
         let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, "", fallback_text, method);
+        self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
 
         for (&field_id, value) in lrgp_fields {
             let mut bytes = Vec::new();
@@ -2159,6 +2232,11 @@ impl LxmfManager {
             Some(msg) => msg,
             None => return,
         };
+        self.apply_peer_lxmf_compression_support(
+            &mut msg,
+            Some(request.db_pool),
+            request.dest_hash_hex,
+        );
 
         normalize_protocol_delivery_method(&mut msg);
         if !message_within_resource_limit(&msg) {
@@ -3074,11 +3152,23 @@ impl LxmfManager {
                 self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
                 return changed;
             }
-        } else if name_hash == rns_identity::name_hash::name_hash(LXMF_APP_NAME)
-            && let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(app_data)
-        {
-            let changed = self.router.get_stamp_cost(&dest_hash) != Some(cost);
-            self.router.set_stamp_cost(dest_hash, cost);
+        } else if name_hash == rns_identity::name_hash::name_hash(LXMF_APP_NAME) {
+            let mut changed = false;
+            if let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(app_data) {
+                changed |= self.router.get_stamp_cost(&dest_hash) != Some(cost);
+                self.router.set_stamp_cost(dest_hash, cost);
+            }
+            let compression_support =
+                lxmf_core::handlers::compression_support_state_from_app_data(app_data);
+            match compression_support {
+                CompressionSupport::Supported | CompressionSupport::Unsupported => {
+                    changed |= self
+                        .peer_lxmf_compression_support
+                        .insert(dest_hash, compression_support)
+                        != Some(compression_support);
+                }
+                CompressionSupport::Unknown => {}
+            }
             return changed;
         }
         false
@@ -4647,6 +4737,19 @@ mod tests {
         LxmfManager::load_or_create(&tmp, None, None).unwrap()
     }
 
+    fn delivery_app_data_with_features(features: &[u8]) -> Vec<u8> {
+        let values = features
+            .iter()
+            .map(|feature| rmpv::Value::from(*feature as u64))
+            .collect();
+        let arr = rmpv::Value::Array(vec![
+            rmpv::Value::Binary(b"Peer".to_vec()),
+            rmpv::Value::Nil,
+            rmpv::Value::Array(values),
+        ]);
+        encode_msgpack_value(&arr)
+    }
+
     fn next_outbound(rx: &mut mpsc::Receiver<TransportMessage>) -> Vec<u8> {
         while let Ok(message) = rx.try_recv() {
             if let TransportMessage::Outbound(request) = message {
@@ -5264,6 +5367,69 @@ mod tests {
             } => {
                 assert_eq!(command_link, link_id);
                 assert!(!payload.is_empty());
+            }
+            _ => panic!("expected SendLinkPayload command"),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_delivery_to_explicit_no_bz2_peer_disables_backchannel_compression() {
+        let mut mgr = test_manager();
+        let (transport_tx, _transport_rx) = mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(transport_tx);
+        let (command_tx, mut command_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
+        let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
+        let (_packet_tx, packet_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
+        let (_resource_tx, resource_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
+        mgr.set_lxmf_link_control(
+            command_tx,
+            direct_tx,
+            identified_rx,
+            closed_rx,
+            packet_rx,
+            resource_rx,
+        );
+
+        let dest = [0x34; 16];
+        let dest_hex = hex::encode(dest);
+        let link_id = [0x45; 16];
+        mgr.peer_lxmf_compression_support
+            .insert(dest, CompressionSupport::Unsupported);
+        assert!(mgr.ensure_link_delivery_manager());
+        mgr.link_delivery
+            .as_mut()
+            .unwrap()
+            .register_backchannel(dest, link_id);
+
+        let msg = mgr
+            .create_message(&dest_hex, "direct no bz2", "", DeliveryMethod::Direct)
+            .unwrap();
+        assert!(!msg.auto_compress);
+        let msg_hash = msg.hash.unwrap();
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message: msg,
+            dest_hash: dest,
+        }]);
+        assert_eq!(
+            results,
+            vec![(hex::encode(msg_hash), "reusing_backchannel")]
+        );
+
+        let command = command_rx.try_recv().expect("backchannel send command");
+        match command {
+            rns_runtime::link_manager::LinkManagerCommand::SendLinkPayload {
+                link_id: command_link,
+                auto_compress,
+                ..
+            } => {
+                assert_eq!(command_link, link_id);
+                assert!(!auto_compress);
             }
             _ => panic!("expected SendLinkPayload command"),
         }
@@ -6740,6 +6906,100 @@ mod tests {
     }
 
     #[test]
+    fn auto_delivery_prefers_opportunistic_for_explicit_no_bz2_message_peers() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "abababababababababababababababab";
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        db::touch_identity_activity(&pool, &[(dest.to_string(), now, None, None)]);
+        assert!(db::set_identity_lxmf_compression_support(
+            &pool,
+            dest,
+            db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED
+        ));
+
+        assert_eq!(
+            mgr.pick_delivery_method(
+                &pool,
+                dest,
+                DeliveryPreference::Auto,
+                DeliveryProfile::Message
+            ),
+            DeliveryMethod::Opportunistic
+        );
+        assert_eq!(
+            mgr.pick_delivery_method(
+                &pool,
+                dest,
+                DeliveryPreference::Direct,
+                DeliveryProfile::Message
+            ),
+            DeliveryMethod::Direct
+        );
+        assert_eq!(
+            mgr.pick_delivery_method(
+                &pool,
+                dest,
+                DeliveryPreference::Auto,
+                DeliveryProfile::Attachment
+            ),
+            DeliveryMethod::Direct
+        );
+        assert_eq!(
+            mgr.pick_delivery_method(&pool, dest, DeliveryPreference::Auto, DeliveryProfile::Lrgp),
+            DeliveryMethod::Direct
+        );
+
+        mgr.client_propagation_enabled = true;
+        assert!(db::touch_identity_last_heard(
+            &pool,
+            dest,
+            now - RECENT_PEER_SECS - 10.0
+        ));
+        assert_eq!(
+            mgr.pick_delivery_method(
+                &pool,
+                dest,
+                DeliveryPreference::Auto,
+                DeliveryProfile::Message
+            ),
+            DeliveryMethod::Opportunistic
+        );
+    }
+
+    #[test]
+    fn persisted_no_bz2_peer_disables_direct_message_auto_compression() {
+        let pool = test_pool();
+        let mgr = test_manager();
+        let dest = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+        let dest_bytes: [u8; 16] = hex::decode(dest).unwrap().try_into().unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        db::touch_identity_activity(&pool, &[(dest.to_string(), now, None, None)]);
+        assert!(db::set_identity_lxmf_compression_support(
+            &pool,
+            dest,
+            db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED
+        ));
+
+        let mut msg = LxMessage::new(
+            dest_bytes,
+            mgr.lxmf_dest_hash,
+            "",
+            "manual direct",
+            DeliveryMethod::Direct,
+        );
+        assert!(msg.auto_compress);
+        mgr.apply_peer_lxmf_compression_support(&mut msg, Some(&pool), dest);
+        assert!(!msg.auto_compress);
+    }
+
+    #[test]
     fn auto_delivery_uses_relay_for_not_recent_peer_when_configured() {
         let pool = test_pool();
         let mut mgr = test_manager();
@@ -7040,6 +7300,44 @@ mod tests {
             Some(&delivery_data),
         ));
         assert_eq!(mgr.router.get_stamp_cost(&unrelated_dest), None);
+    }
+
+    #[test]
+    fn lxmf_announce_app_data_caches_explicit_compression_support() {
+        let mut mgr = test_manager();
+        let dest = [0x44; 16];
+        let delivery_name_hash = rns_identity::name_hash::name_hash("lxmf.delivery");
+
+        let legacy_data = lxmf_core::handlers::get_announce_app_data(Some("peer"), None);
+        assert!(!mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&legacy_data),));
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&dest),
+            None,
+            "legacy app_data must not be treated as an explicit constrained-peer signal"
+        );
+
+        let no_bz2_data = delivery_app_data_with_features(&[]);
+        assert!(mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&no_bz2_data),));
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&dest),
+            Some(&CompressionSupport::Unsupported)
+        );
+        assert!(!mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&legacy_data),));
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&dest),
+            Some(&CompressionSupport::Unsupported),
+            "unknown metadata should not erase explicit capability"
+        );
+
+        let supported_data =
+            delivery_app_data_with_features(&[lxmf_core::constants::SF_COMPRESSION]);
+        assert!(
+            mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&supported_data),)
+        );
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&dest),
+            Some(&CompressionSupport::Supported)
+        );
     }
 
     #[test]

@@ -183,12 +183,24 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         .as_deref()
         .and_then(crate::lxmf::ratspeak_status_from_app_data);
 
+    let lxmf_compression_support = event
+        .app_data
+        .as_deref()
+        .and_then(crate::lxmf::lxmf_compression_support_db_value_from_app_data)
+        .map(str::to_string);
+
     if let Some(bytes) = event.app_data.as_deref()
-        && let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(bytes)
         && let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
     {
-        mgr.router.set_stamp_cost(event.destination_hash, cost);
+        let changed = mgr.update_lxmf_announce_app_data(
+            event.destination_hash,
+            rns_identity::name_hash::name_hash("lxmf.delivery"),
+            Some(bytes),
+        );
+        if changed {
+            mgr.save_router_state();
+        }
     }
 
     let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
@@ -229,6 +241,7 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
             identity_hash: identity_hash_hex,
             services,
             clear_ratspeak_services: true,
+            lxmf_compression_support,
         };
         db::spawn_db(pool, move |p| {
             db::touch_identity_activity_updates(&p, &[update]);

@@ -3589,6 +3589,13 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                         if announce_timestamp_changed && !a.is_path_response {
                             if a.name_hash == lxmf_delivery_name_hash {
                                 let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY.to_string()];
+                                let lxmf_compression_support = a
+                                    .app_data
+                                    .as_deref()
+                                    .and_then(
+                                        crate::lxmf::lxmf_compression_support_db_value_from_app_data,
+                                    )
+                                    .map(str::to_string);
                                 if let Some(app_data) = a.app_data.as_deref() {
                                     services.extend(
                                         crate::lxmf::ratspeak_capability_services_from_app_data(
@@ -3614,6 +3621,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                         .map(|pk| hex::encode(rns_crypto::sha::truncated_hash(pk))),
                                     services,
                                     clear_ratspeak_services: true,
+                                    lxmf_compression_support,
                                 });
                                 peer_activity_hashes.push(hash_hex.clone());
                                 delivery_trigger_hashes.push(a.dest_hash);
@@ -3637,6 +3645,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                     identity_hash: Some(hex::encode(identity_hash)),
                                     services: vec![db::PEER_SERVICE_LXST_TELEPHONY.to_string()],
                                     clear_ratspeak_services: false,
+                                    lxmf_compression_support: None,
                                 });
                                 peer_activity_hashes.push(lxmf_dest_hex);
                             }
