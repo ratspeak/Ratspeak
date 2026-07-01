@@ -39,15 +39,7 @@ import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
-import android.view.View
-import android.webkit.ConsoleMessage
-import android.webkit.GeolocationPermissions
 import android.webkit.JavascriptInterface
-import android.webkit.JsPromptResult
-import android.webkit.JsResult
-import android.webkit.PermissionRequest
-import android.webkit.ValueCallback
-import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
@@ -187,7 +179,6 @@ class MainActivity : TauriActivity() {
         // Incoming call ringtones are app audio, not microphone capture. Allow
         // Web Audio playback after startup notification permission handling.
         webView.settings.mediaPlaybackRequiresUserGesture = false
-        webView.webChromeClient = RatspeakWebChromeClient(this, RustWebChromeClient(this))
         webViewRef = webView
         installAppBackNavigation()
         // Expose BLE permission bridge to JavaScript
@@ -214,70 +205,6 @@ class MainActivity : TauriActivity() {
             handler.postDelayed({
                 navigateToView(target)
             }, 3000)
-        }
-    }
-
-    private class RatspeakWebChromeClient(
-        private val activity: WryActivity,
-        private val delegate: RustWebChromeClient
-    ) : WebChromeClient() {
-        override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-            delegate.onShowCustomView(view, callback)
-        }
-
-        override fun onHideCustomView() {
-            delegate.onHideCustomView()
-        }
-
-        override fun onPermissionRequest(request: PermissionRequest) {
-            delegate.onPermissionRequest(request)
-        }
-
-        override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {
-            return delegate.onJsAlert(view, url, message, result)
-        }
-
-        override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
-            return delegate.onJsConfirm(view, url, message, result)
-        }
-
-        override fun onJsPrompt(
-            view: WebView,
-            url: String,
-            message: String,
-            defaultValue: String,
-            result: JsPromptResult
-        ): Boolean {
-            return delegate.onJsPrompt(view, url, message, defaultValue, result)
-        }
-
-        override fun onGeolocationPermissionsShowPrompt(
-            origin: String,
-            callback: GeolocationPermissions.Callback
-        ) {
-            val coarsePermission = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
-            if (PermissionHelper.hasPermissions(activity, coarsePermission)) {
-                callback.invoke(origin, true, false)
-                Logger.debug("Ratspeak geolocation prompt: coarse permission already granted")
-                return
-            }
-            delegate.onGeolocationPermissionsShowPrompt(origin, callback)
-        }
-
-        override fun onShowFileChooser(
-            webView: WebView,
-            filePathCallback: ValueCallback<Array<Uri?>?>,
-            fileChooserParams: FileChooserParams
-        ): Boolean {
-            return delegate.onShowFileChooser(webView, filePathCallback, fileChooserParams)
-        }
-
-        override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
-            return delegate.onConsoleMessage(consoleMessage)
-        }
-
-        override fun onReceivedTitle(view: WebView, title: String) {
-            delegate.onReceivedTitle(view, title)
         }
     }
 

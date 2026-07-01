@@ -185,6 +185,14 @@ fn rnode_public_map_is_edit_only_and_privacy_gated() {
         root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
     )
     .expect("android main activity");
+    let android_web_chrome = read_source(
+        root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/generated/RustWebChromeClient.kt",
+        ),
+    )
+    .expect("android generated web chrome client");
+    let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
+        .expect("android gradle");
 
     assert!(index.contains(r#"id="rnode-public-map-section" style="display:none;""#));
     assert!(index.contains(r#"id="rnode-public-map-enabled""#));
@@ -236,23 +244,26 @@ fn rnode_public_map_is_edit_only_and_privacy_gated() {
 
     assert!(manifest.contains(r#"android.permission.ACCESS_FINE_LOCATION" />"#));
     assert!(manifest.contains(r#"android.permission.ACCESS_COARSE_LOCATION" />"#));
-    assert!(android_main.contains(
-        "webView.webChromeClient = RatspeakWebChromeClient(this, RustWebChromeClient(this))"
+    assert!(!android_main.contains("RustWebChromeClient(this)"));
+    assert!(!android_main.contains("RatspeakWebChromeClient"));
+    assert!(android_web_chrome.contains("override fun onGeolocationPermissionsShowPrompt("));
+    assert!(android_web_chrome.contains(
+        "val coarseLocationPermission = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)"
     ));
-    assert!(android_main.contains("private class RatspeakWebChromeClient("));
-    assert!(android_main.contains("delegate.onPermissionRequest(request)"));
     assert!(
-        android_main
-            .contains("delegate.onShowFileChooser(webView, filePathCallback, fileChooserParams)")
+        android_web_chrome
+            .contains("PermissionHelper.hasPermissions(activity, coarseLocationPermission)")
     );
-    assert!(android_main.contains("override fun onGeolocationPermissionsShowPrompt("));
+    assert!(android_web_chrome.contains("callback.invoke(origin, true, false)"));
     assert!(
-        android_main
-            .contains("val coarsePermission = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)")
+        android_web_chrome
+            .contains("onGeolocationPermissionsShowPrompt: coarse permission already granted")
     );
-    assert!(android_main.contains("PermissionHelper.hasPermissions(activity, coarsePermission)"));
-    assert!(android_main.contains("callback.invoke(origin, true, false)"));
-    assert!(android_main.contains("delegate.onGeolocationPermissionsShowPrompt(origin, callback)"));
+    assert!(
+        android_gradle.contains(
+            "Tauri RustWebChromeClient.kt coarse geolocation permission patch is missing"
+        )
+    );
 }
 
 #[test]
