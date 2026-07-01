@@ -147,6 +147,30 @@ fn android_ble_rnode_bridge_retries_writes_and_fallback_detaches() {
 }
 
 #[test]
+fn rnode_config_edit_suppresses_next_interface_reannounce() {
+    let root = repo_root();
+    let state_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let runtime_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+
+    assert!(state_rs.contains("interface_reannounce_suppression"));
+    assert!(state_rs.contains("suppress_next_interface_reannounce"));
+    assert!(state_rs.contains("take_interface_reannounce_suppression"));
+    assert!(state_rs.contains("INTERFACE_REANNOUNCE_SUPPRESSION_TTL"));
+
+    assert!(runtime_rs.contains("take_interface_reannounce_suppression(name)"));
+    assert!(runtime_rs.contains("!reannounce_suppressed"));
+    assert!(runtime_rs.contains("Skipped re-announce after"));
+
+    assert!(interfaces_rs.contains("operation == \"update_lora\""));
+    assert!(interfaces_rs.contains("matches!(&new_runtime, EditableInterfaceConfig::RNode"));
+    assert!(interfaces_rs.contains("suppress_next_interface_reannounce(new_runtime.name())"));
+}
+
+#[test]
 fn peers_sort_preference_defaults_to_last_seen_and_persists() {
     let root = repo_root();
 

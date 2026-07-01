@@ -3305,9 +3305,35 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             let net_level = if online { "standard" } else { "essential" };
                             state.emit_network_event("interface", &msg, name, net_level);
                         }
+                        let reannounce_suppressed =
+                            online && state.take_interface_reannounce_suppression(name);
+                        if reannounce_suppressed {
+                            last_interface_announce = Instant::now();
+                            tracing::info!(
+                                interface = %name,
+                                "interface re-announce suppressed after config restart"
+                            );
+                            state.add_event(json!({
+                                "timestamp": ev_ts,
+                                "category": "system",
+                                "message": format!("Skipped re-announce after {name} restarted"),
+                            }));
+                            if state
+                                .network_log_enabled
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                state.emit_network_event(
+                                    "announce",
+                                    "Skipped re-announce after interface restarted",
+                                    name,
+                                    "detailed",
+                                );
+                            }
+                        }
                         // Re-announce on interface up; gated by auto-announce + 30s cooldown.
                         let auto_announce_on = *state.announce_interval_rx.borrow() > 0;
                         if online
+                            && !reannounce_suppressed
                             && auto_announce_on
                             && last_interface_announce.elapsed() >= Duration::from_secs(30)
                         {

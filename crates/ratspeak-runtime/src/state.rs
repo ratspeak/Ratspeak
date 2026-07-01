@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
 use ratspeak_core::{Emitter, NativeNotification, NativeNotifier};
@@ -19,6 +19,8 @@ pub use ratspeak_core::types::{
     LrgpMsgMeta, MAX_DISCOVERED_PROPAGATION_NODES, PROPAGATION_NODE_TTL_SECS,
 };
 pub use ratspeak_db::DbPool;
+
+const INTERFACE_REANNOUNCE_SUPPRESSION_TTL: Duration = Duration::from_secs(120);
 
 /// Uses `std::sync::{Mutex, RwLock}`, not tokio variants. Critical sections
 /// must finish before `.await` or run in `spawn_blocking`
@@ -90,6 +92,8 @@ pub struct AppState {
     pub last_opportunistic_announce_at: Mutex<Option<Instant>>,
     /// Peers currently covered by an in-flight opportunistic announce attempt.
     pub opportunistic_announce_inflight: Mutex<HashSet<String>>,
+    /// One-shot interface-up re-announce suppression keyed by interface name.
+    pub interface_reannounce_suppression: Mutex<HashMap<String, Instant>>,
     /// Coalesces conversation-list broadcasts; spawned task debounces 100ms.
     pub conversations_broadcast_pending: AtomicBool,
     /// 10s session-local throttle on Refresh button. `None` = never throttled.
@@ -217,6 +221,7 @@ impl AppState {
             last_lxmf_delivery_announce_at_ms: AtomicU64::new(0),
             last_opportunistic_announce_at: Mutex::new(None),
             opportunistic_announce_inflight: Mutex::new(HashSet::new()),
+            interface_reannounce_suppression: Mutex::new(HashMap::new()),
             conversations_broadcast_pending: AtomicBool::new(false),
             last_refresh_request_at: Mutex::new(None),
             last_static_probe_at: Mutex::new(None),
@@ -299,6 +304,29 @@ impl AppState {
             + 1
     }
 
+    pub fn suppress_next_interface_reannounce(&self, name: &str) {
+        if name.is_empty() {
+            return;
+        }
+        if let Ok(mut suppressions) = self.interface_reannounce_suppression.lock() {
+            suppressions.insert(name.to_string(), Instant::now());
+        }
+    }
+
+    pub fn take_interface_reannounce_suppression(&self, name: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        let now = Instant::now();
+        let Ok(mut suppressions) = self.interface_reannounce_suppression.lock() else {
+            return false;
+        };
+        suppressions.retain(|_, marked| {
+            now.duration_since(*marked) <= INTERFACE_REANNOUNCE_SUPPRESSION_TTL
+        });
+        suppressions.remove(name).is_some()
+    }
+
     pub fn clear_identity_scoped_runtime_state(&self) {
         if let Ok(mut known) = self.known_path_hashes.lock() {
             known.clear();
@@ -352,6 +380,9 @@ impl AppState {
         }
         if let Ok(mut inflight) = self.opportunistic_announce_inflight.lock() {
             inflight.clear();
+        }
+        if let Ok(mut suppressions) = self.interface_reannounce_suppression.lock() {
+            suppressions.clear();
         }
         if let Ok(mut last) = self.last_refresh_request_at.lock() {
             *last = None;
@@ -599,6 +630,38 @@ mod tests {
 
     fn make_state() -> AppState {
         make_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    #[test]
+    fn interface_reannounce_suppression_is_one_shot() {
+        let state = make_state();
+
+        assert!(!state.take_interface_reannounce_suppression("LoRa"));
+        state.suppress_next_interface_reannounce("LoRa");
+
+        assert!(state.take_interface_reannounce_suppression("LoRa"));
+        assert!(!state.take_interface_reannounce_suppression("LoRa"));
+    }
+
+    #[test]
+    fn stale_interface_reannounce_suppression_expires() {
+        let state = make_state();
+        {
+            let mut suppressions = state.interface_reannounce_suppression.lock().unwrap();
+            suppressions.insert(
+                "LoRa".to_string(),
+                Instant::now() - INTERFACE_REANNOUNCE_SUPPRESSION_TTL - Duration::from_secs(1),
+            );
+        }
+
+        assert!(!state.take_interface_reannounce_suppression("LoRa"));
+        assert!(
+            state
+                .interface_reannounce_suppression
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

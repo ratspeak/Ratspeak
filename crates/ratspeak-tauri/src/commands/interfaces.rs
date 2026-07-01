@@ -2198,6 +2198,10 @@ async fn finish_interface_replace(
     );
     teardown_live_interface_by_name(&state, &old_name, old_runtime.rnode_port()).await;
 
+    if operation == "update_lora" && matches!(&new_runtime, EditableInterfaceConfig::RNode { .. }) {
+        state.suppress_next_interface_reannounce(new_runtime.name());
+    }
+
     match spawn_editable_interface(&state, &new_runtime).await {
         Ok(step) => {
             emit_op_status_broadcast(&state, operation, "hub", &step, true, None);
