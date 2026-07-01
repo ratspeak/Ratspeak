@@ -171,6 +171,51 @@ fn rnode_config_edit_suppresses_next_interface_reannounce() {
 }
 
 #[test]
+fn rnode_public_map_is_edit_only_and_privacy_gated() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let rns_config_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
+    let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+        .expect("android manifest");
+
+    assert!(index.contains(r#"id="rnode-public-map-section" style="display:none;""#));
+    assert!(index.contains(r#"id="rnode-public-map-enabled""#));
+    assert!(index.contains("Display on public map"));
+    assert!(index.contains(r#"id="rnode-public-map-latitude""#));
+    assert!(index.contains(r#"id="rnode-public-map-longitude""#));
+    assert!(!index.contains("rnode-public-map-height"));
+
+    let warning = "This node's approximate location data will be broadcast publicly. The location will be your current approximate location, and only change again if you update it. Location is never live tracked.";
+    assert!(modals_js.contains(warning));
+    assert!(modals_js.contains("title: 'Display on public map?'"));
+    assert!(modals_js.contains("confirmText: 'Enable'"));
+    assert!(modals_js.contains("navigator.geolocation.getCurrentPosition"));
+    assert!(modals_js.contains("_rnodeResetPublicMap();"));
+    assert!(modals_js.contains("_rnodeLoadPublicMap(editIface);"));
+    assert!(modals_js.contains("loraArgs.public_map = publicMapSettings"));
+    assert!(modals_js.contains("Math.round(value * 1000) / 1000"));
+
+    assert!(interfaces_rs.contains("pub public_map: Option<UpdateLoraPublicMapArgs>"));
+    assert!(interfaces_rs.contains("resolve_rnode_public_map_update"));
+    assert!(interfaces_rs.contains("Set an identity display name before enabling public map."));
+    assert!(interfaces_rs.contains("discovery_name: Some(display_name)"));
+
+    assert!(rns_config_rs.contains("pub struct RnodePublicMapArgs"));
+    assert!(rns_config_rs.contains("discoverable = yes"));
+    assert!(rns_config_rs.contains("latitude = {latitude}"));
+    assert!(rns_config_rs.contains("longitude = {longitude}"));
+    assert!(rns_config_rs.contains("discovery_name = {discovery_name}"));
+    assert!(!rns_config_rs.contains("height = {"));
+
+    assert!(manifest.contains(r#"android.permission.ACCESS_FINE_LOCATION" />"#));
+    assert!(manifest.contains(r#"android.permission.ACCESS_COARSE_LOCATION" />"#));
+}
+
+#[test]
 fn peers_sort_preference_defaults_to_last_seen_and_persists() {
     let root = repo_root();
 

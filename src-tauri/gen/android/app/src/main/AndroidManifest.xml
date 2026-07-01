@@ -21,9 +21,9 @@
     <!-- BLE permissions (legacy, API 30 and below) -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <!-- Location required for BLE scanning on API 29-30 -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
+    <!-- Location supports opt-in public map capture; API 29-30 also require it for BLE scanning. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- Declare BLE hardware feature (not required, graceful degradation) -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />

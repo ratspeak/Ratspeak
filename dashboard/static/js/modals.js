@@ -409,9 +409,15 @@ function _ifaceInt(iface, key, fallback) {
     return isNaN(v) ? fallback : v;
 }
 
-function _ifaceBool(iface, key) {
-    var v = _ifaceString(iface, key, '').toLowerCase();
-    return v === 'true' || v === 'yes' || v === '1';
+function _ifaceFloat(iface, key, fallback) {
+    var v = parseFloat(_ifaceString(iface, key, ''));
+    return isNaN(v) ? fallback : v;
+}
+
+function _ifaceBool(iface, key, fallback) {
+    var v = _ifaceString(iface, key, '').trim().toLowerCase();
+    if (!v) return !!fallback;
+    return v === 'true' || v === 'yes' || v === '1' || v === 'on';
 }
 
 function _rnodeFormatScaledValue(value, divisor, maxDecimals, minDecimals) {
@@ -599,6 +605,195 @@ function _rnodeReadRadioSettings() {
         airtimeShort: airtimeShort,
         airtimeLong: airtimeLong,
     };
+}
+
+function _rnodeApproxCoordinate(value) {
+    var rounded = Math.round(value * 1000) / 1000;
+    return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function _rnodePublicMapElements() {
+    return {
+        section: document.getElementById('rnode-public-map-section'),
+        checkbox: document.getElementById('rnode-public-map-enabled'),
+        help: document.getElementById('rnode-public-map-help'),
+        controls: document.getElementById('rnode-public-map-controls'),
+        status: document.getElementById('rnode-public-map-status'),
+        latitude: document.getElementById('rnode-public-map-latitude'),
+        longitude: document.getElementById('rnode-public-map-longitude'),
+        error: document.getElementById('rnode-public-map-error'),
+    };
+}
+
+function _rnodeSetPublicMapError(message) {
+    var error = document.getElementById('rnode-public-map-error');
+    if (!error) return;
+    if (message) {
+        error.textContent = message;
+        error.style.display = '';
+    } else {
+        error.textContent = '';
+        error.style.display = 'none';
+    }
+}
+
+function _rnodeSetPublicMapStatus() {
+    var els = _rnodePublicMapElements();
+    if (!els.status) return;
+    var lat = parseFloat(els.latitude ? els.latitude.value : '');
+    var lon = parseFloat(els.longitude ? els.longitude.value : '');
+    if (isNaN(lat) || isNaN(lon)) {
+        els.status.textContent = 'Add an approximate location before saving.';
+        return;
+    }
+    var latText = String(_rnodeApproxCoordinate(lat));
+    var lonText = String(_rnodeApproxCoordinate(lon));
+    els.status.innerHTML = 'Approximate location set <code>' +
+        escapeHtml(latText + ', ' + lonText) + '</code>';
+}
+
+function _rnodeSetPublicMapEnabled(enabled) {
+    var els = _rnodePublicMapElements();
+    if (els.checkbox) els.checkbox.checked = !!enabled;
+    if (els.controls) els.controls.style.display = enabled ? '' : 'none';
+    if (els.help) {
+        els.help.textContent = enabled
+            ? 'Uses a saved approximate location until you update it.'
+            : 'Off by default. Shares a one-time approximate location for this LoRa device.';
+    }
+    if (!enabled) {
+        _rnodeSetPublicMapError('');
+    } else {
+        _rnodeSetPublicMapStatus();
+    }
+}
+
+function _rnodeResetPublicMap() {
+    var els = _rnodePublicMapElements();
+    if (els.section) els.section.style.display = 'none';
+    if (els.latitude) els.latitude.value = '';
+    if (els.longitude) els.longitude.value = '';
+    _rnodeSetPublicMapError('');
+    _rnodeSetPublicMapEnabled(false);
+}
+
+function _rnodeLoadPublicMap(editIface) {
+    var els = _rnodePublicMapElements();
+    if (!els.section) return;
+    els.section.style.display = editIface ? '' : 'none';
+    if (!editIface) {
+        _rnodeSetPublicMapEnabled(false);
+        return;
+    }
+    var discoverable = _ifaceBool(editIface, 'discoverable', false);
+    var lat = _ifaceFloat(editIface, 'latitude', null);
+    var lon = _ifaceFloat(editIface, 'longitude', null);
+    if (els.latitude) els.latitude.value = lat === null ? '' : String(_rnodeApproxCoordinate(lat));
+    if (els.longitude) els.longitude.value = lon === null ? '' : String(_rnodeApproxCoordinate(lon));
+    _rnodeSetPublicMapEnabled(discoverable);
+}
+
+function _rnodeParsePublicMapLocation() {
+    var els = _rnodePublicMapElements();
+    var latRaw = els.latitude ? String(els.latitude.value).trim() : '';
+    var lonRaw = els.longitude ? String(els.longitude.value).trim() : '';
+    if (!latRaw || !lonRaw) return { error: 'Add a location before enabling public map.' };
+    var lat = Number(latRaw);
+    var lon = Number(lonRaw);
+    if (!isFinite(lat)) return { error: 'Latitude must be between -90 and 90.' };
+    if (!isFinite(lon)) return { error: 'Longitude must be between -180 and 180.' };
+    if (lat < -90 || lat > 90) return { error: 'Latitude must be between -90 and 90.' };
+    if (lon < -180 || lon > 180) return { error: 'Longitude must be between -180 and 180.' };
+    lat = _rnodeApproxCoordinate(lat);
+    lon = _rnodeApproxCoordinate(lon);
+    if (els.latitude) els.latitude.value = String(lat);
+    if (els.longitude) els.longitude.value = String(lon);
+    return { latitude: lat, longitude: lon };
+}
+
+function _rnodeActiveIdentityDisplayName() {
+    if (typeof activeIdentity === 'function') {
+        var active = activeIdentity();
+        if (active && active.display_name) return String(active.display_name).trim();
+    }
+    try {
+        return String(localStorage.getItem('ratspeak_identity_name') || '').trim();
+    } catch (e) {
+        return '';
+    }
+}
+
+function _rnodeReadPublicMapSettings() {
+    var els = _rnodePublicMapElements();
+    if (!els.section || els.section.style.display === 'none' || !els.checkbox || !els.checkbox.checked) {
+        return { enabled: false };
+    }
+    if (!_rnodeActiveIdentityDisplayName()) {
+        return { error: 'Set an identity display name before enabling public map.' };
+    }
+    var location = _rnodeParsePublicMapLocation();
+    if (location.error) return location;
+    return {
+        enabled: true,
+        latitude: location.latitude,
+        longitude: location.longitude,
+    };
+}
+
+function _rnodeRequestPublicMapLocation() {
+    var els = _rnodePublicMapElements();
+    _rnodeSetPublicMapError('');
+    if (els.status) els.status.textContent = 'Requesting current approximate location...';
+    if (!navigator.geolocation) {
+        _rnodeSetPublicMapError('Location unavailable. Enter latitude and longitude manually.');
+        _rnodeSetPublicMapStatus();
+        return;
+    }
+    navigator.geolocation.getCurrentPosition(function(pos) {
+        var coords = pos && pos.coords ? pos.coords : {};
+        var lat = typeof coords.latitude === 'number' ? coords.latitude : NaN;
+        var lon = typeof coords.longitude === 'number' ? coords.longitude : NaN;
+        if (!isFinite(lat) || !isFinite(lon)) {
+            _rnodeSetPublicMapError('Location unavailable. Enter latitude and longitude manually.');
+            _rnodeSetPublicMapStatus();
+            return;
+        }
+        if (els.latitude) els.latitude.value = String(_rnodeApproxCoordinate(lat));
+        if (els.longitude) els.longitude.value = String(_rnodeApproxCoordinate(lon));
+        _rnodeSetPublicMapError('');
+        _rnodeSetPublicMapStatus();
+    }, function(err) {
+        var denied = err && err.code === 1;
+        _rnodeSetPublicMapError(denied
+            ? 'Location permission was denied. Enter latitude and longitude manually.'
+            : 'Location unavailable. Enter latitude and longitude manually.');
+        _rnodeSetPublicMapStatus();
+    }, {
+        enableHighAccuracy: false,
+        timeout: 12000,
+        maximumAge: 600000,
+    });
+}
+
+function _rnodeEnablePublicMapWithWarning() {
+    var warning = "This node's approximate location data will be broadcast publicly. The location will be your current approximate location, and only change again if you update it. Location is never live tracked.";
+    if (typeof rsConfirm !== 'function') {
+        _rnodeSetPublicMapEnabled(false);
+        return;
+    }
+    rsConfirm({
+        title: 'Display on public map?',
+        message: warning,
+        confirmText: 'Enable',
+        cancelText: 'Cancel',
+    }).then(function(ok) {
+        if (!ok) {
+            _rnodeSetPublicMapEnabled(false);
+            return;
+        }
+        _rnodeSetPublicMapEnabled(true);
+        _rnodeRequestPublicMapLocation();
+    });
 }
 
 function _rnodeUpdateRadioHints() {
@@ -842,6 +1037,7 @@ function openRnodeModal(mode, editIface) {
     _rnodeSetAirtimeLimits(null, null);
     _rnodeSetInterfaceMode('full');
     _rnodeSyncInterfaceModeVisibility();
+    _rnodeResetPublicMap();
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
 
@@ -905,6 +1101,7 @@ function openRnodeModal(mode, editIface) {
         var airtimeShort = isNaN(airtimeShortRaw) ? null : airtimeShortRaw;
         var airtimeLong = isNaN(airtimeLongRaw) ? null : airtimeLongRaw;
         document.getElementById('rnode-iface-name').value = editIface.name || '';
+        _rnodeLoadPublicMap(editIface);
         var applyRadioSelection = function() {
             var regionKey = _rnodeRegionForInterface(editIface, freq);
             var presetKey = _rnodePresetForInterface(editIface, bw, sf, cr, tx);
@@ -931,6 +1128,7 @@ function openRnodeModal(mode, editIface) {
         if (submit) submit.textContent = 'Save Changes';
         rnodeUpdateNextBtn();
     } else {
+        _rnodeResetPublicMap();
         var submitBtn = document.getElementById('rnode-submit-btn');
         if (submitBtn) submitBtn.textContent = 'Add Radio';
         catalogReady.then(_rnodeApplyDefaultRadioControls).catch(function() {});
@@ -945,6 +1143,7 @@ function closeRnodeModal() {
     _selectedSerialPort = null;
     _androidUsbSelectedDevice = null;
     _rnodeEditContext = null;
+    _rnodeResetPublicMap();
     var tcpInput = document.getElementById('rnode-tcp-endpoint');
     if (tcpInput) tcpInput.value = '';
     var titleEl = document.querySelector('#rnode-modal .bottom-sheet-title');
@@ -1456,6 +1655,17 @@ function submitRnodeInterface() {
         return;
     }
 
+    var publicMapSettings = null;
+    if (_rnodeEditContext) {
+        publicMapSettings = _rnodeReadPublicMapSettings();
+        if (publicMapSettings.error) {
+            _rnodeSetPublicMapError(publicMapSettings.error);
+            showPreConditionToast(publicMapSettings.error);
+            return;
+        }
+        _rnodeSetPublicMapError('');
+    }
+
     // Prompt for USB permission before Rust opens the device.
     var proceed = Promise.resolve(true);
     if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice && hasAndroidBridge()) {
@@ -1500,7 +1710,10 @@ function submitRnodeInterface() {
         if (radioSettings.customParams) loraArgs.custom_params = true;
         if (radioSettings.airtimeShort !== null) loraArgs.airtime_limit_short = radioSettings.airtimeShort;
         if (radioSettings.airtimeLong !== null) loraArgs.airtime_limit_long = radioSettings.airtimeLong;
-        if (isEdit) loraArgs.old_name = _rnodeEditContext.oldName;
+        if (isEdit) {
+            loraArgs.old_name = _rnodeEditContext.oldName;
+            loraArgs.public_map = publicMapSettings || { enabled: false };
+        }
         var loraRequest = RS.invoke(loraCommand, { args: loraArgs });
 
         closeRnodeModal();
@@ -2627,6 +2840,27 @@ if (rnodeFrequencyInput) rnodeFrequencyInput.addEventListener('input', _rnodeRef
 ['rnode-bandwidth', 'rnode-spreading-factor', 'rnode-coding-rate', 'rnode-tx-power'].forEach(function(id) {
     var input = document.getElementById(id);
     if (input) input.addEventListener('input', _rnodeRefreshPresetFromAdvanced);
+});
+var rnodePublicMapEnabled = document.getElementById('rnode-public-map-enabled');
+if (rnodePublicMapEnabled) rnodePublicMapEnabled.addEventListener('change', function() {
+    if (this.checked) {
+        this.checked = false;
+        _rnodeEnablePublicMapWithWarning();
+    } else {
+        _rnodeSetPublicMapEnabled(false);
+    }
+});
+var rnodePublicMapUseCurrent = document.getElementById('rnode-public-map-use-current');
+if (rnodePublicMapUseCurrent) rnodePublicMapUseCurrent.addEventListener('click', function() {
+    _rnodeSetPublicMapEnabled(true);
+    _rnodeRequestPublicMapLocation();
+});
+['rnode-public-map-latitude', 'rnode-public-map-longitude'].forEach(function(id) {
+    var input = document.getElementById(id);
+    if (input) input.addEventListener('input', function() {
+        _rnodeSetPublicMapError('');
+        _rnodeSetPublicMapStatus();
+    });
 });
 
 var rnodeToggleSerial = document.getElementById('rnode-toggle-serial');

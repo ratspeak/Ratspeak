@@ -1406,6 +1406,7 @@ enum EditableInterfaceConfig {
         tx_power: i8,
         airtime_limit_short: Option<f64>,
         airtime_limit_long: Option<f64>,
+        public_map: RnodePublicMapSettings,
     },
     TcpClient {
         name: String,
@@ -1435,6 +1436,30 @@ enum EditableInterfaceConfig {
         prefer_ipv6: bool,
         device: Option<String>,
     },
+}
+
+#[derive(Clone, Default)]
+struct RnodePublicMapSettings {
+    discoverable: bool,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    discovery_name: Option<String>,
+}
+
+impl RnodePublicMapSettings {
+    fn config_args(&self) -> crate::rns_config::RnodePublicMapArgs<'_> {
+        crate::rns_config::RnodePublicMapArgs {
+            discoverable: self.discoverable,
+            latitude: self.latitude,
+            longitude: self.longitude,
+            discovery_name: self.discovery_name.as_deref(),
+        }
+    }
+}
+
+enum RnodePublicMapUpdate {
+    Preserve,
+    Set(RnodePublicMapSettings),
 }
 
 impl EditableInterfaceConfig {
@@ -1726,6 +1751,12 @@ fn rnode_config_from_entry(entry: &Value) -> Option<EditableInterfaceConfig> {
         tx_power: cfg_i8(entry, "txpower").unwrap_or_else(default_tx),
         airtime_limit_short: cfg_f64(entry, "airtime_limit_short"),
         airtime_limit_long: cfg_f64(entry, "airtime_limit_long"),
+        public_map: RnodePublicMapSettings {
+            discoverable: cfg_bool(entry, "discoverable"),
+            latitude: cfg_f64(entry, "latitude"),
+            longitude: cfg_f64(entry, "longitude"),
+            discovery_name: cfg_non_empty_str(entry, "discovery_name"),
+        },
     })
 }
 
@@ -1936,6 +1967,7 @@ async fn spawn_editable_interface(
             tx_power,
             airtime_limit_short,
             airtime_limit_long,
+            public_map: _,
         } => {
             #[cfg(all(
                 not(feature = "serial"),
@@ -2499,6 +2531,7 @@ pub async fn add_lora_interface(
                 preset_key: radio.preset_key,
                 airtime_limit_short: radio.airtime_limit_short,
                 airtime_limit_long: radio.airtime_limit_long,
+                public_map: crate::rns_config::RnodePublicMapArgs::default(),
             },
         );
         (fresh_add, existing_rnode_port, config_written)
@@ -2969,6 +3002,83 @@ pub struct UpdateLoraArgs {
     pub airtime_limit_short: Option<f64>,
     #[serde(default)]
     pub airtime_limit_long: Option<f64>,
+    #[serde(default)]
+    pub public_map: Option<UpdateLoraPublicMapArgs>,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateLoraPublicMapArgs {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub latitude: Option<f64>,
+    #[serde(default)]
+    pub longitude: Option<f64>,
+}
+
+async fn resolve_rnode_public_map_update(
+    state: &Arc<AppState>,
+    args: Option<&UpdateLoraPublicMapArgs>,
+) -> AppResult<RnodePublicMapUpdate> {
+    let Some(args) = args else {
+        return Ok(RnodePublicMapUpdate::Preserve);
+    };
+    if !args.enabled {
+        return Ok(RnodePublicMapUpdate::Set(RnodePublicMapSettings::default()));
+    }
+
+    let latitude = args
+        .latitude
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| AppError::bad_request("Add a location before enabling public map."))?;
+    if !(-90.0..=90.0).contains(&latitude) {
+        return Err(AppError::bad_request(
+            "Latitude must be between -90 and 90.",
+        ));
+    }
+    let longitude = args
+        .longitude
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| AppError::bad_request("Add a location before enabling public map."))?;
+    if !(-180.0..=180.0).contains(&longitude) {
+        return Err(AppError::bad_request(
+            "Longitude must be between -180 and 180.",
+        ));
+    }
+
+    let display_name = active_identity_display_name_for_public_map(state).await?;
+    Ok(RnodePublicMapUpdate::Set(RnodePublicMapSettings {
+        discoverable: true,
+        latitude: Some(latitude),
+        longitude: Some(longitude),
+        discovery_name: Some(display_name),
+    }))
+}
+
+async fn active_identity_display_name_for_public_map(state: &Arc<AppState>) -> AppResult<String> {
+    let active = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
+        .await
+        .map_err(|_| AppError::internal("active identity db task panicked"))?;
+    let display_name = active
+        .as_ref()
+        .and_then(|identity| identity.get("display_name"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if display_name.is_empty() {
+        return Err(AppError::bad_request(
+            "Set an identity display name before enabling public map.",
+        ));
+    }
+    if display_name
+        .chars()
+        .any(|c| c == '\r' || c == '\n' || c == '\0' || c == '#')
+    {
+        return Err(AppError::bad_request(
+            "Identity display name contains unsupported characters.",
+        ));
+    }
+    Ok(display_name.to_string())
 }
 
 #[tauri::command]
@@ -3004,6 +3114,8 @@ pub async fn update_lora_interface(
         airtime_limit_long: args.airtime_limit_long,
     })?;
     let mode = normalize_lora_interface_mode(args.mode.as_deref())?;
+    let public_map_update =
+        resolve_rnode_public_map_update(&state_arc, args.public_map.as_ref()).await?;
 
     let config_dir = active_rns_config_dir(&state_arc);
     let (old_runtime, old_config_content, config_written) =
@@ -3012,6 +3124,13 @@ pub async fn update_lora_interface(
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
             let old_runtime = rnode_config_from_entry(&old_entry)
                 .ok_or_else(|| AppError::bad_request("Invalid radio config"))?;
+            let public_map = match &public_map_update {
+                RnodePublicMapUpdate::Preserve => match &old_runtime {
+                    EditableInterfaceConfig::RNode { public_map, .. } => public_map.clone(),
+                    _ => RnodePublicMapSettings::default(),
+                },
+                RnodePublicMapUpdate::Set(public_map) => public_map.clone(),
+            };
             let old_config_content =
                 crate::rns_config::read_config(&config_dir).unwrap_or_default();
             let config_written = crate::rns_config::update_rnode_interface(
@@ -3030,6 +3149,7 @@ pub async fn update_lora_interface(
                     preset_key: radio.preset_key,
                     airtime_limit_short: radio.airtime_limit_short,
                     airtime_limit_long: radio.airtime_limit_long,
+                    public_map: public_map.config_args(),
                 },
             );
             Ok::<_, AppError>((old_runtime, old_config_content, config_written))
@@ -3058,6 +3178,13 @@ pub async fn update_lora_interface(
         tx_power: radio.tx_power,
         airtime_limit_short: radio.airtime_limit_short,
         airtime_limit_long: radio.airtime_limit_long,
+        public_map: match public_map_update {
+            RnodePublicMapUpdate::Preserve => match &old_runtime {
+                EditableInterfaceConfig::RNode { public_map, .. } => public_map.clone(),
+                _ => RnodePublicMapSettings::default(),
+            },
+            RnodePublicMapUpdate::Set(public_map) => public_map,
+        },
     };
     emit_hub_interfaces(
         &state_arc,

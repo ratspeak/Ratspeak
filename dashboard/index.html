@@ -1510,6 +1510,30 @@
                     <label>Name</label>
                     <input type="text" id="rnode-iface-name" class="modal-input" placeholder="My LoRa Radio" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
                 </div>
+                <div class="modal-field rnode-public-map-section" id="rnode-public-map-section" style="display:none;">
+                    <label class="rs-dialog-checkbox-wrap" id="rnode-public-map-toggle-wrap">
+                        <input type="checkbox" id="rnode-public-map-enabled" class="rs-dialog-checkbox">
+                        <span class="rs-dialog-checkbox-label">Display on public map</span>
+                        <span class="rs-dialog-checkbox-help" id="rnode-public-map-help">Off by default. Shares a one-time approximate location for this LoRa device.</span>
+                    </label>
+                    <div class="rnode-public-map-controls" id="rnode-public-map-controls" style="display:none;">
+                        <div class="rnode-public-map-status" id="rnode-public-map-status"></div>
+                        <div class="rnode-public-map-grid">
+                            <div class="modal-field">
+                                <label>Latitude</label>
+                                <input type="text" id="rnode-public-map-latitude" class="modal-input" inputmode="decimal" placeholder="39.7392" autocorrect="off" autocapitalize="none" spellcheck="false">
+                            </div>
+                            <div class="modal-field">
+                                <label>Longitude</label>
+                                <input type="text" id="rnode-public-map-longitude" class="modal-input" inputmode="decimal" placeholder="-104.9903" autocorrect="off" autocapitalize="none" spellcheck="false">
+                            </div>
+                        </div>
+                        <div class="rnode-public-map-actions">
+                            <button type="button" class="nr-btn nr-btn-sm nr-btn-ghost" id="rnode-public-map-use-current">Use current location</button>
+                        </div>
+                        <div class="rs-dialog-field-error" id="rnode-public-map-error" style="display:none;"></div>
+                    </div>
+                </div>
                 <div class="modal-field">
                     <label>Band / Region</label>
                     <select id="rnode-region" class="nr-select"></select>
