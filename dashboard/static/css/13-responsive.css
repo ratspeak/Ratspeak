@@ -3421,9 +3421,12 @@
 
     #rnode-modal .rnode-pairing-tip,
     #rnode-modal .rnode-handoff-hint,
-    #rnode-modal .rnode-device-summary,
     #rnode-modal .rnode-radio-warning {
         padding: var(--space-4) var(--space-5);
+    }
+
+    #rnode-modal .rnode-device-summary {
+        padding: var(--space-3) var(--space-4);
     }
 
     .bottom-sheet .rs-dialog-field-help {

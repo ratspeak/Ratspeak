@@ -616,7 +616,7 @@ function _rnodePublicMapElements() {
     return {
         section: document.getElementById('rnode-public-map-section'),
         checkbox: document.getElementById('rnode-public-map-enabled'),
-        help: document.getElementById('rnode-public-map-help'),
+        state: document.getElementById('rnode-public-map-state'),
         controls: document.getElementById('rnode-public-map-controls'),
         status: document.getElementById('rnode-public-map-status'),
         latitude: document.getElementById('rnode-public-map-latitude'),
@@ -637,31 +637,35 @@ function _rnodeSetPublicMapError(message) {
     }
 }
 
+function _rnodeSetPublicMapState(message) {
+    var state = document.getElementById('rnode-public-map-state');
+    if (state) state.textContent = message || 'Off';
+}
+
 function _rnodeSetPublicMapStatus() {
     var els = _rnodePublicMapElements();
     if (!els.status) return;
-    var lat = parseFloat(els.latitude ? els.latitude.value : '');
-    var lon = parseFloat(els.longitude ? els.longitude.value : '');
+    var latRaw = els.latitude ? String(els.latitude.value).trim() : '';
+    var lonRaw = els.longitude ? String(els.longitude.value).trim() : '';
+    var lat = latRaw ? Number(latRaw) : NaN;
+    var lon = lonRaw ? Number(lonRaw) : NaN;
     if (isNaN(lat) || isNaN(lon)) {
-        els.status.textContent = 'Add an approximate location before saving.';
+        _rnodeSetPublicMapState('Location needed');
+        els.status.textContent = 'Enter latitude and longitude manually.';
         return;
     }
     var latText = String(_rnodeApproxCoordinate(lat));
     var lonText = String(_rnodeApproxCoordinate(lon));
-    els.status.innerHTML = 'Approximate location set <code>' +
-        escapeHtml(latText + ', ' + lonText) + '</code>';
+    _rnodeSetPublicMapState('On');
+    els.status.innerHTML = 'Approx. <code>' + escapeHtml(latText + ', ' + lonText) + '</code>';
 }
 
 function _rnodeSetPublicMapEnabled(enabled) {
     var els = _rnodePublicMapElements();
     if (els.checkbox) els.checkbox.checked = !!enabled;
     if (els.controls) els.controls.style.display = enabled ? '' : 'none';
-    if (els.help) {
-        els.help.textContent = enabled
-            ? 'Uses a saved approximate location until you update it.'
-            : 'Off by default. Shares a one-time approximate location for this LoRa device.';
-    }
     if (!enabled) {
+        _rnodeSetPublicMapState('Off');
         _rnodeSetPublicMapError('');
     } else {
         _rnodeSetPublicMapStatus();
@@ -743,6 +747,7 @@ function _rnodeReadPublicMapSettings() {
 function _rnodeRequestPublicMapLocation() {
     var els = _rnodePublicMapElements();
     _rnodeSetPublicMapError('');
+    _rnodeSetPublicMapState('Requesting location...');
     if (els.status) els.status.textContent = 'Requesting current approximate location...';
     if (!navigator.geolocation) {
         _rnodeSetPublicMapError('Location unavailable. Enter latitude and longitude manually.');

@@ -184,15 +184,21 @@ fn rnode_public_map_is_edit_only_and_privacy_gated() {
 
     assert!(index.contains(r#"id="rnode-public-map-section" style="display:none;""#));
     assert!(index.contains(r#"id="rnode-public-map-enabled""#));
+    assert!(index.contains(r#"class="rnode-setting-row""#));
+    assert!(index.contains(r#"id="rnode-public-map-state">Off</span>"#));
+    assert!(index.contains(r#"class="prop-toggle rnode-public-map-toggle""#));
     assert!(index.contains("Display on public map"));
     assert!(index.contains(r#"id="rnode-public-map-latitude""#));
     assert!(index.contains(r#"id="rnode-public-map-longitude""#));
+    assert!(!index.contains("id=\"rnode-public-map-help\""));
+    assert!(!index.contains("id=\"rnode-public-map-toggle-wrap\""));
     assert!(!index.contains("rnode-public-map-height"));
 
     let warning = "This node's approximate location data will be broadcast publicly. The location will be your current approximate location, and only change again if you update it. Location is never live tracked.";
     assert!(modals_js.contains(warning));
     assert!(modals_js.contains("title: 'Display on public map?'"));
     assert!(modals_js.contains("confirmText: 'Enable'"));
+    assert!(modals_js.contains("_rnodeSetPublicMapState('Requesting location...')"));
     assert!(modals_js.contains("navigator.geolocation.getCurrentPosition"));
     assert!(modals_js.contains("_rnodeResetPublicMap();"));
     assert!(modals_js.contains("_rnodeLoadPublicMap(editIface);"));
