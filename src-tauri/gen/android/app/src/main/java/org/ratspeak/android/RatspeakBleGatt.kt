@@ -55,10 +55,20 @@ class RatspeakBleGatt(private val context: Context) {
         private const val POST_BOND_RECONNECT_DELAY_MS = 2600L
         private const val BONDED_GATT_CONNECT_ATTEMPTS = 3
         private const val BONDED_GATT_RETRY_DELAY_MS = 1200L
+        private const val BLE_WRITE_REJECT_RETRY_MS = 20L
+        private const val BLE_WRITE_REJECT_TIMEOUT_MS = 1200L
+        private const val BLE_WRITE_PACING_MS = 12L
+        private const val RNODE_DETACH_SETTLE_MS = 80L
 
         // TCP read buffer. Large because one write from Rust can be up to 4KB;
         // the per-chunk BLE write uses negotiatedMtu separately.
         private const val TCP_READ_BUFFER = 4096
+
+        // Upstream RNodeInterface.detach(): RADIO_STATE_OFF, then LEAVE.
+        private val RNODE_DETACH_FRAME = byteArrayOf(
+            0xC0.toByte(), 0x06, 0x00, 0xC0.toByte(),
+            0xC0.toByte(), 0x0A, 0xFF.toByte(), 0xC0.toByte(),
+        )
 
         // Error prefixes the JS side recognises to drive UX.
         const val ERR_PAIRING_MODE = "ERR_PAIRING_MODE"
@@ -93,6 +103,8 @@ class RatspeakBleGatt(private val context: Context) {
     private val lastGattStatus = AtomicInteger(BluetoothGatt.GATT_SUCCESS)
     private val bleWriteLock = Object()
     private val cleanupLock = Object()
+    private val rustDetachObserved = AtomicBoolean(false)
+    private var detachFrameMatch = 0
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -103,6 +115,8 @@ class RatspeakBleGatt(private val context: Context) {
     fun connect(address: String, localPort: Int): String? {
         try {
             Log.i(TAG, "=== BLE CONNECT START === address=$address tcpPort=$localPort")
+            rustDetachObserved.set(false)
+            detachFrameMatch = 0
             emitProgress("starting")
 
             val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
@@ -361,13 +375,15 @@ class RatspeakBleGatt(private val context: Context) {
                         running.set(false)
                         break
                     }
+                    observeRustDetachBytes(readBuf, off, end)
                     off = end
-                    if (off < n) Thread.sleep(5)
+                    if (running.get()) Thread.sleep(BLE_WRITE_PACING_MS)
                 }
             }
         } catch (e: Exception) {
             if (running.get()) Log.e(TAG, "TCP→BLE error: ${e.javaClass.simpleName}: ${e.message}")
         }
+        sendRnodeDetachFallbackIfNeeded("TCP bridge closing")
         Log.i(TAG, "TCP→BLE stopped")
         running.set(false)
         cleanup()
@@ -378,6 +394,55 @@ class RatspeakBleGatt(private val context: Context) {
         cleanup()
     }
     fun isRunning(): Boolean = running.get()
+
+    private fun observeRustDetachBytes(bytes: ByteArray, start: Int, end: Int) {
+        for (i in start until end) {
+            val b = bytes[i]
+            if (b == RNODE_DETACH_FRAME[detachFrameMatch]) {
+                detachFrameMatch++
+                if (detachFrameMatch == RNODE_DETACH_FRAME.size) {
+                    rustDetachObserved.set(true)
+                    detachFrameMatch = 0
+                    Log.i(TAG, "Observed Rust RNode detach frame on TCP bridge")
+                }
+            } else {
+                detachFrameMatch = if (b == RNODE_DETACH_FRAME[0]) 1 else 0
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendRnodeDetachFallbackIfNeeded(reason: String) {
+        if (rustDetachObserved.get()) return
+        val activeGatt = gatt ?: return
+        val rxC = rxChar ?: return
+        try {
+            synchronized(bleWriteLock) {
+                Log.i(TAG, "Sending fallback RNode detach before BLE close ($reason)")
+                var off = 0
+                val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
+                while (off < RNODE_DETACH_FRAME.size) {
+                    val end = minOf(off + chunkSize, RNODE_DETACH_FRAME.size)
+                    val chunk = RNODE_DETACH_FRAME.copyOfRange(off, end)
+                    if (!enqueueBleWriteLocked(
+                            activeGatt,
+                            rxC,
+                            chunk,
+                            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+                            "fallback detach"
+                        )
+                    ) {
+                        return
+                    }
+                    off = end
+                    if (off < RNODE_DETACH_FRAME.size) Thread.sleep(BLE_WRITE_PACING_MS)
+                }
+            }
+            Thread.sleep(RNODE_DETACH_SETTLE_MS)
+        } catch (e: Exception) {
+            Log.d(TAG, "detach($reason): ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
 
     @SuppressLint("MissingPermission")
     private fun cleanup() {
@@ -572,6 +637,51 @@ class RatspeakBleGatt(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
+    private fun enqueueBleWriteLocked(
+        activeGatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        writeType: Int,
+        reason: String
+    ): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BLE_WRITE_REJECT_TIMEOUT_MS)
+        var attempts = 0
+        while (true) {
+            attempts++
+            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
+                writeLatch = CountDownLatch(1)
+                writeStatus.set(false)
+            }
+
+            val accepted = writeCharacteristicCompat(activeGatt, characteristic, value, writeType)
+            if (accepted) {
+                if (attempts > 1) {
+                    Log.i(TAG, "$reason BLE write accepted after $attempts attempts type=$writeType len=${value.size}")
+                }
+                return true
+            }
+
+            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
+                writeLatch = null
+            }
+
+            val staleGatt = gatt !== activeGatt
+            if (staleGatt || System.nanoTime() >= deadline) {
+                Log.e(
+                    TAG,
+                    "$reason BLE write rejected type=$writeType len=${value.size} attempts=$attempts staleGatt=$staleGatt lastGattStatus=${lastGattStatus.get()}"
+                )
+                return false
+            }
+
+            if (attempts == 1 || attempts % 10 == 0) {
+                Log.w(TAG, "$reason BLE write rejected; retrying type=$writeType len=${value.size} attempts=$attempts")
+            }
+            Thread.sleep(BLE_WRITE_REJECT_RETRY_MS)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     private fun writeBleChunk(
         activeGatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic,
@@ -586,15 +696,7 @@ class RatspeakBleGatt(private val context: Context) {
             }
 
         synchronized(bleWriteLock) {
-            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
-                writeLatch = CountDownLatch(1)
-                writeStatus.set(false)
-            }
-
-            val accepted = writeCharacteristicCompat(activeGatt, characteristic, value, writeType)
-            if (!accepted) {
-                Log.e(TAG, "$reason BLE write rejected type=$writeType len=${value.size}")
-                if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) writeLatch = null
+            if (!enqueueBleWriteLocked(activeGatt, characteristic, value, writeType, reason)) {
                 return false
             }
 

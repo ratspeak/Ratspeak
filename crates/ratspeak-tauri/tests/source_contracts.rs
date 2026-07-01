@@ -125,6 +125,28 @@ fn ble_rnode_runtime_spawns_enable_flow_control() {
 }
 
 #[test]
+fn android_ble_rnode_bridge_retries_writes_and_fallback_detaches() {
+    let root = repo_root();
+    let gatt =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBleGatt.kt",
+        ))
+        .expect("android BLE GATT bridge");
+
+    assert!(gatt.contains("private val RNODE_DETACH_FRAME = byteArrayOf("));
+    assert!(gatt.contains("0xC0.toByte(), 0x06, 0x00, 0xC0.toByte()"));
+    assert!(gatt.contains("0xC0.toByte(), 0x0A, 0xFF.toByte(), 0xC0.toByte()"));
+    assert!(gatt.contains("private const val BLE_WRITE_REJECT_TIMEOUT_MS"));
+    assert!(gatt.contains("private fun enqueueBleWriteLocked("));
+    assert!(gatt.contains("attempts++"));
+    assert!(gatt.contains("Thread.sleep(BLE_WRITE_REJECT_RETRY_MS)"));
+    assert!(gatt.contains("Thread.sleep(BLE_WRITE_PACING_MS)"));
+    assert!(gatt.contains("observeRustDetachBytes(readBuf, off, end)"));
+    assert!(gatt.contains("sendRnodeDetachFallbackIfNeeded(\"TCP bridge closing\")"));
+    assert!(gatt.contains("if (rustDetachObserved.get()) return"));
+}
+
+#[test]
 fn peers_sort_preference_defaults_to_last_seen_and_persists() {
     let root = repo_root();
 
