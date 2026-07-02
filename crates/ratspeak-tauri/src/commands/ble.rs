@@ -527,6 +527,14 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                             state
                                 .ble_peer_count
                                 .store(peer_count, std::sync::atomic::Ordering::Relaxed);
+                            // Mirror into AppState so api_ble_peer_status can hand
+                            // the current peer rows back after a webview reload.
+                            if let Ok(mut peers) = state.ble_peers.lock() {
+                                *peers = address_to_identity
+                                    .iter()
+                                    .map(|(a, i)| (a.clone(), i.clone()))
+                                    .collect();
+                            }
                             peer_count
                         }
 
@@ -775,6 +783,15 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                     );
                 }
                 Err(_) => {
+                    // The spawn future was cancelled by the timeout, but it may
+                    // have already started advertising + spawned loops (those
+                    // are detached, so dropping the future doesn't stop them).
+                    // Tear the half-started session down so it can't keep
+                    // advertising while the app reports BLE off. Call the
+                    // low-level stop directly — disable_ble_peer_inner would
+                    // deadlock on the enable lock we hold here.
+                    #[cfg(feature = "ble")]
+                    rns_interface::ble_peer::stop_ble_peer_interface().await;
                     let _ = db::spawn_db(state_arc.db.clone(), |p| {
                         db::set_setting(&p, BLE_PEER_ENABLED_SETTING, "0");
                         db::set_setting(&p, BLE_PEER_EXPIRES_AT_SETTING, "0");
@@ -898,15 +915,11 @@ pub async fn disconnect_ble_peer(
     }
     let address_clone = address.clone();
     tokio::spawn(async move {
-        #[cfg(all(feature = "ble", target_os = "android"))]
-        {
-            let addr = address_clone.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                rns_interface::ble_peer::disconnect_android_peer(&addr);
-            })
-            .await;
-        }
-        #[cfg(not(all(feature = "ble", target_os = "android")))]
+        // Cross-platform now (was Android-only, so the UI reported success on
+        // desktop/Apple while doing nothing).
+        #[cfg(feature = "ble")]
+        rns_interface::ble_peer::disconnect_mesh_peer(&address_clone).await;
+        #[cfg(not(feature = "ble"))]
         let _ = &address_clone;
         emit_op_status_broadcast(
             &state_arc,
