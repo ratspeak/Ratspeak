@@ -2490,6 +2490,58 @@ async fn apply_inbound_ratspeak_reaction(
 }
 
 /// Handle inbound LXMF messages delivered by the transport actor.
+/// Emit a path-response announce for our LXMF delivery destination on the
+/// interface a path request arrived on. The transport delegates this to us
+/// because it doesn't hold our identity keys; answering is what lets a peer
+/// that never announced learn our identity + path on first contact.
+async fn answer_lxmf_path_request(state: &Arc<AppState>, attached_interface: Option<u64>) {
+    // Build under the lxmf lock (sync), then drop it before the async send.
+    let built = match state.lxmf.lock() {
+        Ok(mut guard) => guard.as_mut().and_then(|mgr| {
+            match mgr.create_path_response_announce_packet() {
+                Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to build LXMF path-response announce");
+                    None
+                }
+            }
+        }),
+        Err(_) => None,
+    };
+    let Some((raw, dest_hash)) = built else {
+        return;
+    };
+
+    let Some(tx) = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
+    else {
+        return;
+    };
+
+    let request = rns_transport::messages::OutboundRequest {
+        raw: Bytes::from(raw),
+        destination_hash: dest_hash,
+    };
+    let message = match attached_interface {
+        Some(interface_id) => rns_transport::messages::TransportMessage::OutboundAttached {
+            request,
+            interface_id,
+        },
+        None => rns_transport::messages::TransportMessage::Outbound(request),
+    };
+    if let Err(e) = tx.send(message).await {
+        tracing::warn!(error = %e, "failed to queue LXMF path-response announce");
+    } else {
+        tracing::debug!(
+            attached_interface = ?attached_interface,
+            "answered LXMF path request with path-response announce"
+        );
+    }
+}
+
 async fn handle_inbound_lxmf(
     state: Arc<AppState>,
     mut rx: tokio::sync::mpsc::Receiver<rns_transport::link_messages::DestinationEvent>,
@@ -2552,6 +2604,20 @@ async fn handle_inbound_lxmf(
                     msg_id,
                     "standard",
                 );
+            }
+            continue;
+        }
+
+        // A path request arrived for our LXMF destination. The transport can't
+        // answer it itself (it doesn't hold our keys), so it asks us to. Reply
+        // with a path-response announce carrying our identity + path, so a peer
+        // that has never announced can still reach us on first contact.
+        // Previously this event fell through to `_ => continue` and was
+        // dropped, so we never answered path requests and replies to us stalled
+        // until we announced.
+        if let DestinationEvent::AnnounceRequested(ref req) = event {
+            if req.path_response {
+                answer_lxmf_path_request(&state, req.attached_interface).await;
             }
             continue;
         }

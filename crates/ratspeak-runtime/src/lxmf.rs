@@ -2249,6 +2249,20 @@ impl LxmfManager {
     }
 
     pub fn create_announce_packet(&mut self) -> Result<Vec<u8>, String> {
+        self.build_delivery_announce_packet(false)
+    }
+
+    /// Path-response variant: an otherwise-identical delivery announce tagged
+    /// with the `PathResponse` context. Answers a path request by delivering
+    /// our identity + path (and display name / stamp cost) to the requester
+    /// without triggering wide rebroadcast. Without this, a peer that has never
+    /// announced can't learn our keys/path, so replies to them stall until we
+    /// announce. See the `AnnounceRequested` handler in `lib.rs`.
+    pub fn create_path_response_announce_packet(&mut self) -> Result<Vec<u8>, String> {
+        self.build_delivery_announce_packet(true)
+    }
+
+    fn build_delivery_announce_packet(&mut self, path_response: bool) -> Result<Vec<u8>, String> {
         use rns_identity::announce::AnnounceData;
 
         if self.ratchet_ring.needs_rotation() {
@@ -2303,7 +2317,11 @@ impl LxmfManager {
             hops: 0,
             transport_id: None,
             destination_hash: self.lxmf_dest_hash,
-            context: rns_wire::context::PacketContext::None,
+            context: if path_response {
+                rns_wire::context::PacketContext::PathResponse
+            } else {
+                rns_wire::context::PacketContext::None
+            },
         };
 
         let mut raw = header.pack();
@@ -4856,6 +4874,37 @@ mod tests {
         let raw = mgr.create_announce_packet().expect("announce packet");
 
         assert!(raw.len() <= rns_wire::constants::MTU);
+    }
+
+    #[test]
+    fn path_response_announce_uses_path_response_context() {
+        let mut mgr = test_manager();
+
+        let normal = mgr.create_announce_packet().expect("announce packet");
+        let (normal_hdr, _) =
+            rns_wire::header::PacketHeader::unpack(&normal).expect("unpack normal announce");
+        assert_eq!(normal_hdr.context, rns_wire::context::PacketContext::None);
+        assert_eq!(
+            normal_hdr.flags.packet_type,
+            rns_wire::flags::PacketType::Announce
+        );
+
+        let response = mgr
+            .create_path_response_announce_packet()
+            .expect("path-response announce packet");
+        let (resp_hdr, _) =
+            rns_wire::header::PacketHeader::unpack(&response).expect("unpack path response");
+        // The distinguishing bit: PathResponse context, so this answers a path
+        // request rather than being treated as a fresh broadcast announce.
+        assert_eq!(
+            resp_hdr.context,
+            rns_wire::context::PacketContext::PathResponse
+        );
+        assert_eq!(
+            resp_hdr.flags.packet_type,
+            rns_wire::flags::PacketType::Announce
+        );
+        assert_eq!(resp_hdr.destination_hash, mgr.lxmf_dest_hash);
     }
 
     #[test]
