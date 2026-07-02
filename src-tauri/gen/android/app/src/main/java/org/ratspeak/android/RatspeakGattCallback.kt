@@ -126,10 +126,14 @@ class RatspeakGattCallback(
     }
 
     override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-        // Flow control — notification delivery confirmed
+        // Flow control: release the per-device notify gate so the next
+        // fragment can be sent. Release on failure too — the stack is done
+        // with this send either way, and blocking further sends would only
+        // strand the peer.
         if (status != BluetoothGatt.GATT_SUCCESS) {
             Log.w(TAG, "GATT notification send failed: status=$status")
         }
+        device.address?.let { RatspeakBleServer.onNotifySent(it) }
     }
 
     // Native methods registered by Rust in JNI_OnLoad. The Rust extern fns

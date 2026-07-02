@@ -6,6 +6,8 @@ import android.content.Context
 import android.os.Build
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 
 /**
  * Singleton helper that creates and manages the BluetoothGattServer for
@@ -64,6 +66,18 @@ object RatspeakBleServer {
     // exchange (B6).
     private val centralMtu = ConcurrentHashMap<String, Int>()
     private const val DEFAULT_PAYLOAD = 244
+
+    // Per-device notify gate. Android accepts only one outstanding
+    // notification per device and confirms delivery via onNotificationSent;
+    // firing the next notify before then silently drops it, corrupting a
+    // multi-fragment packet. Each device holds a 1-permit semaphore: notifyTx
+    // waits for the previous send's onNotificationSent (bounded, so a lost
+    // callback can't wedge the fan-out) before issuing the next.
+    private val notifyGate = ConcurrentHashMap<String, Semaphore>()
+    private const val NOTIFY_GATE_TIMEOUT_MS = 250L
+
+    private fun notifyGate(deviceAddress: String): Semaphore =
+        notifyGate.getOrPut(deviceAddress) { Semaphore(1, true) }
 
     /**
      * Open the GATT server and register both Ratspeak and Columba services.
@@ -182,6 +196,7 @@ object RatspeakBleServer {
         connectedDevices.remove(deviceAddress)
         connectedCentrals.remove(deviceAddress)
         centralMtu.remove(deviceAddress)
+        notifyGate.remove(deviceAddress)
     }
 
     /** Stash the negotiated ATT payload size for a connected central (B6). */
@@ -255,7 +270,14 @@ object RatspeakBleServer {
             return false
         }
 
-        return try {
+        // Wait for the previous notification to be taken by the stack. Bounded
+        // so a missing onNotificationSent degrades to best-effort rather than
+        // wedging the fan-out. On a successful enqueue the gate is released by
+        // onNotifySent; on failure we release it here since no callback comes.
+        val gate = notifyGate(deviceAddress)
+        val acquired = gate.tryAcquire(NOTIFY_GATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+
+        val ok = try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 server.notifyCharacteristicChanged(device, char, false, data) == BluetoothStatusCodes.SUCCESS
             } else {
@@ -266,6 +288,24 @@ object RatspeakBleServer {
         } catch (t: Throwable) {
             Log.w(TAG, "notifyTx failed for $deviceAddress: ${t.message}")
             false
+        }
+
+        if (!ok && acquired) {
+            gate.release()
+        }
+        return ok
+    }
+
+    /**
+     * Called from RatspeakGattCallback.onNotificationSent to release the
+     * per-device notify gate so the next fragment can be sent. Capped at one
+     * permit so a duplicate/spurious callback can't over-release.
+     */
+    @JvmStatic
+    fun onNotifySent(deviceAddress: String) {
+        val gate = notifyGate[deviceAddress] ?: return
+        if (gate.availablePermits() == 0) {
+            gate.release()
         }
     }
 
