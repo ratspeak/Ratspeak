@@ -2505,18 +2505,19 @@ async fn apply_inbound_ratspeak_reaction(
 /// that never announced learn our identity + path on first contact.
 async fn answer_lxmf_path_request(state: &Arc<AppState>, attached_interface: Option<u64>) {
     // Build under the lxmf lock (sync), then drop it before the async send.
-    let built = match state.lxmf.lock() {
-        Ok(mut guard) => guard.as_mut().and_then(|mgr| {
-            match mgr.create_path_response_announce_packet() {
-                Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to build LXMF path-response announce");
-                    None
+    let built =
+        match state.lxmf.lock() {
+            Ok(mut guard) => guard.as_mut().and_then(|mgr| {
+                match mgr.create_path_response_announce_packet() {
+                    Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to build LXMF path-response announce");
+                        None
+                    }
                 }
-            }
-        }),
-        Err(_) => None,
-    };
+            }),
+            Err(_) => None,
+        };
     let Some((raw, dest_hash)) = built else {
         return;
     };
