@@ -2498,27 +2498,50 @@ async fn apply_inbound_ratspeak_reaction(
     );
 }
 
-/// Handle inbound LXMF messages delivered by the transport actor.
+/// Build the transport message that answers a path request for our own LXMF
+/// delivery destination: a `PathResponse`-context announce carrying our
+/// identity + path, routed back out the interface the request arrived on
+/// (`OutboundAttached`), or broadcast (`Outbound`) when that interface is
+/// unknown. Returns `None` if the LXMF manager isn't ready or the announce
+/// can't be built. Split from the send so the routing/context choice is
+/// unit-testable without a live transport.
+fn build_lxmf_path_response_message(
+    state: &Arc<AppState>,
+    attached_interface: Option<u64>,
+) -> Option<rns_transport::messages::TransportMessage> {
+    // Build under the lxmf lock (sync), then drop it before returning.
+    let (raw, dest_hash) = match state.lxmf.lock() {
+        Ok(mut guard) => guard.as_mut().and_then(|mgr| {
+            match mgr.create_path_response_announce_packet() {
+                Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to build LXMF path-response announce");
+                    None
+                }
+            }
+        }),
+        Err(_) => None,
+    }?;
+
+    let request = rns_transport::messages::OutboundRequest {
+        raw: Bytes::from(raw),
+        destination_hash: dest_hash,
+    };
+    Some(match attached_interface {
+        Some(interface_id) => rns_transport::messages::TransportMessage::OutboundAttached {
+            request,
+            interface_id,
+        },
+        None => rns_transport::messages::TransportMessage::Outbound(request),
+    })
+}
+
 /// Emit a path-response announce for our LXMF delivery destination on the
 /// interface a path request arrived on. The transport delegates this to us
 /// because it doesn't hold our identity keys; answering is what lets a peer
 /// that never announced learn our identity + path on first contact.
 async fn answer_lxmf_path_request(state: &Arc<AppState>, attached_interface: Option<u64>) {
-    // Build under the lxmf lock (sync), then drop it before the async send.
-    let built =
-        match state.lxmf.lock() {
-            Ok(mut guard) => guard.as_mut().and_then(|mgr| {
-                match mgr.create_path_response_announce_packet() {
-                    Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to build LXMF path-response announce");
-                        None
-                    }
-                }
-            }),
-            Err(_) => None,
-        };
-    let Some((raw, dest_hash)) = built else {
+    let Some(message) = build_lxmf_path_response_message(state, attached_interface) else {
         return;
     };
 
@@ -2531,17 +2554,6 @@ async fn answer_lxmf_path_request(state: &Arc<AppState>, attached_interface: Opt
         return;
     };
 
-    let request = rns_transport::messages::OutboundRequest {
-        raw: Bytes::from(raw),
-        destination_hash: dest_hash,
-    };
-    let message = match attached_interface {
-        Some(interface_id) => rns_transport::messages::TransportMessage::OutboundAttached {
-            request,
-            interface_id,
-        },
-        None => rns_transport::messages::TransportMessage::Outbound(request),
-    };
     if let Err(e) = tx.send(message).await {
         tracing::warn!(error = %e, "failed to queue LXMF path-response announce");
     } else {
@@ -2552,6 +2564,7 @@ async fn answer_lxmf_path_request(state: &Arc<AppState>, attached_interface: Opt
     }
 }
 
+/// Handle inbound LXMF messages delivered by the transport actor.
 async fn handle_inbound_lxmf(
     state: Arc<AppState>,
     mut rx: tokio::sync::mpsc::Receiver<rns_transport::link_messages::DestinationEvent>,
@@ -4674,6 +4687,71 @@ mod inbound_pipeline_tests {
             .unwrap()
             .query_row("SELECT COUNT(*) FROM reactions", [], |row| row.get(0))
             .unwrap()
+    }
+
+    // Regression guard for commit 4e7a71e: a path request for our own LXMF
+    // destination must be answered with a PathResponse-context announce routed
+    // back out the arrival interface. Before the fix the AnnounceRequested event
+    // fell through to `_ => continue` and never produced a reply, so a peer that
+    // never announced could not reach us on first contact.
+    #[test]
+    fn path_response_message_targets_arrival_interface() {
+        let (state, _emitter) = pipeline_state();
+        let dest = local_dest(&state);
+
+        let message = build_lxmf_path_response_message(&state, Some(7))
+            .expect("path-response message built");
+
+        // Must be OutboundAttached on the arrival interface, NOT a broadcast —
+        // upstream RNS answers a local path request only on that interface.
+        let request = match message {
+            rns_transport::messages::TransportMessage::OutboundAttached {
+                request,
+                interface_id,
+            } => {
+                assert_eq!(interface_id, 7, "answer must go back out the arrival interface");
+                request
+            }
+            other => panic!("expected OutboundAttached, got {other:?}"),
+        };
+        assert_eq!(
+            request.destination_hash, dest,
+            "answer is for our own LXMF destination"
+        );
+
+        let (header, _) = rns_wire::header::PacketHeader::unpack(&request.raw)
+            .expect("unpack path-response announce");
+        assert_eq!(header.flags.packet_type, rns_wire::flags::PacketType::Announce);
+        assert_eq!(
+            header.context,
+            rns_wire::context::PacketContext::PathResponse,
+            "must be a PathResponse announce, not a plain broadcast announce"
+        );
+        assert_eq!(header.destination_hash, dest);
+    }
+
+    // With no arrival interface the answer falls back to a broadcast Outbound
+    // (still a PathResponse announce). Guards the Some/None routing branch.
+    #[test]
+    fn path_response_message_without_interface_broadcasts() {
+        let (state, _emitter) = pipeline_state();
+        let dest = local_dest(&state);
+
+        let message = build_lxmf_path_response_message(&state, None)
+            .expect("path-response message built");
+
+        let request = match message {
+            rns_transport::messages::TransportMessage::Outbound(request) => request,
+            other => panic!("expected Outbound broadcast, got {other:?}"),
+        };
+        assert_eq!(request.destination_hash, dest);
+
+        let (header, _) = rns_wire::header::PacketHeader::unpack(&request.raw)
+            .expect("unpack path-response announce");
+        assert_eq!(
+            header.context,
+            rns_wire::context::PacketContext::PathResponse
+        );
     }
 
     #[tokio::test]
