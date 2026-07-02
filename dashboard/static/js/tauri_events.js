@@ -566,6 +566,12 @@ RS.listen('hub_interfaces_update', function(data) {
 
 RS.listen('ble_peer_status_update', function(data) {
     window._blePeerEnabled = !!(data && data.enabled);
+    // After enabling, re-poll the probe-backed status so an adapter-off /
+    // permission-denied condition surfaces as a clear state instead of the UI
+    // sitting on "Scanning…". The per-peer event stream only carries on/starting.
+    if (window._blePeerEnabled && typeof window.refreshBlePeerStatus === 'function') {
+        setTimeout(function() { window.refreshBlePeerStatus(); }, 2500);
+    }
     if (typeof updateBlePeerToggle === 'function') updateBlePeerToggle();
     // Drop per-peer cache on disable so section reverts to "No active peers".
     if (!window._blePeerEnabled) {
