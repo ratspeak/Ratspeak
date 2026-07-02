@@ -568,6 +568,15 @@ async fn teardown_rns_runtime_interfaces(handle: &rns_runtime::reticulum::Reticu
     };
 
     for iface in stats {
+        // The BLE Peer interface needs its own teardown: the generic path only
+        // aborts the read task + deregisters, leaving the peripheral advertising
+        // and the mesh loops running (a ghost session against a dead transport)
+        // after a soft restart / identity switch / shutdown.
+        #[cfg(feature = "ble")]
+        if iface.name == "Bluetooth Peer" || iface.name == "BLE Mesh" {
+            rns_runtime::reticulum::teardown_ble_peer_interface(handle, iface.id).await;
+            continue;
+        }
         rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
     }
 }
