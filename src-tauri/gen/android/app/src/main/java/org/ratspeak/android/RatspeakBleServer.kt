@@ -35,13 +35,11 @@ object RatspeakBleServer {
     private val RATSPEAK_SERVICE = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d")
     private val RATSPEAK_RX     = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5e")
     private val RATSPEAK_TX     = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5f")
-    private val RATSPEAK_ID     = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c60")
 
     // Columba compatibility service UUIDs
     private val COLUMBA_SERVICE = UUID.fromString("37145b00-442d-4a94-917f-8f42c5da28e3")
     private val COLUMBA_RX      = UUID.fromString("37145b00-442d-4a94-917f-8f42c5da28e5")
     private val COLUMBA_TX      = UUID.fromString("37145b00-442d-4a94-917f-8f42c5da28e4")
-    private val COLUMBA_ID      = UUID.fromString("37145b00-442d-4a94-917f-8f42c5da28e6")
 
     // ── Per-device tracking, populated by RatspeakGattCallback ───────────────
     //
@@ -84,6 +82,10 @@ object RatspeakBleServer {
      * Returns true on success.
      */
     @JvmStatic
+    // identityHash is retained in the JNI signature for ABI stability but is no
+    // longer surfaced over GATT (the static ID characteristic was removed as a
+    // tracking vector); identity is exchanged via signed announces.
+    @Suppress("UNUSED_PARAMETER")
     fun openGattServer(context: Context, identityHash: ByteArray): Boolean {
         val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         if (btManager == null) {
@@ -91,7 +93,7 @@ object RatspeakBleServer {
             return false
         }
 
-        val callback = RatspeakGattCallback({ gattServer }, identityHash)
+        val callback = RatspeakGattCallback({ gattServer })
         gattServer = btManager.openGattServer(context, callback)
         if (gattServer == null) {
             Log.e(TAG, "GATT server: openGattServer returned null")
@@ -100,7 +102,7 @@ object RatspeakBleServer {
 
         // Register Ratspeak service
         val ratspeakService = createService(
-            RATSPEAK_SERVICE, RATSPEAK_RX, RATSPEAK_TX, RATSPEAK_ID, identityHash
+            RATSPEAK_SERVICE, RATSPEAK_RX, RATSPEAK_TX
         )
         if (!gattServer!!.addService(ratspeakService)) {
             Log.w(TAG, "GATT server: failed to add Ratspeak service")
@@ -110,7 +112,7 @@ object RatspeakBleServer {
         Thread.sleep(250)
 
         val columbaService = createService(
-            COLUMBA_SERVICE, COLUMBA_RX, COLUMBA_TX, COLUMBA_ID, identityHash
+            COLUMBA_SERVICE, COLUMBA_RX, COLUMBA_TX
         )
         if (!gattServer!!.addService(columbaService)) {
             Log.w(TAG, "GATT server: failed to add Columba service")
@@ -135,8 +137,7 @@ object RatspeakBleServer {
     }
 
     private fun createService(
-        serviceUuid: UUID, rxUuid: UUID, txUuid: UUID, idUuid: UUID,
-        identityHash: ByteArray
+        serviceUuid: UUID, rxUuid: UUID, txUuid: UUID
     ): BluetoothGattService {
         val service = BluetoothGattService(
             serviceUuid, BluetoothGattService.SERVICE_TYPE_PRIMARY
@@ -169,14 +170,9 @@ object RatspeakBleServer {
         // Stash the TX characteristic so notifyTx can resolve UUID → live char
         txCharacteristics[txUuid] = tx
 
-        // ID: static 16-byte Reticulum identity hash (read-only)
-        val id = BluetoothGattCharacteristic(
-            idUuid,
-            BluetoothGattCharacteristic.PROPERTY_READ,
-            BluetoothGattCharacteristic.PERMISSION_READ
-        )
-        setCharacteristicValueCompat(id, identityHash)
-        service.addCharacteristic(id)
+        // No static ID characteristic: it exposed a MAC-rotation-stable
+        // identity read to any connecting scanner (a tracking vector) and was
+        // never read by this stack — identity is learned from signed announces.
 
         return service
     }

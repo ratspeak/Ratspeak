@@ -12,8 +12,7 @@ import android.bluetooth.*
  */
 @SuppressLint("MissingPermission")
 class RatspeakGattCallback(
-    private val gattServer: () -> BluetoothGattServer?,
-    private val identityHash: ByteArray
+    private val gattServer: () -> BluetoothGattServer?
 ) : BluetoothGattServerCallback() {
 
     companion object {
@@ -56,13 +55,10 @@ class RatspeakGattCallback(
         offset: Int,
         characteristic: BluetoothGattCharacteristic
     ) {
-        // Serve identity hash on ID characteristics (Ratspeak or Columba)
-        val value = if (offset < identityHash.size) {
-            identityHash.copyOfRange(offset, identityHash.size)
-        } else {
-            byteArrayOf()
-        }
-        gattServer()?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+        // No readable characteristic value: never serve the identity hash on a
+        // GATT read (a MAC-rotation-stable tracking vector). Peers learn
+        // identity from signed announces over the TX notify pipe instead.
+        gattServer()?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, byteArrayOf())
     }
 
     override fun onCharacteristicWriteRequest(
