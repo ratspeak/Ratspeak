@@ -548,14 +548,38 @@ if (connToggleLocal) connToggleLocal.addEventListener('click', toggleLocalNetwor
 var connToggleBle = document.getElementById('conn-toggle-ble');
 if (connToggleBle) connToggleBle.addEventListener('click', toggleBlePeer);
 
-RS.invoke('api_ble_peer_status').then(function(data) {
-    window._blePeerAvailable = !!data.available;
-    window._blePeerEnabled = !!data.enabled;
-    if (data.state) window._blePeerState = data.state;
-    if (typeof data.peer_count === 'number') window._blePeerCount = data.peer_count;
-    if (typeof updateBlePeerToggle === 'function') updateBlePeerToggle();
-    if (typeof _refreshBlePeerSectionState === 'function') _refreshBlePeerSectionState();
-}).catch(function() {});
+// Reusable so it can re-run after enabling (to surface a
+// permission-needed / adapter-unavailable probe result instead of a stuck
+// "Scanning…") and after a webview reload (to rehydrate the peer rows, which
+// otherwise only exist from the per-peer event stream during the session).
+window.refreshBlePeerStatus = function() {
+    return RS.invoke('api_ble_peer_status').then(function(data) {
+        window._blePeerAvailable = !!data.available;
+        window._blePeerEnabled = !!data.enabled;
+        if (data.state) window._blePeerState = data.state;
+        if (typeof data.peer_count === 'number') window._blePeerCount = data.peer_count;
+        // Rehydrate connected-peer rows from the snapshot.
+        if (data.enabled && Array.isArray(data.peers)) {
+            window._blePeers = window._blePeers || {};
+            data.peers.forEach(function(p) {
+                if (!p || !p.address) return;
+                var prior = window._blePeers[p.address] || {};
+                window._blePeers[p.address] = {
+                    address: p.address,
+                    identity_hash: p.identity_hash || prior.identity_hash || '',
+                    protocol: prior.protocol || 'Ratspeak',
+                    rssi: prior.rssi,
+                    connected: true,
+                    connected_at: prior.connected_at || Date.now(),
+                };
+            });
+            if (typeof _renderConnectionsFromCache === 'function') _renderConnectionsFromCache();
+        }
+        if (typeof updateBlePeerToggle === 'function') updateBlePeerToggle();
+        if (typeof _refreshBlePeerSectionState === 'function') _refreshBlePeerSectionState();
+    }).catch(function() {});
+};
+window.refreshBlePeerStatus();
 
 // Loads before identity.js — cross-file calls MUST use typeof guards.
 function openActiveIdentityContactCard() {

@@ -545,6 +545,11 @@ pub(crate) fn emit_op_status_broadcast(
 }
 
 pub(crate) async fn disable_ble_peer_inner(state: &Arc<AppState>) {
+    // Serialize against enable: without this a rapid toggle (or an expiry
+    // firing mid-enable) races the spawn, leaving either a zombie "enabled"
+    // interface or a torn-down new session. The enable task holds the same
+    // lock for its whole duration, so this waits for any in-flight enable.
+    let _enable_guard = state.ble_peer_enable_lock.lock().await;
     tracing::info!("disable_ble_peer_inner: start");
     let _ = db::spawn_db(state.db.clone(), |p| {
         db::set_setting(&p, "ble_peer_enabled", "0");
@@ -555,6 +560,9 @@ pub(crate) async fn disable_ble_peer_inner(state: &Arc<AppState>) {
     state
         .ble_peer_count
         .store(0, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut peers) = state.ble_peers.lock() {
+        peers.clear();
+    }
     state.emit_to_all(
         "ble_peer_status_changed",
         json!({ "state": "off", "peer_count": 0 }),

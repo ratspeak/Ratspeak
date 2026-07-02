@@ -77,6 +77,10 @@ pub struct AppState {
     pub poll_now: Arc<tokio::sync::Notify>,
     /// Live BLE-peer count, driven by `BlePeerEvent::Connected/Disconnected`.
     pub ble_peer_count: AtomicUsize,
+    /// Live connected BLE-peer set (address → identity hash, empty if not yet
+    /// resolved). Snapshot source so the peer rows survive a webview reload —
+    /// the per-event list otherwise lives only in the relay task.
+    pub ble_peers: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
     /// If true, inbound LXMF without a stamp meeting `required_stamp_cost`
     /// are dropped before delivery-proof + storage.
     pub enforce_stamps: AtomicBool,
@@ -214,6 +218,7 @@ impl AppState {
             announce_ratspeak_usage: AtomicBool::new(initial_announce_ratspeak_usage),
             poll_now: Arc::new(tokio::sync::Notify::new()),
             ble_peer_count: AtomicUsize::new(0),
+            ble_peers: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             enforce_stamps: AtomicBool::new(initial_enforce_stamps),
             required_stamp_cost: AtomicU8::new(initial_required_stamp_cost),
             propagation_node_hosting_enabled: AtomicBool::new(initial_prop_node_hosting),

@@ -419,12 +419,25 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
         "starting"
     };
 
+    // Connected-peer snapshot so the UI can rebuild rows after a webview
+    // reload instead of waiting for the next per-peer event.
+    let peers: Vec<Value> = state
+        .ble_peers
+        .lock()
+        .map(|m| {
+            m.iter()
+                .map(|(address, identity)| json!({ "address": address, "identity_hash": identity }))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut body = json!({
         "enabled": enabled,
         "available": probe.available,
         "missing": probe.missing,
         "state": peer_state,
         "peer_count": peer_count,
+        "peers": peers,
     });
     if let Some(a) = probe.auth_state {
         body["auth_state"] = json!(a);
