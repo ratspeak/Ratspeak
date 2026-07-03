@@ -2510,18 +2510,19 @@ fn build_lxmf_path_response_message(
     attached_interface: Option<u64>,
 ) -> Option<rns_transport::messages::TransportMessage> {
     // Build under the lxmf lock (sync), then drop it before returning.
-    let (raw, dest_hash) = match state.lxmf.lock() {
-        Ok(mut guard) => guard.as_mut().and_then(|mgr| {
-            match mgr.create_path_response_announce_packet() {
-                Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to build LXMF path-response announce");
-                    None
+    let (raw, dest_hash) =
+        match state.lxmf.lock() {
+            Ok(mut guard) => guard.as_mut().and_then(|mgr| {
+                match mgr.create_path_response_announce_packet() {
+                    Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to build LXMF path-response announce");
+                        None
+                    }
                 }
-            }
-        }),
-        Err(_) => None,
-    }?;
+            }),
+            Err(_) => None,
+        }?;
 
     let request = rns_transport::messages::OutboundRequest {
         raw: Bytes::from(raw),
@@ -4699,8 +4700,8 @@ mod inbound_pipeline_tests {
         let (state, _emitter) = pipeline_state();
         let dest = local_dest(&state);
 
-        let message = build_lxmf_path_response_message(&state, Some(7))
-            .expect("path-response message built");
+        let message =
+            build_lxmf_path_response_message(&state, Some(7)).expect("path-response message built");
 
         // Must be OutboundAttached on the arrival interface, NOT a broadcast —
         // upstream RNS answers a local path request only on that interface.
@@ -4709,7 +4710,10 @@ mod inbound_pipeline_tests {
                 request,
                 interface_id,
             } => {
-                assert_eq!(interface_id, 7, "answer must go back out the arrival interface");
+                assert_eq!(
+                    interface_id, 7,
+                    "answer must go back out the arrival interface"
+                );
                 request
             }
             other => panic!("expected OutboundAttached, got {other:?}"),
@@ -4721,7 +4725,10 @@ mod inbound_pipeline_tests {
 
         let (header, _) = rns_wire::header::PacketHeader::unpack(&request.raw)
             .expect("unpack path-response announce");
-        assert_eq!(header.flags.packet_type, rns_wire::flags::PacketType::Announce);
+        assert_eq!(
+            header.flags.packet_type,
+            rns_wire::flags::PacketType::Announce
+        );
         assert_eq!(
             header.context,
             rns_wire::context::PacketContext::PathResponse,
@@ -4737,8 +4744,8 @@ mod inbound_pipeline_tests {
         let (state, _emitter) = pipeline_state();
         let dest = local_dest(&state);
 
-        let message = build_lxmf_path_response_message(&state, None)
-            .expect("path-response message built");
+        let message =
+            build_lxmf_path_response_message(&state, None).expect("path-response message built");
 
         let request = match message {
             rns_transport::messages::TransportMessage::Outbound(request) => request,
