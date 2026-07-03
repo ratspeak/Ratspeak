@@ -4184,7 +4184,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-core"
-version = "1.0.23"
+version = "1.0.24"
 dependencies = [
  "serde",
  "serde_json",
@@ -4194,7 +4194,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-db"
-version = "1.0.23"
+version = "1.0.24"
 dependencies = [
  "hex",
  "lrgp",
@@ -4211,7 +4211,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-runtime"
-version = "1.0.23"
+version = "1.0.24"
 dependencies = [
  "argon2",
  "bytes",
@@ -4252,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-tauri"
-version = "1.0.23"
+version = "1.0.24"
 dependencies = [
  "base64 0.22.1",
  "bytes",
