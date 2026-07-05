@@ -926,22 +926,44 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         state.config.rns_config_dir.clone()
     };
     if state.config.uses_app_private_rns_config_dir() {
-        match rns_config::ensure_app_private_shared_instance_ports(&config_dir) {
+        let instance = state.config.rns_instance_identity();
+        match rns_config::ensure_app_private_instance_config(&config_dir, &instance) {
             Ok(rns_config::RatspeakRnsPortConfigChange::Created) => {
                 tracing::info!(
                     path = %config_dir.join("config").display(),
-                    shared_instance_port = ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT,
-                    instance_control_port = ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
+                    share_instance = instance.share_instance,
+                    instance_name = %instance.instance_name,
+                    shared_instance_port = instance.shared_instance_port,
+                    instance_control_port = instance.instance_control_port,
                     "created Ratspeak app-private Reticulum config"
                 );
+                // A Standalone headless bot has no shared-instance transport to
+                // ride, so seed a LAN AutoInterface once at creation (operators
+                // can remove it; it is not re-added on later boots). Named "LAN"
+                // rather than "Default Interface" so the identity-config seed's
+                // strip_legacy_default_auto_interface does not remove it.
+                if state.config.rns_seed_default_interface
+                    && rns_config::add_auto_interface(
+                        &config_dir,
+                        "LAN",
+                        &rns_config::AutoInterfaceOptions::default(),
+                    )
+                {
+                    tracing::info!(
+                        path = %config_dir.join("config").display(),
+                        "seeded default LAN AutoInterface for headless bot"
+                    );
+                }
             }
             Ok(rns_config::RatspeakRnsPortConfigChange::Updated) => {
                 tracing::info!(
                     path = %config_dir.join("config").display(),
                     backup = %config_dir.join("config.backup").display(),
-                    shared_instance_port = ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT,
-                    instance_control_port = ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
-                    "updated Ratspeak app-private Reticulum shared-instance ports"
+                    share_instance = instance.share_instance,
+                    instance_name = %instance.instance_name,
+                    shared_instance_port = instance.shared_instance_port,
+                    instance_control_port = instance.instance_control_port,
+                    "reconciled Ratspeak app-private Reticulum instance config"
                 );
             }
             Ok(rns_config::RatspeakRnsPortConfigChange::Unchanged) => {}
@@ -4628,6 +4650,10 @@ mod inbound_pipeline_tests {
                 rns_config_dir,
                 rns_config_dir_overridden: false,
                 max_log_entries: 200,
+                rns_share_instance: true,
+                rns_instance_name: None,
+                rns_derive_ports: false,
+                rns_seed_default_interface: false,
             },
             pool,
             emitter.clone(),
@@ -5013,6 +5039,10 @@ mod transport_startup_tests {
                 rns_config_dir,
                 rns_config_dir_overridden: false,
                 max_log_entries: 200,
+                rns_share_instance: true,
+                rns_instance_name: None,
+                rns_derive_ports: false,
+                rns_seed_default_interface: false,
             },
             memory_pool(),
             Arc::new(ratspeak_core::NoopEmitter),

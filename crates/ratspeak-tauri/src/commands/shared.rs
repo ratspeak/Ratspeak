@@ -721,6 +721,10 @@ mod tests {
             rns_config_dir: override_dir.clone(),
             rns_config_dir_overridden: true,
             max_log_entries: 200,
+            rns_share_instance: true,
+            rns_instance_name: None,
+            rns_derive_ports: false,
+            rns_seed_default_interface: false,
         };
         let state = state_for_config(config);
         let identity_hash = "cccccccccccccccccccccccccccccccc";

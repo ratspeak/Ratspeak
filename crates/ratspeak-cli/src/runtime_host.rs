@@ -11,6 +11,7 @@ use crate::event_store::EventStore;
 pub async fn init_headless_runtime(
     data_root: std::path::PathBuf,
     emit_jsonl: bool,
+    policy: ratspeak_runtime::bootstrap::HeadlessRnsPolicy,
 ) -> CliResult<Arc<AppState>> {
     let event_store = EventStore::open(data_root.clone())?;
     let (emitter, notifier): (Arc<dyn Emitter>, Arc<dyn NativeNotifier>) = {
@@ -18,7 +19,7 @@ pub async fn init_headless_runtime(
         (sink.clone(), sink)
     };
 
-    ratspeak_runtime::bootstrap::init_headless(data_root, emitter, notifier)
+    ratspeak_runtime::bootstrap::init_headless(data_root, emitter, notifier, policy)
         .await
         .map_err(|e| CliError::failed(format!("failed to initialize Ratspeak runtime: {e}")))
 }

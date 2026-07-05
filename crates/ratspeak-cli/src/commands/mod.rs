@@ -49,6 +49,7 @@ pub async fn run_ctl(args: Vec<String>) -> CliResult<()> {
         "audit" => run_audit(&profile, &args[1..], global.output),
         "propagation" => run_propagation(&profile, &args[1..], global.output),
         "network" => run_network(&profile, &args[1..], global.output),
+        "interface" | "interfaces" => run_interface(&profile, &args[1..], global.output),
         "events" => run_events(&profile, &args[1..], global.output),
         other => Err(CliError::usage(format!(
             "unknown ratspeakctl command: {other}"
@@ -66,19 +67,53 @@ pub async fn run_daemon(args: Vec<String>) -> CliResult<()> {
     let mut emit_jsonl = false;
     let mut quiet = false;
     let mut force = false;
-    for arg in &args {
-        match arg.as_str() {
+    let mut share_instance = false;
+    let mut instance_name: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
             "run" => {}
             "--events-jsonl" => emit_jsonl = true,
             "--quiet" => quiet = true,
             "--force" => force = true,
+            "--no-share-instance" => share_instance = false,
+            "--share-instance" => share_instance = true,
+            "--instance-name" => {
+                i += 1;
+                let Some(name) = args.get(i) else {
+                    return Err(CliError::usage(
+                        "--instance-name requires a value".to_string(),
+                    ));
+                };
+                instance_name = Some(name.clone());
+                share_instance = true;
+            }
             other => {
                 return Err(CliError::usage(format!(
                     "unknown ratspeakd option: {other}"
                 )));
             }
         }
+        i += 1;
     }
+    if let Some(name) = &instance_name {
+        if name.trim().is_empty() || !name.bytes().all(is_instance_name_byte) {
+            return Err(CliError::usage(
+                "invalid --instance-name: use letters, digits, '.', '_', or '-'".to_string(),
+            ));
+        }
+        if name.eq_ignore_ascii_case("default") && !force {
+            return Err(CliError::usage(
+                "refusing --instance-name default: it collides with Python rnsd's default \
+                 instance. Choose another name or pass --force."
+                    .to_string(),
+            ));
+        }
+    }
+    let rns_policy = ratspeak_runtime::bootstrap::HeadlessRnsPolicy {
+        share_instance,
+        instance_name,
+    };
 
     init_tracing();
     let data_root = profile::resolve_data_root(global.data_root);
@@ -102,7 +137,9 @@ pub async fn run_daemon(args: Vec<String>) -> CliResult<()> {
     let profile_lock =
         ratspeak_runtime::profile_lock::try_acquire_profile_lock(&lock_data_dir, "ratspeakd")
             .map_err(|e| CliError::failed(format!("failed to acquire profile lock: {e}")))?;
-    let state = crate::runtime_host::init_headless_runtime(data_root.clone(), emit_jsonl).await?;
+    let state =
+        crate::runtime_host::init_headless_runtime(data_root.clone(), emit_jsonl, rns_policy)
+            .await?;
     let api_server = crate::daemon_api::start_server(state.clone()).await?;
     if !quiet {
         eprintln!(
@@ -149,6 +186,95 @@ async fn wait_for_shutdown_signal() -> &'static str {
     {
         let _ = tokio::signal::ctrl_c().await;
         "ctrl-c"
+    }
+}
+
+fn is_instance_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-'
+}
+
+/// The Reticulum config dir the daemon actually reads for this profile: the
+/// active identity's dir when one exists (seeded from app-private), else the
+/// app-private dir.
+fn runtime_rns_config_dir(profile: &Profile) -> PathBuf {
+    if profile.config.uses_app_private_rns_config_dir() {
+        if let Some(hash) = ratspeak_db::get_active_identity(&profile.db)
+            .and_then(|id| id.get("hash").and_then(|h| h.as_str()).map(str::to_string))
+            .filter(|h| !h.is_empty())
+        {
+            return profile.config.identity_rns_config_dir(&hash);
+        }
+    }
+    profile.config.rns_config_dir.clone()
+}
+
+fn run_interface(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    use ratspeak_runtime::rns_config;
+    let config_dir = runtime_rns_config_dir(profile);
+    let interface_result = |ok: bool, action: &str, name: &str| -> CliResult<()> {
+        if !ok {
+            return Err(CliError::failed(format!(
+                "interface {action} failed for '{name}' (invalid name/args or write error)"
+            )));
+        }
+        print_json(
+            &json!({
+                "ok": true,
+                "action": action,
+                "name": name,
+                "config_dir": config_dir,
+                "note": "restart ratspeakd for interface changes to take effect",
+            }),
+            output,
+        )
+    };
+
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" => print_json(
+            &json!({
+                "ok": true,
+                "config_dir": config_dir,
+                "interfaces": rns_config::get_all_interfaces(&config_dir),
+            }),
+            output,
+        ),
+        "add-auto" => {
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            let name = take_option(&mut rest, "--name")?.unwrap_or_else(|| "LAN".to_string());
+            let group_id = take_option(&mut rest, "--group-id")?;
+            let discovery_scope = take_option(&mut rest, "--discovery-scope")?;
+            ensure_no_extra_args(&rest, "interface add-auto")?;
+            let opts = rns_config::AutoInterfaceOptions {
+                group_id,
+                discovery_scope,
+                ..Default::default()
+            };
+            let ok = rns_config::add_auto_interface(&config_dir, &name, &opts);
+            interface_result(ok, "add-auto", &name)
+        }
+        "add-tcp" => {
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            let name = take_option(&mut rest, "--name")?.unwrap_or_else(|| "TCP".to_string());
+            let host = take_option(&mut rest, "--host")?
+                .ok_or_else(|| CliError::usage("interface add-tcp requires --host".to_string()))?;
+            let port = take_u64_option_opt(&mut rest, "--port")?
+                .ok_or_else(|| CliError::usage("interface add-tcp requires --port".to_string()))?;
+            let port = u16::try_from(port)
+                .map_err(|_| CliError::usage("--port must be 1-65535".to_string()))?;
+            ensure_no_extra_args(&rest, "interface add-tcp")?;
+            let ok = rns_config::add_tcp_client(&config_dir, &name, &host, port);
+            interface_result(ok, "add-tcp", &name)
+        }
+        "remove" => {
+            let name = args
+                .get(1)
+                .ok_or_else(|| CliError::usage("interface remove requires a name".to_string()))?;
+            let ok = rns_config::remove_interface(&config_dir, name);
+            interface_result(ok, "remove", name)
+        }
+        other => Err(CliError::usage(format!(
+            "unknown interface command: {other} (expected list|add-auto|add-tcp|remove)"
+        ))),
     }
 }
 
@@ -2244,13 +2370,19 @@ fn print_daemon_help() {
     println!(
         "\
 ratspeakd [--data-dir PATH] [run] [--events-jsonl] [--quiet] [--force]
+          [--share-instance | --no-share-instance] [--instance-name NAME]
 
 Runs the Ratspeak runtime without the Tauri UI. With no --data-dir it uses a
-headless CLI profile distinct from the desktop app.
-  --events-jsonl   emit runtime events and notifications as JSONL on stdout
-  --quiet          suppress daemon lifecycle messages on stderr
-  --force          allow running against the desktop app profile (unsafe;
-                   concurrent access with the GUI app can corrupt state)
+headless CLI profile distinct from the desktop app. By default the daemon runs a
+Standalone Reticulum instance, isolated from the desktop app and other bots.
+  --events-jsonl        emit runtime events and notifications as JSONL on stdout
+  --quiet               suppress daemon lifecycle messages on stderr
+  --force               allow running against the desktop app profile, or an
+                        --instance-name of 'default' (both unsafe)
+  --no-share-instance   force a Standalone instance (default)
+  --share-instance      join a machine-local shared instance with a per-profile
+                        derived name and ports
+  --instance-name NAME  join the named shared instance (implies --share-instance)
 
 ratspeakd publishes a profile-local daemon API endpoint at
 .ratspeak/ratspeakd-api.json. ratspeakctl discovers that endpoint and routes

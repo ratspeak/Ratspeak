@@ -8,13 +8,24 @@ use ratspeak_core::{Emitter, NativeNotifier};
 use crate::config::DashboardConfig;
 use crate::state::AppState;
 
+/// Reticulum instance policy for a headless daemon. Defaults to a Standalone
+/// instance (no machine-local rendezvous), which is the isolated default for a
+/// CLI bot.
+#[derive(Debug, Clone, Default)]
+pub struct HeadlessRnsPolicy {
+    pub share_instance: bool,
+    pub instance_name: Option<String>,
+}
+
 pub async fn init_headless(
     data_root: PathBuf,
     emitter: Arc<dyn Emitter>,
     notifier: Arc<dyn NativeNotifier>,
+    policy: HeadlessRnsPolicy,
 ) -> Result<Arc<AppState>, Box<dyn std::error::Error + Send + Sync>> {
     std::fs::create_dir_all(&data_root)?;
-    let config = DashboardConfig::from_env_and_defaults(data_root.clone());
+    let config = DashboardConfig::from_env_and_defaults(data_root.clone())
+        .with_headless_rns_policy(policy.share_instance, policy.instance_name);
 
     let pool_root = data_root.clone();
     let db = tokio::task::spawn_blocking(move || crate::db::init_pool(&pool_root))
