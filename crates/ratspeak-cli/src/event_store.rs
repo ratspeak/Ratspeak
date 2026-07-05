@@ -11,6 +11,11 @@ use crate::error::{CliError, CliResult};
 
 const EVENT_LOG_FILE: &str = "ratspeakd-events.jsonl";
 const EVENT_CURSOR_FILE: &str = "ratspeakd-events.cursor";
+/// Compact the durable event log once it grows past this size, keeping only the
+/// most recent lines. Bounds both disk use and the per-poll read scan for an
+/// always-on daemon (which emits tens of thousands of stats events per day).
+const EVENT_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const EVENT_LOG_KEEP_LINES: usize = 5_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventRecord {
@@ -125,7 +130,101 @@ impl EventStore {
         file.write_all(b"\n")?;
         file.flush()?;
         write_cursor(&self.data_dir, *cursor)?;
+        // Under the write lock, so the high-frequency emitter never races its own
+        // compaction. (Rare cross-instance appends are not excluded, but those
+        // are low-frequency daemon events.)
+        compact_event_log_if_needed(&log_path)?;
         Ok(record)
+    }
+}
+
+/// Truncate the event log to its most recent lines once it exceeds the size cap.
+/// Consumers far behind the retained window lose old events by design; the
+/// monotonic id/cursor scheme keeps recent reads correct.
+fn compact_event_log_if_needed(log_path: &Path) -> CliResult<()> {
+    compact_event_log_to(log_path, EVENT_LOG_MAX_BYTES, EVENT_LOG_KEEP_LINES)
+}
+
+fn compact_event_log_to(log_path: &Path, max_bytes: u64, keep_lines: usize) -> CliResult<()> {
+    let len = match std::fs::metadata(log_path) {
+        Ok(meta) => meta.len(),
+        Err(_) => return Ok(()),
+    };
+    if len <= max_bytes {
+        return Ok(());
+    }
+    let lines: Vec<String> = std::io::BufReader::new(File::open(log_path)?)
+        .lines()
+        .collect::<std::io::Result<_>>()?;
+    let start = lines.len().saturating_sub(keep_lines);
+    let tmp = log_path.with_extension("compact.tmp");
+    {
+        let mut out = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        for line in &lines[start..] {
+            out.write_all(line.as_bytes())?;
+            out.write_all(b"\n")?;
+        }
+        out.flush()?;
+    }
+    restrict_file_permissions(&tmp)?;
+    std::fs::rename(&tmp, log_path)?;
+    tracing::info!(
+        path = %log_path.display(),
+        kept = keep_lines,
+        "compacted ratspeakd event log"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compaction_keeps_recent_lines_past_cap() {
+        let dir = std::env::temp_dir().join(format!(
+            "ratspeak-eventlog-test-{}-{}",
+            std::process::id(),
+            unix_now_secs()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(EVENT_LOG_FILE);
+        let mut body = String::new();
+        for i in 0..1000 {
+            body.push_str(&format!("{{\"id\":{i}}}\n"));
+        }
+        std::fs::write(&log, &body).unwrap();
+
+        // Cap tiny so the existing file exceeds it; keep only the last 10 lines.
+        compact_event_log_to(&log, 64, 10).unwrap();
+
+        let kept: Vec<String> = std::io::BufReader::new(File::open(&log).unwrap())
+            .lines()
+            .collect::<std::io::Result<_>>()
+            .unwrap();
+        assert_eq!(kept.len(), 10);
+        assert_eq!(kept.last().unwrap(), "{\"id\":999}");
+        assert_eq!(kept.first().unwrap(), "{\"id\":990}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn compaction_noop_under_cap() {
+        let dir = std::env::temp_dir().join(format!(
+            "ratspeak-eventlog-noop-{}-{}",
+            std::process::id(),
+            unix_now_secs()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(EVENT_LOG_FILE);
+        std::fs::write(&log, "{\"id\":1}\n").unwrap();
+        compact_event_log_to(&log, EVENT_LOG_MAX_BYTES, EVENT_LOG_KEEP_LINES).unwrap();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "{\"id\":1}\n");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

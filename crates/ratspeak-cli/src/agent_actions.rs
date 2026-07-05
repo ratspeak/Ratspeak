@@ -1669,6 +1669,16 @@ fn recheck_record_policy(
     record: &AgentActionRecord,
     now: f64,
 ) -> CliResult<()> {
+    // Unconditional revoke kill-switch: a revoked or otherwise inactive grant can
+    // never execute, independent of the deny_execute_on_* policy toggles.
+    if let Some(manifest) = crate::agent_policy::read_agent_manifest_from_data_dir(data_dir)? {
+        let status = manifest.effective_grant().status;
+        if status != "active" {
+            return Err(CliError::failed(format!(
+                "agent grant is not active (status={status}); refusing to execute"
+            )));
+        }
+    }
     let policy = ensure_write_policy(data_dir)?;
     if policy.deny_execute_on_grant_revision_change
         && record.policy.grant_revision != 0

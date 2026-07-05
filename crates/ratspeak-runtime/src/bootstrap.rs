@@ -41,8 +41,19 @@ pub async fn init_headless(
     state.set_startup_stage("checking");
 
     let init_state = state.clone();
-    tokio::spawn(async move {
+    let init_handle = tokio::spawn(async move {
         crate::init_rns_lxmf(init_state, data_root).await;
+    });
+
+    // Supervise the detached init: a panic here would otherwise leave the daemon
+    // up with the API answering while startup never completes. Surface it and
+    // mark the startup stage failed so clients can detect the dead runtime.
+    let watch_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(err) = init_handle.await {
+            tracing::error!(error = %err, "Ratspeak runtime init task terminated abnormally");
+            watch_state.set_startup_stage("failed");
+        }
     });
 
     Ok(state)
