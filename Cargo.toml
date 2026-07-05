@@ -5,6 +5,7 @@ members = [
     "crates/ratspeak-core",
     "crates/ratspeak-db",
     "crates/ratspeak-cli",
+    "crates/ratspeak-agent",
     "crates/ratspeak-runtime",
     "crates/ratspeak-tauri",
 ]

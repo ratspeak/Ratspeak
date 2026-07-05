@@ -1,0 +1,20 @@
+[package]
+name = "ratspeak-agent"
+description = "Reference Ratspeak agent runner — a Venice adapter over the ratspeakd runner contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ratspeak-agent"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Blocking OpenAI-compatible calls to the configured provider (e.g. Venice).
+reqwest = { version = "0.11", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+] }
