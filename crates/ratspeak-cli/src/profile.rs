@@ -82,13 +82,14 @@ pub fn profile_summary(profile: &Profile) -> Value {
     let db_stats = ratspeak_db::get_database_stats(&profile.db);
     let lock_path = ratspeak_runtime::profile_lock::lock_path(&profile.config.data_dir);
     let lock_info = ratspeak_runtime::profile_lock::read_profile_lock(&profile.config.data_dir);
+    let locked = ratspeak_runtime::profile_lock::is_profile_locked(&profile.config.data_dir);
     json!({
         "data_root": profile.data_root,
         "data_dir": profile.config.data_dir,
         "db_path": profile.config.db_path(),
         "profile_lock": {
             "path": lock_path,
-            "locked": lock_info.is_some(),
+            "locked": locked,
             "owner": lock_info,
         },
         "rns_config_dir": profile.config.rns_config_dir,

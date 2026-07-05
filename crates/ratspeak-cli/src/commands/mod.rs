@@ -115,21 +115,83 @@ pub async fn run_daemon(args: Vec<String>) -> CliResult<()> {
         );
     }
 
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(|e| CliError::failed(format!("failed to wait for shutdown signal: {e}")))?;
+    let signal = wait_for_shutdown_signal().await;
     if !quiet {
-        eprintln!("ratspeakd shutting down");
+        eprintln!("ratspeakd shutting down ({signal})");
     }
+    // Persist crypto/ratchet state and release the lock on both SIGINT and
+    // SIGTERM so `systemctl stop`/`kill` don't skip shutdown or leak the lock.
     ratspeak_runtime::shutdown_rns_lxmf(&state).await;
+    drop(profile_lock);
     Ok(())
+}
+
+/// Resolve when the daemon should shut down. Handles SIGTERM (service stop) in
+/// addition to SIGINT so an always-on daemon persists state on every clean exit.
+async fn wait_for_shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => "SIGINT",
+                    _ = term.recv() => "SIGTERM",
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+                "SIGINT"
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "ctrl-c"
+    }
 }
 
 fn run_profile(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
     match args.first().map(String::as_str).unwrap_or("show") {
         "show" => print_json(&profile::profile_summary(profile), output),
+        "unlock" => run_profile_unlock(profile, &args[1..], output),
         other => Err(CliError::usage(format!("unknown profile command: {other}"))),
     }
+}
+
+fn run_profile_unlock(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    let mut rest = args.to_vec();
+    let force = take_flag(&mut rest, "--force");
+    ensure_no_extra_args(&rest, "profile unlock")?;
+    let data_dir = &profile.config.data_dir;
+    let lock_path = ratspeak_runtime::profile_lock::lock_path(data_dir);
+    if !force {
+        return Err(CliError::usage(
+            "profile unlock removes the profile lock and requires --force; \
+             stop any running ratspeakd for this profile first"
+                .to_string(),
+        ));
+    }
+    // On Unix a held lock means a live process still owns the advisory flock;
+    // yanking the file would let a second daemon co-own the profile. Refuse.
+    if ratspeak_runtime::profile_lock::is_profile_locked(data_dir) {
+        return Err(CliError::failed(format!(
+            "refusing to unlock: a running process still holds the profile lock at {}. \
+             Stop that ratspeakd first.",
+            lock_path.display()
+        )));
+    }
+    let removed = ratspeak_runtime::profile_lock::remove_lock_file(data_dir)
+        .map_err(|e| CliError::failed(format!("failed to remove lock file: {e}")))?;
+    print_json(
+        &json!({
+            "ok": true,
+            "unlocked": removed,
+            "lock_path": lock_path,
+        }),
+        output,
+    )
 }
 
 fn run_daemon_tools(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {

@@ -66,6 +66,11 @@ zeroize = "1"
 
 # Optional interface backends
 serialport = { workspace = true, optional = true }
+
+# Advisory flock for the profile lock (kernel-released on process exit).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # iOS-only: CoreBluetooth authorization probe in platform_ios.rs
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
