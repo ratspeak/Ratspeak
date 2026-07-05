@@ -631,22 +631,9 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     db::spawn_db(state.db.clone(), |pool| {
+        db::note_identity_tables_changed();
         if let Ok(conn) = pool.get() {
-            let tables = [
-                "messages",
-                "contacts",
-                "identities",
-                "settings",
-                "connection_history",
-                "reactions",
-                "games",
-                "app_sessions",
-                "app_actions",
-                "hidden_conversations",
-                "blocked_contacts",
-                "identity_activity",
-            ];
-            for table in &tables {
+            for table in db::RESET_TABLES {
                 let _ = conn.execute(&format!("DELETE FROM {}", table), []);
             }
             let _ = conn.execute(

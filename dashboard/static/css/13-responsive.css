@@ -3415,7 +3415,6 @@
     .bottom-sheet .modal-op-status,
     #rnode-modal .rnode-pairing-tip,
     #rnode-modal .rnode-handoff-hint,
-    #rnode-modal .rnode-device-summary,
     #rnode-modal .rnode-radio-warning,
     #rnode-modal .ble-scan-placeholder {
         font-size: var(--mobile-list-detail-size);
@@ -3488,7 +3487,6 @@
 
     #rnode-modal .rnode-pairing-tip,
     #rnode-modal .rnode-handoff-hint,
-    #rnode-modal .rnode-device-summary,
     #rnode-modal .rnode-radio-warning {
         padding: var(--space-4) var(--space-5);
     }

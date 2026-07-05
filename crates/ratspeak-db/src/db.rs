@@ -8,13 +8,15 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 32;
+const SCHEMA_VERSION: i64 = 33;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = "lxmf.delivery";
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
 pub const PEER_SERVICE_RATSPEAK_CLIENT: &str = "ratspeak.client";
 pub const PEER_SERVICE_RATSPEAK_GAMES: &str = "ratspeak.games";
 pub const PEER_SERVICE_RATSPEAK_CHAT: &str = "ratspeak.chat";
+pub const LXMF_COMPRESSION_SUPPORT_SUPPORTED: &str = "supported";
+pub const LXMF_COMPRESSION_SUPPORT_UNSUPPORTED: &str = "unsupported";
 
 const IDENTITY_SELECT_COLUMNS: &str = "hash,
     lxmf_hash,
@@ -340,7 +342,8 @@ CREATE TABLE IF NOT EXISTS identity_activity (
     display_name   TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT '',
     last_interface TEXT NOT NULL DEFAULT '',
-    services       TEXT NOT NULL DEFAULT ''
+    services       TEXT NOT NULL DEFAULT '',
+    lxmf_compression_support TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
 
@@ -350,10 +353,32 @@ CREATE INDEX IF NOT EXISTS idx_blocked_identity ON blocked_contacts(identity_id)
 CREATE INDEX IF NOT EXISTS idx_identities_active ON identities(is_active) WHERE is_active = 1;
 "#;
 
+/// Run one schema-version step inside an explicit transaction so a crash
+/// mid-step (especially multi-statement table rebuilds) rolls back atomically
+/// instead of leaving a half-migrated schema with the version un-bumped.
+fn migration_step(
+    conn: &Connection,
+    to_version: i64,
+    apply: impl FnOnce(&Connection) -> Result<(), rusqlite::Error>,
+) -> Result<(), rusqlite::Error> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match apply(conn) {
+        Ok(()) => conn.execute_batch("COMMIT"),
+        Err(e) => {
+            if let Err(rollback_err) = conn.execute_batch("ROLLBACK") {
+                tracing::error!(to_version, error = %rollback_err, "migration rollback failed");
+            }
+            tracing::error!(to_version, error = %e, "migration step failed; rolled back");
+            Err(e)
+        }
+    }
+}
+
 fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::Error> {
     if from_version < 2 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS connection_history (
+        migration_step(conn, 2, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS connection_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 host TEXT NOT NULL,
                 port INTEGER NOT NULL,
@@ -363,13 +388,16 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 UNIQUE(host, port)
             );
             UPDATE schema_version SET version = 2;",
-        )?;
-        tracing::info!("Migrated to schema version 2 (connection_history)");
+            )?;
+            tracing::info!("Migrated to schema version 2 (connection_history)");
+            Ok(())
+        })?;
     }
 
     if from_version < 3 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS identities (
+        migration_step(conn, 3, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS identities (
                 hash TEXT PRIMARY KEY,
                 lxmf_hash TEXT,
                 nickname TEXT DEFAULT '',
@@ -380,19 +408,19 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 propagation_node TEXT DEFAULT '',
                 propagation_enabled INTEGER DEFAULT 0
             );",
-        )?;
+            )?;
 
-        let has_identity_id = {
-            let mut stmt = conn.prepare("PRAGMA table_info(contacts)")?;
-            let cols: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            cols.iter().any(|c| c == "identity_id")
-        };
+            let has_identity_id = {
+                let mut stmt = conn.prepare("PRAGMA table_info(contacts)")?;
+                let cols: Vec<String> = stmt
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                cols.iter().any(|c| c == "identity_id")
+            };
 
-        if !has_identity_id {
-            conn.execute_batch(
+            if !has_identity_id {
+                conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS contacts_new (
                     dest_hash TEXT NOT NULL,
                     identity_id TEXT DEFAULT '',
@@ -411,47 +439,53 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 DROP TABLE contacts;
                 ALTER TABLE contacts_new RENAME TO contacts;"
             )?;
-        }
+            }
 
-        let has_msg_identity = {
-            let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
-            let cols: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            cols.iter().any(|c| c == "identity_id")
-        };
-        if !has_msg_identity {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN identity_id TEXT DEFAULT ''")?;
-        }
+            let has_msg_identity = {
+                let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+                let cols: Vec<String> = stmt
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                cols.iter().any(|c| c == "identity_id")
+            };
+            if !has_msg_identity {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN identity_id TEXT DEFAULT ''")?;
+            }
 
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_id);
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_messages_identity ON messages(identity_id);
              UPDATE schema_version SET version = 3;",
-        )?;
-        tracing::info!("Migrated to schema version 3 (identities)");
+            )?;
+            tracing::info!("Migrated to schema version 3 (identities)");
+            Ok(())
+        })?;
     }
 
     if from_version < 4 {
-        let msg_cols = get_column_names(conn, "messages")?;
-        for col in &[
-            "attachment_name",
-            "attachment_stored_name",
-            "image_name",
-            "image_stored_name",
-        ] {
-            if !msg_cols.iter().any(|c| c == col) {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE messages ADD COLUMN {col} TEXT DEFAULT ''"
-                ))?;
+        migration_step(conn, 4, |conn| {
+            let msg_cols = get_column_names(conn, "messages")?;
+            for col in &[
+                "attachment_name",
+                "attachment_stored_name",
+                "image_name",
+                "image_stored_name",
+            ] {
+                if !msg_cols.iter().any(|c| c == col) {
+                    conn.execute_batch(&format!(
+                        "ALTER TABLE messages ADD COLUMN {col} TEXT DEFAULT ''"
+                    ))?;
+                }
             }
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 4;")?;
-        tracing::info!("Migrated to schema version 4 (attachment columns)");
+            conn.execute_batch("UPDATE schema_version SET version = 4;")?;
+            tracing::info!("Migrated to schema version 4 (attachment columns)");
+            Ok(())
+        })?;
     }
 
     if from_version < 5 {
-        conn.execute_batch(
+        migration_step(conn, 5, |conn| {
+            conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 content, title, id UNINDEXED, identity_id UNINDEXED,
                 content='messages', content_rowid='rowid'
@@ -473,12 +507,15 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
             UPDATE schema_version SET version = 5;"
         )?;
-        tracing::info!("Migrated to schema version 5 (FTS5)");
+            tracing::info!("Migrated to schema version 5 (FTS5)");
+            Ok(())
+        })?;
     }
 
     if from_version < 6 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS reactions (
+        migration_step(conn, 6, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS reactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_id TEXT NOT NULL,
                 sender TEXT NOT NULL,
@@ -488,21 +525,26 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 UNIQUE(message_id, sender, emoji, identity_id)
             );
             CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(message_id);",
-        )?;
-        let msg_cols = get_column_names(conn, "messages")?;
-        if !msg_cols.iter().any(|c| c == "reply_to_id") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN reply_to_id TEXT DEFAULT ''")?;
-        }
-        if !msg_cols.iter().any(|c| c == "reply_to_preview") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN reply_to_preview TEXT DEFAULT ''")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 6;")?;
-        tracing::info!("Migrated to schema version 6 (reactions, reply-to)");
+            )?;
+            let msg_cols = get_column_names(conn, "messages")?;
+            if !msg_cols.iter().any(|c| c == "reply_to_id") {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN reply_to_id TEXT DEFAULT ''")?;
+            }
+            if !msg_cols.iter().any(|c| c == "reply_to_preview") {
+                conn.execute_batch(
+                    "ALTER TABLE messages ADD COLUMN reply_to_preview TEXT DEFAULT ''",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 6;")?;
+            tracing::info!("Migrated to schema version 6 (reactions, reply-to)");
+            Ok(())
+        })?;
     }
 
     if from_version < 7 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS games (
+        migration_step(conn, 7, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS games (
                 game_id TEXT PRIMARY KEY,
                 game TEXT NOT NULL,
                 contact_hash TEXT NOT NULL,
@@ -519,73 +561,82 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             );
             CREATE INDEX IF NOT EXISTS idx_games_contact ON games(contact_hash, identity_id);
             CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);",
-        )?;
-        let msg_cols = get_column_names(conn, "messages")?;
-        if !msg_cols.iter().any(|c| c == "game_id") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_id TEXT DEFAULT ''")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 7;")?;
-        tracing::info!("Migrated to schema version 7 (games)");
+            )?;
+            let msg_cols = get_column_names(conn, "messages")?;
+            if !msg_cols.iter().any(|c| c == "game_id") {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN game_id TEXT DEFAULT ''")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 7;")?;
+            tracing::info!("Migrated to schema version 7 (games)");
+            Ok(())
+        })?;
     }
 
     if from_version < 8 {
-        let game_cols = get_column_names(conn, "games")?;
-        if !game_cols.iter().any(|c| c == "first_turn") {
-            conn.execute_batch(
-                "ALTER TABLE games ADD COLUMN first_turn TEXT DEFAULT 'challenger'",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 8;")?;
-        tracing::info!("Migrated to schema version 8 (first_turn)");
+        migration_step(conn, 8, |conn| {
+            let game_cols = get_column_names(conn, "games")?;
+            if !game_cols.iter().any(|c| c == "first_turn") {
+                conn.execute_batch(
+                    "ALTER TABLE games ADD COLUMN first_turn TEXT DEFAULT 'challenger'",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 8;")?;
+            tracing::info!("Migrated to schema version 8 (first_turn)");
+            Ok(())
+        })?;
     }
 
     if from_version < 9 {
-        let mut stmt = conn.prepare(
+        migration_step(conn, 9, |conn| {
+            let mut stmt = conn.prepare(
             "SELECT game_id, identity_id, challenger, contact_hash, turn, first_turn, winner FROM games"
         )?;
-        let rows: Vec<(String, String, String, String, String, String, String)> = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2).unwrap_or_default(),
-                    row.get::<_, String>(3).unwrap_or_default(),
-                    row.get::<_, String>(4).unwrap_or_default(),
-                    row.get::<_, String>(5).unwrap_or_default(),
-                    row.get::<_, String>(6).unwrap_or_default(),
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            let rows: Vec<(String, String, String, String, String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2).unwrap_or_default(),
+                        row.get::<_, String>(3).unwrap_or_default(),
+                        row.get::<_, String>(4).unwrap_or_default(),
+                        row.get::<_, String>(5).unwrap_or_default(),
+                        row.get::<_, String>(6).unwrap_or_default(),
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
 
-        for (gid, iid, ch, co, turn, first_turn, winner) in rows {
-            let new_turn = match turn.as_str() {
-                "challenger" => &ch,
-                "opponent" => &co,
-                _ => &turn,
-            };
-            let new_first = match first_turn.as_str() {
-                "challenger" => &ch,
-                "opponent" => &co,
-                _ => &first_turn,
-            };
-            let new_winner = match winner.as_str() {
-                "challenger" => &ch,
-                "opponent" => &co,
-                _ => &winner,
-            };
-            conn.execute(
+            for (gid, iid, ch, co, turn, first_turn, winner) in rows {
+                let new_turn = match turn.as_str() {
+                    "challenger" => &ch,
+                    "opponent" => &co,
+                    _ => &turn,
+                };
+                let new_first = match first_turn.as_str() {
+                    "challenger" => &ch,
+                    "opponent" => &co,
+                    _ => &first_turn,
+                };
+                let new_winner = match winner.as_str() {
+                    "challenger" => &ch,
+                    "opponent" => &co,
+                    _ => &winner,
+                };
+                conn.execute(
                 "UPDATE games SET turn = ?1, first_turn = ?2, winner = ?3 WHERE game_id = ?4 AND identity_id = ?5",
                 params![new_turn, new_first, new_winner, gid, iid],
             )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 9;")?;
-        tracing::info!("Migrated to schema version 9 (role→hash)");
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 9;")?;
+            tracing::info!("Migrated to schema version 9 (role→hash)");
+            Ok(())
+        })?;
     }
 
     if from_version < 10 {
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS games;
+        migration_step(conn, 10, |conn| {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS games;
             CREATE TABLE IF NOT EXISTS games (
                 game_id TEXT NOT NULL,
                 game TEXT NOT NULL,
@@ -605,24 +656,32 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             CREATE INDEX IF NOT EXISTS idx_games_contact ON games(contact_hash, identity_id);
             CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
             UPDATE schema_version SET version = 10;",
-        )?;
-        tracing::info!("Migrated to schema version 10 (games composite PK)");
+            )?;
+            tracing::info!("Migrated to schema version 10 (games composite PK)");
+            Ok(())
+        })?;
     }
 
     if from_version < 11 {
-        let msg_cols = get_column_names(conn, "messages")?;
-        if !msg_cols.iter().any(|c| c == "game_action") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_action TEXT DEFAULT ''")?;
-        }
-        if !msg_cols.iter().any(|c| c == "game_move_san") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN game_move_san TEXT DEFAULT ''")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 11;")?;
-        tracing::info!("Migrated to schema version 11 (game_action columns)");
+        migration_step(conn, 11, |conn| {
+            let msg_cols = get_column_names(conn, "messages")?;
+            if !msg_cols.iter().any(|c| c == "game_action") {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN game_action TEXT DEFAULT ''")?;
+            }
+            if !msg_cols.iter().any(|c| c == "game_move_san") {
+                conn.execute_batch(
+                    "ALTER TABLE messages ADD COLUMN game_move_san TEXT DEFAULT ''",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 11;")?;
+            tracing::info!("Migrated to schema version 11 (game_action columns)");
+            Ok(())
+        })?;
     }
 
     if from_version < 12 {
-        conn.execute_batch(
+        migration_step(conn, 12, |conn| {
+            conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS app_sessions (
                 session_id    TEXT NOT NULL,
                 identity_id   TEXT NOT NULL DEFAULT '',
@@ -653,21 +712,27 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             );
             UPDATE schema_version SET version = 12;"
         )?;
-        tracing::info!("Migrated to schema version 12 (LRGP tables)");
+            tracing::info!("Migrated to schema version 12 (LRGP tables)");
+            Ok(())
+        })?;
     }
 
     if from_version < 13 {
-        conn.execute_batch(
+        migration_step(conn, 13, |conn| {
+            conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_contacts_dest_identity ON contacts(dest_hash, identity_id);
             CREATE INDEX IF NOT EXISTS idx_messages_identity_state ON messages(identity_id, state);
             UPDATE schema_version SET version = 13;"
         )?;
-        tracing::info!("Migrated to schema version 13 (additional indexes)");
+            tracing::info!("Migrated to schema version 13 (additional indexes)");
+            Ok(())
+        })?;
     }
 
     if from_version < 14 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS blocked_contacts (
+        migration_step(conn, 14, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS blocked_contacts (
                 dest_hash TEXT NOT NULL,
                 identity_id TEXT NOT NULL DEFAULT '',
                 display_name TEXT DEFAULT '',
@@ -675,22 +740,28 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 PRIMARY KEY (dest_hash, identity_id)
             );
             UPDATE schema_version SET version = 14;",
-        )?;
-        tracing::info!("Migrated to schema version 14 (blocked_contacts)");
+            )?;
+            tracing::info!("Migrated to schema version 14 (blocked_contacts)");
+            Ok(())
+        })?;
     }
 
     if from_version < 15 {
-        conn.execute_batch(
+        migration_step(conn, 15, |conn| {
+            conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_messages_source_identity ON messages(source, identity_id, timestamp ASC);
              CREATE INDEX IF NOT EXISTS idx_messages_dest_identity ON messages(destination, identity_id, timestamp ASC);
              UPDATE schema_version SET version = 15;"
         )?;
-        tracing::info!("Migrated to schema version 15 (conversation query indexes)");
+            tracing::info!("Migrated to schema version 15 (conversation query indexes)");
+            Ok(())
+        })?;
     }
 
     if from_version < 16 {
-        // Backfill last_seen/first_seen from messages table.
-        conn.execute_batch(
+        migration_step(conn, 16, |conn| {
+            // Backfill last_seen/first_seen from messages table.
+            conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS identity_activity (
                  dest_hash      TEXT PRIMARY KEY,
                  last_seen      REAL NOT NULL,
@@ -724,12 +795,15 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
 
              UPDATE schema_version SET version = 16;"
         )?;
-        tracing::info!("Migrated to schema version 16 (identity_activity + scaling indexes)");
+            tracing::info!("Migrated to schema version 16 (identity_activity + scaling indexes)");
+            Ok(())
+        })?;
     }
 
     if from_version < 17 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS lrgp_pending_sends (
+        migration_step(conn, 17, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS lrgp_pending_sends (
                 id                   INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id           TEXT NOT NULL,
                 identity_id          TEXT NOT NULL,
@@ -750,25 +824,32 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             CREATE INDEX IF NOT EXISTS idx_lrgp_pending_session
                 ON lrgp_pending_sends(session_id, identity_id);
             UPDATE schema_version SET version = 17;",
-        )?;
-        tracing::info!("Migrated to schema version 17 (lrgp_pending_sends)");
+            )?;
+            tracing::info!("Migrated to schema version 17 (lrgp_pending_sends)");
+            Ok(())
+        })?;
     }
 
     if from_version < 18 {
-        // Self-heal: empty session_id rows orphan the frontend `_allSessions` map.
-        let sessions_removed =
-            conn.execute("DELETE FROM app_sessions WHERE session_id = ''", [])?;
-        let actions_removed = conn.execute("DELETE FROM app_actions WHERE session_id = ''", [])?;
-        conn.execute_batch("UPDATE schema_version SET version = 18;")?;
-        tracing::info!(
-            "Migrated to schema version 18 (pruned {sessions_removed} empty-SID sessions, \
+        migration_step(conn, 18, |conn| {
+            // Self-heal: empty session_id rows orphan the frontend `_allSessions` map.
+            let sessions_removed =
+                conn.execute("DELETE FROM app_sessions WHERE session_id = ''", [])?;
+            let actions_removed =
+                conn.execute("DELETE FROM app_actions WHERE session_id = ''", [])?;
+            conn.execute_batch("UPDATE schema_version SET version = 18;")?;
+            tracing::info!(
+                "Migrated to schema version 18 (pruned {sessions_removed} empty-SID sessions, \
              {actions_removed} empty-SID actions)"
-        );
+            );
+            Ok(())
+        })?;
     }
 
     if from_version < 19 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS identity_interface_activity (
+        migration_step(conn, 19, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS identity_interface_activity (
                 dest_hash      TEXT NOT NULL,
                 interface_name TEXT NOT NULL,
                 last_seen      REAL NOT NULL,
@@ -778,23 +859,26 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             CREATE INDEX IF NOT EXISTS idx_iia_interface
                 ON identity_interface_activity(interface_name);
             UPDATE schema_version SET version = 19;",
-        )?;
-        tracing::info!(
-            "Migrated to schema version 19 (identity_interface_activity for per-interface peer tracking)"
-        );
+            )?;
+            tracing::info!(
+                "Migrated to schema version 19 (identity_interface_activity for per-interface peer tracking)"
+            );
+            Ok(())
+        })?;
     }
 
     if from_version < 20 {
-        // Unify peers on identity_activity; drop identity_interface_activity.
-        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-        if !cols.iter().any(|c| c == "display_name") {
-            conn.execute_batch(
-                "ALTER TABLE identity_activity
+        migration_step(conn, 20, |conn| {
+            // Unify peers on identity_activity; drop identity_interface_activity.
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "display_name") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
                     ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
-            )?;
-        }
-        conn.execute_batch(
-            "DROP INDEX IF EXISTS idx_iia_interface;
+                )?;
+            }
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS idx_iia_interface;
              DROP TABLE IF EXISTS identity_interface_activity;
 
              UPDATE identity_activity
@@ -811,107 +895,131 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 );
 
              UPDATE schema_version SET version = 20;",
-        )?;
-        tracing::info!(
-            "Migrated to schema version 20 (display_name on identity_activity, dropped identity_interface_activity)"
-        );
+            )?;
+            tracing::info!(
+                "Migrated to schema version 20 (display_name on identity_activity, dropped identity_interface_activity)"
+            );
+            Ok(())
+        })?;
     }
 
     if from_version < 21 {
-        // Add `last_interface`; required by v22's DROP COLUMN below.
-        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-        if !cols.iter().any(|c| c == "last_interface") {
-            conn.execute_batch(
-                "ALTER TABLE identity_activity
+        migration_step(conn, 21, |conn| {
+            // Add `last_interface`; required by v22's DROP COLUMN below.
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "last_interface") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
                     ADD COLUMN last_interface TEXT NOT NULL DEFAULT '';",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 21;")?;
-        tracing::info!("Migrated to schema version 21 (last_interface on identity_activity)");
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 21;")?;
+            tracing::info!("Migrated to schema version 21 (last_interface on identity_activity)");
+            Ok(())
+        })?;
     }
 
     if from_version < 22 {
-        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-        if cols.iter().any(|c| c == "last_interface") {
-            conn.execute_batch("ALTER TABLE identity_activity DROP COLUMN last_interface;")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 22;")?;
-        tracing::info!("Migrated to schema version 22 (dropped last_interface)");
+        migration_step(conn, 22, |conn| {
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if cols.iter().any(|c| c == "last_interface") {
+                conn.execute_batch("ALTER TABLE identity_activity DROP COLUMN last_interface;")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 22;")?;
+            tracing::info!("Migrated to schema version 22 (dropped last_interface)");
+            Ok(())
+        })?;
     }
 
     if from_version < 23 {
-        // Re-add `last_interface`; stamped atomically with `last_seen` per announce.
-        let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-        if !cols.iter().any(|c| c == "last_interface") {
-            conn.execute_batch(
-                "ALTER TABLE identity_activity
+        migration_step(conn, 23, |conn| {
+            // Re-add `last_interface`; stamped atomically with `last_seen` per announce.
+            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+            if !cols.iter().any(|c| c == "last_interface") {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
                     ADD COLUMN last_interface TEXT NOT NULL DEFAULT '';",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 23;")?;
-        tracing::info!(
-            "Migrated to schema version 23 (last_interface restored, atomic with announce)"
-        );
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 23;")?;
+            tracing::info!(
+                "Migrated to schema version 23 (last_interface restored, atomic with announce)"
+            );
+            Ok(())
+        })?;
     }
 
     if from_version < 24 {
-        // Add propagation Off/Auto/Manual mode + favor_static.
-        // Pre-existing `propagation_node` and `propagation_enabled` preserved;
-        // `enable_propagation` becomes a shim mapping to mode.
-        let cols = get_column_names(conn, "identities").unwrap_or_default();
-        if !cols.iter().any(|c| c == "propagation_mode") {
-            conn.execute_batch(
-                "ALTER TABLE identities
+        migration_step(conn, 24, |conn| {
+            // Add propagation Off/Auto/Manual mode + favor_static.
+            // Pre-existing `propagation_node` and `propagation_enabled` preserved;
+            // `enable_propagation` becomes a shim mapping to mode.
+            let cols = get_column_names(conn, "identities").unwrap_or_default();
+            if !cols.iter().any(|c| c == "propagation_mode") {
+                conn.execute_batch(
+                    "ALTER TABLE identities
                     ADD COLUMN propagation_mode TEXT NOT NULL DEFAULT 'auto';",
-            )?;
-        }
-        if !cols.iter().any(|c| c == "propagation_auto_favor_static") {
-            conn.execute_batch(
-                "ALTER TABLE identities
+                )?;
+            }
+            if !cols.iter().any(|c| c == "propagation_auto_favor_static") {
+                conn.execute_batch(
+                    "ALTER TABLE identities
                     ADD COLUMN propagation_auto_favor_static INTEGER NOT NULL DEFAULT 1;",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 24;")?;
-        tracing::info!("Migrated to schema version 24 (propagation_mode + auto_favor_static)");
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 24;")?;
+            tracing::info!("Migrated to schema version 24 (propagation_mode + auto_favor_static)");
+            Ok(())
+        })?;
     }
 
     if from_version < 25 {
-        // Persist the chosen LXMF delivery method per outbound message so the
-        // UI can render proof-aware state icons (muted check for opportunistic,
-        // accent check for direct, envelope for propagated).
-        let cols = get_column_names(conn, "messages").unwrap_or_default();
-        if !cols.iter().any(|c| c == "delivery_method") {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN delivery_method TEXT;")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 25;")?;
-        tracing::info!("Migrated to schema version 25 (messages.delivery_method)");
+        migration_step(conn, 25, |conn| {
+            // Persist the chosen LXMF delivery method per outbound message so the
+            // UI can render proof-aware state icons (muted check for opportunistic,
+            // accent check for direct, envelope for propagated).
+            let cols = get_column_names(conn, "messages").unwrap_or_default();
+            if !cols.iter().any(|c| c == "delivery_method") {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN delivery_method TEXT;")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 25;")?;
+            tracing::info!("Migrated to schema version 25 (messages.delivery_method)");
+            Ok(())
+        })?;
     }
 
     if from_version < 26 {
-        // LRGP application-layer retry queue removed — Direct's
-        // MAX_DELIVERY_ATTEMPTS=5 is the actual transport-layer reliability,
-        // and the queue's nonce-replay window (30 min) outran LRGP's per-
-        // session dedup TTL (10 min), risking duplicate move application.
-        conn.execute_batch("DROP TABLE IF EXISTS lrgp_pending_sends;")?;
-        conn.execute_batch("UPDATE schema_version SET version = 26;")?;
-        tracing::info!("Migrated to schema version 26 (drop lrgp_pending_sends)");
+        migration_step(conn, 26, |conn| {
+            // LRGP application-layer retry queue removed — Direct's
+            // MAX_DELIVERY_ATTEMPTS=5 is the actual transport-layer reliability,
+            // and the queue's nonce-replay window (30 min) outran LRGP's per-
+            // session dedup TTL (10 min), risking duplicate move application.
+            conn.execute_batch("DROP TABLE IF EXISTS lrgp_pending_sends;")?;
+            conn.execute_batch("UPDATE schema_version SET version = 26;")?;
+            tracing::info!("Migrated to schema version 26 (drop lrgp_pending_sends)");
+            Ok(())
+        })?;
     }
 
     if from_version < 27 {
-        // Persist the packed LRGP envelope per action so the manual "Resend
-        // last move" path can re-transmit the exact same envelope without
-        // re-dispatching through the LRGP router (which would reject the
-        // resend as `not_your_turn` because local state already advanced).
-        let cols = get_column_names(conn, "app_actions").unwrap_or_default();
-        if !cols.iter().any(|c| c == "envelope_mp") {
-            conn.execute_batch("ALTER TABLE app_actions ADD COLUMN envelope_mp BLOB;")?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 27;")?;
-        tracing::info!("Migrated to schema version 27 (app_actions.envelope_mp)");
+        migration_step(conn, 27, |conn| {
+            // Persist the packed LRGP envelope per action so the manual "Resend
+            // last move" path can re-transmit the exact same envelope without
+            // re-dispatching through the LRGP router (which would reject the
+            // resend as `not_your_turn` because local state already advanced).
+            let cols = get_column_names(conn, "app_actions").unwrap_or_default();
+            if !cols.iter().any(|c| c == "envelope_mp") {
+                conn.execute_batch("ALTER TABLE app_actions ADD COLUMN envelope_mp BLOB;")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 27;")?;
+            tracing::info!("Migrated to schema version 27 (app_actions.envelope_mp)");
+            Ok(())
+        })?;
     }
 
     if from_version < 28 {
-        conn.execute_batch(
+        migration_step(conn, 28, |conn| {
+            conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS pending_blackholes (
                 dest_hash       TEXT NOT NULL,
                 identity_id     TEXT NOT NULL DEFAULT '',
@@ -924,26 +1032,29 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             CREATE INDEX IF NOT EXISTS idx_pending_blackholes_identity ON pending_blackholes(identity_id);
             UPDATE schema_version SET version = 28;",
         )?;
-        tracing::info!("Migrated to schema version 28 (pending_blackholes)");
+            tracing::info!("Migrated to schema version 28 (pending_blackholes)");
+            Ok(())
+        })?;
     }
 
     if from_version < 29 {
-        if table_exists(conn, "identity_activity")? {
-            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-            if !cols.iter().any(|c| c == "identity_hash") {
-                conn.execute_batch(
-                    "ALTER TABLE identity_activity
+        migration_step(conn, 29, |conn| {
+            if table_exists(conn, "identity_activity")? {
+                let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+                if !cols.iter().any(|c| c == "identity_hash") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
                         ADD COLUMN identity_hash TEXT NOT NULL DEFAULT '';",
-                )?;
-            }
-            if !cols.iter().any(|c| c == "services") {
-                conn.execute_batch(
-                    "ALTER TABLE identity_activity
+                    )?;
+                }
+                if !cols.iter().any(|c| c == "services") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
                         ADD COLUMN services TEXT NOT NULL DEFAULT '';",
-                )?;
-            }
-            conn.execute_batch(
-                "UPDATE identity_activity
+                    )?;
+                }
+                conn.execute_batch(
+                    "UPDATE identity_activity
                     SET services = 'lxmf.delivery'
                   WHERE services = ''
                     AND (
@@ -951,37 +1062,42 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                         OR dest_hash IN (SELECT destination FROM messages WHERE destination != '')
                         OR dest_hash IN (SELECT dest_hash FROM contacts)
                     );",
-            )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 29;")?;
-        tracing::info!("Migrated to schema version 29 (peer service aspects)");
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 29;")?;
+            tracing::info!("Migrated to schema version 29 (peer service aspects)");
+            Ok(())
+        })?;
     }
 
     if from_version < 30 {
-        if table_exists(conn, "messages")? {
-            let msg_cols = get_column_names(conn, "messages").unwrap_or_default();
-            for (col, ddl) in [
-                ("rtt_ms", "REAL"),
-                ("hops", "INTEGER"),
-                ("path", "TEXT"),
-                ("identity_id", "TEXT DEFAULT ''"),
-                ("attachment_name", "TEXT DEFAULT ''"),
-                ("attachment_stored_name", "TEXT DEFAULT ''"),
-                ("image_name", "TEXT DEFAULT ''"),
-                ("image_stored_name", "TEXT DEFAULT ''"),
-                ("reply_to_id", "TEXT DEFAULT ''"),
-                ("reply_to_preview", "TEXT DEFAULT ''"),
-                ("game_id", "TEXT DEFAULT ''"),
-                ("game_action", "TEXT DEFAULT ''"),
-                ("game_move_san", "TEXT DEFAULT ''"),
-                ("delivery_method", "TEXT"),
-            ] {
-                if !msg_cols.iter().any(|c| c == col) {
-                    conn.execute_batch(&format!("ALTER TABLE messages ADD COLUMN {col} {ddl}"))?;
+        migration_step(conn, 30, |conn| {
+            if table_exists(conn, "messages")? {
+                let msg_cols = get_column_names(conn, "messages").unwrap_or_default();
+                for (col, ddl) in [
+                    ("rtt_ms", "REAL"),
+                    ("hops", "INTEGER"),
+                    ("path", "TEXT"),
+                    ("identity_id", "TEXT DEFAULT ''"),
+                    ("attachment_name", "TEXT DEFAULT ''"),
+                    ("attachment_stored_name", "TEXT DEFAULT ''"),
+                    ("image_name", "TEXT DEFAULT ''"),
+                    ("image_stored_name", "TEXT DEFAULT ''"),
+                    ("reply_to_id", "TEXT DEFAULT ''"),
+                    ("reply_to_preview", "TEXT DEFAULT ''"),
+                    ("game_id", "TEXT DEFAULT ''"),
+                    ("game_action", "TEXT DEFAULT ''"),
+                    ("game_move_san", "TEXT DEFAULT ''"),
+                    ("delivery_method", "TEXT"),
+                ] {
+                    if !msg_cols.iter().any(|c| c == col) {
+                        conn.execute_batch(&format!(
+                            "ALTER TABLE messages ADD COLUMN {col} {ddl}"
+                        ))?;
+                    }
                 }
-            }
 
-            conn.execute_batch(
+                conn.execute_batch(
                 "DROP TRIGGER IF EXISTS messages_ai;
                  DROP TRIGGER IF EXISTS messages_ad;
                  DROP TRIGGER IF EXISTS messages_au;
@@ -1079,58 +1195,83 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                  END;
                  INSERT INTO messages_fts(messages_fts) VALUES('rebuild');",
             )?;
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 30;")?;
-        tracing::info!("Migrated to schema version 30 (messages scoped by identity)");
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 30;")?;
+            tracing::info!("Migrated to schema version 30 (messages scoped by identity)");
+            Ok(())
+        })?;
     }
 
     if from_version < 31 {
-        if table_exists(conn, "identities")? {
-            let cols = get_column_names(conn, "identities").unwrap_or_default();
-            if !cols.iter().any(|c| c == "status") {
-                conn.execute_batch(
-                    "ALTER TABLE identities
+        migration_step(conn, 31, |conn| {
+            if table_exists(conn, "identities")? {
+                let cols = get_column_names(conn, "identities").unwrap_or_default();
+                if !cols.iter().any(|c| c == "status") {
+                    conn.execute_batch(
+                        "ALTER TABLE identities
                         ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-                )?;
+                    )?;
+                }
             }
-        }
-        if table_exists(conn, "identity_activity")? {
-            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-            if !cols.iter().any(|c| c == "status") {
-                conn.execute_batch(
-                    "ALTER TABLE identity_activity
+            if table_exists(conn, "identity_activity")? {
+                let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+                if !cols.iter().any(|c| c == "status") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
                         ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-                )?;
+                    )?;
+                }
             }
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 31;")?;
-        tracing::info!("Migrated to schema version 31 (announce status metadata)");
+            conn.execute_batch("UPDATE schema_version SET version = 31;")?;
+            tracing::info!("Migrated to schema version 31 (announce status metadata)");
+            Ok(())
+        })?;
     }
 
     if from_version < 32 {
-        // Repair databases that were marked v31 before both status columns were
-        // actually present. Without identities.status, identity reads fail and
-        // first-run setup incorrectly treats a populated profile as empty.
-        if table_exists(conn, "identities")? {
-            let cols = get_column_names(conn, "identities").unwrap_or_default();
-            if !cols.iter().any(|c| c == "status") {
-                conn.execute_batch(
-                    "ALTER TABLE identities
+        migration_step(conn, 32, |conn| {
+            // Repair databases that were marked v31 before both status columns were
+            // actually present. Without identities.status, identity reads fail and
+            // first-run setup incorrectly treats a populated profile as empty.
+            if table_exists(conn, "identities")? {
+                let cols = get_column_names(conn, "identities").unwrap_or_default();
+                if !cols.iter().any(|c| c == "status") {
+                    conn.execute_batch(
+                        "ALTER TABLE identities
                         ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-                )?;
+                    )?;
+                }
             }
-        }
-        if table_exists(conn, "identity_activity")? {
-            let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
-            if !cols.iter().any(|c| c == "status") {
-                conn.execute_batch(
-                    "ALTER TABLE identity_activity
+            if table_exists(conn, "identity_activity")? {
+                let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+                if !cols.iter().any(|c| c == "status") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
                         ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-                )?;
+                    )?;
+                }
             }
-        }
-        conn.execute_batch("UPDATE schema_version SET version = 32;")?;
-        tracing::info!("Migrated to schema version 32 (repair identity status columns)");
+            conn.execute_batch("UPDATE schema_version SET version = 32;")?;
+            tracing::info!("Migrated to schema version 32 (repair identity status columns)");
+            Ok(())
+        })?;
+    }
+
+    if from_version < 33 {
+        migration_step(conn, 33, |conn| {
+            if table_exists(conn, "identity_activity")? {
+                let cols = get_column_names(conn, "identity_activity").unwrap_or_default();
+                if !cols.iter().any(|c| c == "lxmf_compression_support") {
+                    conn.execute_batch(
+                        "ALTER TABLE identity_activity
+                        ADD COLUMN lxmf_compression_support TEXT NOT NULL DEFAULT '';",
+                    )?;
+                }
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 33;")?;
+            tracing::info!("Migrated to schema version 33 (LXMF peer compression capability)");
+            Ok(())
+        })?;
     }
 
     Ok(())
@@ -1190,6 +1331,22 @@ pub fn get_identity(pool: &DbPool, hash_hex: &str) -> Option<serde_json::Value> 
     stmt.query_row(params![hash_hex], row_to_identity).ok()
 }
 
+/// Process-wide identity-table generation. Bumped by every db-layer write
+/// that can change which identity is active (or its lxmf hash) so runtime
+/// caches invalidate without each caller remembering to — see
+/// `ratspeak_runtime::helpers::active_identity_id`.
+static IDENTITY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn identity_generation() -> u64 {
+    IDENTITY_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// For identity-table writes that bypass the helpers in this module
+/// (factory reset's raw table wipe).
+pub fn note_identity_tables_changed() {
+    IDENTITY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Release);
+}
+
 pub fn save_identity(
     pool: &DbPool,
     hash_hex: &str,
@@ -1197,6 +1354,7 @@ pub fn save_identity(
     nickname: &str,
     display_name: &str,
 ) {
+    note_identity_tables_changed();
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
@@ -1233,6 +1391,7 @@ pub fn set_identity_propagation_node(
 }
 
 pub fn set_active_identity(pool: &DbPool, hash_hex: &str) -> Result<(), String> {
+    note_identity_tables_changed();
     let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
     let now = now_ts();
     let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
@@ -1285,33 +1444,61 @@ pub fn update_identity_status(pool: &DbPool, hash_hex: &str, status: &str) -> Re
     Ok(())
 }
 
+/// Every user-data table cleared by factory reset (`api_reset_database`).
+/// Inventory-checked in tests: a new user-data table must be added here (or
+/// explicitly exempted in the test) before it can ship.
+pub const RESET_TABLES: &[&str] = &[
+    "messages",
+    "contacts",
+    "identities",
+    "settings",
+    "connection_history",
+    "reactions",
+    "games",
+    "app_sessions",
+    "app_actions",
+    "hidden_conversations",
+    "blocked_contacts",
+    "identity_activity",
+    "pending_blackholes",
+];
+
+/// Per-identity cascade for `delete_identity`. Static DELETEs (no format!()
+/// interpolation), children before parents. Inventory-checked in tests
+/// against every table carrying an `identity_id` column.
+const IDENTITY_CASCADE: &[(&str, &str)] = &[
+    (
+        "app_actions",
+        "DELETE FROM app_actions WHERE identity_id = ?1",
+    ),
+    (
+        "app_sessions",
+        "DELETE FROM app_sessions WHERE identity_id = ?1",
+    ),
+    ("games", "DELETE FROM games WHERE identity_id = ?1"),
+    ("reactions", "DELETE FROM reactions WHERE identity_id = ?1"),
+    (
+        "hidden_conversations",
+        "DELETE FROM hidden_conversations WHERE identity_id = ?1",
+    ),
+    (
+        "blocked_contacts",
+        "DELETE FROM blocked_contacts WHERE identity_id = ?1",
+    ),
+    (
+        "pending_blackholes",
+        "DELETE FROM pending_blackholes WHERE identity_id = ?1",
+    ),
+    ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
+    ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
+];
+
 pub fn delete_identity(pool: &DbPool, hash_hex: &str, cascade: bool) -> Result<(), String> {
+    note_identity_tables_changed();
     let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
     let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
     if cascade {
-        // Static DELETEs (no format!() interpolation), children before parents.
-        for (label, sql) in [
-            (
-                "app_actions",
-                "DELETE FROM app_actions WHERE identity_id = ?1",
-            ),
-            (
-                "app_sessions",
-                "DELETE FROM app_sessions WHERE identity_id = ?1",
-            ),
-            ("games", "DELETE FROM games WHERE identity_id = ?1"),
-            ("reactions", "DELETE FROM reactions WHERE identity_id = ?1"),
-            (
-                "hidden_conversations",
-                "DELETE FROM hidden_conversations WHERE identity_id = ?1",
-            ),
-            (
-                "blocked_contacts",
-                "DELETE FROM blocked_contacts WHERE identity_id = ?1",
-            ),
-            ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
-            ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
-        ] {
+        for (label, sql) in IDENTITY_CASCADE {
             tx.execute(sql, params![hash_hex])
                 .map_err(|e| format!("delete {label}: {e}"))?;
         }
@@ -1731,25 +1918,36 @@ pub fn clear_pending_blackhole(pool: &DbPool, dest_hash: &str, identity_id: &str
     .unwrap_or(false)
 }
 
-pub fn get_message_delivery_method(pool: &DbPool, msg_id: &str) -> Option<String> {
+pub fn get_message_delivery_method(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+) -> Option<String> {
     let conn = pool.get().ok()?;
     conn.query_row(
-        "SELECT delivery_method FROM messages WHERE id = ?1 AND direction = 'outbound' LIMIT 1",
-        params![msg_id],
+        "SELECT delivery_method FROM messages \
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' LIMIT 1",
+        params![msg_id, identity_id],
         |row| row.get::<_, Option<String>>(0),
     )
     .ok()
     .flatten()
 }
 
-pub fn update_message_delivery_method(pool: &DbPool, msg_id: &str, delivery_method: &str) {
+pub fn update_message_delivery_method(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+    delivery_method: &str,
+) {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
     };
     conn.execute(
-        "UPDATE messages SET delivery_method = ?1 WHERE id = ?2 AND direction = 'outbound'",
-        params![delivery_method, msg_id],
+        "UPDATE messages SET delivery_method = ?1 \
+         WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound'",
+        params![delivery_method, msg_id, identity_id],
     )
     .ok();
 }
@@ -1835,7 +2033,13 @@ pub fn save_message(
 /// cannot be regressed by later updates. `propagated` is terminal at the LXMF
 /// layer because the propagation path only confirms node-deposit, not end-to-end
 /// recipient delivery — there is no later signal that upgrades it to `delivered`.
-pub fn update_message_state(pool: &DbPool, msg_id: &str, state: &str, rtt_ms: Option<f64>) {
+pub fn update_message_state(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+    state: &str,
+    rtt_ms: Option<f64>,
+) {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
@@ -1843,29 +2047,29 @@ pub fn update_message_state(pool: &DbPool, msg_id: &str, state: &str, rtt_ms: Op
     if let Some(rtt) = rtt_ms {
         conn.execute(
             "UPDATE messages SET state = ?1, rtt_ms = ?2 \
-             WHERE id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
-            params![state, rtt, msg_id],
+             WHERE id = ?3 AND identity_id = ?4 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+            params![state, rtt, msg_id, identity_id],
         )
         .ok();
     } else {
         conn.execute(
             "UPDATE messages SET state = ?1 \
-             WHERE id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
-            params![state, msg_id],
+             WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+            params![state, msg_id, identity_id],
         )
         .ok();
     }
 }
 
-pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str) -> bool {
+pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &str) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
     };
     conn.execute(
         "UPDATE messages SET state = 'cancelled' \
-         WHERE id = ?1 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
-        params![msg_id],
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+        params![msg_id, identity_id],
     )
     .map(|n| n > 0)
     .unwrap_or(false)
@@ -2260,6 +2464,14 @@ fn normalized_peer_services<'a>(services: impl IntoIterator<Item = &'a str>) -> 
     out
 }
 
+fn normalized_lxmf_compression_support(value: &str) -> Option<&'static str> {
+    match value.trim() {
+        LXMF_COMPRESSION_SUPPORT_SUPPORTED => Some(LXMF_COMPRESSION_SUPPORT_SUPPORTED),
+        LXMF_COMPRESSION_SUPPORT_UNSUPPORTED => Some(LXMF_COMPRESSION_SUPPORT_UNSUPPORTED),
+        _ => None,
+    }
+}
+
 /// Same as `touch_identity_activity`, but records the service aspect that made
 /// the destination actionable for Ratspeak.
 pub fn touch_identity_activity_for_service(
@@ -2281,6 +2493,7 @@ pub struct IdentityActivityUpdate {
     pub identity_hash: Option<String>,
     pub services: Vec<String>,
     pub clear_ratspeak_services: bool,
+    pub lxmf_compression_support: Option<String>,
 }
 
 /// Same as `touch_identity_activity_for_service`, but merges multiple service
@@ -2309,6 +2522,7 @@ pub fn touch_identity_activity_for_services(
             identity_hash: identity_hash.map(str::to_owned),
             services: services.clone(),
             clear_ratspeak_services,
+            lxmf_compression_support: None,
         })
         .collect();
     touch_identity_activity_updates(pool, &updates)
@@ -2337,8 +2551,8 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
             Err(_) => return 0,
         };
         let mut stmt = match tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services)
-             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7)
+            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services, lxmf_compression_support)
+             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7, COALESCE(?8, ''))
              ON CONFLICT(dest_hash) DO UPDATE SET
                  last_seen = MAX(excluded.last_seen, last_seen),
                  announce_count = announce_count + 1,
@@ -2358,7 +2572,11 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                      WHEN excluded.last_interface != '' THEN excluded.last_interface
                      ELSE last_interface
                  END,
-                 services = excluded.services",
+                 services = excluded.services,
+                 lxmf_compression_support = CASE
+                     WHEN ?8 IS NOT NULL AND ?8 != '' THEN excluded.lxmf_compression_support
+                     ELSE lxmf_compression_support
+                 END",
         ) {
             Ok(s) => s,
             Err(_) => return 0,
@@ -2384,6 +2602,10 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                 }
             }
             let merged_services = merged.join(",");
+            let lxmf_compression_support = update
+                .lxmf_compression_support
+                .as_deref()
+                .and_then(normalized_lxmf_compression_support);
             let ok = stmt
                 .execute(params![
                     update.dest_hash,
@@ -2392,7 +2614,8 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                     n,
                     update.status.as_deref(),
                     i,
-                    merged_services
+                    merged_services,
+                    lxmf_compression_support,
                 ])
                 .is_ok();
             if ok {
@@ -2402,6 +2625,38 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
     }
     tx.commit().ok();
     touched
+}
+
+pub fn get_identity_lxmf_compression_support(pool: &DbPool, dest_hash: &str) -> Option<String> {
+    let conn = pool.get().ok()?;
+    let raw: String = conn
+        .query_row(
+            "SELECT COALESCE(lxmf_compression_support, '') FROM identity_activity WHERE dest_hash = ?1",
+            params![dest_hash],
+            |row| row.get(0),
+        )
+        .ok()?;
+    normalized_lxmf_compression_support(&raw).map(str::to_owned)
+}
+
+pub fn set_identity_lxmf_compression_support(
+    pool: &DbPool,
+    dest_hash: &str,
+    support: &str,
+) -> bool {
+    let Some(support) = normalized_lxmf_compression_support(support) else {
+        return false;
+    };
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.execute(
+        "UPDATE identity_activity SET lxmf_compression_support = ?1 WHERE dest_hash = ?2",
+        params![support, dest_hash],
+    )
+    .map(|rows| rows > 0)
+    .unwrap_or(false)
 }
 
 pub fn touch_identity_last_heard(pool: &DbPool, dest_hash: &str, timestamp: f64) -> bool {
@@ -3323,14 +3578,15 @@ pub fn get_failed_messages_for_contact(
 }
 
 /// Bypasses the terminal-state guard for an intentional retry.
-pub fn mark_message_resent(pool: &DbPool, msg_id: &str) {
+pub fn mark_message_resent(pool: &DbPool, msg_id: &str, identity_id: &str) {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
     };
     conn.execute(
-        "UPDATE messages SET state = 'resent' WHERE id = ?1 AND direction = 'outbound' AND state = 'failed'",
-        params![msg_id],
+        "UPDATE messages SET state = 'resent' \
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state = 'failed'",
+        params![msg_id, identity_id],
     )
     .ok();
 }
@@ -3839,10 +4095,10 @@ mod unread_breakdown_tests {
             Some("direct"),
         );
 
-        update_message_delivery_method(&pool, "msg", "propagated");
+        update_message_delivery_method(&pool, "msg", "me", "propagated");
 
         assert_eq!(
-            get_message_delivery_method(&pool, "msg").as_deref(),
+            get_message_delivery_method(&pool, "msg", "me").as_deref(),
             Some("propagated")
         );
     }
@@ -3890,7 +4146,7 @@ mod unread_breakdown_tests {
             None,
         );
 
-        update_message_state(&pool, shared_id, "delivered", Some(12.0));
+        update_message_state(&pool, shared_id, "identity-a", "delivered", Some(12.0));
 
         let conn = pool.get().unwrap();
         let inbound_state: String = conn
@@ -3909,6 +4165,126 @@ mod unread_breakdown_tests {
             .unwrap();
         assert_eq!(inbound_state, "received");
         assert_eq!(outbound_state, "delivered");
+    }
+
+    /// T1-14: state updates are identity-scoped — a delivery proof, method
+    /// change, or cancel handled for identity A must not flip identity B's
+    /// row with the same message hash.
+    #[test]
+    fn message_state_updates_are_identity_scoped() {
+        let pool = test_pool();
+        let shared_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        for identity in ["identity-a", "identity-b"] {
+            save_message(
+                &pool,
+                shared_id,
+                "me",
+                "peer",
+                "content",
+                "",
+                10.0,
+                "sent",
+                "outbound",
+                identity,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Some("direct"),
+            );
+        }
+
+        update_message_state(&pool, shared_id, "identity-a", "delivered", Some(8.0));
+        update_message_delivery_method(&pool, shared_id, "identity-a", "propagated");
+
+        // Fresh connection per query: the test pool has max_size 1, so a held
+        // checkout would starve the update calls below.
+        let state_of = |identity: &str| -> String {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT state FROM messages WHERE id = ?1 AND identity_id = ?2",
+                    params![shared_id, identity],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(state_of("identity-a"), "delivered");
+        assert_eq!(state_of("identity-b"), "sent", "B's row must not flip");
+        assert_eq!(
+            get_message_delivery_method(&pool, shared_id, "identity-a").as_deref(),
+            Some("propagated")
+        );
+        assert_eq!(
+            get_message_delivery_method(&pool, shared_id, "identity-b").as_deref(),
+            Some("direct")
+        );
+        let method_b: Option<String> = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT delivery_method FROM messages WHERE id = ?1 AND identity_id = 'identity-b'",
+                params![shared_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(method_b.as_deref(), Some("direct"));
+
+        assert!(
+            !cancel_outbound_message_state(&pool, shared_id, "identity-a"),
+            "A's row is terminal now"
+        );
+        assert!(cancel_outbound_message_state(
+            &pool,
+            shared_id,
+            "identity-b"
+        ));
+        assert_eq!(state_of("identity-a"), "delivered");
+        assert_eq!(state_of("identity-b"), "cancelled");
+    }
+
+    #[test]
+    fn mark_message_resent_is_identity_scoped() {
+        let pool = test_pool();
+        let shared_id = "resent-duplicate-id";
+        for identity in ["identity-a", "identity-b"] {
+            save_message(
+                &pool,
+                shared_id,
+                "me",
+                "peer",
+                "failed outbound",
+                "",
+                10.0,
+                "failed",
+                "outbound",
+                identity,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Some("direct"),
+            );
+        }
+
+        mark_message_resent(&pool, shared_id, "identity-a");
+
+        let state_of = |identity: &str| -> String {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT state FROM messages WHERE id = ?1 AND identity_id = ?2",
+                    params![shared_id, identity],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(state_of("identity-a"), "resent");
+        assert_eq!(state_of("identity-b"), "failed");
     }
 
     #[test]
@@ -3972,9 +4348,21 @@ mod unread_breakdown_tests {
             None,
         );
 
-        assert!(cancel_outbound_message_state(&pool, "cancel-me"));
-        assert!(!cancel_outbound_message_state(&pool, "already-done"));
-        assert!(!cancel_outbound_message_state(&pool, "inbound-row"));
+        assert!(cancel_outbound_message_state(
+            &pool,
+            "cancel-me",
+            "identity-a"
+        ));
+        assert!(!cancel_outbound_message_state(
+            &pool,
+            "already-done",
+            "identity-a"
+        ));
+        assert!(!cancel_outbound_message_state(
+            &pool,
+            "inbound-row",
+            "identity-a"
+        ));
 
         let conn = pool.get().unwrap();
         let cancel_state: String = conn
@@ -4180,6 +4568,14 @@ mod migration_tests {
                 .unwrap();
             assert!(exists > 0, "expected index `{index}` after init_schema");
         }
+
+        let activity_cols = get_column_names(&conn, "identity_activity").unwrap();
+        assert!(
+            activity_cols
+                .iter()
+                .any(|c| c == "lxmf_compression_support"),
+            "fresh schema should include LXMF compression capability metadata"
+        );
     }
 
     #[test]
@@ -4204,6 +4600,145 @@ mod migration_tests {
             .query_row("SELECT COUNT(*) FROM identities", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1, "data survives repeat init_schema calls");
+    }
+
+    /// T1-8: every user-data table must be wiped by factory reset, and every
+    /// identity-scoped table covered by the delete_identity cascade — new
+    /// tables cannot silently drift out of either list.
+    #[test]
+    fn test_reset_and_cascade_cover_all_user_data_tables() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        let conn = pool.get().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table'
+                 AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // schema_version survives reset by design; FTS shadow tables follow
+        // `messages` via triggers plus the explicit rebuild after the wipe.
+        for table in &tables {
+            if table == "schema_version" || table.starts_with("messages_fts") {
+                continue;
+            }
+            assert!(
+                RESET_TABLES.contains(&table.as_str()),
+                "table `{table}` is not wiped by factory reset — add it to RESET_TABLES or exempt it here"
+            );
+        }
+
+        // identities itself is keyed by hash and deleted separately.
+        for table in &tables {
+            if table == "identities" || table.starts_with("messages_fts") {
+                continue;
+            }
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let cols: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            if cols.iter().any(|c| c == "identity_id") {
+                assert!(
+                    IDENTITY_CASCADE.iter().any(|(label, _)| label == table),
+                    "table `{table}` has identity_id but is missing from the delete_identity cascade"
+                );
+            }
+        }
+    }
+
+    /// T1-8: blackhole requests queued for an identity do not survive its
+    /// deletion.
+    #[test]
+    fn test_delete_identity_cascades_pending_blackholes() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO identities (hash, created_at) VALUES ('idA', 0.0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pending_blackholes (dest_hash, identity_id, queued_at)
+                 VALUES ('peer1', 'idA', 1.0), ('peer2', 'idB', 1.0)",
+                [],
+            )
+            .unwrap();
+        }
+        delete_identity(&pool, "idA", true).unwrap();
+        let conn = pool.get().unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_blackholes", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 1, "only the other identity's row survives");
+        let who: String = conn
+            .query_row("SELECT identity_id FROM pending_blackholes", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(who, "idB");
+    }
+
+    /// T1-4: a crash between statements of one migration step must roll the
+    /// whole step back (schema + version bump) and re-run cleanly.
+    #[test]
+    fn test_migration_step_interrupt_rolls_back_and_rerun_succeeds() {
+        let pool = empty_pool();
+        let conn = pool.get().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (1);
+             CREATE TABLE t (x INTEGER);
+             INSERT INTO t VALUES (1);",
+        )
+        .unwrap();
+
+        // Step applies one statement, then dies before finishing the batch.
+        let result = migration_step(&conn, 2, |conn| {
+            conn.execute_batch(
+                "ALTER TABLE t RENAME TO t_old;
+                 UPDATE schema_version SET version = 2;",
+            )?;
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        });
+        assert!(result.is_err());
+
+        // Both the rename and the version bump rolled back.
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1, "version bump must roll back with the step");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "schema change must roll back with the step");
+
+        // Re-running the same step (without the injected interrupt) succeeds.
+        migration_step(&conn, 2, |conn| {
+            conn.execute_batch(
+                "ALTER TABLE t RENAME TO t_old;
+                 UPDATE schema_version SET version = 2;",
+            )
+        })
+        .unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -4437,6 +4972,16 @@ mod peers_snapshot_tests {
         .unwrap()
     }
 
+    fn lxmf_compression_support_for(pool: &DbPool, hash: &str) -> String {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT lxmf_compression_support FROM identity_activity WHERE dest_hash = ?1",
+            params![hash],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn touch_identity_activity_merges_multiple_services_once_and_clears_ratspeak() {
         let pool = test_pool();
@@ -4486,6 +5031,7 @@ mod peers_snapshot_tests {
                     identity_hash: Some("11111111111111111111111111111111".into()),
                     services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
                     clear_ratspeak_services: true,
+                    lxmf_compression_support: None,
                 },
                 IdentityActivityUpdate {
                     dest_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
@@ -4496,6 +5042,7 @@ mod peers_snapshot_tests {
                     identity_hash: Some("22222222222222222222222222222222".into()),
                     services: vec![PEER_SERVICE_LXST_TELEPHONY.into()],
                     clear_ratspeak_services: false,
+                    lxmf_compression_support: None,
                 },
             ],
         );
@@ -4511,6 +5058,67 @@ mod peers_snapshot_tests {
         assert_eq!(
             services_for(&pool, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             PEER_SERVICE_LXST_TELEPHONY
+        );
+    }
+
+    #[test]
+    fn touch_identity_activity_updates_merges_lxmf_compression_support() {
+        let pool = test_pool();
+        let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        touch_identity_activity_updates(
+            &pool,
+            &[IdentityActivityUpdate {
+                dest_hash: hash.into(),
+                timestamp: 100.0,
+                display_name: Some("Alice".into()),
+                status: None,
+                last_interface: None,
+                identity_hash: None,
+                services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
+                clear_ratspeak_services: false,
+                lxmf_compression_support: Some(LXMF_COMPRESSION_SUPPORT_UNSUPPORTED.into()),
+            }],
+        );
+        assert_eq!(
+            get_identity_lxmf_compression_support(&pool, hash).as_deref(),
+            Some(LXMF_COMPRESSION_SUPPORT_UNSUPPORTED)
+        );
+
+        touch_identity_activity_updates(
+            &pool,
+            &[IdentityActivityUpdate {
+                dest_hash: hash.into(),
+                timestamp: 101.0,
+                display_name: None,
+                status: None,
+                last_interface: None,
+                identity_hash: None,
+                services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
+                clear_ratspeak_services: false,
+                lxmf_compression_support: None,
+            }],
+        );
+        assert_eq!(
+            lxmf_compression_support_for(&pool, hash),
+            LXMF_COMPRESSION_SUPPORT_UNSUPPORTED
+        );
+
+        assert!(set_identity_lxmf_compression_support(
+            &pool,
+            hash,
+            LXMF_COMPRESSION_SUPPORT_SUPPORTED
+        ));
+        assert_eq!(
+            get_identity_lxmf_compression_support(&pool, hash).as_deref(),
+            Some(LXMF_COMPRESSION_SUPPORT_SUPPORTED)
+        );
+        assert!(!set_identity_lxmf_compression_support(
+            &pool, hash, "unknown"
+        ));
+        assert_eq!(
+            lxmf_compression_support_for(&pool, hash),
+            LXMF_COMPRESSION_SUPPORT_SUPPORTED
         );
     }
 
@@ -4998,5 +5606,79 @@ mod pending_blackhole_tests {
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert_eq!(active.get("status").and_then(|v| v.as_str()), Some(""));
+    }
+
+    #[test]
+    fn migration_from_v32_adds_lxmf_compression_support_column() {
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version (version) VALUES (32);
+
+                CREATE TABLE identity_activity (
+                    dest_hash TEXT PRIMARY KEY,
+                    identity_hash TEXT NOT NULL DEFAULT '',
+                    last_seen REAL NOT NULL,
+                    first_seen REAL NOT NULL,
+                    announce_count INTEGER NOT NULL DEFAULT 1,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    last_interface TEXT NOT NULL DEFAULT '',
+                    services TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO identity_activity
+                    (dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services)
+                VALUES
+                    ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     10.0,
+                     5.0,
+                     3,
+                     'Peer',
+                     'Ready',
+                     'RNode',
+                     'lxmf.delivery');
+                "#,
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        let activity_cols = get_column_names(&conn, "identity_activity").unwrap();
+        assert!(
+            activity_cols
+                .iter()
+                .any(|c| c == "lxmf_compression_support")
+        );
+        let row: (String, String, String, String) = conn
+            .query_row(
+                "SELECT display_name, status, services, lxmf_compression_support
+                 FROM identity_activity
+                 WHERE dest_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "Peer".into(),
+                "Ready".into(),
+                "lxmf.delivery".into(),
+                "".into()
+            )
+        );
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }

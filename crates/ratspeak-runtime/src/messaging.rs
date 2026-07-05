@@ -116,6 +116,13 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
 
         let mut conversations: std::collections::HashMap<String, Value> =
             std::collections::HashMap::new();
+        let mut activity_name_stmt = conn
+            .prepare(
+                "SELECT display_name
+                 FROM identity_activity
+                 WHERE dest_hash = ?1 AND COALESCE(display_name, '') != ''",
+            )
+            .ok();
 
         if let Ok(rows) = stmt.query_map(rusqlite::params![id_for_db], |row| {
             Ok((
@@ -151,7 +158,16 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                         .get(&other)
                         .cloned()
                         .filter(|s| !s.is_empty())
-                        .or_else(|| announce_names.get(&other).cloned());
+                        .or_else(|| announce_names.get(&other).cloned())
+                        .or_else(|| {
+                            activity_name_stmt.as_mut().and_then(|stmt| {
+                                stmt.query_row(rusqlite::params![&other], |row| {
+                                    row.get::<_, String>(0)
+                                })
+                                .ok()
+                                .filter(|s| !s.is_empty())
+                            })
+                        });
 
                     conversations.insert(
                         other.clone(),
@@ -233,5 +249,87 @@ pub async fn broadcast_conversations_now(state: &AppState) {
         .store(false, Ordering::Release);
     if let Some(payload) = build_conversations_payload(state).await {
         state.emit_to_all("conversations_update", payload);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DashboardConfig;
+    use r2d2_sqlite::SqliteConnectionManager;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_STATE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn make_state() -> AppState {
+        let unique = TEMP_STATE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-runtime-msg-test-{}-{}-{unique}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let config = DashboardConfig::from_env_and_defaults(tmp);
+        let mgr = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(2).build(mgr).unwrap();
+        crate::db::init_schema(&pool).unwrap();
+        AppState::new(
+            config,
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        )
+    }
+
+    #[tokio::test]
+    async fn conversations_use_persisted_activity_name_for_non_contacts() {
+        let state = make_state();
+        crate::db::save_identity(
+            &state.db,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "me",
+            "Me",
+        );
+        crate::db::set_active_identity(&state.db, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let peer = "11111111111111111111111111111111";
+        {
+            let conn = state.db.get().unwrap();
+            conn.execute(
+                "INSERT INTO messages
+                    (id, source, destination, content, timestamp, state, direction, identity_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    "msg-1",
+                    peer,
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "hello",
+                    100.0,
+                    "delivered",
+                    "inbound",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ],
+            )
+            .unwrap();
+        }
+        crate::db::touch_identity_activity(
+            &state.db,
+            &[(peer.to_string(), 90.0, Some("RatDeck".to_string()), None)],
+        );
+
+        let payload = build_conversations_payload(&state).await.unwrap();
+        let rows = payload.as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("display_name").and_then(|v| v.as_str()),
+            Some("RatDeck")
+        );
+        assert_eq!(
+            rows[0].get("is_contact").and_then(|v| v.as_bool()),
+            Some(false)
+        );
     }
 }

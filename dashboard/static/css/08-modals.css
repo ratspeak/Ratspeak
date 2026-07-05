@@ -833,18 +833,6 @@
     cursor: text;
 }
 
-
-.rnode-device-summary {
-    padding: var(--space-4) var(--space-5);
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    font-size: var(--text-sm);
-    font-weight: 500;
-    color: var(--text-secondary);
-    margin-bottom: var(--space-6);
-}
-
 .rnode-frequency-row {
     display: flex;
     align-items: stretch;
@@ -875,6 +863,71 @@
     line-height: var(--type-leading-copy);
 }
 
+.rnode-public-map-section {
+    margin-top: var(--space-3);
+}
+
+.rnode-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    min-height: 52px;
+    padding: var(--space-4) 0;
+    border-top: 1px solid var(--border-row);
+    border-bottom: 1px solid var(--border-row);
+}
+
+.rnode-setting-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.rnode-public-map-section .rnode-setting-label {
+    color: var(--text-primary);
+    font-size: var(--text-lg);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.rnode-public-map-toggle {
+    flex-shrink: 0;
+}
+
+.rnode-public-map-controls {
+    margin-top: var(--space-3);
+}
+
+.rnode-public-map-status {
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    line-height: 1.4;
+}
+
+.rnode-public-map-status code {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+}
+
+.rnode-public-map-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
+}
+
+.rnode-public-map-actions {
+    margin-top: var(--space-3);
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+}
+
 .rnode-advanced-details {
     border-top: 1px solid var(--border-row);
     padding-top: var(--space-2);
@@ -893,6 +946,11 @@
 }
 
 @media (max-width: 520px) {
+    .rnode-public-map-grid {
+        grid-template-columns: 1fr;
+        gap: var(--space-3);
+    }
+
     .rnode-advanced-grid {
         grid-template-columns: 1fr;
     }

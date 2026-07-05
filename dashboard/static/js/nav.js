@@ -427,6 +427,8 @@ var VIEW_LIFECYCLE = {
             loadConversations();
         }
         if (typeof renderMsgProfileStrip === 'function') requestAnimationFrame(renderMsgProfileStrip);
+        // Heal renders skipped while this view was hidden.
+        if (typeof renderContactList === 'function') renderContactList();
     },
 
     contacts: function() {

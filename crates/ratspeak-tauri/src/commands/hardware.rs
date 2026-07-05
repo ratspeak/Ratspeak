@@ -245,49 +245,7 @@ pub async fn hw_remove(state: State<'_, Arc<AppState>>, hash: String) -> AppResu
 /// remaining attempts, or PIN-blocked).
 #[tauri::command]
 pub async fn hw_unlock(state: State<'_, Arc<AppState>>, pin: String) -> AppResult<Value> {
-    check_pin(&pin)?;
-    let state = Arc::clone(&state);
-    let _guard = state.identity_switch_lock.lock().await;
-    let expected_hash = state.hw_locked_hash();
-
-    crate::shutdown_rns_lxmf(&state).await;
-    state.clear_identity_scoped_runtime_state();
-    state.set_hw_last_error(None);
-    state.set_pending_hw_pin(Some(pin));
-    if let Ok(mut sig) = state.session_shutdown.write() {
-        *sig = rns_runtime::lifecycle::ShutdownSignal::new();
-    }
-    state.set_startup_stage("checking");
-    crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
-    crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
-
-    let loaded_identity = state
-        .lxmf
-        .lock()
-        .ok()
-        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity_hash.clone()));
-    let unlocked = loaded_identity.is_some()
-        && expected_hash
-            .as_deref()
-            .is_none_or(|expected| loaded_identity.as_deref() == Some(expected));
-    if unlocked {
-        state.set_hw_locked(None);
-        return to_value(serde_json::json!({ "ok": true }));
-    }
-    let msg = state
-        .take_hw_last_error()
-        .unwrap_or_else(|| "Could not unlock the hardware identity.".to_string());
-    if let Some(expected) = expected_hash {
-        state.set_hw_locked(Some(expected));
-        state.set_startup_stage("hw_locked");
-    }
-    let locked = msg.contains("PIN locked");
-    to_value(serde_json::json!({
-        "ok": false,
-        "error": msg,
-        "locked": locked,
-        "remaining": parse_remaining(&msg),
-    }))
+    crate::commands::identity::unlock_protected_identity(Arc::clone(&state), pin).await
 }
 
 /// First-run hardware setup completion needs a stronger guarantee than

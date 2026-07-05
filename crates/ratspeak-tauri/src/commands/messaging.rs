@@ -342,7 +342,15 @@ pub async fn send_lxmf_message(
     let tt = title.clone();
     let id_c = identity_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             lxmf.as_mut().and_then(|mgr| {
                 mgr.send_message_with_preference(MessageSendRequest {
                     dest_hash_hex: &dh,
@@ -482,7 +490,15 @@ pub async fn send_reaction(
     let ac = action.clone();
     let id_c = identity_id.clone();
     let sent = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             if let Some(mgr) = lxmf.as_mut() {
                 mgr.send_reaction_with_preference(ReactionSendRequest {
                     dest_hash_hex: &dh,
@@ -588,7 +604,15 @@ pub async fn send_lxmf_reply(
     let id_c = identity_id.clone();
     let reply_id_for_send = wire_reply_to_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             lxmf.as_mut().and_then(|mgr| {
                 mgr.send_reply_with_preference(ReplyMessageSendRequest {
                     dest_hash_hex: &dh,
@@ -697,7 +721,15 @@ pub async fn send_lxmf_propagated(
     let tt = title.clone();
     let id_c = identity_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             lxmf.as_mut().and_then(|mgr| {
                 mgr.send_message_with_method(
                     &dh,
@@ -880,7 +912,15 @@ pub async fn send_lxmf_with_attachment(
     let im = image_mime.clone();
     let id_c = identity_id.clone();
     let msg_id = tokio::task::spawn_blocking(move || {
+        let send_lock_started = std::time::Instant::now();
         if let Ok(mut lxmf) = st.lxmf.lock() {
+            let waited = send_lock_started.elapsed();
+            if waited > std::time::Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "send waited on lxmf manager lock"
+                );
+            }
             if let Some(mgr) = lxmf.as_mut() {
                 // Append "[File: …]" so non-attachment clients see the name.
                 let msg_content = if ct.is_empty() {
@@ -992,8 +1032,11 @@ pub async fn cancel_lxmf_message(
     .map_err(|_| AppError::internal("cancel_lxmf_message task panicked"))?;
 
     let msg_id_for_db = msg_id.clone();
-    let db_cancelled = db::spawn_db(state.db.clone(), move |p| {
-        db::cancel_outbound_message_state(&p, &msg_id_for_db)
+    let identity_for_db = active_identity_id(&state);
+    let (db_cancelled, method) = db::spawn_db(state.db.clone(), move |p| {
+        let db_cancelled = db::cancel_outbound_message_state(&p, &msg_id_for_db, &identity_for_db);
+        let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
+        (db_cancelled, method)
     })
     .await
     .map_err(|_| AppError::internal("cancel_lxmf_message db task panicked"))?;
@@ -1006,7 +1049,6 @@ pub async fn cancel_lxmf_message(
         if let Ok(mut map) = state.msg_id_map.lock() {
             map.remove(&msg_id);
         }
-        let method = db::get_message_delivery_method(&state.db, &msg_id);
         state.emit_to_all(
             "lxmf_step",
             json!({
@@ -1217,14 +1259,10 @@ pub async fn api_file_download(
     state: State<'_, Arc<AppState>>,
     stored_name: String,
 ) -> AppResult<FileDownload> {
-    let sanitized: String = stored_name
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
-        .take(200)
-        .collect();
+    // get_received_file applies the shared stored-filename sanitizer.
     let file_path = if let Ok(lxmf) = state.lxmf.lock() {
         lxmf.as_ref()
-            .and_then(|mgr| mgr.get_received_file(&sanitized))
+            .and_then(|mgr| mgr.get_received_file(&stored_name))
     } else {
         None
     };

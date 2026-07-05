@@ -592,6 +592,7 @@ fn safe_rnode_args(args: RnodeInterfaceArgs<'_>) -> bool {
         && normalize_rnode_interface_mode(args.mode).is_some()
         && safe_optional_scalar(args.region_key)
         && safe_optional_scalar(args.preset_key)
+        && safe_public_map_args(args.public_map)
 }
 
 pub fn normalize_rnode_interface_mode(mode: Option<&str>) -> Option<&'static str> {
@@ -624,7 +625,20 @@ pub fn rnode_interface_mode_value(
 }
 
 fn safe_backbone_client_args(args: BackboneClientArgs<'_>) -> bool {
-    safe_interface_name(args.name) && safe_config_scalar(args.host)
+    safe_interface_name(args.name) && safe_config_scalar(args.host) && safe_ifac_args(args.ifac)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InterfaceIfacArgs<'a> {
+    pub network_name: Option<&'a str>,
+    pub passphrase: Option<&'a str>,
+    pub ifac_size: Option<usize>,
+}
+
+fn safe_ifac_args(args: InterfaceIfacArgs<'_>) -> bool {
+    safe_optional_scalar(args.network_name)
+        && safe_optional_scalar(args.passphrase)
+        && args.ifac_size.is_none_or(|size| (1..=64).contains(&size))
 }
 
 /// Removes any existing block with the same `name` before insertion.
@@ -649,6 +663,37 @@ pub struct RnodeInterfaceArgs<'a> {
     pub tx_power: i8,
     pub region_key: Option<&'a str>,
     pub preset_key: Option<&'a str>,
+    pub airtime_limit_short: Option<f64>,
+    pub airtime_limit_long: Option<f64>,
+    pub public_map: RnodePublicMapArgs<'a>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+/// Public interface discovery metadata for Ratspeak map publishing.
+pub struct RnodePublicMapArgs<'a> {
+    pub discoverable: bool,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub discovery_name: Option<&'a str>,
+}
+
+fn safe_public_map_args(args: RnodePublicMapArgs<'_>) -> bool {
+    if !safe_optional_scalar(args.discovery_name) {
+        return false;
+    }
+    if !args.discoverable {
+        return true;
+    }
+    let Some(latitude) = args.latitude else {
+        return false;
+    };
+    let Some(longitude) = args.longitude else {
+        return false;
+    };
+    latitude.is_finite()
+        && longitude.is_finite()
+        && (-90.0..=90.0).contains(&latitude)
+        && (-180.0..=180.0).contains(&longitude)
 }
 
 pub fn auto_interface_names(config_dir: &Path) -> Vec<String> {
@@ -861,12 +906,22 @@ fn rnode_interface_block(args: RnodeInterfaceArgs<'_>) -> String {
         tx_power,
         region_key,
         preset_key,
+        airtime_limit_short,
+        airtime_limit_long,
+        public_map,
     } = args;
     let mode = normalize_rnode_interface_mode(mode).unwrap_or(RNODE_DEFAULT_INTERFACE_MODE);
 
     let mut block = format!(
         "\n  [[{name}]]\n    type = RNodeInterface\n    port = {port}\n    mode = {mode}\n    frequency = {frequency}\n    bandwidth = {bandwidth}\n    spreadingfactor = {spreading_factor}\n    codingrate = {coding_rate}\n    txpower = {tx_power}\n    enabled = true\n"
     );
+    if let Some(v) = airtime_limit_short {
+        block.push_str(&format!("    airtime_limit_short = {v}\n"));
+    }
+    if let Some(v) = airtime_limit_long {
+        block.push_str(&format!("    airtime_limit_long = {v}\n"));
+    }
+    append_public_map_fields(&mut block, public_map);
     if let Some(region_key) = region_key {
         block.push_str(&format!("    ratspeak_region = {region_key}\n"));
     }
@@ -876,10 +931,42 @@ fn rnode_interface_block(args: RnodeInterfaceArgs<'_>) -> String {
     block
 }
 
-fn tcp_client_block(name: &str, host: &str, port: u16) -> String {
-    format!(
+fn append_public_map_fields(block: &mut String, public_map: RnodePublicMapArgs<'_>) {
+    if !public_map.discoverable {
+        return;
+    }
+    let Some(latitude) = public_map.latitude else {
+        return;
+    };
+    let Some(longitude) = public_map.longitude else {
+        return;
+    };
+    block.push_str("    discoverable = yes\n");
+    block.push_str(&format!("    latitude = {latitude}\n"));
+    block.push_str(&format!("    longitude = {longitude}\n"));
+    if let Some(discovery_name) = public_map.discovery_name.filter(|s| !s.is_empty()) {
+        block.push_str(&format!("    discovery_name = {discovery_name}\n"));
+    }
+}
+
+fn append_ifac_fields(block: &mut String, ifac: InterfaceIfacArgs<'_>) {
+    if let Some(network_name) = ifac.network_name.filter(|s| !s.is_empty()) {
+        block.push_str(&format!("    network_name = {network_name}\n"));
+    }
+    if let Some(passphrase) = ifac.passphrase.filter(|s| !s.is_empty()) {
+        block.push_str(&format!("    passphrase = {passphrase}\n"));
+    }
+    if let Some(ifac_size) = ifac.ifac_size {
+        block.push_str(&format!("    ifac_size = {ifac_size}\n"));
+    }
+}
+
+fn tcp_client_block(name: &str, host: &str, port: u16, ifac: InterfaceIfacArgs<'_>) -> String {
+    let mut block = format!(
         "\n  [[{name}]]\n    type = TCPClientInterface\n    target_host = {host}\n    target_port = {port}\n    enabled = true\n"
-    )
+    );
+    append_ifac_fields(&mut block, ifac);
+    block
 }
 
 fn tcp_server_block(name: &str, listen_port: u16, listen_ip: &str) -> String {
@@ -898,6 +985,7 @@ pub struct BackboneClientArgs<'a> {
     pub connect_timeout: Option<u64>,
     pub max_reconnect_tries: Option<usize>,
     pub i2p_tunneled: bool,
+    pub ifac: InterfaceIfacArgs<'a>,
 }
 
 fn backbone_client_block(args: BackboneClientArgs<'_>) -> String {
@@ -909,6 +997,7 @@ fn backbone_client_block(args: BackboneClientArgs<'_>) -> String {
         connect_timeout,
         max_reconnect_tries,
         i2p_tunneled,
+        ifac,
     } = args;
 
     let mut block = format!(
@@ -926,6 +1015,7 @@ fn backbone_client_block(args: BackboneClientArgs<'_>) -> String {
     if i2p_tunneled {
         block.push_str("    i2p_tunneled = true\n");
     }
+    append_ifac_fields(&mut block, ifac);
     block
 }
 
@@ -998,10 +1088,23 @@ pub fn add_auto_interface(config_dir: &Path, name: &str, opts: &AutoInterfaceOpt
 }
 
 pub fn add_tcp_client(config_dir: &Path, name: &str, host: &str, port: u16) -> bool {
+    add_tcp_client_with_ifac(config_dir, name, host, port, InterfaceIfacArgs::default())
+}
+
+pub fn add_tcp_client_with_ifac(
+    config_dir: &Path,
+    name: &str,
+    host: &str,
+    port: u16,
+    ifac: InterfaceIfacArgs<'_>,
+) -> bool {
     if !safe_interface_name(name) || !safe_config_scalar(host) {
         return false;
     }
-    let block = tcp_client_block(name, host, port);
+    if !safe_ifac_args(ifac) {
+        return false;
+    }
+    let block = tcp_client_block(name, host, port, ifac);
     upsert_interface_block(config_dir, &[name], &block)
 }
 
@@ -1058,10 +1161,31 @@ pub fn update_tcp_client(
     host: &str,
     port: u16,
 ) -> bool {
+    update_tcp_client_with_ifac(
+        config_dir,
+        old_name,
+        name,
+        host,
+        port,
+        InterfaceIfacArgs::default(),
+    )
+}
+
+pub fn update_tcp_client_with_ifac(
+    config_dir: &Path,
+    old_name: &str,
+    name: &str,
+    host: &str,
+    port: u16,
+    ifac: InterfaceIfacArgs<'_>,
+) -> bool {
     if !safe_interface_name(old_name) || !safe_interface_name(name) || !safe_config_scalar(host) {
         return false;
     }
-    let block = tcp_client_block(name, host, port);
+    if !safe_ifac_args(ifac) {
+        return false;
+    }
+    let block = tcp_client_block(name, host, port, ifac);
     replace_interface_block(config_dir, old_name, name, &block)
 }
 
@@ -1391,6 +1515,97 @@ mod tests {
     }
 
     #[test]
+    fn tcp_client_ifac_writes_passphrase_without_network_name() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(add_tcp_client_with_ifac(
+            &dir,
+            "Private TCP",
+            "private.example",
+            4242,
+            InterfaceIfacArgs {
+                network_name: None,
+                passphrase: Some("secret"),
+                ifac_size: None,
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("[[Private TCP]]"));
+        assert!(content.contains("passphrase = secret"));
+        assert!(!content.contains("network_name ="));
+        assert!(!content.contains("ifac_size ="));
+    }
+
+    #[test]
+    fn update_tcp_client_ifac_can_preserve_size() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_tcp_client_with_ifac(
+            &dir,
+            "Old TCP",
+            "old.example",
+            4242,
+            InterfaceIfacArgs {
+                network_name: Some("mesh"),
+                passphrase: Some("secret"),
+                ifac_size: Some(8),
+            },
+        ));
+
+        assert!(update_tcp_client_with_ifac(
+            &dir,
+            "Old TCP",
+            "New TCP",
+            "new.example",
+            4243,
+            InterfaceIfacArgs {
+                network_name: Some("mesh"),
+                passphrase: Some("changed"),
+                ifac_size: Some(8),
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert_eq!(count_header(&content, "Old TCP"), 0);
+        assert_eq!(count_header(&content, "New TCP"), 1);
+        assert!(content.contains("network_name = mesh"));
+        assert!(content.contains("passphrase = changed"));
+        assert!(content.contains("ifac_size = 8"));
+    }
+
+    #[test]
+    fn backbone_client_ifac_writes_network_name_and_passphrase() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(add_backbone_client(
+            &dir,
+            BackboneClientArgs {
+                name: "Private Backbone",
+                host: "backbone.example",
+                port: 4242,
+                prefer_ipv6: false,
+                connect_timeout: None,
+                max_reconnect_tries: None,
+                i2p_tunneled: false,
+                ifac: InterfaceIfacArgs {
+                    network_name: Some("mesh"),
+                    passphrase: Some("secret"),
+                    ifac_size: None,
+                },
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("[[Private Backbone]]"));
+        assert!(content.contains("type = BackboneInterface"));
+        assert!(content.contains("network_name = mesh"));
+        assert!(content.contains("passphrase = secret"));
+    }
+
+    #[test]
     fn update_tcp_server_same_name_replaces_existing_block() {
         let dir = temp_config_dir();
         write_base_config(&dir);
@@ -1555,6 +1770,9 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("americas"),
                 preset_key: Some("short_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs::default(),
             },
         ));
 
@@ -1572,6 +1790,9 @@ mod tests {
                 tx_power: 20,
                 region_key: Some("americas"),
                 preset_key: None,
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs::default(),
             },
         ));
 
@@ -1604,6 +1825,9 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("uhf_433"),
                 preset_key: None,
+                airtime_limit_short: Some(33.0),
+                airtime_limit_long: Some(3.5),
+                public_map: RnodePublicMapArgs::default(),
             },
         ));
 
@@ -1614,8 +1838,133 @@ mod tests {
         assert!(content.contains("spreadingfactor = 10"));
         assert!(content.contains("codingrate = 6"));
         assert!(content.contains("txpower = 17"));
+        assert!(content.contains("airtime_limit_short = 33"));
+        assert!(content.contains("airtime_limit_long = 3.5"));
         assert!(content.contains("ratspeak_region = uhf_433"));
         assert!(!content.contains("ratspeak_preset ="));
+    }
+
+    #[test]
+    fn rnode_interface_writes_public_map_discovery_fields() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(add_rnode_interface(
+            &dir,
+            RnodeInterfaceArgs {
+                name: "Mapped Radio",
+                port: "/dev/ttyUSB0",
+                mode: Some("full"),
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: Some("americas"),
+                preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs {
+                    discoverable: true,
+                    latitude: Some(39.739),
+                    longitude: Some(-104.99),
+                    discovery_name: Some("Alice"),
+                },
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("discoverable = yes"));
+        assert!(content.contains("latitude = 39.739"));
+        assert!(content.contains("longitude = -104.99"));
+        assert!(content.contains("discovery_name = Alice"));
+        assert!(!content.contains("height ="));
+    }
+
+    #[test]
+    fn update_rnode_clears_public_map_fields_when_disabled() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            RnodeInterfaceArgs {
+                name: "Mapped Radio",
+                port: "/dev/ttyUSB0",
+                mode: Some("full"),
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: Some("americas"),
+                preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs {
+                    discoverable: true,
+                    latitude: Some(39.739),
+                    longitude: Some(-104.99),
+                    discovery_name: Some("Alice"),
+                },
+            },
+        ));
+
+        assert!(update_rnode_interface(
+            &dir,
+            "Mapped Radio",
+            RnodeInterfaceArgs {
+                name: "Mapped Radio",
+                port: "/dev/ttyUSB0",
+                mode: Some("full"),
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: Some("americas"),
+                preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs::default(),
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert!(!content.contains("discoverable ="));
+        assert!(!content.contains("latitude ="));
+        assert!(!content.contains("longitude ="));
+        assert!(!content.contains("discovery_name ="));
+    }
+
+    #[test]
+    fn rnode_interface_rejects_invalid_public_map_coordinates() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(!add_rnode_interface(
+            &dir,
+            RnodeInterfaceArgs {
+                name: "Bad Map Radio",
+                port: "/dev/ttyUSB0",
+                mode: Some("full"),
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: Some("americas"),
+                preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs {
+                    discoverable: true,
+                    latitude: Some(91.0),
+                    longitude: Some(-104.99),
+                    discovery_name: Some("Alice"),
+                },
+            },
+        ));
+        assert!(!read_config(&dir).unwrap().contains("Bad Map Radio"));
     }
 
     #[test]
@@ -1636,6 +1985,9 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("americas"),
                 preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs::default(),
             },
         ));
 
@@ -1643,6 +1995,8 @@ mod tests {
         assert!(content.contains("port = tcp://rnode.local:7633"));
         assert!(content.contains("mode = gateway"));
         assert!(content.contains("type = RNodeInterface"));
+        assert!(!content.contains("airtime_limit_short ="));
+        assert!(!content.contains("airtime_limit_long ="));
     }
 
     #[test]
@@ -1663,6 +2017,9 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("americas"),
                 preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs::default(),
             },
         ));
 
@@ -1688,6 +2045,9 @@ mod tests {
                 tx_power: 17,
                 region_key: Some("americas"),
                 preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs::default(),
             },
         ));
         assert!(read_config(&dir).unwrap().contains("[interfaces]"));

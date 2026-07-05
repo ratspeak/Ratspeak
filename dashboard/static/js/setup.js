@@ -258,8 +258,8 @@ function runConnectingProgress() {
         pollAttempt++;
         RS.invoke('api_startup_progress').then(function(data) {
             if (data.stage === 'hw_locked') {
-                // Active identity is a locked hardware key — prompt for the PIN.
-                // Unlock re-inits the runtime and reloads the app.
+                // Active identity is locked — prompt for the PIN. Unlock
+                // re-inits the runtime and reloads the app.
                 if (typeof showHwUnlock === 'function') showHwUnlock(data.hw_locked, data.hw_locked_kind);
                 return;
             }
@@ -501,16 +501,14 @@ document.addEventListener('DOMContentLoaded', function() {
     if (setupMnemonicCopy) {
         setupMnemonicCopy.addEventListener('click', function() {
             if (!setupRecoveryMnemonic) return;
-            if (!navigator.clipboard) {
-                if (typeof showToast === 'function') showToast('Clipboard is not available', 'toast-orange', 2000);
-                return;
-            }
-            navigator.clipboard.writeText(setupRecoveryMnemonic).then(function() {
-                if (typeof showCopyConfirmationToast === 'function') {
-                    showCopyConfirmationToast('Recovery phrase');
+            RS.copyText(setupRecoveryMnemonic).then(function(ok) {
+                if (ok) {
+                    if (typeof showCopyConfirmationToast === 'function') {
+                        showCopyConfirmationToast('Recovery phrase');
+                    }
+                } else if (typeof showToast === 'function') {
+                    showToast('Could not copy phrase', 'toast-orange', 2000);
                 }
-            }).catch(function() {
-                if (typeof showToast === 'function') showToast('Could not copy phrase', 'toast-orange', 2000);
             });
         });
     }
@@ -559,17 +557,19 @@ document.addEventListener('DOMContentLoaded', function() {
             var hashEl = document.getElementById('setup-lxmf-hash');
             var hashText = hashEl ? hashEl.textContent : '';
             if (hashText && hashText !== '\u2014' && hashText !== '--') {
-                navigator.clipboard.writeText(hashText).then(function() {
-                    if (typeof showCopyConfirmationToast === 'function') {
-                        showCopyConfirmationToast('Address');
+                RS.copyText(hashText).then(function(ok) {
+                    if (ok) {
+                        if (typeof showCopyConfirmationToast === 'function') {
+                            showCopyConfirmationToast('Address');
+                        }
+                    } else {
+                        // Clipboard unavailable; fall back to text selection.
+                        var range = document.createRange();
+                        range.selectNodeContents(hashEl);
+                        var sel = window.getSelection();
+                        sel.removeAllRanges();
+                        sel.addRange(range);
                     }
-                }).catch(function() {
-                    // Clipboard API unavailable; fall back to text selection.
-                    var range = document.createRange();
-                    range.selectNodeContents(hashEl);
-                    var sel = window.getSelection();
-                    sel.removeAllRanges();
-                    sel.addRange(range);
                 });
             }
         });

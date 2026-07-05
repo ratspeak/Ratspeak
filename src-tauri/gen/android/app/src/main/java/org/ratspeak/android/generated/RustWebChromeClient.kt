@@ -243,6 +243,12 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
   ) {
     super.onGeolocationPermissionsShowPrompt(origin, callback)
     Logger.debug("onGeolocationPermissionsShowPrompt: DOING IT HERE FOR ORIGIN: $origin")
+    val coarseLocationPermission = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+    if (PermissionHelper.hasPermissions(activity, coarseLocationPermission)) {
+      callback.invoke(origin, true, false)
+      Logger.debug("onGeolocationPermissionsShowPrompt: coarse permission already granted")
+      return
+    }
     val geoPermissions =
       arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
     if (!PermissionHelper.hasPermissions(activity, geoPermissions)) {

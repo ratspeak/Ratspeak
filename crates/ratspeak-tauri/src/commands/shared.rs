@@ -53,6 +53,32 @@ pub(crate) fn with_rns_config_lock<T>(state: &AppState, f: impl FnOnce() -> T) -
     f()
 }
 
+// Interface names whose most recent `add_lora_interface` created a brand-new
+// config entry. Connect-failure rollback (`cancel_ble_connect`) may only
+// delete these; reconnects of pre-existing radios must survive a failed or
+// cancelled connect.
+static FRESH_LORA_ADDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+pub(crate) fn mark_lora_add_freshness(name: &str, fresh: bool) {
+    let mut set = FRESH_LORA_ADDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if fresh {
+        set.insert(name.to_string());
+    } else {
+        set.remove(name);
+    }
+}
+
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+pub(crate) fn take_fresh_lora_add(name: &str) -> bool {
+    FRESH_LORA_ADDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(name)
+}
+
 pub(crate) fn remove_stored_file_refs(
     files_dir: &Path,
     file_refs: impl IntoIterator<Item = String>,
@@ -61,15 +87,10 @@ pub(crate) fn remove_stored_file_refs(
         if file_ref.is_empty() {
             continue;
         }
-        let sanitized: String = file_ref
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ')
-            .take(240)
-            .collect();
-        if sanitized != file_ref {
+        let Some(sanitized) = ratspeak_runtime::lxmf::sanitize_stored_file_name(&file_ref) else {
             tracing::warn!(stored_name = %file_ref, "skipping unsafe stored attachment path");
             continue;
-        }
+        };
         std::fs::remove_file(files_dir.join(sanitized)).ok();
     }
 }
@@ -524,6 +545,11 @@ pub(crate) fn emit_op_status_broadcast(
 }
 
 pub(crate) async fn disable_ble_peer_inner(state: &Arc<AppState>) {
+    // Serialize against enable: without this a rapid toggle (or an expiry
+    // firing mid-enable) races the spawn, leaving either a zombie "enabled"
+    // interface or a torn-down new session. The enable task holds the same
+    // lock for its whole duration, so this waits for any in-flight enable.
+    let _enable_guard = state.ble_peer_enable_lock.lock().await;
     tracing::info!("disable_ble_peer_inner: start");
     let _ = db::spawn_db(state.db.clone(), |p| {
         db::set_setting(&p, "ble_peer_enabled", "0");
@@ -534,6 +560,9 @@ pub(crate) async fn disable_ble_peer_inner(state: &Arc<AppState>) {
     state
         .ble_peer_count
         .store(0, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut peers) = state.ble_peers.lock() {
+        peers.clear();
+    }
     state.emit_to_all(
         "ble_peer_status_changed",
         json!({ "state": "off", "peer_count": 0 }),
@@ -632,6 +661,23 @@ mod tests {
     }
 
     #[test]
+    fn fresh_lora_add_marker_gates_rollback_and_consumes_once() {
+        // Fresh add: rollback allowed exactly once.
+        mark_lora_add_freshness("Marker Radio Fresh", true);
+        assert!(take_fresh_lora_add("Marker Radio Fresh"));
+        assert!(!take_fresh_lora_add("Marker Radio Fresh"));
+
+        // Re-add of an existing entry clears any stale fresh marker, so a
+        // failed reconnect never deletes pre-existing config.
+        mark_lora_add_freshness("Marker Radio Existing", true);
+        mark_lora_add_freshness("Marker Radio Existing", false);
+        assert!(!take_fresh_lora_add("Marker Radio Existing"));
+
+        // Resume/cancel paths that never went through add are not deletable.
+        assert!(!take_fresh_lora_add("Marker Radio Never Added"));
+    }
+
+    #[test]
     fn blackhole_reason_display_prefers_custom_label() {
         assert_eq!(
             blackhole_reason_display(BlackholeReason::Manual, Some("operator note")),
@@ -674,9 +720,6 @@ mod tests {
             data_dir: temp.path().join(".ratspeak"),
             rns_config_dir: override_dir.clone(),
             rns_config_dir_overridden: true,
-            port: 5050,
-            api_token: String::new(),
-            poll_interval: 1.5,
             max_log_entries: 200,
         };
         let state = state_for_config(config);

@@ -42,19 +42,42 @@ pub fn sanitize_announced_status(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+/// Active identity's (hash, lxmf_hash) via the generation-stamped cache.
+/// Hot async paths call this every poll/announce/message; the sync DB read
+/// only happens when an identity-table write bumped `db::identity_generation`.
+pub fn active_identity_snapshot(state: &AppState) -> Option<(String, String)> {
+    let generation = db::identity_generation();
+    if let Ok(cache) = state.active_identity_cache.lock()
+        && let Some((cached_generation, snapshot)) = cache.as_ref()
+        && *cached_generation == generation
+    {
+        return snapshot.clone();
+    }
+
+    let snapshot = db::get_active_identity(&state.db).and_then(|id| {
+        let hash = id.get("hash")?.as_str()?.to_string();
+        let lxmf_hash = id
+            .get("lxmf_hash")
+            .and_then(|h| h.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Some((hash, lxmf_hash))
+    });
+    if let Ok(mut cache) = state.active_identity_cache.lock() {
+        *cache = Some((generation, snapshot.clone()));
+    }
+    snapshot
+}
+
 pub fn active_identity_id(state: &AppState) -> String {
-    db::get_active_identity(&state.db)
-        .and_then(|id| id.get("hash").and_then(|h| h.as_str()).map(String::from))
+    active_identity_snapshot(state)
+        .map(|(hash, _)| hash)
         .unwrap_or_default()
 }
 
 pub fn active_lxmf_hash(state: &AppState) -> String {
-    db::get_active_identity(&state.db)
-        .and_then(|id| {
-            id.get("lxmf_hash")
-                .and_then(|h| h.as_str())
-                .map(String::from)
-        })
+    active_identity_snapshot(state)
+        .map(|(_, lxmf_hash)| lxmf_hash)
         .unwrap_or_default()
 }
 

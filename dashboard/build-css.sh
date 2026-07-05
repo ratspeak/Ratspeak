@@ -22,15 +22,11 @@ cat \
     "$CSS_DIR/13-responsive.css" \
     > "$OUT"
 
-# Minify: strip comments, collapse whitespace, trim lines
+# Minify: strip comments, trim trailing whitespace, drop blank lines.
+# All via perl — BSD and GNU `sed -i` syntax differ, and the BSD form
+# silently no-ops on Linux.
 UNMIN_SIZE=$(wc -c < "$OUT" | tr -d ' ')
-sed -i '' -e 's|/\*[^*]*\*\+\([^/*][^*]*\*\+\)*/||g' "$OUT" 2>/dev/null || true
-# Remove remaining multi-line comments via perl (sed can't handle multi-line well)
-if command -v perl &>/dev/null; then
-    perl -0777 -pi -e 's{/\*.*?\*/}{}gs' "$OUT"
-fi
-# Collapse blank lines and trim trailing whitespace
-sed -i '' -e '/^[[:space:]]*$/d' -e 's/[[:space:]]*$//' "$OUT" 2>/dev/null || true
+perl -0777 -pi -e 's{/\*.*?\*/}{}gs; s/[ \t]+$//mg; s/\n+/\n/g; s/\A\n//' "$OUT"
 MIN_SIZE=$(wc -c < "$OUT" | tr -d ' ')
 
 echo "Built $OUT ($(wc -l < "$OUT" | tr -d ' ') lines, ${UNMIN_SIZE}B → ${MIN_SIZE}B)"

@@ -152,6 +152,60 @@ async fn spawn_db_propagates_panics_as_join_error() {
     assert!(join_err.is_panic(), "error should represent a panic");
 }
 
+/// T2-2: `helpers::active_identity_id` is generation-cached — concurrent hot
+/// paths read the cache, and any identity-table write through the db layer
+/// (switch/delete) invalidates it without an explicit hook at the call site.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_identity_cache_tracks_identity_switches() {
+    use ratspeak_tauri::config::DashboardConfig;
+    use ratspeak_tauri::helpers;
+    use ratspeak_tauri::state::AppState;
+
+    let (pool, dir) = build_pool();
+    let data_dir = dir.path().join(".ratspeak");
+    let rns_config_dir = data_dir.join("reticulum");
+    std::fs::create_dir_all(&rns_config_dir).expect("create dirs");
+    let state = Arc::new(AppState::new(
+        DashboardConfig {
+            data_root: dir.path().to_path_buf(),
+            data_dir,
+            rns_config_dir,
+            rns_config_dir_overridden: false,
+            max_log_entries: 200,
+        },
+        pool.clone(),
+        Arc::new(ratspeak_core::NoopEmitter),
+        Arc::new(ratspeak_core::NoopNotifier),
+    ));
+
+    db::save_identity(&pool, "id-a", "lxmf-a", "", "");
+    db::save_identity(&pool, "id-b", "lxmf-b", "", "");
+    db::set_active_identity(&pool, "id-a").expect("activate a");
+    assert_eq!(helpers::active_identity_id(&state), "id-a");
+    assert_eq!(helpers::active_lxmf_hash(&state), "lxmf-a");
+
+    // Concurrent cached reads agree.
+    let mut handles = Vec::new();
+    for _ in 0..50 {
+        let state = Arc::clone(&state);
+        handles.push(tokio::spawn(async move {
+            assert_eq!(helpers::active_identity_id(&state), "id-a");
+        }));
+    }
+    for h in handles {
+        h.await.expect("cached read task");
+    }
+
+    // A switch through the db layer invalidates the cache by itself.
+    db::set_active_identity(&pool, "id-b").expect("activate b");
+    assert_eq!(helpers::active_identity_id(&state), "id-b");
+    assert_eq!(helpers::active_lxmf_hash(&state), "lxmf-b");
+
+    // Deleting the active identity leaves no active row.
+    db::delete_identity(&pool, "id-b", false).expect("delete b");
+    assert_eq!(helpers::active_identity_id(&state), "");
+}
+
 /// Keep the pool large enough to absorb UI bursts without starving callers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pool_size_is_at_least_32() {

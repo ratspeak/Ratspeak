@@ -12,9 +12,6 @@ pub struct DashboardConfig {
     pub data_dir: PathBuf,
     pub rns_config_dir: PathBuf,
     pub rns_config_dir_overridden: bool,
-    pub port: u16,
-    pub api_token: String,
-    pub poll_interval: f64,
     pub max_log_entries: usize,
 }
 
@@ -34,12 +31,6 @@ impl DashboardConfig {
             data_dir,
             rns_config_dir,
             rns_config_dir_overridden,
-            port: std::env::var("RATSPEAK_SERVER_PORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5050),
-            api_token: std::env::var("RATSPEAK_SERVER_API_TOKEN").unwrap_or_default(),
-            poll_interval: 1.5,
             max_log_entries: 200,
         }
     }

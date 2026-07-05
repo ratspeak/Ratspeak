@@ -546,6 +546,109 @@ pub async fn reveal_identity_mnemonic(
     Ok(json!({ "mnemonic": phrase }))
 }
 
+fn protected_identity_kind(state: &AppState, hash: &str) -> Option<&'static str> {
+    let id_dir = state.config.data_dir.join("identities").join(hash);
+    if id_dir.join("identity.hwid").exists() {
+        Some("hardware")
+    } else if id_dir.join("identity.enc").exists() {
+        Some("passcode")
+    } else {
+        None
+    }
+}
+
+fn check_unlock_secret(kind: Option<&str>, secret: &str) -> AppResult<()> {
+    if secret.len() < 6 {
+        return Err(AppError::bad_request("PIN must be at least 6 characters"));
+    }
+    if kind == Some("hardware") && secret.len() > 8 {
+        return Err(AppError::bad_request("PIN must be 6-8 characters"));
+    }
+    if kind != Some("hardware") && secret.len() > 128 {
+        return Err(AppError::bad_request("PIN must be at most 128 characters"));
+    }
+    Ok(())
+}
+
+fn parse_remaining_attempts(msg: &str) -> Option<u8> {
+    let idx = msg.find(" attempts remaining")?;
+    msg[..idx]
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+pub(crate) async fn unlock_protected_identity(
+    state: Arc<AppState>,
+    secret: String,
+) -> AppResult<Value> {
+    let _guard = state.identity_switch_lock.lock().await;
+    let expected_hash = state.hw_locked_hash();
+    let kind = expected_hash
+        .as_deref()
+        .and_then(|hash| protected_identity_kind(&state, hash));
+    check_unlock_secret(kind, &secret)?;
+
+    crate::shutdown_rns_lxmf(&state).await;
+    state.clear_identity_scoped_runtime_state();
+    state.set_hw_last_error(None);
+    state.set_pending_hw_pin(Some(secret));
+    if let Ok(mut sig) = state.session_shutdown.write() {
+        *sig = rns_runtime::lifecycle::ShutdownSignal::new();
+    }
+    state.set_startup_stage("checking");
+    crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+    crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
+
+    let loaded_identity = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity_hash.clone()));
+    let unlocked = loaded_identity.is_some()
+        && expected_hash
+            .as_deref()
+            .is_none_or(|expected| loaded_identity.as_deref() == Some(expected));
+    if unlocked {
+        state.set_hw_locked(None);
+        state.set_hw_last_error(None);
+        return Ok(json!({
+            "ok": true,
+            "kind": kind.unwrap_or("unknown"),
+        }));
+    }
+
+    let msg = state.take_hw_last_error().unwrap_or_else(|| match kind {
+        Some("passcode") => "Could not unlock the identity.".to_string(),
+        _ => "Could not unlock the hardware identity.".to_string(),
+    });
+    if let Some(expected) = expected_hash {
+        state.set_hw_locked(Some(expected));
+        state.set_startup_stage("hw_locked");
+    }
+    let locked = kind == Some("hardware") && msg.contains("PIN locked");
+    Ok(json!({
+        "ok": false,
+        "kind": kind.unwrap_or("unknown"),
+        "error": msg,
+        "locked": locked,
+        "remaining": parse_remaining_attempts(&msg),
+    }))
+}
+
+/// Unlock the active protected identity. For software identities, `secret` is
+/// the at-rest encryption PIN; for hardware identities, it is the token PIN.
+#[tauri::command]
+pub async fn unlock_identity(state: State<'_, Arc<AppState>>, secret: String) -> AppResult<Value> {
+    unlock_protected_identity(Arc::clone(&state), secret).await
+}
+
 async fn import_identity_shared(
     state: State<'_, Arc<AppState>>,
     key_bytes: Vec<u8>,
@@ -832,15 +935,22 @@ pub async fn api_export_identity_backup_base64(
         .unwrap_or("")
         .to_string();
 
-    let mnemonic = ratspeak_runtime::vault::reveal_mnemonic(
-        &state.config.data_dir.join("identities").join(&hash_hex),
-        None,
-    )
-    .ok()
-    .map(|m| m.as_str().to_string());
-    let vault =
-        ratspeak_runtime::vault::encrypt_identity(&passcode, &key_array, mnemonic.as_deref())
-            .map_err(|e| AppError::internal(format!("failed to encrypt identity backup: {e}")))?;
+    // Argon2id KDF — off the async worker like the other vault paths.
+    let identity_dir = state.config.data_dir.join("identities").join(&hash_hex);
+    let passcode_for_kdf = passcode.clone();
+    let vault = tokio::task::spawn_blocking(move || {
+        let mnemonic = ratspeak_runtime::vault::reveal_mnemonic(&identity_dir, None)
+            .ok()
+            .map(|m| m.as_str().to_string());
+        ratspeak_runtime::vault::encrypt_identity(
+            &passcode_for_kdf,
+            &key_array,
+            mnemonic.as_deref(),
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("identity backup task panicked"))?
+    .map_err(|e| AppError::internal(format!("failed to encrypt identity backup: {e}")))?;
 
     let backup = EncryptedIdentityBackupV2 {
         format: IDENTITY_BACKUP_FORMAT.to_string(),
@@ -1046,7 +1156,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     crate::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
     crate::commands::ble::restore_ble_peer_if_requested(Arc::clone(&state)).await;
 
-    // Switching to a hardware identity comes up locked (awaiting PIN) — a valid
+    // Switching to a protected identity comes up locked (awaiting PIN) — a valid
     // intermediate state, not a failed switch. Keep it active and let the unlock
     // prompt (driven by the hardware_locked event) take over; do not roll back.
     if state.hw_locked_hash().as_deref() == Some(hash_hex.as_str()) {
@@ -1145,7 +1255,8 @@ pub async fn api_set_display_name(
         return Err(AppError::conflict("no active identity"));
     }
 
-    // Prefer in-memory LXMF mgr; fall back to DB-only on startup race.
+    // Memory update under a short lock; the DB write happens after it drops
+    // (the mgr may be absent on a startup race — DB-only then).
     let updated_in_memory = {
         let mut guard = state
             .lxmf
@@ -1153,30 +1264,24 @@ pub async fn api_set_display_name(
             .map_err(|_| AppError::internal("lxmf state lock poisoned"))?;
         match guard.as_mut() {
             Some(mgr) => {
-                mgr.update_display_name(&display_name, &state.db, &identity_id)
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "display_name: update_identity failed");
-                        AppError::internal("failed to save display name")
-                    })?;
+                mgr.set_display_name(&display_name);
                 true
             }
             None => false,
         }
     };
 
-    if !updated_in_memory {
-        let id = identity_id.clone();
-        let dn = display_name.clone();
-        db::spawn_db(state.db.clone(), move |p| {
-            db::update_identity(&p, &id, None, Some(&dn))
-        })
-        .await
-        .map_err(|_| AppError::internal("failed to save display name"))?
-        .map_err(|e| {
-            tracing::error!(error = %e, "display_name: update_identity failed (no lxmf)");
-            AppError::internal("failed to save display name")
-        })?;
-    }
+    let id = identity_id.clone();
+    let dn = display_name.clone();
+    db::spawn_db(state.db.clone(), move |p| {
+        db::update_identity(&p, &id, None, Some(&dn))
+    })
+    .await
+    .map_err(|_| AppError::internal("failed to save display name"))?
+    .map_err(|e| {
+        tracing::error!(error = %e, "display_name: update_identity failed");
+        AppError::internal("failed to save display name")
+    })?;
 
     if updated_in_memory {
         crate::send_announce_from_state(&state).await;
@@ -1197,44 +1302,35 @@ pub async fn set_identity_status(
         return Err(AppError::conflict("no active identity"));
     }
 
-    let mut identity_payload: Option<Value> = None;
-    let updated_in_memory = {
+    // Memory update under a short lock; the DB write happens after it drops
+    // (the mgr may be absent on a startup race — DB-only then).
+    let identity_payload: Option<Value> = {
         let mut guard = state
             .lxmf
             .lock()
             .map_err(|_| AppError::internal("lxmf state lock poisoned"))?;
-        match guard.as_mut() {
-            Some(mgr) => {
-                mgr.update_status(&status, &state.db, &identity_id)
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "status: update_identity_status failed");
-                        AppError::internal("failed to save status")
-                    })?;
-                identity_payload = Some(json!({
-                    "hash": mgr.lxmf_hash.clone(),
-                    "identity_hash": mgr.identity_hash.clone(),
-                    "display_name": mgr.display_name.clone(),
-                    "status": status.clone(),
-                }));
-                true
-            }
-            None => false,
-        }
+        guard.as_mut().map(|mgr| {
+            mgr.set_status(&status);
+            json!({
+                "hash": mgr.lxmf_hash.clone(),
+                "identity_hash": mgr.identity_hash.clone(),
+                "display_name": mgr.display_name.clone(),
+                "status": status.clone(),
+            })
+        })
     };
 
-    if !updated_in_memory {
-        let id = identity_id.clone();
-        let saved_status = status.clone();
-        db::spawn_db(state.db.clone(), move |p| {
-            db::update_identity_status(&p, &id, &saved_status)
-        })
-        .await
-        .map_err(|_| AppError::internal("failed to save status"))?
-        .map_err(|e| {
-            tracing::error!(error = %e, "status: update_identity_status failed (no lxmf)");
-            AppError::internal("failed to save status")
-        })?;
-    }
+    let id = identity_id.clone();
+    let saved_status = status.clone();
+    db::spawn_db(state.db.clone(), move |p| {
+        db::update_identity_status(&p, &id, &saved_status)
+    })
+    .await
+    .map_err(|_| AppError::internal("failed to save status"))?
+    .map_err(|e| {
+        tracing::error!(error = %e, "status: update_identity_status failed");
+        AppError::internal("failed to save status")
+    })?;
 
     if let Some(payload) = identity_payload {
         state.emit_to_all("lxmf_identity", payload);

@@ -5,11 +5,9 @@ var RECOVERY_PHRASE_WORDS = 12;
 
 function shareAddress(address, displayName) {
     if (!navigator.share) {
-        if (navigator.clipboard) {
-            navigator.clipboard.writeText(address).then(function() {
-                showCopyConfirmationToast('Address');
-            });
-        }
+        RS.copyText(address).then(function(ok) {
+            if (ok) showCopyConfirmationToast('Address');
+        });
         return;
     }
     var title = displayName ? displayName + ' (Ratspeak)' : 'Ratspeak Address';
@@ -59,13 +57,10 @@ function isOriginalIdentity(hash) {
 
 function copyIdentityValue(value, noun) {
     if (!value) return;
-    if (!navigator.clipboard) {
-        shareAddress(value, '');
-        return;
-    }
-    navigator.clipboard.writeText(value).then(function() {
-        showCopyConfirmationToast(noun || 'Value');
-    }).catch(function() {});
+    RS.copyText(value).then(function(ok) {
+        if (ok) showCopyConfirmationToast(noun || 'Value');
+        else shareAddress(value, '');
+    });
 }
 
 function identitySetInlineError(id, message) {
@@ -984,14 +979,9 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
         var copyBtn = document.getElementById('recovery-backup-copy');
         if (copyBtn) {
             copyBtn.addEventListener('click', function() {
-                if (!navigator.clipboard) {
-                    showToast('Clipboard is not available', 'toast-orange', 2000);
-                    return;
-                }
-                navigator.clipboard.writeText(mnemonic).then(function() {
-                    showCopyConfirmationToast('Recovery phrase');
-                }).catch(function() {
-                    showToast('Could not copy phrase', 'toast-orange', 2000);
+                RS.copyText(mnemonic).then(function(ok) {
+                    if (ok) showCopyConfirmationToast('Recovery phrase');
+                    else showToast('Could not copy phrase', 'toast-orange', 2000);
                 });
             });
         }
@@ -1783,13 +1773,10 @@ document.addEventListener('DOMContentLoaded', function() {
         var active = activeIdentity();
         var address = active && (active.lxmf_hash || active.hash);
         if (!address) return;
-        if (!navigator.clipboard) {
-            shareAddress(address, active.display_name || active.nickname || '');
-            return;
-        }
-        navigator.clipboard.writeText(address).then(function() {
-            showCopyConfirmationToast('Address');
-        }).catch(function() {});
+        RS.copyText(address).then(function(ok) {
+            if (ok) showCopyConfirmationToast('Address');
+            else shareAddress(address, active.display_name || active.nickname || '');
+        });
     });
 
     var identityShareBtn = document.getElementById('identity-share-address-btn');
@@ -2480,11 +2467,9 @@ function _hwFinish(result) {
 function _hwCopyMnemonic() {
     var phrase = _hwCtx && _hwCtx.mnemonic;
     if (!phrase) return;
-    if (navigator.clipboard) {
-        navigator.clipboard.writeText(phrase).then(function() {
-            showCopyConfirmationToast('Recovery phrase');
-        }).catch(function() {});
-    }
+    RS.copyText(phrase).then(function(ok) {
+        if (ok) showCopyConfirmationToast('Recovery phrase');
+    });
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -2652,15 +2637,15 @@ function removeHardwareIdentity(target) {
     });
 }
 
-// ---- Hardware identity unlock (PIN prompt) ----
-// Shown when the active identity is hardware-backed and the token is locked
+// ---- Protected identity unlock (PIN prompt) ----
+// Shown when the active identity is hardware-backed or software PIN-protected
 // (on boot, or after the auto-lock timeout). Unlocking re-inits the runtime.
 
 var _hwLockedHash = null;
 var _hwLockedKind = 'hardware'; // 'hardware' (YubiKey PIN) | 'passcode' (software)
 
 // Launch/timeout unlock prompt. Handles both a hardware-key PIN and a software
-// passcode (kind) — same flow, same `hw_unlock` command (the secret rides in `pin`).
+// passcode (kind) through the generic identity unlock command.
 function showHwUnlock(hash, kind) {
     if (typeof hash === 'string' && hash) _hwLockedHash = hash;
     if (kind === 'passcode' || kind === 'hardware') _hwLockedKind = kind;
@@ -2718,7 +2703,7 @@ function _hwDoUnlock() {
     btn.textContent = 'Unlocking…';
     if (resetBtn) resetBtn.style.display = 'none';
     if (err) err.style.display = 'none';
-    RS.invoke('hw_unlock', { pin: secret }).then(function(res) {
+    RS.invoke('unlock_identity', { secret: secret }).then(function(res) {
         res = res || {};
         if (res.ok) {
             // Re-bootstrap the whole app on the now-unlocked identity.

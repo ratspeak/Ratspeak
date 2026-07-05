@@ -12,8 +12,7 @@ import android.bluetooth.*
  */
 @SuppressLint("MissingPermission")
 class RatspeakGattCallback(
-    private val gattServer: () -> BluetoothGattServer?,
-    private val identityHash: ByteArray
+    private val gattServer: () -> BluetoothGattServer?
 ) : BluetoothGattServerCallback() {
 
     companion object {
@@ -56,13 +55,10 @@ class RatspeakGattCallback(
         offset: Int,
         characteristic: BluetoothGattCharacteristic
     ) {
-        // Serve identity hash on ID characteristics (Ratspeak or Columba)
-        val value = if (offset < identityHash.size) {
-            identityHash.copyOfRange(offset, identityHash.size)
-        } else {
-            byteArrayOf()
-        }
-        gattServer()?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+        // No readable characteristic value: never serve the identity hash on a
+        // GATT read (a MAC-rotation-stable tracking vector). Peers learn
+        // identity from signed announces over the TX notify pipe instead.
+        gattServer()?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, byteArrayOf())
     }
 
     override fun onCharacteristicWriteRequest(
@@ -126,10 +122,14 @@ class RatspeakGattCallback(
     }
 
     override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-        // Flow control — notification delivery confirmed
+        // Flow control: release the per-device notify gate so the next
+        // fragment can be sent. Release on failure too — the stack is done
+        // with this send either way, and blocking further sends would only
+        // strand the peer.
         if (status != BluetoothGatt.GATT_SUCCESS) {
             Log.w(TAG, "GATT notification send failed: status=$status")
         }
+        device.address?.let { RatspeakBleServer.onNotifySent(it) }
     }
 
     // Native methods registered by Rust in JNI_OnLoad. The Rust extern fns

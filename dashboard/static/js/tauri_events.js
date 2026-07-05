@@ -11,8 +11,8 @@ function showConnectionSummary() {
 
 // One-shot bootstrap; subsequent updates arrive via push events.
 function _rsBootstrapOnLoad() {
-    // Race-free check for a locked hardware identity at boot (the hardware_locked
-    // event can fire before this listener attaches).
+    // Race-free check for a locked protected identity at boot (the
+    // hardware_locked event can fire before this listener attaches).
     RS.invoke('api_startup_progress').then(function(data) {
         if (data && data.stage === 'hw_locked' && typeof showHwUnlock === 'function') {
             showHwUnlock(data.hw_locked, data.hw_locked_kind);
@@ -566,6 +566,12 @@ RS.listen('hub_interfaces_update', function(data) {
 
 RS.listen('ble_peer_status_update', function(data) {
     window._blePeerEnabled = !!(data && data.enabled);
+    // After enabling, re-poll the probe-backed status so an adapter-off /
+    // permission-denied condition surfaces as a clear state instead of the UI
+    // sitting on "Scanning…". The per-peer event stream only carries on/starting.
+    if (window._blePeerEnabled && typeof window.refreshBlePeerStatus === 'function') {
+        setTimeout(function() { window.refreshBlePeerStatus(); }, 2500);
+    }
     if (typeof updateBlePeerToggle === 'function') updateBlePeerToggle();
     // Drop per-peer cache on disable so section reverts to "No active peers".
     if (!window._blePeerEnabled) {
@@ -1022,6 +1028,15 @@ RS.listen('ble_rnode_pairing_finished', function(data) {
     _bleRnodeDismissModal(record);
 });
 
+// Android-only: interface teardown must close the Kotlin GATT link, or the
+// RNode stays connected and never advertises again.
+RS.listen('ble_rnode_disconnect_native', function() {
+    if (typeof window.RatspeakAndroid !== 'undefined' &&
+        typeof window.RatspeakAndroid.disconnectBleDevice === 'function') {
+        try { window.RatspeakAndroid.disconnectBleDevice(); } catch (_) {}
+    }
+});
+
 // Android-only: Rust asks Kotlin to open GATT + TCP bridge first.
 RS.listen('ble_rnode_connect_native', function(data) {
     if (typeof window.RatspeakAndroid === 'undefined' ||
@@ -1036,6 +1051,7 @@ RS.listen('ble_rnode_connect_native', function(data) {
     var PHASE_MESSAGES = {
         starting: 'Starting BLE connection...',
         connecting: 'Connecting to RNode (GATT)...',
+        connecting_retry: 'Retrying paired BLE reconnect...',
         mtu: 'Negotiating MTU...',
         discovering: 'Discovering services...',
         bonding: "Pairing...\nThis may take a moment. Don't unplug or restart your device.",
@@ -1066,13 +1082,18 @@ RS.listen('ble_rnode_connect_native', function(data) {
                     coding_rate: data.coding_rate,
                     tx_power: data.tx_power,
                     mode: data.mode,
+                    airtime_limit_short: data.airtime_limit_short,
+                    airtime_limit_long: data.airtime_limit_long,
                 }
             }).catch(function() {});
         } else {
             var errRaw = result.error || 'Unknown error';
             var pairingMode = errRaw.indexOf('ERR_PAIRING_MODE') === 0;
+            var staleBond = errRaw.indexOf('ERR_STALE_BOND') === 0;
             var errMsg = pairingMode
                 ? 'Pairing failed. Fresh installs are ready briefly after boot; otherwise hold P or OK on the RNode, then retry.'
+                : staleBond
+                    ? 'Paired BLE reconnect failed. Android may have a stale pairing for this RNode; remove it from Android Bluetooth settings, put the RNode in pairing mode, then pair again.'
                 : 'BLE connect failed: ' + errRaw;
             if (typeof window.RatspeakAndroid !== 'undefined' &&
                 typeof window.RatspeakAndroid.disconnectBleDevice === 'function') {

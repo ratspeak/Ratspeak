@@ -20,9 +20,10 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.20
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.20
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.20
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.24
+  RATSPEAK_RSLXMF_REF: v1.0.1
+  RATSPEAK_RSLXST_REF: ratspeak-v1.0.21
+  RATSPEAK_LRGP_REF: ratspeak-v1.0.21
 
 jobs:
   build:
@@ -59,6 +60,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
+          ref: ${{ env.RATSPEAK_LRGP_REF }}
           path: lrgp-rs
 
       - name: Install Rust toolchain
@@ -198,8 +200,9 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name, '-') }}
           body: |
-            - Fix direct delivery for peers over Bluetooth
-            - General fixes and improvements
+            - Answer path requests for our own address so peers who message you before you have announced reach you on first contact
+            - BLE peer mesh: stop exposing the identity hash over GATT on Android and fix dropped notification fragments
+            - BLE peer mesh: reliable teardown on shutdown/restart/identity switch, plus clearer adapter/permission state
           files: |
             Ratspeak/dist/windows/*
             Ratspeak/checksums-windows.txt

@@ -325,31 +325,8 @@ function renderPeersList(scrollOnly) {
         return 0;
     });
 
-    var contactItems = [], onlineItems = [], onlineStarItems = [], staleItems = [], offlineItems = [];
-    filtered.forEach(function(c) {
-        if (c.is_contact) contactItems.push(c);
-        else if (c.status === 'reachable' || c.status === 'direct') {
-            if (typeof hasRealDisplayName === 'function' && hasRealDisplayName(c)) onlineItems.push(c);
-            else onlineStarItems.push(c);
-        } else if (c.status === 'stale') staleItems.push(c);
-        else offlineItems.push(c);
-    });
-
-    var flatItems = [];
-    var groupDefs = [
-        { items: contactItems, key: 'contacts', label: 'Contacts' },
-        { items: onlineItems, key: 'online', label: 'Recent' },
-        { items: onlineStarItems, key: 'online_star', label: 'Recent*' },
-        { items: staleItems, key: 'stale', label: 'Seen today' },
-        { items: offlineItems, key: 'offline', label: 'Older / unknown' }
-    ];
-    groupDefs.forEach(function(g) {
-        if (g.items.length > 0) {
-            flatItems.push({ type: 'header', group: g.key, label: g.label, count: g.items.length });
-            if (!peersCollapsedGroups[g.key]) {
-                g.items.forEach(function(c) { flatItems.push({ type: 'row', data: c }); });
-            }
-        }
+    var flatItems = RS.buildPeerGroupItems(filtered, peersCollapsedGroups, function(c) {
+        return typeof hasRealDisplayName === 'function' && hasRealDisplayName(c);
     });
 
     if (filtered.length === 0 && !scrollOnly) {
@@ -510,8 +487,8 @@ function renderPeersDetailPanel(hash) {
     var hashEl = document.getElementById('peers-detail-hash-copy');
     if (hashEl) {
         hashEl.addEventListener('click', function() {
-            navigator.clipboard.writeText(hash).then(function() {
-                if (typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('Address');
+            RS.copyText(hash).then(function(ok) {
+                if (ok && typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('Address');
             });
         });
     }
@@ -530,7 +507,7 @@ function renderPeersDetailPanel(hash) {
             var prefill = peer.display_name || '';
             rsPrompt({ message: 'Contact name (optional):', placeholder: 'Display name', defaultValue: prefill }).then(function(name) {
                 if (name === null) return;
-                RS.invoke('add_contact', { args: { hash: hash, display_name: name.trim() || null } }).catch(function() {});
+                RS.invokeOrToast('add_contact', { args: { hash: hash, display_name: name.trim() || null } }, 'Could not add contact');
             });
         });
     }
@@ -547,7 +524,7 @@ function renderPeersDetailPanel(hash) {
                 defaultChecked: false
             }).then(function(result) {
                 if (!result.confirmed) return;
-                RS.invoke('block_contact', { args: { hash: hash, escalate_to_blackhole: result.checked } })
+                RS.invokeOrToast('block_contact', { args: { hash: hash, escalate_to_blackhole: result.checked } }, 'Could not block contact')
                     .then(function(resp) {
                         if (resp && resp.blackhole_pending && typeof showToast === 'function') {
                             showToast('Blocked. Network blackhole will activate on their next announce.', 'toast-orange', 5000);

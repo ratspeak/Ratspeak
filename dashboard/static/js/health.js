@@ -147,7 +147,7 @@ function renderDashboardPeersList() {
             var prefill = cd ? (cd.display_name || '') : '';
             rsPrompt({ message: 'Contact name (optional):', placeholder: 'Display name', defaultValue: prefill }).then(function(name) {
                 if (name === null) return;
-                RS.invoke('add_contact', { args: { hash: h, display_name: name.trim() || null } }).catch(function() {});
+                RS.invokeOrToast('add_contact', { args: { hash: h, display_name: name.trim() || null } }, 'Could not add contact');
             });
         });
     });
@@ -659,17 +659,6 @@ function classifyInterface(iface) {
 // the same Ratspeak peer.
 window._blePeers = window._blePeers || {};
 
-function _formatAgo(ms) {
-    if (!ms) return '';
-    var s = Math.floor((Date.now() - ms) / 1000);
-    if (s < 5) return 'just now';
-    if (s < 60) return s + 's ago';
-    var m = Math.floor(s / 60);
-    if (m < 60) return m + 'm ago';
-    var h = Math.floor(m / 60);
-    return h + 'h ago';
-}
-
 // Grace window: render 'Identifying peer\u2026' before the first signed
 // announce arrives, then fall back to the BLE address.
 var BLE_PEER_IDENTIFYING_GRACE_MS = 5000;
@@ -764,7 +753,8 @@ function renderBlePeerRow(peer) {
     var resolved = _resolveBlePeerLabel(peer);
     var protocol = peer.protocol || 'Ratspeak';
     var protoClass = protocol === 'Columba' ? 'badge-columba' : 'badge-ratspeak';
-    var ago = _formatAgo(peer.connected_at);
+    // connected_at is epoch ms; RS.relativeTime takes seconds.
+    var ago = RS.relativeTime(Math.floor(peer.connected_at / 1000));
 
     return '<div class="conn-iface-row ble-peer-row" data-peer-address="' + escapeHtml(addr) + '" data-peer-addresses="' + escapeHtml(addressList) + '" data-peer-protocol="' + escapeHtml(protocol) + '" role="button" tabindex="0">' +
         '<span class="conn-iface-dot up" title="Connected"></span>' +

@@ -24,6 +24,7 @@ import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Native BLE GATT client + local TCP bridge for RNode communication.
@@ -49,8 +50,15 @@ class RatspeakBleGatt(private val context: Context) {
         // Cardputer RNode keeps first-pair/manual pairing windows open longer
         // than this; time out first so the app can cleanly roll back.
         private const val BOND_TIMEOUT_SEC = 60L
+        private const val NONE_DEBOUNCE_SEC = 3L
         private const val BOND_POLL_INTERVAL_MS = 250L
         private const val POST_BOND_RECONNECT_DELAY_MS = 2600L
+        private const val BONDED_GATT_CONNECT_ATTEMPTS = 3
+        private const val BONDED_GATT_RETRY_DELAY_MS = 1200L
+        private const val BLE_WRITE_REJECT_RETRY_MS = 20L
+        private const val BLE_WRITE_REJECT_TIMEOUT_MS = 1200L
+        private const val BLE_WRITE_PACING_MS = 12L
+        private const val RNODE_DETACH_SETTLE_MS = 80L
 
         // TCP read buffer. Large because one write from Rust can be up to 4KB;
         // the per-chunk BLE write uses negotiatedMtu separately.
@@ -64,9 +72,10 @@ class RatspeakBleGatt(private val context: Context) {
 
         // Error prefixes the JS side recognises to drive UX.
         const val ERR_PAIRING_MODE = "ERR_PAIRING_MODE"
+        const val ERR_STALE_BOND = "ERR_STALE_BOND"
     }
 
-    private var gatt: BluetoothGatt? = null
+    @Volatile private var gatt: BluetoothGatt? = null
     private var rxChar: BluetoothGattCharacteristic? = null
     private var txChar: BluetoothGattCharacteristic? = null
     private var negotiatedMtu = MTU_FALLBACK_PAYLOAD
@@ -82,12 +91,20 @@ class RatspeakBleGatt(private val context: Context) {
     private var descriptorLatch: CountDownLatch? = null
     private var mtuLatch: CountDownLatch? = null
     private var bondLatch: CountDownLatch? = null
+    private var writeLatch: CountDownLatch? = null
 
     // Volatile/atomic because GATT callbacks fire off the main thread.
     private val connectStatus = AtomicBoolean(false)
     private val servicesStatus = AtomicBoolean(false)
+    private val descriptorStatus = AtomicBoolean(false)
+    private val writeStatus = AtomicBoolean(false)
     private var bondReceiver: BroadcastReceiver? = null
     private var webViewRef: WebView? = null
+    private val lastGattStatus = AtomicInteger(BluetoothGatt.GATT_SUCCESS)
+    private val bleWriteLock = Object()
+    private val cleanupLock = Object()
+    private val rustDetachObserved = AtomicBoolean(false)
+    private var detachFrameMatch = 0
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -98,6 +115,8 @@ class RatspeakBleGatt(private val context: Context) {
     fun connect(address: String, localPort: Int): String? {
         try {
             Log.i(TAG, "=== BLE CONNECT START === address=$address tcpPort=$localPort")
+            rustDetachObserved.set(false)
+            detachFrameMatch = 0
             emitProgress("starting")
 
             val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
@@ -161,75 +180,25 @@ class RatspeakBleGatt(private val context: Context) {
                 Thread.sleep(POST_BOND_RECONNECT_DELAY_MS)
             }
 
-            // ── Phase 1: GATT connect over the bonded (encrypted) link ──
-            connectLatch = CountDownLatch(1)
-            connectStatus.set(false)
+            val alreadyBonded = device.bondState == BluetoothDevice.BOND_BONDED
+            val attempts = if (alreadyBonded) BONDED_GATT_CONNECT_ATTEMPTS else 1
+            var gattError: String? = null
+            for (attempt in 1..attempts) {
+                gattError = openGattBridge(device, attempt, attempts)
+                if (gattError == null) break
 
-            emitProgress("connecting")
-            Log.i(TAG, "Phase 1: Connecting GATT...")
-            handler.post {
-                gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-                Log.i(TAG, "connectGatt() called")
-            }
-
-            if (!connectLatch!!.await(GATT_TIMEOUT_SEC, TimeUnit.SECONDS)) {
-                cleanup(); return err("GATT connection timed out")
-            }
-            if (!connectStatus.get()) {
-                cleanup(); return err("GATT connection failed")
-            }
-            Log.i(TAG, "Phase 1 COMPLETE: GATT connected")
-
-            // ── Phase 2: MTU negotiation ──
-            emitProgress("mtu")
-            Log.i(TAG, "Phase 2: Requesting MTU=$TARGET_MTU")
-            mtuLatch = CountDownLatch(1)
-            handler.post { gatt?.requestMtu(TARGET_MTU) }
-            if (!mtuLatch!!.await(5, TimeUnit.SECONDS)) {
-                // Fall back to 244 rather than sticking at 20 (initial BLE default).
-                negotiatedMtu = MTU_FALLBACK_PAYLOAD
-                Log.w(TAG, "MTU negotiation timed out — using fallback payload=$MTU_FALLBACK_PAYLOAD")
-            }
-            Log.i(TAG, "Phase 2 COMPLETE: MTU payload=$negotiatedMtu")
-
-            // ── Phase 3: Service discovery ──
-            emitProgress("discovering")
-            Log.i(TAG, "Phase 3: Discovering services...")
-            if (!discoverServicesWithLatch(15)) {
-                cleanup(); return err("Service discovery failed")
-            }
-
-            gatt?.services?.forEach { svc ->
-                Log.i(TAG, "  Service: ${svc.uuid}")
-                svc.characteristics.forEach { c ->
-                    Log.i(TAG, "    Char: ${c.uuid} props=0x${c.properties.toString(16)}")
+                Log.w(TAG, "GATT setup attempt $attempt/$attempts failed: $gattError")
+                closeGattOnly("retry after failed setup")
+                if (attempt < attempts) {
+                    emitProgress("connecting_retry")
+                    Thread.sleep(BONDED_GATT_RETRY_DELAY_MS * attempt)
                 }
             }
-
-            val nusService: BluetoothGattService = gatt?.getService(BleUuids.NUS_SERVICE)
-                ?: run { cleanup(); return err("NUS service not found") }
-            rxChar = nusService.getCharacteristic(BleUuids.NUS_RX_CHAR)
-                ?: run { cleanup(); return err("NUS RX characteristic not found") }
-            txChar = nusService.getCharacteristic(BleUuids.NUS_TX_CHAR)
-                ?: run { cleanup(); return err("NUS TX characteristic not found") }
-            Log.i(TAG, "Phase 3 COMPLETE: NUS found")
-
-            // ── Phase 5: Subscribe to TX notifications (now authenticated) ──
-            emitProgress("subscribing")
-            Log.i(TAG, "Phase 5: Enabling TX notifications...")
-            descriptorLatch = CountDownLatch(1)
-            gatt?.setCharacteristicNotification(txChar!!, true)
-            txChar!!.getDescriptor(BleUuids.CCCD)?.let { desc ->
-                gatt?.let { activeGatt ->
-                    writeDescriptorCompat(
-                        activeGatt,
-                        desc,
-                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    )
-                }
-                descriptorLatch!!.await(10, TimeUnit.SECONDS)
+            if (gattError != null) {
+                cleanup()
+                val prefix = if (alreadyBonded) "$ERR_STALE_BOND " else ""
+                return err(prefix + gattError)
             }
-            Log.i(TAG, "Phase 5 COMPLETE: TX notifications enabled")
 
             // ── Phase 6: TCP bridge ──
             emitProgress("bridge")
@@ -244,6 +213,110 @@ class RatspeakBleGatt(private val context: Context) {
             cleanup()
             return err("Exception: ${e.javaClass.simpleName}: ${e.message}")
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun openGattBridge(device: BluetoothDevice, attempt: Int, attempts: Int): String? {
+        negotiatedMtu = MTU_FALLBACK_PAYLOAD
+        rxChar = null
+        txChar = null
+
+        // Phase 1: GATT connect over the bonded (encrypted) link.
+        connectLatch = CountDownLatch(1)
+        connectStatus.set(false)
+        lastGattStatus.set(BluetoothGatt.GATT_SUCCESS)
+
+        emitProgress(if (attempt == 1) "connecting" else "connecting_retry")
+        Log.i(TAG, "Phase 1: Connecting GATT (attempt $attempt/$attempts)...")
+        handler.post {
+            val newGatt = try {
+                device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            } catch (e: Exception) {
+                logEx("connectGatt", e)
+                null
+            }
+            gatt = newGatt
+            if (newGatt == null) {
+                lastGattStatus.set(-1)
+                connectLatch?.countDown()
+            }
+            Log.i(TAG, "connectGatt() called attempt=$attempt returned=${newGatt != null}")
+        }
+
+        if (!connectLatch!!.await(GATT_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+            return "GATT connection timed out"
+        }
+        if (!connectStatus.get()) {
+            val status = lastGattStatus.get()
+            return if (status == BluetoothGatt.GATT_SUCCESS || status == -1) {
+                "GATT connection failed"
+            } else {
+                "GATT connection failed (status=$status)"
+            }
+        }
+        Log.i(TAG, "Phase 1 COMPLETE: GATT connected")
+
+        // Phase 2: MTU negotiation.
+        emitProgress("mtu")
+        Log.i(TAG, "Phase 2: Requesting MTU=$TARGET_MTU")
+        mtuLatch = CountDownLatch(1)
+        handler.post { gatt?.requestMtu(TARGET_MTU) }
+        if (!mtuLatch!!.await(5, TimeUnit.SECONDS)) {
+            negotiatedMtu = MTU_FALLBACK_PAYLOAD
+            Log.w(TAG, "MTU negotiation timed out - using fallback payload=$MTU_FALLBACK_PAYLOAD")
+        }
+        Log.i(TAG, "Phase 2 COMPLETE: MTU payload=$negotiatedMtu")
+
+        // Phase 3: Service discovery.
+        emitProgress("discovering")
+        Log.i(TAG, "Phase 3: Discovering services...")
+        if (!discoverServicesWithLatch(15)) {
+            gatt?.let { refreshGattCache(it) }
+            return "Service discovery failed"
+        }
+
+        gatt?.services?.forEach { svc ->
+            Log.i(TAG, "  Service: ${svc.uuid}")
+            svc.characteristics.forEach { c ->
+                Log.i(TAG, "    Char: ${c.uuid} props=0x${c.properties.toString(16)}")
+            }
+        }
+
+        val nusService: BluetoothGattService = gatt?.getService(BleUuids.NUS_SERVICE)
+            ?: run {
+                gatt?.let { refreshGattCache(it) }
+                return "NUS service not found"
+            }
+        rxChar = nusService.getCharacteristic(BleUuids.NUS_RX_CHAR)
+            ?: return "NUS RX characteristic not found"
+        txChar = nusService.getCharacteristic(BleUuids.NUS_TX_CHAR)
+            ?: return "NUS TX characteristic not found"
+        Log.i(TAG, "Phase 3 COMPLETE: NUS found")
+
+        // Phase 5: Subscribe to TX notifications (now authenticated).
+        emitProgress("subscribing")
+        Log.i(TAG, "Phase 5: Enabling TX notifications...")
+        descriptorLatch = CountDownLatch(1)
+        descriptorStatus.set(false)
+        val activeGatt = gatt ?: return "GATT closed before subscribe"
+        if (!activeGatt.setCharacteristicNotification(txChar!!, true)) {
+            return "TX notification enable rejected"
+        }
+        val cccd = txChar!!.getDescriptor(BleUuids.CCCD) ?: return "NUS TX CCCD not found"
+        if (!writeDescriptorCompat(
+                activeGatt,
+                cccd,
+                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            )
+        ) {
+            return "TX notification descriptor write rejected"
+        }
+        if (!descriptorLatch!!.await(10, TimeUnit.SECONDS)) {
+            return "TX notification subscribe timed out"
+        }
+        if (!descriptorStatus.get()) return "TX notification subscribe failed"
+        Log.i(TAG, "Phase 5 COMPLETE: TX notifications enabled")
+        return null
     }
 
     /** Run service discovery against the current gatt connection with a timeout. */
@@ -291,22 +364,26 @@ class RatspeakBleGatt(private val context: Context) {
                 val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
                 while (off < n && running.get()) {
                     val end = minOf(off + chunkSize, n)
-                    gatt?.let { activeGatt ->
-                        writeCharacteristicCompat(
+                    val activeGatt = gatt ?: break
+                    if (!writeBleChunk(
                             activeGatt,
                             rxC,
                             readBuf.copyOfRange(off, end),
-                            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                            "TCP->BLE"
                         )
+                    ) {
+                        running.set(false)
+                        break
                     }
+                    observeRustDetachBytes(readBuf, off, end)
                     off = end
-                    if (off < n) Thread.sleep(5)
+                    if (running.get()) Thread.sleep(BLE_WRITE_PACING_MS)
                 }
             }
         } catch (e: Exception) {
             if (running.get()) Log.e(TAG, "TCP→BLE error: ${e.javaClass.simpleName}: ${e.message}")
         }
-        sendRnodeDetachBestEffort("TCP bridge closing")
+        sendRnodeDetachFallbackIfNeeded("TCP bridge closing")
         Log.i(TAG, "TCP→BLE stopped")
         running.set(false)
         cleanup()
@@ -314,31 +391,54 @@ class RatspeakBleGatt(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
-        sendRnodeDetachBestEffort("disconnect requested")
         cleanup()
     }
     fun isRunning(): Boolean = running.get()
 
-    @SuppressLint("MissingPermission")
-    private fun sendRnodeDetachBestEffort(reason: String) {
-        val rxC = rxChar ?: return
-        val g = gatt ?: return
-        try {
-            Log.i(TAG, "Sending RNode detach before BLE close ($reason)")
-            var off = 0
-            val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
-            while (off < RNODE_DETACH_FRAME.size) {
-                val end = minOf(off + chunkSize, RNODE_DETACH_FRAME.size)
-                writeCharacteristicCompat(
-                    g,
-                    rxC,
-                    RNODE_DETACH_FRAME.copyOfRange(off, end),
-                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                )
-                off = end
-                if (off < RNODE_DETACH_FRAME.size) Thread.sleep(5)
+    private fun observeRustDetachBytes(bytes: ByteArray, start: Int, end: Int) {
+        for (i in start until end) {
+            val b = bytes[i]
+            if (b == RNODE_DETACH_FRAME[detachFrameMatch]) {
+                detachFrameMatch++
+                if (detachFrameMatch == RNODE_DETACH_FRAME.size) {
+                    rustDetachObserved.set(true)
+                    detachFrameMatch = 0
+                    Log.i(TAG, "Observed Rust RNode detach frame on TCP bridge")
+                }
+            } else {
+                detachFrameMatch = if (b == RNODE_DETACH_FRAME[0]) 1 else 0
             }
-            Thread.sleep(80)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendRnodeDetachFallbackIfNeeded(reason: String) {
+        if (rustDetachObserved.get()) return
+        val activeGatt = gatt ?: return
+        val rxC = rxChar ?: return
+        try {
+            synchronized(bleWriteLock) {
+                Log.i(TAG, "Sending fallback RNode detach before BLE close ($reason)")
+                var off = 0
+                val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
+                while (off < RNODE_DETACH_FRAME.size) {
+                    val end = minOf(off + chunkSize, RNODE_DETACH_FRAME.size)
+                    val chunk = RNODE_DETACH_FRAME.copyOfRange(off, end)
+                    if (!enqueueBleWriteLocked(
+                            activeGatt,
+                            rxC,
+                            chunk,
+                            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+                            "fallback detach"
+                        )
+                    ) {
+                        return
+                    }
+                    off = end
+                    if (off < RNODE_DETACH_FRAME.size) Thread.sleep(BLE_WRITE_PACING_MS)
+                }
+            }
+            Thread.sleep(RNODE_DETACH_SETTLE_MS)
         } catch (e: Exception) {
             Log.d(TAG, "detach($reason): ${e.javaClass.simpleName}: ${e.message}")
         }
@@ -346,34 +446,101 @@ class RatspeakBleGatt(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun cleanup() {
-        Log.i(TAG, "cleanup()")
-        running.set(false)
-        unregisterBondReceiver()
-        try { clientSocket?.close() } catch (e: Exception) { logEx("clientSocket.close", e) }
-        try { serverSocket?.close() } catch (e: Exception) { logEx("serverSocket.close", e) }
-        forwardThread?.interrupt()
-        handler.post {
-            try { txChar?.let { gatt?.setCharacteristicNotification(it, false) } }
-            catch (e: Exception) { logEx("setCharacteristicNotification", e) }
-            try { gatt?.disconnect() } catch (e: Exception) { logEx("gatt.disconnect", e) }
-            try { gatt?.close() } catch (e: Exception) { logEx("gatt.close", e) }
-            gatt = null
+        synchronized(cleanupLock) {
+            Log.i(TAG, "cleanup()")
+            running.set(false)
+            unregisterBondReceiver()
+            try { clientSocket?.close() } catch (e: Exception) { logEx("clientSocket.close", e) }
+            try { serverSocket?.close() } catch (e: Exception) { logEx("serverSocket.close", e) }
+            val fwd = forwardThread
+            if (fwd != null && fwd !== Thread.currentThread()) {
+                fwd.interrupt()
+            }
+            closeGattOnly("cleanup")
+            rxChar = null; txChar = null; clientSocket = null; serverSocket = null; tcpOut = null
+            forwardThread = null
         }
-        rxChar = null; txChar = null; clientSocket = null; serverSocket = null; tcpOut = null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun closeGattOnly(reason: String) {
+        val done = CountDownLatch(1)
+        val gattToClose = gatt
+        val txCharToDisable = txChar
+        val closeBlock = Runnable {
+            try { txCharToDisable?.let { gattToClose?.setCharacteristicNotification(it, false) } }
+            catch (e: Exception) { logEx("setCharacteristicNotification", e) }
+            try { gattToClose?.disconnect() } catch (e: Exception) { logEx("gatt.disconnect", e) }
+            try { gattToClose?.close() } catch (e: Exception) { logEx("gatt.close", e) }
+            if (gatt === gattToClose) {
+                gatt = null
+            }
+            done.countDown()
+        }
+        Log.i(TAG, "closeGattOnly($reason)")
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            closeBlock.run()
+        } else {
+            handler.post(closeBlock)
+            try {
+                done.await(2, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                Log.d(TAG, "closeGattOnly($reason) interrupted")
+                Thread.currentThread().interrupt()
+            }
+        }
+        rxChar = null
+        txChar = null
+        mtuLatch = null
+        servicesLatch = null
+        descriptorLatch = null
+        writeLatch = null
+        connectLatch = null
+        negotiatedMtu = MTU_FALLBACK_PAYLOAD
+    }
+
+    private fun refreshGattCache(activeGatt: BluetoothGatt) {
+        try {
+            val refresh = activeGatt.javaClass.getMethod("refresh")
+            val ok = refresh.invoke(activeGatt) as? Boolean ?: false
+            Log.i(TAG, "GATT cache refresh requested ok=$ok")
+        } catch (e: Exception) {
+            Log.d(TAG, "GATT cache refresh unavailable: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    private fun isActiveGatt(callbackGatt: BluetoothGatt, callback: String): Boolean {
+        if (gatt === callbackGatt) return true
+        Log.i(TAG, "Ignoring stale GATT callback: $callback")
+        return false
     }
 
     @SuppressLint("MissingPermission")
     private fun waitForBondState(device: BluetoothDevice): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(BOND_TIMEOUT_SEC)
+        // Android SMP can bounce BONDING→NONE transiently while the system
+        // pairing dialog is still up (first-attempt retries, security-request
+        // collisions). Treating that bounce as terminal fails the add flow
+        // while the user is still typing the passkey — only give up on NONE
+        // once it has persisted.
+        var noneSince = 0L
         while (System.nanoTime() < deadline) {
-            val state = device.bondState
-            if (state == BluetoothDevice.BOND_BONDED || state == BluetoothDevice.BOND_NONE) return true
+            when (device.bondState) {
+                BluetoothDevice.BOND_BONDED -> return true
+                BluetoothDevice.BOND_NONE -> {
+                    if (noneSince == 0L) {
+                        noneSince = System.nanoTime()
+                        Log.i(TAG, "Bond state NONE — debouncing ${NONE_DEBOUNCE_SEC}s before failing")
+                    } else if (System.nanoTime() - noneSince > TimeUnit.SECONDS.toNanos(NONE_DEBOUNCE_SEC)) {
+                        return true
+                    }
+                }
+                else -> noneSince = 0L
+            }
             val remainingMs = TimeUnit.NANOSECONDS
                 .toMillis(deadline - System.nanoTime())
                 .coerceAtLeast(1L)
-            if (bondLatch?.await(minOf(BOND_POLL_INTERVAL_MS, remainingMs), TimeUnit.MILLISECONDS) == true) {
-                return true
-            }
+            bondLatch?.await(minOf(BOND_POLL_INTERVAL_MS, remainingMs), TimeUnit.MILLISECONDS)
         }
         return false
     }
@@ -387,7 +554,9 @@ class RatspeakBleGatt(private val context: Context) {
                 val prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
                 Log.i(TAG, "Bond: ${bondStr(prev)} → ${bondStr(state)} (${dev?.address})")
                 if (dev?.address == address) {
-                    if (state == BluetoothDevice.BOND_BONDED || state == BluetoothDevice.BOND_NONE) {
+                    // Only BONDED releases the wait — NONE bounces are handled
+                    // (debounced) by the waitForBondState poll loop.
+                    if (state == BluetoothDevice.BOND_BONDED) {
                         bondLatch?.countDown()
                     }
                 }
@@ -467,6 +636,84 @@ class RatspeakBleGatt(private val context: Context) {
         return activeGatt.writeCharacteristic(characteristic)
     }
 
+    @SuppressLint("MissingPermission")
+    private fun enqueueBleWriteLocked(
+        activeGatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        writeType: Int,
+        reason: String
+    ): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BLE_WRITE_REJECT_TIMEOUT_MS)
+        var attempts = 0
+        while (true) {
+            attempts++
+            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
+                writeLatch = CountDownLatch(1)
+                writeStatus.set(false)
+            }
+
+            val accepted = writeCharacteristicCompat(activeGatt, characteristic, value, writeType)
+            if (accepted) {
+                if (attempts > 1) {
+                    Log.i(TAG, "$reason BLE write accepted after $attempts attempts type=$writeType len=${value.size}")
+                }
+                return true
+            }
+
+            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
+                writeLatch = null
+            }
+
+            val staleGatt = gatt !== activeGatt
+            if (staleGatt || System.nanoTime() >= deadline) {
+                Log.e(
+                    TAG,
+                    "$reason BLE write rejected type=$writeType len=${value.size} attempts=$attempts staleGatt=$staleGatt lastGattStatus=${lastGattStatus.get()}"
+                )
+                return false
+            }
+
+            if (attempts == 1 || attempts % 10 == 0) {
+                Log.w(TAG, "$reason BLE write rejected; retrying type=$writeType len=${value.size} attempts=$attempts")
+            }
+            Thread.sleep(BLE_WRITE_REJECT_RETRY_MS)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeBleChunk(
+        activeGatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+        reason: String
+    ): Boolean {
+        val writeType =
+            if ((characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            } else {
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            }
+
+        synchronized(bleWriteLock) {
+            if (!enqueueBleWriteLocked(activeGatt, characteristic, value, writeType, reason)) {
+                return false
+            }
+
+            if (writeType != BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
+                return true
+            }
+
+            val completed = writeLatch?.await(5, TimeUnit.SECONDS) ?: false
+            val ok = completed && writeStatus.get()
+            writeLatch = null
+            if (!ok) {
+                Log.e(TAG, "$reason BLE write failed completed=$completed len=${value.size}")
+            }
+            return ok
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun bluetoothDeviceExtra(intent: Intent, name: String): BluetoothDevice? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -490,16 +737,18 @@ class RatspeakBleGatt(private val context: Context) {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (!isActiveGatt(gatt, "onConnectionStateChange")) return
             val s = when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> "CONNECTED"
                 BluetoothProfile.STATE_DISCONNECTED -> "DISCONNECTED"
                 else -> "OTHER($newState)"
             }
             Log.i(TAG, "GATT: status=$status state=$s bondState=${bondStr(gatt.device?.bondState ?: -1)}")
+            lastGattStatus.set(status)
 
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    connectStatus.set(true)
+                    connectStatus.set(status == BluetoothGatt.GATT_SUCCESS)
                     connectLatch?.countDown()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -520,20 +769,37 @@ class RatspeakBleGatt(private val context: Context) {
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (!isActiveGatt(gatt, "onMtuChanged")) return
             if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu - 3
             Log.i(TAG, "MTU: $mtu (payload=$negotiatedMtu) status=$status")
             mtuLatch?.countDown()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (!isActiveGatt(gatt, "onServicesDiscovered")) return
             servicesStatus.set(status == BluetoothGatt.GATT_SUCCESS)
             Log.i(TAG, "Services discovered: status=$status ok=${servicesStatus.get()}")
             servicesLatch?.countDown()
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, desc: BluetoothGattDescriptor, status: Int) {
+            if (!isActiveGatt(gatt, "onDescriptorWrite")) return
+            descriptorStatus.set(status == BluetoothGatt.GATT_SUCCESS)
             Log.i(TAG, "Descriptor write: ${desc.uuid} status=$status")
             descriptorLatch?.countDown()
+        }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            ch: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            if (!isActiveGatt(gatt, "onCharacteristicWrite")) return
+            writeStatus.set(status == BluetoothGatt.GATT_SUCCESS)
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "Characteristic write failed: ${ch.uuid} status=$status")
+            }
+            writeLatch?.countDown()
         }
 
         override fun onCharacteristicChanged(
@@ -541,11 +807,13 @@ class RatspeakBleGatt(private val context: Context) {
             ch: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
+            if (!isActiveGatt(gatt, "onCharacteristicChanged")) return
             handleCharacteristicChanged(ch, value)
         }
 
         @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, ch: BluetoothGattCharacteristic) {
+            if (!isActiveGatt(gatt, "onCharacteristicChangedDeprecated")) return
             handleCharacteristicChanged(ch, ch.value ?: return)
         }
     }

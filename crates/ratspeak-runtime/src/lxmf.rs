@@ -13,6 +13,7 @@ use lxmf_core::constants::{
     DeliveryMethod, DeliveryRepresentation, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES,
     PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
+use lxmf_core::handlers::CompressionSupport;
 use lxmf_core::link_delivery::{
     BackchannelSendCommand, BackchannelSendError, BackchannelSendReceipt, DeliveryResult,
     DeliveryState, DirectLinkStartKind, LxmfDeliveryEvent, LxmfDeliveryEventKind,
@@ -592,8 +593,8 @@ impl DeliveryPreference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryProfile {
-    /// Chat-like payloads. Ratspeak Auto uses proof-backed Direct by default;
-    /// Opportunistic is an explicit user choice.
+    /// Chat-like payloads. Ratspeak Auto uses proof-backed Direct by default,
+    /// except for peers that explicitly advertise constrained no-bz2 support.
     Message,
     /// Payloads that usually need proof-backed link/resource delivery.
     Attachment,
@@ -701,6 +702,20 @@ pub fn peer_last_seen(db_pool: &DbPool, dest_hash_hex: &str) -> Option<f64> {
     .ok()
 }
 
+pub fn lxmf_compression_support_db_value(support: CompressionSupport) -> Option<&'static str> {
+    match support {
+        CompressionSupport::Unknown => None,
+        CompressionSupport::Unsupported => Some(db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED),
+        CompressionSupport::Supported => Some(db::LXMF_COMPRESSION_SUPPORT_SUPPORTED),
+    }
+}
+
+pub fn lxmf_compression_support_db_value_from_app_data(app_data: &[u8]) -> Option<&'static str> {
+    lxmf_compression_support_db_value(
+        lxmf_core::handlers::compression_support_state_from_app_data(app_data),
+    )
+}
+
 struct PendingDirectLinkIdentification {
     link_id: [u8; 16],
     observed_at: Instant,
@@ -724,6 +739,7 @@ pub struct LxmfManager {
     pub ratchet_ring: RatchetRing,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
     pub known_identities: HashMap<String, [u8; 64]>,
+    peer_lxmf_compression_support: HashMap<[u8; 16], CompressionSupport>,
     route_hops: HashMap<[u8; 16], u8>,
     route_entries: HashMap<[u8; 16], PathTableRpcEntry>,
     /// Held so identity-switch can re-register with the transport actor.
@@ -745,6 +761,7 @@ pub struct LxmfManager {
     pub client_propagation_enabled: bool,
     pub configured_propagation_node: Option<[u8; 16]>,
     last_ratchet_clean: f64,
+    last_router_cull: f64,
     pub received_ratchets_dir: PathBuf,
     /// Outbound message hashes routed via propagation. `LinkDeliveryManager`
     /// reports `Complete` for both propagation deposits and large-message
@@ -764,8 +781,8 @@ pub struct LxmfManager {
     direct_retry_started_at: HashMap<[u8; 32], f64>,
 }
 
-/// Loads a hardware (PIV-backed) identity from its `.hwid`. PIN comes from the
-/// `RATKEY_PIN` env var for now — a temporary stand-in until the UI prompts for it.
+/// Loads a hardware (PIV-backed) identity from its `.hwid`; `pin` comes from
+/// the unlock UI.
 #[cfg(feature = "hardware")]
 fn load_hwid_identity(
     hwid_file: &Path,
@@ -1006,6 +1023,7 @@ impl LxmfManager {
             ratchet_ring,
             received_ratchets,
             known_identities,
+            peer_lxmf_compression_support: HashMap::new(),
             route_hops: HashMap::new(),
             route_entries: HashMap::new(),
             delivery_tx: None,
@@ -1021,6 +1039,7 @@ impl LxmfManager {
             propagation_sync: None,
             propagation_client: None,
             last_propagation_check: 0.0,
+            last_router_cull: 0.0,
             client_propagation_enabled: false,
             configured_propagation_node: None,
             last_ratchet_clean: SystemTime::now()
@@ -1040,149 +1059,6 @@ impl LxmfManager {
             auto_direct_fallback: HashSet::new(),
             direct_retry_started_at: HashMap::new(),
         })
-    }
-
-    pub fn load_identity(
-        &mut self,
-        hash_hex: &str,
-        hw_pin: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let switch_dir = self.data_dir.join("identities").join(hash_hex);
-        let id_file = switch_dir.join("identity");
-        let hwid_file = switch_dir.join("identity.hwid");
-        let enc_file = switch_dir.join("identity.enc");
-
-        let (identity, is_hardware) = if hwid_file.exists() {
-            (load_hwid_identity(&hwid_file, hash_hex, hw_pin)?, true)
-        } else if enc_file.exists() {
-            (load_encrypted_identity(&enc_file, hash_hex, hw_pin)?, false)
-        } else if id_file.exists() {
-            (Identity::from_file(&id_file)?, false)
-        } else {
-            return Err(format!("Identity file not found: {}", id_file.display()).into());
-        };
-
-        self.save_crypto_state();
-
-        let lxmf_dest_hash =
-            Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity.hash));
-
-        let old_dest_hash = self.lxmf_dest_hash;
-
-        self.identity = identity;
-        self.is_hardware = is_hardware;
-        self.identity_hash = hash_hex.to_string();
-        self.lxmf_hash = hex::encode(lxmf_dest_hash);
-        self.lxmf_dest_hash = lxmf_dest_hash;
-        self.propagation_dest_hash =
-            Destination::hash_from_name_and_identity("lxmf.propagation", Some(&self.identity.hash));
-
-        let id_dir = self.data_dir.join("identities").join(hash_hex);
-
-        // Preserve transport_tx across router replacement; re-register dest.
-        let old_transport_tx = self.router.transport_tx.take();
-        let lxmf_storage = id_dir.join("lxmf");
-        std::fs::create_dir_all(&lxmf_storage).ok();
-        let mut router = LxmRouter::new(RouterConfig::default());
-        if let Err(e) = router.load_state(&lxmf_storage) {
-            tracing::warn!(
-                path = %lxmf_storage.display(),
-                error = %e,
-                "failed to load LXMF router state after identity switch"
-            );
-        }
-        self.router = router;
-        self.lxmf_storage_dir = lxmf_storage;
-        self.link_delivery = None;
-        self.lxmf_backchannel_command_rx = None;
-        self.lxmf_link_closed_rx = None;
-        self.delivery_progress_updates.clear();
-        self.last_reported_steps.clear();
-        self.auto_direct_fallback.clear();
-        self.direct_retry_started_at.clear();
-        if let Some(tx) = old_transport_tx {
-            self.router.set_transport(tx.clone());
-
-            if let Err(e) = tx.try_send(TransportMessage::DeregisterDestination {
-                hash: old_dest_hash,
-            }) {
-                tracing::warn!(error = %e, "failed to deregister previous LXMF destination");
-            }
-            if let Some(ref dtx) = self.delivery_tx
-                && let Err(e) = tx.try_send(TransportMessage::RegisterDestination {
-                    hash: self.lxmf_dest_hash,
-                    app_name: "lxmf.delivery".to_string(),
-                    delivery_tx: Some(dtx.clone()),
-                })
-            {
-                tracing::error!(error = %e, "failed to register LXMF destination; inbound disabled");
-            }
-        }
-
-        let ratchet_dir = id_dir.join("ratchets");
-        std::fs::create_dir_all(&ratchet_dir).ok();
-
-        let ratchet_ring_path = ratchet_dir.join("ring");
-        self.ratchet_ring = if ratchet_ring_path.exists() {
-            RatchetRing::load(&ratchet_ring_path)
-                .map(|(ring, _sig)| ring)
-                .unwrap_or_else(|_| RatchetRing::new())
-        } else {
-            RatchetRing::new()
-        };
-        if self.ratchet_ring.is_empty() {
-            self.ratchet_ring.rotate();
-            let sig = self
-                .identity
-                .sign(
-                    self.ratchet_ring
-                        .current_public_key()
-                        .unwrap_or([0u8; 32])
-                        .as_ref(),
-                )
-                .unwrap_or([0u8; 64]);
-            let _ = self.ratchet_ring.save(&ratchet_ring_path, &sig);
-        }
-
-        // Sweep expired/corrupt files for clean post-switch ratchet set.
-        let received_dir = ratchet_dir.join("received");
-        std::fs::create_dir_all(&received_dir).ok();
-        let _ = clean_received_ratchets_dir(&received_dir);
-        self.received_ratchets.clear();
-        if let Ok(entries) = std::fs::read_dir(&received_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(name) = path.file_stem().and_then(|n| n.to_str())
-                    && let Ok(rr) = ReceivedRatchet::load(&path)
-                {
-                    self.received_ratchets.insert(name.to_string(), rr);
-                }
-            }
-        }
-        self.received_ratchets_dir = received_dir;
-
-        let ki_path = ratchet_dir.join("known_identities");
-        self.known_identities.clear();
-        if ki_path.exists()
-            && let Ok(data) = std::fs::read(&ki_path)
-        {
-            let mut pos = 0;
-            while pos + 80 <= data.len() {
-                let mut dh = [0u8; 16];
-                dh.copy_from_slice(&data[pos..pos + 16]);
-                let mut pk = [0u8; 64];
-                pk.copy_from_slice(&data[pos + 16..pos + 80]);
-                self.known_identities.insert(hex::encode(dh), pk);
-                pos += 80;
-            }
-        }
-
-        tracing::info!(
-            "Switched to identity: {} (LXMF: {})",
-            &hash_hex[..16.min(hash_hex.len())],
-            &self.lxmf_hash[..16]
-        );
-        Ok(())
     }
 
     pub fn create_identity(
@@ -1408,6 +1284,54 @@ impl LxmfManager {
         self.client_propagation_enabled && !self.peer_recently_seen(db_pool, dest_hash_hex)
     }
 
+    fn peer_lxmf_compression_support(
+        &self,
+        db_pool: Option<&DbPool>,
+        dest_hash_hex: &str,
+    ) -> CompressionSupport {
+        let dest_bytes = match hex::decode(dest_hash_hex) {
+            Ok(bytes) if bytes.len() == 16 => bytes,
+            _ => return CompressionSupport::Unknown,
+        };
+        let mut dest = [0u8; 16];
+        dest.copy_from_slice(&dest_bytes);
+        if let Some(support) = self.peer_lxmf_compression_support.get(&dest).copied() {
+            return support;
+        }
+
+        db_pool
+            .and_then(|pool| db::get_identity_lxmf_compression_support(pool, dest_hash_hex))
+            .as_deref()
+            .map(|support| match support {
+                db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED => CompressionSupport::Unsupported,
+                db::LXMF_COMPRESSION_SUPPORT_SUPPORTED => CompressionSupport::Supported,
+                _ => CompressionSupport::Unknown,
+            })
+            .unwrap_or(CompressionSupport::Unknown)
+    }
+
+    fn peer_explicitly_lacks_lxmf_compression(
+        &self,
+        db_pool: &DbPool,
+        dest_hash_hex: &str,
+    ) -> bool {
+        self.peer_lxmf_compression_support(Some(db_pool), dest_hash_hex)
+            == CompressionSupport::Unsupported
+    }
+
+    fn apply_peer_lxmf_compression_support(
+        &self,
+        msg: &mut LxMessage,
+        db_pool: Option<&DbPool>,
+        dest_hash_hex: &str,
+    ) {
+        if self.peer_lxmf_compression_support(db_pool, dest_hash_hex)
+            == CompressionSupport::Unsupported
+        {
+            msg.auto_compress = false;
+        }
+    }
+
     /// Pick the most truthful `DeliveryMethod` for an outbound send so the
     /// persisted `messages.delivery_method` and the wire method reflect the
     /// user's choice or Ratspeak's Auto policy.
@@ -1423,7 +1347,11 @@ impl LxmfManager {
             DeliveryPreference::Direct => DeliveryMethod::Direct,
             DeliveryPreference::Propagated => DeliveryMethod::Propagated,
             DeliveryPreference::Auto => {
-                if self.should_use_propagation_fallback(db_pool, dest_hash_hex) {
+                if profile == DeliveryProfile::Message
+                    && self.peer_explicitly_lacks_lxmf_compression(db_pool, dest_hash_hex)
+                {
+                    DeliveryMethod::Opportunistic
+                } else if self.should_use_propagation_fallback(db_pool, dest_hash_hex) {
                     DeliveryMethod::Propagated
                 } else {
                     match profile {
@@ -1467,6 +1395,7 @@ impl LxmfManager {
         dest.copy_from_slice(&dest_bytes);
 
         let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, title, content, delivery_method);
+        self.apply_peer_lxmf_compression_support(&mut msg, None, dest_hash_hex);
 
         // Attach our outbound ticket and mint one for the peer to use.
         let now = SystemTime::now()
@@ -1645,6 +1574,7 @@ impl LxmfManager {
             delivery_method,
             &custom_fields,
         )?;
+        self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
         normalize_protocol_delivery_method(&mut msg);
         if !message_within_resource_limit(&msg) {
             return None;
@@ -1754,6 +1684,7 @@ impl LxmfManager {
             DeliveryProfile::Attachment,
         );
         let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, title, content, method);
+        self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
 
         if is_image {
             let image_format = image_mime
@@ -1908,6 +1839,7 @@ impl LxmfManager {
         let method =
             self.pick_delivery_method(db_pool, dest_hash_hex, preference, DeliveryProfile::Lrgp);
         let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, "", fallback_text, method);
+        self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
 
         for (&field_id, value) in lrgp_fields {
             let mut bytes = Vec::new();
@@ -2076,12 +2008,7 @@ impl LxmfManager {
     }
 
     pub fn get_received_file(&self, stored_name: &str) -> Option<PathBuf> {
-        // SAFETY: char-whitelist guards against path traversal.
-        let sanitized: String = stored_name
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
-            .take(200)
-            .collect();
+        let sanitized = sanitize_stored_file_name(stored_name)?;
         let path = self.files_dir().join(&sanitized);
         if path.exists() && path.is_file() {
             Some(path)
@@ -2095,11 +2022,7 @@ impl LxmfManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let safe_name: String = file_name
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ')
-            .take(200)
-            .collect();
+        let safe_name = sanitize_stored_file_name(file_name).unwrap_or_else(|| "file".to_string());
         let stored_name = format!("{ts}_{safe_name}");
         let path = self.files_dir().join(&stored_name);
         std::fs::write(&path, data).ok();
@@ -2129,17 +2052,11 @@ impl LxmfManager {
         let file_refs = db::delete_conversation(db_pool, dest_hash, identity_id);
         let files_dir = self.files_dir();
         for file_ref in file_refs {
-            let sanitized: String = file_ref
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ')
-                .take(240)
-                .collect();
-            if sanitized != file_ref {
+            let Some(sanitized) = sanitize_stored_file_name(&file_ref) else {
                 tracing::warn!(stored_name = %file_ref, "skipping unsafe stored attachment path");
                 continue;
-            }
-            let path = files_dir.join(sanitized);
-            std::fs::remove_file(&path).ok();
+            };
+            std::fs::remove_file(files_dir.join(sanitized)).ok();
         }
     }
 
@@ -2315,6 +2232,11 @@ impl LxmfManager {
             Some(msg) => msg,
             None => return,
         };
+        self.apply_peer_lxmf_compression_support(
+            &mut msg,
+            Some(request.db_pool),
+            request.dest_hash_hex,
+        );
 
         normalize_protocol_delivery_method(&mut msg);
         if !message_within_resource_limit(&msg) {
@@ -2327,6 +2249,20 @@ impl LxmfManager {
     }
 
     pub fn create_announce_packet(&mut self) -> Result<Vec<u8>, String> {
+        self.build_delivery_announce_packet(false)
+    }
+
+    /// Path-response variant: an otherwise-identical delivery announce tagged
+    /// with the `PathResponse` context. Answers a path request by delivering
+    /// our identity + path (and display name / stamp cost) to the requester
+    /// without triggering wide rebroadcast. Without this, a peer that has never
+    /// announced can't learn our keys/path, so replies to them stall until we
+    /// announce. See the `AnnounceRequested` handler in `lib.rs`.
+    pub fn create_path_response_announce_packet(&mut self) -> Result<Vec<u8>, String> {
+        self.build_delivery_announce_packet(true)
+    }
+
+    fn build_delivery_announce_packet(&mut self, path_response: bool) -> Result<Vec<u8>, String> {
         use rns_identity::announce::AnnounceData;
 
         if self.ratchet_ring.needs_rotation() {
@@ -2381,7 +2317,11 @@ impl LxmfManager {
             hops: 0,
             transport_id: None,
             destination_hash: self.lxmf_dest_hash,
-            context: rns_wire::context::PacketContext::None,
+            context: if path_response {
+                rns_wire::context::PacketContext::PathResponse
+            } else {
+                rns_wire::context::PacketContext::None
+            },
         };
 
         let mut raw = header.pack();
@@ -2445,24 +2385,16 @@ impl LxmfManager {
             .map_err(|e| format!("Failed to send announce: {e}"))
     }
 
-    pub fn update_display_name(
-        &mut self,
-        name: &str,
-        db_pool: &DbPool,
-        identity_id: &str,
-    ) -> Result<(), String> {
+    /// Memory-only; callers persist via `db::update_identity` outside the
+    /// manager lock so the mutex is never held across a DB write.
+    pub fn set_display_name(&mut self, name: &str) {
         self.display_name = name.to_string();
-        db::update_identity(db_pool, identity_id, None, Some(name))
     }
 
-    pub fn update_status(
-        &mut self,
-        status: &str,
-        db_pool: &DbPool,
-        identity_id: &str,
-    ) -> Result<(), String> {
+    /// Memory-only; callers persist via `db::update_identity_status` outside
+    /// the manager lock.
+    pub fn set_status(&mut self, status: &str) {
         self.status = status.to_string();
-        db::update_identity_status(db_pool, identity_id, status)
     }
 
     pub fn request_all_paths(&self, db_pool: &DbPool, identity_id: &str) -> usize {
@@ -2510,9 +2442,39 @@ impl LxmfManager {
         Value::Object(status)
     }
 
+    pub fn ratchets_dir(&self) -> std::path::PathBuf {
+        self.data_dir
+            .join("identities")
+            .join(&self.identity_hash)
+            .join("ratchets")
+    }
+
+    /// Binary: repeated [dest_hash:16][pubkey:64] records.
+    pub fn known_identities_blob(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(self.known_identities.len() * 80);
+        for (hash_hex, pk) in &self.known_identities {
+            if let Ok(hash_bytes) = hex::decode(hash_hex)
+                && hash_bytes.len() == 16
+            {
+                data.extend_from_slice(&hash_bytes);
+                data.extend_from_slice(pk);
+            }
+        }
+        data
+    }
+
+    pub fn save_router_state(&self) {
+        if let Err(e) = self.router.save_state(&self.lxmf_storage_dir) {
+            tracing::warn!(
+                path = %self.lxmf_storage_dir.display(),
+                error = %e,
+                "Failed to save LXMF router state"
+            );
+        }
+    }
+
     pub fn save_crypto_state(&self) {
-        let id_dir = self.data_dir.join("identities").join(&self.identity_hash);
-        let ratchet_dir = id_dir.join("ratchets");
+        let ratchet_dir = self.ratchets_dir();
         std::fs::create_dir_all(&ratchet_dir).ok();
 
         let ring_path = ratchet_dir.join("ring");
@@ -2538,41 +2500,41 @@ impl LxmfManager {
             }
         }
 
-        // Binary: repeated [dest_hash:16][pubkey:64] records.
         let ki_path = ratchet_dir.join("known_identities");
-        let mut data = Vec::with_capacity(self.known_identities.len() * 80);
-        for (hash_hex, pk) in &self.known_identities {
-            if let Ok(hash_bytes) = hex::decode(hash_hex)
-                && hash_bytes.len() == 16
-            {
-                data.extend_from_slice(&hash_bytes);
-                data.extend_from_slice(pk);
-            }
-        }
-        if let Err(e) = rns_identity::persistence::atomic_write(&ki_path, &data) {
+        if let Err(e) =
+            rns_identity::persistence::atomic_write(&ki_path, &self.known_identities_blob())
+        {
             tracing::warn!("Failed to save known identities: {e}");
         }
 
-        if let Err(e) = self.router.save_state(&self.lxmf_storage_dir) {
-            tracing::warn!(
-                path = %self.lxmf_storage_dir.display(),
-                error = %e,
-                "Failed to save LXMF router state"
-            );
-        }
+        self.save_router_state();
     }
 
+    /// Returns `(identity_changed, ratchet_changed)`. No-op updates are
+    /// skipped so callers persist only real deltas, and an unchanged
+    /// ratchet keeps its original `received_at` (Python `_remember_ratchet`).
     pub fn update_remote_crypto(
         &mut self,
         dest_hash_hex: &str,
         pk: &[u8; 64],
         ratchet: Option<&[u8; 32]>,
-    ) {
-        self.known_identities.insert(dest_hash_hex.to_string(), *pk);
-        if let Some(r) = ratchet {
+    ) -> (bool, bool) {
+        let identity_changed = self.known_identities.get(dest_hash_hex) != Some(pk);
+        if identity_changed {
+            self.known_identities.insert(dest_hash_hex.to_string(), *pk);
+        }
+        let mut ratchet_changed = false;
+        if let Some(r) = ratchet
+            && self
+                .received_ratchets
+                .get(dest_hash_hex)
+                .is_none_or(|rr| rr.ratchet_pub != *r)
+        {
             self.received_ratchets
                 .insert(dest_hash_hex.to_string(), ReceivedRatchet::new(*r));
+            ratchet_changed = true;
         }
+        (identity_changed, ratchet_changed)
     }
 
     pub fn replace_route_hops_from_path_table(
@@ -3208,11 +3170,23 @@ impl LxmfManager {
                 self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
                 return changed;
             }
-        } else if name_hash == rns_identity::name_hash::name_hash(LXMF_APP_NAME)
-            && let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(app_data)
-        {
-            let changed = self.router.get_stamp_cost(&dest_hash) != Some(cost);
-            self.router.set_stamp_cost(dest_hash, cost);
+        } else if name_hash == rns_identity::name_hash::name_hash(LXMF_APP_NAME) {
+            let mut changed = false;
+            if let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(app_data) {
+                changed |= self.router.get_stamp_cost(&dest_hash) != Some(cost);
+                self.router.set_stamp_cost(dest_hash, cost);
+            }
+            let compression_support =
+                lxmf_core::handlers::compression_support_state_from_app_data(app_data);
+            match compression_support {
+                CompressionSupport::Supported | CompressionSupport::Unsupported => {
+                    changed |= self
+                        .peer_lxmf_compression_support
+                        .insert(dest_hash, compression_support)
+                        != Some(compression_support);
+                }
+                CompressionSupport::Unknown => {}
+            }
             return changed;
         }
         false
@@ -3418,6 +3392,14 @@ impl LxmfManager {
         if !actions.is_empty() {
             results.extend(self.execute_encrypted_actions(actions));
             self.drain_link_delivery_progress_updates();
+        }
+        // Advance the router jobloop (transient caches, store cull, peer
+        // rotation at Python cadences) — process_outbound_with_direct does
+        // not drive it. Internally time-gated, safe at the 500 ms tick rate.
+        self.router.run_jobs_tick();
+        if now - self.last_router_cull > 300.0 {
+            self.router.cull_stamp_costs();
+            self.last_router_cull = now;
         }
 
         if let Some(ref mut ld) = self.link_delivery {
@@ -3759,33 +3741,40 @@ impl LxmfManager {
         })
     }
 
-    fn ensure_message_stamp(&self, message: &mut LxMessage) {
-        if message.stamp.is_none()
-            && let Some(cost) = self.router.get_stamp_cost(&message.destination_hash)
-            && cost > 0
-        {
-            tracing::info!(
-                dest = %hex::encode(message.destination_hash),
-                cost = cost,
-                "generating stamp (cost={}) for outbound message — this may take a moment",
-                cost,
-            );
-            message.stamp_cost = Some(cost);
-            match message.get_stamp() {
-                Some(stamp) => {
-                    tracing::info!(
-                        dest = %hex::encode(message.destination_hash),
-                        stamp = %hex::encode(stamp),
-                        "stamp generated successfully"
-                    );
-                }
-                None => {
-                    tracing::warn!(
-                        dest = %hex::encode(message.destination_hash),
-                        cost = cost,
-                        "failed to generate stamp — sending without stamp"
-                    );
-                }
+    /// Hand `message` back when it is ready to send (stamped or no stamp
+    /// required); `None` when stamp PoW was deferred to a worker — the
+    /// message re-enters `pending_outbound` with the stamp attached, so the
+    /// caller must skip this delivery attempt. Never grinds PoW inline: the
+    /// tick holds the manager lock, and a synchronous search blocked it for
+    /// 53 s in live testing (announces and all manager work stalled).
+    fn ensure_message_stamp_or_defer(&mut self, mut message: LxMessage) -> Option<LxMessage> {
+        if message.stamp.is_some() {
+            return Some(message);
+        }
+        let Some(cost) = self
+            .router
+            .get_stamp_cost(&message.destination_hash)
+            .filter(|cost| *cost > 0)
+        else {
+            return Some(message);
+        };
+        message.stamp_cost = Some(cost);
+        let dest = hex::encode(message.destination_hash);
+        match self.router.defer_stamp(message) {
+            None => {
+                tracing::info!(
+                    dest = %dest,
+                    cost,
+                    "stamp required; deferred to worker — delivery resumes when ready"
+                );
+                None
+            }
+            Some(mut message) => {
+                // No id to key the deferred job on; keep prior inline
+                // behavior as the last resort.
+                tracing::warn!(dest = %dest, cost, "stamp needed but message has no id; generating inline");
+                message.get_stamp();
+                Some(message)
             }
         }
     }
@@ -3823,7 +3812,7 @@ impl LxmfManager {
 
     fn start_propagation_delivery(
         &mut self,
-        mut message: LxMessage,
+        message: LxMessage,
         prop_hash: [u8; 16],
         results: &mut Vec<(String, &'static str)>,
     ) {
@@ -3862,7 +3851,9 @@ impl LxmfManager {
             return;
         }
 
-        self.ensure_message_stamp(&mut message);
+        let Some(mut message) = self.ensure_message_stamp_or_defer(message) else {
+            return;
+        };
         let Some(packed) = self.pack_message_for_propagation(&mut message, prop_hash) else {
             tracing::warn!(
                 dest = %dest_hex,
@@ -4056,7 +4047,7 @@ impl LxmfManager {
         let mut results = Vec::new();
 
         for action in actions {
-            let (mut message, dest_hash, is_opportunistic, mut direct_plan) = match action {
+            let (message, dest_hash, is_opportunistic, mut direct_plan) = match action {
                 OutboundAction::DeliverDirect { message, dest_hash } => {
                     (message, dest_hash, false, None)
                 }
@@ -4087,7 +4078,9 @@ impl LxmfManager {
                     continue;
                 }
             };
-            self.ensure_message_stamp(&mut message);
+            let Some(mut message) = self.ensure_message_stamp_or_defer(message) else {
+                continue;
+            };
 
             let msg_hash = message.hash;
             let is_ephemeral = msg_hash
@@ -4716,6 +4709,23 @@ async fn pull_identity_from_announces(
     }
 }
 
+/// Single filename rule for everything under `files_dir`: the
+/// save/get/download/delete paths all use it, so a name that saves is always
+/// retrievable and deletable. The char whitelist (spaces allowed — existing
+/// stored attachments contain them) guards against path traversal; pure
+/// dot-names are rejected so the result can never reference a directory.
+pub fn sanitize_stored_file_name(raw: &str) -> Option<String> {
+    let sanitized: String = raw
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' '))
+        .take(240)
+        .collect();
+    if sanitized.is_empty() || sanitized.chars().all(|c| c == '.' || c == ' ') {
+        return None;
+    }
+    Some(sanitized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4745,6 +4755,19 @@ mod tests {
         LxmfManager::load_or_create(&tmp, None, None).unwrap()
     }
 
+    fn delivery_app_data_with_features(features: &[u8]) -> Vec<u8> {
+        let values = features
+            .iter()
+            .map(|feature| rmpv::Value::from(*feature as u64))
+            .collect();
+        let arr = rmpv::Value::Array(vec![
+            rmpv::Value::Binary(b"Peer".to_vec()),
+            rmpv::Value::Nil,
+            rmpv::Value::Array(values),
+        ]);
+        encode_msgpack_value(&arr)
+    }
+
     fn next_outbound(rx: &mut mpsc::Receiver<TransportMessage>) -> Vec<u8> {
         while let Ok(message) = rx.try_recv() {
             if let TransportMessage::Outbound(request) = message {
@@ -4752,6 +4775,59 @@ mod tests {
             }
         }
         panic!("expected outbound transport message");
+    }
+
+    /// T1-7: one shared sanitizer — names that save (spaces included) must
+    /// list, download, and delete; traversal input never escapes files_dir.
+    #[test]
+    fn attachment_with_spaces_round_trips_save_get_delete() {
+        let mgr = test_manager();
+
+        let stored = mgr.save_attachment("my report final.pdf", b"data");
+        assert!(stored.ends_with("_my report final.pdf"));
+
+        let listed = mgr.list_received_files();
+        assert!(
+            listed
+                .iter()
+                .any(|f| f.get("stored_name").and_then(|v| v.as_str()) == Some(stored.as_str())),
+            "saved file must appear in the listing"
+        );
+
+        let path = mgr
+            .get_received_file(&stored)
+            .expect("space-bearing stored name must resolve");
+        assert_eq!(std::fs::read(&path).unwrap(), b"data");
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(mgr.get_received_file(&stored).is_none());
+    }
+
+    #[test]
+    fn stored_file_name_sanitizer_blocks_traversal() {
+        assert_eq!(
+            sanitize_stored_file_name("../../etc/passwd").as_deref(),
+            Some("....etcpasswd"),
+            "separators are stripped so the result cannot traverse"
+        );
+        assert_eq!(sanitize_stored_file_name(".."), None);
+        assert_eq!(sanitize_stored_file_name("."), None);
+        assert_eq!(sanitize_stored_file_name(". ."), None);
+        assert_eq!(sanitize_stored_file_name("///"), None);
+        assert_eq!(sanitize_stored_file_name(""), None);
+        assert_eq!(
+            sanitize_stored_file_name("a/b\\c").as_deref(),
+            Some("abc"),
+            "separators are stripped, not preserved"
+        );
+        assert_eq!(
+            sanitize_stored_file_name("my file.txt").as_deref(),
+            Some("my file.txt")
+        );
+
+        let mgr = test_manager();
+        assert!(mgr.get_received_file("../../etc/passwd").is_none());
+        assert!(mgr.get_received_file("..").is_none());
     }
 
     #[test]
@@ -4798,6 +4874,37 @@ mod tests {
         let raw = mgr.create_announce_packet().expect("announce packet");
 
         assert!(raw.len() <= rns_wire::constants::MTU);
+    }
+
+    #[test]
+    fn path_response_announce_uses_path_response_context() {
+        let mut mgr = test_manager();
+
+        let normal = mgr.create_announce_packet().expect("announce packet");
+        let (normal_hdr, _) =
+            rns_wire::header::PacketHeader::unpack(&normal).expect("unpack normal announce");
+        assert_eq!(normal_hdr.context, rns_wire::context::PacketContext::None);
+        assert_eq!(
+            normal_hdr.flags.packet_type,
+            rns_wire::flags::PacketType::Announce
+        );
+
+        let response = mgr
+            .create_path_response_announce_packet()
+            .expect("path-response announce packet");
+        let (resp_hdr, _) =
+            rns_wire::header::PacketHeader::unpack(&response).expect("unpack path response");
+        // The distinguishing bit: PathResponse context, so this answers a path
+        // request rather than being treated as a fresh broadcast announce.
+        assert_eq!(
+            resp_hdr.context,
+            rns_wire::context::PacketContext::PathResponse
+        );
+        assert_eq!(
+            resp_hdr.flags.packet_type,
+            rns_wire::flags::PacketType::Announce
+        );
+        assert_eq!(resp_hdr.destination_hash, mgr.lxmf_dest_hash);
     }
 
     #[test]
@@ -5309,6 +5416,69 @@ mod tests {
             } => {
                 assert_eq!(command_link, link_id);
                 assert!(!payload.is_empty());
+            }
+            _ => panic!("expected SendLinkPayload command"),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_delivery_to_explicit_no_bz2_peer_disables_backchannel_compression() {
+        let mut mgr = test_manager();
+        let (transport_tx, _transport_rx) = mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(transport_tx);
+        let (command_tx, mut command_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
+        let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
+        let (_packet_tx, packet_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
+        let (_resource_tx, resource_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
+        mgr.set_lxmf_link_control(
+            command_tx,
+            direct_tx,
+            identified_rx,
+            closed_rx,
+            packet_rx,
+            resource_rx,
+        );
+
+        let dest = [0x34; 16];
+        let dest_hex = hex::encode(dest);
+        let link_id = [0x45; 16];
+        mgr.peer_lxmf_compression_support
+            .insert(dest, CompressionSupport::Unsupported);
+        assert!(mgr.ensure_link_delivery_manager());
+        mgr.link_delivery
+            .as_mut()
+            .unwrap()
+            .register_backchannel(dest, link_id);
+
+        let msg = mgr
+            .create_message(&dest_hex, "direct no bz2", "", DeliveryMethod::Direct)
+            .unwrap();
+        assert!(!msg.auto_compress);
+        let msg_hash = msg.hash.unwrap();
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message: msg,
+            dest_hash: dest,
+        }]);
+        assert_eq!(
+            results,
+            vec![(hex::encode(msg_hash), "reusing_backchannel")]
+        );
+
+        let command = command_rx.try_recv().expect("backchannel send command");
+        match command {
+            rns_runtime::link_manager::LinkManagerCommand::SendLinkPayload {
+                link_id: command_link,
+                auto_compress,
+                ..
+            } => {
+                assert_eq!(command_link, link_id);
+                assert!(!auto_compress);
             }
             _ => panic!("expected SendLinkPayload command"),
         }
@@ -6785,6 +6955,100 @@ mod tests {
     }
 
     #[test]
+    fn auto_delivery_prefers_opportunistic_for_explicit_no_bz2_message_peers() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "abababababababababababababababab";
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        db::touch_identity_activity(&pool, &[(dest.to_string(), now, None, None)]);
+        assert!(db::set_identity_lxmf_compression_support(
+            &pool,
+            dest,
+            db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED
+        ));
+
+        assert_eq!(
+            mgr.pick_delivery_method(
+                &pool,
+                dest,
+                DeliveryPreference::Auto,
+                DeliveryProfile::Message
+            ),
+            DeliveryMethod::Opportunistic
+        );
+        assert_eq!(
+            mgr.pick_delivery_method(
+                &pool,
+                dest,
+                DeliveryPreference::Direct,
+                DeliveryProfile::Message
+            ),
+            DeliveryMethod::Direct
+        );
+        assert_eq!(
+            mgr.pick_delivery_method(
+                &pool,
+                dest,
+                DeliveryPreference::Auto,
+                DeliveryProfile::Attachment
+            ),
+            DeliveryMethod::Direct
+        );
+        assert_eq!(
+            mgr.pick_delivery_method(&pool, dest, DeliveryPreference::Auto, DeliveryProfile::Lrgp),
+            DeliveryMethod::Direct
+        );
+
+        mgr.client_propagation_enabled = true;
+        assert!(db::touch_identity_last_heard(
+            &pool,
+            dest,
+            now - RECENT_PEER_SECS - 10.0
+        ));
+        assert_eq!(
+            mgr.pick_delivery_method(
+                &pool,
+                dest,
+                DeliveryPreference::Auto,
+                DeliveryProfile::Message
+            ),
+            DeliveryMethod::Opportunistic
+        );
+    }
+
+    #[test]
+    fn persisted_no_bz2_peer_disables_direct_message_auto_compression() {
+        let pool = test_pool();
+        let mgr = test_manager();
+        let dest = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+        let dest_bytes: [u8; 16] = hex::decode(dest).unwrap().try_into().unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        db::touch_identity_activity(&pool, &[(dest.to_string(), now, None, None)]);
+        assert!(db::set_identity_lxmf_compression_support(
+            &pool,
+            dest,
+            db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED
+        ));
+
+        let mut msg = LxMessage::new(
+            dest_bytes,
+            mgr.lxmf_dest_hash,
+            "",
+            "manual direct",
+            DeliveryMethod::Direct,
+        );
+        assert!(msg.auto_compress);
+        mgr.apply_peer_lxmf_compression_support(&mut msg, Some(&pool), dest);
+        assert!(!msg.auto_compress);
+    }
+
+    #[test]
     fn auto_delivery_uses_relay_for_not_recent_peer_when_configured() {
         let pool = test_pool();
         let mut mgr = test_manager();
@@ -7085,6 +7349,44 @@ mod tests {
             Some(&delivery_data),
         ));
         assert_eq!(mgr.router.get_stamp_cost(&unrelated_dest), None);
+    }
+
+    #[test]
+    fn lxmf_announce_app_data_caches_explicit_compression_support() {
+        let mut mgr = test_manager();
+        let dest = [0x44; 16];
+        let delivery_name_hash = rns_identity::name_hash::name_hash("lxmf.delivery");
+
+        let legacy_data = lxmf_core::handlers::get_announce_app_data(Some("peer"), None);
+        assert!(!mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&legacy_data),));
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&dest),
+            None,
+            "legacy app_data must not be treated as an explicit constrained-peer signal"
+        );
+
+        let no_bz2_data = delivery_app_data_with_features(&[]);
+        assert!(mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&no_bz2_data),));
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&dest),
+            Some(&CompressionSupport::Unsupported)
+        );
+        assert!(!mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&legacy_data),));
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&dest),
+            Some(&CompressionSupport::Unsupported),
+            "unknown metadata should not erase explicit capability"
+        );
+
+        let supported_data =
+            delivery_app_data_with_features(&[lxmf_core::constants::SF_COMPRESSION]);
+        assert!(
+            mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&supported_data),)
+        );
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&dest),
+            Some(&CompressionSupport::Supported)
+        );
     }
 
     #[test]

@@ -52,16 +52,7 @@
                 return _contactNameCache[hash];
             }
         }
-        return _shortHash(hash, 8, 4);
-    }
-
-    function _shortHash(hash, front, back) {
-        if (!hash) return '';
-        if (typeof shortHash === 'function') return shortHash(hash, front || 8, back || 4);
-        front = front || 8;
-        back = back || 4;
-        if (hash.length <= front + back + 1) return hash;
-        return hash.substring(0, front) + '\u2026' + hash.slice(-back);
+        return shortHash(hash, 8, 4);
     }
 
     function _isMe(session, hash) {
@@ -305,7 +296,7 @@
                         '<span class="games-session-status ' + _statusClass(s) + '">' + _statusText(s) + '</span>' +
                     '</div>' +
                 '</div>' +
-                '<div class="games-session-time">' + relativeTime(s.updated_at || s.last_action_at) + '</div>' +
+                '<div class="games-session-time">' + RS.relativeTime(s.updated_at || s.last_action_at) + '</div>' +
                 '<button type="button" class="games-session-delete" aria-label="Remove game from history" title="Remove from history">' +
                     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>' +
                 '</button>' +
@@ -1401,15 +1392,16 @@
                     '<span class="games-sheet-contact-avatar">' + avatar + '</span>' +
                     '<span class="games-sheet-contact-copy">' +
                         '<span class="games-sheet-contact-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
-                        '<span class="games-sheet-contact-hash">' + escapeHtml(_shortHash(c.hash, 8, 4)) + '</span>' +
+                        '<span class="games-sheet-contact-hash">' + escapeHtml(shortHash(c.hash, 8, 4)) + '</span>' +
                     '</span>' +
                 '</button>';
             }
         }
 
-        var overlayHtml = '<div class="bottom-sheet-overlay" id="games-new-sheet-overlay"></div>';
-        var sheetHtml = '<div class="bottom-sheet games-new-dialog" id="games-new-sheet">' +
-            '<div class="bottom-sheet-handle"></div>' +
+        var shell = RS.sheetShell.create({ sheetClass: 'bottom-sheet games-new-dialog' });
+        shell.overlay.id = 'games-new-sheet-overlay';
+        shell.sheet.id = 'games-new-sheet';
+        shell.sheet.innerHTML = '<div class="bottom-sheet-handle"></div>' +
             '<div class="bottom-sheet-header">' +
                 '<div>' +
                     '<div class="bottom-sheet-title">New game</div>' +
@@ -1439,19 +1431,11 @@
             '<div class="bottom-sheet-footer games-sheet-footer">' +
                 '<button type="button" class="rs-dialog-cancel games-sheet-cancel-btn" id="games-sheet-cancel">Cancel</button>' +
                 '<button type="button" class="rs-dialog-confirm games-sheet-send-btn" id="games-sheet-send" disabled>Send Challenge</button>' +
-            '</div>' +
-        '</div>';
+            '</div>';
 
-        document.body.insertAdjacentHTML('beforeend', overlayHtml);
-        document.body.insertAdjacentHTML('beforeend', sheetHtml);
-
-        var overlay = document.getElementById('games-new-sheet-overlay');
-        var sheet = document.getElementById('games-new-sheet');
-
-        requestAnimationFrame(function() {
-            if (overlay) overlay.classList.add('active');
-            if (sheet) sheet.classList.add('open');
-        });
+        RS.sheetShell.present(shell);
+        var overlay = shell.overlay;
+        var sheet = shell.sheet;
 
         var selectedHash = null;
         var selectedAppId = 'ttt';
@@ -1507,18 +1491,10 @@
     }
 
     function _closeNewGameSheet() {
-        var overlay = document.getElementById('games-new-sheet-overlay');
-        var sheet = document.getElementById('games-new-sheet');
-        if (overlay) overlay.classList.remove('active');
-        if (sheet) {
-            sheet.classList.remove('open');
-            setTimeout(function() {
-                if (overlay) overlay.remove();
-                if (sheet) sheet.remove();
-            }, 300);
-        } else if (overlay) {
-            overlay.remove();
-        }
+        RS.sheetShell.dismiss({
+            overlay: document.getElementById('games-new-sheet-overlay'),
+            sheet: document.getElementById('games-new-sheet'),
+        });
     }
 
     function startNewGame(appId, contactHash) {

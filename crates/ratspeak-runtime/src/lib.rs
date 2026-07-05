@@ -571,6 +571,15 @@ async fn teardown_rns_runtime_interfaces(handle: &rns_runtime::reticulum::Reticu
     };
 
     for iface in stats {
+        // The BLE Peer interface needs its own teardown: the generic path only
+        // aborts the read task + deregisters, leaving the peripheral advertising
+        // and the mesh loops running (a ghost session against a dead transport)
+        // after a soft restart / identity switch / shutdown.
+        #[cfg(feature = "ble")]
+        if iface.name == "Bluetooth Peer" || iface.name == "BLE Mesh" {
+            rns_runtime::reticulum::teardown_ble_peer_interface(handle, iface.id).await;
+            continue;
+        }
         rns_runtime::reticulum::teardown_interface(handle, iface.id).await;
     }
 }
@@ -707,9 +716,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         return;
     }
 
-    // Hardware identities need a PIN to unlock the token. If the active identity
-    // is hardware and no PIN is staged, enter the locked state and wait for
-    // `hw_unlock` rather than coming up with no identity.
+    // Protected identities need a secret to unlock. If the active identity is
+    // hardware or passcode-encrypted and no secret is staged, enter the locked
+    // state and wait for `unlock_identity` rather than coming up with no identity.
     let hw_pin = state.take_pending_hw_pin();
     // Detect whether the active identity is protected (needs a secret to unlock):
     // hardware (.hwid → YubiKey PIN) or passcode-encrypted (.enc → passcode).
@@ -1105,6 +1114,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             .load(std::sync::atomic::Ordering::Relaxed),
                         ..lxmf_core::propagation_node::PropagationNodeConfig::default()
                     };
+                    // Captured before the config moves into the node: bounds
+                    // the wrapper decode in the deposit loop below.
+                    let max_transfer_bytes = prop_node_config.max_storage;
 
                     let prop_node = if let Some((storage_dir, dest_hash)) = prop_storage {
                         match lxmf_core::propagation_node::PropagationNode::with_storage(
@@ -1201,23 +1213,25 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 None
                             }
                         } else if path_hash == get_path_hash {
-                            if let Ok(mut node) = get_node.lock() {
-                                let remote_identity_hash = link_identities
-                                    .lock()
-                                    .ok()
-                                    .and_then(|ids| ids.get(&link_id).copied());
-                                let client_dest_hash = remote_identity_hash
-                                    .map(|identity_hash| {
-                                        rns_identity::destination::Destination::hash_from_name_and_identity(
-                                            "lxmf.delivery",
-                                            Some(&identity_hash),
-                                        )
-                                    })
-                                    .unwrap_or([0u8; 16]);
-                                Some(node.handle_get_request(&data, &client_dest_hash))
+                            let remote_identity_hash = link_identities
+                                .lock()
+                                .ok()
+                                .and_then(|ids| ids.get(&link_id).copied());
+                            let client_dest_hash = remote_identity_hash
+                                .map(|identity_hash| {
+                                    rns_identity::destination::Destination::hash_from_name_and_identity(
+                                        "lxmf.delivery",
+                                        Some(&identity_hash),
+                                    )
+                                })
+                                .unwrap_or([0u8; 16]);
+                            let action = if let Ok(mut node) = get_node.lock() {
+                                node.handle_get_request(&data, &client_dest_hash)
                             } else {
-                                None
-                            }
+                                return None;
+                            };
+                            // Phase-2 file reads happen here, after the node lock drops.
+                            Some(action.into_response())
                         } else {
                             None
                         }
@@ -1261,7 +1275,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 break;
                             };
                             let Ok((_timebase, entries)) =
-                                lxmf_core::message::LxMessage::unpack_propagation_wrapper(&data)
+                                lxmf_core::message::LxMessage::unpack_propagation_wrapper_bounded(
+                                    &data,
+                                    max_transfer_bytes,
+                                )
                             else {
                                 tracing::warn!("failed to unpack inbound propagation wrapper");
                                 continue;
@@ -1430,11 +1447,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             // Link deliveries arrive already decrypted. Payload
                             // is the full LXMF wire format:
                             //   [dest:16][src:16][sig:64][msgpack].
-                            handle_link_delivered_lxmf(
+                            handle_decrypted_lxmf(
                                 &link_inbound_state,
                                 data,
-                                true,
-                                Some(link_id),
+                                InboundLxmfSource::Link {
+                                    link_id: Some(link_id),
+                                },
                             )
                             .await;
                         }
@@ -1528,12 +1546,28 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     let should_save_crypto_state = save_counter.is_multiple_of(600);
                     let tick_state_for_lxmf = tick_state.clone();
                     let tick_result = tokio::task::spawn_blocking(move || {
+                        let lock_wait_started = std::time::Instant::now();
                         if let Ok(mut lxmf) = tick_state_for_lxmf.lxmf.lock()
                             && let Some(mgr) = lxmf.as_mut()
                         {
+                            let waited = lock_wait_started.elapsed();
+                            if waited > Duration::from_secs(1) {
+                                tracing::warn!(
+                                    waited_ms = waited.as_millis() as u64,
+                                    "lxmf tick waited on manager lock"
+                                );
+                            }
+                            let hold_started = std::time::Instant::now();
                             let results = mgr.tick_with_auto_propagation_download_ready(
                                 auto_inbox_download_ready,
                             );
+                            let tick_held = hold_started.elapsed();
+                            if tick_held > Duration::from_secs(1) {
+                                tracing::warn!(
+                                    held_ms = tick_held.as_millis() as u64,
+                                    "lxmf tick held manager lock (tick body)"
+                                );
+                            }
                             let delivery_progress = mgr.take_delivery_progress_updates();
                             let downloaded = mgr.take_downloaded_propagation_messages();
                             let (
@@ -1594,6 +1628,22 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             )
                         }
                     };
+                    // Hosted propagation node maintenance on the crypto-save
+                    // cadence (~5 min): age-cull, weight cap, orphan cleanup.
+                    // Previously never ran — the store only hard-rejected at
+                    // the ingest cap once full.
+                    if should_save_crypto_state {
+                        let hosted_node = tick_state
+                            .propagation_node
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.clone());
+                        if let Some(node) = hosted_node
+                            && let Ok(mut node) = node.lock()
+                        {
+                            node.tick();
+                        }
+                    }
                     let propagation_deposit_terminal = !completed_propagation_deposits.is_empty()
                         || !failed_propagation_deposits.is_empty();
                     for node in completed_propagation_deposits {
@@ -1635,23 +1685,45 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     }
                     // Persist before emit: a successful `lxmf_step` event
                     // must imply the DB has already accepted the transition.
-                    let mut persisted: Vec<(String, &'static str)> =
+                    // State rows are keyed (id, identity_id); these events come
+                    // from the active identity's router.
+                    let identity_for_db = if results.is_empty() {
+                        String::new()
+                    } else {
+                        helpers::active_identity_id(&tick_state)
+                    };
+                    let mut persisted: Vec<(String, &'static str, Option<String>)> =
                         Vec::with_capacity(results.len());
                     for (msg_id, new_state) in &results {
                         let msg_id_for_db = msg_id.clone();
+                        let identity_for_db = identity_for_db.clone();
                         let new_state_for_db = new_state.to_string();
                         let delivery_method_for_db =
                             matches!(*new_state, "propagating" | "propagated")
                                 .then_some("propagated".to_string());
+                        // Same blocking-pool hop also reads the method back
+                        // for the emit below.
                         match db::spawn_db(tick_state.db.clone(), move |p| {
                             if let Some(method) = delivery_method_for_db.as_deref() {
-                                db::update_message_delivery_method(&p, &msg_id_for_db, method);
+                                db::update_message_delivery_method(
+                                    &p,
+                                    &msg_id_for_db,
+                                    &identity_for_db,
+                                    method,
+                                );
                             }
-                            db::update_message_state(&p, &msg_id_for_db, &new_state_for_db, None);
+                            db::update_message_state(
+                                &p,
+                                &msg_id_for_db,
+                                &identity_for_db,
+                                &new_state_for_db,
+                                None,
+                            );
+                            db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db)
                         })
                         .await
                         {
-                            Ok(()) => persisted.push((msg_id.clone(), *new_state)),
+                            Ok(method) => persisted.push((msg_id.clone(), *new_state, method)),
                             Err(e) => tracing::error!(
                                 msg_id = %msg_id,
                                 new_state = %new_state,
@@ -1660,13 +1732,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             ),
                         }
                     }
-                    for (msg_id, new_state) in &persisted {
+                    for (msg_id, new_state, method) in &persisted {
                         let client_msg_id = tick_state
                             .msg_id_map
                             .lock()
                             .ok()
                             .and_then(|map| map.get(msg_id).cloned());
-                        let method = db::get_message_delivery_method(&tick_state.db, msg_id);
                         tick_state.emit_to_all(
                             "lxmf_step",
                             json!({
@@ -1769,7 +1840,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     }
 
                     for data in downloaded_propagation_messages {
-                        handle_link_delivered_lxmf(&tick_state, data, false, None).await;
+                        handle_decrypted_lxmf(&tick_state, data, InboundLxmfSource::Propagated)
+                            .await;
                     }
 
                     // Every ~30s: timeout sweep + evict >1h tracking entries.
@@ -1777,7 +1849,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     if timeout_check_counter.is_multiple_of(60) {
                         propagation::reconcile_active_auto_node(&tick_state).await;
                         propagation::probe_static_nodes_background(&tick_state).await;
-                        check_message_timeouts(&tick_state);
+                        check_message_timeouts(&tick_state).await;
                         sweep_undelivered_game_sessions(&tick_state).await;
                         let cleanup_now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -2112,9 +2184,17 @@ async fn send_announce_from_state_inner(
     }
     let (packets, transport_tx) = {
         let mut packets: Vec<([u8; 16], Vec<u8>, &'static str, bool)> = Vec::new();
+        let lock_wait_started = std::time::Instant::now();
         if let Ok(mut lxmf) = state.lxmf.lock()
             && let Some(mgr) = lxmf.as_mut()
         {
+            let waited = lock_wait_started.elapsed();
+            if waited > Duration::from_secs(1) {
+                tracing::warn!(
+                    waited_ms = waited.as_millis() as u64,
+                    "announce waited on lxmf manager lock"
+                );
+            }
             if let Ok(raw) = mgr.create_announce_packet() {
                 packets.push((
                     mgr.lxmf_dest_hash,
@@ -2350,6 +2430,21 @@ fn clamp_chat_field(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
+/// Inbound reactions are peer-controlled and rendered in the UI. Reject
+/// markup-dangerous and control characters outright instead of trusting
+/// every render site to escape (the renderer escapes too — defense in depth).
+fn sanitize_reaction_emoji(value: &str) -> Option<String> {
+    let emoji = clamp_chat_field(value, 16);
+    if emoji.is_empty()
+        || emoji
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '<' | '>' | '&' | '"' | '\''))
+    {
+        return None;
+    }
+    Some(emoji)
+}
+
 fn inbound_reply_fields(ext: Option<&lxmf::RatspeakChatExtension>) -> (String, String) {
     match ext {
         Some(lxmf::RatspeakChatExtension::Reply {
@@ -2371,8 +2466,10 @@ async fn apply_inbound_ratspeak_reaction(
     action: &str,
 ) {
     let target = clamp_chat_field(target, 128);
-    let emoji = clamp_chat_field(emoji, 16);
-    if target.is_empty() || emoji.is_empty() {
+    let Some(emoji) = sanitize_reaction_emoji(emoji) else {
+        return;
+    };
+    if target.is_empty() {
         return;
     }
     let action = if action == "remove" {
@@ -2404,6 +2501,73 @@ async fn apply_inbound_ratspeak_reaction(
     );
 }
 
+/// Build the transport message that answers a path request for our own LXMF
+/// delivery destination: a `PathResponse`-context announce carrying our
+/// identity + path, routed back out the interface the request arrived on
+/// (`OutboundAttached`), or broadcast (`Outbound`) when that interface is
+/// unknown. Returns `None` if the LXMF manager isn't ready or the announce
+/// can't be built. Split from the send so the routing/context choice is
+/// unit-testable without a live transport.
+fn build_lxmf_path_response_message(
+    state: &Arc<AppState>,
+    attached_interface: Option<u64>,
+) -> Option<rns_transport::messages::TransportMessage> {
+    // Build under the lxmf lock (sync), then drop it before returning.
+    let (raw, dest_hash) =
+        match state.lxmf.lock() {
+            Ok(mut guard) => guard.as_mut().and_then(|mgr| {
+                match mgr.create_path_response_announce_packet() {
+                    Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to build LXMF path-response announce");
+                        None
+                    }
+                }
+            }),
+            Err(_) => None,
+        }?;
+
+    let request = rns_transport::messages::OutboundRequest {
+        raw: Bytes::from(raw),
+        destination_hash: dest_hash,
+    };
+    Some(match attached_interface {
+        Some(interface_id) => rns_transport::messages::TransportMessage::OutboundAttached {
+            request,
+            interface_id,
+        },
+        None => rns_transport::messages::TransportMessage::Outbound(request),
+    })
+}
+
+/// Emit a path-response announce for our LXMF delivery destination on the
+/// interface a path request arrived on. The transport delegates this to us
+/// because it doesn't hold our identity keys; answering is what lets a peer
+/// that never announced learn our identity + path on first contact.
+async fn answer_lxmf_path_request(state: &Arc<AppState>, attached_interface: Option<u64>) {
+    let Some(message) = build_lxmf_path_response_message(state, attached_interface) else {
+        return;
+    };
+
+    let Some(tx) = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
+    else {
+        return;
+    };
+
+    if let Err(e) = tx.send(message).await {
+        tracing::warn!(error = %e, "failed to queue LXMF path-response announce");
+    } else {
+        tracing::debug!(
+            attached_interface = ?attached_interface,
+            "answered LXMF path request with path-response announce"
+        );
+    }
+}
+
 /// Handle inbound LXMF messages delivered by the transport actor.
 async fn handle_inbound_lxmf(
     state: Arc<AppState>,
@@ -2427,8 +2591,11 @@ async fn handle_inbound_lxmf(
         {
             let rtt_ms = rtt.map(|d| d.as_secs_f64() * 1000.0);
             let msg_id_for_db = msg_id.clone();
-            db::spawn_db(state.db.clone(), move |p| {
-                db::update_message_state(&p, &msg_id_for_db, "delivered", rtt_ms);
+            let identity_for_db = helpers::active_identity_id(&state);
+            // One hop: flip the state and read the method back for the emit.
+            let method = db::spawn_db(state.db.clone(), move |p| {
+                db::update_message_state(&p, &msg_id_for_db, &identity_for_db, "delivered", rtt_ms);
+                db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db)
             })
             .await
             .expect("db task panicked");
@@ -2440,7 +2607,6 @@ async fn handle_inbound_lxmf(
                 .lock()
                 .ok()
                 .and_then(|mut map| map.remove(msg_id));
-            let method = db::get_message_delivery_method(&state.db, msg_id);
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -2465,6 +2631,20 @@ async fn handle_inbound_lxmf(
                     msg_id,
                     "standard",
                 );
+            }
+            continue;
+        }
+
+        // A path request arrived for our LXMF destination. The transport can't
+        // answer it itself (it doesn't hold our keys), so it asks us to. Reply
+        // with a path-response announce carrying our identity + path, so a peer
+        // that has never announced can still reach us on first contact.
+        // Previously this event fell through to `_ => continue` and was
+        // dropped, so we never answered path requests and replies to us stalled
+        // until we announced.
+        if let DestinationEvent::AnnounceRequested(ref req) = event {
+            if req.path_response {
+                answer_lxmf_path_request(&state, req.attached_interface).await;
             }
             continue;
         }
@@ -2502,399 +2682,137 @@ async fn handle_inbound_lxmf(
 
         // Opportunistic LXMF omits dest_hash from the body (it's in the
         // RNS header). unpack() needs [dest_hash:16][src_hash:16][sig:64][msgpack];
-        // re-prepend it here.
-        let mut msg = if let Some(ref pt) = decrypted {
-            let mut lxmf_data = Vec::with_capacity(16 + pt.len());
-            lxmf_data.extend_from_slice(&dest_hash);
-            lxmf_data.extend_from_slice(pt);
-            match lxmf_core::message::LxMessage::unpack(&lxmf_data) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        decrypted_len = pt.len(),
-                        "Decrypted LXMF unpack failed — dropping"
-                    );
-                    continue;
-                }
-            }
-        } else {
-            // Plaintext broadcast: prepend dest_hash for unpack() layout.
-            let mut lxmf_data = Vec::with_capacity(16 + lxmf_payload.len());
-            lxmf_data.extend_from_slice(&dest_hash);
-            lxmf_data.extend_from_slice(lxmf_payload);
-            match lxmf_core::message::LxMessage::unpack(&lxmf_data) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!("Inbound LXMF message unpack failed: {e}");
-                    continue;
-                }
+        // re-prepend it here. Falls back to the plaintext-broadcast layout
+        // when decryption didn't apply.
+        let body: &[u8] = decrypted.as_deref().unwrap_or(lxmf_payload);
+        let mut lxmf_data = Vec::with_capacity(16 + body.len());
+        lxmf_data.extend_from_slice(&dest_hash);
+        lxmf_data.extend_from_slice(body);
+        let msg = match lxmf_core::message::LxMessage::unpack(&lxmf_data) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    decrypted = decrypted.is_some(),
+                    "inbound LXMF unpack failed — dropping"
+                );
+                continue;
             }
         };
 
-        let sig_valid = state.lxmf.lock().ok().and_then(|mut l| {
-            l.as_mut()
-                .and_then(|mgr| mgr.verify_inbound_signature(&mut msg))
-        });
-        match sig_valid {
-            Some(true) => tracing::debug!("inbound signature validated"),
-            Some(false) => {
-                tracing::warn!("inbound signature INVALID — dropping message");
-                continue;
-            }
-            None => tracing::debug!("sender unknown — signature not validated"),
-        }
-
-        // Stamp PoW check; must run after signature validation and before
-        // delivery-proof ACK. Ticket-store entries skip the check.
-        if state
-            .enforce_stamps
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            let required_cost = state
-                .required_stamp_cost
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if required_cost > 0 {
-                let stamp_ok = match (msg.stamp.as_deref(), msg.message_id.or(msg.hash)) {
-                    (Some(stamp), Some(message_id)) => state
-                        .lxmf
-                        .lock()
-                        .ok()
-                        .and_then(|l| {
-                            l.as_ref().map(|mgr| {
-                                mgr.router.validate_stamp_with_tickets(
-                                    &message_id,
-                                    stamp,
-                                    required_cost,
-                                    &msg.source_hash,
-                                )
-                            })
-                        })
-                        .unwrap_or(false),
-                    _ => false,
-                };
-                if !stamp_ok {
-                    tracing::warn!(
-                        from = %hex::encode(msg.source_hash),
-                        required_cost,
-                        has_stamp = msg.stamp.is_some(),
-                        "inbound message REJECTED: stamp missing or PoW invalid (enforce_stamps=true)"
-                    );
-                    continue;
-                }
-            }
-        }
-
-        // FIELD_TICKET 0x0C: `[expires_f64, token:16]` for stamp bypass.
-        if let Some(ticket_data) = msg.fields.get(&lxmf_core::constants::FIELD_TICKET)
-            && let Some((token, expires)) = decode_lxmf_ticket_field(ticket_data)
-            && let Ok(mut lxmf) = state.lxmf.lock()
-            && let Some(mgr) = lxmf.as_mut()
-        {
-            mgr.router.ticket_store.add(lxmf_core::ticket::Ticket::new(
-                token,
-                msg.source_hash,
-                expires,
-            ));
-            tracing::debug!(
-                from = %hex::encode(msg.source_hash),
-                "stored inbound ticket for future stamp bypass"
-            );
-        }
-
-        {
-            let proof_and_tx = state.lxmf.lock().ok().and_then(|l| {
-                let mgr = l.as_ref()?;
-                let proof = mgr.create_delivery_proof(&raw)?;
-                let tx = mgr.router.transport_tx.clone()?;
-                Some((proof, tx))
-            });
-            if let Some((proof_raw, tx)) = proof_and_tx
-                && let Ok((proof_hdr, _)) = rns_wire::header::PacketHeader::unpack(&proof_raw)
-            {
-                let _ = tx.try_send(rns_transport::messages::TransportMessage::Outbound(
-                    rns_transport::messages::OutboundRequest {
-                        raw: Bytes::from(proof_raw),
-                        destination_hash: proof_hdr.destination_hash,
-                    },
-                ));
-                tracing::debug!("sent delivery proof for inbound message");
-            }
-        }
-
-        let source_hash = hex::encode(msg.source_hash);
-        let dest_hash = hex::encode(msg.destination_hash);
-        let msg_id = msg
-            .hash
-            .map(hex::encode)
-            .unwrap_or_else(|| hex::encode(rns_crypto::sha::sha256(lxmf_payload)));
-
-        tracing::info!(
-            from = %source_hash,
-            title = %msg.title,
-            len = msg.content.len(),
-            "Inbound LXMF message received"
-        );
-        if state
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            state.emit_network_event(
-                "message",
-                &format!(
-                    "Message received from {}",
-                    &source_hash[..8.min(source_hash.len())]
-                ),
-                &source_hash,
-                "standard",
-            );
-        }
-
-        let identity_id = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
-            .await
-            .expect("db task panicked")
-            .and_then(|id| id.get("hash").and_then(|h| h.as_str()).map(String::from))
-            .unwrap_or_default();
-        if identity_id.is_empty() {
-            tracing::warn!("No active identity — dropping inbound message");
-            continue;
-        }
-
-        // Senders retry on missing proofs; duplicates are scoped to the local
-        // identity so two Ratspeak identities can hold the same LXMF hash.
-        let msg_id_for_exists = msg_id.clone();
-        let identity_id_for_exists = identity_id.clone();
-        let already_exists = db::spawn_db(state.db.clone(), move |p| {
-            db::message_exists_for_identity(&p, &msg_id_for_exists, &identity_id_for_exists)
-        })
-        .await
-        .expect("db task panicked");
-        if already_exists {
-            tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "inbound LXMF duplicate — skipping");
-            continue;
-        }
-
-        // Blocked senders silently discarded; proof already sent so we
-        // don't leak a "missing proof" signal.
-        let source_hash_for_blocked = source_hash.clone();
-        let identity_id_for_blocked = identity_id.clone();
-        let blocked = db::spawn_db(state.db.clone(), move |p| {
-            db::is_blocked(&p, &source_hash_for_blocked, &identity_id_for_blocked)
-        })
-        .await
-        .expect("db task panicked");
-        if blocked {
-            tracing::debug!(from = %source_hash, "inbound message from blocked user — discarding");
-            continue;
-        }
-
-        touch_peer_last_heard(state.as_ref(), &source_hash).await;
-
-        let chat_extension = lxmf::decode_ratspeak_chat_extension(&msg);
-        if let Some(lxmf::RatspeakChatExtension::Reaction {
-            target,
-            emoji,
-            action,
-        }) = chat_extension.as_ref()
-        {
-            apply_inbound_ratspeak_reaction(
-                state.as_ref(),
-                &source_hash,
-                &identity_id,
-                target,
-                emoji,
-                action,
-            )
-            .await;
-            continue;
-        }
-
-        // LRGP keys sessions by LXMF hash (not identity hash).
-        let lxmf_id = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
-            .await
-            .expect("db task panicked")
-            .and_then(|id| {
-                id.get("lxmf_hash")
-                    .and_then(|h| h.as_str())
-                    .map(String::from)
-            })
-            .unwrap_or_default();
-        let is_lrgp = !matches!(
-            chat_extension,
-            Some(lxmf::RatspeakChatExtension::Reply { .. })
-        ) && try_handle_inbound_lrgp(&state, &msg, &source_hash, &lxmf_id);
-
-        // LRGP tunnels over LXMF; don't surface in conversation UI.
-        if is_lrgp {
-            continue;
-        }
-
-        let received_at =
-            next_chat_observed_timestamp(state.as_ref(), &source_hash, &identity_id).await;
-        let attachment_file = extract_and_save_attachment(&state, &msg);
-        let (reply_to_id, reply_to_preview) = inbound_reply_fields(chat_extension.as_ref());
-        {
-            let msg_id_for_save = msg_id.clone();
-            let source_hash_for_save = source_hash.clone();
-            let dest_hash_for_save = dest_hash.clone();
-            let content_for_save = msg.content.clone();
-            let title_for_save = msg.title.clone();
-            let timestamp_for_save = received_at;
-            let identity_id_for_save = identity_id.clone();
-            let reply_to_id_for_save = reply_to_id.clone();
-            let reply_to_preview_for_save = reply_to_preview.clone();
-            let (att_name, att_stored, img_name, img_stored) = match attachment_file.as_ref() {
-                Some(a) if a.is_image => (
-                    String::new(),
-                    String::new(),
-                    a.file_name.clone(),
-                    a.stored_name.clone(),
-                ),
-                Some(a) => (
-                    a.file_name.clone(),
-                    a.stored_name.clone(),
-                    String::new(),
-                    String::new(),
-                ),
-                None => (String::new(), String::new(), String::new(), String::new()),
-            };
-            db::spawn_db(state.db.clone(), move |p| {
-                db::save_message(
-                    &p,
-                    &msg_id_for_save,
-                    &source_hash_for_save,
-                    &dest_hash_for_save,
-                    &content_for_save,
-                    &title_for_save,
-                    timestamp_for_save,
-                    "received",
-                    "inbound",
-                    &identity_id_for_save,
-                    &att_name,
-                    &att_stored,
-                    &img_name,
-                    &img_stored,
-                    &reply_to_id_for_save,
-                    &reply_to_preview_for_save,
-                    None,
-                );
-            })
-            .await
-            .expect("db task panicked");
-        }
-        {
-            // Inbound message un-hides the conversation.
-            let source_hash_for_unhide = source_hash.clone();
-            let identity_id_for_unhide = identity_id.clone();
-            db::spawn_db(state.db.clone(), move |p| {
-                db::unhide_conversation(&p, &source_hash_for_unhide, &identity_id_for_unhide);
-            })
-            .await
-            .expect("db task panicked");
-        }
-        notify_inbound_message_if_background(
-            state.as_ref(),
-            &source_hash,
-            &identity_id,
-            &msg.content,
-            attachment_file.is_some(),
+        process_inbound_lxmf(
+            &state,
+            msg,
+            &lxmf_data,
+            InboundLxmfSource::Opportunistic { raw },
         )
         .await;
-
-        let source_display_name = contact_label_from_db(&state.db, &source_hash, &identity_id);
-
-        // Frontend expects nested `image` / `attachments` matching history rows.
-        let mut event_data = json!({
-            "id": msg_id,
-            "source": source_hash,
-            "source_display_name": source_display_name,
-            "destination": dest_hash,
-            "content": msg.content,
-            "title": msg.title,
-            "timestamp": received_at,
-            "state": "received",
-            "direction": "inbound",
-            "reply_to_id": reply_to_id,
-            "reply_to_preview": reply_to_preview,
-        });
-        if let Some(ref att) = attachment_file {
-            let obj = event_data.as_object_mut().unwrap();
-            if att.is_image {
-                obj.insert(
-                    "image".to_string(),
-                    json!({ "stored_name": att.stored_name, "filename": att.file_name }),
-                );
-            } else {
-                obj.insert(
-                    "attachments".to_string(),
-                    json!([{ "filename": att.file_name, "stored_name": att.stored_name }]),
-                );
-            }
-        }
-        state.emit_to_all("lxmf_message", event_data);
-        messaging::broadcast_conversations(Arc::clone(&state));
-
-        // Post-emit UI refresh failures only mean stale sidebar counts.
-        let identity_id_for_contacts = identity_id.clone();
-        match db::spawn_db(state.db.clone(), move |p| {
-            db::get_all_contacts(&p, &identity_id_for_contacts)
-        })
-        .await
-        {
-            Ok(contacts) => {
-                let contacts_list: Vec<serde_json::Value> = contacts
-                    .into_iter()
-                    .map(|c| {
-                        json!({
-                            "hash": c.get("dest_hash"),
-                            "display_name": c.get("display_name"),
-                            "trust": c.get("trust"),
-                            "notes": c.get("notes"),
-                            "first_seen": c.get("first_seen"),
-                            "last_seen": c.get("last_seen"),
-                            "services": c.get("services"),
-                        })
-                    })
-                    .collect();
-                state.emit_to_all("contacts_update", contacts_list.into());
-            }
-            Err(e) => tracing::error!(error = %e, "contacts refresh after inbound message failed"),
-        }
-
-        let identity_id_for_counts = identity_id.clone();
-        match db::spawn_db(state.db.clone(), move |p| {
-            db::get_all_unread_counts(&p, &identity_id_for_counts)
-        })
-        .await
-        {
-            Ok(counts) => {
-                let total: i64 = counts.values().sum();
-                state.emit_to_all("unread_total", json!({"count": total}));
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "unread-total refresh after inbound message failed")
-            }
-        }
     }
 
     tracing::warn!("Inbound LXMF handler channel closed");
 }
 
-// Direct (link-decrypted) delivery: data = [dest:16][src:16][sig:64][msgpack].
-async fn handle_link_delivered_lxmf(
-    state: &AppState,
-    data: Vec<u8>,
-    mark_sender_seen: bool,
-    link_id: Option<[u8; 16]>,
-) {
-    let mut msg = match lxmf_core::message::LxMessage::unpack(&data) {
+/// Where an inbound LXMF message entered. Source only drives the
+/// source-specific steps (delivery proof, backchannel note, last-heard
+/// touch, log labels); everything else is the shared pipeline.
+enum InboundLxmfSource {
+    /// Opportunistic single-packet delivery; `raw` is the RNS packet the
+    /// delivery proof is derived from.
+    Opportunistic { raw: Bytes },
+    /// Link-delivered (direct); the link is noted for backchannel reuse.
+    Link { link_id: Option<[u8; 16]> },
+    /// Downloaded from a propagation node.
+    Propagated,
+}
+
+impl InboundLxmfSource {
+    fn label(&self) -> &'static str {
+        match self {
+            InboundLxmfSource::Opportunistic { .. } => "opportunistic",
+            InboundLxmfSource::Link { .. } => "link",
+            InboundLxmfSource::Propagated => "propagated",
+        }
+    }
+
+    /// Propagated messages say nothing about the sender being reachable now.
+    fn marks_sender_seen(&self) -> bool {
+        !matches!(self, InboundLxmfSource::Propagated)
+    }
+}
+
+/// Stamp PoW gate (T1-9): applies to every inbound source. Runs after
+/// signature validation and before the delivery-proof ACK; ticket-store
+/// entries bypass via `validate_stamp_with_tickets`.
+fn inbound_stamp_allowed(state: &AppState, msg: &lxmf_core::message::LxMessage) -> bool {
+    if !state
+        .enforce_stamps
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return true;
+    }
+    let required_cost = state
+        .required_stamp_cost
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if required_cost == 0 {
+        return true;
+    }
+    let stamp_ok = match (msg.stamp.as_deref(), msg.message_id.or(msg.hash)) {
+        (Some(stamp), Some(message_id)) => state
+            .lxmf
+            .lock()
+            .ok()
+            .and_then(|l| {
+                l.as_ref().map(|mgr| {
+                    mgr.router.validate_stamp_with_tickets(
+                        &message_id,
+                        stamp,
+                        required_cost,
+                        &msg.source_hash,
+                    )
+                })
+            })
+            .unwrap_or(false),
+        _ => false,
+    };
+    if !stamp_ok {
+        tracing::warn!(
+            from = %hex::encode(msg.source_hash),
+            required_cost,
+            has_stamp = msg.stamp.is_some(),
+            "inbound message REJECTED: stamp missing or PoW invalid (enforce_stamps=true)"
+        );
+    }
+    stamp_ok
+}
+
+/// Pre-decrypted inbound entry: `data` = [dest:16][src:16][sig:64][msgpack].
+async fn handle_decrypted_lxmf(state: &Arc<AppState>, data: Vec<u8>, source: InboundLxmfSource) {
+    let msg = match lxmf_core::message::LxMessage::unpack(&data) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(error = %e, data_len = data.len(), "link-delivered LXMF unpack failed");
+            tracing::warn!(
+                error = %e,
+                data_len = data.len(),
+                source = source.label(),
+                "inbound LXMF unpack failed"
+            );
             return;
         }
     };
+    process_inbound_lxmf(state, msg, &data, source).await;
+}
 
+/// The one inbound LXMF pipeline. `fallback_id_material` is the unpacked
+/// wire material; its hash is the msg-id fallback when the message carries
+/// no hash — deterministic across sender retries so dedupe still works
+/// (the old paths used the ciphertext hash / a fresh uuid4, both of which
+/// made every retry look new).
+async fn process_inbound_lxmf(
+    state: &Arc<AppState>,
+    mut msg: lxmf_core::message::LxMessage,
+    fallback_id_material: &[u8],
+    source: InboundLxmfSource,
+) {
     let source_hash = hex::encode(msg.source_hash);
     let dest_hash = hex::encode(msg.destination_hash);
 
@@ -2902,7 +2820,8 @@ async fn handle_link_delivered_lxmf(
         from = %source_hash,
         title = %msg.title,
         len = msg.content.len(),
-        "link-delivered LXMF message received (DIRECT)"
+        source = source.label(),
+        "inbound LXMF message received"
     );
     if state
         .network_log_enabled
@@ -2911,8 +2830,9 @@ async fn handle_link_delivered_lxmf(
         state.emit_network_event(
             "message",
             &format!(
-                "Direct message received from {}",
-                &source_hash[..8.min(source_hash.len())]
+                "Message received from {} ({})",
+                &source_hash[..8.min(source_hash.len())],
+                source.label()
             ),
             &source_hash,
             "standard",
@@ -2924,12 +2844,16 @@ async fn handle_link_delivered_lxmf(
             .and_then(|mgr| mgr.verify_inbound_signature(&mut msg))
     });
     match sig_valid {
-        Some(true) => {}
+        Some(true) => tracing::debug!("inbound signature validated"),
         Some(false) => {
-            tracing::warn!("link-delivered signature INVALID — dropping");
+            tracing::warn!("inbound signature INVALID — dropping message");
             return;
         }
-        None => {}
+        None => tracing::debug!("sender unknown — signature not validated"),
+    }
+
+    if !inbound_stamp_allowed(state, &msg) {
+        return;
     }
 
     // FIELD_TICKET 0x0C: `[expires_f64, token:16]` for stamp bypass.
@@ -2943,10 +2867,37 @@ async fn handle_link_delivered_lxmf(
             msg.source_hash,
             expires,
         ));
-        tracing::debug!(from = %hex::encode(msg.source_hash),
-            "stored inbound ticket (link-delivered)");
+        tracing::debug!(
+            from = %hex::encode(msg.source_hash),
+            "stored inbound ticket for future stamp bypass"
+        );
     }
 
+    // Opportunistic ACK; runs before the blocked check on purpose so a
+    // blocked sender doesn't learn anything from a missing proof.
+    if let InboundLxmfSource::Opportunistic { ref raw } = source {
+        let proof_and_tx = state.lxmf.lock().ok().and_then(|l| {
+            let mgr = l.as_ref()?;
+            let proof = mgr.create_delivery_proof(raw)?;
+            let tx = mgr.router.transport_tx.clone()?;
+            Some((proof, tx))
+        });
+        if let Some((proof_raw, tx)) = proof_and_tx
+            && let Ok((proof_hdr, _)) = rns_wire::header::PacketHeader::unpack(&proof_raw)
+        {
+            let _ = tx.try_send(rns_transport::messages::TransportMessage::Outbound(
+                rns_transport::messages::OutboundRequest {
+                    raw: Bytes::from(proof_raw),
+                    destination_hash: proof_hdr.destination_hash,
+                },
+            ));
+            tracing::debug!("sent delivery proof for inbound message");
+        }
+    }
+
+    // Active identity comes from the running LXMF manager for every source
+    // (the old opportunistic path re-read the DB; the manager IS the active
+    // identity and inbound traffic only exists while it runs).
     let (identity_id, lxmf_id) = state
         .lxmf
         .lock()
@@ -2957,16 +2908,17 @@ async fn handle_link_delivered_lxmf(
         })
         .unwrap_or_default();
     if identity_id.is_empty() {
-        tracing::warn!("No active LXMF identity — dropping link-delivered message");
+        tracing::warn!("No active LXMF identity — dropping inbound message");
         return;
     }
 
     let msg_id = msg
         .hash
         .map(hex::encode)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        .unwrap_or_else(|| hex::encode(rns_crypto::sha::sha256(fallback_id_material)));
 
-    // Skip duplicates (sender retries on missing proofs).
+    // Senders retry on missing proofs; duplicates are scoped to the local
+    // identity so two Ratspeak identities can hold the same LXMF hash.
     let msg_id_for_exists = msg_id.clone();
     let identity_id_for_exists = identity_id.clone();
     let already_exists = db::spawn_db(state.db.clone(), move |p| {
@@ -2975,10 +2927,12 @@ async fn handle_link_delivered_lxmf(
     .await
     .expect("db task panicked");
     if already_exists {
-        tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "link-delivered LXMF duplicate — skipping");
+        tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "inbound LXMF duplicate — skipping");
         return;
     }
 
+    // Blocked senders silently discarded; any source-level ACK already
+    // happened so we don't leak a "missing proof" signal.
     let source_hash_for_blocked = source_hash.clone();
     let identity_id_for_blocked = identity_id.clone();
     let blocked = db::spawn_db(state.db.clone(), move |p| {
@@ -2987,11 +2941,14 @@ async fn handle_link_delivered_lxmf(
     .await
     .expect("db task panicked");
     if blocked {
-        tracing::debug!(from = %source_hash, "link-delivered message from blocked user — discarding");
+        tracing::debug!(from = %source_hash, "inbound message from blocked user — discarding");
         return;
     }
 
-    if let Some(link_id) = link_id {
+    if let InboundLxmfSource::Link {
+        link_id: Some(link_id),
+    } = source
+    {
         let local_destination_matches = hex::decode(&lxmf_id)
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
@@ -3009,7 +2966,7 @@ async fn handle_link_delivered_lxmf(
         }
     }
 
-    if mark_sender_seen {
+    if source.marks_sender_seen() {
         touch_peer_last_heard(state, &source_hash).await;
     }
 
@@ -3025,11 +2982,11 @@ async fn handle_link_delivered_lxmf(
         return;
     }
 
-    // LRGP tunnels over LXMF (Direct or Opportunistic); don't surface in chat.
+    // LRGP tunnels over LXMF; don't surface in conversation UI.
     if !matches!(
         chat_extension,
         Some(lxmf::RatspeakChatExtension::Reply { .. })
-    ) && try_handle_inbound_lrgp(state, &msg, &source_hash, &lxmf_id)
+    ) && try_handle_inbound_lrgp(state, &msg, &source_hash, &lxmf_id).await
     {
         return;
     }
@@ -3087,6 +3044,7 @@ async fn handle_link_delivered_lxmf(
         .expect("db task panicked");
     }
     {
+        // Inbound message un-hides the conversation.
         let source_hash_for_unhide = source_hash.clone();
         let identity_id_for_unhide = identity_id.clone();
         db::spawn_db(state.db.clone(), move |p| {
@@ -3106,8 +3064,7 @@ async fn handle_link_delivered_lxmf(
 
     let source_display_name = contact_label_from_db(&state.db, &source_hash, &identity_id);
 
-    // Frontend renderer expects nested `image` / `attachments` objects so
-    // the live emit matches what history-loaded rows produce.
+    // Frontend expects nested `image` / `attachments` matching history rows.
     let mut event_data = json!({
         "id": msg_id,
         "source": source_hash,
@@ -3136,8 +3093,9 @@ async fn handle_link_delivered_lxmf(
         }
     }
     state.emit_to_all("lxmf_message", event_data);
-    messaging::broadcast_conversations_now(state).await;
+    messaging::broadcast_conversations(Arc::clone(state));
 
+    // Post-emit UI refresh failures only mean stale sidebar counts.
     let identity_id_for_contacts = identity_id.clone();
     match db::spawn_db(state.db.clone(), move |p| {
         db::get_all_contacts(&p, &identity_id_for_contacts)
@@ -3161,9 +3119,7 @@ async fn handle_link_delivered_lxmf(
                 .collect();
             state.emit_to_all("contacts_update", contacts_list.into());
         }
-        Err(e) => {
-            tracing::error!(error = %e, "contacts refresh after link-delivered message failed")
-        }
+        Err(e) => tracing::error!(error = %e, "contacts refresh after inbound message failed"),
     }
 
     let identity_id_for_counts = identity_id.clone();
@@ -3177,7 +3133,7 @@ async fn handle_link_delivered_lxmf(
             state.emit_to_all("unread_total", json!({"count": total}));
         }
         Err(e) => {
-            tracing::error!(error = %e, "unread-total refresh after link-delivered message failed")
+            tracing::error!(error = %e, "unread-total refresh after inbound message failed")
         }
     }
 }
@@ -3442,9 +3398,35 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             let net_level = if online { "standard" } else { "essential" };
                             state.emit_network_event("interface", &msg, name, net_level);
                         }
+                        let reannounce_suppressed =
+                            online && state.take_interface_reannounce_suppression(name);
+                        if reannounce_suppressed {
+                            last_interface_announce = Instant::now();
+                            tracing::info!(
+                                interface = %name,
+                                "interface re-announce suppressed after config restart"
+                            );
+                            state.add_event(json!({
+                                "timestamp": ev_ts,
+                                "category": "system",
+                                "message": format!("Skipped re-announce after {name} restarted"),
+                            }));
+                            if state
+                                .network_log_enabled
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                state.emit_network_event(
+                                    "announce",
+                                    "Skipped re-announce after interface restarted",
+                                    name,
+                                    "detailed",
+                                );
+                            }
+                        }
                         // Re-announce on interface up; gated by auto-announce + 30s cooldown.
                         let auto_announce_on = *state.announce_interval_rx.borrow() > 0;
                         if online
+                            && !reannounce_suppressed
                             && auto_announce_on
                             && last_interface_announce.elapsed() >= Duration::from_secs(30)
                         {
@@ -3597,8 +3579,12 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                 if let Ok(mut lxmf) = state.lxmf.lock()
                     && let Some(mgr) = lxmf.as_mut()
                 {
-                    let mut changed = false;
+                    let mut identities_changed = false;
                     let mut router_changed = false;
+                    let mut changed_ratchets: Vec<(
+                        String,
+                        rns_identity::ratchet::ReceivedRatchet,
+                    )> = Vec::new();
                     for a in &announces {
                         let dest_hex = hex::encode(a.dest_hash);
                         tracing::debug!(
@@ -3610,7 +3596,14 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                         );
                         if let Some(ref pk) = a.public_key {
                             let is_new = !mgr.known_identities.contains_key(&dest_hex);
-                            mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
+                            let (id_changed, ratchet_changed) =
+                                mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
+                            identities_changed |= id_changed;
+                            if ratchet_changed
+                                && let Some(rr) = mgr.received_ratchets.get(&dest_hex)
+                            {
+                                changed_ratchets.push((dest_hex.clone(), *rr));
+                            }
                             if is_new {
                                 tracing::debug!(
                                     dest = %dest_hex,
@@ -3632,7 +3625,6 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                         "standard",
                                     );
                                 }
-                                changed = true;
                             }
                         }
                         router_changed |= mgr.update_lxmf_announce_app_data(
@@ -3641,16 +3633,40 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             a.app_data.as_deref(),
                         );
                     }
-                    if changed || router_changed {
-                        // Coalesce announce-derived cache persistence to one
-                        // write per poll batch instead of one write per
-                        // announce on busy hubs.
-                        mgr.save_crypto_state();
+                    // Persist only announce-derived deltas, off the poll
+                    // loop; the ring and full rewrites stay on the
+                    // rotation/periodic/shutdown saves. Stamp costs persist
+                    // per batch like Python's delivery announce handler.
+                    if router_changed {
+                        mgr.save_router_state();
+                    }
+                    if identities_changed || !changed_ratchets.is_empty() {
+                        let ratchet_dir = mgr.ratchets_dir();
+                        let ki_blob = identities_changed.then(|| mgr.known_identities_blob());
                         tracing::debug!(
                             known_identities = mgr.known_identities.len(),
+                            changed_ratchets = changed_ratchets.len(),
                             router_state_changed = router_changed,
-                            "announce-derived crypto/router state persisted"
+                            "announce-derived crypto state persisted"
                         );
+                        tokio::task::spawn_blocking(move || {
+                            let received_dir = ratchet_dir.join("received");
+                            std::fs::create_dir_all(&received_dir).ok();
+                            for (hash_hex, rr) in &changed_ratchets {
+                                let path = received_dir.join(format!("{hash_hex}.ratchet"));
+                                if let Err(e) = rr.save(&path) {
+                                    tracing::warn!("Failed to persist received ratchet: {e}");
+                                }
+                            }
+                            if let Some(blob) = ki_blob {
+                                let ki_path = ratchet_dir.join("known_identities");
+                                if let Err(e) =
+                                    rns_identity::persistence::atomic_write(&ki_path, &blob)
+                                {
+                                    tracing::warn!("Failed to save known identities: {e}");
+                                }
+                            }
+                        });
                     }
                 }
 
@@ -3692,6 +3708,13 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                         if announce_timestamp_changed && !a.is_path_response {
                             if a.name_hash == lxmf_delivery_name_hash {
                                 let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY.to_string()];
+                                let lxmf_compression_support = a
+                                    .app_data
+                                    .as_deref()
+                                    .and_then(
+                                        crate::lxmf::lxmf_compression_support_db_value_from_app_data,
+                                    )
+                                    .map(str::to_string);
                                 if let Some(app_data) = a.app_data.as_deref() {
                                     services.extend(
                                         crate::lxmf::ratspeak_capability_services_from_app_data(
@@ -3717,6 +3740,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                         .map(|pk| hex::encode(rns_crypto::sha::truncated_hash(pk))),
                                     services,
                                     clear_ratspeak_services: true,
+                                    lxmf_compression_support,
                                 });
                                 peer_activity_hashes.push(hash_hex.clone());
                                 delivery_trigger_hashes.push(a.dest_hash);
@@ -3740,6 +3764,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                     identity_hash: Some(hex::encode(identity_hash)),
                                     services: vec![db::PEER_SERVICE_LXST_TELEPHONY.to_string()],
                                     clear_ratspeak_services: false,
+                                    lxmf_compression_support: None,
                                 });
                                 peer_activity_hashes.push(lxmf_dest_hex);
                             }
@@ -3971,7 +3996,7 @@ const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 // propagated challenges can sit on a relay for the normal LXMF expiry window.
 const LRGP_UNDELIVERED_TIMEOUT_SECS: f64 = lxmf_core::constants::MESSAGE_EXPIRY as f64;
 
-fn check_message_timeouts(state: &AppState) {
+async fn check_message_timeouts(state: &AppState) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -3990,15 +4015,31 @@ fn check_message_timeouts(state: &AppState) {
     } else {
         Vec::new()
     };
+    if timed_out.is_empty() {
+        return;
+    }
 
-    for msg_id in &timed_out {
-        db::update_message_state(&state.db, msg_id, "failed", None);
+    // One blocking-pool hop for the whole sweep: state flips + method reads.
+    let identity_id = helpers::active_identity_id(state);
+    let ids_for_db = timed_out.clone();
+    let methods = db::spawn_db(state.db.clone(), move |p| {
+        ids_for_db
+            .iter()
+            .map(|msg_id| {
+                db::update_message_state(&p, msg_id, &identity_id, "failed", None);
+                db::get_message_delivery_method(&p, msg_id, &identity_id)
+            })
+            .collect::<Vec<Option<String>>>()
+    })
+    .await
+    .unwrap_or_default();
+
+    for (msg_id, method) in timed_out.iter().zip(methods) {
         let client_msg_id = state
             .msg_id_map
             .lock()
             .ok()
             .and_then(|mut map| map.remove(msg_id));
-        let method = db::get_message_delivery_method(&state.db, msg_id);
         state.emit_to_all(
             "lxmf_step",
             json!({
@@ -4185,7 +4226,7 @@ async fn touch_peer_last_heard(state: &AppState, source_hash: &str) {
 }
 
 // Three wire shapes: UTF-8 string, msgpack BIN/STR (NomadNet),
-// msgpack fixarray(1)[bin8(name)] (ratdeck/ratcom).
+// msgpack fixarray(1)[bin8(name)] (rsdeck/ratcom).
 pub(crate) fn extract_display_name(data: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(data) {
         return s.to_string();
@@ -4209,7 +4250,7 @@ fn extract_name_from_msgpack(value: &rmpv::Value) -> Option<String> {
 }
 
 // Returns true if the envelope was LRGP (dispatched); false → fall through.
-fn try_handle_inbound_lrgp(
+async fn try_handle_inbound_lrgp(
     state: &AppState,
     msg: &lxmf_core::message::LxMessage,
     sender_hash: &str,
@@ -4299,7 +4340,6 @@ fn try_handle_inbound_lrgp(
         );
         return true;
     }
-    let had_session = db::get_game_session(&state.db, &session_id, identity_id).is_some();
 
     tracing::info!(
         target: "ttt_trace",
@@ -4316,81 +4356,107 @@ fn try_handle_inbound_lrgp(
         "dispatch_incoming ok"
     );
 
-    let action_num = db::get_game_action_count(&state.db, &session_id, identity_id);
     let payload_json = result
         .emit
         .as_ref()
         .map(|e| serde_json::to_value(e).unwrap_or(json!({})))
         .unwrap_or(json!({}));
 
-    let action = lrgp::store::Action {
-        session_id: session_id.clone(),
-        identity_id: identity_id.to_string(),
-        action_num,
-        command: command.clone(),
-        payload_json: serde_json::to_string(&payload_json).unwrap_or_else(|_| "{}".into()),
-        sender: sender_hash.to_string(),
-        timestamp: msg.timestamp,
+    // The whole persistence sequence is one blocking-pool hop; previously
+    // these ~7 sequential sync calls all ran on the async worker.
+    let (had_session, sessions, all) = {
+        let session_id = session_id.clone();
+        let identity_id = identity_id.to_string();
+        let sender_hash = sender_hash.to_string();
+        let app_id = app_id.clone();
+        let command = command.clone();
+        let session_data = result.session.clone();
+        let timestamp = msg.timestamp;
+        db::spawn_db(state.db.clone(), move |p| {
+            let had_session = db::get_game_session(&p, &session_id, &identity_id).is_some();
+
+            let action_num = db::get_game_action_count(&p, &session_id, &identity_id);
+            let action = lrgp::store::Action {
+                session_id: session_id.clone(),
+                identity_id: identity_id.clone(),
+                action_num,
+                command: command.clone(),
+                payload_json: serde_json::to_string(&payload_json)
+                    .unwrap_or_else(|_| "{}".into()),
+                sender: sender_hash.clone(),
+                timestamp,
+            };
+            db::save_game_action(&p, &action, None);
+
+            if let Some(ref session_data) = session_data {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+
+                let status = session_data
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("pending");
+                let initiator = session_data
+                    .get("initiator")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&sender_hash);
+
+                // Unwrap nested "metadata" so DB has flat fields the frontend reads.
+                let metadata_map: std::collections::HashMap<String, serde_json::Value> =
+                    session_data
+                        .get("metadata")
+                        .and_then(|v| v.as_object())
+                        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                        .unwrap_or_default();
+
+                // Bump unread relative to the persisted row so repeat actions
+                // accumulate instead of clobbering each other to 1.
+                let unread = db::get_game_session(&p, &session_id, &identity_id)
+                    .as_ref()
+                    .and_then(|row| row.get("unread").and_then(|v| v.as_i64()))
+                    .unwrap_or(0)
+                    + 1;
+
+                let session = lrgp::session::Session {
+                    session_id: session_id.clone(),
+                    identity_id: identity_id.clone(),
+                    app_id: app_id.clone(),
+                    app_version: 1,
+                    contact_hash: sender_hash.clone(),
+                    initiator: initiator.to_string(),
+                    status: status.to_string(),
+                    metadata: metadata_map,
+                    unread,
+                    created_at: session_data
+                        .get("created_at")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(now),
+                    updated_at: now,
+                    last_action_at: now,
+                };
+                db::save_game_session(&p, &session);
+            } else if let Some(existing) = db::get_game_session(&p, &session_id, &identity_id) {
+                let unread = existing.get("unread").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
+                if let Ok(conn) = p.get() {
+                    conn.execute(
+                        "UPDATE app_sessions SET unread = ?1, last_action_at = ?2 WHERE session_id = ?3 AND identity_id = ?4",
+                        rusqlite::params![unread, timestamp, session_id, identity_id],
+                    ).ok();
+                }
+            }
+
+            let sessions = db::list_game_sessions(&p, &identity_id, Some(&sender_hash), None);
+            let all = db::list_game_sessions(&p, &identity_id, None, None);
+            (had_session, sessions, all)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "LRGP inbound persistence task panicked");
+            (false, Vec::new(), Vec::new())
+        })
     };
-    db::save_game_action(&state.db, &action, None);
-
-    if let Some(ref session_data) = result.session {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-
-        let status = session_data
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("pending");
-        let initiator = session_data
-            .get("initiator")
-            .and_then(|v| v.as_str())
-            .unwrap_or(sender_hash);
-
-        // Unwrap nested "metadata" so DB has flat fields the frontend reads.
-        let metadata_map: std::collections::HashMap<String, serde_json::Value> = session_data
-            .get("metadata")
-            .and_then(|v| v.as_object())
-            .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-
-        // Bump unread relative to the persisted row so repeat actions accumulate
-        // instead of clobbering each other to 1.
-        let unread = db::get_game_session(&state.db, &session_id, identity_id)
-            .as_ref()
-            .and_then(|row| row.get("unread").and_then(|v| v.as_i64()))
-            .unwrap_or(0)
-            + 1;
-
-        let session = lrgp::session::Session {
-            session_id: session_id.clone(),
-            identity_id: identity_id.to_string(),
-            app_id: app_id.clone(),
-            app_version: 1,
-            contact_hash: sender_hash.to_string(),
-            initiator: initiator.to_string(),
-            status: status.to_string(),
-            metadata: metadata_map,
-            unread,
-            created_at: session_data
-                .get("created_at")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(now),
-            updated_at: now,
-            last_action_at: now,
-        };
-        db::save_game_session(&state.db, &session);
-    } else if let Some(existing) = db::get_game_session(&state.db, &session_id, identity_id) {
-        let unread = existing.get("unread").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
-        if let Ok(conn) = state.db.get() {
-            conn.execute(
-                "UPDATE app_sessions SET unread = ?1, last_action_at = ?2 WHERE session_id = ?3 AND identity_id = ?4",
-                rusqlite::params![unread, msg.timestamp, session_id, identity_id],
-            ).ok();
-        }
-    }
 
     if result.error.is_none() {
         notify_game_if_background(
@@ -4403,12 +4469,10 @@ fn try_handle_inbound_lrgp(
         );
     }
 
-    let sessions = db::list_game_sessions(&state.db, identity_id, Some(sender_hash), None);
     state.emit_to_all(
         "active_games",
         json!({"hash": sender_hash, "games": sessions}),
     );
-    let all = db::list_game_sessions(&state.db, identity_id, None, None);
     tracing::info!(
         target: "ttt_trace",
         step = "inbound.emitted_all",
@@ -4506,6 +4570,363 @@ mod packet_dispatch_tests {
 }
 
 #[cfg(test)]
+mod inbound_pipeline_tests {
+    use super::*;
+    use crate::lxmf::LxmfManager;
+    use r2d2_sqlite::SqliteConnectionManager;
+    use ratspeak_core::config::DashboardConfig;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_PIPELINE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    }
+
+    impl ratspeak_core::Emitter for RecordingEmitter {
+        fn emit(&self, event: &str, payload: serde_json::Value) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((event.to_string(), payload));
+        }
+    }
+
+    impl RecordingEmitter {
+        fn count(&self, name: &str) -> usize {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(event, _)| event == name)
+                .count()
+        }
+    }
+
+    fn pipeline_state() -> (Arc<AppState>, Arc<RecordingEmitter>) {
+        let unique = TEMP_PIPELINE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "ratspeak-inbound-pipeline-{}-{}-{unique}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = root.join(".ratspeak");
+        let rns_config_dir = data_dir.join("reticulum");
+        std::fs::create_dir_all(&rns_config_dir).unwrap();
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(2).build(manager).unwrap();
+        db::init_schema(&pool).unwrap();
+        let emitter = Arc::new(RecordingEmitter::default());
+        let state = AppState::new(
+            DashboardConfig {
+                data_root: root.clone(),
+                data_dir,
+                rns_config_dir,
+                rns_config_dir_overridden: false,
+                max_log_entries: 200,
+            },
+            pool,
+            emitter.clone(),
+            Arc::new(ratspeak_core::NoopNotifier),
+        );
+        let mgr = LxmfManager::load_or_create(&root, None, None).unwrap();
+        *state.lxmf.lock().unwrap() = Some(mgr);
+        (Arc::new(state), emitter)
+    }
+
+    fn local_dest(state: &AppState) -> [u8; 16] {
+        let hex_hash = state
+            .lxmf
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .lxmf_hash
+            .clone();
+        hex::decode(hex_hash).unwrap().try_into().unwrap()
+    }
+
+    fn local_identity(state: &AppState) -> String {
+        state
+            .lxmf
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .identity_hash
+            .clone()
+    }
+
+    fn packed_inbound(dest: [u8; 16], src: [u8; 16], content: &str) -> Vec<u8> {
+        let mut msg = lxmf_core::message::LxMessage::new(
+            dest,
+            src,
+            "",
+            content,
+            lxmf_core::constants::DeliveryMethod::Direct,
+        );
+        // Unsigned-by-unknown-sender: verify returns None and the message is
+        // still delivered, so tests don't need real peer keys.
+        msg.signature = Some([0u8; 64]);
+        msg.pack().unwrap()
+    }
+
+    fn message_rows(state: &AppState) -> i64 {
+        state
+            .db
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn reaction_rows(state: &AppState) -> i64 {
+        state
+            .db
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM reactions", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    // Regression guard for commit 4e7a71e: a path request for our own LXMF
+    // destination must be answered with a PathResponse-context announce routed
+    // back out the arrival interface. Before the fix the AnnounceRequested event
+    // fell through to `_ => continue` and never produced a reply, so a peer that
+    // never announced could not reach us on first contact.
+    #[test]
+    fn path_response_message_targets_arrival_interface() {
+        let (state, _emitter) = pipeline_state();
+        let dest = local_dest(&state);
+
+        let message =
+            build_lxmf_path_response_message(&state, Some(7)).expect("path-response message built");
+
+        // Must be OutboundAttached on the arrival interface, NOT a broadcast —
+        // upstream RNS answers a local path request only on that interface.
+        let request = match message {
+            rns_transport::messages::TransportMessage::OutboundAttached {
+                request,
+                interface_id,
+            } => {
+                assert_eq!(
+                    interface_id, 7,
+                    "answer must go back out the arrival interface"
+                );
+                request
+            }
+            other => panic!("expected OutboundAttached, got {other:?}"),
+        };
+        assert_eq!(
+            request.destination_hash, dest,
+            "answer is for our own LXMF destination"
+        );
+
+        let (header, _) = rns_wire::header::PacketHeader::unpack(&request.raw)
+            .expect("unpack path-response announce");
+        assert_eq!(
+            header.flags.packet_type,
+            rns_wire::flags::PacketType::Announce
+        );
+        assert_eq!(
+            header.context,
+            rns_wire::context::PacketContext::PathResponse,
+            "must be a PathResponse announce, not a plain broadcast announce"
+        );
+        assert_eq!(header.destination_hash, dest);
+    }
+
+    // With no arrival interface the answer falls back to a broadcast Outbound
+    // (still a PathResponse announce). Guards the Some/None routing branch.
+    #[test]
+    fn path_response_message_without_interface_broadcasts() {
+        let (state, _emitter) = pipeline_state();
+        let dest = local_dest(&state);
+
+        let message =
+            build_lxmf_path_response_message(&state, None).expect("path-response message built");
+
+        let request = match message {
+            rns_transport::messages::TransportMessage::Outbound(request) => request,
+            other => panic!("expected Outbound broadcast, got {other:?}"),
+        };
+        assert_eq!(request.destination_hash, dest);
+
+        let (header, _) = rns_wire::header::PacketHeader::unpack(&request.raw)
+            .expect("unpack path-response announce");
+        assert_eq!(
+            header.context,
+            rns_wire::context::PacketContext::PathResponse
+        );
+    }
+
+    #[tokio::test]
+    async fn inbound_message_persists_and_emits() {
+        let (state, emitter) = pipeline_state();
+        let data = packed_inbound(local_dest(&state), [0xEE; 16], "hello");
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(message_rows(&state), 1);
+        assert_eq!(emitter.count("lxmf_message"), 1);
+        assert!(emitter.count("contacts_update") >= 1);
+        assert!(emitter.count("unread_total") >= 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_inbound_is_skipped() {
+        let (state, emitter) = pipeline_state();
+        let data = packed_inbound(local_dest(&state), [0xEE; 16], "once");
+
+        handle_decrypted_lxmf(&state, data.clone(), InboundLxmfSource::Propagated).await;
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(message_rows(&state), 1, "sender retry must dedupe");
+        assert_eq!(emitter.count("lxmf_message"), 1);
+    }
+
+    #[tokio::test]
+    async fn blocked_sender_is_discarded() {
+        let (state, emitter) = pipeline_state();
+        let src = [0xEE; 16];
+        db::block_contact(
+            &state.db,
+            &hex::encode(src),
+            "blocked peer",
+            &local_identity(&state),
+        );
+        let data = packed_inbound(local_dest(&state), src, "should vanish");
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(message_rows(&state), 0);
+        assert_eq!(emitter.count("lxmf_message"), 0);
+    }
+
+    /// T1-9: with enforce_stamps on, an unstamped message is rejected on
+    /// EVERY inbound source — the old link/propagated path skipped the check.
+    #[tokio::test]
+    async fn unstamped_message_rejected_on_all_sources_when_enforced() {
+        let (state, emitter) = pipeline_state();
+        state
+            .enforce_stamps
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+            .required_stamp_cost
+            .store(8, std::sync::atomic::Ordering::Relaxed);
+
+        let dest = local_dest(&state);
+        let link_data = packed_inbound(dest, [0xE1; 16], "via link");
+        handle_decrypted_lxmf(&state, link_data, InboundLxmfSource::Link { link_id: None }).await;
+
+        let prop_data = packed_inbound(dest, [0xE2; 16], "via propagation");
+        handle_decrypted_lxmf(&state, prop_data, InboundLxmfSource::Propagated).await;
+
+        let opp_data = packed_inbound(dest, [0xE3; 16], "via opportunistic");
+        let msg = lxmf_core::message::LxMessage::unpack(&opp_data).unwrap();
+        process_inbound_lxmf(
+            &state,
+            msg,
+            &opp_data,
+            InboundLxmfSource::Opportunistic { raw: Bytes::new() },
+        )
+        .await;
+
+        assert_eq!(message_rows(&state), 0, "all unstamped sources rejected");
+        assert_eq!(emitter.count("lxmf_message"), 0);
+
+        // Enforcement off again: the same wire bytes deliver.
+        state
+            .enforce_stamps
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let data = packed_inbound(dest, [0xE1; 16], "via link");
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        assert_eq!(message_rows(&state), 1);
+    }
+
+    /// The Link source persists like Propagated (shared pipeline).
+    #[tokio::test]
+    async fn link_source_persists_and_emits() {
+        let (state, emitter) = pipeline_state();
+        let data = packed_inbound(local_dest(&state), [0xEE; 16], "direct hello");
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+
+        assert_eq!(message_rows(&state), 1);
+        assert_eq!(emitter.count("lxmf_message"), 1);
+    }
+
+    #[tokio::test]
+    async fn reaction_routes_to_reaction_store_not_conversation() {
+        let (state, emitter) = pipeline_state();
+        let target_id = hex::encode([0xAB; 32]);
+
+        let mut msg = lxmf_core::message::LxMessage::new(
+            local_dest(&state),
+            [0xEE; 16],
+            "",
+            "",
+            lxmf_core::constants::DeliveryMethod::Direct,
+        );
+        for (field_id, bytes) in
+            lxmf::ratspeak_chat_custom_fields(&lxmf::RatspeakChatExtension::Reaction {
+                target: target_id.clone(),
+                emoji: "\u{1F44D}".to_string(),
+                action: "add".to_string(),
+            })
+            .unwrap()
+        {
+            msg.fields.insert(field_id, bytes);
+        }
+        msg.signature = Some([0u8; 64]);
+        let data = msg.pack().unwrap();
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(reaction_rows(&state), 1, "reaction recorded");
+        assert_eq!(message_rows(&state), 0, "reactions never hit the chat log");
+        assert_eq!(emitter.count("reaction_update"), 1);
+        assert_eq!(emitter.count("lxmf_message"), 0);
+    }
+}
+
+#[cfg(test)]
+mod reaction_sanitizer_tests {
+    use super::*;
+
+    /// T0-5: peer-controlled reactions are rendered in the UI — markup and
+    /// control characters must be rejected at ingest.
+    #[test]
+    fn rejects_markup_and_control_characters() {
+        assert_eq!(sanitize_reaction_emoji("<b>x</b>"), None);
+        assert_eq!(sanitize_reaction_emoji("a&b"), None);
+        assert_eq!(sanitize_reaction_emoji("\"quote\""), None);
+        assert_eq!(sanitize_reaction_emoji("it's"), None);
+        assert_eq!(sanitize_reaction_emoji("a\nb"), None);
+        assert_eq!(sanitize_reaction_emoji("\u{7f}"), None);
+        assert_eq!(sanitize_reaction_emoji(""), None);
+    }
+
+    #[test]
+    fn accepts_plausible_reactions_and_clamps_length() {
+        assert_eq!(
+            sanitize_reaction_emoji("\u{1F44D}").as_deref(),
+            Some("\u{1F44D}")
+        );
+        assert_eq!(sanitize_reaction_emoji("+1").as_deref(), Some("+1"));
+        let long = "x".repeat(40);
+        assert_eq!(
+            sanitize_reaction_emoji(&long).as_deref(),
+            Some("xxxxxxxxxxxxxxxx")
+        );
+    }
+}
+
+#[cfg(test)]
 mod identity_material_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -4591,9 +5012,6 @@ mod transport_startup_tests {
                 data_dir,
                 rns_config_dir,
                 rns_config_dir_overridden: false,
-                port: 5050,
-                api_token: String::new(),
-                poll_interval: 1.5,
                 max_log_entries: 200,
             },
             memory_pool(),

@@ -126,6 +126,36 @@ fun patchTauriGeneratedLoggerFile() {
         throw GradleException("Tauri RustWebView.kt deprecation warning is not suppressed")
     }
 
+    val rustWebChromeClient = file("src/main/java/org/ratspeak/android/generated/RustWebChromeClient.kt")
+    if (!rustWebChromeClient.exists()) {
+        throw GradleException("Tauri generated RustWebChromeClient.kt is missing")
+    }
+    val rustWebChromeClientSource = rustWebChromeClient.readText()
+    val geolocationMarker =
+        "    Logger.debug(\"onGeolocationPermissionsShowPrompt: DOING IT HERE FOR ORIGIN: ${'$'}origin\")\n" +
+            "    val geoPermissions ="
+    val geolocationPatch =
+        "    Logger.debug(\"onGeolocationPermissionsShowPrompt: DOING IT HERE FOR ORIGIN: ${'$'}origin\")\n" +
+            "    val coarseLocationPermission = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)\n" +
+            "    if (PermissionHelper.hasPermissions(activity, coarseLocationPermission)) {\n" +
+            "      callback.invoke(origin, true, false)\n" +
+            "      Logger.debug(\"onGeolocationPermissionsShowPrompt: coarse permission already granted\")\n" +
+            "      return\n" +
+            "    }\n" +
+            "    val geoPermissions ="
+    val rustWebChromeClientPatched =
+        if (rustWebChromeClientSource.contains("onGeolocationPermissionsShowPrompt: coarse permission already granted")) {
+            rustWebChromeClientSource
+        } else {
+            rustWebChromeClientSource.replace(geolocationMarker, geolocationPatch)
+        }
+    if (rustWebChromeClientPatched != rustWebChromeClientSource) {
+        rustWebChromeClient.writeText(rustWebChromeClientPatched)
+    }
+    if (!rustWebChromeClientPatched.contains("onGeolocationPermissionsShowPrompt: coarse permission already granted")) {
+        throw GradleException("Tauri RustWebChromeClient.kt coarse geolocation permission patch is missing")
+    }
+
     val wryActivity = file("src/main/java/org/ratspeak/android/generated/WryActivity.kt")
     if (!wryActivity.exists()) {
         throw GradleException("Tauri generated WryActivity.kt is missing")

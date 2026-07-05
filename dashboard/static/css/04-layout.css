@@ -257,6 +257,8 @@
 
 .sidebar.collapsed .nav-item {
     justify-content: center;
+    /* Zero-width labels still occupy a flex gap slot, shifting icons off-center */
+    gap: 0;
     padding: 0;
     margin: 0 var(--space-3);
 }
@@ -359,6 +361,7 @@
 }
 .sidebar.collapsed .sidebar-brand {
     justify-content: center;
+    gap: 0;
     padding: var(--space-2) 0;
 }
 .sidebar-divider {

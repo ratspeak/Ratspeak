@@ -1432,6 +1432,20 @@
                 <input type="checkbox" id="connect-use-backbone" class="rs-dialog-checkbox">
                 <span class="rs-dialog-checkbox-label">Experimental: Use Backbone</span>
             </label>
+            <label class="rs-dialog-checkbox-wrap mt-4" id="connect-ifac-row" style="display:none;">
+                <input type="checkbox" id="connect-use-ifac" class="rs-dialog-checkbox">
+                <span class="rs-dialog-checkbox-label">Use IFAC</span>
+            </label>
+            <div id="connect-ifac-fields" style="display:none;">
+                <div class="modal-field">
+                    <label>IFAC Network Name</label>
+                    <input type="text" id="connect-ifac-network-name" class="modal-input" placeholder="Optional" maxlength="128" autocorrect="off" autocapitalize="none" spellcheck="false">
+                </div>
+                <div class="modal-field">
+                    <label>IFAC Passphrase</label>
+                    <input type="password" id="connect-ifac-passphrase" class="modal-input" placeholder="Required for most IFAC networks" maxlength="256" autocorrect="off" autocapitalize="none" spellcheck="false">
+                </div>
+            </div>
             <button class="nr-btn w-full mt-4" id="connect-submit-btn">Connect</button>
         </div>
     </div>
@@ -1546,8 +1560,6 @@
             </div>
 
             <div id="rnode-step-2" style="display:none;">
-                <div class="rnode-device-summary" id="rnode-device-summary"></div>
-
                 <div class="modal-field">
                     <label>Name</label>
                     <input type="text" id="rnode-iface-name" class="modal-input" placeholder="My LoRa Radio" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false">
@@ -1607,9 +1619,46 @@
                                 <span class="rnode-frequency-unit">dBm</span>
                             </div>
                         </div>
+                        <div class="modal-field">
+                            <label>Airtime limit, short-term (%)</label>
+                            <input type="number" id="rnode-airtime-short" class="modal-input" min="0" max="100" step="0.1" inputmode="decimal" placeholder="No limit">
+                        </div>
+                        <div class="modal-field">
+                            <label>Airtime limit, long-term (%)</label>
+                            <input type="number" id="rnode-airtime-long" class="modal-input" min="0" max="100" step="0.1" inputmode="decimal" placeholder="No limit">
+                        </div>
                     </div>
                     <div class="inline-hint-sm rnode-advanced-hint">Use custom values only when every node on the link will use the same frequency, bandwidth, spreading factor, and coding rate.</div>
                 </details>
+
+                <div class="modal-field rnode-public-map-section" id="rnode-public-map-section" style="display:none;">
+                    <div class="rnode-setting-row">
+                        <div class="rnode-setting-copy">
+                            <label class="rnode-setting-label" for="rnode-public-map-enabled">Display on public map</label>
+                        </div>
+                        <label class="prop-toggle rnode-public-map-toggle" aria-label="Display on public map">
+                            <input type="checkbox" id="rnode-public-map-enabled">
+                            <span class="prop-slider"></span>
+                        </label>
+                    </div>
+                    <div class="rnode-public-map-controls" id="rnode-public-map-controls" style="display:none;">
+                        <div class="rnode-public-map-grid">
+                            <div class="modal-field">
+                                <label>Latitude</label>
+                                <input type="text" id="rnode-public-map-latitude" class="modal-input" inputmode="decimal" placeholder="39.7392" autocorrect="off" autocapitalize="none" spellcheck="false">
+                            </div>
+                            <div class="modal-field">
+                                <label>Longitude</label>
+                                <input type="text" id="rnode-public-map-longitude" class="modal-input" inputmode="decimal" placeholder="-104.9903" autocorrect="off" autocapitalize="none" spellcheck="false">
+                            </div>
+                        </div>
+                        <div class="rnode-public-map-actions">
+                            <button type="button" class="nr-btn nr-btn-sm nr-btn-ghost" id="rnode-public-map-use-current">Use current location</button>
+                            <span class="inline-hint-sm rnode-public-map-status" id="rnode-public-map-status"></span>
+                        </div>
+                        <div class="rs-dialog-field-error" id="rnode-public-map-error" style="display:none;"></div>
+                    </div>
+                </div>
 
                 <div class="u-flex gap-4 mt-7">
                     <button type="button" class="nr-btn nr-btn-ghost" id="rnode-back-btn">Back</button>

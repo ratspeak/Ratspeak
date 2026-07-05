@@ -27,6 +27,30 @@ fn read_source(path: impl AsRef<Path>) -> std::io::Result<String> {
     fs::read_to_string(path).map(|source| source.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
+fn rust_struct_literal_blocks<'a>(source: &'a str, marker: &str) -> Vec<&'a str> {
+    source
+        .match_indices(marker)
+        .map(|(idx, _)| {
+            let tail = &source[idx..];
+            let start = tail.find('{').expect("struct literal start");
+            let mut depth = 0usize;
+            for (offset, ch) in tail[start..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            return &tail[..start + offset + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unterminated struct literal for {marker}");
+        })
+        .collect()
+}
+
 #[test]
 fn privacy_announce_usage_setting_is_wired() {
     let root = repo_root();
@@ -63,6 +87,183 @@ fn privacy_announce_usage_setting_is_wired() {
         .and_then(|tail| tail.split("pub async fn api_identity_reset").next())
         .expect("reset database body");
     assert!(!reset_body.contains("\"settings\""));
+}
+
+#[test]
+fn ble_rnode_runtime_spawns_enable_flow_control() {
+    let root = repo_root();
+    let ble_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble commands");
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+
+    let native_blocks = rust_struct_literal_blocks(&ble_rs, "BleRnodeRuntimeArgs");
+    assert_eq!(
+        native_blocks.len(),
+        1,
+        "Android native BLE RNode should have one runtime-args block"
+    );
+    for block in native_blocks {
+        assert!(
+            block.contains("flow_control: true"),
+            "Android native BLE RNode runtime args must opt into RNode CMD_READY flow control:\n{block}"
+        );
+    }
+
+    let interface_blocks = rust_struct_literal_blocks(&interfaces_rs, "BleRnodeRuntimeArgs");
+    assert_eq!(
+        interface_blocks.len(),
+        2,
+        "interface commands should have editable/add BLE RNode runtime-args blocks"
+    );
+    for block in interface_blocks {
+        assert!(
+            block.contains("flow_control: true"),
+            "BLE RNode runtime args must opt into RNode CMD_READY flow control:\n{block}"
+        );
+    }
+}
+
+#[test]
+fn android_ble_rnode_bridge_retries_writes_and_fallback_detaches() {
+    let root = repo_root();
+    let gatt =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBleGatt.kt",
+        ))
+        .expect("android BLE GATT bridge");
+
+    assert!(gatt.contains("private val RNODE_DETACH_FRAME = byteArrayOf("));
+    assert!(gatt.contains("0xC0.toByte(), 0x06, 0x00, 0xC0.toByte()"));
+    assert!(gatt.contains("0xC0.toByte(), 0x0A, 0xFF.toByte(), 0xC0.toByte()"));
+    assert!(gatt.contains("private const val BLE_WRITE_REJECT_TIMEOUT_MS"));
+    assert!(gatt.contains("private fun enqueueBleWriteLocked("));
+    assert!(gatt.contains("attempts++"));
+    assert!(gatt.contains("Thread.sleep(BLE_WRITE_REJECT_RETRY_MS)"));
+    assert!(gatt.contains("Thread.sleep(BLE_WRITE_PACING_MS)"));
+    assert!(gatt.contains("observeRustDetachBytes(readBuf, off, end)"));
+    assert!(gatt.contains("sendRnodeDetachFallbackIfNeeded(\"TCP bridge closing\")"));
+    assert!(gatt.contains("if (rustDetachObserved.get()) return"));
+}
+
+#[test]
+fn rnode_config_edit_suppresses_next_interface_reannounce() {
+    let root = repo_root();
+    let state_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let runtime_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+
+    assert!(state_rs.contains("interface_reannounce_suppression"));
+    assert!(state_rs.contains("suppress_next_interface_reannounce"));
+    assert!(state_rs.contains("take_interface_reannounce_suppression"));
+    assert!(state_rs.contains("INTERFACE_REANNOUNCE_SUPPRESSION_TTL"));
+
+    assert!(runtime_rs.contains("take_interface_reannounce_suppression(name)"));
+    assert!(runtime_rs.contains("!reannounce_suppressed"));
+    assert!(runtime_rs.contains("Skipped re-announce after"));
+
+    assert!(interfaces_rs.contains("operation == \"update_lora\""));
+    assert!(interfaces_rs.contains("matches!(&new_runtime, EditableInterfaceConfig::RNode"));
+    assert!(interfaces_rs.contains("suppress_next_interface_reannounce(new_runtime.name())"));
+}
+
+#[test]
+fn rnode_public_map_is_edit_only_and_privacy_gated() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let rns_config_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
+    let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+        .expect("android manifest");
+    let android_main = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("android main activity");
+    let android_web_chrome = read_source(
+        root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/generated/RustWebChromeClient.kt",
+        ),
+    )
+    .expect("android generated web chrome client");
+    let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
+        .expect("android gradle");
+
+    assert!(index.contains(r#"id="rnode-public-map-section" style="display:none;""#));
+    assert!(index.contains(r#"id="rnode-public-map-enabled""#));
+    assert!(index.contains(r#"class="rnode-setting-row""#));
+    assert!(index.contains(r#"class="prop-toggle rnode-public-map-toggle""#));
+    assert!(index.contains("Display on public map"));
+    assert!(index.contains(r#"id="rnode-public-map-latitude""#));
+    assert!(index.contains(r#"id="rnode-public-map-longitude""#));
+    assert!(!index.contains("rnode-device-summary"));
+    assert!(!index.contains("rnode-public-map-state"));
+    assert!(!index.contains("id=\"rnode-public-map-help\""));
+    assert!(!index.contains("id=\"rnode-public-map-toggle-wrap\""));
+    assert!(!index.contains("rnode-public-map-height"));
+    let advanced_idx = index
+        .find(r#"id="rnode-advanced""#)
+        .expect("advanced details");
+    let public_map_idx = index
+        .find(r#"id="rnode-public-map-section""#)
+        .expect("public map section");
+    let submit_idx = index
+        .find(r#"id="rnode-submit-btn""#)
+        .expect("submit button");
+    assert!(advanced_idx < public_map_idx);
+    assert!(public_map_idx < submit_idx);
+
+    let warning = "This node's approximate location data will be broadcast publicly. The location will be your current approximate location, and only change again if you update it. Location is never live tracked.";
+    assert!(modals_js.contains(warning));
+    assert!(modals_js.contains("title: 'Display on public map?'"));
+    assert!(modals_js.contains("confirmText: 'Enable'"));
+    assert!(!modals_js.contains("_rnodeSetPublicMapState"));
+    assert!(modals_js.contains("Requesting current approximate location..."));
+    assert!(modals_js.contains("navigator.geolocation.getCurrentPosition"));
+    assert!(modals_js.contains("_rnodeResetPublicMap();"));
+    assert!(modals_js.contains("_rnodeLoadPublicMap(editIface);"));
+    assert!(modals_js.contains("loraArgs.public_map = publicMapSettings"));
+    assert!(modals_js.contains("Math.round(value * 1000) / 1000"));
+
+    assert!(interfaces_rs.contains("pub public_map: Option<UpdateLoraPublicMapArgs>"));
+    assert!(interfaces_rs.contains("resolve_rnode_public_map_update"));
+    assert!(interfaces_rs.contains("Set an identity display name before enabling public map."));
+    assert!(interfaces_rs.contains("discovery_name: Some(display_name)"));
+
+    assert!(rns_config_rs.contains("pub struct RnodePublicMapArgs"));
+    assert!(rns_config_rs.contains("discoverable = yes"));
+    assert!(rns_config_rs.contains("latitude = {latitude}"));
+    assert!(rns_config_rs.contains("longitude = {longitude}"));
+    assert!(rns_config_rs.contains("discovery_name = {discovery_name}"));
+    assert!(!rns_config_rs.contains("height = {"));
+
+    assert!(manifest.contains(r#"android.permission.ACCESS_FINE_LOCATION" />"#));
+    assert!(manifest.contains(r#"android.permission.ACCESS_COARSE_LOCATION" />"#));
+    assert!(!android_main.contains("RustWebChromeClient(this)"));
+    assert!(!android_main.contains("RatspeakWebChromeClient"));
+    assert!(android_web_chrome.contains("override fun onGeolocationPermissionsShowPrompt("));
+    assert!(android_web_chrome.contains(
+        "val coarseLocationPermission = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)"
+    ));
+    assert!(
+        android_web_chrome
+            .contains("PermissionHelper.hasPermissions(activity, coarseLocationPermission)")
+    );
+    assert!(android_web_chrome.contains("callback.invoke(origin, true, false)"));
+    assert!(
+        android_web_chrome
+            .contains("onGeolocationPermissionsShowPrompt: coarse permission already granted")
+    );
+    assert!(
+        android_gradle.contains(
+            "Tauri RustWebChromeClient.kt coarse geolocation permission patch is missing"
+        )
+    );
 }
 
 #[test]
@@ -112,6 +313,100 @@ fn ratspeak_capability_marker_drives_name_badge() {
     let identity_js =
         read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
     assert!(!identity_js.contains("ratspeak-avatar-glow"));
+}
+
+#[test]
+fn frontend_shared_helpers_are_adopted() {
+    let root = repo_root();
+    // T2-4: one sheet shell, one peer-group builder, toast-surfaced actions.
+    let constants_js =
+        read_source(root.join("dashboard/static/js/constants.js")).expect("constants js");
+    assert!(constants_js.contains("RS.sheetShell = {"));
+    assert!(constants_js.contains("RS.invokeOrToast = function"));
+    assert!(constants_js.contains("RS.buildPeerGroupItems = function"));
+
+    for file in [
+        "dashboard/static/js/dialogs.js",
+        "dashboard/static/js/contact_card.js",
+        "dashboard/static/js/games_tab.js",
+    ] {
+        let source = read_source(root.join(file)).expect(file);
+        assert!(
+            source.contains("RS.sheetShell."),
+            "{file} must use the shared sheet shell"
+        );
+    }
+    for file in [
+        "dashboard/static/js/peers.js",
+        "dashboard/static/js/connections.js",
+    ] {
+        let source = read_source(root.join(file)).expect(file);
+        assert!(
+            source.contains("RS.buildPeerGroupItems("),
+            "{file} must use the shared peer grouping"
+        );
+    }
+
+    // User-initiated contact/block actions surface failures, never the silent
+    // `RS.invoke('add_contact'...).catch(function() {})` pattern.
+    for file in [
+        "dashboard/static/js/lxmf.js",
+        "dashboard/static/js/peers.js",
+        "dashboard/static/js/health.js",
+        "dashboard/static/js/contact_card.js",
+    ] {
+        let source = read_source(root.join(file)).expect(file);
+        for action in ["add_contact", "remove_contact", "block_contact"] {
+            assert!(
+                !source.contains(&format!("RS.invoke('{action}'")),
+                "{file}: {action} must go through RS.invokeOrToast"
+            );
+        }
+    }
+
+    // Portable CSS minify (BSD `sed -i ''` silently no-ops on GNU sed).
+    let build_css = read_source(root.join("dashboard/build-css.sh")).expect("build-css.sh");
+    assert!(!build_css.contains("sed -i ''"));
+    assert!(build_css.contains("perl -0777 -pi"));
+
+    // Peer-controlled data URL is escaped at the image render site.
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf_js.contains("escapeHtml(msg.image.data_url)"));
+}
+
+#[test]
+fn contact_list_renders_are_gated() {
+    let root = repo_root();
+    // T2-3: visibility gates per owning view + content-hash dedupe.
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf_js.contains("function _gateHidden"));
+    assert!(lxmf_js.contains("function _gateClean"));
+    assert!(lxmf_js.contains("_gateHidden('view-message'"));
+    assert!(lxmf_js.contains("_gateHidden('view-contacts'"));
+    assert!(lxmf_js.contains("_gateHidden('view-dashboard'"));
+    // Reactions map resets on conversation switch.
+    assert!(lxmf_js.contains("_msgReactions = {};"));
+
+    let connections_js =
+        read_source(root.join("dashboard/static/js/connections.js")).expect("connections js");
+    assert!(connections_js.contains("if (container._rsLastHtml === mobileHtml) return;"));
+
+    // Message view heals gated skips on activation.
+    let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    assert!(nav_js.contains("Heal renders skipped while this view was hidden."));
+}
+
+#[test]
+fn reaction_emoji_is_escaped_and_validated() {
+    let root = repo_root();
+    // Render site escapes the peer-controlled emoji text (T0-5).
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf_js.contains("escapeHtml(emoji) + (count > 1"));
+
+    // Runtime rejects markup/control characters at ingest.
+    let runtime_rs = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
+    assert!(runtime_rs.contains("fn sanitize_reaction_emoji"));
+    assert!(runtime_rs.contains("let Some(emoji) = sanitize_reaction_emoji(emoji)"));
 }
 
 #[test]
@@ -380,7 +675,7 @@ fn notifications_use_canonical_names_and_ignore_watched_game_unread() {
 fn games_new_sheet_uses_shared_mobile_bottom_sheet_width() {
     let root = repo_root();
     let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
-    assert!(games_js.contains(r#"class="bottom-sheet games-new-dialog""#));
+    assert!(games_js.contains("sheetClass: 'bottom-sheet games-new-dialog'"));
     assert!(games_js.contains("rs-dialog-cancel games-sheet-cancel-btn"));
     assert!(games_js.contains("rs-dialog-confirm games-sheet-send-btn"));
 
@@ -602,7 +897,7 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     assert!(interfaces_rs.contains("\"probe_failed\": true"));
     assert!(interfaces_rs.contains("permission_required"));
     assert!(interfaces_rs.contains(
-        "#[cfg(target_os = \"android\")]\n        return Ok(android_ble_peer_availability_payload());"
+        "#[cfg(all(feature = \"ble\", target_os = \"android\"))]\n    return Ok(android_ble_peer_availability_payload());"
     ));
 
     let settings_js =
@@ -635,6 +930,33 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     let proguard = read_source(root.join("src-tauri/gen/android/app/proguard-rules.pro"))
         .expect("android proguard rules");
     assert!(proguard.contains("-keep class org.ratspeak.android.RatspeakBleAvailability"));
+}
+
+#[test]
+fn android_ble_gatt_close_targets_captured_connection() {
+    let root = repo_root();
+    let gatt =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBleGatt.kt",
+        ))
+        .expect("android BLE GATT source");
+
+    assert!(gatt.contains("val gattToClose = gatt"));
+    assert!(gatt.contains("val txCharToDisable = txChar"));
+    assert!(
+        gatt.contains("gattToClose?.setCharacteristicNotification(it, false)"),
+        "notification teardown should target the captured GATT handle"
+    );
+    assert!(gatt.contains("gattToClose?.disconnect()"));
+    assert!(gatt.contains("gattToClose?.close()"));
+    assert!(
+        gatt.contains("if (gatt === gattToClose) {\n                gatt = null\n            }"),
+        "delayed close must not clear a newer active GATT handle"
+    );
+    assert!(
+        !gatt.contains("try { gatt?.close() }"),
+        "delayed close must not dereference the mutable global GATT handle"
+    );
 }
 
 #[test]
@@ -850,6 +1172,56 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
 }
 
 #[test]
+fn tcp_connect_sheet_gates_backbone_and_ifac_behind_developer_mode() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    for expected in [
+        "id=\"connect-backbone-row\" style=\"display:none;\"",
+        "id=\"connect-ifac-row\" style=\"display:none;\"",
+        "id=\"connect-use-ifac\"",
+        "id=\"connect-ifac-network-name\"",
+        "id=\"connect-ifac-passphrase\"",
+    ] {
+        assert!(
+            index.contains(expected),
+            "missing IFAC connect UI token {expected}"
+        );
+    }
+    assert!(!index.contains("ifac_size"));
+
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    assert!(modals_js.contains("function _syncConnectAdvancedVisibility()"));
+    assert!(modals_js.contains("if (bbRow) bbRow.style.display = dev ? '' : 'none';"));
+    assert!(modals_js.contains("if (ifacRow) ifacRow.style.display = showIfac ? '' : 'none';"));
+    assert!(modals_js.contains("if (!_developerModeEnabled()) return null;"));
+    assert!(modals_js.contains("args.ifac_enabled = ifac.ifac_enabled;"));
+    assert!(modals_js.contains("args.ifac_network_name = ifac.ifac_network_name;"));
+    assert!(modals_js.contains("args.ifac_passphrase = ifac.ifac_passphrase;"));
+    assert!(modals_js.contains("Enter an IFAC network name or passphrase"));
+    assert!(modals_js.contains("window.addEventListener('ratspeak-developer-mode-changed', _syncConnectAdvancedVisibility);"));
+    assert!(modals_js.contains("if (ifacCheckbox) ifacCheckbox.checked = false;"));
+    assert!(modals_js.contains("if (ifacNetworkName) ifacNetworkName.value = '';"));
+    assert!(modals_js.contains("if (ifacPassphrase) ifacPassphrase.value = '';"));
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    assert!(interfaces_rs.contains("struct InterfaceIfacCommandFields"));
+    assert!(interfaces_rs.contains("ifac_enabled: Option<bool>"));
+    assert!(interfaces_rs.contains("ifac_settings_from_args(&args.ifac, None)"));
+    assert!(interfaces_rs.contains("ifac_settings_from_args(&args.ifac, Some(&old_ifac))"));
+    assert!(interfaces_rs.contains("spawn_tcp_client_runtime_with_ifac"));
+    assert!(interfaces_rs.contains("spawn_backbone_client_runtime_with_ifac"));
+
+    let rns_config =
+        read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
+    assert!(rns_config.contains("pub struct InterfaceIfacArgs"));
+    assert!(rns_config.contains("network_name = {network_name}"));
+    assert!(rns_config.contains("passphrase = {passphrase}"));
+    assert!(rns_config.contains("add_tcp_client_with_ifac"));
+    assert!(rns_config.contains("update_tcp_client_with_ifac"));
+}
+
+#[test]
 fn interface_pause_resume_is_config_backed_and_visible() {
     let root = repo_root();
 
@@ -890,6 +1262,53 @@ fn interface_pause_resume_is_config_backed_and_visible() {
     let app_shell = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     assert!(app_shell.contains("ratspeak_tauri::commands::interfaces::pause_interface"));
     assert!(app_shell.contains("ratspeak_tauri::commands::interfaces::resume_interface"));
+}
+
+#[test]
+fn failed_lora_reconnects_keep_persisted_interface_config() {
+    let root = repo_root();
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    // Resume/update reconnects never request frontend rollback; only an add
+    // that created the entry may (`fresh_add`). A hardcoded `true` regresses
+    // re-adds of existing radios into config deletion on connect failure.
+    assert!(interfaces_rs.contains("\"rollback_on_error\": false,"));
+    assert!(interfaces_rs.contains("\"rollback_on_error\": fresh_add,"));
+    assert!(!interfaces_rs.contains("\"rollback_on_error\": true"));
+    assert!(
+        interfaces_rs
+            .contains("find_config_interface_with_group(&config_dir, None, &name).is_none()")
+    );
+    assert!(interfaces_rs.contains("mark_lora_add_freshness(&name, fresh_add)"));
+    // Desktop pairing-timeout rollback only deletes entries the add created.
+    assert!(interfaces_rs.contains("if fresh_add {"));
+    // Failed resume flips the entry back to paused instead of deleting it or
+    // leaving a dead enabled config.
+    assert!(
+        interfaces_rs
+            .contains("crate::rns_config::set_interface_enabled(&config_dir, &iface_name, false)")
+    );
+
+    let shared_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
+        .expect("shared commands");
+    assert!(shared_rs.contains("pub(crate) fn mark_lora_add_freshness"));
+    assert!(shared_rs.contains("pub(crate) fn take_fresh_lora_add"));
+
+    let ble_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble commands");
+    assert!(ble_rs.contains("take_fresh_lora_add(&name)"));
+    assert!(ble_rs.contains("if fresh_add {"));
+
+    // JS guards: auto-rollback only when Rust requested it; manual cancel
+    // only invokes the cancel command for adds, never for edits.
+    let events_js =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
+    assert!(events_js.contains("if (data.rollback_on_error && data.name) {"));
+    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    assert!(modals_js.contains(
+        "if (!isEdit) RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});"
+    ));
 }
 
 #[test]
@@ -1534,7 +1953,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.20");
+    assert_eq!(version_file.trim(), "1.0.24");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -1620,7 +2039,7 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000023"#));
+    assert!(tauri_conf.contains(r#""versionCode": 1000028"#));
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
@@ -2560,7 +2979,7 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("label: 'Opportunistic', icon: ICON_SEND_OPPORTUNISTIC"));
     assert!(lxmf.contains("label: 'Direct', icon: ICON_SEND_DIRECT"));
     assert!(!lxmf.contains("label: 'Direct', icon: ICON_ROUTE"));
-    assert!(lxmf.contains("function _copyToClipboardFallback(text)"));
+    assert!(lxmf.contains("function _copyToClipboard(text)"));
     assert!(lxmf.contains("function _messageMediaContextAction(msgData)"));
     assert!(lxmf.contains("function _resolveMessageImageFile(msgData)"));
     assert!(lxmf.contains("function _resolveMessageAttachmentFile(att)"));
@@ -2853,6 +3272,7 @@ fn identity_management_is_first_class_tab() {
     assert!(tauri_lib.contains("api_export_identity_reticulum_base64"));
     assert!(tauri_lib.contains("api_export_identity_reticulum_base32"));
     assert!(tauri_lib.contains("hw_change_pin"));
+    assert!(tauri_lib.contains("unlock_identity"));
 
     let identity_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/identity.rs"))
         .expect("identity command source");
@@ -2861,6 +3281,8 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_rs.contains("base32-private-key"));
     assert!(identity_rs.contains("api_export_identity_reticulum_base64"));
     assert!(identity_rs.contains("api_export_identity_reticulum_base32"));
+    assert!(identity_rs.contains("pub async fn unlock_identity"));
+    assert!(identity_rs.contains("pub(crate) async fn unlock_protected_identity"));
 }
 
 #[test]
@@ -2912,6 +3334,8 @@ fn software_identity_creation_uses_passcode_and_backup_acknowledgement_flow() {
     assert!(identity_js.contains("readIdentityPasscodeOption('identity-create')"));
     assert!(identity_js.contains("function protectIdentityWithPasscode"));
     assert!(identity_js.contains("RS.invoke('set_identity_passcode'"));
+    assert!(identity_js.contains("RS.invoke('unlock_identity', { secret: secret })"));
+    assert!(!identity_js.contains("RS.invoke('hw_unlock'"));
     assert!(identity_js.contains("identityPasscodeOptionHtml('restore-phrase')"));
     assert!(identity_js.contains("} else {\n            restore();\n        }"));
 
