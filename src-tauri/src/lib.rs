@@ -524,29 +524,53 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::network_type_changed,
             ratspeak_tauri::commands::interfaces::set_auto_announce,
             ratspeak_tauri::commands::interfaces::api_app_settings,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agents,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_connection_bundle,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_adapter,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::set_agent_adapter,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_runtime,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::start_agent_daemon,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::create_agent,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::set_agent_grant,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::revoke_agent,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::remove_agent,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::rotate_agent_token,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_policy,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_policy_defaults,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::set_agent_policy,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_approvals,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_approval,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_file_inspection,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::approve_agent_action,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::reject_agent_action,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::cancel_agent_action,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::execute_agent_action,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::expire_agent_actions,
+            #[cfg(feature = "agent-gui")]
             ratspeak_tauri::commands::agents::api_agent_audit,
             ratspeak_tauri::commands::interfaces::set_peers_sort,
             ratspeak_tauri::commands::interfaces::set_hardware_lock_timeout,

@@ -15,6 +15,8 @@ crate-type = ["lib", "cdylib", "staticlib"]
 [features]
 default = ["lxst-voice"]
 lxst-voice = ["ratspeak-tauri/lxst-voice"]
+# GUI agent management (off by default; the beta is CLI-first).
+agent-gui = ["ratspeak-tauri/agent-gui"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

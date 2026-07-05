@@ -1550,6 +1550,16 @@ fn agent_setup_checklist(manifest: &AgentManifest) -> Value {
                 "detail": runtime.get("state").and_then(Value::as_str).unwrap_or("unknown"),
             },
             {
+                // ratspeakd carries messages and enforces policy, but does not
+                // itself generate replies — a separate runner must be attached.
+                // Kept explicitly incomplete so config + a running daemon never
+                // read as "the bot will reply".
+                "key": "runner",
+                "label": "Reply runner",
+                "complete": false,
+                "detail": "attach a runner (e.g. the Venice adapter) — ratspeakd relays messages but does not generate replies",
+            },
+            {
                 "key": "guardrails",
                 "label": "Guardrails",
                 "complete": true,

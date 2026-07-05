@@ -2,6 +2,7 @@
 //! Commands must not hold `std::sync::{Mutex, RwLock}` guards across `.await`;
 //! delegate blocking work to `db::spawn_db` or a worker task.
 
+#[cfg(feature = "agent-gui")]
 pub mod agents;
 pub mod ble;
 pub mod contact_card;

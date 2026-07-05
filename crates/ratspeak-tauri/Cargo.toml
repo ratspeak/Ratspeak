@@ -7,6 +7,10 @@ license.workspace = true
 
 [features]
 default = ["serial", "seed"]
+# GUI agent management. Off by default: the CLI-first beta manages bots through
+# ratspeakd/ratspeakctl, not the personal desktop app, so this surface (and its
+# ~24 Tauri commands) is gated until a decoupled agent UX ships.
+agent-gui = []
 # Re-exported through ratspeak-runtime so user-visible flag names don't change.
 serial = ["ratspeak-runtime/serial", "ratspeak-cli/serial", "dep:serialport", "rns-interface/serial", "rns-runtime/serial"]
 rnode-tcp = ["ratspeak-runtime/rnode-tcp", "ratspeak-cli/rnode-tcp", "rns-interface/rnode-tcp", "rns-runtime/rnode-tcp"]

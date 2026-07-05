@@ -4370,6 +4370,7 @@ version = "1.0.24"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4401,6 +4402,7 @@ dependencies = [
  "hex",
  "indexmap 2.13.0",
  "jni 0.19.0",
+ "libc",
  "lrgp",
  "lxmf-core",
  "lxst-core",

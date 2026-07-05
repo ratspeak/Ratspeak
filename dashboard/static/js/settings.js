@@ -485,6 +485,16 @@ function initAgentSettings() {
     var panel = document.getElementById('panel-settings-agents');
     if (!panel) return;
 
+    // CLI-first beta: the in-app agent surface is gated off (see RS.FEATURES).
+    // Hide its settings nav entry + panel so a default build never shows a
+    // control wired to Tauri commands that aren't compiled in.
+    if (!(window.RS && RS.FEATURES && RS.FEATURES.agentGui)) {
+        var navBtn = document.querySelector('[data-settings-panel="panel-settings-agents"]');
+        if (navBtn) navBtn.style.display = 'none';
+        panel.style.display = 'none';
+        return;
+    }
+
     if (!_settingsAgentsBound) {
         _settingsAgentsBound = true;
 

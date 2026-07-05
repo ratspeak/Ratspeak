@@ -2,6 +2,12 @@
 
 var RS = window.RS || {};
 
+// Feature flags. `agentGui` is off for the CLI-first beta: bots are managed via
+// ratspeakd/ratspeakctl, not the personal desktop app, and its Tauri command
+// surface is gated behind the `agent-gui` build feature. Keep this in sync with
+// that feature when re-enabling the in-app agent UX.
+RS.FEATURES = RS.FEATURES || { agentGui: false };
+
 RS.config = {
     TOAST_DURATION: 3000,
     TOAST_ERROR_DURATION: 5000,
