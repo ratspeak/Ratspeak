@@ -456,10 +456,56 @@ fn run_agent(profile: &Profile, args: &[String], output: OutputFormat) -> CliRes
         "show" => run_agent_show(profile, &args[1..], output),
         "grant" => run_agent_grant(profile, &args[1..], output),
         "policy" => run_agent_policy(profile, &args[1..], output),
+        "adapter" => run_agent_adapter(profile, &args[1..], output),
         "revoke" => run_agent_revoke(profile, &args[1..], output),
         "remove" | "delete" => run_agent_remove(profile, &args[1..], output),
         "rotate-token" => run_agent_rotate_token(profile, &args[1..], output),
         other => Err(CliError::usage(format!("unknown agent command: {other}"))),
+    }
+}
+
+fn run_agent_adapter(profile: &Profile, args: &[String], output: OutputFormat) -> CliResult<()> {
+    match args.first().map(String::as_str).unwrap_or("show") {
+        "show" => {
+            let name = args
+                .get(1)
+                .ok_or_else(|| CliError::usage("agent adapter show requires <name>"))?;
+            print_json(&agent_admin::show_agent_adapter(profile, name)?, output)
+        }
+        "catalog" => print_json(&agent_admin::agent_adapter_catalog_payload(), output),
+        "set" => {
+            let name = args
+                .get(1)
+                .ok_or_else(|| CliError::usage("agent adapter set requires <name>"))?
+                .clone();
+            let mut rest = args.get(2..).unwrap_or_default().to_vec();
+            let provider = take_option(&mut rest, "--provider")?.unwrap_or_else(|| "venice".into());
+            let label = take_option(&mut rest, "--label")?;
+            let model = take_option(&mut rest, "--model")?;
+            let base_url = take_option(&mut rest, "--base-url")?;
+            let secret_env = take_option(&mut rest, "--secret-env")?;
+            let secret_file = take_option(&mut rest, "--secret-file")?.map(PathBuf::from);
+            let notes = take_option(&mut rest, "--notes")?;
+            ensure_no_extra_args(&rest, "agent adapter set")?;
+            // The adapter's launch `command` is reserved: ratspeakd does not spawn
+            // runners, so the CLI never records one (an external runner attaches
+            // over the daemon API with the agent token).
+            let update = agent_admin::AgentAdapterUpdate {
+                name,
+                provider,
+                label,
+                model,
+                base_url,
+                command: Vec::new(),
+                secret_env,
+                secret_file,
+                notes,
+            };
+            print_json(&agent_admin::set_agent_adapter(profile, update)?, output)
+        }
+        other => Err(CliError::usage(format!(
+            "unknown agent adapter command: {other} (expected show|set|catalog)"
+        ))),
     }
 }
 
