@@ -65,11 +65,13 @@ pub async fn run_daemon(args: Vec<String>) -> CliResult<()> {
 
     let mut emit_jsonl = false;
     let mut quiet = false;
+    let mut force = false;
     for arg in &args {
         match arg.as_str() {
             "run" => {}
             "--events-jsonl" => emit_jsonl = true,
             "--quiet" => quiet = true,
+            "--force" => force = true,
             other => {
                 return Err(CliError::usage(format!(
                     "unknown ratspeakd option: {other}"
@@ -80,6 +82,22 @@ pub async fn run_daemon(args: Vec<String>) -> CliResult<()> {
 
     init_tracing();
     let data_root = profile::resolve_data_root(global.data_root);
+    if profile::is_desktop_app_root(&data_root) {
+        if !force {
+            return Err(CliError::usage(format!(
+                "refusing to run ratspeakd against the desktop app profile at {} — \
+                 a headless daemon here would co-own the app's database, identity, and \
+                 Reticulum config. Point --data-dir at a separate bot profile, or pass \
+                 --force to override.",
+                data_root.display()
+            )));
+        }
+        eprintln!(
+            "warning: running ratspeakd against the desktop app profile at {} (--force); \
+             concurrent access with the GUI app can corrupt state",
+            data_root.display()
+        );
+    }
     let lock_data_dir = data_root.join(".ratspeak");
     let profile_lock =
         ratspeak_runtime::profile_lock::try_acquire_profile_lock(&lock_data_dir, "ratspeakd")
@@ -2163,11 +2181,14 @@ Set RATSPEAK_DATA_DIR or --data-dir to target a specific Ratspeak profile."
 fn print_daemon_help() {
     println!(
         "\
-ratspeakd [--data-dir PATH] [run] [--events-jsonl] [--quiet]
+ratspeakd [--data-dir PATH] [run] [--events-jsonl] [--quiet] [--force]
 
-Runs the Ratspeak runtime without the Tauri UI.
+Runs the Ratspeak runtime without the Tauri UI. With no --data-dir it uses a
+headless CLI profile distinct from the desktop app.
   --events-jsonl   emit runtime events and notifications as JSONL on stdout
   --quiet          suppress daemon lifecycle messages on stderr
+  --force          allow running against the desktop app profile (unsafe;
+                   concurrent access with the GUI app can corrupt state)
 
 ratspeakd publishes a profile-local daemon API endpoint at
 .ratspeak/ratspeakd-api.json. ratspeakctl discovers that endpoint and routes

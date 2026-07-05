@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ratspeak_core::{NoopEmitter, NoopNotifier};
@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::error::{CliError, CliResult};
 
 const DESKTOP_IDENTIFIER: &str = "org.ratspeak.desktop";
+const CLI_IDENTIFIER: &str = "org.ratspeak.cli";
 
 #[derive(Clone)]
 pub struct Profile {
@@ -27,7 +28,7 @@ pub fn resolve_data_root(explicit: Option<PathBuf>) -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    default_desktop_data_root()
+    default_cli_data_root()
 }
 
 pub fn open_profile(data_root: PathBuf) -> CliResult<Profile> {
@@ -99,39 +100,52 @@ pub fn profile_summary(profile: &Profile) -> Value {
     })
 }
 
-fn default_desktop_data_root() -> PathBuf {
+/// Default data root for the headless CLI/daemon. Deliberately distinct from
+/// the desktop app so a bare `ratspeakd`/`ratspeakctl` never co-owns the GUI
+/// profile's database, identity, or Reticulum config.
+fn default_cli_data_root() -> PathBuf {
+    default_data_root_for(CLI_IDENTIFIER)
+}
+
+/// Data root of the desktop GUI app. A headless daemon must never silently
+/// co-own this profile; `ratspeakd run` refuses it without `--force`.
+pub fn desktop_app_data_root() -> PathBuf {
+    default_data_root_for(DESKTOP_IDENTIFIER)
+}
+
+/// True when `path` resolves to the desktop app's data root.
+pub fn is_desktop_app_root(path: &Path) -> bool {
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canonical(path) == canonical(&desktop_app_data_root())
+}
+
+fn default_data_root_for(identifier: &str) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         return home_dir()
             .join("Library")
             .join("Application Support")
-            .join(DESKTOP_IDENTIFIER);
+            .join(identifier);
     }
 
     #[cfg(target_os = "windows")]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
             if !appdata.trim().is_empty() {
-                return PathBuf::from(appdata).join(DESKTOP_IDENTIFIER);
+                return PathBuf::from(appdata).join(identifier);
             }
         }
-        return home_dir()
-            .join("AppData")
-            .join("Roaming")
-            .join(DESKTOP_IDENTIFIER);
+        return home_dir().join("AppData").join("Roaming").join(identifier);
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
             if !xdg.trim().is_empty() {
-                return PathBuf::from(xdg).join(DESKTOP_IDENTIFIER);
+                return PathBuf::from(xdg).join(identifier);
             }
         }
-        home_dir()
-            .join(".local")
-            .join("share")
-            .join(DESKTOP_IDENTIFIER)
+        home_dir().join(".local").join("share").join(identifier)
     }
 }
 
@@ -150,5 +164,21 @@ mod tests {
     fn explicit_data_root_wins() {
         let path = PathBuf::from("/tmp/ratspeak-explicit");
         assert_eq!(resolve_data_root(Some(path.clone())), path);
+    }
+
+    #[test]
+    fn cli_default_root_is_distinct_from_desktop() {
+        let cli = default_cli_data_root();
+        let desktop = desktop_app_data_root();
+        assert_ne!(cli, desktop, "CLI must not default into the desktop profile");
+        assert!(cli.ends_with(CLI_IDENTIFIER));
+        assert!(desktop.ends_with(DESKTOP_IDENTIFIER));
+    }
+
+    #[test]
+    fn desktop_root_detection() {
+        assert!(is_desktop_app_root(&desktop_app_data_root()));
+        assert!(!is_desktop_app_root(&default_cli_data_root()));
+        assert!(!is_desktop_app_root(&PathBuf::from("/tmp/some-bot-profile")));
     }
 }
