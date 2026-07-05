@@ -12,18 +12,22 @@ direct daemon-API client will later replace.
 
 ## Use
 
+Owner-side commands take the owner data root plus the agent name; the daemon and
+runner take the agent's own root, which is `<owner>/.ratspeak/agents/<name>`
+(printed as `profile_root` by `ratspeakctl agent show <name>`).
+
 ```sh
-# 1. Create an agent and point it at a provider (owner profile):
+# 1. Create an agent and point it at a provider (owner profile + agent name):
 ratspeakctl --data-dir <owner> agent onboard my-bot --allow-contact <hash>
-ratspeakctl --data-dir <owner>/agents/my-bot agent adapter set my-bot \
+ratspeakctl --data-dir <owner> agent adapter set my-bot \
   --provider venice --model zai-org-glm-5 --secret-env VENICE_API_KEY
 
-# 2. Start the agent daemon:
-ratspeakd --data-dir <owner>/agents/my-bot run --quiet
+# 2. Start the agent daemon (agent's own root):
+ratspeakd --data-dir <owner>/.ratspeak/agents/my-bot run --quiet
 
 # 3. Run the reference runner (key in the configured env var):
 export VENICE_API_KEY=...
-ratspeak-agent --data-dir <owner>/agents/my-bot
+ratspeak-agent --data-dir <owner>/.ratspeak/agents/my-bot
 #   --dry-run       print replies instead of submitting
 #   --system TEXT   override the system prompt
 #   --max-tokens N  cap reply length
