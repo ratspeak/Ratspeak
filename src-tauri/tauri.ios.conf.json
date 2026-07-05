@@ -1,3 +1,6 @@
 {
-  "identifier": "org.ratspeak.ios"
+  "identifier": "org.ratspeak.ios",
+  "bundle": {
+    "externalBin": []
+  }
 }

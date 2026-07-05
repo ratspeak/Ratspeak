@@ -4,7 +4,9 @@
   "version": "1.0.24",
   "identifier": "org.ratspeak.desktop",
   "build": {
-    "frontendDist": "../dashboard"
+    "frontendDist": "../dashboard",
+    "beforeDevCommand": "bash ../scripts/release/prepare-tauri-sidecars.sh",
+    "beforeBuildCommand": "bash ../scripts/release/prepare-tauri-sidecars.sh"
   },
   "bundle": {
     "active": true,

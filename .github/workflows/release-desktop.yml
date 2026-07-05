@@ -126,6 +126,11 @@ jobs:
         working-directory: Ratspeak
         run: bash dashboard/build-css.sh
 
+      - name: Prepare Tauri sidecars
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/prepare-tauri-sidecars.sh
+
       - name: Check Tauri desktop shell
         shell: bash
         working-directory: Ratspeak
