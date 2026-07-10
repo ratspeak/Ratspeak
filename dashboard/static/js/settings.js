@@ -46,6 +46,19 @@ function setDeveloperModeEnabled(enabled) {
     persistDeveloperModePreference(_settingsDeveloperModeEnabled);
     syncDeveloperModeRadioState();
     notifyDeveloperModeChanged();
+    // SQLite is the durable store; localStorage is only a boot-time cache
+    // (WKWebView drops custom-scheme localStorage on macOS/iOS).
+    RS.invoke('set_developer_mode', { enabled: _settingsDeveloperModeEnabled }).catch(function() {});
+}
+
+// Backend value wins over the localStorage cache at boot; no write-back.
+function adoptDeveloperModeFromBackend(enabled) {
+    enabled = !!enabled;
+    if (enabled === _settingsDeveloperModeEnabled) return;
+    _settingsDeveloperModeEnabled = enabled;
+    persistDeveloperModePreference(enabled);
+    syncDeveloperModeRadioState();
+    notifyDeveloperModeChanged();
 }
 
 window.ratspeakDeveloperModeEnabled = function() {
@@ -1242,6 +1255,9 @@ function applyAppSettingsPayload(data) {
         var t = parseInt(data.hardware_session_timeout, 10);
         hwBadge.textContent = _hwLockLabel(t);
         hwBadge.setAttribute('data-value', t);
+    }
+    if (data.developer_mode !== undefined) {
+        adoptDeveloperModeFromBackend(data.developer_mode);
     }
 }
 

@@ -526,6 +526,7 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::api_app_settings,
             ratspeak_tauri::commands::interfaces::set_peers_sort,
             ratspeak_tauri::commands::interfaces::set_hardware_lock_timeout,
+            ratspeak_tauri::commands::interfaces::set_developer_mode,
             ratspeak_tauri::commands::interfaces::set_announce_ratspeak_usage,
             ratspeak_tauri::commands::interfaces::api_notification_settings,
             ratspeak_tauri::commands::interfaces::set_desktop_notifications,

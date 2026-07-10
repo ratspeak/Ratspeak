@@ -1900,27 +1900,71 @@ function _ifaceHasIfac(iface) {
     return !!(_ifaceIfacNetworkName(iface) || _ifaceIfacPassphrase(iface));
 }
 
-function _readConnectIfacValues() {
-    if (!_developerModeEnabled()) return null;
-    var useIfac = !!(document.getElementById('connect-use-ifac') || {}).checked;
-    var networkNameEl = document.getElementById('connect-ifac-network-name');
-    var passphraseEl = document.getElementById('connect-ifac-passphrase');
-    var networkName = networkNameEl ? networkNameEl.value.trim() : '';
-    var passphrase = passphraseEl ? passphraseEl.value.trim() : '';
-    return {
+// Shared IFAC form helpers. Each modal uses ids `<prefix>-use-ifac`,
+// `<prefix>-ifac-fields`, `<prefix>-ifac-network-name`, `<prefix>-ifac-passphrase`
+// and `<prefix>-ifac-size(-field)`. IFAC itself is a normal end-user feature;
+// only the size override stays behind developer mode (backend preserves the
+// stored value when the field is omitted).
+function _ifacSyncFields(prefix) {
+    var checkbox = document.getElementById(prefix + '-use-ifac');
+    var fields = document.getElementById(prefix + '-ifac-fields');
+    var sizeField = document.getElementById(prefix + '-ifac-size-field');
+    if (fields) fields.style.display = (checkbox && checkbox.checked) ? '' : 'none';
+    if (sizeField) sizeField.style.display = _developerModeEnabled() ? '' : 'none';
+}
+
+function _ifacPopulate(prefix, iface) {
+    var checkbox = document.getElementById(prefix + '-use-ifac');
+    var network = document.getElementById(prefix + '-ifac-network-name');
+    var pass = document.getElementById(prefix + '-ifac-passphrase');
+    var size = document.getElementById(prefix + '-ifac-size');
+    if (checkbox) checkbox.checked = _ifaceHasIfac(iface);
+    if (network) network.value = iface ? _ifaceIfacNetworkName(iface) : '';
+    if (pass) pass.value = iface ? _ifaceIfacPassphrase(iface) : '';
+    if (size) size.value = iface ? _ifaceString(iface, 'ifac_size', '') : '';
+    if (checkbox && !checkbox.dataset.bound) {
+        checkbox.dataset.bound = '1';
+        checkbox.addEventListener('change', function() { _ifacSyncFields(prefix); });
+    }
+    _ifacSyncFields(prefix);
+}
+
+function _ifacReadValues(prefix) {
+    var useIfac = !!(document.getElementById(prefix + '-use-ifac') || {}).checked;
+    var networkEl = document.getElementById(prefix + '-ifac-network-name');
+    var passEl = document.getElementById(prefix + '-ifac-passphrase');
+    var sizeEl = document.getElementById(prefix + '-ifac-size');
+    var values = {
         ifac_enabled: useIfac,
-        ifac_network_name: useIfac ? networkName : '',
-        ifac_passphrase: useIfac ? passphrase : ''
+        ifac_network_name: useIfac && networkEl ? networkEl.value.trim() : '',
+        ifac_passphrase: useIfac && passEl ? passEl.value.trim() : ''
     };
+    var size = sizeEl ? parseInt(sizeEl.value, 10) : NaN;
+    if (useIfac && size >= 1 && size <= 64) values.ifac_size = size;
+    return values;
+}
+
+function _ifacApplyArgs(prefix, args) {
+    var v = _ifacReadValues(prefix);
+    args.ifac_enabled = v.ifac_enabled;
+    args.ifac_network_name = v.ifac_network_name;
+    args.ifac_passphrase = v.ifac_passphrase;
+    if (v.ifac_size !== undefined) args.ifac_size = v.ifac_size;
+    return args;
+}
+
+// IFAC on with neither field filled is always a mistake; block the submit.
+function _ifacGuardEmpty(prefix) {
+    var v = _ifacReadValues(prefix);
+    if (v.ifac_enabled && !v.ifac_network_name && !v.ifac_passphrase) {
+        showPreConditionToast('Enter an IFAC network name or passphrase');
+        return false;
+    }
+    return true;
 }
 
 function _applyConnectIfacValuesToArgs(args) {
-    var ifac = _readConnectIfacValues();
-    if (!ifac) return args;
-    args.ifac_enabled = ifac.ifac_enabled;
-    args.ifac_network_name = ifac.ifac_network_name;
-    args.ifac_passphrase = ifac.ifac_passphrase;
-    return args;
+    return _ifacApplyArgs('connect', args);
 }
 
 function _syncConnectAdvancedVisibility() {
@@ -1937,15 +1981,14 @@ function _syncConnectAdvancedVisibility() {
     if (bbRow) bbRow.style.display = dev ? '' : 'none';
 
     var ifacRow = document.getElementById('connect-ifac-row');
-    var ifacCheckbox = document.getElementById('connect-use-ifac');
-    var ifacFields = document.getElementById('connect-ifac-fields');
-    var showIfac = dev;
-    if (ifacRow) ifacRow.style.display = showIfac ? '' : 'none';
-    if (ifacFields) {
-        var enabled = showIfac && !!(ifacCheckbox && ifacCheckbox.checked);
-        ifacFields.style.display = enabled ? '' : 'none';
-    }
+    if (ifacRow) ifacRow.style.display = '';
+    _ifacSyncFields('connect');
 }
+
+window.addEventListener('ratspeak-developer-mode-changed', function() {
+    _ifacSyncFields('host');
+    _ifacSyncFields('backbone-host');
+});
 
 function openConnectModal(editContext) {
     _connectEditContext = _normaliseConnectEditContext(editContext);
@@ -1980,18 +2023,8 @@ function openConnectModal(editContext) {
     if (bbCheckbox) {
         bbCheckbox.checked = isBackboneEdit;
     }
-    var ifacCheckbox = document.getElementById('connect-use-ifac');
-    var ifacNetworkName = document.getElementById('connect-ifac-network-name');
-    var ifacPassphrase = document.getElementById('connect-ifac-passphrase');
-    var hasIfac = _ifaceHasIfac(iface);
-    if (ifacCheckbox) ifacCheckbox.checked = hasIfac;
-    if (ifacNetworkName) ifacNetworkName.value = iface ? _ifaceIfacNetworkName(iface) : '';
-    if (ifacPassphrase) ifacPassphrase.value = iface ? _ifaceIfacPassphrase(iface) : '';
+    _ifacPopulate('connect', iface);
     _syncConnectAdvancedVisibility();
-    if (ifacCheckbox && !ifacCheckbox.dataset.bound) {
-        ifacCheckbox.dataset.bound = '1';
-        ifacCheckbox.addEventListener('change', _syncConnectAdvancedVisibility);
-    }
     loadConnectionHistory();
     refreshConnectPublicServers();
     RS.ui.openExistingSheet('connect-modal', 'connect-modal-overlay');
@@ -2087,9 +2120,11 @@ function quickConnect(host, port, name, opts) {
     var ifacCheckbox = document.getElementById('connect-use-ifac');
     var ifacNetworkName = document.getElementById('connect-ifac-network-name');
     var ifacPassphrase = document.getElementById('connect-ifac-passphrase');
+    var ifacSize = document.getElementById('connect-ifac-size');
     if (ifacCheckbox) ifacCheckbox.checked = false;
     if (ifacNetworkName) ifacNetworkName.value = '';
     if (ifacPassphrase) ifacPassphrase.value = '';
+    if (ifacSize) ifacSize.value = '';
     _syncConnectAdvancedVisibility();
     document.getElementById('connect-host').value = host;
     document.getElementById('connect-port').value = port;
@@ -2146,12 +2181,7 @@ function submitConnection() {
         return;
     }
 
-    var ifacValues = _readConnectIfacValues();
-    if (ifacValues && ifacValues.ifac_enabled &&
-        !ifacValues.ifac_network_name && !ifacValues.ifac_passphrase) {
-        showPreConditionToast('Enter an IFAC network name or passphrase');
-        return;
-    }
+    if (!_ifacGuardEmpty('connect')) return;
 
     var submitBtn = document.getElementById('connect-submit-btn');
     if (submitBtn) {
@@ -2228,6 +2258,7 @@ function openHostModal(editContext) {
     document.getElementById('host-port').value = iface ? _ifaceString(iface, 'listen_port', '') : '';
     document.getElementById('host-listen-ip').value = iface ? _ifaceString(iface, 'listen_ip', '0.0.0.0') : '';
     document.getElementById('host-name').value = iface ? _ifaceString(iface, 'name', '') : '';
+    _ifacPopulate('host', iface);
     var submitBtn = document.getElementById('host-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = isEdit ? 'Save Changes' : 'Start Hosting';
@@ -2257,17 +2288,19 @@ function submitHostServer() {
     var listenIp = document.getElementById('host-listen-ip').value.trim() || '0.0.0.0';
     var name = document.getElementById('host-name').value.trim();
 
+    if (!_ifacGuardEmpty('host')) return;
+
     var submitBtn = document.getElementById('host-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = editContext ? 'Saving...' : 'Starting...';
         submitBtn.disabled = true;
     }
 
-    var hostArgs = {
+    var hostArgs = _ifacApplyArgs('host', {
         listen_port: port,
         listen_ip: listenIp,
         name: name || ('TCP Server :' + port),
-    };
+    });
     if (editContext) hostArgs.old_name = editContext.oldName;
     RS.invoke(editContext ? 'update_tcp_server' : 'add_tcp_server', {
         args: hostArgs
@@ -2296,6 +2329,7 @@ function openBackboneHostModal(editContext) {
     document.getElementById('backbone-host-port').value = iface ? _ifaceString(iface, 'listen_port', '') : '';
     document.getElementById('backbone-host-listen-ip').value = iface ? (_ifaceString(iface, 'listen_on', '') || _ifaceString(iface, 'listen_ip', '0.0.0.0')) : '';
     document.getElementById('backbone-host-name').value = iface ? _ifaceString(iface, 'name', '') : '';
+    _ifacPopulate('backbone-host', iface);
     var submitBtn = document.getElementById('backbone-host-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = isEdit ? 'Save Changes' : 'Start Hosting';
@@ -2325,17 +2359,19 @@ function submitBackboneHost() {
     var listenIp = document.getElementById('backbone-host-listen-ip').value.trim() || '0.0.0.0';
     var name = document.getElementById('backbone-host-name').value.trim();
 
+    if (!_ifacGuardEmpty('backbone-host')) return;
+
     var submitBtn = document.getElementById('backbone-host-submit-btn');
     if (submitBtn) {
         submitBtn.textContent = editContext ? 'Saving...' : 'Starting...';
         submitBtn.disabled = true;
     }
 
-    var args = {
+    var args = _ifacApplyArgs('backbone-host', {
         listen_port: port,
         listen_ip: listenIp,
         name: name || ('Backbone Server :' + port),
-    };
+    });
     if (editContext) {
         var iface = editContext.iface || {};
         args.old_name = editContext.oldName;

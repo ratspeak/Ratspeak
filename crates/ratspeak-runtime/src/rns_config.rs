@@ -969,10 +969,17 @@ fn tcp_client_block(name: &str, host: &str, port: u16, ifac: InterfaceIfacArgs<'
     block
 }
 
-fn tcp_server_block(name: &str, listen_port: u16, listen_ip: &str) -> String {
-    format!(
+fn tcp_server_block(
+    name: &str,
+    listen_port: u16,
+    listen_ip: &str,
+    ifac: InterfaceIfacArgs<'_>,
+) -> String {
+    let mut block = format!(
         "\n  [[{name}]]\n    type = TCPServerInterface\n    listen_ip = {listen_ip}\n    listen_port = {listen_port}\n    enabled = true\n"
-    )
+    );
+    append_ifac_fields(&mut block, ifac);
+    block
 }
 
 #[derive(Clone, Copy)]
@@ -1025,6 +1032,7 @@ fn backbone_server_block(
     listen_ip: &str,
     prefer_ipv6: bool,
     device: Option<&str>,
+    ifac: InterfaceIfacArgs<'_>,
 ) -> String {
     let mut block = format!(
         "\n  [[{name}]]\n    type = BackboneInterface\n    listen_on = {listen_ip}\n    listen_port = {listen_port}\n    enabled = true\n"
@@ -1035,6 +1043,7 @@ fn backbone_server_block(
     if let Some(d) = device.filter(|s| !s.is_empty()) {
         block.push_str(&format!("    device = {d}\n"));
     }
+    append_ifac_fields(&mut block, ifac);
     block
 }
 
@@ -1109,10 +1118,26 @@ pub fn add_tcp_client_with_ifac(
 }
 
 pub fn add_tcp_server(config_dir: &Path, name: &str, listen_port: u16, listen_ip: &str) -> bool {
-    if !safe_interface_name(name) || !safe_config_scalar(listen_ip) {
+    add_tcp_server_with_ifac(
+        config_dir,
+        name,
+        listen_port,
+        listen_ip,
+        InterfaceIfacArgs::default(),
+    )
+}
+
+pub fn add_tcp_server_with_ifac(
+    config_dir: &Path,
+    name: &str,
+    listen_port: u16,
+    listen_ip: &str,
+    ifac: InterfaceIfacArgs<'_>,
+) -> bool {
+    if !safe_interface_name(name) || !safe_config_scalar(listen_ip) || !safe_ifac_args(ifac) {
         return false;
     }
-    let block = tcp_server_block(name, listen_port, listen_ip);
+    let block = tcp_server_block(name, listen_port, listen_ip, ifac);
     upsert_interface_block(config_dir, &[name], &block)
 }
 
@@ -1132,13 +1157,37 @@ pub fn add_backbone_server(
     prefer_ipv6: bool,
     device: Option<&str>,
 ) -> bool {
-    if !safe_interface_name(name) || !safe_config_scalar(listen_ip) || !safe_optional_scalar(device)
+    add_backbone_server_with_ifac(
+        config_dir,
+        name,
+        listen_port,
+        listen_ip,
+        prefer_ipv6,
+        device,
+        InterfaceIfacArgs::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn add_backbone_server_with_ifac(
+    config_dir: &Path,
+    name: &str,
+    listen_port: u16,
+    listen_ip: &str,
+    prefer_ipv6: bool,
+    device: Option<&str>,
+    ifac: InterfaceIfacArgs<'_>,
+) -> bool {
+    if !safe_interface_name(name)
+        || !safe_config_scalar(listen_ip)
+        || !safe_optional_scalar(device)
+        || !safe_ifac_args(ifac)
     {
         return false;
     }
     // Synthesizer reads `listen_on` (interface_factory.rs); IPC arg is
     // `listen_ip` for parity with the TCP server command.
-    let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device);
+    let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device, ifac);
     upsert_interface_block(config_dir, &[name], &block)
 }
 
@@ -1196,13 +1245,32 @@ pub fn update_tcp_server(
     listen_port: u16,
     listen_ip: &str,
 ) -> bool {
+    update_tcp_server_with_ifac(
+        config_dir,
+        old_name,
+        name,
+        listen_port,
+        listen_ip,
+        InterfaceIfacArgs::default(),
+    )
+}
+
+pub fn update_tcp_server_with_ifac(
+    config_dir: &Path,
+    old_name: &str,
+    name: &str,
+    listen_port: u16,
+    listen_ip: &str,
+    ifac: InterfaceIfacArgs<'_>,
+) -> bool {
     if !safe_interface_name(old_name)
         || !safe_interface_name(name)
         || !safe_config_scalar(listen_ip)
+        || !safe_ifac_args(ifac)
     {
         return false;
     }
-    let block = tcp_server_block(name, listen_port, listen_ip);
+    let block = tcp_server_block(name, listen_port, listen_ip, ifac);
     replace_interface_block(config_dir, old_name, name, &block)
 }
 
@@ -1227,14 +1295,38 @@ pub fn update_backbone_server(
     prefer_ipv6: bool,
     device: Option<&str>,
 ) -> bool {
+    update_backbone_server_with_ifac(
+        config_dir,
+        old_name,
+        name,
+        listen_port,
+        listen_ip,
+        prefer_ipv6,
+        device,
+        InterfaceIfacArgs::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_backbone_server_with_ifac(
+    config_dir: &Path,
+    old_name: &str,
+    name: &str,
+    listen_port: u16,
+    listen_ip: &str,
+    prefer_ipv6: bool,
+    device: Option<&str>,
+    ifac: InterfaceIfacArgs<'_>,
+) -> bool {
     if !safe_interface_name(old_name)
         || !safe_interface_name(name)
         || !safe_config_scalar(listen_ip)
         || !safe_optional_scalar(device)
+        || !safe_ifac_args(ifac)
     {
         return false;
     }
-    let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device);
+    let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device, ifac);
     replace_interface_block(config_dir, old_name, name, &block)
 }
 

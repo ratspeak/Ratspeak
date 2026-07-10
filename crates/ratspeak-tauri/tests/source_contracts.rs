@@ -1172,53 +1172,101 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
 }
 
 #[test]
-fn tcp_connect_sheet_gates_backbone_and_ifac_behind_developer_mode() {
+fn ifac_is_available_ungated_on_client_and_server_sheets() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     for expected in [
+        // Backbone stays a developer-mode experiment; IFAC does not.
         "id=\"connect-backbone-row\" style=\"display:none;\"",
-        "id=\"connect-ifac-row\" style=\"display:none;\"",
         "id=\"connect-use-ifac\"",
         "id=\"connect-ifac-network-name\"",
         "id=\"connect-ifac-passphrase\"",
+        "id=\"connect-ifac-size\"",
+        "id=\"host-use-ifac\"",
+        "id=\"host-ifac-network-name\"",
+        "id=\"host-ifac-passphrase\"",
+        "id=\"host-ifac-size\"",
+        "id=\"backbone-host-use-ifac\"",
+        "id=\"backbone-host-ifac-network-name\"",
+        "id=\"backbone-host-ifac-passphrase\"",
+        "id=\"backbone-host-ifac-size\"",
     ] {
-        assert!(
-            index.contains(expected),
-            "missing IFAC connect UI token {expected}"
-        );
+        assert!(index.contains(expected), "missing IFAC UI token {expected}");
     }
-    assert!(!index.contains("ifac_size"));
 
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains("function _syncConnectAdvancedVisibility()"));
     assert!(modals_js.contains("if (bbRow) bbRow.style.display = dev ? '' : 'none';"));
-    assert!(modals_js.contains("if (ifacRow) ifacRow.style.display = showIfac ? '' : 'none';"));
-    assert!(modals_js.contains("if (!_developerModeEnabled()) return null;"));
-    assert!(modals_js.contains("args.ifac_enabled = ifac.ifac_enabled;"));
-    assert!(modals_js.contains("args.ifac_network_name = ifac.ifac_network_name;"));
-    assert!(modals_js.contains("args.ifac_passphrase = ifac.ifac_passphrase;"));
+    // IFAC row is always visible; only the size override is dev-gated.
+    assert!(modals_js.contains("if (ifacRow) ifacRow.style.display = '';"));
+    assert!(modals_js.contains(
+        "if (sizeField) sizeField.style.display = _developerModeEnabled() ? '' : 'none';"
+    ));
+    assert!(modals_js.contains("function _ifacSyncFields(prefix)"));
+    assert!(modals_js.contains("args.ifac_enabled = v.ifac_enabled;"));
+    assert!(modals_js.contains("args.ifac_network_name = v.ifac_network_name;"));
+    assert!(modals_js.contains("args.ifac_passphrase = v.ifac_passphrase;"));
     assert!(modals_js.contains("Enter an IFAC network name or passphrase"));
-    assert!(modals_js.contains("window.addEventListener('ratspeak-developer-mode-changed', _syncConnectAdvancedVisibility);"));
+    assert!(modals_js.contains("_ifacGuardEmpty('connect')"));
+    assert!(modals_js.contains("_ifacGuardEmpty('host')"));
+    assert!(modals_js.contains("_ifacGuardEmpty('backbone-host')"));
+    assert!(modals_js.contains("_ifacPopulate('connect', iface)"));
+    assert!(modals_js.contains("_ifacPopulate('host', iface)"));
+    assert!(modals_js.contains("_ifacPopulate('backbone-host', iface)"));
+    assert!(modals_js.contains("_ifacApplyArgs('host', {"));
+    assert!(modals_js.contains("_ifacApplyArgs('backbone-host', {"));
+    assert!(modals_js.contains(
+        "window.addEventListener('ratspeak-developer-mode-changed', _syncConnectAdvancedVisibility);"
+    ));
     assert!(modals_js.contains("if (ifacCheckbox) ifacCheckbox.checked = false;"));
     assert!(modals_js.contains("if (ifacNetworkName) ifacNetworkName.value = '';"));
     assert!(modals_js.contains("if (ifacPassphrase) ifacPassphrase.value = '';"));
+    assert!(modals_js.contains("if (ifacSize) ifacSize.value = '';"));
 
     let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("interfaces commands");
     assert!(interfaces_rs.contains("struct InterfaceIfacCommandFields"));
     assert!(interfaces_rs.contains("ifac_enabled: Option<bool>"));
+    assert!(interfaces_rs.contains("ifac_size: Option<usize>"));
     assert!(interfaces_rs.contains("ifac_settings_from_args(&args.ifac, None)"));
     assert!(interfaces_rs.contains("ifac_settings_from_args(&args.ifac, Some(&old_ifac))"));
+    assert!(interfaces_rs.contains("ifac_settings_from_args(&args.ifac, Some(&existing_ifac))"));
     assert!(interfaces_rs.contains("spawn_tcp_client_runtime_with_ifac"));
     assert!(interfaces_rs.contains("spawn_backbone_client_runtime_with_ifac"));
+    assert!(interfaces_rs.contains("spawn_tcp_server_runtime_with_ifac"));
+    assert!(interfaces_rs.contains("spawn_backbone_server_runtime_with_ifac"));
 
     let rns_config =
         read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
     assert!(rns_config.contains("pub struct InterfaceIfacArgs"));
     assert!(rns_config.contains("network_name = {network_name}"));
     assert!(rns_config.contains("passphrase = {passphrase}"));
+    assert!(rns_config.contains("ifac_size = {ifac_size}"));
     assert!(rns_config.contains("add_tcp_client_with_ifac"));
     assert!(rns_config.contains("update_tcp_client_with_ifac"));
+    assert!(rns_config.contains("add_tcp_server_with_ifac"));
+    assert!(rns_config.contains("update_tcp_server_with_ifac"));
+    assert!(rns_config.contains("add_backbone_server_with_ifac"));
+    assert!(rns_config.contains("update_backbone_server_with_ifac"));
+}
+
+#[test]
+fn developer_mode_persists_in_sqlite_not_only_localstorage() {
+    let root = repo_root();
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    assert!(settings_js.contains("RS.invoke('set_developer_mode'"));
+    assert!(settings_js.contains("function adoptDeveloperModeFromBackend(enabled)"));
+    assert!(settings_js.contains("adoptDeveloperModeFromBackend(data.developer_mode)"));
+
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    assert!(interfaces_rs.contains("pub async fn set_developer_mode"));
+    assert!(interfaces_rs.contains("\"developer_mode_enabled\""));
+    assert!(interfaces_rs.contains("\"developer_mode\": developer_mode"));
+
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("src-tauri lib");
+    assert!(tauri_lib.contains("ratspeak_tauri::commands::interfaces::set_developer_mode"));
 }
 
 #[test]
@@ -2228,7 +2276,8 @@ fn settings_system_panel_has_developer_mode_and_reset_group() {
     assert!(!settings_js.contains("title: 'Enable Developer Mode?'"));
     assert!(!settings_js.contains("confirmText: 'Enable'"));
     assert!(!settings_js.contains("_settingsDeveloperModeEnabled = !!ok;"));
-    assert!(!settings_js.contains("RS.invoke('set_developer_mode'"));
+    // Durable store is SQLite (see developer_mode_persists_in_sqlite_not_only_localstorage).
+    assert!(settings_js.contains("RS.invoke('set_developer_mode'"));
 
     assert!(views_css.contains(".settings-panel-section-title"));
     assert!(views_css.contains(".settings-radio-group"));
