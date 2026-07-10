@@ -1,7 +1,10 @@
 use ratspeak_core::{NativeNotification, NativeNotifier};
+#[cfg(not(target_os = "ios"))]
 use tauri_plugin_notification::NotificationExt;
 
 pub struct TauriNotifier {
+    // iOS: unused until the notification stub in `notify` is lifted.
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     handle: tauri::AppHandle,
 }
 
