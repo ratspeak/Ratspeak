@@ -388,7 +388,7 @@
     padding: 0;
     border: 0;
     border-radius: 50%;
-    color: #fff;
+    color: var(--on-accent);
     background: conic-gradient(var(--accent) var(--send-progress, 0%), rgba(255,255,255,0.26) 0);
     box-shadow: 0 8px 24px rgba(0,0,0,0.34);
     transform: translate(-50%, -50%);
@@ -432,7 +432,7 @@
     margin-top: 0;
     padding: 2px 6px;
     border-radius: var(--radius-pill);
-    color: #fff;
+    color: var(--on-overlay);
     background: rgba(0, 0, 0, 0.42);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
@@ -480,14 +480,14 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--space-3);
-    padding: calc(12px + var(--sat, 0px)) calc(14px + var(--sar, 0px)) 10px calc(14px + var(--sal, 0px));
+    padding: calc(12px + var(--sat)) calc(14px + var(--sar)) 10px calc(14px + var(--sal));
 }
 .image-viewer-btn {
     width: 42px;
     height: 42px;
     border: 1px solid rgba(255, 255, 255, 0.18);
     border-radius: var(--radius-full);
-    color: #fff;
+    color: var(--on-overlay);
     background: rgba(18, 18, 20, 0.56);
     display: inline-flex;
     align-items: center;
@@ -517,7 +517,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 10px calc(14px + var(--sar, 0px)) calc(24px + var(--sab, 0px)) calc(14px + var(--sal, 0px));
+    padding: 10px calc(14px + var(--sar)) calc(24px + var(--sab)) calc(14px + var(--sal));
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
     /* Non-zoomed vertical drags dismiss the viewer; zoomed images can pan. */
@@ -1002,9 +1002,9 @@ body.image-viewer-open {
     }
     .lxst-call-global {
         position: fixed;
-        left: calc(10px + var(--sal, 0px));
-        right: calc(10px + var(--sar, 0px));
-        bottom: calc(64px + var(--sab, 0px));
+        left: calc(10px + var(--sal));
+        right: calc(10px + var(--sar));
+        bottom: calc(64px + var(--sab));
         z-index: calc(var(--z-bottom-bar) + 1);
         display: flex;
         border: 1px solid var(--border-surface);
@@ -1473,7 +1473,7 @@ body.image-viewer-open {
     transition: background var(--transition-fast);
     flex-shrink: 0;
 }
-.emoji-picker-category-btn:hover { background: rgba(255,255,255,0.06); }
+.emoji-picker-category-btn:hover { background: var(--overlay-white-faint); }
 .emoji-picker-category-btn.active { border-bottom-color: var(--accent); }
 .emoji-picker-grid {
     display: grid;
@@ -1495,7 +1495,7 @@ body.image-viewer-open {
     line-height: 1.2;
     transition: background 0.12s;
 }
-.emoji-picker-item:hover { background: rgba(255,255,255,0.1); }
+.emoji-picker-item:hover { background: var(--overlay-white-hover); }
 .emoji-picker-empty {
     padding: var(--space-8);
     text-align: center;
@@ -1564,14 +1564,14 @@ body.image-viewer-open {
     transition: background var(--transition-fast);
     line-height: 1;
 }
-.quick-react-emoji:hover { background: rgba(255,255,255,0.1); }
+.quick-react-emoji:hover { background: var(--overlay-white-hover); }
 .quick-react-plus {
     font-size: var(--text-xl); cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
     color: var(--text-muted); font-weight: 700;
     display: flex; align-items: center; justify-content: center;
     transition: background var(--transition-fast), color var(--transition-fast);
 }
-.quick-react-plus:hover { background: rgba(255,255,255,0.1); color: var(--text-primary); }
+.quick-react-plus:hover { background: var(--overlay-white-hover); color: var(--text-primary); }
 .msg-context-actions { display: flex; gap: 6px; }
 .msg-ctx-btn {
     flex: 1; padding: 8px 10px;
@@ -1588,7 +1588,7 @@ body.image-viewer-open {
     gap: 6px;
     min-height: 36px;
 }
-.msg-ctx-btn:hover { background: rgba(255,255,255,0.1); }
+.msg-ctx-btn:hover { background: var(--overlay-white-hover); }
 .msg-ctx-btn svg {
     width: 16px;
     height: 16px;
@@ -1604,7 +1604,7 @@ body.image-viewer-open {
     display: flex; align-items: center; gap: 8px;
     padding: var(--space-4) var(--space-6);
     border-left: 3px solid var(--accent);
-    background: rgba(255,255,255,0.04);
+    background: var(--overlay-white-subtle);
     border-radius: var(--radius-sm);
     margin: 0 var(--space-4) var(--space-2);
     cursor: default;
@@ -1621,7 +1621,7 @@ body.image-viewer-open {
 
 .msg-reply-quote {
     display: flex; gap: 8px; padding: 4px 8px; margin-bottom: 4px;
-    border-radius: var(--radius-sm); background: rgba(255,255,255,0.04);
+    border-radius: var(--radius-sm); background: var(--overlay-white-subtle);
     cursor: pointer; overflow: hidden;
 }
 .reply-quote-bar {

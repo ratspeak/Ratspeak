@@ -52,6 +52,13 @@
 
     --surface-sunken:      rgba(236, 230, 222, 0.55);
     --surface-overlay:     rgba(0, 0, 0, 0.35);
+    --on-overlay:          #FFFFFF;
+
+    /* Theme-static white-alpha overlays for dark glass components
+       (context menus, pickers, game chrome). */
+    --overlay-white-subtle: rgba(255, 255, 255, 0.04);
+    --overlay-white-faint:  rgba(255, 255, 255, 0.06);
+    --overlay-white-hover:  rgba(255, 255, 255, 0.1);
 
     --surface-elevation-0: #F3EFEA;
     --surface-elevation-1: #FAF7F3;

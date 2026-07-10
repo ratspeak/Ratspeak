@@ -76,7 +76,7 @@
 }
 
 .skeleton {
-    background: linear-gradient(90deg, var(--bg-tertiary) 25%, rgba(255,255,255,0.04) 50%, var(--bg-tertiary) 75%);
+    background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--overlay-white-subtle) 50%, var(--bg-tertiary) 75%);
     background-size: 200% 100%;
     animation: shimmer 1.5s ease-in-out infinite;
     border-radius: var(--radius-sm);
@@ -314,7 +314,7 @@
     position: fixed;
     z-index: var(--z-bottom-sheet);
     left: 50%;
-    bottom: calc(62px + var(--sab, 0px) + 20px);
+    bottom: calc(62px + var(--sab) + 20px);
     transform: translateX(-50%) translateY(8px) scale(0.96);
     transform-origin: center bottom;
     max-width: calc(100vw - 32px);

@@ -84,8 +84,8 @@
         flex: 1;
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
-        padding-bottom: calc(62px + var(--sab, env(safe-area-inset-bottom, 0px)) + var(--space-5));
-        scroll-padding-bottom: calc(62px + var(--sab, env(safe-area-inset-bottom, 0px)) + var(--space-5));
+        padding-bottom: calc(62px + var(--sab) + var(--space-5));
+        scroll-padding-bottom: calc(62px + var(--sab) + var(--space-5));
         gap: var(--space-2);
     }
     .conn-section:not(.collapsed) .conn-section-body {
@@ -119,7 +119,7 @@
         width: 240px;
         min-width: 240px;
         z-index: var(--z-sidebar);
-        padding-top: calc(12px + var(--sat, env(safe-area-inset-top, 0px)));
+        padding-top: calc(12px + var(--sat));
         background: var(--glass-dark-bg);
         backdrop-filter: blur(20px) saturate(1.2);
         -webkit-backdrop-filter: blur(20px) saturate(1.2);
@@ -154,7 +154,7 @@
     .header {
         padding-left: var(--space-7);
         min-height: 55px;
-        padding-top: calc(10px + var(--sat, env(safe-area-inset-top, 0px)));
+        padding-top: calc(10px + var(--sat));
     }
     body.checking-setup .header,
     body.setup-active   .header { display: none; }
@@ -808,7 +808,7 @@
         padding-bottom: 0;
     }
     body.view-chat-detail .lxmf-chat-header {
-        padding-top: calc(6px + var(--sat, 0px));
+        padding-top: calc(6px + var(--sat));
     }
     .sidebar .nav-item[data-view="dashboard"],
     .sidebar .nav-item[data-view="message"],
@@ -911,7 +911,7 @@
         align-items: flex-end;
         gap: var(--space-3);
         padding: var(--space-4) var(--space-5);
-        padding-bottom: calc(var(--space-4) + var(--sab, 0px));
+        padding-bottom: calc(var(--space-4) + var(--sab));
         border-top: 1px solid var(--border-row);
         background: var(--surface-panel);
     }
@@ -1249,7 +1249,7 @@
     .peers-toolbar .conn-search-input { flex: 1 1 auto; width: auto; }
 
     #toast-container {
-        top: calc(8px + var(--sat, 0px));
+        top: calc(8px + var(--sat));
         right: 8px;
         left: 8px;
         max-width: none;
@@ -1323,7 +1323,7 @@
     }
 
     .app-layout {
-        height: calc(var(--app-height, 100vh) - 55px - var(--sat, env(safe-area-inset-top, 0px)));
+        height: calc(var(--app-height, 100vh) - 55px - var(--sat));
         padding-bottom: 0;
     }
 
@@ -1411,7 +1411,7 @@
         overflow-y: auto;
         transform: translateY(100%);
         transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        padding-bottom: var(--sab, env(safe-area-inset-bottom, 0px));
+        padding-bottom: var(--sab);
         display: flex;
         flex-direction: column;
         visibility: hidden;
@@ -1593,16 +1593,16 @@
 .conn-detail-sheet--progressive .conn-detail-sheet-content {
     flex: 0 0 auto;
     gap: var(--space-5);
-    padding-bottom: calc(var(--space-6) + var(--sab, env(safe-area-inset-bottom, 0px)));
+    padding-bottom: calc(var(--space-6) + var(--sab));
 }
 .conn-detail-sheet--progressive.conn-detail-sheet--compact .conn-detail-sheet-content {
     flex: 0 0 auto;
     gap: var(--space-4);
-    padding-bottom: calc(var(--space-5) + var(--sab, env(safe-area-inset-bottom, 0px)));
+    padding-bottom: calc(var(--space-5) + var(--sab));
 }
 .conn-detail-sheet--progressive.conn-detail-sheet--with-add .conn-detail-sheet-content {
     gap: var(--space-5);
-    padding-bottom: calc(var(--space-6) + var(--sab, env(safe-area-inset-bottom, 0px)));
+    padding-bottom: calc(var(--space-6) + var(--sab));
 }
 .conn-detail-sheet-identity {
     display: grid;
@@ -2041,7 +2041,7 @@
         -webkit-backdrop-filter: none;
         border-top: none;
         padding: var(--space-4) var(--space-6);
-        padding-bottom: calc(8px + var(--sab, 0px));
+        padding-bottom: calc(8px + var(--sab));
         z-index: 5;
     }
 
@@ -2110,7 +2110,7 @@
         bottom: 0;
         background: var(--surface-page);
         padding: var(--space-6) 0;
-        padding-bottom: calc(12px + var(--sab, 0px));
+        padding-bottom: calc(12px + var(--sab));
         z-index: 3;
     }
 
@@ -2149,7 +2149,7 @@
         bottom: 0;
         background: var(--surface-elevation-1);
         padding: var(--space-6);
-        padding-bottom: calc(12px + var(--sab, 0px));
+        padding-bottom: calc(12px + var(--sab));
         z-index: 3;
     }
 
@@ -2607,7 +2607,7 @@
 
     .fab-dial-actions {
         position: fixed;
-        bottom: calc(90px + var(--sab, 0px) + 68px);
+        bottom: calc(90px + var(--sab) + 68px);
         right: 20px;
         z-index: var(--z-fab);
         flex-direction: column;
@@ -2747,7 +2747,7 @@
         background: var(--surface-row-active);
     }
     .games-sheet-footer {
-        padding: var(--space-4) var(--space-5) calc(var(--space-5) + var(--sab, env(safe-area-inset-bottom, 0px)));
+        padding: var(--space-4) var(--space-5) calc(var(--space-5) + var(--sab));
     }
     .games-sheet-send-btn,
     .games-sheet-cancel-btn {
@@ -2762,10 +2762,10 @@
         justify-content: center;
         height: 100%;
         box-sizing: border-box;
-        padding: calc(20px + var(--sat, 0px)) 16px calc(16px + var(--sab, 0px));
+        padding: calc(20px + var(--sat)) 16px calc(16px + var(--sab));
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
-        scroll-padding-bottom: calc(16px + var(--sab, 0px));
+        scroll-padding-bottom: calc(16px + var(--sab));
     }
     .setup-card {
         padding: 32px 24px;
@@ -2791,8 +2791,8 @@
     body.setup-backup-active .setup-container {
         align-items: stretch;
         justify-content: flex-start;
-        padding-top: calc(12px + var(--sat, 0px));
-        padding-bottom: calc(18px + var(--sab, 0px));
+        padding-top: calc(12px + var(--sat));
+        padding-bottom: calc(18px + var(--sab));
     }
     body.setup-backup-active .setup-card {
         padding: 24px 22px;
@@ -2847,7 +2847,7 @@
 
     .header {
         min-height: 40px;
-        padding-top: calc(4px + var(--sat, env(safe-area-inset-top, 0px)));
+        padding-top: calc(4px + var(--sat));
         padding-bottom: var(--space-2);
     }
     .header h1 {
@@ -2855,7 +2855,7 @@
     }
 
     .app-layout {
-        height: calc(var(--app-height, 100vh) - 40px - var(--sat, env(safe-area-inset-top, 0px)));
+        height: calc(var(--app-height, 100vh) - 40px - var(--sat));
     }
 
     .view-fab {
@@ -3465,10 +3465,10 @@
 @media (max-width: 768px) {
     .hw-unlock-overlay {
         padding: var(--space-8);
-        padding-top: calc(var(--space-8) + var(--sat, env(safe-area-inset-top, 0px)));
-        padding-bottom: calc(var(--space-8) + var(--sab, env(safe-area-inset-bottom, 0px)));
-        padding-left: calc(var(--space-8) + var(--sal, env(safe-area-inset-left, 0px)));
-        padding-right: calc(var(--space-8) + var(--sar, env(safe-area-inset-right, 0px)));
+        padding-top: calc(var(--space-8) + var(--sat));
+        padding-bottom: calc(var(--space-8) + var(--sab));
+        padding-left: calc(var(--space-8) + var(--sal));
+        padding-right: calc(var(--space-8) + var(--sar));
     }
     .hw-unlock-card {
         max-width: 440px;
@@ -3485,8 +3485,8 @@
 @media (max-width: 360px) {
     .hw-unlock-overlay {
         padding: var(--space-6);
-        padding-top: calc(var(--space-6) + var(--sat, env(safe-area-inset-top, 0px)));
-        padding-bottom: calc(var(--space-6) + var(--sab, env(safe-area-inset-bottom, 0px)));
+        padding-top: calc(var(--space-6) + var(--sat));
+        padding-bottom: calc(var(--space-6) + var(--sab));
     }
     .hw-unlock-card {
         padding: var(--space-6) var(--space-5);

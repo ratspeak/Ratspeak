@@ -3,7 +3,7 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--space-5) var(--space-12);
-    padding-top: calc(var(--space-5) + var(--sat, env(safe-area-inset-top, 0px)));
+    padding-top: calc(var(--space-5) + var(--sat));
     background: var(--surface-shell);
     border-bottom: 1px solid var(--border-surface-soft);
     min-height: 56px;
@@ -210,9 +210,9 @@
    Desktop overrides to plain 100vh below. */
 .app-layout {
     display: flex;
-    height: calc(100vh - 61px - var(--sat, env(safe-area-inset-top, 0px)));
+    height: calc(100vh - 61px - var(--sat));
     overflow: hidden;
-    padding-bottom: var(--sab, env(safe-area-inset-bottom, 0px));
+    padding-bottom: var(--sab);
 }
 @media (min-width: 769px) {
     .app-layout {

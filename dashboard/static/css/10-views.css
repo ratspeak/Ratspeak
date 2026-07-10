@@ -2821,7 +2821,7 @@ body.setup-active .main-content {
     font-size: var(--type-badge-size);
     font-weight: var(--type-badge-weight);
     color: var(--text-secondary);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--overlay-white-faint);
     padding: var(--space-1) var(--space-4);
     border-radius: var(--radius-lg-plus);
     text-transform: uppercase;
@@ -3595,7 +3595,7 @@ body.setup-active .main-content {
     height: auto;
     margin: 0;
     width: min(416px, calc(100vw - 28px));
-    max-height: min(calc(var(--app-height, 100vh) - 32px - var(--sat, 0px) - var(--sab, 0px)), 760px);
+    max-height: min(calc(var(--app-height, 100vh) - 32px - var(--sat) - var(--sab)), 760px);
     display: flex;
     flex-direction: column;
     background:
@@ -4367,10 +4367,10 @@ body.setup-active .main-content {
     justify-content: center;
     overflow-y: auto;
     padding: var(--space-16);
-    padding-top: calc(var(--space-16) + var(--sat, env(safe-area-inset-top, 0px)));
-    padding-bottom: calc(var(--space-16) + var(--sab, env(safe-area-inset-bottom, 0px)));
-    padding-left: calc(var(--space-16) + var(--sal, env(safe-area-inset-left, 0px)));
-    padding-right: calc(var(--space-16) + var(--sar, env(safe-area-inset-right, 0px)));
+    padding-top: calc(var(--space-16) + var(--sat));
+    padding-bottom: calc(var(--space-16) + var(--sab));
+    padding-left: calc(var(--space-16) + var(--sal));
+    padding-right: calc(var(--space-16) + var(--sar));
     background: rgba(0, 0, 0, 0.55);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
