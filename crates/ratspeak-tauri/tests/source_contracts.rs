@@ -2321,9 +2321,7 @@ fn network_interface_sections_scroll_without_compressing_rows() {
     ));
 
     assert!(responsive_css.contains(".network-main {\n        display: flex;"));
-    assert!(responsive_css.contains(
-        "padding-bottom: calc(62px + var(--sab, env(safe-area-inset-bottom, 0px)) + var(--space-5));"
-    ));
+    assert!(responsive_css.contains("padding-bottom: calc(62px + var(--sab) + var(--space-5));"));
     assert!(responsive_css.contains(
         ".conn-section:not(.collapsed) .conn-section-body {\n        max-height: none;\n        overflow: visible;"
     ));
@@ -3046,7 +3044,7 @@ fn first_run_announce_hint_waits_for_online_mobile_interface() {
     assert!(system.contains("remove app-private Reticulum config"));
     assert!(runtime.contains("strip_legacy_default_auto_interface(&source_content)"));
     assert!(rns_config.contains("pub fn strip_legacy_default_auto_interface"));
-    assert!(animations.contains("bottom: calc(62px + var(--sab, 0px) + 20px);"));
+    assert!(animations.contains("bottom: calc(62px + var(--sab) + 20px);"));
     assert!(animations.contains("background: var(--surface-sheet);"));
     assert!(animations.contains(".first-run-hint-icon"));
     assert!(animations.contains("background: var(--accent-a12);"));
@@ -3719,8 +3717,14 @@ fn peers_are_filtered_to_ratspeak_actionable_services() {
     assert!(peers.contains("telephony_hash"));
     assert!(peers.contains("supports_lxst_call"));
 
+    let core_types =
+        read_source(root.join("crates/ratspeak-core/src/types.rs")).expect("core types");
+    assert!(core_types.contains("pub const LXMF_DELIVERY_APP_NAME: &str = \"lxmf.delivery\";"));
+
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db");
-    assert!(db.contains("pub const PEER_SERVICE_LXMF_DELIVERY: &str = \"lxmf.delivery\";"));
+    assert!(db.contains(
+        "pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;"
+    ));
     assert!(db.contains("pub const PEER_SERVICE_LXST_TELEPHONY: &str = \"lxst.telephony\";"));
     assert!(db.contains("fn peer_service_filter_sql(column: &str) -> String"));
 
@@ -3728,7 +3732,7 @@ fn peers_are_filtered_to_ratspeak_actionable_services() {
         .expect("handlers");
     assert!(handlers.contains("pub async fn spawn_lxst_telephony_handler"));
     assert!(handlers.contains("const LXST_TELEPHONY_ASPECT: &str = \"lxst.telephony\";"));
-    assert!(handlers.contains("Destination::hash_from_name_and_identity(\"lxmf.delivery\""));
+    assert!(handlers.contains("Destination::hash_from_name_and_identity(LXMF_DELIVERY_APP_NAME"));
     assert!(handlers.contains("db::PEER_SERVICE_LXST_TELEPHONY"));
 
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");

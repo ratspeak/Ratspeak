@@ -13,6 +13,7 @@ use lxst_telephony::{
     ActiveCallSnapshot, TelephonyControl, TelephonyRnsEndpoint, TelephonyRuntimeCore,
     TelephonyRuntimeSnapshot, TelephonyService, TelephonyServiceEvent,
 };
+use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_DELIVERY_DESTINATION_NAME, hex_to_array16};
 use rns_identity::destination::Destination;
 use rns_identity::identity::Identity;
 use rns_transport::blackhole::BlackholeReason;
@@ -59,7 +60,6 @@ const VOICE_OUTPUT_GAIN: f32 = 1.85;
 const VOICE_OUTPUT_LIMIT: f32 = 0.98;
 const VOICE_OUTPUT_LIMIT_CURVE: f32 = 0.35;
 const VOICE_INITIAL_PROFILE: Profile = Profile::QualityHigh;
-const LXMF_DELIVERY_DESTINATION_NAME: &str = "lxmf.delivery";
 const VOICE_CONTACTS_ONLY_NOTICE: &str = "I'm only accepting calls from contacts.";
 const VOICE_REJECTED_CALL_BLACKHOLE_THRESHOLD: u32 = 10;
 const VOICE_REJECTED_CALL_ATTEMPT_WINDOW: Duration = Duration::from_secs(6 * 60 * 60);
@@ -676,16 +676,6 @@ fn transport_sender(
         .read()
         .ok()
         .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
-}
-
-fn hex_to_array16(value: &str) -> Option<[u8; 16]> {
-    let bytes = hex::decode(value).ok()?;
-    if bytes.len() != 16 {
-        return None;
-    }
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&bytes);
-    Some(out)
 }
 
 fn voice_control_tx(state: &AppState) -> Option<mpsc::Sender<TelephonyControl>> {

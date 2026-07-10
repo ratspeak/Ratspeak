@@ -21,9 +21,10 @@ use crate::helpers::{
 };
 use crate::state::AppState;
 
+use ratspeak_core::LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME;
+
 const IDENTITY_BACKUP_FORMAT: &str = "ratspeak.identity.v2";
 const LEGACY_IDENTITY_BACKUP_FORMAT: &str = "ratspeak.identity.v1";
-const LXMF_APP_NAME: &str = "lxmf.delivery";
 const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 #[derive(Debug, Deserialize, Serialize)]

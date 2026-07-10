@@ -36,6 +36,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use ratspeak_core::{LXMF_DELIVERY_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 use rns_identity::destination::Destination;
 use serde_json::{Value, json};
 
@@ -987,7 +988,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     .send(
                         rns_transport::messages::TransportMessage::RegisterDestination {
                             hash: dest_hash,
-                            app_name: "lxmf.delivery".to_string(),
+                            app_name: LXMF_DELIVERY_APP_NAME.to_string(),
                             delivery_tx: Some(delivery_tx.clone()),
                         },
                     )
@@ -1075,7 +1076,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .send(
                             rns_transport::messages::TransportMessage::RegisterDestination {
                                 hash: prop_dest_hash,
-                                app_name: "lxmf.propagation".to_string(),
+                                app_name: LXMF_PROPAGATION_APP_NAME.to_string(),
                                 delivery_tx: Some(prop_tx),
                             },
                         )
@@ -1153,7 +1154,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         rns_mgr.handle.transport_tx.clone(),
                         prop_rx,
                         &identity,
-                        "lxmf.propagation",
+                        LXMF_PROPAGATION_APP_NAME,
                         Some(signing_key),
                     );
 
@@ -1217,7 +1218,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             let client_dest_hash = remote_identity_hash
                                 .map(|identity_hash| {
                                     rns_identity::destination::Destination::hash_from_name_and_identity(
-                                        "lxmf.delivery",
+                                        LXMF_DELIVERY_APP_NAME,
                                         Some(&identity_hash),
                                     )
                                 })
@@ -1364,7 +1365,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             rns_mgr.handle.transport_tx.clone(),
                             link_rx,
                             &identity,
-                            "lxmf.delivery",
+                            LXMF_DELIVERY_APP_NAME,
                             signing_key,
                         );
 

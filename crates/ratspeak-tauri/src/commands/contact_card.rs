@@ -15,9 +15,10 @@ use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
 use crate::state::AppState;
 
+use ratspeak_core::LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME;
+
 const CONTACT_CARD_PREFIX: &str = "RSCP1:";
 const CONTACT_CARD_FORMAT: &str = "ratspeak.contact.v1";
-const LXMF_APP_NAME: &str = "lxmf.delivery";
 const CONTACT_CARD_NAME_BYTES: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

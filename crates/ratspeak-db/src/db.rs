@@ -10,7 +10,7 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 
 const SCHEMA_VERSION: i64 = 33;
 
-pub const PEER_SERVICE_LXMF_DELIVERY: &str = "lxmf.delivery";
+pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
 pub const PEER_SERVICE_RATSPEAK_CLIENT: &str = "ratspeak.client";
 pub const PEER_SERVICE_RATSPEAK_GAMES: &str = "ratspeak.games";

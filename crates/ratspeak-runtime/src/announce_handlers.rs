@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::db;
 use crate::state::AppState;
+use ratspeak_core::{LXMF_DELIVERY_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 
 const HANDLER_CHANNEL_CAP: usize = 64;
 const REGISTER_ATTEMPTS: u32 = 3;
@@ -28,7 +29,14 @@ pub async fn spawn_lxmf_delivery_handler(
     shutdown: ShutdownSignal,
 ) {
     let (htx, mut hrx) = mpsc::channel::<AnnounceHandlerEvent>(HANDLER_CHANNEL_CAP);
-    if !register_with_retry(&transport_tx, Some("lxmf.delivery".to_string()), true, htx).await {
+    if !register_with_retry(
+        &transport_tx,
+        Some(LXMF_DELIVERY_APP_NAME.to_string()),
+        true,
+        htx,
+    )
+    .await
+    {
         return;
     }
 
@@ -57,7 +65,7 @@ pub async fn spawn_lxmf_propagation_handler(
     let (htx, mut hrx) = mpsc::channel::<AnnounceHandlerEvent>(HANDLER_CHANNEL_CAP);
     if !register_with_retry(
         &transport_tx,
-        Some("lxmf.propagation".to_string()),
+        Some(LXMF_PROPAGATION_APP_NAME.to_string()),
         true,
         htx,
     )
@@ -195,7 +203,7 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
     {
         let changed = mgr.update_lxmf_announce_app_data(
             event.destination_hash,
-            rns_identity::name_hash::name_hash("lxmf.delivery"),
+            rns_identity::name_hash::name_hash(LXMF_DELIVERY_APP_NAME),
             Some(bytes),
         );
         if changed {
@@ -284,7 +292,8 @@ async fn process_lxst_telephony_announce(state: &Arc<AppState>, event: AnnounceH
         return;
     };
 
-    let lxmf_dest = Destination::hash_from_name_and_identity("lxmf.delivery", Some(&identity_hash));
+    let lxmf_dest =
+        Destination::hash_from_name_and_identity(LXMF_DELIVERY_APP_NAME, Some(&identity_hash));
     let lxmf_dest_hex = hex::encode(lxmf_dest);
     let identity_hash_hex = hex::encode(identity_hash);
     let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;

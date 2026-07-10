@@ -37,9 +37,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::db;
 use crate::state::{AppState, DbPool};
+use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 
-const LXMF_APP_NAME: &str = "lxmf.delivery";
-const LXMF_PROPAGATION_APP_NAME: &str = "lxmf.propagation";
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;

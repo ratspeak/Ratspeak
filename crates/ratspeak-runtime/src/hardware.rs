@@ -15,8 +15,8 @@ use rns_ratkey::provision::{self, ProvisionConfig};
 use rns_ratkey::{PcscPivSession, RatkeyError};
 
 use crate::state::DbPool;
+use ratspeak_core::LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME;
 
-const LXMF_APP_NAME: &str = "lxmf.delivery";
 const DEFAULT_PIN: &str = "123456";
 /// Factory-default PIV management key (AES-192 on YubiKey 5.7+).
 const DEFAULT_MGMT_KEY: [u8; 24] = [

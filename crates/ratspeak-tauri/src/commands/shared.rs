@@ -13,7 +13,7 @@ use crate::helpers::{active_identity_id, validate_hex};
 use crate::lxmf::resolve_destination;
 use crate::state::AppState;
 
-const LXMF_APP_NAME: &str = "lxmf.delivery";
+use ratspeak_core::LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME;
 
 pub(crate) fn transport_sender(
     state: &AppState,
@@ -374,18 +374,7 @@ pub(crate) async fn resolve_before_send(state: &AppState, dest_hash: &str) {
     }
 }
 
-pub(crate) fn hex_to_array16(s: &str) -> Option<[u8; 16]> {
-    if s.len() != 32 {
-        return None;
-    }
-    let mut out = [0u8; 16];
-    for (i, byte) in out.iter_mut().enumerate() {
-        let hi = u8::from_str_radix(&s[i * 2..i * 2 + 1], 16).ok()?;
-        let lo = u8::from_str_radix(&s[i * 2 + 1..i * 2 + 2], 16).ok()?;
-        *byte = (hi << 4) | lo;
-    }
-    Some(out)
-}
+pub(crate) use ratspeak_core::hex_to_array16;
 
 pub(crate) fn json_to_rmpv_map(v: &Value) -> std::collections::HashMap<String, rmpv::Value> {
     let mut map = std::collections::HashMap::new();
