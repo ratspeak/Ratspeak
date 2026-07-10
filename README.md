@@ -30,7 +30,7 @@ Ratspeak is for private messaging when the normal internet is unavailable,
 untrusted, or not the path you want to depend on. When your cell tower is down, when natural disaster hits, or when you just want an alternative. When you know the current system is broken.
 
 It runs on
-[Reticulum](https://github.com/ratspeak/rsReticulum) and [LXMF](https://https://github.com/ratspeak/rsLXMF), so conversations can happen
+[Reticulum](https://github.com/ratspeak/rsReticulum) and [LXMF](https://github.com/ratspeak/rsLXMF), so conversations can happen
 over regular internet, LoRa radios, WiFi, Bluetooth, there is no limit - if it can move data it can be a part of the mesh.
 
 There is no Ratspeak account server, no central database, no hub where everything routes through by default. Your Reticulum identity is generated on

@@ -21,7 +21,7 @@
     }
     updateThemeColor();
 
-    if (!stored && window.matchMedia) {
+    if (window.matchMedia) {
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {
             var current;
             try { current = localStorage.getItem(STORAGE_KEY); } catch(ex) {}
