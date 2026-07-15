@@ -3240,6 +3240,14 @@ impl LxmfManager {
         self.known_identities.contains_key(dest_hash_hex)
     }
 
+    /// Resolve a destination hash to its identity hash via learned announce
+    /// keys — the equivalent of `RNS.Identity.recall` (LXMessage.py:776).
+    pub fn recall_identity_hash(&self, dest_hash: &[u8; 16]) -> Option<[u8; 16]> {
+        self.known_identities
+            .get(&hex::encode(dest_hash))
+            .map(|pub_key| rns_crypto::sha::truncated_hash(pub_key))
+    }
+
     pub fn propagation_node_ready_for_send(&self, prop_hash: &[u8; 16]) -> bool {
         self.known_identities.contains_key(&hex::encode(prop_hash))
             && self.router.get_stamp_cost(prop_hash).is_some()
@@ -7356,7 +7364,9 @@ mod tests {
         let dest = [0x44; 16];
         let delivery_name_hash = rns_identity::name_hash::name_hash("lxmf.delivery");
 
-        let legacy_data = lxmf_core::handlers::get_announce_app_data(Some("peer"), None);
+        // <=0.9.8 peer announce: msgpack [b"peer", nil] — 2 elements, no
+        // feature list (get_announce_app_data emits the 3-element 1.0.1 form).
+        let legacy_data = vec![0x92, 0xC4, 0x04, 0x70, 0x65, 0x65, 0x72, 0xC0];
         assert!(!mgr.update_lxmf_announce_app_data(dest, delivery_name_hash, Some(&legacy_data),));
         assert_eq!(
             mgr.peer_lxmf_compression_support.get(&dest),
