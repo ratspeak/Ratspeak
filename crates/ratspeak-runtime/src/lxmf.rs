@@ -427,7 +427,11 @@ pub fn ratspeak_chat_custom_fields(ext: &RatspeakChatExtension) -> Option<Vec<(u
             fields.push((lxmf_core::constants::FIELD_CUSTOM_DATA, payload));
         }
     }
-    if fields.is_empty() { None } else { Some(fields) }
+    if fields.is_empty() {
+        None
+    } else {
+        Some(fields)
+    }
 }
 
 pub fn reaction_fallback_text(emoji: &str, action: &str) -> String {
