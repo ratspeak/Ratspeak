@@ -5075,6 +5075,88 @@ mod inbound_pipeline_tests {
         assert_eq!(emitter.count("reaction_update"), 1);
         assert_eq!(emitter.count("lxmf_message"), 0);
     }
+
+    /// A standard-only peer's FIELD_REACTION (native msgpack dict, no
+    /// 0xFB/0xFC envelope) routes to the reaction store like ours.
+    #[tokio::test]
+    async fn standard_field_reaction_routes_to_reaction_store() {
+        let (state, emitter) = pipeline_state();
+        let target_hash = [0xAB; 32];
+
+        let mut msg = lxmf_core::message::LxMessage::new(
+            local_dest(&state),
+            [0xEE; 16],
+            "",
+            "Reacted to your message with \u{1F44D}.",
+            lxmf_core::constants::DeliveryMethod::Direct,
+        );
+        let dict_value = rmpv::Value::Map(vec![
+            (
+                rmpv::Value::from(lxmf_core::constants::REACTION_TO as u64),
+                rmpv::Value::Binary(target_hash.to_vec()),
+            ),
+            (
+                rmpv::Value::from(lxmf_core::constants::REACTION_CONTENT as u64),
+                rmpv::Value::Binary("\u{1F44D}".as_bytes().to_vec()),
+            ),
+        ]);
+        let mut dict = Vec::new();
+        rmpv::encode::write_value(&mut dict, &dict_value).unwrap();
+        msg.set_msgpack_field(lxmf_core::constants::FIELD_REACTION, dict)
+            .unwrap();
+        msg.signature = Some([0u8; 64]);
+        let data = msg.pack().unwrap();
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        assert_eq!(reaction_rows(&state), 1, "standard reaction recorded");
+        assert_eq!(message_rows(&state), 0, "reactions never hit the chat log");
+        assert_eq!(emitter.count("reaction_update"), 1);
+        let stored: String = state
+            .db
+            .get()
+            .unwrap()
+            .query_row("SELECT message_id FROM reactions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stored, hex::encode(target_hash), "keys on full-hash hex id");
+    }
+
+    /// A standard-only peer's FIELD_REPLY_TO/FIELD_REPLY_QUOTE (e.g. MeshChatX
+    /// replies) persists as reply metadata on the saved message.
+    #[tokio::test]
+    async fn standard_field_reply_persists_reply_metadata() {
+        let (state, emitter) = pipeline_state();
+        let target_hash = [0xCD; 32];
+
+        let mut msg = lxmf_core::message::LxMessage::new(
+            local_dest(&state),
+            [0xEE; 16],
+            "",
+            "standard reply",
+            lxmf_core::constants::DeliveryMethod::Direct,
+        );
+        msg.set_field(lxmf_core::constants::FIELD_REPLY_TO, target_hash.to_vec());
+        msg.set_field(lxmf_core::constants::FIELD_REPLY_QUOTE, b"quoted".to_vec());
+        msg.signature = Some([0u8; 64]);
+        let data = msg.pack().unwrap();
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+
+        assert_eq!(message_rows(&state), 1);
+        assert_eq!(emitter.count("lxmf_message"), 1);
+        let (reply_to, preview): (String, String) = state
+            .db
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT reply_to_id, reply_to_preview FROM messages",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(reply_to, hex::encode(target_hash));
+        assert_eq!(preview, "quoted");
+    }
 }
 
 #[cfg(test)]

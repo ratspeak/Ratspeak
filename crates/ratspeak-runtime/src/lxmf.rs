@@ -58,6 +58,12 @@ pub const LEGACY_RATSPEAK_REACTION_TYPE: &[u8] = b"ratspeak.reaction";
 // Back-compat alias for callers (tests, source-contract guards) that still
 // reference the old single-version constant.
 pub const RATSPEAK_CHAT_CUSTOM_TYPE: &[u8] = RATSPEAK_CHAT_CUSTOM_TYPE_V1;
+// TRANSITION: replies/reactions now emit the standard LXMF 1.0.1 fields
+// (FIELD_REPLY_TO/FIELD_REPLY_QUOTE/FIELD_REACTION) as primary; the legacy
+// 0xFB/0xFC envelope is dual-emitted because shipped v1.0.x clients only
+// decode the envelope. Flip to false / remove in a future release once the
+// fleet reads the standard fields.
+pub const EMIT_LEGACY_REPLY_REACTION_ENVELOPE: bool = true;
 pub const RATSPEAK_ANNOUNCE_EXTENSION_VERSION: u8 = 1;
 pub const RATSPEAK_CAP_CLIENT: u64 = 0x01;
 pub const RATSPEAK_CAP_GAMES: u64 = 0x02;
@@ -346,29 +352,82 @@ fn encode_chat_extension_data_v2(ext: &RatspeakChatExtension) -> Option<Vec<u8>>
     Some(bytes)
 }
 
+// FIELD_REACTION 0x40 = {REACTION_TO: bin(32-byte hash), REACTION_CONTENT:
+// bin(UTF-8)} — a native msgpack dict, byte-exact with Python's packb.
+fn encode_standard_reaction_field(target: &[u8; 32], emoji: &str) -> Vec<u8> {
+    encode_msgpack_value(&rmpv::Value::Map(vec![
+        (
+            rmpv::Value::from(lxmf_core::constants::REACTION_TO as u64),
+            rmpv::Value::Binary(target.to_vec()),
+        ),
+        (
+            rmpv::Value::from(lxmf_core::constants::REACTION_CONTENT as u64),
+            rmpv::Value::Binary(emoji.as_bytes().to_vec()),
+        ),
+    ]))
+}
+
+// Standard LXMF 1.0.1 fields: FIELD_REPLY_TO 0x30 = bin(full LXMessage hash),
+// FIELD_REPLY_QUOTE 0x31 = bin(quoted content UTF-8), FIELD_REACTION 0x40 =
+// dict (see above). Empty when the target id isn't a 32-byte hash (UUID
+// stand-in case) or the reaction is a removal — the standard field has no
+// remove semantics, so removals stay envelope-only rather than showing
+// standard peers a phantom add.
+fn standard_chat_fields(ext: &RatspeakChatExtension) -> Vec<(u8, Vec<u8>)> {
+    let mut fields = Vec::new();
+    match ext {
+        RatspeakChatExtension::Reaction {
+            target,
+            emoji,
+            action,
+        } => {
+            if action == "add"
+                && let Some(hash) = id_as_32_bytes(target)
+            {
+                fields.push((
+                    lxmf_core::constants::FIELD_REACTION,
+                    encode_standard_reaction_field(&hash, emoji),
+                ));
+            }
+        }
+        RatspeakChatExtension::Reply {
+            target, preview, ..
+        } => {
+            if let Some(hash) = id_as_32_bytes(target) {
+                fields.push((lxmf_core::constants::FIELD_REPLY_TO, hash.to_vec()));
+                if !preview.is_empty() {
+                    fields.push((
+                        lxmf_core::constants::FIELD_REPLY_QUOTE,
+                        preview.as_bytes().to_vec(),
+                    ));
+                }
+            }
+        }
+    }
+    fields
+}
+
 pub fn ratspeak_chat_custom_fields(ext: &RatspeakChatExtension) -> Option<Vec<(u8, Vec<u8>)>> {
-    // Prefer v2 (~32 B saved per hash reference). Fall back to v1 when the
-    // ids in `ext` aren't 32-byte hashes — covers the UUID-id'd-outbound
-    // edge case where msg.hash was None at send time.
-    if let Some(payload) = encode_chat_extension_data_v2(ext) {
-        return Some(vec![
-            (
+    let mut fields = standard_chat_fields(ext);
+    if EMIT_LEGACY_REPLY_REACTION_ENVELOPE {
+        // Envelope prefers v2 (~32 B saved per hash reference). Fall back to
+        // v1 when the ids in `ext` aren't 32-byte hashes — covers the
+        // UUID-id'd-outbound edge case where msg.hash was None at send time.
+        if let Some(payload) = encode_chat_extension_data_v2(ext) {
+            fields.push((
                 lxmf_core::constants::FIELD_CUSTOM_TYPE,
                 RATSPEAK_CHAT_CUSTOM_TYPE_V2.to_vec(),
-            ),
-            (lxmf_core::constants::FIELD_CUSTOM_DATA, payload),
-        ]);
+            ));
+            fields.push((lxmf_core::constants::FIELD_CUSTOM_DATA, payload));
+        } else if let Some(payload) = encode_chat_extension_data_v1(ext) {
+            fields.push((
+                lxmf_core::constants::FIELD_CUSTOM_TYPE,
+                RATSPEAK_CHAT_CUSTOM_TYPE_V1.to_vec(),
+            ));
+            fields.push((lxmf_core::constants::FIELD_CUSTOM_DATA, payload));
+        }
     }
-    Some(vec![
-        (
-            lxmf_core::constants::FIELD_CUSTOM_TYPE,
-            RATSPEAK_CHAT_CUSTOM_TYPE_V1.to_vec(),
-        ),
-        (
-            lxmf_core::constants::FIELD_CUSTOM_DATA,
-            encode_chat_extension_data_v1(ext)?,
-        ),
-    ])
+    if fields.is_empty() { None } else { Some(fields) }
 }
 
 pub fn reaction_fallback_text(emoji: &str, action: &str) -> String {
@@ -379,7 +438,62 @@ pub fn reaction_fallback_text(emoji: &str, action: &str) -> String {
     }
 }
 
+// Accept the spec'd bin(32) hash plus the 64-char-ASCII-hex variant some
+// clients put on the wire; normalizes to the lowercase hex id space the rest
+// of the codebase (and the DB) keys on.
+fn standard_hash_hex(bytes: &[u8]) -> Option<String> {
+    if bytes.len() == 32 {
+        return Some(hex::encode(bytes));
+    }
+    if bytes.len() == 64
+        && let Ok(s) = std::str::from_utf8(bytes)
+        && hex::decode(s).is_ok_and(|b| b.len() == 32)
+    {
+        return Some(s.to_ascii_lowercase());
+    }
+    None
+}
+
+// Inbound standard LXMF 1.0.1 fields. Reactions carry no action key — the
+// standard field only expresses adds (removals arrive envelope-only).
+fn decode_standard_chat_fields(msg: &LxMessage) -> Option<RatspeakChatExtension> {
+    if let Some(data) = msg.fields.get(&lxmf_core::constants::FIELD_REACTION) {
+        let value = rmpv::decode::read_value(&mut &data[..]).ok()?;
+        let map = value.as_map()?;
+        let entry = |key: u8| {
+            map.iter()
+                .find_map(|(k, v)| (k.as_u64() == Some(key as u64)).then_some(v))
+        };
+        let target = standard_hash_hex(entry(lxmf_core::constants::REACTION_TO)?.as_slice()?)?;
+        let emoji = msgpack_text_value(entry(lxmf_core::constants::REACTION_CONTENT)?)?;
+        if emoji.is_empty() {
+            return None;
+        }
+        return Some(RatspeakChatExtension::Reaction {
+            target,
+            emoji,
+            action: "add".to_string(),
+        });
+    }
+    let target = standard_hash_hex(msg.fields.get(&lxmf_core::constants::FIELD_REPLY_TO)?)?;
+    let preview = msg
+        .fields
+        .get(&lxmf_core::constants::FIELD_REPLY_QUOTE)
+        .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+        .unwrap_or_default();
+    Some(RatspeakChatExtension::Reply {
+        target,
+        preview,
+        target_sender: None,
+    })
+}
+
 pub fn decode_ratspeak_chat_extension(msg: &LxMessage) -> Option<RatspeakChatExtension> {
+    // Standard fields win when both are present (our own dual-emit carries
+    // the same data) and are the only shape standard-only peers send.
+    if let Some(ext) = decode_standard_chat_fields(msg) {
+        return Some(ext);
+    }
     let custom_type = chat_custom_type(msg)?;
     if custom_type == LEGACY_RATSPEAK_REACTION_TYPE {
         let data: serde_json::Value = serde_json::from_str(&msg.content).ok()?;
@@ -1423,7 +1537,13 @@ impl LxmfManager {
         }
 
         for (field_id, bytes) in custom_fields {
-            msg.set_field(*field_id, bytes.clone());
+            // FIELD_REACTION is a native msgpack dict on the wire; everything
+            // else we emit packs as bin.
+            if *field_id == lxmf_core::constants::FIELD_REACTION {
+                msg.set_msgpack_field(*field_id, bytes.clone()).ok()?;
+            } else {
+                msg.set_field(*field_id, bytes.clone());
+            }
         }
 
         // Sign with Ed25519 seed (second half of identity private key).
@@ -4967,12 +5087,277 @@ mod tests {
                 &reply_fields,
             )
             .expect("reply msg");
+        // Standard FIELD_REPLY_TO wins on decode; target_sender only exists in
+        // the legacy envelope (and nothing downstream consumes it).
         assert_eq!(
             decode_ratspeak_chat_extension(&reply_msg),
             Some(RatspeakChatExtension::Reply {
                 target: target_hash_hex,
                 preview: "original text".to_string(),
-                target_sender: Some(sender_hash_hex),
+                target_sender: None,
+            })
+        );
+    }
+
+    // Outbound dual-emit: standard LXMF fields primary, legacy 0xFB/0xFC
+    // envelope alongside while EMIT_LEGACY_REPLY_REACTION_ENVELOPE holds.
+    #[test]
+    fn outbound_reply_emits_standard_fields_and_legacy_envelope() {
+        let target_hash = [0xAA; 32];
+        let fields = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reply {
+            target: hex::encode(target_hash),
+            preview: "quoted".to_string(),
+            target_sender: None,
+        })
+        .expect("reply fields");
+
+        let get = |id: u8| fields.iter().find(|(fid, _)| *fid == id).map(|(_, v)| v);
+        assert_eq!(
+            get(lxmf_core::constants::FIELD_REPLY_TO).map(Vec::as_slice),
+            Some(&target_hash[..])
+        );
+        assert_eq!(
+            get(lxmf_core::constants::FIELD_REPLY_QUOTE).map(Vec::as_slice),
+            Some("quoted".as_bytes())
+        );
+        assert!(EMIT_LEGACY_REPLY_REACTION_ENVELOPE);
+        assert_eq!(
+            get(lxmf_core::constants::FIELD_CUSTOM_TYPE).map(Vec::as_slice),
+            Some(RATSPEAK_CHAT_CUSTOM_TYPE_V2)
+        );
+        assert!(get(lxmf_core::constants::FIELD_CUSTOM_DATA).is_some());
+
+        // Empty preview: no quote field.
+        let no_quote = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reply {
+            target: hex::encode(target_hash),
+            preview: String::new(),
+            target_sender: None,
+        })
+        .expect("reply fields");
+        assert!(
+            !no_quote
+                .iter()
+                .any(|(id, _)| *id == lxmf_core::constants::FIELD_REPLY_QUOTE)
+        );
+    }
+
+    // FIELD_REACTION dict must be byte-exact with Python:
+    // msgpack.packb({0x00: bytes(hash), 0x01: content}, use_bin_type=True).
+    #[test]
+    fn outbound_reaction_field_is_byte_exact_with_python() {
+        let fields = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
+            target: hex::encode([0xAA; 32]),
+            emoji: "👍".to_string(),
+            action: "add".to_string(),
+        })
+        .expect("reaction fields");
+        let reaction = fields
+            .iter()
+            .find(|(id, _)| *id == lxmf_core::constants::FIELD_REACTION)
+            .map(|(_, v)| v.as_slice())
+            .expect("standard reaction field");
+
+        let mut expected = vec![0x82, 0x00, 0xc4, 0x20];
+        expected.extend_from_slice(&[0xAA; 32]);
+        expected.extend_from_slice(&[0x01, 0xc4, 0x04, 0xf0, 0x9f, 0x91, 0x8d]);
+        assert_eq!(reaction, expected.as_slice());
+    }
+
+    // Reaction removals have no standard representation — emitting 0x40 would
+    // read as an add on standard peers, so removals stay envelope-only.
+    #[test]
+    fn outbound_reaction_remove_is_legacy_envelope_only() {
+        let fields = ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
+            target: hex::encode([0xAA; 32]),
+            emoji: "👍".to_string(),
+            action: "remove".to_string(),
+        })
+        .expect("reaction fields");
+        assert!(
+            !fields
+                .iter()
+                .any(|(id, _)| *id == lxmf_core::constants::FIELD_REACTION)
+        );
+        assert!(
+            fields
+                .iter()
+                .any(|(id, _)| *id == lxmf_core::constants::FIELD_CUSTOM_TYPE)
+        );
+    }
+
+    // Standard-only peers (e.g. MeshChatX replies) carry no 0xFB/0xFC envelope.
+    #[test]
+    fn decodes_standard_only_reply_and_reaction() {
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x22; 16]);
+        let target_hash = [0xCD; 32];
+
+        let reply_fields = vec![
+            (lxmf_core::constants::FIELD_REPLY_TO, target_hash.to_vec()),
+            (
+                lxmf_core::constants::FIELD_REPLY_QUOTE,
+                b"quoted line".to_vec(),
+            ),
+        ];
+        let reply_msg = mgr
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "reply text",
+                "",
+                DeliveryMethod::Direct,
+                &reply_fields,
+            )
+            .expect("reply msg");
+        assert_eq!(
+            decode_ratspeak_chat_extension(&reply_msg),
+            Some(RatspeakChatExtension::Reply {
+                target: hex::encode(target_hash),
+                preview: "quoted line".to_string(),
+                target_sender: None,
+            })
+        );
+
+        let reaction_fields = vec![(
+            lxmf_core::constants::FIELD_REACTION,
+            encode_standard_reaction_field(&target_hash, "👍"),
+        )];
+        let reaction_msg = mgr
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "Reacted to your message with 👍.",
+                "",
+                DeliveryMethod::Direct,
+                &reaction_fields,
+            )
+            .expect("reaction msg");
+        assert_eq!(
+            decode_ratspeak_chat_extension(&reaction_msg),
+            Some(RatspeakChatExtension::Reaction {
+                target: hex::encode(target_hash),
+                emoji: "👍".to_string(),
+                action: "add".to_string(),
+            })
+        );
+    }
+
+    // Legacy-only messages (pre-migration Ratspeak) must still decode.
+    #[test]
+    fn decodes_legacy_only_envelope() {
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x22; 16]);
+        let target_hash_hex = hex::encode([0xAB; 32]);
+
+        let legacy_fields: Vec<(u8, Vec<u8>)> = vec![
+            (
+                lxmf_core::constants::FIELD_CUSTOM_TYPE,
+                RATSPEAK_CHAT_CUSTOM_TYPE_V2.to_vec(),
+            ),
+            (
+                lxmf_core::constants::FIELD_CUSTOM_DATA,
+                encode_chat_extension_data_v2(&RatspeakChatExtension::Reply {
+                    target: target_hash_hex.clone(),
+                    preview: "old peer".to_string(),
+                    target_sender: None,
+                })
+                .expect("v2 payload"),
+            ),
+        ];
+        let msg = mgr
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "reply text",
+                "",
+                DeliveryMethod::Direct,
+                &legacy_fields,
+            )
+            .expect("legacy msg");
+        assert_eq!(
+            decode_ratspeak_chat_extension(&msg),
+            Some(RatspeakChatExtension::Reply {
+                target: target_hash_hex,
+                preview: "old peer".to_string(),
+                target_sender: None,
+            })
+        );
+    }
+
+    // Both present with divergent targets: standard field wins.
+    #[test]
+    fn standard_fields_preferred_over_legacy_envelope() {
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x22; 16]);
+        let standard_target = [0x11; 32];
+        let legacy_target_hex = hex::encode([0x99; 32]);
+
+        let mut fields = vec![
+            (
+                lxmf_core::constants::FIELD_REPLY_TO,
+                standard_target.to_vec(),
+            ),
+            (
+                lxmf_core::constants::FIELD_REPLY_QUOTE,
+                b"standard quote".to_vec(),
+            ),
+        ];
+        fields.push((
+            lxmf_core::constants::FIELD_CUSTOM_TYPE,
+            RATSPEAK_CHAT_CUSTOM_TYPE_V2.to_vec(),
+        ));
+        fields.push((
+            lxmf_core::constants::FIELD_CUSTOM_DATA,
+            encode_chat_extension_data_v2(&RatspeakChatExtension::Reply {
+                target: legacy_target_hex,
+                preview: "legacy quote".to_string(),
+                target_sender: None,
+            })
+            .expect("v2 payload"),
+        ));
+        let msg = mgr
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "reply text",
+                "",
+                DeliveryMethod::Direct,
+                &fields,
+            )
+            .expect("msg");
+        assert_eq!(
+            decode_ratspeak_chat_extension(&msg),
+            Some(RatspeakChatExtension::Reply {
+                target: hex::encode(standard_target),
+                preview: "standard quote".to_string(),
+                target_sender: None,
+            })
+        );
+    }
+
+    // Hex-string REPLY_TO variant (64 ASCII chars instead of bin32) normalizes
+    // into the same lowercase-hex id space.
+    #[test]
+    fn decodes_hex_string_reply_to_variant() {
+        let mut mgr = test_manager();
+        let dest_hex = hex::encode([0x22; 16]);
+        let target_hash_hex = hex::encode([0xEF; 32]);
+
+        let fields = vec![(
+            lxmf_core::constants::FIELD_REPLY_TO,
+            target_hash_hex.to_uppercase().into_bytes(),
+        )];
+        let msg = mgr
+            .create_message_with_custom_fields(
+                &dest_hex,
+                "reply text",
+                "",
+                DeliveryMethod::Direct,
+                &fields,
+            )
+            .expect("msg");
+        assert_eq!(
+            decode_ratspeak_chat_extension(&msg),
+            Some(RatspeakChatExtension::Reply {
+                target: target_hash_hex,
+                preview: String::new(),
+                target_sender: None,
             })
         );
     }
