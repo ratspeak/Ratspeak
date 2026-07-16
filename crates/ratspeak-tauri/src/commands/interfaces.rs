@@ -1666,9 +1666,9 @@ fn ifac_settings_from_args(
 
 fn cfg_rnode_mode(entry: &Value) -> String {
     let raw = cfg_str(entry, "mode").or_else(|| cfg_str(entry, "interface_mode"));
-    crate::rns_config::normalize_rnode_interface_mode(raw.as_deref())
-        .unwrap_or(crate::rns_config::RNODE_DEFAULT_INTERFACE_MODE)
-        .to_string()
+    // Unrecognized hand-edited modes pass through verbatim; runtime spawn maps
+    // them to Full via rnode_runtime_mode without rewriting the config value.
+    crate::rns_config::rnode_interface_mode_passthrough(raw.as_deref()).to_string()
 }
 
 fn cfg_csv(entry: &Value, key: &str) -> Option<Vec<String>> {
@@ -3163,12 +3163,12 @@ pub async fn update_lora_interface(
         airtime_limit_short: args.airtime_limit_short,
         airtime_limit_long: args.airtime_limit_long,
     })?;
-    let mode = normalize_lora_interface_mode(args.mode.as_deref())?;
+    let ui_mode = normalize_lora_interface_mode(args.mode.as_deref())?;
     let public_map_update =
         resolve_rnode_public_map_update(&state_arc, args.public_map.as_ref()).await?;
 
     let config_dir = active_rns_config_dir(&state_arc);
-    let (old_runtime, old_config_content, config_written) =
+    let (old_runtime, old_config_content, config_written, mode) =
         with_rns_config_lock(&state_arc, || {
             let old_entry = find_config_interface(&config_dir, "rnode", &old_name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
@@ -3181,6 +3181,16 @@ pub async fn update_lora_interface(
                 },
                 RnodePublicMapUpdate::Set(public_map) => public_map.clone(),
             };
+            // The dropdown coerces unknown modes to the default, so a default
+            // submission over a hand-edited mode is not a deliberate change.
+            let existing_mode = cfg_rnode_mode(&old_entry);
+            let mode = if ui_mode == crate::rns_config::RNODE_DEFAULT_INTERFACE_MODE
+                && crate::rns_config::normalize_rnode_interface_mode(Some(&existing_mode)).is_none()
+            {
+                existing_mode
+            } else {
+                ui_mode.to_string()
+            };
             let old_config_content =
                 crate::rns_config::read_config(&config_dir).unwrap_or_default();
             let config_written = crate::rns_config::update_rnode_interface(
@@ -3189,7 +3199,7 @@ pub async fn update_lora_interface(
                 crate::rns_config::RnodeInterfaceArgs {
                     name: &name,
                     port: &port,
-                    mode: Some(mode),
+                    mode: Some(&mode),
                     frequency: radio.frequency,
                     bandwidth: radio.bandwidth,
                     spreading_factor: radio.spreading_factor,
@@ -3202,7 +3212,7 @@ pub async fn update_lora_interface(
                     public_map: public_map.config_args(),
                 },
             );
-            Ok::<_, AppError>((old_runtime, old_config_content, config_written))
+            Ok::<_, AppError>((old_runtime, old_config_content, config_written, mode))
         })?;
 
     if !config_written {
@@ -3220,7 +3230,7 @@ pub async fn update_lora_interface(
     let new_runtime = EditableInterfaceConfig::RNode {
         name: name.clone(),
         port,
-        mode: mode.to_string(),
+        mode,
         frequency: radio.frequency,
         bandwidth: radio.bandwidth,
         spreading_factor: radio.spreading_factor,
@@ -5108,6 +5118,18 @@ mod backbone_args_tests {
         assert_eq!(v.name, "Backbone Server");
         assert!(!v.prefer_ipv6);
         assert!(v.device.is_none());
+    }
+
+    #[test]
+    fn cfg_rnode_mode_passes_unrecognized_mode_through() {
+        let entry = serde_json::json!({ "name": "Radio", "mode": "internal" });
+        assert_eq!(cfg_rnode_mode(&entry), "internal");
+
+        let entry = serde_json::json!({ "name": "Radio", "mode": "gw" });
+        assert_eq!(cfg_rnode_mode(&entry), "gateway");
+
+        let entry = serde_json::json!({ "name": "Radio" });
+        assert_eq!(cfg_rnode_mode(&entry), "full");
     }
 
     #[test]

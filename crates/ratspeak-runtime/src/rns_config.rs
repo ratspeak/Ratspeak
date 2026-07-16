@@ -589,7 +589,7 @@ fn safe_auto_options(opts: &AutoInterfaceOptions) -> bool {
 fn safe_rnode_args(args: RnodeInterfaceArgs<'_>) -> bool {
     safe_interface_name(args.name)
         && safe_config_scalar(args.port)
-        && normalize_rnode_interface_mode(args.mode).is_some()
+        && safe_optional_scalar(args.mode)
         && safe_optional_scalar(args.region_key)
         && safe_optional_scalar(args.preset_key)
         && safe_public_map_args(args.public_map)
@@ -609,6 +609,14 @@ pub fn normalize_rnode_interface_mode(mode: Option<&str>) -> Option<&'static str
         "roaming" => Some("roaming"),
         _ => None,
     }
+}
+
+/// Known modes normalize; unknown non-empty modes pass through verbatim so
+/// hand-edited values (e.g. `mode = internal`) survive UI-driven updates.
+pub fn rnode_interface_mode_passthrough(mode: Option<&str>) -> &str {
+    let mode = mode.map(str::trim).filter(|mode| !mode.is_empty());
+    normalize_rnode_interface_mode(mode)
+        .unwrap_or_else(|| mode.unwrap_or(RNODE_DEFAULT_INTERFACE_MODE))
 }
 
 pub fn rnode_interface_mode_value(
@@ -643,7 +651,7 @@ fn safe_ifac_args(args: InterfaceIfacArgs<'_>) -> bool {
 
 /// Removes any existing block with the same `name` before insertion.
 pub fn add_rnode_interface(config_dir: &Path, args: RnodeInterfaceArgs<'_>) -> bool {
-    if !safe_rnode_args(args) {
+    if normalize_rnode_interface_mode(args.mode).is_none() || !safe_rnode_args(args) {
         return false;
     }
     let block = rnode_interface_block(args);
@@ -873,7 +881,80 @@ fn upsert_interface_block(config_dir: &Path, remove_names: &[&str], block: &str)
     write_config(config_dir, &new_content)
 }
 
-fn replace_interface_block(config_dir: &Path, old_name: &str, new_name: &str, block: &str) -> bool {
+// Full key schema each block generator owns (emitted plus read-side aliases).
+// Update carry-over drops these — the generator decides whether to re-emit —
+// and preserves everything else (hand edits, newer Reticulum keys).
+const COMMON_OWNED_KEYS: &[&str] = &["type", "interface_type", "enabled", "interface_enabled"];
+const IFAC_OWNED_KEYS: &[&str] = &[
+    "network_name",
+    "networkname",
+    "passphrase",
+    "pass_phrase",
+    "ifac_size",
+];
+const RNODE_OWNED_KEYS: &[&str] = &[
+    "port",
+    "mode",
+    "interface_mode",
+    "frequency",
+    "bandwidth",
+    "spreadingfactor",
+    "codingrate",
+    "txpower",
+    "airtime_limit_short",
+    "airtime_limit_long",
+    "discoverable",
+    "latitude",
+    "longitude",
+    "discovery_name",
+    "ratspeak_region",
+    "ratspeak_preset",
+];
+const TCP_CLIENT_OWNED_KEYS: &[&str] = &["target_host", "target_port"];
+const TCP_SERVER_OWNED_KEYS: &[&str] = &["listen_ip", "listen_port"];
+const BACKBONE_CLIENT_OWNED_KEYS: &[&str] = &[
+    "target_host",
+    "target_port",
+    "prefer_ipv6",
+    "connect_timeout",
+    "max_reconnect_tries",
+    "i2p_tunneled",
+];
+const BACKBONE_SERVER_OWNED_KEYS: &[&str] = &[
+    "listen_on",
+    "listen_ip",
+    "listen_port",
+    "prefer_ipv6",
+    "device",
+];
+
+/// Key lines in `name`'s block that no generator owns, in original order.
+fn unowned_block_lines(content: &str, name: &str, owned_keys: &[&[&str]]) -> Vec<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(start) = lines
+        .iter()
+        .position(|line| interface_block_name(line) == Some(name))
+    else {
+        return Vec::new();
+    };
+    let end = next_section_header(&lines, start + 1);
+    lines[start + 1..end]
+        .iter()
+        .filter(|line| {
+            parse_ini_key_value(line)
+                .is_some_and(|(key, _)| !owned_keys.iter().any(|set| set.contains(&key.as_str())))
+        })
+        .map(|line| (*line).to_string())
+        .collect()
+}
+
+fn replace_interface_block(
+    config_dir: &Path,
+    old_name: &str,
+    new_name: &str,
+    block: &str,
+    owned_keys: &[&[&str]],
+) -> bool {
     if !safe_interface_name(old_name) || !safe_interface_name(new_name) {
         return false;
     }
@@ -881,6 +962,11 @@ fn replace_interface_block(config_dir: &Path, old_name: &str, new_name: &str, bl
         Some(c) => c,
         None => return false,
     };
+    let mut block = block.to_string();
+    for line in unowned_block_lines(&content, old_name, owned_keys) {
+        block.push_str(&line);
+        block.push('\n');
+    }
     let remove_names = if old_name == new_name {
         vec![old_name]
     } else {
@@ -890,7 +976,7 @@ fn replace_interface_block(config_dir: &Path, old_name: &str, new_name: &str, bl
     if !removed_old {
         return false;
     }
-    let new_content = insert_interface_block(&content, block);
+    let new_content = insert_interface_block(&content, &block);
     write_config(config_dir, &new_content)
 }
 
@@ -910,7 +996,7 @@ fn rnode_interface_block(args: RnodeInterfaceArgs<'_>) -> String {
         airtime_limit_long,
         public_map,
     } = args;
-    let mode = normalize_rnode_interface_mode(mode).unwrap_or(RNODE_DEFAULT_INTERFACE_MODE);
+    let mode = rnode_interface_mode_passthrough(mode);
 
     let mut block = format!(
         "\n  [[{name}]]\n    type = RNodeInterface\n    port = {port}\n    mode = {mode}\n    frequency = {frequency}\n    bandwidth = {bandwidth}\n    spreadingfactor = {spreading_factor}\n    codingrate = {coding_rate}\n    txpower = {tx_power}\n    enabled = true\n"
@@ -1200,7 +1286,13 @@ pub fn update_rnode_interface(
         return false;
     }
     let block = rnode_interface_block(args);
-    replace_interface_block(config_dir, old_name, args.name, &block)
+    replace_interface_block(
+        config_dir,
+        old_name,
+        args.name,
+        &block,
+        &[COMMON_OWNED_KEYS, RNODE_OWNED_KEYS],
+    )
 }
 
 pub fn update_tcp_client(
@@ -1235,7 +1327,13 @@ pub fn update_tcp_client_with_ifac(
         return false;
     }
     let block = tcp_client_block(name, host, port, ifac);
-    replace_interface_block(config_dir, old_name, name, &block)
+    replace_interface_block(
+        config_dir,
+        old_name,
+        name,
+        &block,
+        &[COMMON_OWNED_KEYS, IFAC_OWNED_KEYS, TCP_CLIENT_OWNED_KEYS],
+    )
 }
 
 pub fn update_tcp_server(
@@ -1271,7 +1369,13 @@ pub fn update_tcp_server_with_ifac(
         return false;
     }
     let block = tcp_server_block(name, listen_port, listen_ip, ifac);
-    replace_interface_block(config_dir, old_name, name, &block)
+    replace_interface_block(
+        config_dir,
+        old_name,
+        name,
+        &block,
+        &[COMMON_OWNED_KEYS, IFAC_OWNED_KEYS, TCP_SERVER_OWNED_KEYS],
+    )
 }
 
 pub fn update_backbone_client(
@@ -1283,7 +1387,17 @@ pub fn update_backbone_client(
         return false;
     }
     let block = backbone_client_block(args);
-    replace_interface_block(config_dir, old_name, args.name, &block)
+    replace_interface_block(
+        config_dir,
+        old_name,
+        args.name,
+        &block,
+        &[
+            COMMON_OWNED_KEYS,
+            IFAC_OWNED_KEYS,
+            BACKBONE_CLIENT_OWNED_KEYS,
+        ],
+    )
 }
 
 pub fn update_backbone_server(
@@ -1327,7 +1441,17 @@ pub fn update_backbone_server_with_ifac(
         return false;
     }
     let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device, ifac);
-    replace_interface_block(config_dir, old_name, name, &block)
+    replace_interface_block(
+        config_dir,
+        old_name,
+        name,
+        &block,
+        &[
+            COMMON_OWNED_KEYS,
+            IFAC_OWNED_KEYS,
+            BACKBONE_SERVER_OWNED_KEYS,
+        ],
+    )
 }
 
 pub fn set_transport_mode(config_dir: &Path, enable: bool) -> bool {
@@ -2146,6 +2270,66 @@ mod tests {
     }
 
     #[test]
+    fn update_tcp_client_preserves_unmanaged_keys_in_order() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[interfaces]\n  [[Hub]]\n    type = TCPClientInterface\n    target_host = old.example\n    target_port = 4242\n    recursive_prs = true\n    enabled = true\n    announces_from_internal = false\n    frobnicate = 7\n",
+        );
+
+        assert!(update_tcp_client(&dir, "Hub", "Hub", "new.example", 4243));
+
+        let content = read_config(&dir).unwrap();
+        assert_eq!(count_header(&content, "Hub"), 1);
+        assert!(content.contains("target_host = new.example"));
+        assert!(content.contains("target_port = 4243"));
+        assert!(!content.contains("old.example"));
+        assert_eq!(content.matches("enabled =").count(), 1);
+        let recursive = content.find("recursive_prs = true").unwrap();
+        let announces = content.find("announces_from_internal = false").unwrap();
+        let frobnicate = content.find("frobnicate = 7").unwrap();
+        assert!(recursive < announces && announces < frobnicate);
+    }
+
+    #[test]
+    fn update_rnode_keeps_hand_set_mode_and_unmanaged_keys() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[interfaces]\n  [[Radio]]\n    type = RNodeInterface\n    port = /dev/ttyUSB0\n    mode = internal\n    frequency = 915000000\n    bandwidth = 125000\n    spreadingfactor = 7\n    codingrate = 5\n    txpower = 17\n    enabled = true\n    announces_from_internal = false\n",
+        );
+
+        // The UI dropdown only submits known modes; the command glue threads
+        // the existing unrecognized mode through verbatim (cfg_rnode_mode).
+        assert!(update_rnode_interface(
+            &dir,
+            "Radio",
+            RnodeInterfaceArgs {
+                name: "Radio",
+                port: "/dev/ttyUSB1",
+                mode: Some("internal"),
+                frequency: 915_000_000,
+                bandwidth: 125_000,
+                spreading_factor: 7,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: None,
+                preset_key: None,
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs::default(),
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert_eq!(count_header(&content, "Radio"), 1);
+        assert!(content.contains("mode = internal"));
+        assert!(!content.contains("mode = full"));
+        assert!(content.contains("port = /dev/ttyUSB1"));
+        assert!(content.contains("announces_from_internal = false"));
+    }
+
+    #[test]
     fn rnode_mode_helpers_cover_exposed_modes() {
         assert_eq!(normalize_rnode_interface_mode(None), Some("full"));
         assert_eq!(normalize_rnode_interface_mode(Some("full")), Some("full"));
@@ -2175,5 +2359,20 @@ mod tests {
         for mode in RNODE_INTERFACE_MODES {
             assert!(rnode_interface_mode_value(Some(mode)).is_some());
         }
+    }
+
+    #[test]
+    fn rnode_mode_passthrough_keeps_unknown_values_verbatim() {
+        assert_eq!(rnode_interface_mode_passthrough(None), "full");
+        assert_eq!(rnode_interface_mode_passthrough(Some("")), "full");
+        assert_eq!(rnode_interface_mode_passthrough(Some("gw")), "gateway");
+        assert_eq!(
+            rnode_interface_mode_passthrough(Some("internal")),
+            "internal"
+        );
+        assert_eq!(
+            rnode_interface_mode_passthrough(Some(" internal ")),
+            "internal"
+        );
     }
 }
