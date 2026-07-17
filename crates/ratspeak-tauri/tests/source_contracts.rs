@@ -734,10 +734,22 @@ fn linux_wayland_webkit_startup_keeps_blank_window_workaround() {
     let source = read_source(repo_root().join("src-tauri/src/lib.rs")).expect("app shell");
 
     assert!(source.contains("fn apply_linux_webkit_rendering_workarounds()"));
-    assert!(source.contains("WAYLAND_DISPLAY"));
-    assert!(source.contains("XDG_SESSION_TYPE"));
     assert!(source.contains("WEBKIT_DISABLE_DMABUF_RENDERER"));
     assert!(source.contains("RATSPEAK_DISABLE_WEBKIT_DMABUF_WORKAROUND"));
+
+    // WEBKIT_DISABLE_DMABUF_RENDERER only selects the legacy renderer on
+    // WebKitGTK < 2.46; on 2.46+ it disables hardware acceleration outright
+    // (gray windows on smithay compositors / NixOS). The workaround must stay
+    // version-gated on the runtime WebKit.
+    assert!(source.contains("fn should_disable_webkit_dmabuf("));
+    assert!(source.contains("webkit_get_major_version"));
+    assert!(source.contains("webkit_version < (2, 46)"));
+
+    // Session detection lives in the shared window_prefs module.
+    let prefs = read_source(repo_root().join("crates/ratspeak-tauri/src/window_prefs.rs"))
+        .expect("window prefs");
+    assert!(prefs.contains("WAYLAND_DISPLAY"));
+    assert!(prefs.contains("XDG_SESSION_TYPE"));
 
     let workaround_pos = source
         .find("let linux_webkit_dmabuf_workaround = apply_linux_webkit_rendering_workarounds();")
@@ -752,6 +764,51 @@ fn linux_wayland_webkit_startup_keeps_blank_window_workaround() {
         workaround_pos < tracing_pos && tracing_pos < builder_pos,
         "WebKitGTK env workaround must run before Tauri constructs the webview"
     );
+
+    // --webview-diag must exit before any webview/env mutation side effects.
+    let diag_pos = source
+        .find("\"--webview-diag\"")
+        .expect("webview diagnostics flag");
+    assert!(
+        diag_pos < workaround_pos,
+        "--webview-diag must be handled before the workaround/builder run"
+    );
+}
+
+#[test]
+fn linux_window_decorations_preference_is_wired_end_to_end() {
+    let root = repo_root();
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("app shell");
+    let prefs = read_source(root.join("crates/ratspeak-tauri/src/window_prefs.rs"))
+        .expect("window prefs");
+    let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+
+    // Resolver: explicit on/off override; auto only reacts to tiling Wayland.
+    assert!(prefs.contains("fn resolve_window_decorations"));
+    assert!(prefs.contains("SWAYSOCK"));
+    assert!(prefs.contains("NIRI_SOCKET"));
+    assert!(prefs.contains("HYPRLAND_INSTANCE_SIGNATURE"));
+
+    // Shell: preference read before the window is built, applied at builder
+    // time, and adjustable live via the command.
+    assert!(shell.contains("window_decorations"));
+    assert!(shell.contains(".decorations(decorations)"));
+    assert!(shell.contains("fn set_window_decorations("));
+    assert!(shell.contains("set_window_decorations,"));
+
+    // Devtools must be reachable in release builds for field diagnostics.
+    assert!(shell.contains(".devtools(diagnostics_enabled() || developer_mode)"));
+
+    // Settings surface: payload field + frontend control.
+    assert!(commands.contains("\"window_decorations\": window_decorations"));
+    assert!(settings_js.contains("set_window_decorations"));
+    assert!(settings_js.contains("initWindowDecorationsToggle"));
+    assert!(index.contains("settings-window-decorations-auto"));
+    assert!(index.contains("settings-window-decorations-off"));
 }
 
 #[test]
@@ -802,8 +859,35 @@ fn app_sources_do_not_write_direct_stdout_or_stderr_logs() {
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
-        let source = read_source(&path).expect("source file");
-        let rel = path.strip_prefix(&root).unwrap_or(&path).display();
+        let mut source = read_source(&path).expect("source file");
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+
+        // Sole sanctioned stderr exception: `--webview-diag` prints the
+        // rendering environment by design — it must work without the tracing
+        // opt-in, before any subscriber exists. Everything else stays on
+        // tracing. The excised region must still never touch stdout.
+        if rel.ends_with("src-tauri/src/lib.rs") {
+            let start = source
+                .find("fn print_webview_diagnostics()")
+                .expect("webview diagnostics printer present");
+            let end = source[start..]
+                .find("\nfn ")
+                .map(|offset| start + offset)
+                .expect("function following the diagnostics printer");
+            // `eprintln!(` contains the `println!(` substring; strip stderr
+            // prints first so only genuine stdout prints can trip this.
+            let diag_without_stderr = source[start..end].replace("eprintln!(", "");
+            assert!(
+                !diag_without_stderr.contains("println!("),
+                "print_webview_diagnostics must write to stderr, not stdout"
+            );
+            source.replace_range(start..end, "");
+        }
+
         assert!(
             !source.contains("println!("),
             "{rel} must not print to stdout"

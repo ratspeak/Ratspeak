@@ -73,26 +73,141 @@ fn diagnostics_enabled() -> bool {
     env_flag("RATSPEAK_DIAGNOSTICS")
 }
 
+#[cfg(target_os = "linux")]
+fn webkit_runtime_version() -> (u32, u32) {
+    extern "C" {
+        fn webkit_get_major_version() -> std::os::raw::c_uint;
+        fn webkit_get_minor_version() -> std::os::raw::c_uint;
+    }
+    // Plain version getters on the already-linked libwebkit2gtk; safe pre-gtk_init.
+    unsafe { (webkit_get_major_version(), webkit_get_minor_version()) }
+}
+
+/// WEBKIT_DISABLE_DMABUF_RENDERER selects the legacy (working) renderer only on
+/// WebKitGTK < 2.46. From 2.46 (Skia) it empties the buffer-transport mode and
+/// disables hardware acceleration outright — a silent CPU downgrade that can
+/// render nothing at all (smithay compositors, NixOS). Gate on runtime version:
+/// pre-2.46 stacks keep the blank-window workaround, modern WebKit keeps GPU.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn should_disable_webkit_dmabuf(
+    webkit_version: (u32, u32),
+    wayland_session: bool,
+    opted_out: bool,
+    env_already_set: bool,
+) -> bool {
+    wayland_session && !opted_out && !env_already_set && webkit_version < (2, 46)
+}
+
 fn apply_linux_webkit_rendering_workarounds() -> bool {
-    if !cfg!(target_os = "linux") {
-        return false;
-    }
-
-    let wayland_session = std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var("XDG_SESSION_TYPE")
-            .map(|value| value.eq_ignore_ascii_case("wayland"))
-            .unwrap_or(false);
-    if !wayland_session
-        || env_flag("RATSPEAK_DISABLE_WEBKIT_DMABUF_WORKAROUND")
-        || std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some()
+    #[cfg(target_os = "linux")]
     {
-        return false;
+        let session = ratspeak_tauri::window_prefs::detect_session_env();
+        if should_disable_webkit_dmabuf(
+            webkit_runtime_version(),
+            session.wayland_session,
+            env_flag("RATSPEAK_DISABLE_WEBKIT_DMABUF_WORKAROUND"),
+            std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some(),
+        ) {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            return true;
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+/// `--webview-diag`: print the rendering environment and exit. Makes gray-window
+/// reports self-serve without a rebuild.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn print_webview_diagnostics() {
+    eprintln!(
+        "Ratspeak webview diagnostics (v{}, {})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let (major, minor) = webkit_runtime_version();
+        eprintln!("webkitgtk_runtime: {major}.{minor}");
+        let session = ratspeak_tauri::window_prefs::detect_session_env();
+        eprintln!(
+            "wayland_session: {}  tiling_compositor: {}",
+            session.wayland_session, session.tiling_compositor
+        );
+        for var in [
+            "XDG_SESSION_TYPE",
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",
+            "GDK_BACKEND",
+        ] {
+            eprintln!("{var}: {}", std::env::var(var).unwrap_or_default());
+        }
+        for var in [
+            "WAYLAND_DISPLAY",
+            "DISPLAY",
+            "APPIMAGE",
+            "SWAYSOCK",
+            "HYPRLAND_INSTANCE_SIGNATURE",
+            "NIRI_SOCKET",
+            "WAYFIRE_SOCKET",
+        ] {
+            eprintln!("{var}_present: {}", std::env::var_os(var).is_some());
+        }
+        let applied = apply_linux_webkit_rendering_workarounds();
+        eprintln!("dmabuf_workaround_applied: {applied}");
+        for var in [
+            "WEBKIT_DISABLE_DMABUF_RENDERER",
+            "WEBKIT_DISABLE_COMPOSITING_MODE",
+        ] {
+            eprintln!("{var}: {}", std::env::var(var).unwrap_or_default());
+        }
+        eprintln!(
+            "decorations_auto_resolution: {}",
+            ratspeak_tauri::window_prefs::resolve_window_decorations(
+                ratspeak_tauri::window_prefs::DecorationsPref::Auto,
+                session
+            )
+        );
+    }
+}
+
+/// Window decorations preference (auto/on/off). Persisted in SQLite; re-applied
+/// live to the running window on Linux (auto = hide under tiling Wayland).
+#[tauri::command]
+async fn set_window_decorations(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, std::sync::Arc<ratspeak_tauri::state::AppState>>,
+    mode: String,
+) -> Result<serde_json::Value, String> {
+    let mode = mode.trim().to_ascii_lowercase();
+    if !matches!(mode.as_str(), "auto" | "on" | "off") {
+        return Err("window decorations mode must be auto, on, or off".into());
     }
 
-    // WebKitGTK's DMA-BUF renderer can create blank webviews on recent
-    // Wayland stacks. Ratspeak is not GPU-heavy, so prefer reliable startup.
-    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    true
+    let stored = mode.clone();
+    ratspeak_tauri::db::spawn_db(state.db.clone(), move |p| {
+        ratspeak_tauri::db::try_set_setting(&p, "window_decorations", &stored)
+    })
+    .await
+    .map_err(|_| "set_window_decorations db task panicked".to_string())?
+    .map_err(|e| format!("Failed to save window decorations: {e}"))?;
+
+    #[cfg(target_os = "linux")]
+    if let Some(window) = app.get_webview_window("main") {
+        use ratspeak_tauri::window_prefs::{self, DecorationsPref};
+        let decorations = window_prefs::resolve_window_decorations(
+            DecorationsPref::from_setting(Some(&mode)),
+            window_prefs::detect_session_env(),
+        );
+        // GTK applies this live on Wayland; if a compositor ignores it, the
+        // builder-time path still applies it on next launch.
+        let _ = window.set_decorations(decorations);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = &app;
+
+    Ok(serde_json::json!({ "window_decorations": mode }))
 }
 
 fn validate_http_url(raw: &str) -> Result<String, String> {
@@ -439,10 +554,16 @@ fn init_tracing() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if std::env::args().any(|arg| arg == "--webview-diag") {
+        print_webview_diagnostics();
+        std::process::exit(0);
+    }
+
     let linux_webkit_dmabuf_workaround = apply_linux_webkit_rendering_workarounds();
     init_tracing();
     if linux_webkit_dmabuf_workaround {
-        tracing::debug!("disabled WebKitGTK DMA-BUF renderer for Linux Wayland startup");
+        tracing::info!("WebKitGTK < 2.46: disabled DMA-BUF renderer for Wayland startup");
     }
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
@@ -464,6 +585,7 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             open_external_url,
+            set_window_decorations,
             save_image_to_photos,
             request_microphone_permission,
             ratspeak_tauri::commands::system::api_version,
@@ -670,6 +792,20 @@ pub fn run() {
                     .await
                     .expect("Failed to start Ratspeak core")
             });
+
+            // Window prefs must be read before the window is built.
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+            let (decorations_setting, developer_mode) = rt
+                .block_on(ratspeak_tauri::db::spawn_db(state.db.clone(), |p| {
+                    (
+                        ratspeak_tauri::db::get_setting(&p, "window_decorations"),
+                        ratspeak_tauri::db::get_setting(&p, "developer_mode_enabled")
+                            .is_some_and(|v| v == "true"),
+                    )
+                }))
+                .unwrap_or((None, false));
+
             std::mem::forget(rt);
 
             app.manage(state);
@@ -698,7 +834,25 @@ pub fn run() {
                 .title("Ratspeak")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 600.0)
-                .disable_drag_drop_handler();
+                .disable_drag_drop_handler()
+                .devtools(diagnostics_enabled() || developer_mode);
+
+            #[cfg(target_os = "linux")]
+            let window = {
+                use ratspeak_tauri::window_prefs::{self, DecorationsPref};
+                let pref = DecorationsPref::from_setting(decorations_setting.as_deref());
+                let decorations = window_prefs::resolve_window_decorations(
+                    pref,
+                    window_prefs::detect_session_env(),
+                );
+                if !decorations {
+                    tracing::info!(
+                        pref = pref.as_setting(),
+                        "hiding window decorations (tiling Wayland compositor)"
+                    );
+                }
+                window.decorations(decorations)
+            };
 
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             let window = window.on_download(|_webview, event| {

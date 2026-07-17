@@ -20,7 +20,7 @@ lxst-voice = ["ratspeak-tauri/lxst-voice"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "devtools"] }
 tauri-plugin-notification = "2"
 url = "2"
 serde = { version = "1", features = ["derive"] }

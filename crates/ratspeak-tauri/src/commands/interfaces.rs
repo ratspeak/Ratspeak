@@ -919,22 +919,25 @@ pub async fn set_auto_announce(state: State<'_, Arc<AppState>>, interval: u64) -
 
 #[tauri::command]
 pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    let (hw_timeout, developer_mode) = db::spawn_db(state.db.clone(), |p| {
+    let (hw_timeout, developer_mode, window_decorations) = db::spawn_db(state.db.clone(), |p| {
         let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
         let developer_mode =
             db::get_setting(&p, "developer_mode_enabled").is_some_and(|v| v == "true");
-        (hw_timeout, developer_mode)
+        let window_decorations =
+            db::get_setting(&p, "window_decorations").unwrap_or_else(|| "auto".to_string());
+        (hw_timeout, developer_mode, window_decorations)
     })
     .await
-    .unwrap_or((0, false));
+    .unwrap_or((0, false, "auto".to_string()));
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
         "announce_ratspeak_usage": state.announce_ratspeak_usage_enabled(),
         "peers_sort": persisted_peers_sort(&state),
         "hardware_session_timeout": hw_timeout,
         "developer_mode": developer_mode,
+        "window_decorations": window_decorations,
     }))
 }
 

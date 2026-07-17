@@ -12,6 +12,7 @@ pub mod config;
 pub mod emitter;
 pub mod error;
 pub mod notifier;
+pub mod window_prefs;
 
 // Re-export runtime modules so internal `crate::*` paths in commands keep
 // resolving after the runtime/Tauri split.
