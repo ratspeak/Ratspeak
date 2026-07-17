@@ -779,8 +779,8 @@ fn linux_wayland_webkit_startup_keeps_blank_window_workaround() {
 fn linux_window_decorations_preference_is_wired_end_to_end() {
     let root = repo_root();
     let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("app shell");
-    let prefs = read_source(root.join("crates/ratspeak-tauri/src/window_prefs.rs"))
-        .expect("window prefs");
+    let prefs =
+        read_source(root.join("crates/ratspeak-tauri/src/window_prefs.rs")).expect("window prefs");
     let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("interfaces commands");
     let settings_js =

@@ -108,7 +108,10 @@ mod tests {
             DecorationsPref::from_setting(Some("auto")),
             DecorationsPref::Auto
         );
-        assert_eq!(DecorationsPref::from_setting(Some("on")), DecorationsPref::On);
+        assert_eq!(
+            DecorationsPref::from_setting(Some("on")),
+            DecorationsPref::On
+        );
         assert_eq!(
             DecorationsPref::from_setting(Some(" OFF ")),
             DecorationsPref::Off
@@ -121,21 +124,39 @@ mod tests {
 
     #[test]
     fn auto_keeps_decorations_on_stacking_desktops() {
-        assert!(resolve_window_decorations(DecorationsPref::Auto, env(true, false)));
-        assert!(resolve_window_decorations(DecorationsPref::Auto, env(false, false)));
+        assert!(resolve_window_decorations(
+            DecorationsPref::Auto,
+            env(true, false)
+        ));
+        assert!(resolve_window_decorations(
+            DecorationsPref::Auto,
+            env(false, false)
+        ));
     }
 
     #[test]
     fn auto_drops_decorations_only_for_tiling_wayland() {
-        assert!(!resolve_window_decorations(DecorationsPref::Auto, env(true, true)));
+        assert!(!resolve_window_decorations(
+            DecorationsPref::Auto,
+            env(true, true)
+        ));
         // X11 tiling (i3): tao draws no GTK titlebar, leave decorations alone.
-        assert!(resolve_window_decorations(DecorationsPref::Auto, env(false, true)));
+        assert!(resolve_window_decorations(
+            DecorationsPref::Auto,
+            env(false, true)
+        ));
     }
 
     #[test]
     fn explicit_pref_overrides_detection_both_ways() {
-        assert!(resolve_window_decorations(DecorationsPref::On, env(true, true)));
-        assert!(!resolve_window_decorations(DecorationsPref::Off, env(false, false)));
+        assert!(resolve_window_decorations(
+            DecorationsPref::On,
+            env(true, true)
+        ));
+        assert!(!resolve_window_decorations(
+            DecorationsPref::Off,
+            env(false, false)
+        ));
     }
 
     #[test]
