@@ -99,7 +99,6 @@ pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfMana
     let stamp_cost = state
         .required_stamp_cost
         .load(std::sync::atomic::Ordering::Relaxed);
-    mgr.router.set_enforce_stamps(enforce);
     mgr.router.config.stamp_cost = if enforce && stamp_cost > 0 {
         Some(stamp_cost)
     } else {
