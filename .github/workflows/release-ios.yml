@@ -16,9 +16,9 @@ permissions:
   contents: read
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.24
-  RATSPEAK_RSLXMF_REF: v1.0.1
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.21
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.25
+  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.25
+  RATSPEAK_RSLXST_REF: ratspeak-v1.0.25
   RATSPEAK_LRGP_REF: ratspeak-v1.0.21
   TOOLCHAINS: com.apple.dt.toolchain.XcodeDefault
 

@@ -25,10 +25,10 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.24
-  RATSPEAK_RSLXMF_REF: v1.0.1
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.21
-  RATSPEAK_LRGP_REF: ratspeak-v1.0.21
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.25
+  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.25
+  RATSPEAK_RSLXST_REF: ratspeak-v1.0.25
+  RATSPEAK_LRGP_REF: ratspeak-v1.0.25
 
 jobs:
   build:
@@ -257,9 +257,11 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name, '-') }}
           body: |
-            - Answer path requests for our own address so peers who message you before you have announced reach you on first contact
-            - BLE peer mesh: stop exposing the identity hash over GATT on Android and fix dropped notification fragments
-            - BLE peer mesh: reliable teardown on shutdown/restart/identity switch, plus clearer adapter/permission state
+            - Protocol refresh: byte-exact parity with Reticulum 1.3.8 and LXMF 1.0.1
+            - Fix unbounded announce-cache growth on long-running nodes (Android storage)
+            - Standardized reply and reaction interop with other LXMF clients
+            - Linux: WebView rendering fixes and a window-decorations setting
+            - Interface settings edits preserve manually configured keys and modes
           files: |
             Ratspeak/dist/macos/*
             Ratspeak/checksums-macos.txt
