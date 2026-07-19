@@ -860,11 +860,13 @@ fn app_sources_do_not_write_direct_stdout_or_stderr_logs() {
             continue;
         }
         let mut source = read_source(&path).expect("source file");
+        // Normalize separators so the carve-out below matches on Windows too.
         let rel = path
             .strip_prefix(&root)
             .unwrap_or(&path)
             .display()
-            .to_string();
+            .to_string()
+            .replace('\\', "/");
 
         // Sole sanctioned stderr exception: `--webview-diag` prints the
         // rendering environment by design — it must work without the tracing
