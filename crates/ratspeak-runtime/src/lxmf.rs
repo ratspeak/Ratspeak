@@ -13,6 +13,7 @@ use lxmf_core::constants::{
     DeliveryMethod, DeliveryRepresentation, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES,
     PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
+use lxmf_core::delivery_ratchet::{DeliveryAnnounceKind, DeliveryRatchetState};
 use lxmf_core::handlers::CompressionSupport;
 use lxmf_core::link_delivery::{
     BackchannelSendCommand, BackchannelSendError, BackchannelSendReceipt, DeliveryResult,
@@ -27,7 +28,7 @@ use lxmf_core::router::{
 use rns_identity::destination::Destination;
 use rns_identity::identity::Identity;
 use rns_identity::ratchet::{
-    RatchetRing, ReceivedRatchet, clean_received_ratchets_dir, purge_expired_ratchets_in_memory,
+    ReceivedRatchet, clean_received_ratchets_dir, purge_expired_ratchets_in_memory,
 };
 
 use rns_transport::messages::{
@@ -853,7 +854,8 @@ pub struct LxmfManager {
     pub display_name: String,
     pub status: String,
     pub announce_ratspeak_usage: bool,
-    pub ratchet_ring: RatchetRing,
+    delivery_ratchets: DeliveryRatchetState,
+    announce_cache_started: Instant,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
     pub known_identities: HashMap<String, [u8; 64]>,
     peer_lxmf_compression_support: HashMap<[u8; 16], CompressionSupport>,
@@ -1057,29 +1059,17 @@ impl LxmfManager {
 
         let ratchet_dir = id_dir.join("ratchets");
         std::fs::create_dir_all(&ratchet_dir)?;
-        let ratchet_ring_path = ratchet_dir.join("ring");
-        let mut ratchet_ring = if ratchet_ring_path.exists() {
-            RatchetRing::load(&ratchet_ring_path)
-                .map(|(ring, _sig)| ring)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Failed to load ratchet ring: {e}, creating new");
-                    RatchetRing::new()
-                })
-        } else {
-            RatchetRing::new()
-        };
-        if ratchet_ring.is_empty() {
-            ratchet_ring.rotate();
-            let sig = identity
-                .sign(
-                    ratchet_ring
-                        .current_public_key()
-                        .unwrap_or([0u8; 32])
-                        .as_ref(),
-                )
-                .unwrap_or([0u8; 64]);
-            let _ = ratchet_ring.save(&ratchet_ring_path, &sig);
-        }
+        let wall_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let delivery_ratchets = DeliveryRatchetState::load_or_initialize(
+            &identity,
+            lxmf_dest_hash,
+            ratchet_dir.join("ring"),
+            ratchet_dir.join("ring.control"),
+            wall_now,
+        )?;
 
         // Sweep expired/corrupt files before load.
         let received_dir = ratchet_dir.join("received");
@@ -1118,7 +1108,7 @@ impl LxmfManager {
         }
 
         tracing::info!(
-            ratchet_keys = ratchet_ring.len(),
+            ratchet_keys = delivery_ratchets.ring().len(),
             received_ratchets = received_ratchets.len(),
             known_identities = known_identities.len(),
             "Crypto state loaded"
@@ -1137,7 +1127,8 @@ impl LxmfManager {
             display_name: String::new(),
             status: String::new(),
             announce_ratspeak_usage: true,
-            ratchet_ring,
+            delivery_ratchets,
+            announce_cache_started: Instant::now(),
             received_ratchets,
             known_identities,
             peer_lxmf_compression_support: HashMap::new(),
@@ -2372,7 +2363,7 @@ impl LxmfManager {
     }
 
     pub fn create_announce_packet(&mut self) -> Result<Vec<u8>, String> {
-        self.build_delivery_announce_packet(false)
+        self.build_delivery_announce_packet(DeliveryAnnounceKind::Broadcast)
     }
 
     /// Path-response variant: an otherwise-identical delivery announce tagged
@@ -2381,21 +2372,31 @@ impl LxmfManager {
     /// without triggering wide rebroadcast. Without this, a peer that has never
     /// announced can't learn our keys/path, so replies to them stall until we
     /// announce. See the `AnnounceRequested` handler in `lib.rs`.
-    pub fn create_path_response_announce_packet(&mut self) -> Result<Vec<u8>, String> {
-        self.build_delivery_announce_packet(true)
+    pub fn create_path_response_announce_packet(
+        &mut self,
+        tag: Option<&[u8]>,
+    ) -> Result<Vec<u8>, String> {
+        self.build_delivery_announce_packet(DeliveryAnnounceKind::PathResponse { tag })
     }
 
-    fn build_delivery_announce_packet(&mut self, path_response: bool) -> Result<Vec<u8>, String> {
-        use rns_identity::announce::AnnounceData;
+    fn build_delivery_announce_packet(
+        &mut self,
+        kind: DeliveryAnnounceKind<'_>,
+    ) -> Result<Vec<u8>, String> {
+        let wall_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cache_now = self.announce_cache_started.elapsed().as_secs_f64();
+        self.build_delivery_announce_packet_at(kind, wall_now, cache_now)
+    }
 
-        if self.ratchet_ring.needs_rotation() {
-            self.ratchet_ring.rotate();
-            self.save_crypto_state();
-        }
-
-        let ratchet_pub = self.ratchet_ring.current_public_key();
-        let ratchet_ref = ratchet_pub.as_ref();
-
+    fn build_delivery_announce_packet_at(
+        &mut self,
+        kind: DeliveryAnnounceKind<'_>,
+        wall_now: u64,
+        cache_now: f64,
+    ) -> Result<Vec<u8>, String> {
         // Pack as LXMF-compatible msgpack with a Ratspeak extension tail.
         // The first three fields match Python `LXMRouter.get_announce_app_data`.
         // Raw UTF-8 forces Python receivers onto a legacy path that skips
@@ -2418,37 +2419,10 @@ impl LxmfManager {
             self.announce_ratspeak_usage,
         );
 
-        let announce = AnnounceData::create(
-            &self.identity,
-            LXMF_APP_NAME,
-            Some(&app_data_bytes),
-            ratchet_ref,
-        )
-        .map_err(|e| format!("Failed to create announce: {e}"))?;
-
-        let payload = announce.pack();
-
-        let flags = rns_wire::flags::PacketFlags {
-            header_type: rns_wire::flags::HeaderType::Header1,
-            context_flag: ratchet_ref.is_some(),
-            transport_type: rns_wire::flags::TransportType::Broadcast,
-            destination_type: rns_wire::flags::DestinationType::Single,
-            packet_type: rns_wire::flags::PacketType::Announce,
-        };
-        let header = rns_wire::header::PacketHeader {
-            flags,
-            hops: 0,
-            transport_id: None,
-            destination_hash: self.lxmf_dest_hash,
-            context: if path_response {
-                rns_wire::context::PacketContext::PathResponse
-            } else {
-                rns_wire::context::PacketContext::None
-            },
-        };
-
-        let mut raw = header.pack();
-        raw.extend_from_slice(&payload);
+        let raw = self
+            .delivery_ratchets
+            .create_announce(&self.identity, &app_data_bytes, wall_now, cache_now, kind)
+            .map_err(|error| error.to_string())?;
         if raw.len() > rns_wire::constants::MTU {
             return Err(format!(
                 "Announce packet exceeds Reticulum MTU ({} > {})",
@@ -2600,19 +2574,7 @@ impl LxmfManager {
         let ratchet_dir = self.ratchets_dir();
         std::fs::create_dir_all(&ratchet_dir).ok();
 
-        let ring_path = ratchet_dir.join("ring");
-        let sig = self
-            .identity
-            .sign(
-                self.ratchet_ring
-                    .current_public_key()
-                    .unwrap_or([0u8; 32])
-                    .as_ref(),
-            )
-            .unwrap_or([0u8; 64]);
-        if let Err(e) = self.ratchet_ring.save(&ring_path, &sig) {
-            tracing::warn!("Failed to save ratchet ring: {e}");
-        }
+        self.delivery_ratchets.save(&self.identity);
 
         let received_dir = ratchet_dir.join("received");
         std::fs::create_dir_all(&received_dir).ok();
@@ -3333,7 +3295,7 @@ impl LxmfManager {
     }
 
     pub fn decrypt_inbound(&self, ciphertext: &[u8]) -> Option<Vec<u8>> {
-        let prv_keys = self.ratchet_ring.private_keys();
+        let prv_keys = self.delivery_ratchets.ring().private_keys();
         let refs: Vec<&[u8; 32]> = prv_keys.iter().collect();
         let ratchets = if refs.is_empty() {
             None
@@ -5008,10 +4970,31 @@ mod tests {
     }
 
     #[test]
+    fn propagation_announce_never_carries_the_delivery_ratchet() {
+        let mut mgr = test_manager();
+        let raw = mgr
+            .create_propagation_announce_packet()
+            .expect("propagation announce");
+        let (header, offset) =
+            rns_wire::header::PacketHeader::unpack(&raw).expect("propagation header");
+        let announce =
+            rns_identity::announce::AnnounceData::unpack(&raw[offset..], header.flags.context_flag)
+                .expect("propagation announce data");
+
+        assert!(
+            !header.flags.context_flag,
+            "reusing the delivery ring here would make propagation unreachable to Python peers"
+        );
+        assert_eq!(announce.ratchet, None);
+    }
+
+    #[test]
     fn path_response_announce_uses_path_response_context() {
         let mut mgr = test_manager();
 
-        let normal = mgr.create_announce_packet().expect("announce packet");
+        let normal = mgr
+            .build_delivery_announce_packet_at(DeliveryAnnounceKind::Broadcast, 100, 1.0)
+            .expect("announce packet");
         let (normal_hdr, _) =
             rns_wire::header::PacketHeader::unpack(&normal).expect("unpack normal announce");
         assert_eq!(normal_hdr.context, rns_wire::context::PacketContext::None);
@@ -5021,7 +5004,13 @@ mod tests {
         );
 
         let response = mgr
-            .create_path_response_announce_packet()
+            .build_delivery_announce_packet_at(
+                DeliveryAnnounceKind::PathResponse {
+                    tag: Some(b"path-tag"),
+                },
+                101,
+                2.0,
+            )
             .expect("path-response announce packet");
         let (resp_hdr, _) =
             rns_wire::header::PacketHeader::unpack(&response).expect("unpack path response");
@@ -5036,6 +5025,102 @@ mod tests {
             rns_wire::flags::PacketType::Announce
         );
         assert_eq!(resp_hdr.destination_hash, mgr.lxmf_dest_hash);
+    }
+
+    #[test]
+    fn repeated_path_request_tag_reuses_exact_signed_announce() {
+        let mut mgr = test_manager();
+        let tag = b"same-path-request";
+        let first = mgr
+            .build_delivery_announce_packet_at(
+                DeliveryAnnounceKind::PathResponse { tag: Some(tag) },
+                100,
+                1.0,
+            )
+            .expect("first path response");
+        let committed_wire = mgr.delivery_ratchets.control().last_announce_wire();
+
+        mgr.display_name = "changed after first response".to_string();
+        let replay = mgr
+            .build_delivery_announce_packet_at(
+                DeliveryAnnounceKind::PathResponse { tag: Some(tag) },
+                100,
+                2.0,
+            )
+            .expect("cached path response");
+
+        assert_eq!(
+            replay, first,
+            "dropping the request tag would create different signed bytes"
+        );
+        assert_eq!(
+            mgr.delivery_ratchets.control().last_announce_wire(),
+            committed_wire,
+            "a cached response must not consume another persisted announce value"
+        );
+    }
+
+    #[test]
+    fn retained_delivery_key_decrypts_messages_after_rotation() {
+        let mut mgr = test_manager();
+        let initial_public = mgr
+            .delivery_ratchets
+            .ring()
+            .current_public_key()
+            .expect("initial durable ratchet");
+        let remote = Identity::from_public_key(&mgr.identity.get_public_key()).unwrap();
+        let ciphertext = remote
+            .encrypt(b"in flight before rotation", Some(&initial_public))
+            .unwrap();
+        assert!(
+            mgr.identity.decrypt(&ciphertext, None, false).is_err(),
+            "the fixture must actually require the ratchet private key"
+        );
+
+        let rotate_at = mgr
+            .delivery_ratchets
+            .control()
+            .last_rotation_wall()
+            .unwrap()
+            + mgr.delivery_ratchets.ring().ratchet_interval();
+        mgr.build_delivery_announce_packet_at(DeliveryAnnounceKind::Broadcast, rotate_at, 1.0)
+            .expect("rotating announce");
+
+        assert_ne!(
+            mgr.delivery_ratchets.ring().current_public_key(),
+            Some(initial_public)
+        );
+        assert_eq!(
+            mgr.decrypt_inbound(&ciphertext).as_deref(),
+            Some(b"in flight before rotation".as_slice()),
+            "trying only the newest key would break in-flight messages after rotation"
+        );
+    }
+
+    #[test]
+    fn outbound_encryption_prefers_a_live_peer_ratchet() {
+        let mut mgr = test_manager();
+        let peer = Identity::new();
+        let destination = Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&peer.hash));
+        let destination_hex = hex::encode(destination);
+        mgr.known_identities
+            .insert(destination_hex.clone(), peer.get_public_key());
+        let private = rns_crypto::x25519::X25519PrivateKey::generate();
+        let public = private.public_key().to_bytes();
+        mgr.received_ratchets
+            .insert(destination_hex.clone(), ReceivedRatchet::new(public));
+
+        let ciphertext = mgr
+            .encrypt_for_destination(&destination_hex, b"prefer peer ratchet")
+            .expect("encrypted message");
+        assert!(peer.decrypt(&ciphertext, None, false).is_err());
+        let private = private.to_bytes();
+        assert_eq!(
+            peer.decrypt(&ciphertext, Some(&[&private]), false)
+                .unwrap()
+                .as_slice(),
+            b"prefer peer ratchet"
+        );
     }
 
     #[test]
@@ -5124,7 +5209,7 @@ mod tests {
             get(lxmf_core::constants::FIELD_REPLY_QUOTE).map(Vec::as_slice),
             Some("quoted".as_bytes())
         );
-        assert!(EMIT_LEGACY_REPLY_REACTION_ENVELOPE);
+        const { assert!(EMIT_LEGACY_REPLY_REACTION_ENVELOPE) };
         assert_eq!(
             get(lxmf_core::constants::FIELD_CUSTOM_TYPE).map(Vec::as_slice),
             Some(RATSPEAK_CHAT_CUSTOM_TYPE_V2)
@@ -5579,6 +5664,100 @@ mod tests {
 
         let loaded = LxmfManager::load_or_create(&tmp, Some(&second_hash), None).unwrap();
         assert_eq!(loaded.identity_hash, second_hash);
+    }
+
+    #[test]
+    fn ratchet_files_are_identity_scoped_and_restart_verified() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-ratchet-identity-scope-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pool = test_pool();
+        let first = LxmfManager::load_or_create(&tmp, None, None).unwrap();
+        let first_hash = first.identity_hash.clone();
+        let first_public = first.delivery_ratchets.ring().current_public_key().unwrap();
+        let first_ring = first.delivery_ratchets.ring_path().to_path_buf();
+        let first_control = first.delivery_ratchets.control_path().to_path_buf();
+        let (second_hash, _) = first.create_identity("Second", &pool).unwrap();
+        drop(first);
+
+        let second = LxmfManager::load_or_create(&tmp, Some(&second_hash), None).unwrap();
+        assert_ne!(second.delivery_ratchets.ring_path(), first_ring);
+        assert_ne!(second.delivery_ratchets.control_path(), first_control);
+        assert!(
+            second
+                .delivery_ratchets
+                .ring_path()
+                .starts_with(tmp.join(".ratspeak/identities").join(&second_hash))
+        );
+        assert!(second.delivery_ratchets.ring_path().is_file());
+        assert!(second.delivery_ratchets.control_path().is_file());
+        drop(second);
+
+        let restarted = LxmfManager::load_or_create(&tmp, Some(&first_hash), None).unwrap();
+        assert_eq!(restarted.delivery_ratchets.ring_path(), first_ring);
+        assert_eq!(restarted.delivery_ratchets.control_path(), first_control);
+        assert_eq!(
+            restarted.delivery_ratchets.ring().current_public_key(),
+            Some(first_public),
+            "using one global ring would silently replace the first identity's decryption key"
+        );
+        assert_eq!(
+            rns_identity::ratchet::RatchetRing::load_verified(&first_ring, &restarted.identity)
+                .unwrap()
+                .format(),
+            rns_identity::ratchet::RatchetRingFormat::Canonical
+        );
+        rns_identity::announce_state::RatchetControlState::load_verified(
+            &first_control,
+            &restarted.identity,
+            restarted.lxmf_dest_hash,
+        )
+        .unwrap();
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn corrupt_own_ring_is_preserved_and_only_unratcheted_announces_escape() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-ratchet-corrupt-ring-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = LxmfManager::load_or_create(&tmp, None, None).unwrap();
+        let identity_hash = first.identity_hash.clone();
+        let ring_path = first.delivery_ratchets.ring_path().to_path_buf();
+        drop(first);
+        let corrupt = b"preserve this corrupt ring for recovery";
+        std::fs::write(&ring_path, corrupt).unwrap();
+
+        let mut restarted = LxmfManager::load_or_create(&tmp, Some(&identity_hash), None).unwrap();
+        let raw = restarted
+            .build_delivery_announce_packet_at(DeliveryAnnounceKind::Broadcast, 100, 1.0)
+            .expect("safe unratcheted fallback");
+        let (header, offset) = rns_wire::header::PacketHeader::unpack(&raw).unwrap();
+        let announce =
+            rns_identity::announce::AnnounceData::unpack(&raw[offset..], header.flags.context_flag)
+                .unwrap();
+        restarted.save_crypto_state();
+
+        assert!(!header.flags.context_flag);
+        assert_eq!(announce.ratchet, None);
+        assert_eq!(
+            std::fs::read(&ring_path).unwrap(),
+            corrupt,
+            "startup or shutdown must not destroy evidence or recovery material"
+        );
+        std::fs::remove_dir_all(tmp).ok();
     }
 
     #[test]

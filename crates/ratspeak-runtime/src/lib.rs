@@ -2508,12 +2508,13 @@ async fn apply_inbound_ratspeak_reaction(
 fn build_lxmf_path_response_message(
     state: &Arc<AppState>,
     attached_interface: Option<u64>,
+    tag: Option<&[u8]>,
 ) -> Option<rns_transport::messages::TransportMessage> {
     // Build under the lxmf lock (sync), then drop it before returning.
     let (raw, dest_hash) =
         match state.lxmf.lock() {
             Ok(mut guard) => guard.as_mut().and_then(|mgr| {
-                match mgr.create_path_response_announce_packet() {
+                match mgr.create_path_response_announce_packet(tag) {
                     Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
                     Err(e) => {
                         tracing::warn!(error = %e, "failed to build LXMF path-response announce");
@@ -2541,8 +2542,13 @@ fn build_lxmf_path_response_message(
 /// interface a path request arrived on. The transport delegates this to us
 /// because it doesn't hold our identity keys; answering is what lets a peer
 /// that never announced learn our identity + path on first contact.
-async fn answer_lxmf_path_request(state: &Arc<AppState>, attached_interface: Option<u64>) {
-    let Some(message) = build_lxmf_path_response_message(state, attached_interface) else {
+async fn answer_lxmf_path_request(
+    state: &Arc<AppState>,
+    attached_interface: Option<u64>,
+    tag: Option<Vec<u8>>,
+) {
+    let Some(message) = build_lxmf_path_response_message(state, attached_interface, tag.as_deref())
+    else {
         return;
     };
 
@@ -2641,7 +2647,7 @@ async fn handle_inbound_lxmf(
         // until we announced.
         if let DestinationEvent::AnnounceRequested(ref req) = event {
             if req.path_response {
-                answer_lxmf_path_request(&state, req.attached_interface).await;
+                answer_lxmf_path_request(&state, req.attached_interface, req.tag.clone()).await;
             }
             continue;
         }
@@ -4749,8 +4755,9 @@ mod inbound_pipeline_tests {
         let (state, _emitter) = pipeline_state();
         let dest = local_dest(&state);
 
-        let message =
-            build_lxmf_path_response_message(&state, Some(7)).expect("path-response message built");
+        let tag = [0xA5; 16];
+        let message = build_lxmf_path_response_message(&state, Some(7), Some(&tag))
+            .expect("path-response message built");
 
         // Must be OutboundAttached on the arrival interface, NOT a broadcast —
         // upstream RNS answers a local path request only on that interface.
@@ -4793,8 +4800,8 @@ mod inbound_pipeline_tests {
         let (state, _emitter) = pipeline_state();
         let dest = local_dest(&state);
 
-        let message =
-            build_lxmf_path_response_message(&state, None).expect("path-response message built");
+        let message = build_lxmf_path_response_message(&state, None, None)
+            .expect("path-response message built");
 
         let request = match message {
             rns_transport::messages::TransportMessage::Outbound(request) => request,
@@ -4807,6 +4814,29 @@ mod inbound_pipeline_tests {
         assert_eq!(
             header.context,
             rns_wire::context::PacketContext::PathResponse
+        );
+    }
+
+    #[test]
+    fn path_response_message_preserves_tag_for_exact_replay() {
+        let (state, _emitter) = pipeline_state();
+        let tag = [0x5A; 16];
+
+        let first = build_lxmf_path_response_message(&state, Some(3), Some(&tag))
+            .expect("first path response");
+        let second = build_lxmf_path_response_message(&state, Some(3), Some(&tag))
+            .expect("cached path response");
+        let raw = |message| match message {
+            rns_transport::messages::TransportMessage::OutboundAttached { request, .. } => {
+                request.raw
+            }
+            other => panic!("expected attached path response, got {other:?}"),
+        };
+
+        assert_eq!(
+            raw(second),
+            raw(first),
+            "discarding AnnounceRequest.tag would defeat Reticulum path-response deduplication"
         );
     }
 
