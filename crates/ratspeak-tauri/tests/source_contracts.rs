@@ -59,6 +59,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
         read_source(root.join("dashboard/static/js/channels.js")).expect("channels js");
     let channels_css =
         read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
     let build_css = read_source(root.join("dashboard/build-css.sh")).expect("css build script");
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/channels.rs"))
@@ -66,6 +68,7 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channels.rs"))
         .expect("channels commands");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    let tauri_build = read_source(root.join("src-tauri/build.rs")).expect("tauri build script");
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
 
     assert!(index.contains("data-view=\"channels\""));
@@ -76,9 +79,15 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_js.contains("Keys are sent over the authenticated Link and are never saved"));
     assert!(channels_js.contains("RS.listen('channels_snapshot'"));
     assert!(channels_js.contains("TextEncoder"));
-    assert!(channels_css.contains(".channels-layout.view-channel-detail"));
-    assert!(channels_css.contains("body.view-channel-detail .bottom-bar"));
+    assert!(responsive_css.contains(".channels-layout.view-channel-detail"));
+    assert!(responsive_css.contains("body.view-channel-detail .bottom-bar"));
+    assert!(responsive_css.contains("calc(56px + var(--sat))"));
+    assert!(responsive_css.contains("body.view-channel-detail .main-content"));
+    assert!(responsive_css.contains(".channels-layout.has-active-room.members-open"));
+    assert!(channels_css.contains(".channel-members-scrim"));
+    assert!(channels_js.contains("layout.classList.remove('members-open')"));
     assert!(build_css.contains("09-channels.css"));
+    assert!(tauri_build.contains(r#""09-channels.css""#));
 
     assert!(nav_js.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];"));
     assert!(nav_js.contains("if (viewId === 'channels') return 'message';"));

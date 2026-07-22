@@ -507,14 +507,17 @@ function _channelsBuildRoomRow(room, savedOnly) {
 }
 
 function _channelsRenderRoom() {
+    var layout = _channelsEl('channels-layout');
     var header = _channelsEl('channel-room-header');
     var banner = _channelsEl('channel-session-banner');
     var compose = _channelsEl('channel-compose');
     var transcript = _channelsEl('channel-transcript');
     var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
     if (!header || !transcript || !compose || !banner) return;
+    if (layout) layout.classList.toggle('has-active-room', !!room);
 
     if (!room) {
+        if (layout) layout.classList.remove('members-open');
         header.hidden = true;
         banner.hidden = true;
         compose.hidden = true;
@@ -863,9 +866,7 @@ function channelsOpenConnectSheet(prefill) {
     });
     built.footer.appendChild(cancel);
     built.footer.appendChild(connect);
-    built.overlay.addEventListener('click', function(event) { if (event.target === built.overlay) built.dismiss(); });
-    built.present();
-    setTimeout(function() { (selectedHash ? nicknameInput : destinationInput).focus(); }, 250);
+    _channelsPresentSheet(built, selectedHash ? nicknameInput : destinationInput);
 }
 
 function _channelsSheetField(labelText, input) {
@@ -879,6 +880,53 @@ function _channelsSheetField(labelText, input) {
     field.appendChild(label);
     field.appendChild(input);
     return field;
+}
+
+function _channelsPresentSheet(built, initialFocus) {
+    built.overlay.addEventListener('click', function(event) {
+        if (event.target === built.overlay) built.dismiss();
+    });
+    built.sheet.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') {
+            event.stopPropagation();
+            built.dismiss();
+            return;
+        }
+        if (event.key === 'Enter' &&
+                (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT')) {
+            var primary = built.sheet.querySelector('.nr-btn-primary:not(:disabled)');
+            if (primary) {
+                event.preventDefault();
+                primary.click();
+                return;
+            }
+        }
+        if (event.key !== 'Tab') return;
+        var focusable = built.sheet.querySelectorAll('input, textarea, select, button:not(:disabled)');
+        if (!focusable.length) return;
+        var first = focusable[0];
+        var last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    });
+    if (RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
+        RS.gestures.attachDragDismiss(built.sheet, {
+            axis: 'y',
+            blockIfScrolled: true,
+            skipIf: function(event) {
+                return !!event.target.closest('button, input, textarea, select');
+            },
+            parallaxOverlay: built.overlay,
+            onCommit: function() { built.dismiss(); }
+        });
+    }
+    built.present();
+    if (initialFocus) setTimeout(function() { initialFocus.focus(); }, 250);
 }
 
 function channelsOpenJoinSheet(prefillRoom) {
@@ -943,9 +991,7 @@ function channelsOpenJoinSheet(prefillRoom) {
     });
     built.footer.appendChild(cancel);
     built.footer.appendChild(join);
-    built.overlay.addEventListener('click', function(event) { if (event.target === built.overlay) built.dismiss(); });
-    built.present();
-    setTimeout(function() { roomInput.focus(); }, 250);
+    _channelsPresentSheet(built, roomInput);
 }
 
 function channelsOpenHubOptions() {
@@ -995,8 +1041,7 @@ function channelsOpenHubOptions() {
     });
     built.footer.appendChild(copyButton);
     built.footer.appendChild(disconnect);
-    built.overlay.addEventListener('click', function(event) { if (event.target === built.overlay) built.dismiss(); });
-    built.present();
+    _channelsPresentSheet(built, copyButton);
 }
 
 function channelsOpenRoomOptions() {
@@ -1022,8 +1067,7 @@ function channelsOpenRoomOptions() {
         });
     });
     built.footer.appendChild(leave);
-    built.overlay.addEventListener('click', function(event) { if (event.target === built.overlay) built.dismiss(); });
-    built.present();
+    _channelsPresentSheet(built, leave);
 }
 
 function channelsDisconnect() {
@@ -1101,6 +1145,8 @@ function _channelsBindUI() {
     });
     var membersClose = _channelsEl('channel-members-close');
     if (membersClose) membersClose.addEventListener('click', channelsCloseMemberPane);
+    var membersScrim = _channelsEl('channel-members-scrim');
+    if (membersScrim) membersScrim.addEventListener('click', channelsCloseMemberPane);
     var input = _channelsEl('channel-message-input');
     if (input) {
         input.addEventListener('input', function() {

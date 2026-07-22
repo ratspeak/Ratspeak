@@ -3495,3 +3495,283 @@
         padding: var(--space-2) var(--space-3);
     }
 }
+
+/* Channels responsive layout. Keep breakpoint behavior in this module. */
+@media (max-width: 1120px) and (min-width: 769px) {
+    .channels-layout {
+        grid-template-columns: minmax(240px, 276px) minmax(360px, 1fr);
+    }
+
+    .channel-members-pane {
+        position: absolute;
+        z-index: var(--z-dropdown);
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 240px;
+        box-shadow: var(--shadow-xl);
+        transform: translateX(105%);
+        transition: transform var(--transition-base);
+    }
+
+    .channels-layout.has-active-room.members-open .channel-members-pane {
+        transform: translateX(0);
+    }
+
+    .channel-members-close {
+        display: inline-flex;
+    }
+}
+
+@media (max-width: 768px) {
+    #view-channels {
+        position: relative;
+        height: 100%;
+    }
+
+    .message-mode-switch {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--space-2);
+        margin: var(--space-4) var(--space-5) var(--space-3);
+        padding: var(--space-2);
+        border: 1px solid var(--border-surface-soft);
+        border-radius: var(--radius-lg);
+        background: var(--surface-panel-muted);
+        flex-shrink: 0;
+    }
+
+    .message-mode-option {
+        min-height: 36px;
+        padding: var(--space-3) var(--space-5);
+        border: 1px solid transparent;
+        border-radius: var(--radius-md);
+        background: transparent;
+        color: var(--text-muted);
+        font-family: var(--font-sans);
+        font-size: var(--text-sm);
+        font-weight: var(--type-weight-medium);
+        cursor: pointer;
+    }
+
+    .message-mode-option.active {
+        border-color: var(--border-surface-soft);
+        background: var(--surface-panel);
+        box-shadow: var(--shadow-sm);
+        color: var(--text-primary);
+    }
+
+    .channels-layout {
+        display: block;
+        position: relative;
+        height: 100%;
+        overflow: hidden;
+    }
+
+    .channels-sidebar {
+        width: 100%;
+        height: 100%;
+        border-right: 0;
+    }
+
+    .channels-sidebar-header {
+        padding: var(--space-5) var(--space-6) var(--space-4);
+    }
+
+    .channels-sidebar-header h2 {
+        font-size: var(--text-base);
+    }
+
+    .channels-icon-btn {
+        width: 44px;
+        height: 44px;
+        flex-basis: 44px;
+    }
+
+    .channel-hub-strip {
+        margin: 0 var(--space-5) var(--space-4);
+    }
+
+    .channel-hub-menu-btn {
+        width: 40px;
+        height: 40px;
+        flex-basis: 40px;
+    }
+
+    .channels-list-toolbar {
+        min-height: 42px;
+    }
+
+    .channels-text-btn {
+        min-width: 44px;
+        min-height: 40px;
+        font-size: var(--text-sm);
+    }
+
+    .channel-hub-row,
+    .channel-room-row {
+        min-height: 58px;
+        padding: var(--space-5) var(--space-6);
+    }
+
+    .channels-sidebar-footnote {
+        padding-bottom: calc(var(--space-6) + var(--sab));
+    }
+
+    .channel-room-pane {
+        display: none;
+        position: absolute;
+        z-index: 5;
+        inset: 0;
+        background: var(--surface-elevation-1);
+    }
+
+    .channels-layout.view-channel-detail .channels-sidebar {
+        display: none;
+    }
+
+    .channels-layout.view-channel-detail .channel-room-pane {
+        display: flex;
+    }
+
+    .channel-room-header {
+        min-height: calc(56px + var(--sat));
+        padding: calc(var(--space-3) + var(--sat)) var(--space-4) var(--space-3);
+    }
+
+    .channel-room-header .mobile-back-btn {
+        display: flex;
+    }
+
+    .channel-room-actions {
+        gap: 0;
+        margin-left: var(--space-2);
+    }
+
+    .channel-session-banner {
+        padding: var(--space-4) var(--space-6);
+    }
+
+    .channel-session-banner span:last-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .channel-transcript {
+        padding: var(--space-6) var(--space-5);
+    }
+
+    .channel-welcome-state {
+        min-height: 220px;
+        padding: var(--space-10) var(--space-8);
+    }
+
+    .channel-welcome-mark {
+        width: 68px;
+        height: 68px;
+    }
+
+    .channel-event {
+        margin-bottom: var(--space-5);
+        padding: var(--space-4) var(--space-2);
+    }
+
+    .channel-compose {
+        padding: var(--space-4) var(--space-5) max(var(--space-4), var(--sab));
+    }
+
+    .channel-compose .nr-input {
+        min-height: 44px;
+        font-size: 16px;
+    }
+
+    .channel-send-btn {
+        width: 44px;
+        height: 44px;
+        flex-basis: 44px;
+    }
+
+    .channel-members-pane {
+        position: absolute;
+        z-index: var(--z-bottom-sheet);
+        inset: auto 0 0;
+        display: flex;
+        max-height: min(70%, 540px);
+        border: 1px solid var(--sheet-border);
+        border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+        box-shadow: var(--sheet-shadow);
+        transform: translateY(105%);
+        transition: transform var(--transition-base);
+    }
+
+    .channels-layout.has-active-room.members-open .channel-members-pane {
+        transform: translateY(0);
+    }
+
+    .channels-layout.has-active-room.members-open .channel-members-scrim {
+        display: block;
+        position: absolute;
+        z-index: calc(var(--z-bottom-sheet) - 1);
+        inset: 0;
+        padding: 0;
+        border: 0;
+        background: var(--surface-scrim);
+    }
+
+    .channel-members-close {
+        display: inline-flex;
+    }
+
+    body.view-channel-detail {
+        overflow: hidden;
+        overscroll-behavior: none;
+    }
+
+    body.view-channel-detail .bottom-bar {
+        display: none;
+    }
+
+    body.view-channel-detail .header {
+        display: none;
+    }
+
+    body.view-channel-detail .app-layout {
+        height: var(--app-height, 100vh);
+        height: var(--app-height, 100dvh);
+        padding-bottom: 0;
+    }
+
+    body.view-channel-detail .main-content {
+        padding-bottom: 0;
+    }
+
+    .keyboard-open .channel-compose {
+        padding-bottom: var(--space-3);
+    }
+
+    .keyboard-open .channel-transcript,
+    .keyboard-open .channels-list {
+        padding-bottom: 0;
+    }
+
+    .channel-sheet-hubs {
+        max-height: 152px;
+    }
+}
+
+@media (max-width: 380px) {
+    .channel-session-banner strong {
+        display: none;
+    }
+
+    .channel-event {
+        grid-template-columns: 26px minmax(0, 1fr) auto;
+        column-gap: var(--space-4);
+    }
+
+    .channel-event-avatar {
+        width: 26px;
+        height: 26px;
+    }
+}

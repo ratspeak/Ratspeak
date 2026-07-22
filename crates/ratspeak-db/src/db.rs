@@ -1503,6 +1503,8 @@ pub const RESET_TABLES: &[&str] = &[
     "blocked_contacts",
     "identity_activity",
     "pending_blackholes",
+    "channel_rooms",
+    "channel_hubs",
 ];
 
 /// Per-identity cascade for `delete_identity`. Static DELETEs (no format!()
@@ -1530,6 +1532,14 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "pending_blackholes",
         "DELETE FROM pending_blackholes WHERE identity_id = ?1",
+    ),
+    (
+        "channel_rooms",
+        "DELETE FROM channel_rooms WHERE identity_id = ?1",
+    ),
+    (
+        "channel_hubs",
+        "DELETE FROM channel_hubs WHERE identity_id = ?1",
     ),
     ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
     ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
