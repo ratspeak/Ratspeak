@@ -68,3 +68,4 @@ objc2 = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

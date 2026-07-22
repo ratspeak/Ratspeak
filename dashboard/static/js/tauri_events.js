@@ -878,11 +878,6 @@ RS.listen('ble_scan_results', function(data) {
     }
 });
 
-// Opt-in: set window._bleDiag = true in DevTools.
-RS.listen('ble_diag', function(data) {
-    if (window._bleDiag) window.RS.diag('log', '[ble_diag]', data && data.msg);
-});
-
 // AutoInterface JoinFailed; current producer is Apple multicast-without-entitlement.
 RS.listen('auto_unavailable', function(data) {
     if (!data) return;

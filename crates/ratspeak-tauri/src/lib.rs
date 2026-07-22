@@ -9,6 +9,7 @@
 
 pub mod commands;
 pub mod config;
+pub mod diagnostics;
 pub mod emitter;
 pub mod error;
 pub mod notifier;
@@ -62,8 +63,9 @@ pub async fn init_core(
     let app_state = Arc::new(AppState::new(config.clone(), db_pool, emitter, notifier));
     app_state.set_startup_stage("checking");
 
-    // Relay BLE diagnostics → `ble_diag` events.
-    commands::ble::spawn_ble_diag_broadcaster(&app_state);
+    // Relay typed BLE pairing/product events. Raw ble_diag strings are never
+    // forwarded across IPC.
+    commands::ble::spawn_ble_event_broadcaster(&app_state);
 
     // Relay AutoInterface events → `auto_unavailable` / `auto_carrier_state`.
     commands::interfaces::spawn_auto_event_broadcaster(&app_state);

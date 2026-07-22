@@ -152,11 +152,11 @@ async fn register_with_retry(
                 );
                 return true;
             }
-            Err(e) => {
+            Err(_) => {
                 tracing::warn!(
                     aspect = ?aspect_filter,
                     attempt = attempt + 1,
-                    error = %e,
+                    reason = "registration_failed",
                     "announce-handler register failed; retrying"
                 );
                 tokio::time::sleep(REGISTER_RETRY_DELAY).await;
@@ -258,7 +258,7 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         .expect("db task panicked");
     } else {
         tracing::debug!(
-            dest = %hash_hex,
+            dest = %crate::short_id(&hash_hex),
             "lxmf.delivery path response refreshed route data without touching peer last_seen"
         );
     }
@@ -286,7 +286,7 @@ async fn process_lxst_telephony_announce(state: &Arc<AppState>, event: AnnounceH
     });
     let Some(identity_hash) = identity_hash else {
         tracing::debug!(
-            dest = %hex::encode(event.destination_hash),
+            dest = %crate::short_id(&hex::encode(event.destination_hash)),
             "lxst.telephony announce dropped: no identity hash"
         );
         return;
@@ -314,8 +314,8 @@ async fn process_lxst_telephony_announce(state: &Arc<AppState>, event: AnnounceH
         .expect("db task panicked");
     } else {
         tracing::debug!(
-            dest = %hex::encode(event.destination_hash),
-            lxmf_dest = %lxmf_dest_hex,
+            dest = %crate::short_id(&hex::encode(event.destination_hash)),
+            lxmf_dest = %crate::short_id(&lxmf_dest_hex),
             "lxst.telephony path response refreshed route data without touching peer last_seen"
         );
     }
@@ -344,7 +344,7 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         None => {
             state.pn_parse_failures.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(
-                dest = %hash_hex,
+                dest = %crate::short_id(&hash_hex),
                 reason = "no_app_data",
                 "lxmf.propagation announce dropped: no app_data"
             );
@@ -355,7 +355,7 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
             None => {
                 state.pn_parse_failures.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(
-                    dest = %hash_hex,
+                    dest = %crate::short_id(&hash_hex),
                     reason = "parse_failed",
                     app_data_len = bytes.len(),
                     "lxmf.propagation announce dropped: app_data did not parse as PN format"

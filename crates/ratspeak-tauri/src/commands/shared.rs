@@ -88,7 +88,10 @@ pub(crate) fn remove_stored_file_refs(
             continue;
         }
         let Some(sanitized) = ratspeak_runtime::lxmf::sanitize_stored_file_name(&file_ref) else {
-            tracing::warn!(stored_name = %file_ref, "skipping unsafe stored attachment path");
+            tracing::warn!(
+                reason = "unsafe_stored_name",
+                "skipping unsafe stored attachment path"
+            );
             continue;
         };
         std::fs::remove_file(files_dir.join(sanitized)).ok();
@@ -328,15 +331,17 @@ pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_has
     public_key.copy_from_slice(&pubkey_bytes);
 
     let Ok(identity) = Identity::from_public_key(&public_key) else {
-        tracing::warn!(dest = %dest_hash, "contact identity public key is invalid");
+        tracing::warn!(
+            reason = "invalid_public_key",
+            "contact identity public key is invalid"
+        );
         return false;
     };
     let expected_lxmf =
         Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity.hash));
     if hex::encode(expected_lxmf) != dest_hash {
         tracing::warn!(
-            dest = %dest_hash,
-            expected = %hex::encode(expected_lxmf),
+            reason = "destination_mismatch",
             "contact identity public key does not match LXMF destination"
         );
         return false;
@@ -347,7 +352,7 @@ pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_has
     {
         mgr.update_remote_crypto(&dest_hash, &public_key, None);
         mgr.save_crypto_state();
-        tracing::debug!(dest = %dest_hash, "hydrated LXMF identity from contact card");
+        tracing::debug!("hydrated LXMF identity from contact card");
         return true;
     }
     false
@@ -370,7 +375,10 @@ pub(crate) async fn resolve_before_send(state: &AppState, dest_hash: &str) {
     if let Some(tx) = transport_tx
         && !resolve_destination(state, dest_hash, &tx).await
     {
-        tracing::warn!(dest = %dest_hash, "could not resolve destination, sending anyway");
+        tracing::warn!(
+            reason = "resolve_failed",
+            "could not resolve destination, sending anyway"
+        );
     }
 }
 
@@ -428,10 +436,7 @@ pub(crate) async fn save_session_from_state(
         tracing::warn!(
             target: "ttt_trace",
             step = "save_session.empty_sid_rejected",
-            app_id = %app_id,
-            identity_id = %identity_id,
-            contact_hash = %contact_hash,
-            delivery_state = ?delivery_state,
+            reason = "empty_session_id",
             "refusing to persist app_session with empty session_id"
         );
         return;

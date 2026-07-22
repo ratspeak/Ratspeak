@@ -37,8 +37,11 @@ impl NativeNotifier for TauriNotifier {
             } = notification;
             let state = match self.handle.notification().permission_state() {
                 Ok(state) => state,
-                Err(e) => {
-                    tracing::warn!(error = %e, "notification permission check failed");
+                Err(_) => {
+                    tracing::warn!(
+                        reason = "permission_check_failed",
+                        "notification permission check failed"
+                    );
                     return;
                 }
             };
@@ -76,8 +79,8 @@ impl NativeNotifier for TauriNotifier {
                 builder = builder.channel_id(channel_id);
             }
 
-            if let Err(e) = builder.show() {
-                tracing::warn!(error = %e, "native notification failed");
+            if builder.show().is_err() {
+                tracing::warn!(reason = "show_failed", "native notification failed");
             }
         }
     }

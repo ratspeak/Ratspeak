@@ -97,12 +97,12 @@ pub async fn api_conversation(
     });
     match tokio::time::timeout(Duration::from_secs(5), fetch).await {
         Ok(Ok(messages)) => Ok(json!(messages)),
-        Ok(Err(e)) => {
-            tracing::warn!(%dest_hash, ?e, "api_conversation db task failed");
+        Ok(Err(_)) => {
+            tracing::warn!(reason = "db_task_failed", "api_conversation db task failed");
             Err(AppError::internal("Database task failed"))
         }
         Err(_) => {
-            tracing::warn!(%dest_hash, "api_conversation timed out after 5s");
+            tracing::warn!(reason = "timeout", "api_conversation timed out after 5s");
             Err(AppError::service_unavailable(
                 "Database temporarily unavailable",
             ))
@@ -138,8 +138,11 @@ pub async fn api_search_messages(
         db::search_messages(&p, &query_str, &id_for_db, 50)
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "search_messages db task panicked — returning empty");
+    .unwrap_or_else(|_| {
+        tracing::error!(
+            reason = "task_panicked",
+            "search_messages db task panicked — returning empty"
+        );
         Default::default()
     });
     Ok(json!(results))
@@ -226,7 +229,6 @@ pub(crate) async fn ensure_propagation_ready_for_send(
     profile: DeliveryProfile,
     client_msg_id: Option<&str>,
 ) -> AppResult<()> {
-    let identity_id = active_identity_id(state);
     let st = Arc::clone(state);
     let dh = dest_hash.to_string();
     let method = tokio::task::spawn_blocking(move || {
@@ -279,8 +281,6 @@ pub(crate) async fn ensure_propagation_ready_for_send(
         }),
     );
     tracing::warn!(
-        identity = %identity_id,
-        dest = %dest_hash,
         ?readiness,
         "propagation send held until a reachable Offline Inbox is available"
     );
@@ -1142,11 +1142,11 @@ pub async fn hide_conversation(state: State<'_, Arc<AppState>>, hash: String) ->
             Ok(c) => c,
             Err(_) => return 0i64,
         };
-        if let Err(e) = conn.execute(
+        if conn.execute(
             "INSERT OR REPLACE INTO hidden_conversations (dest_hash, identity_id) VALUES (?1, ?2)",
             rusqlite::params![dh, id_c],
-        ) {
-            tracing::warn!(error = %e, "hide_conversation insert failed");
+        ).is_err() {
+            tracing::warn!(reason = "insert_failed", "hide_conversation insert failed");
         }
         let counts = db::get_all_unread_counts_conn(&conn, &id_c);
         counts.values().sum::<i64>()
@@ -1267,8 +1267,8 @@ pub async fn api_file_download(
         None
     };
     let path = file_path.ok_or_else(|| AppError::not_found("File not found"))?;
-    let data = tokio::fs::read(&path).await.map_err(|e| {
-        tracing::warn!(error = %e, "file-download read failed");
+    let data = tokio::fs::read(&path).await.map_err(|_| {
+        tracing::warn!(reason = "read_failed", "file-download read failed");
         AppError::not_found("File not found")
     })?;
     let mime = mime_guess::from_path(&path)

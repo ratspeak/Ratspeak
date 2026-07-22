@@ -784,8 +784,11 @@ async fn connect_to_hub(
                 LinkSessionEvent::Packet { data, .. } => {
                     let envelope = match rrc::decode(&data) {
                         Ok(envelope) => envelope,
-                        Err(error) => {
-                            tracing::debug!(error = %error, "ignoring malformed pre-WELCOME channel envelope");
+                        Err(_) => {
+                            tracing::debug!(
+                                reason = "decode_failed",
+                                "ignoring malformed pre-WELCOME channel envelope"
+                            );
                             continue;
                         }
                     };
@@ -1121,8 +1124,11 @@ async fn handle_link_event(
                     LinkEventOutcome::Closed("Channel link send failed".into())
                 }
             }
-            Err(error) => {
-                tracing::debug!(error = %error, "ignoring malformed channel envelope");
+            Err(_) => {
+                tracing::debug!(
+                    reason = "decode_failed",
+                    "ignoring malformed channel envelope"
+                );
                 LinkEventOutcome::Keep
             }
         },
@@ -1151,7 +1157,7 @@ async fn handle_envelope(active: &mut ActiveSession, envelope: Envelope) -> bool
     {
         tracing::debug!(
             message_type = ?envelope.message_type,
-            source = %hex::encode(envelope.source),
+            reason = "unauthenticated_control_source",
             "ignoring channel control envelope not authored by the authenticated hub"
         );
         return true;
@@ -1765,7 +1771,10 @@ fn emit_snapshot(emitter: &Arc<dyn Emitter>, snapshot: &Arc<RwLock<ChannelsSnaps
     };
     match serde_json::to_value(snapshot) {
         Ok(payload) => emitter.emit("channels_snapshot", payload),
-        Err(error) => tracing::warn!(error = %error, "failed to serialize Channels snapshot"),
+        Err(_) => tracing::warn!(
+            reason = "serialization_failed",
+            "failed to serialize Channels snapshot"
+        ),
     }
 }
 

@@ -77,8 +77,8 @@ pub async fn escalate_pending_if_present(
         .await;
         if !matches!(resp, Some(TransportQueryResponse::Ok)) {
             tracing::warn!(
-                dest = %row.dest_hash,
-                identity_id = %row.identity_id,
+                dest = %crate::short_id(&row.dest_hash),
+                identity_id = %crate::short_id(&row.identity_id),
                 "pending blackhole escalation failed; row left in queue"
             );
             continue;

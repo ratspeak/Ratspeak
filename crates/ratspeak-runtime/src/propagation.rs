@@ -841,8 +841,8 @@ fn auto_relay_change_deferred_by_pending_deposit(state: &AppState, next: Option<
     }
 
     tracing::info!(
-        current = ?current.map(hex::encode),
-        next = ?next.map(hex::encode),
+        has_current = current.is_some(),
+        has_next = next.is_some(),
         "deferred auto propagation relay change until pending propagated send finishes"
     );
     true
@@ -854,7 +854,7 @@ async fn relay_send_ready_or_waiting(state: &Arc<AppState>, hash: [u8; 16]) -> R
     } else {
         request_relay_path(state, hash).await;
         tracing::info!(
-            node = %hex::encode(hash),
+        node = %crate::short_id(&hex::encode(hash)),
             "Offline Inbox path is reachable, waiting for LXMF propagation identity/stamp metadata"
         );
         RelayReadiness::Waiting
@@ -904,7 +904,7 @@ pub async fn apply_auto_selection(state: &Arc<AppState>, hash: [u8; 16]) {
 
     emit_propagation_update(state);
     tracing::info!(
-        node = %hex_hash,
+        node = %crate::short_id(&hex_hash),
         "auto-selected propagation node"
     );
 }
@@ -1338,7 +1338,7 @@ pub async fn handle_sync_failure(state: &Arc<AppState>) {
     if hit_threshold {
         mark_relay_failure(state, node, "sync_failure_threshold");
         tracing::warn!(
-            node = %hex::encode(node),
+            node = %crate::short_id(&hex::encode(node)),
             "propagation node hit 3 failures within 30 min — dropping from auto-selection"
         );
         if auto_relay_change_deferred_by_pending_deposit(state, None) {

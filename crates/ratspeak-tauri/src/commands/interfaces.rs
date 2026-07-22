@@ -397,8 +397,8 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
         enabled && (expires_at == 0 || expires_at > now_secs)
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "ble_peer_status db task panicked");
+    .unwrap_or_else(|_| {
+        tracing::error!(reason = "task_panicked", "ble_peer_status db task panicked");
         Default::default()
     });
 
@@ -449,8 +449,11 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
 pub async fn api_connection_history(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let history = db::spawn_db(state.db.clone(), |p| db::get_connection_history(&p, 10))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "connection_history db task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(
+                reason = "task_panicked",
+                "connection_history db task panicked"
+            );
             Default::default()
         });
     Ok(json!(history))
@@ -465,8 +468,11 @@ pub async fn api_delete_connection_history(
         db::delete_connection_history(&p, id)
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "delete_connection_history db task panicked");
+    .unwrap_or_else(|_| {
+        tracing::error!(
+            reason = "task_panicked",
+            "delete_connection_history db task panicked"
+        );
         Default::default()
     });
     Ok(json!(null))
@@ -710,7 +716,10 @@ pub(crate) fn reconcile_auto_transport_after_interface_change(state: &AppState, 
     let enable = configured_enable && runtime_allowed;
     match apply_transport_runtime_update(state, "auto", configured_enable, enable) {
         Ok(payload) => state.emit_to_all("transport_mode_updated", payload),
-        Err(error) => tracing::warn!(error = %error, "failed to reconcile transport mode config"),
+        Err(_) => tracing::warn!(
+            reason = "config_reconcile_failed",
+            "failed to reconcile transport mode config"
+        ),
     }
 }
 
@@ -867,21 +876,17 @@ async fn respawn_android_auto_interfaces(state: Arc<AppState>) {
         .await;
         match spawn_res {
             Ok(Ok(_)) => {
-                tracing::info!(
-                    interface = %name,
-                    "AutoInterface respawned after network change"
-                );
+                tracing::info!("AutoInterface respawned after network change");
             }
-            Ok(Err(e)) => {
+            Ok(Err(_)) => {
                 tracing::warn!(
-                    interface = %name,
-                    error = %e,
+                    reason = "spawn_failed",
                     "AutoInterface respawn failed after network change"
                 );
             }
             Err(_) => {
                 tracing::warn!(
-                    interface = %name,
+                    reason = "timeout",
                     "AutoInterface respawn timed out after network change"
                 );
             }
@@ -3586,7 +3591,7 @@ pub async fn enable_auto_interface(
                     }
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!(interface = %iface_name, error = %e, "AutoInterface spawn failed");
+                    tracing::warn!(reason = "spawn_failed", "AutoInterface spawn failed");
                     // Roll back config write on spawn failure.
                     let _ = with_rns_config_lock(&st, || {
                         crate::rns_config::remove_interface(&config_dir, &iface_name)
@@ -3601,7 +3606,7 @@ pub async fn enable_auto_interface(
                     );
                 }
                 Err(_) => {
-                    tracing::warn!(interface = %iface_name, "AutoInterface spawn timed out");
+                    tracing::warn!(reason = "timeout", "AutoInterface spawn timed out");
                     let _ = with_rns_config_lock(&st, || {
                         crate::rns_config::remove_interface(&config_dir, &iface_name)
                     });

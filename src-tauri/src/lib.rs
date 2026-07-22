@@ -36,12 +36,18 @@ pub extern "system" fn JNI_OnLoad(
                 rns_interface::ble_rnode::mark_btleplug_initialized();
                 tracing::debug!("btleplug initialized from JNI_OnLoad");
             }
-            Err(e) => {
-                tracing::debug!(error = %e, "btleplug init failed from JNI_OnLoad");
+            Err(_) => {
+                tracing::debug!(
+                    reason = "btleplug_init_failed",
+                    "btleplug init failed from JNI_OnLoad"
+                );
             }
         },
-        Err(e) => {
-            tracing::debug!(error = %e, "failed to get JNI env in JNI_OnLoad");
+        Err(_) => {
+            tracing::debug!(
+                reason = "jni_env_unavailable",
+                "failed to get JNI env in JNI_OnLoad"
+            );
         }
     }
 
@@ -71,6 +77,10 @@ fn env_flag(name: &str) -> bool {
 
 fn diagnostics_enabled() -> bool {
     env_flag("RATSPEAK_DIAGNOSTICS")
+}
+
+fn diagnostic_metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool {
+    ratspeak_tauri::diagnostics::metadata_allowed(metadata)
 }
 
 #[cfg(target_os = "linux")]
@@ -233,7 +243,10 @@ fn open_external_url(url: String) -> Result<(), String> {
         Err("Android external links are opened through the native WebView bridge".into())
     }
 
-    #[cfg(all(not(any(target_os = "android", target_os = "ios")), target_os = "macos"))]
+    #[cfg(all(
+        not(any(target_os = "android", target_os = "ios")),
+        target_os = "macos"
+    ))]
     {
         std::process::Command::new("open")
             .arg(&clean)
@@ -242,7 +255,10 @@ fn open_external_url(url: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to open link: {e}"))
     }
 
-    #[cfg(all(not(any(target_os = "android", target_os = "ios")), target_os = "windows"))]
+    #[cfg(all(
+        not(any(target_os = "android", target_os = "ios")),
+        target_os = "windows"
+    ))]
     {
         std::process::Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", &clean])
@@ -271,8 +287,8 @@ fn open_external_url_ios(url: &str) -> Result<(), String> {
     use std::ffi::CString;
 
     unsafe {
-        let ns_string_class = AnyClass::get(c"NSString")
-            .ok_or_else(|| "NSString class not found".to_string())?;
+        let ns_string_class =
+            AnyClass::get(c"NSString").ok_or_else(|| "NSString class not found".to_string())?;
         let ns_url_class =
             AnyClass::get(c"NSURL").ok_or_else(|| "NSURL class not found".to_string())?;
         let ui_app_class = AnyClass::get(c"UIApplication")
@@ -404,8 +420,8 @@ unsafe extern "C" {}
 
 #[cfg(target_os = "ios")]
 fn save_image_to_photos_ios(_filename: &str, mime: &str, data_base64: &str) -> Result<(), String> {
-    use base64::Engine;
     use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
     use block2::RcBlock;
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject};
@@ -483,30 +499,38 @@ fn init_tracing() {
 
     #[cfg(target_os = "ios")]
     {
+        use tracing_subscriber::filter::filter_fn;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
         let _ = tracing_subscriber::registry()
             .with(filter)
+            .with(filter_fn(diagnostic_metadata_allowed))
             .with(tracing_oslog::OsLogger::new("org.ratspeak.ios", "default"))
             .try_init();
     }
 
     #[cfg(target_os = "android")]
     {
+        use tracing_subscriber::filter::filter_fn;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
         match tracing_android::layer("RatspeakRust") {
             Ok(layer) => {
                 let _ = tracing_subscriber::registry()
                     .with(filter)
+                    .with(filter_fn(diagnostic_metadata_allowed))
                     .with(layer)
                     .try_init();
             }
             Err(_) => {
-                let _ = tracing_subscriber::fmt()
-                    .with_env_filter(filter)
-                    .with_target(false)
-                    .with_ansi(false)
+                let _ = tracing_subscriber::registry()
+                    .with(filter)
+                    .with(filter_fn(diagnostic_metadata_allowed))
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_target(false)
+                            .with_ansi(false),
+                    )
                     .try_init();
             }
         }
@@ -514,6 +538,7 @@ fn init_tracing() {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
+        use tracing_subscriber::filter::filter_fn;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
@@ -528,6 +553,7 @@ fn init_tracing() {
 
             let _ = tracing_subscriber::registry()
                 .with(filter)
+                .with(filter_fn(diagnostic_metadata_allowed))
                 .with(
                     tracing_subscriber::fmt::layer()
                         .with_target(false)
@@ -542,11 +568,15 @@ fn init_tracing() {
                 )
                 .try_init();
         } else {
-            let _ = tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_target(false)
-                .with_ansi(true)
-                .with_writer(std::io::stderr)
+            let _ = tracing_subscriber::registry()
+                .with(filter)
+                .with(filter_fn(diagnostic_metadata_allowed))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_target(false)
+                        .with_ansi(true)
+                        .with_writer(std::io::stderr),
+                )
                 .try_init();
         }
     }
@@ -795,7 +825,7 @@ pub fn run() {
 
             let data_dir = paths::resolve_data_dir(&handle);
             std::fs::create_dir_all(&data_dir).ok();
-            tracing::debug!(path = %data_dir.display(), "resolved Ratspeak data directory");
+            tracing::debug!("resolved Ratspeak data directory");
 
             // setup() has no Tokio runtime; leak one for process-lifetime tasks.
             let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
@@ -892,9 +922,9 @@ pub fn run() {
                             false
                         }
                     }
-                    DownloadEvent::Finished { url, success, .. } => {
+                    DownloadEvent::Finished { success, .. } => {
                         if !success {
-                            tracing::debug!(%url, "download failed");
+                            tracing::debug!(reason = "download_failed", "download failed");
                         }
                         true
                     }

@@ -25,8 +25,8 @@ pub async fn api_get_peers_snapshot(state: State<'_, Arc<AppState>>) -> AppResul
         db::get_peers_snapshot(&p, cutoff, &identity_id)
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "peers-snapshot db task panicked");
+    .unwrap_or_else(|_| {
+        tracing::error!(reason = "task_panicked", "peers-snapshot db task panicked");
         Vec::new()
     });
     let json_rows: Vec<Value> = rows

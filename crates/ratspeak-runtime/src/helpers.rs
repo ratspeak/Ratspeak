@@ -11,6 +11,23 @@ pub fn validate_hex(value: &str, min_len: usize, max_len: usize) -> bool {
     value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Returns a privacy-safe abbreviation only for protocol-shaped identifiers.
+///
+/// Reticulum destination and identity hashes are 16 bytes, while LXMF message
+/// hashes are 32 bytes. Refusing every other shape prevents diagnostics from
+/// turning an arbitrary database value, filename stem, or user input into an
+/// eight-character content leak.
+pub fn diagnostic_short_protocol_id(value: &str) -> Option<&str> {
+    if !matches!(value.len(), 32 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    value.get(..8)
+}
+
+pub fn is_protocol_hash_16(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 pub fn sanitize_text(value: &str, max_len: usize) -> String {
     value
         .chars()
@@ -111,5 +128,28 @@ mod tests {
             sanitize_announced_status("  hello\nthere\tfriend\0  ").unwrap(),
             "hello there friend"
         );
+    }
+
+    #[test]
+    fn diagnostic_protocol_abbreviations_reject_arbitrary_text() {
+        assert_eq!(
+            diagnostic_short_protocol_id("0123456789abcdef0123456789abcdef"),
+            Some("01234567")
+        );
+        assert_eq!(
+            diagnostic_short_protocol_id(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ),
+            Some("01234567")
+        );
+        for malformed in [
+            "human-label",
+            "human-label.ratchet",
+            "0123456789abcdef",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789abcdef0123456789abcdeg",
+        ] {
+            assert_eq!(diagnostic_short_protocol_id(malformed), None);
+        }
     }
 }

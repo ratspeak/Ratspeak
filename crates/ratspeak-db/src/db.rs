@@ -65,7 +65,7 @@ pub fn init_pool(data_dir: &Path) -> Result<DbPool, Box<dyn std::error::Error + 
     });
     let pool = Pool::builder().max_size(POOL_MAX_SIZE).build(manager)?;
 
-    tracing::info!("Database pool initialized at {}", db_path.display());
+    tracing::info!("Database pool initialized");
     Ok(pool)
 }
 
@@ -373,10 +373,18 @@ fn migration_step(
     match apply(conn) {
         Ok(()) => conn.execute_batch("COMMIT"),
         Err(e) => {
-            if let Err(rollback_err) = conn.execute_batch("ROLLBACK") {
-                tracing::error!(to_version, error = %rollback_err, "migration rollback failed");
+            if conn.execute_batch("ROLLBACK").is_err() {
+                tracing::error!(
+                    to_version,
+                    reason = "rollback_failed",
+                    "migration rollback failed"
+                );
             }
-            tracing::error!(to_version, error = %e, "migration step failed; rolled back");
+            tracing::error!(
+                to_version,
+                reason = "migration_failed",
+                "migration step failed; rolled back"
+            );
             Err(e)
         }
     }
@@ -1735,32 +1743,41 @@ pub fn get_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) -> Option<
 pub fn block_contact(pool: &DbPool, dest_hash: &str, display_name: &str, identity_id: &str) {
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, %dest_hash, "block_contact: pool.get() failed");
+        Err(_) => {
+            tracing::warn!(
+                reason = "pool_unavailable",
+                "block_contact: pool.get() failed"
+            );
             return;
         }
     };
-    if let Err(e) = conn.execute(
+    if conn.execute(
         "INSERT OR REPLACE INTO blocked_contacts (dest_hash, identity_id, display_name, blocked_at) VALUES (?1, ?2, ?3, ?4)",
         params![dest_hash, identity_id, display_name, now_ts()],
-    ) {
-        tracing::warn!(error = %e, %dest_hash, "block_contact: INSERT failed");
+    ).is_err() {
+        tracing::warn!(reason = "insert_failed", "block_contact: INSERT failed");
     }
 }
 
 pub fn unblock_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) {
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, %dest_hash, "unblock_contact: pool.get() failed");
+        Err(_) => {
+            tracing::warn!(
+                reason = "pool_unavailable",
+                "unblock_contact: pool.get() failed"
+            );
             return;
         }
     };
-    if let Err(e) = conn.execute(
-        "DELETE FROM blocked_contacts WHERE dest_hash = ?1 AND identity_id = ?2",
-        params![dest_hash, identity_id],
-    ) {
-        tracing::warn!(error = %e, %dest_hash, "unblock_contact: DELETE failed");
+    if conn
+        .execute(
+            "DELETE FROM blocked_contacts WHERE dest_hash = ?1 AND identity_id = ?2",
+            params![dest_hash, identity_id],
+        )
+        .is_err()
+    {
+        tracing::warn!(reason = "delete_failed", "unblock_contact: DELETE failed");
     }
 }
 
@@ -1879,8 +1896,11 @@ pub fn enqueue_pending_blackhole(
 ) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, %dest_hash, "enqueue_pending_blackhole: pool.get() failed");
+        Err(_) => {
+            tracing::warn!(
+                reason = "pool_unavailable",
+                "enqueue_pending_blackhole: pool.get() failed"
+            );
             return false;
         }
     };
@@ -1891,8 +1911,11 @@ pub fn enqueue_pending_blackhole(
         params![dest_hash, identity_id, reason_label, ttl_seconds, now_ts()],
     ) {
         Ok(_) => true,
-        Err(e) => {
-            tracing::warn!(error = %e, %dest_hash, "enqueue_pending_blackhole: INSERT failed");
+        Err(_) => {
+            tracing::warn!(
+                reason = "insert_failed",
+                "enqueue_pending_blackhole: INSERT failed"
+            );
             false
         }
     }
@@ -2223,8 +2246,11 @@ pub fn search_messages(
 ) -> Vec<serde_json::Value> {
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, "search_messages: pool.get() failed");
+        Err(_) => {
+            tracing::warn!(
+                reason = "pool_unavailable",
+                "search_messages: pool.get() failed"
+            );
             return vec![];
         }
     };
@@ -2317,8 +2343,11 @@ pub fn get_unread_breakdown(
     ";
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "get_unread_breakdown: prepare failed");
+        Err(_) => {
+            tracing::warn!(
+                reason = "prepare_failed",
+                "get_unread_breakdown: prepare failed"
+            );
             return Vec::new();
         }
     };
@@ -2343,8 +2372,8 @@ pub fn get_all_unread_counts_conn(
         "SELECT source, COUNT(*) as cnt FROM messages WHERE direction = 'inbound' AND state != 'read' AND identity_id = ?1 GROUP BY source"
     ) {
         Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "get_all_unread_counts_conn: prepare failed");
+        Err(_) => {
+            tracing::warn!(reason = "prepare_failed", "get_all_unread_counts_conn: prepare failed");
             return Default::default();
         }
     };
@@ -2353,8 +2382,11 @@ pub fn get_all_unread_counts_conn(
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })
     .map(|rows| rows.filter_map(|r| r.ok()).collect())
-    .unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "get_all_unread_counts_conn: query_map failed");
+    .unwrap_or_else(|_| {
+        tracing::warn!(
+            reason = "query_failed",
+            "get_all_unread_counts_conn: query_map failed"
+        );
         Default::default()
     })
 }
@@ -3010,8 +3042,11 @@ pub fn get_peers_by_hashes(pool: &DbPool, hashes: &[String], identity_id: &str) 
         );
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "get_peers_by_hashes: prepare failed");
+            Err(_) => {
+                tracing::warn!(
+                    reason = "prepare_failed",
+                    "get_peers_by_hashes: prepare failed"
+                );
                 continue;
             }
         };
@@ -3109,8 +3144,11 @@ pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) ->
     );
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "get_peers_snapshot: prepare failed");
+        Err(_) => {
+            tracing::warn!(
+                reason = "prepare_failed",
+                "get_peers_snapshot: prepare failed"
+            );
             return vec![];
         }
     };
@@ -3238,18 +3276,21 @@ pub fn delete_identity_activity(pool: &DbPool, hashes: &[String]) -> usize {
             .collect();
         match tx.execute(&sql, params.as_slice()) {
             Ok(n) => deleted += n,
-            Err(e) => {
+            Err(_) => {
                 // Continue on chunk failure; pruner retries next pass.
                 tracing::warn!(
-                    error = %e,
                     chunk_len = chunk.len(),
+                    reason = "delete_failed",
                     "delete_identity_activity chunk failed; remaining chunks will still be attempted"
                 );
             }
         }
     }
-    if let Err(e) = tx.commit() {
-        tracing::error!(error = %e, "delete_identity_activity commit failed — deletions discarded");
+    if tx.commit().is_err() {
+        tracing::error!(
+            reason = "commit_failed",
+            "delete_identity_activity commit failed — deletions discarded"
+        );
         return 0;
     }
     deleted
@@ -3656,10 +3697,7 @@ pub fn backfill_identity_id(pool: &DbPool, identity_hash: &str) {
         params![identity_hash],
     )
     .ok();
-    tracing::info!(
-        "Backfilled identity_id={} on existing contacts/messages",
-        &identity_hash[..16.min(identity_hash.len())]
-    );
+    tracing::info!("Backfilled identity_id on existing contacts/messages");
 }
 
 pub fn save_game_session(pool: &DbPool, session: &lrgp::session::Session) {

@@ -644,8 +644,11 @@ fn message_within_resource_limit(msg: &LxMessage) -> bool {
             );
             false
         }
-        Err(e) => {
-            tracing::warn!(error = ?e, "LXMF message failed to pack before send");
+        Err(_) => {
+            tracing::warn!(
+                reason = "pack_failed",
+                "LXMF message failed to pack before send"
+            );
             false
         }
     }
@@ -911,7 +914,7 @@ fn load_hwid_identity(
     let cfg = rns_ratkey::HwidConfig::from_file(hwid_file)
         .map_err(|e| format!("invalid .hwid for {hash}: {e}"))?;
     let pin = pin.ok_or_else(|| "hardware identity is locked (no PIN provided)".to_string())?;
-    tracing::info!(%hash, "loading hardware (PIV) identity");
+    tracing::info!(identity = %crate::short_id(hash), "loading hardware (PIV) identity");
     // Keep the RatkeyError Display in the message — the unlock UI parses it for
     // remaining-attempts / blocked.
     Ok(rns_ratkey::load_hardware_identity(&cfg, pin)
@@ -943,8 +946,14 @@ fn load_encrypted_identity(
         passcode.ok_or_else(|| "identity is locked (no passcode provided)".to_string())?;
     let key = crate::vault::decrypt_key(passcode, &vault)
         .map_err(|e| format!("passcode unlock failed: {e}"))?;
-    tracing::info!(%hash, "loading passcode-protected identity");
+    tracing::info!(identity = %crate::short_id(hash), "loading passcode-protected identity");
     Ok(Identity::from_private_key(key.as_ref())?)
+}
+
+fn received_ratchet_hash_from_path(path: &Path) -> Option<&str> {
+    path.file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| crate::helpers::is_protocol_hash_16(name))
 }
 
 impl LxmfManager {
@@ -953,6 +962,12 @@ impl LxmfManager {
         preferred_identity_hash: Option<&str>,
         hw_pin: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        if preferred_identity_hash
+            .filter(|hash| !hash.is_empty())
+            .is_some_and(|hash| !crate::helpers::is_protocol_hash_16(hash))
+        {
+            return Err("active identity hash is not a canonical 16-byte protocol hash".into());
+        }
         let ratspeak_dir = data_dir.join(".ratspeak");
         std::fs::create_dir_all(&ratspeak_dir)?;
 
@@ -972,10 +987,7 @@ impl LxmfManager {
                 // Passcode-protected software identity; `hw_pin` carries the passcode.
                 load_encrypted_identity(&enc_file, hash, hw_pin.as_deref())?
             } else if id_file.exists() {
-                tracing::info!(
-                    "Loading active identity from profile: {}",
-                    id_file.display()
-                );
+                tracing::info!(identity = %crate::short_id(hash), "Loading active identity from profile");
                 Identity::from_file(&id_file)?
             } else if legacy_path.exists() {
                 let id = Identity::from_file(&legacy_path)?;
@@ -992,10 +1004,7 @@ impl LxmfManager {
                 return Err(format!("active identity file not found for {hash}").into());
             }
         } else if legacy_path.exists() {
-            tracing::info!(
-                "Loading identity from legacy path: {}",
-                legacy_path.display()
-            );
+            tracing::info!("Loading identity from legacy profile");
             Identity::from_file(&legacy_path)?
         } else {
             let mut found = None;
@@ -1043,18 +1052,14 @@ impl LxmfManager {
             Destination::hash_from_name_and_identity("lxmf.propagation", Some(&identity.hash));
 
         tracing::info!(
-            "Identity loaded: {} (LXMF: {})",
-            &identity_hash[..16],
-            &lxmf_hash[..16],
+            identity = %crate::short_id(&identity_hash),
+            lxmf = %crate::short_id(&lxmf_hash),
+            "Identity loaded"
         );
 
         let mut router = LxmRouter::new(RouterConfig::default());
-        if let Err(e) = router.load_state(&lxmf_storage) {
-            tracing::warn!(
-                path = %lxmf_storage.display(),
-                error = %e,
-                "failed to load LXMF router state"
-            );
+        if router.load_state(&lxmf_storage).is_err() {
+            tracing::warn!(reason = "load_failed", "failed to load LXMF router state");
         }
 
         let ratchet_dir = id_dir.join("ratchets");
@@ -1082,7 +1087,7 @@ impl LxmfManager {
         if let Ok(entries) = std::fs::read_dir(&received_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if let Some(name) = path.file_stem().and_then(|n| n.to_str())
+                if let Some(name) = received_ratchet_hash_from_path(&path)
                     && let Ok(rr) = ReceivedRatchet::load(&path)
                 {
                     received_ratchets.insert(name.to_string(), rr);
@@ -1194,7 +1199,7 @@ impl LxmfManager {
 
         db::save_identity(db_pool, &hash_hex, &lxmf_hex, nickname, &display_name);
 
-        tracing::info!("Created new identity: {}", &hash_hex[..16]);
+        tracing::info!(identity = %crate::short_id(&hash_hex), "Created new identity");
         Ok((hash_hex, lxmf_hex))
     }
 
@@ -1272,7 +1277,7 @@ impl LxmfManager {
         };
         db::save_identity(db_pool, &hash_hex, &lxmf_hex, nickname, &display_name);
 
-        tracing::info!("Imported identity: {}", &hash_hex[..16]);
+        tracing::info!(identity = %crate::short_id(&hash_hex), "Imported identity");
         Ok((hash_hex, lxmf_hex))
     }
 
@@ -1915,23 +1920,14 @@ impl LxmfManager {
         identity_id: &str,
         preference: DeliveryPreference,
     ) -> Option<String> {
-        let dest_short: String = dest_hash_hex.chars().take(8).collect();
-        tracing::info!(
-            target: "ttt_trace",
-            step = "lxmf_send.enter",
-            dest = %dest_short,
-            field_count = lrgp_fields.len(),
-            "send_message_with_lrgp_fields entered"
-        );
-
         let dest_bytes = match hex::decode(dest_hash_hex) {
             Ok(b) => b,
-            Err(e) => {
+            Err(_) => {
                 tracing::warn!(
                     target: "ttt_trace",
                     step = "lxmf_send.hex_fail",
-                    dest = %dest_short,
-                    err = %e,
+                    input_len = dest_hash_hex.len(),
+                    reason = "invalid_hex",
                     "dest_hash_hex not valid hex"
                 );
                 return None;
@@ -1941,14 +1937,23 @@ impl LxmfManager {
             tracing::warn!(
                 target: "ttt_trace",
                 step = "lxmf_send.len_fail",
-                dest = %dest_short,
                 len = dest_bytes.len(),
+                reason = "invalid_length",
                 "dest hash length != 16"
             );
             return None;
         }
         let mut dest = [0u8; 16];
         dest.copy_from_slice(&dest_bytes);
+        let canonical_dest = hex::encode(dest);
+        let dest_short = crate::short_id(&canonical_dest);
+        tracing::info!(
+            target: "ttt_trace",
+            step = "lxmf_send.enter",
+            dest = %dest_short,
+            field_count = lrgp_fields.len(),
+            "send_message_with_lrgp_fields entered"
+        );
 
         let method =
             self.pick_delivery_method(db_pool, dest_hash_hex, preference, DeliveryProfile::Lrgp);
@@ -1966,12 +1971,12 @@ impl LxmfManager {
             let mut ed_seed = [0u8; 32];
             ed_seed.copy_from_slice(&prv_key[32..64]);
             let signing_key = rns_crypto::ed25519::Ed25519PrivateKey::from_bytes(&ed_seed);
-            if let Err(e) = msg.sign(&signing_key) {
+            if msg.sign(&signing_key).is_err() {
                 tracing::warn!(
                     target: "ttt_trace",
                     step = "lxmf_send.sign_fail",
                     dest = %dest_short,
-                    err = ?e,
+                    reason = "sign_failed",
                     "message signing failed"
                 );
                 return None;
@@ -2167,7 +2172,10 @@ impl LxmfManager {
         let files_dir = self.files_dir();
         for file_ref in file_refs {
             let Some(sanitized) = sanitize_stored_file_name(&file_ref) else {
-                tracing::warn!(stored_name = %file_ref, "skipping unsafe stored attachment path");
+                tracing::warn!(
+                    reason = "unsafe_stored_name",
+                    "skipping unsafe stored attachment path"
+                );
                 continue;
             };
             std::fs::remove_file(files_dir.join(sanitized)).ok();
@@ -2179,17 +2187,21 @@ impl LxmfManager {
         node_hash: Option<&str>,
         db_pool: &DbPool,
         identity_id: &str,
-    ) {
+    ) -> bool {
         let Some(decoded_node) = Self::decode_propagation_node_hash(node_hash) else {
-            return;
+            return false;
         };
-        let node_str = node_hash.unwrap_or("");
+        let node_str = decoded_node.map(hex::encode).unwrap_or_default();
 
-        if let Err(e) = db::set_identity_propagation_node(db_pool, identity_id, node_str) {
-            tracing::warn!(error = %e, "failed to persist propagation node setting");
+        if db::set_identity_propagation_node(db_pool, identity_id, &node_str).is_err() {
+            tracing::warn!(
+                reason = "persist_failed",
+                "failed to persist propagation node setting"
+            );
         }
 
         self.set_runtime_propagation_node(decoded_node);
+        true
     }
 
     fn decode_propagation_node_hash(node_hash: Option<&str>) -> Option<Option<[u8; 16]>> {
@@ -2204,7 +2216,10 @@ impl LxmfManager {
                 Some(Some(dest))
             }
             _ => {
-                tracing::warn!(node = %node_str, "invalid propagation node hash ignored");
+                tracing::warn!(
+                    reason = "invalid_hash",
+                    "invalid propagation node hash ignored"
+                );
                 None
             }
         }
@@ -2268,7 +2283,7 @@ impl LxmfManager {
             client.set_propagation_node(dest);
             self.propagation_client = Some(client);
             tracing::info!(
-                node = %hex::encode(dest),
+                node = %crate::short_id(&hex::encode(dest)),
                 "propagation client created for message download"
             );
         }
@@ -2505,10 +2520,13 @@ impl LxmfManager {
                 let mut dest = [0u8; 16];
                 dest.copy_from_slice(&bytes);
                 if let Some(tx) = &self.router.transport_tx {
-                    if let Err(e) = tx.try_send(TransportMessage::RequestPath {
-                        destination_hash: dest,
-                    }) {
-                        tracing::warn!(dest = %hex::encode(dest), error = %e, "path request drop (transport backpressure); next sweep will retry");
+                    if tx
+                        .try_send(TransportMessage::RequestPath {
+                            destination_hash: dest,
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!(dest = %crate::short_id(&hex::encode(dest)), reason = "backpressure", "path request drop; next sweep will retry");
                     }
                     count += 1;
                 }
@@ -2561,12 +2579,8 @@ impl LxmfManager {
     }
 
     pub fn save_router_state(&self) {
-        if let Err(e) = self.router.save_state(&self.lxmf_storage_dir) {
-            tracing::warn!(
-                path = %self.lxmf_storage_dir.display(),
-                error = %e,
-                "Failed to save LXMF router state"
-            );
+        if self.router.save_state(&self.lxmf_storage_dir).is_err() {
+            tracing::warn!(reason = "save_failed", "Failed to save LXMF router state");
         }
     }
 
@@ -2579,17 +2593,23 @@ impl LxmfManager {
         let received_dir = ratchet_dir.join("received");
         std::fs::create_dir_all(&received_dir).ok();
         for (hash_hex, rr) in &self.received_ratchets {
+            if !crate::helpers::is_protocol_hash_16(hash_hex) {
+                tracing::warn!(
+                    reason = "invalid_identifier",
+                    "skipping received ratchet with invalid destination identifier"
+                );
+                continue;
+            }
             let path = received_dir.join(format!("{hash_hex}.ratchet"));
-            if let Err(e) = rr.save(&path) {
-                tracing::warn!("Failed to save received ratchet {hash_hex}: {e}");
+            if rr.save(&path).is_err() {
+                tracing::warn!(identity = %crate::short_id(hash_hex), reason = "save_failed", "Failed to save received ratchet");
             }
         }
 
         let ki_path = ratchet_dir.join("known_identities");
-        if let Err(e) =
-            rns_identity::persistence::atomic_write(&ki_path, &self.known_identities_blob())
+        if rns_identity::persistence::atomic_write(&ki_path, &self.known_identities_blob()).is_err()
         {
-            tracing::warn!("Failed to save known identities: {e}");
+            tracing::warn!(reason = "save_failed", "Failed to save known identities");
         }
 
         self.save_router_state();
@@ -2824,7 +2844,7 @@ impl LxmfManager {
         &mut self,
         message: LxMessage,
         dest_hash: [u8; 16],
-        reason: &str,
+        _reason: &str,
         results: &mut Vec<(String, &'static str)>,
     ) -> bool {
         let Some(hash) = message.hash else {
@@ -2858,9 +2878,9 @@ impl LxmfManager {
             && let Some(prop_hash) = prop_hash
         {
             tracing::warn!(
-                dest = %hex::encode(dest_hash),
-                prop = %hex::encode(prop_hash),
-                reason,
+                dest = %crate::short_id(&hex::encode(dest_hash)),
+                prop = %crate::short_id(&hex::encode(prop_hash)),
+                reason = "retry_window_exceeded",
                 attempts = message.delivery_attempts,
                 age_secs = age,
                 "direct link retry window exceeded; elevating Auto send to propagation"
@@ -2872,8 +2892,8 @@ impl LxmfManager {
         }
 
         tracing::warn!(
-            dest = %hex::encode(dest_hash),
-            reason,
+            dest = %crate::short_id(&hex::encode(dest_hash)),
+            reason = "retry_window_exceeded",
             attempts = message.delivery_attempts,
             age_secs = age,
             propagation_enabled = self.client_propagation_enabled,
@@ -2913,7 +2933,7 @@ impl LxmfManager {
 
             if !forced_results.is_empty() {
                 tracing::warn!(
-                    msg = %hex::encode(hash),
+                    msg = %crate::short_id(&hex::encode(hash)),
                     "direct retry window exceeded; aborting in-flight Link delivery"
                 );
                 for result in forced_results {
@@ -2953,8 +2973,8 @@ impl LxmfManager {
             );
         if resource_in_progress {
             tracing::trace!(
-                msg = %hex::encode(hash),
-                link_id = %hex::encode(snapshot.link_id),
+                msg = %crate::short_id(&hex::encode(hash)),
+                link_id = %crate::short_id(&hex::encode(snapshot.link_id)),
                 progress = snapshot.progress,
                 "direct retry window expired, but an active resource transfer owns the message"
             );
@@ -2970,8 +2990,8 @@ impl LxmfManager {
         if queued_behind_active_delivery {
             self.direct_retry_started_at.insert(hash, now);
             tracing::trace!(
-                msg = %hex::encode(hash),
-                link_id = %hex::encode(snapshot.link_id),
+                msg = %crate::short_id(&hex::encode(hash)),
+                link_id = %crate::short_id(&hex::encode(snapshot.link_id)),
                 queued = snapshot.queued_deliveries,
                 "direct retry window extended while queued behind an active Link delivery"
             );
@@ -3008,8 +3028,8 @@ impl LxmfManager {
                 Ok(report) => {
                     let step = direct_link_start_step(report.kind);
                     tracing::info!(
-                        link_id = %hex::encode(report.link_id),
-                        dest = %dest_hex,
+                        link_id = %crate::short_id(&hex::encode(report.link_id)),
+                        dest = %crate::short_id(&dest_hex),
                         kind = ?report.kind,
                         link_state = ?report.link_state,
                         delivery_state = ?report.delivery_state,
@@ -3026,9 +3046,10 @@ impl LxmfManager {
                 Err(err) => {
                     let reason = err.error.to_string();
                     tracing::warn!(
-                        dest = %dest_hex,
+                        dest = %crate::short_id(&dest_hex),
                         attempts,
-                        reason = %reason,
+                        retryable = is_retryable_link_delivery_failure(&reason),
+                        reason = "link_start_failed",
                         "outbound LXMF: failed to start Direct link delivery"
                     );
                     let requeued = if router_owned {
@@ -3061,7 +3082,7 @@ impl LxmfManager {
         &mut self,
         dest_hash: [u8; 16],
         drop_existing: bool,
-        reason: &str,
+        _reason: &str,
         suppress_current_path: bool,
     ) {
         let Some(ref tx) = self.router.transport_tx else {
@@ -3070,17 +3091,19 @@ impl LxmfManager {
 
         if suppress_current_path {
             let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-            if let Err(e) = tx.try_send(TransportMessage::Rpc {
-                query: TransportQuery::SuppressCurrentPathInterface {
-                    dest: dest_hash,
-                    duration: DIRECT_PATH_FAILURE_SUPPRESSION_SECS,
-                },
-                response_tx,
-            }) {
+            if tx
+                .try_send(TransportMessage::Rpc {
+                    query: TransportQuery::SuppressCurrentPathInterface {
+                        dest: dest_hash,
+                        duration: DIRECT_PATH_FAILURE_SUPPRESSION_SECS,
+                    },
+                    response_tx,
+                })
+                .is_err()
+            {
                 tracing::warn!(
-                    dest = %hex::encode(dest_hash),
-                    error = %e,
-                    reason,
+                    dest = %crate::short_id(&hex::encode(dest_hash)),
+                    reason = "queue_suppression_failed",
                     "failed to queue current path-interface suppression after direct link failure"
                 );
             }
@@ -3090,26 +3113,30 @@ impl LxmfManager {
             self.route_hops.remove(&dest_hash);
             self.route_entries.remove(&dest_hash);
             let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-            if let Err(e) = tx.try_send(TransportMessage::Rpc {
-                query: TransportQuery::DropPath { dest: dest_hash },
-                response_tx,
-            }) {
+            if tx
+                .try_send(TransportMessage::Rpc {
+                    query: TransportQuery::DropPath { dest: dest_hash },
+                    response_tx,
+                })
+                .is_err()
+            {
                 tracing::warn!(
-                    dest = %hex::encode(dest_hash),
-                    error = %e,
-                    reason,
+                    dest = %crate::short_id(&hex::encode(dest_hash)),
+                    reason = "queue_path_drop_failed",
                     "failed to queue path drop after direct link failure"
                 );
             }
         }
 
-        if let Err(e) = tx.try_send(TransportMessage::RequestPath {
-            destination_hash: dest_hash,
-        }) {
+        if tx
+            .try_send(TransportMessage::RequestPath {
+                destination_hash: dest_hash,
+            })
+            .is_err()
+        {
             tracing::warn!(
-                dest = %hex::encode(dest_hash),
-                error = %e,
-                reason,
+                dest = %crate::short_id(&hex::encode(dest_hash)),
+                reason = "queue_path_request_failed",
                 "failed to queue path request after direct link failure"
             );
         }
@@ -3160,10 +3187,11 @@ impl LxmfManager {
             .as_secs_f64();
         message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
         tracing::warn!(
-            dest = %hex::encode(dest_hash),
+            dest = %crate::short_id(&hex::encode(dest_hash)),
             attempts = message.delivery_attempts,
             max_attempts = MAX_DELIVERY_ATTEMPTS,
-            reason,
+            retryable,
+            reason = "direct_delivery_failed",
             "direct link delivery failed before completion; rediscovering path and re-queuing"
         );
         self.router.send(message);
@@ -3207,10 +3235,11 @@ impl LxmfManager {
             .as_secs_f64();
         let _ = self.router.defer_outbound_for_path_request(&hash, now);
         tracing::warn!(
-            dest = %hex::encode(dest_hash),
+            dest = %crate::short_id(&hex::encode(dest_hash)),
             attempts = message.delivery_attempts,
             max_attempts = MAX_DELIVERY_ATTEMPTS,
-            reason,
+            retryable,
+            reason = "direct_delivery_failed",
             "direct link delivery failed before completion; rediscovering path and deferring router-owned message"
         );
         true
@@ -3220,18 +3249,17 @@ impl LxmfManager {
         let dest_hex = hex::encode(dest_hash);
         if let Some(entry) = self.direct_route_entry(dest_hash, now) {
             tracing::info!(
-                dest = %dest_hex,
+                dest = %crate::short_id(&dest_hex),
                 has_path = true,
                 hops = entry.hops,
-                interface = %entry.interface,
                 path_age_secs = now - entry.timestamp,
                 path_expires_in_secs = entry.expires - now,
-                next_hop = ?entry.via.map(hex::encode),
+                has_next_hop = entry.via.is_some(),
                 "outbound LXMF: starting Direct delivery via Link"
             );
         } else {
             tracing::warn!(
-                dest = %dest_hex,
+                dest = %crate::short_id(&dest_hex),
                 has_path = false,
                 cached_hops = self.route_hops.get(&dest_hash).copied(),
                 "outbound LXMF: Direct delivery has no current path snapshot"
@@ -3284,7 +3312,7 @@ impl LxmfManager {
         plaintext: &[u8],
     ) -> Option<Vec<u8>> {
         let pub_key = self.known_identities.get(dest_hash_hex)?;
-        tracing::info!(dest = %dest_hash_hex, "encrypting for destination — key found");
+        tracing::info!(dest = %crate::short_id(dest_hash_hex), "encrypting for destination — key found");
         let remote = Identity::from_public_key(pub_key).ok()?;
         let ratchet_pub = self
             .received_ratchets
@@ -3584,7 +3612,7 @@ impl LxmfManager {
         for (msg_id, step) in results {
             if self.last_reported_steps.get(&msg_id).copied() == Some(step) {
                 tracing::trace!(
-                    msg_id = %msg_id,
+                    msg_id = %crate::short_id(&msg_id),
                     step,
                     "suppressing repeated LXMF step"
                 );
@@ -3609,7 +3637,7 @@ impl LxmfManager {
         task.set_node(node_dest_hash);
         self.propagation_sync = Some(task);
         tracing::info!(
-            node = %hex::encode(node_dest_hash),
+            node = %crate::short_id(&hex::encode(node_dest_hash)),
             "propagation sync enabled"
         );
     }
@@ -3688,12 +3716,11 @@ impl LxmfManager {
             DeliveryResult::Rejected {
                 msg_hash,
                 dest_hash,
-                reason,
                 ..
             } => {
                 tracing::warn!(
-                    dest = %hex::encode(dest_hash),
-                    reason = %reason,
+                    dest = %crate::short_id(&hex::encode(dest_hash)),
+                    reason = "rejected",
                     "link delivery rejected"
                 );
                 if let Some(hash) = msg_hash {
@@ -3713,8 +3740,8 @@ impl LxmfManager {
                 ..
             } => {
                 tracing::warn!(
-                    dest = %hex::encode(dest_hash),
-                    reason = %reason,
+                    dest = %crate::short_id(&hex::encode(dest_hash)),
+                    reason = "delivery_failed",
                     "link delivery failed"
                 );
                 if let Some(hash) = msg_hash {
@@ -3856,7 +3883,7 @@ impl LxmfManager {
         match self.router.defer_stamp(message) {
             None => {
                 tracing::info!(
-                    dest = %dest,
+                    dest = %crate::short_id(&dest),
                     cost,
                     "stamp required; deferred to worker — delivery resumes when ready"
                 );
@@ -3865,7 +3892,7 @@ impl LxmfManager {
             Some(mut message) => {
                 // No id to key the deferred job on; keep prior inline
                 // behavior as the last resort.
-                tracing::warn!(dest = %dest, cost, "stamp needed but message has no id; generating inline");
+                tracing::warn!(dest = %crate::short_id(&dest), cost, "stamp needed but message has no id; generating inline");
                 message.get_stamp();
                 Some(message)
             }
@@ -3893,8 +3920,8 @@ impl LxmfManager {
             )
             .ok()?;
         tracing::debug!(
-            dest = %dest_hex,
-            prop = %hex::encode(prop_hash),
+            dest = %crate::short_id(&dest_hex),
+            prop = %crate::short_id(&hex::encode(prop_hash)),
             target_cost,
             stamp_value,
             packed_len = packed.len(),
@@ -3915,7 +3942,7 @@ impl LxmfManager {
 
         if !self.known_identities.contains_key(&prop_hex) {
             tracing::warn!(
-                prop = %prop_hex,
+                prop = %crate::short_id(&prop_hex),
                 attempts = message.delivery_attempts,
                 "cannot propagate LXMF before propagation node identity is known; requesting path"
             );
@@ -3925,7 +3952,7 @@ impl LxmfManager {
 
         if self.router.get_stamp_cost(&prop_hash).is_none() {
             tracing::warn!(
-                prop = %prop_hex,
+                prop = %crate::short_id(&prop_hex),
                 attempts = message.delivery_attempts,
                 "cannot propagate LXMF before propagation node stamp cost is known; requesting path"
             );
@@ -3935,7 +3962,7 @@ impl LxmfManager {
 
         if !self.known_identities.contains_key(&dest_hex) {
             tracing::warn!(
-                dest = %dest_hex,
+                dest = %crate::short_id(&dest_hex),
                 attempts = message.delivery_attempts,
                 "cannot propagate LXMF before recipient identity key is known; requesting path"
             );
@@ -3949,8 +3976,8 @@ impl LxmfManager {
         };
         let Some(packed) = self.pack_message_for_propagation(&mut message, prop_hash) else {
             tracing::warn!(
-                dest = %dest_hex,
-                prop = %hex::encode(prop_hash),
+                dest = %crate::short_id(&dest_hex),
+                prop = %crate::short_id(&hex::encode(prop_hash)),
                 "failed to pack propagation wrapper"
             );
             if let Some(hash) = msg_hash {
@@ -3969,10 +3996,10 @@ impl LxmfManager {
                         results.push((hex::encode(hash), "propagating"));
                     }
                 }
-                Err(err) => {
+                Err(_) => {
                     tracing::warn!(
-                        error = %err,
-                        prop = %hex::encode(prop_hash),
+                        reason = "link_start_failed",
+                        prop = %crate::short_id(&hex::encode(prop_hash)),
                         "failed to start propagation link delivery"
                     );
                     if let Some(hash) = msg_hash {
@@ -4022,9 +4049,9 @@ impl LxmfManager {
                     ld.register_backchannel(dest_hash, link_id);
                 }
                 tracing::info!(
-                    link_id = %hex::encode(link_id),
-                    identity = %hex::encode(identity_hash),
-                    dest = %hex::encode(dest_hash),
+                    link_id = %crate::short_id(&hex::encode(link_id)),
+                    identity = %crate::short_id(&hex::encode(identity_hash)),
+                    dest = %crate::short_id(&hex::encode(dest_hash)),
                     "LXMF inbound Link identified; registered core backchannel"
                 );
             }
@@ -4044,7 +4071,7 @@ impl LxmfManager {
                     .map(|ld| ld.fail_backchannel_link(link_id, "link closed"))
                     .unwrap_or_default();
                 tracing::debug!(
-                    link_id = %hex::encode(link_id),
+                    link_id = %crate::short_id(&hex::encode(link_id)),
                     failed_deliveries = closed_results.len(),
                     "LXMF inbound Link closed; removed core backchannel state"
                 );
@@ -4119,10 +4146,10 @@ impl LxmfManager {
                         let _ = command.result_tx.send(result);
                     });
                 }
-                Err(err) => {
+                Err(_) => {
                     tracing::warn!(
-                        link_id = %hex::encode(link_id),
-                        error = %err,
+                        link_id = %crate::short_id(&hex::encode(link_id)),
+                        reason = "queue_failed",
                         "failed to queue LXMF backchannel send command"
                     );
                     let _ = command
@@ -4154,8 +4181,8 @@ impl LxmfManager {
                 }
                 OutboundAction::DeliverPropagated { message, prop_hash } => {
                     tracing::info!(
-                        dest = %hex::encode(message.destination_hash),
-                        prop = %hex::encode(prop_hash),
+                        dest = %crate::short_id(&hex::encode(message.destination_hash)),
+                        prop = %crate::short_id(&hex::encode(prop_hash)),
                         "routing message via propagation node"
                     );
                     self.start_propagation_delivery(message, prop_hash, &mut results);
@@ -4216,8 +4243,8 @@ impl LxmfManager {
                                     message.delivery_attempts.saturating_sub(1);
                                 direct_plan = None;
                                 tracing::debug!(
-                                    dest = %dest_hex,
-                                    error = %err.error,
+                                    dest = %crate::short_id(&dest_hex),
+                                    reason = "backchannel_unavailable",
                                     "LXMF backchannel unavailable; falling back to outbound Direct link"
                                 );
                             }
@@ -4226,7 +4253,7 @@ impl LxmfManager {
                         message.delivery_attempts = message.delivery_attempts.saturating_sub(1);
                         direct_plan = None;
                         tracing::debug!(
-                            dest = %dest_hex,
+                            dest = %crate::short_id(&dest_hex),
                             "LXMF backchannel unavailable; falling back to outbound Direct link"
                         );
                     }
@@ -4266,7 +4293,7 @@ impl LxmfManager {
                         };
                         self.queue_path_rediscovery(dest_hash, drop_existing, reason, false);
                         tracing::warn!(
-                            dest = %dest_hex,
+                            dest = %crate::short_id(&dest_hex),
                             attempts = message.delivery_attempts,
                             drop_existing,
                             identity_known,
@@ -4285,7 +4312,7 @@ impl LxmfManager {
                     }
                     DirectDeliveryPlan::DeferTerminalFailure => {
                         tracing::warn!(
-                            dest = %dest_hex,
+                            dest = %crate::short_id(&dest_hex),
                             attempts = message.delivery_attempts,
                             max_attempts = MAX_DELIVERY_ATTEMPTS,
                             "outbound LXMF: Direct delivery attempt budget reached; deferring terminal failure"
@@ -4296,7 +4323,7 @@ impl LxmfManager {
                     }
                     DirectDeliveryPlan::WaitForReusableLink => {
                         tracing::debug!(
-                            dest = %dest_hex,
+                            dest = %crate::short_id(&dest_hex),
                             attempts = message.delivery_attempts,
                             "outbound LXMF: Direct delivery waiting for reusable Link"
                         );
@@ -4382,7 +4409,7 @@ impl LxmfManager {
             }
 
             tracing::info!(
-                dest = %dest_hex,
+                dest = %crate::short_id(&dest_hex),
                 known = self.known_identities.contains_key(&dest_hex),
                 total_known = self.known_identities.len(),
                 "outbound: identity lookup for destination"
@@ -4400,13 +4427,13 @@ impl LxmfManager {
             }) {
                 Ok(ct) => {
                     tracing::info!(
-                        dest = %dest_hex,
+                        dest = %crate::short_id(&dest_hex),
                         encrypted_len = ct.len(),
                         "outbound LXMF: encrypted and sending opportunistic payload"
                     );
                     ct
                 }
-                Err(err) if missing_identity => {
+                Err(_) if missing_identity => {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
@@ -4421,18 +4448,18 @@ impl LxmfManager {
 
                     message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
                     tracing::warn!(
-                        dest = %dest_hex,
+                        dest = %crate::short_id(&dest_hex),
                         attempts = message.delivery_attempts,
-                        error = %err,
+                        reason = "identity_unknown",
                         "outbound LXMF: destination key unknown, re-queuing"
                     );
                     self.router.send(message);
                     continue;
                 }
-                Err(err) => {
+                Err(_) => {
                     tracing::warn!(
-                        dest = %dest_hex,
-                        error = %err,
+                        dest = %crate::short_id(&dest_hex),
+                        reason = "pack_failed",
                         "outbound LXMF: failed to pack opportunistic message"
                     );
                     continue;
@@ -4458,7 +4485,7 @@ impl LxmfManager {
 
             if raw.len() > rns_wire::constants::MTU {
                 tracing::info!(
-                    dest = %dest_hex,
+                    dest = %crate::short_id(&dest_hex),
                     packet_len = raw.len(),
                     mtu = rns_wire::constants::MTU,
                     "outbound LXMF packet exceeds MTU — routing to link delivery"
@@ -4495,7 +4522,7 @@ impl LxmfManager {
                             false,
                         );
                         tracing::warn!(
-                            dest = %dest_hex,
+                            dest = %crate::short_id(&dest_hex),
                             attempts = message.delivery_attempts,
                             drop_existing,
                             identity_known,
@@ -4512,7 +4539,7 @@ impl LxmfManager {
                     }
                     DirectDeliveryPlan::DeferTerminalFailure => {
                         tracing::warn!(
-                            dest = %dest_hex,
+                            dest = %crate::short_id(&dest_hex),
                             attempts = message.delivery_attempts,
                             max_attempts = MAX_DELIVERY_ATTEMPTS,
                             "outbound LXMF: oversized Link delivery attempt budget reached; deferring terminal failure"
@@ -4521,7 +4548,7 @@ impl LxmfManager {
                     }
                     DirectDeliveryPlan::WaitForReusableLink => {
                         tracing::debug!(
-                            dest = %dest_hex,
+                            dest = %crate::short_id(&dest_hex),
                             attempts = message.delivery_attempts,
                             "outbound LXMF: oversized Link delivery waiting for reusable Link"
                         );
@@ -4569,7 +4596,7 @@ impl LxmfManager {
             }
 
             let Some(ref transport_tx) = self.router.transport_tx else {
-                tracing::error!(dest = %dest_hex, "transport unavailable; message dropped");
+                tracing::error!(dest = %crate::short_id(&dest_hex), reason = "transport_unavailable", "transport unavailable; message dropped");
                 if let Some(hash) = msg_hash {
                     if self.ephemeral_outbound.remove(&hash) {
                         continue;
@@ -4596,19 +4623,22 @@ impl LxmfManager {
                             rns_wire::flags::HeaderType::Header1,
                         );
                         let receipt_timeout = Some(std::time::Duration::from_secs(15));
-                        if let Err(e) = transport_tx.try_send(TransportMessage::RegisterReceipt {
-                            truncated_hash: pkt_trunc_hash,
-                            full_hash: pkt_full_hash,
-                            msg_id: msg_id_hex.clone(),
-                            timeout: receipt_timeout,
-                        }) {
-                            tracing::warn!(msg_id = %msg_id_hex, error = %e, "receipt registration drop");
+                        if transport_tx
+                            .try_send(TransportMessage::RegisterReceipt {
+                                truncated_hash: pkt_trunc_hash,
+                                full_hash: pkt_full_hash,
+                                msg_id: msg_id_hex.clone(),
+                                timeout: receipt_timeout,
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!(msg_id = %crate::short_id(&msg_id_hex), reason = "backpressure", "receipt registration drop");
                         }
                         results.push((msg_id_hex, "sent"));
                     }
                 }
-                Err(e) => {
-                    tracing::error!(dest = %dest_hex, error = %e, "transport send failed; message dropped");
+                Err(_) => {
+                    tracing::error!(dest = %crate::short_id(&dest_hex), reason = "send_failed", "transport send failed; message dropped");
                     if let Some(hash) = msg_hash {
                         if self.ephemeral_outbound.remove(&hash) {
                             continue;
@@ -4657,11 +4687,10 @@ pub async fn resolve_destination(
         cache_route_hops_from_entries(state, &entries);
         if let Some(entry) = path_entry {
             tracing::debug!(
-                dest = %dest_hash_hex,
+                dest = %crate::short_id(dest_hash_hex),
                 identity_known,
                 has_path = true,
                 hops = entry.hops,
-                interface = %entry.interface,
                 path_age_secs = now - entry.timestamp,
                 path_expires_in_secs = entry.expires - now,
                 "destination path already available before send"
@@ -4682,20 +4711,21 @@ pub async fn resolve_destination(
     }
 
     tracing::info!(
-        dest = %dest_hash_hex,
+        dest = %crate::short_id(dest_hash_hex),
         identity_known,
         "resolving destination path before send..."
     );
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if let Err(e) = transport_tx
+    if transport_tx
         .send(TransportMessage::AwaitPath {
             dest,
             reply: reply_tx,
         })
         .await
+        .is_err()
     {
-        tracing::warn!(dest = %dest_hash_hex, error = %e, "path wait registration failed during destination resolve");
+        tracing::warn!(dest = %crate::short_id(dest_hash_hex), reason = "registration_failed", "path wait registration failed during destination resolve");
         return false;
     }
 
@@ -4719,34 +4749,61 @@ pub async fn resolve_destination(
     };
 
     if known {
-        tracing::info!(dest = %dest_hash_hex, path_found, "destination resolved before send");
+        tracing::info!(dest = %crate::short_id(dest_hash_hex), path_found, "destination resolved before send");
     } else if path_found {
-        tracing::debug!(dest = %dest_hash_hex, "path found but identity key pending; will retry");
+        tracing::debug!(dest = %crate::short_id(dest_hash_hex), "path found but identity key pending; will retry");
     } else {
-        tracing::warn!(dest = %dest_hash_hex, "destination resolution timed out after 5s");
+        tracing::warn!(dest = %crate::short_id(dest_hash_hex), reason = "timeout", "destination resolution timed out after 5s");
     }
     known && path_found
+}
+
+fn transport_response_kind(response: &TransportQueryResponse) -> &'static str {
+    match response {
+        TransportQueryResponse::PathTable(_) => "path_table",
+        TransportQueryResponse::InterfaceStats(_) => "interface_stats",
+        TransportQueryResponse::RateTable(_) => "rate_table",
+        TransportQueryResponse::Announces(_) => "announces",
+        TransportQueryResponse::IntResult(_) => "int_result",
+        TransportQueryResponse::FloatResult(_) => "float_result",
+        TransportQueryResponse::StringResult(_) => "string_result",
+        TransportQueryResponse::HashResult(_) => "hash_result",
+        TransportQueryResponse::BoolResult(_) => "bool_result",
+        TransportQueryResponse::PathStateResult(_) => "path_state_result",
+        TransportQueryResponse::BlackholeList(_) => "blackhole_list",
+        TransportQueryResponse::BlackholedDests(_) => "blackholed_dests",
+        TransportQueryResponse::Data(_) => "data",
+        TransportQueryResponse::Ok => "ok",
+        TransportQueryResponse::Error(_) => "error",
+    }
 }
 
 async fn query_path_table(
     transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
 ) -> Option<Vec<PathTableRpcEntry>> {
     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    if let Err(e) = transport_tx
+    if transport_tx
         .send(TransportMessage::Rpc {
             query: TransportQuery::GetPathTable,
             response_tx: resp_tx,
         })
         .await
+        .is_err()
     {
-        tracing::warn!(error = %e, "path-table RPC failed during route-hop refresh");
+        tracing::warn!(
+            reason = "request_failed",
+            "path-table RPC failed during route-hop refresh"
+        );
         return None;
     }
 
     match resp_rx.await {
         Ok(TransportQueryResponse::PathTable(entries)) => Some(entries),
         Ok(other) => {
-            tracing::warn!(response = ?other, "unexpected path-table RPC response");
+            tracing::warn!(
+                response_kind = transport_response_kind(&other),
+                "unexpected path-table RPC response"
+            );
             None
         }
         Err(_) => {
@@ -4779,11 +4836,17 @@ async fn pull_identity_from_announces(
     dest_hash_hex: &str,
 ) {
     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    if let Err(e) = transport_tx.try_send(TransportMessage::Rpc {
-        query: rns_transport::messages::TransportQuery::GetRecentAnnounces,
-        response_tx: resp_tx,
-    }) {
-        tracing::warn!(error = %e, "announce-RPC drop during identity pull");
+    if transport_tx
+        .try_send(TransportMessage::Rpc {
+            query: rns_transport::messages::TransportQuery::GetRecentAnnounces,
+            response_tx: resp_tx,
+        })
+        .is_err()
+    {
+        tracing::warn!(
+            reason = "backpressure",
+            "announce-RPC drop during identity pull"
+        );
         return;
     }
     if let Ok(rns_transport::messages::TransportQueryResponse::Announces(announces)) = resp_rx.await
@@ -4797,7 +4860,7 @@ async fn pull_identity_from_announces(
             mgr.update_lxmf_announce_app_data(a.dest_hash, a.name_hash, a.app_data.as_deref());
         }
         if mgr.is_destination_known(dest_hash_hex) {
-            tracing::debug!(dest = %dest_hash_hex, "identity key cached from announce data");
+            tracing::debug!(dest = %crate::short_id(dest_hash_hex), "identity key cached from announce data");
         }
     }
 }
@@ -4868,6 +4931,43 @@ mod tests {
             }
         }
         panic!("expected outbound transport message");
+    }
+
+    #[test]
+    fn received_ratchet_loader_rejects_arbitrary_filename_stems() {
+        assert_eq!(
+            received_ratchet_hash_from_path(Path::new("0123456789abcdef0123456789abcdef.ratchet")),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        for path in [
+            "human-label.ratchet",
+            "0123456789abcdef.ratchet",
+            "0123456789abcdef0123456789abcdeg.ratchet",
+        ] {
+            assert_eq!(received_ratchet_hash_from_path(Path::new(path)), None);
+        }
+    }
+
+    #[test]
+    fn invalid_manual_propagation_node_is_not_reported_as_restored() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let identity_id = mgr.identity_hash.clone();
+        db::save_identity(&pool, &identity_id, &mgr.lxmf_hash, "Me", "Me");
+
+        assert!(!mgr.set_propagation_node(
+            Some("human-label-that-is-not-a-destination"),
+            &pool,
+            &identity_id,
+        ));
+        assert_eq!(mgr.configured_propagation_node, None);
+        assert_eq!(
+            db::get_identity(&pool, &identity_id).and_then(|identity| identity
+                .get("propagation_node")
+                .and_then(|node| node.as_str())
+                .map(str::to_string)),
+            Some(String::new())
+        );
     }
 
     /// T1-7: one shared sanitizer — names that save (spaces included) must
@@ -5854,10 +5954,34 @@ mod tests {
         ));
         let _ = LxmfManager::load_or_create(&tmp, None, None).unwrap();
 
-        match LxmfManager::load_or_create(&tmp, Some("missing"), None) {
+        let missing_hash = "ab".repeat(16);
+        match LxmfManager::load_or_create(&tmp, Some(&missing_hash), None) {
             Ok(_) => panic!("missing preferred identity should fail"),
             Err(err) => assert!(err.to_string().contains("active identity file not found")),
         }
+    }
+
+    #[test]
+    fn load_or_create_rejects_unvalidated_identity_hash_before_path_use() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-invalid-preferred-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let err = match LxmfManager::load_or_create(&tmp, Some("../../human-label"), None) {
+            Ok(_) => panic!("unvalidated preferred identity should fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("16-byte protocol hash"));
+        assert!(
+            !tmp.exists(),
+            "invalid identity input must be rejected before filesystem setup"
+        );
     }
 
     #[test]

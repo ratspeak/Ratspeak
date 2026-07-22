@@ -16,8 +16,8 @@ impl TauriEmitter {
 impl Emitter for TauriEmitter {
     fn emit(&self, event: &str, payload: serde_json::Value) {
         use tauri::Emitter as _;
-        if let Err(e) = self.handle.emit(event, &payload) {
-            tracing::warn!(target: "events", event, error = %e, "tauri emit failed");
+        if self.handle.emit(event, &payload).is_err() {
+            tracing::warn!(target: "events", reason = "emit_failed", "tauri emit failed");
         }
     }
 }

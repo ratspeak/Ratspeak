@@ -629,8 +629,8 @@ fn spawn_contacts_only_notice(
             .unwrap_or(false);
         if !sent {
             tracing::debug!(
-                remote_identity = %hex::encode(remote_identity),
-                remote_lxmf_destination = %remote_lxmf_destination,
+                remote_identity = %crate::short_id(&hex::encode(remote_identity)),
+                remote_lxmf_destination = %crate::short_id(&remote_lxmf_destination),
                 "could not queue LXMF contacts-only call notice"
             );
         }
@@ -780,8 +780,8 @@ async fn drive_voice_events(
                 if !policy.allowed {
                     suppressed_call_links.insert(link_id);
                     tracing::info!(
-                        link_id = %hex::encode(link_id),
-                        remote_identity = %hex::encode(remote_identity),
+                        link_id = %crate::short_id(&hex::encode(link_id)),
+                        remote_identity = %crate::short_id(&hex::encode(remote_identity)),
                         reason = policy.reason,
                         rejected_attempts = policy.rejected_attempts,
                         "silently rejecting LXST incoming call"
@@ -794,14 +794,15 @@ async fn drive_voice_events(
                             policy.remote_public_key,
                         );
                     }
-                    if let Err(err) = control_tx
+                    if control_tx
                         .send(TelephonyControl::Hangup {
                             ring_timeout: false,
                         })
                         .await
+                        .is_err()
                     {
                         tracing::warn!(
-                            error = %err,
+                            reason = "hangup_failed",
                             "failed to hang up rejected LXST incoming call"
                         );
                     }
@@ -1174,7 +1175,7 @@ async fn reconcile_audio_session(
             let speaker = session.speaker;
             let warnings = session.warnings.clone();
             tracing::info!(
-                link_id = %hex::encode(active.link_id),
+                link_id = %crate::short_id(&hex::encode(active.link_id)),
                 profile = profile_key(profile),
                 microphone,
                 speaker,
@@ -1240,7 +1241,7 @@ async fn maybe_adapt_voice_profile(
         .is_ok()
     {
         tracing::info!(
-            link_id = %hex::encode(active.link_id),
+            link_id = %crate::short_id(&hex::encode(active.link_id)),
             from = profile_key(current),
             to = profile_key(next),
             "switching LXST voice profile"
@@ -1669,7 +1670,7 @@ impl VoiceAudioSession {
             {
                 Ok(stream) => {
                     tracing::info!(
-                        link_id = %hex::encode(self.link_id),
+                        link_id = %crate::short_id(&hex::encode(self.link_id)),
                         profile = profile_key(self.profile),
                         "recovered LXST microphone stream"
                     );
@@ -1679,11 +1680,11 @@ impl VoiceAudioSession {
                     self.next_microphone_retry_at = None;
                     recovered = true;
                 }
-                Err(message) => {
+                Err(_) => {
                     tracing::warn!(
-                        link_id = %hex::encode(self.link_id),
+                        link_id = %crate::short_id(&hex::encode(self.link_id)),
                         profile = profile_key(self.profile),
-                        error = %message,
+                        reason = "stream_start_failed",
                         "LXST microphone recovery failed"
                     );
                     self.schedule_microphone_retry();
@@ -1700,7 +1701,7 @@ impl VoiceAudioSession {
             match start_speaker_side(&host, control_tx, self.profile.sample_rate_hz()).await {
                 Ok((stream, sink_task)) => {
                     tracing::info!(
-                        link_id = %hex::encode(self.link_id),
+                        link_id = %crate::short_id(&hex::encode(self.link_id)),
                         profile = profile_key(self.profile),
                         "recovered LXST speaker stream"
                     );
@@ -1711,11 +1712,11 @@ impl VoiceAudioSession {
                     self.next_speaker_retry_at = None;
                     recovered = true;
                 }
-                Err(message) => {
+                Err(_) => {
                     tracing::warn!(
-                        link_id = %hex::encode(self.link_id),
+                        link_id = %crate::short_id(&hex::encode(self.link_id)),
                         profile = profile_key(self.profile),
-                        error = %message,
+                        reason = "stream_start_failed",
                         "LXST speaker recovery failed"
                     );
                     self.schedule_speaker_retry();
@@ -2017,8 +2018,11 @@ async fn start_android_speaker_side(
                 fade_samples_total,
             );
             apply_voice_output_leveling(&mut converted);
-            if let Err(err) = write_android_voice_samples(&converted) {
-                tracing::warn!(error = %err, "LXST Android voice output write failed");
+            if write_android_voice_samples(&converted).is_err() {
+                tracing::warn!(
+                    reason = "write_failed",
+                    "LXST Android voice output write failed"
+                );
                 if android_voice_audio::start(ANDROID_OUTPUT_SAMPLE_RATE, ANDROID_OUTPUT_CHANNELS)
                     .is_ok()
                 {
@@ -2747,13 +2751,13 @@ fn channel_sample(source: &[f32], target_channel: usize, target_channels: usize)
     source.get(target_channel).copied().unwrap_or(0.0)
 }
 
-fn log_input_stream_error(err: cpal::StreamError) {
-    tracing::warn!(error = %err, "LXST microphone stream error");
+fn log_input_stream_error(_err: cpal::StreamError) {
+    tracing::warn!(reason = "stream_error", "LXST microphone stream error");
 }
 
 #[cfg_attr(target_os = "android", allow(dead_code))]
-fn log_output_stream_error(err: cpal::StreamError) {
-    tracing::warn!(error = %err, "LXST speaker stream error");
+fn log_output_stream_error(_err: cpal::StreamError) {
+    tracing::warn!(reason = "stream_error", "LXST speaker stream error");
 }
 
 #[cfg(target_os = "android")]

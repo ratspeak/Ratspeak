@@ -830,6 +830,14 @@ fn games_view_uses_standard_dark_mode_surfaces() {
 #[test]
 fn process_diagnostics_are_explicit_opt_in() {
     let source = read_source(repo_root().join("src-tauri/src/lib.rs")).expect("app shell");
+    let policy = read_source(repo_root().join("crates/ratspeak-tauri/src/diagnostics.rs"))
+        .expect("diagnostics target policy");
+    let core =
+        read_source(repo_root().join("crates/ratspeak-tauri/src/lib.rs")).expect("tauri core");
+    let ble = read_source(repo_root().join("crates/ratspeak-tauri/src/commands/ble.rs"))
+        .expect("BLE commands");
+    let events = read_source(repo_root().join("dashboard/static/js/tauri_events.js"))
+        .expect("frontend event listeners");
 
     assert!(source.contains("fn diagnostics_enabled()"));
     assert!(source.contains("env_flag(\"RATSPEAK_DIAGNOSTICS\")"));
@@ -837,6 +845,97 @@ fn process_diagnostics_are_explicit_opt_in() {
     assert!(source.contains("fn diagnostic_file_enabled()"));
     assert!(source.contains("RATSPEAK_DIAGNOSTIC_FILE"));
     assert!(!source.contains("const DEFAULT_FILTER"));
+    assert!(source.contains("fn diagnostic_metadata_allowed("));
+    assert_eq!(
+        source
+            .matches(".with(filter_fn(diagnostic_metadata_allowed))")
+            .count(),
+        5,
+        "every platform subscriber path must intersect EnvFilter with the immutable target policy"
+    );
+    assert!(policy.contains("pub fn target_allowed(target: &str) -> bool"));
+    assert!(policy.contains("pub fn metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool"));
+    assert!(policy.contains("PROHIBITED_FIELD_NAMES"));
+    for denied in ["rns_interface", "lxmf_core::router", "ble_diag"] {
+        assert!(policy.contains(denied));
+    }
+    assert!(core.contains("spawn_ble_event_broadcaster(&app_state)"));
+    assert!(!core.contains("spawn_ble_diag_broadcaster"));
+    assert!(!ble.contains("subscribe_ble_diag"));
+    assert!(!events.contains("RS.listen('ble_diag'"));
+}
+
+#[test]
+fn process_diagnostics_sources_do_not_reintroduce_sensitive_trace_fields() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    collect_files(&root.join("crates"), &mut files);
+    collect_files(&root.join("src-tauri/src"), &mut files);
+
+    let forbidden = [
+        "app_id = %",
+        "backup = %",
+        "command = %",
+        "content = %",
+        "endpoint = %",
+        "error = %",
+        "error = ?",
+        "err = %",
+        "err = ?",
+        "event = %",
+        "fallback = %",
+        "file_name = %",
+        "greeting = %",
+        "interface = %",
+        "label = %",
+        "nickname = %",
+        "path = %",
+        "payload = %",
+        "response = ?",
+        "secret = %",
+        "session_id = %",
+        "stored = %",
+        "stored_name = %",
+        "title = %",
+        "token = %",
+        "topic = %",
+        "uri = %",
+        "url = %",
+    ];
+
+    for path in files.into_iter().filter(|path| {
+        path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+            && !path
+                .components()
+                .any(|component| component.as_os_str() == "tests")
+    }) {
+        let source = read_source(&path).expect("Rust source");
+        for pattern in forbidden {
+            assert!(
+                !source.contains(pattern),
+                "{} contains prohibited diagnostics field pattern {pattern:?}",
+                path.display()
+            );
+        }
+        for shorthand in [
+            "tracing::trace!(%hash",
+            "tracing::debug!(%hash",
+            "tracing::info!(%hash",
+            "tracing::warn!(%hash",
+            "tracing::error!(%hash",
+            "tracing::trace!(%dest_hash",
+            "tracing::debug!(%dest_hash",
+            "tracing::info!(%dest_hash",
+            "tracing::warn!(%dest_hash",
+            "tracing::error!(%dest_hash",
+        ] {
+            assert!(
+                !source.contains(shorthand),
+                "{} contains unreviewed full-identifier shorthand {shorthand:?}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]

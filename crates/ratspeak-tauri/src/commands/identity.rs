@@ -280,8 +280,8 @@ fn identity_preview_payload(key_bytes: &[u8], format: &str) -> Result<Value, Str
 pub async fn api_identity(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let active = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "db task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "db task panicked");
             Default::default()
         });
     let is_hardware = state
@@ -316,8 +316,8 @@ pub async fn api_identity(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
 pub async fn api_list_identities(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let identities = db::spawn_db(state.db.clone(), |p| db::get_all_identities(&p))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "list_identities db task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "list_identities db task panicked");
             Default::default()
         });
     // Tag each row hardware-backed if its on-disk artifact is a `.hwid`, and
@@ -383,7 +383,10 @@ pub async fn api_create_identity(
     if let Some(hash) = resp.get("hash").and_then(|v| v.as_str()) {
         match ratspeak_runtime::vault::store_plaintext_seed(&identities_dir.join(hash), &mnemonic) {
             Ok(()) => {}
-            Err(e) => tracing::warn!(error = %e, "could not store recovery-phrase sidecar"),
+            Err(_) => tracing::warn!(
+                reason = "write_failed",
+                "could not store recovery-phrase sidecar"
+            ),
         }
     }
     if let Some(obj) = resp.as_object_mut() {
@@ -449,7 +452,10 @@ pub async fn restore_seed_identity(
     if let Some(hash) = resp.get("hash").and_then(|v| v.as_str()) {
         match ratspeak_runtime::vault::store_plaintext_seed(&identities_dir.join(hash), &phrase) {
             Ok(()) => {}
-            Err(e) => tracing::warn!(error = %e, "could not store recovery-phrase sidecar"),
+            Err(_) => tracing::warn!(
+                reason = "write_failed",
+                "could not store recovery-phrase sidecar"
+            ),
         }
     }
     Ok(resp)
@@ -708,8 +714,11 @@ async fn import_identity_shared_with_passcode(
         Ok((hash, lxmf_hash)) => {
             if let Some(phrase) = mnemonic.as_deref() {
                 let seed_dir = state.config.data_dir.join("identities").join(&hash);
-                if let Err(e) = ratspeak_runtime::vault::store_plaintext_seed(&seed_dir, phrase) {
-                    tracing::warn!(error = %e, "could not store imported recovery-phrase sidecar");
+                if ratspeak_runtime::vault::store_plaintext_seed(&seed_dir, phrase).is_err() {
+                    tracing::warn!(
+                        reason = "write_failed",
+                        "could not store imported recovery-phrase sidecar"
+                    );
                 }
             }
             let active_missing = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
@@ -1018,8 +1027,8 @@ pub async fn api_update_identity(
     })
     .await
     .map_err(|_| AppError::internal("update_identity db task panicked"))?;
-    result.map_err(|e| {
-        tracing::error!(error = %e, "update_identity failed");
+    result.map_err(|_| {
+        tracing::error!(reason = "update_failed", "update_identity failed");
         AppError::internal("failed to update identity")
     })?;
     Ok(json!(null))
@@ -1078,8 +1087,8 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
         db::get_identity(&p, &hash_for_lookup)
     })
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "identity lookup task panicked");
+    .map_err(|_| {
+        tracing::error!(reason = "task_panicked", "identity lookup task panicked");
         AppError::internal("db task panicked")
     })?
     .ok_or_else(|| AppError::not_found("Identity not found"))?;
@@ -1136,8 +1145,8 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
         db::set_active_identity(&p, &hash_for_db)
     })
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "activate db task panicked");
+    .map_err(|_| {
+        tracing::error!(reason = "task_panicked", "activate db task panicked");
         AppError::internal("db task panicked")
     })?;
     if let Err(e) = set_result {
@@ -1187,9 +1196,8 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     };
     if loaded_identity != hash_hex {
         tracing::error!(
-            requested = %hash_hex,
-            loaded = %loaded_identity,
             generation,
+            reason = "identity_mismatch",
             "identity switch failed to load target; rolling back"
         );
         // Target failed to load (e.g. a hardware key that was re-provisioned or
@@ -1279,8 +1287,11 @@ pub async fn api_set_display_name(
     })
     .await
     .map_err(|_| AppError::internal("failed to save display name"))?
-    .map_err(|e| {
-        tracing::error!(error = %e, "display_name: update_identity failed");
+    .map_err(|_| {
+        tracing::error!(
+            reason = "update_failed",
+            "display_name: update_identity failed"
+        );
         AppError::internal("failed to save display name")
     })?;
 
@@ -1328,8 +1339,11 @@ pub async fn set_identity_status(
     })
     .await
     .map_err(|_| AppError::internal("failed to save status"))?
-    .map_err(|e| {
-        tracing::error!(error = %e, "status: update_identity_status failed");
+    .map_err(|_| {
+        tracing::error!(
+            reason = "update_failed",
+            "status: update_identity_status failed"
+        );
         AppError::internal("failed to save status")
     })?;
 

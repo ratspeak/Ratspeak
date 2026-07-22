@@ -120,8 +120,7 @@ pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfMana
 }
 
 fn short_id(s: &str) -> &str {
-    let n = s.len().min(8);
-    s.get(..n).unwrap_or("")
+    helpers::diagnostic_short_protocol_id(s).unwrap_or("invalid")
 }
 
 fn compact_hash_label(hash: &str) -> String {
@@ -316,31 +315,27 @@ fn seed_identity_rns_config_from_app_private(
     if target.exists() || !source.exists() || app_config_dir == identity_config_dir {
         return;
     }
-    if let Err(e) = std::fs::create_dir_all(identity_config_dir) {
+    if std::fs::create_dir_all(identity_config_dir).is_err() {
         tracing::warn!(
-            path = %identity_config_dir.display(),
-            error = %e,
+            reason = "create_directory",
             "failed to prepare identity Reticulum config directory"
         );
         return;
     }
     let source_content = match std::fs::read_to_string(&source) {
         Ok(content) => content,
-        Err(e) => {
+        Err(_) => {
             tracing::warn!(
-                source = %source.display(),
-                error = %e,
+                reason = "read_config",
                 "failed to read app-private Reticulum config for identity seed"
             );
             return;
         }
     };
     let identity_content = rns_config::strip_legacy_default_auto_interface(&source_content);
-    if let Err(e) = std::fs::write(&target, identity_content) {
+    if std::fs::write(&target, identity_content).is_err() {
         tracing::warn!(
-            source = %source.display(),
-            target = %target.display(),
-            error = %e,
+            reason = "write_config",
             "failed to seed identity Reticulum config from app-private config"
         );
     }
@@ -503,11 +498,7 @@ fn reconcile_persisted_transport_mode_for_startup(state: &AppState, config_dir: 
     };
 
     if !rns_config::set_transport_mode(config_dir, enable) {
-        tracing::warn!(
-            mode = %mode,
-            path = %config_dir.join("config").display(),
-            "failed to reconcile persisted transport mode before RNS startup"
-        );
+        tracing::warn!(mode = %mode, "failed to reconcile persisted transport mode before RNS startup");
     }
 }
 
@@ -620,7 +611,7 @@ async fn lock_hardware_session(state: Arc<AppState>, generation: u64) {
             .map(|m| m.identity_hash.clone())
     });
     let Some(hash) = hash else { return };
-    tracing::info!(%hash, "hardware session auto-lock timeout — locking");
+    tracing::info!(identity = %short_id(&hash), "hardware session auto-lock timeout — locking");
     shutdown_rns_lxmf(&state).await;
     state.set_hw_locked(Some(hash.clone()));
     state.set_startup_stage("hw_locked");
@@ -710,6 +701,17 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         });
+    if preferred_identity_hash
+        .as_deref()
+        .is_some_and(|hash| !helpers::is_protocol_hash_16(hash))
+    {
+        tracing::error!(
+            reason = "invalid_identifier",
+            "active identity row contains an invalid identity hash"
+        );
+        state.set_startup_stage("error");
+        return;
+    }
     if preferred_identity_hash.is_none() && !has_plain_identity_material(&ratspeak_dir) {
         tracing::warn!(
             "Identity material exists without an active identity row; returning to setup"
@@ -738,7 +740,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     if active_is_protected && hw_pin.is_none() {
         let hash = preferred_identity_hash.clone().unwrap_or_default();
         let kind = lock_kind.unwrap_or("hardware");
-        tracing::info!(%hash, kind, "identity locked — awaiting unlock secret");
+        tracing::info!(identity = %short_id(&hash), kind, "identity locked — awaiting unlock secret");
         state.set_hw_locked(Some(hash.clone()));
         state.set_startup_stage("hw_locked");
         state.emit_to_all(
@@ -756,8 +758,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 && mgr.identity_hash != preferred
             {
                 tracing::error!(
-                    loaded = %mgr.identity_hash,
-                    active = %preferred,
+                    loaded = %short_id(&mgr.identity_hash),
+                    active = %short_id(preferred),
                     "loaded LXMF identity does not match active identity"
                 );
                 state.set_startup_stage("error");
@@ -785,8 +787,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 })
                 .await
                 .expect("db task panicked");
-                if let Err(e) = set_result {
-                    tracing::error!("Failed to set active identity: {e}");
+                if set_result.is_err() {
+                    tracing::error!(
+                        reason = "set_active_failed",
+                        "Failed to set active identity"
+                    );
                 }
             }
 
@@ -894,7 +899,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         }
         Err(e) => {
             let msg = e.to_string();
-            tracing::error!("Failed to initialize LXMF: {msg}");
+            tracing::error!(
+                reason = "initialization_failed",
+                "Failed to initialize LXMF"
+            );
             if active_is_protected {
                 let hash = preferred_identity_hash.clone().unwrap_or_default();
                 let kind = lock_kind.unwrap_or("hardware");
@@ -931,26 +939,24 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         match rns_config::ensure_app_private_shared_instance_ports(&config_dir) {
             Ok(rns_config::RatspeakRnsPortConfigChange::Created) => {
                 tracing::info!(
-                    path = %config_dir.join("config").display(),
                     shared_instance_port = ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT,
-                    instance_control_port = ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
+                    instance_control_port =
+                        ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
                     "created Ratspeak app-private Reticulum config"
                 );
             }
             Ok(rns_config::RatspeakRnsPortConfigChange::Updated) => {
                 tracing::info!(
-                    path = %config_dir.join("config").display(),
-                    backup = %config_dir.join("config.backup").display(),
                     shared_instance_port = ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT,
-                    instance_control_port = ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
+                    instance_control_port =
+                        ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
                     "updated Ratspeak app-private Reticulum shared-instance ports"
                 );
             }
             Ok(rns_config::RatspeakRnsPortConfigChange::Unchanged) => {}
-            Err(e) => {
+            Err(_) => {
                 tracing::warn!(
-                    path = %config_dir.join("config").display(),
-                    error = %e,
+                    reason = "prepare_config",
                     "failed to prepare Ratspeak app-private Reticulum config"
                 );
             }
@@ -1000,12 +1006,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 {
                     Ok(()) => {
                         tracing::info!(
-                            dest = %hex::encode(dest_hash),
+                            dest = %short_id(&hex::encode(dest_hash)),
                             "LXMF destination registered with transport"
                         );
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, "CRITICAL: Failed to register LXMF destination — ALL inbound messages will be lost");
+                    Err(_) => {
+                        tracing::error!(
+                            reason = "registration_failed",
+                            "CRITICAL: Failed to register LXMF destination — ALL inbound messages will be lost"
+                        );
                     }
                 }
                 if let Ok(mut lxmf) = state.lxmf.lock()
@@ -1088,12 +1097,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     {
                         Ok(()) => {
                             tracing::info!(
-                                dest = %hex::encode(prop_dest_hash),
+                                dest = %short_id(&hex::encode(prop_dest_hash)),
                                 "propagation destination registered with transport"
                             );
                         }
-                        Err(e) => {
-                            tracing::error!(error = %e, "failed to register propagation destination");
+                        Err(_) => {
+                            tracing::error!(
+                                reason = "registration_failed",
+                                "failed to register propagation destination"
+                            );
                         }
                     }
 
@@ -1133,8 +1145,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 );
                                 node
                             }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to create propagation node with storage, using in-memory");
+                            Err(_) => {
+                                tracing::warn!(
+                                    reason = "storage_unavailable",
+                                    "failed to create propagation node with storage, using in-memory"
+                                );
                                 lxmf_core::propagation_node::PropagationNode::new(
                                     prop_node_config.clone(),
                                     dest_hash,
@@ -1348,8 +1363,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     && let Some(mgr) = lxmf.as_mut()
                 {
                     let identity_id = mgr.identity_hash.clone();
-                    mgr.set_propagation_node(Some(&stored_pn), &state.db, &identity_id);
-                    tracing::info!(node = %stored_pn, "restored Manual-mode propagation node from DB");
+                    if mgr.set_propagation_node(Some(&stored_pn), &state.db, &identity_id) {
+                        tracing::info!(
+                            node = %short_id(&stored_pn),
+                            "restored Manual-mode propagation node from DB"
+                        );
+                    }
                 }
             }
 
@@ -1461,7 +1480,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     });
 
                     tracing::info!(
-                        dest = %hex::encode(lxmf_dest_hash),
+                        dest = %short_id(&hex::encode(lxmf_dest_hash)),
                         "LXMF delivery LinkManager started — accepting link-based messages"
                     );
                 }
@@ -1493,8 +1512,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             }
             tracing::info!("RNS runtime initialized");
             #[cfg(feature = "lxst-voice")]
-            if let Err(e) = voice::start_voice_service(&state).await {
-                tracing::warn!(error = %e, "LXST voice service did not start");
+            if voice::start_voice_service(&state).await.is_err() {
+                tracing::warn!(
+                    reason = "startup_failed",
+                    "LXST voice service did not start"
+                );
             }
 
             // LXMF router tick — drains the outbound queue and fires the
@@ -1634,9 +1656,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         failed_propagation_syncs,
                     ) = match tick_result {
                         Ok(result) => result,
-                        Err(e) => {
+                        Err(_) => {
                             tracing::error!(
-                                error = %e,
+                                reason = "worker_failed",
                                 "lxmf tick worker failed; skipping this tick"
                             );
                             (
@@ -1681,8 +1703,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             propagation::reconcile_active_auto_node(&tick_state).await;
                         } else {
                             tracing::info!(
-                                node = %hex::encode(node),
-                                reason = %reason,
+                                node = %short_id(&hex::encode(node)),
+                                reason = "offline",
                                 "propagation deposit failed while offline; not penalizing relay"
                             );
                         }
@@ -1696,8 +1718,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             propagation::reconcile_active_auto_node(&tick_state).await;
                         } else {
                             tracing::info!(
-                                node = %hex::encode(node),
-                                reason = %reason,
+                                node = %short_id(&hex::encode(node)),
+                                reason = "offline",
                                 "propagation sync failed while offline; not penalizing relay"
                             );
                         }
@@ -1746,10 +1768,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .await
                         {
                             Ok(method) => persisted.push((msg_id.clone(), *new_state, method)),
-                            Err(e) => tracing::error!(
-                                msg_id = %msg_id,
+                            Err(_) => tracing::error!(
+                                msg_id = %short_id(msg_id),
                                 new_state = %new_state,
-                                error = %e,
+                                reason = "persist_failed",
                                 "lxmf_tick: persist failed; skipping emit"
                             ),
                         }
@@ -1997,8 +2019,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 });
             }
         }
-        Err(e) => {
-            tracing::warn!("Failed to initialize RNS: {e}");
+        Err(_) => {
+            tracing::warn!(reason = "initialization_failed", "Failed to initialize RNS");
             tracing::warn!("Starting in degraded mode — network features unavailable");
         }
     }
@@ -2268,7 +2290,7 @@ async fn send_announce_from_state_inner(
                         .last_lxmf_delivery_announce_at_ms
                         .store(unix_now_ms(), Ordering::Relaxed);
                 }
-                tracing::info!(dest = %hex::encode(destination_hash), "announce sent");
+                tracing::info!(dest = %short_id(&hex::encode(destination_hash)), "announce sent");
                 if state
                     .network_log_enabled
                     .load(std::sync::atomic::Ordering::Relaxed)
@@ -2276,19 +2298,14 @@ async fn send_announce_from_state_inner(
                     state.emit_network_event("announce", log_message, "", "detailed");
                 }
             }
-            Err(e) => {
+            Err(_) => {
                 report.failed += 1;
-                tracing::warn!("Failed to send announce: {e}");
+                tracing::warn!(reason = "send_failed", "Failed to send announce");
                 if state
                     .network_log_enabled
                     .load(std::sync::atomic::Ordering::Relaxed)
                 {
-                    state.emit_network_event(
-                        "error",
-                        &format!("Announce failed: {e}"),
-                        "",
-                        "essential",
-                    );
+                    state.emit_network_event("error", "Announce failed", "", "essential");
                 }
             }
         }
@@ -2315,17 +2332,20 @@ async fn send_announce_from_state_inner(
         Ok(false) => {
             tracing::debug!("LXST telephony announce skipped: voice service is not running");
         }
-        Err(e) => {
+        Err(_) => {
             report.packets += 1;
             report.failed += 1;
-            tracing::warn!("Failed to queue LXST telephony announce: {e}");
+            tracing::warn!(
+                reason = "queue_failed",
+                "Failed to queue LXST telephony announce"
+            );
             if state
                 .network_log_enabled
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 state.emit_network_event(
                     "error",
-                    &format!("LXST telephony announce failed: {e}"),
+                    "LXST telephony announce failed",
                     "",
                     "essential",
                 );
@@ -2368,10 +2388,9 @@ fn extract_and_save_attachment(
             {
                 let stored = mgr.save_attachment(&file_name, file_data);
                 tracing::info!(
-                    file_name = %file_name,
-                    stored = %stored,
                     size = file_data.len(),
-                    "extracted inbound file attachment from FIELD_FILE_ATTACHMENTS"
+                    kind = "file",
+                    "extracted inbound attachment"
                 );
                 return Some(ExtractedAttachment {
                     file_name,
@@ -2403,10 +2422,9 @@ fn extract_and_save_attachment(
             {
                 let stored = mgr.save_attachment(&file_name, image_data);
                 tracing::info!(
-                    mime_type = %mime_type,
-                    stored = %stored,
                     size = image_data.len(),
-                    "extracted inbound image from FIELD_IMAGE"
+                    kind = "image",
+                    "extracted inbound attachment"
                 );
                 return Some(ExtractedAttachment {
                     file_name,
@@ -2536,19 +2554,23 @@ fn build_lxmf_path_response_message(
     tag: Option<&[u8]>,
 ) -> Option<rns_transport::messages::TransportMessage> {
     // Build under the lxmf lock (sync), then drop it before returning.
-    let (raw, dest_hash) =
-        match state.lxmf.lock() {
-            Ok(mut guard) => guard.as_mut().and_then(|mgr| {
-                match mgr.create_path_response_announce_packet(tag) {
+    let (raw, dest_hash) = match state.lxmf.lock() {
+        Ok(mut guard) => {
+            guard
+                .as_mut()
+                .and_then(|mgr| match mgr.create_path_response_announce_packet(tag) {
                     Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to build LXMF path-response announce");
+                    Err(_) => {
+                        tracing::warn!(
+                            reason = "build_failed",
+                            "failed to build LXMF path-response announce"
+                        );
                         None
                     }
-                }
-            }),
-            Err(_) => None,
-        }?;
+                })
+        }
+        Err(_) => None,
+    }?;
 
     let request = rns_transport::messages::OutboundRequest {
         raw: Bytes::from(raw),
@@ -2586,11 +2608,14 @@ async fn answer_lxmf_path_request(
         return;
     };
 
-    if let Err(e) = tx.send(message).await {
-        tracing::warn!(error = %e, "failed to queue LXMF path-response announce");
+    if tx.send(message).await.is_err() {
+        tracing::warn!(
+            reason = "queue_failed",
+            "failed to queue LXMF path-response announce"
+        );
     } else {
         tracing::debug!(
-            attached_interface = ?attached_interface,
+            attached = attached_interface.is_some(),
             "answered LXMF path request with path-response announce"
         );
     }
@@ -2645,7 +2670,7 @@ async fn handle_inbound_lxmf(
                     "method": method,
                 }),
             );
-            tracing::info!(msg_id = %msg_id, rtt_ms = ?rtt_ms, "message delivery confirmed");
+            tracing::info!(msg_id = %short_id(msg_id), rtt_ms = ?rtt_ms, "message delivery confirmed");
             if state
                 .network_log_enabled
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -2684,8 +2709,11 @@ async fn handle_inbound_lxmf(
 
         let (header, data_offset) = match rns_wire::header::PacketHeader::unpack(&raw) {
             Ok(h) => h,
-            Err(e) => {
-                tracing::warn!("Inbound packet header parse failed: {e}");
+            Err(_) => {
+                tracing::warn!(
+                    reason = "header_parse_failed",
+                    "Inbound packet header parse failed"
+                );
                 continue;
             }
         };
@@ -2694,7 +2722,7 @@ async fn handle_inbound_lxmf(
 
         tracing::info!(
             payload_len = lxmf_payload.len(),
-            dest = %hex::encode(dest_hash),
+            dest = %short_id(&hex::encode(dest_hash)),
             "attempting LXMF decrypt"
         );
         let decrypted = state
@@ -2718,9 +2746,9 @@ async fn handle_inbound_lxmf(
         lxmf_data.extend_from_slice(body);
         let msg = match lxmf_core::message::LxMessage::unpack(&lxmf_data) {
             Ok(m) => m,
-            Err(e) => {
+            Err(_) => {
                 tracing::warn!(
-                    error = %e,
+                    reason = "unpack_failed",
                     decrypted = decrypted.is_some(),
                     "inbound LXMF unpack failed — dropping"
                 );
@@ -2804,7 +2832,7 @@ fn inbound_stamp_allowed(state: &AppState, msg: &lxmf_core::message::LxMessage) 
     };
     if !stamp_ok {
         tracing::warn!(
-            from = %hex::encode(msg.source_hash),
+            from = %short_id(&hex::encode(msg.source_hash)),
             required_cost,
             has_stamp = msg.stamp.is_some(),
             "inbound message REJECTED: stamp missing or PoW invalid (enforce_stamps=true)"
@@ -2848,11 +2876,11 @@ async fn inbound_source_blackholed(
 async fn handle_decrypted_lxmf(state: &Arc<AppState>, data: Vec<u8>, source: InboundLxmfSource) {
     let msg = match lxmf_core::message::LxMessage::unpack(&data) {
         Ok(m) => m,
-        Err(e) => {
+        Err(_) => {
             tracing::warn!(
-                error = %e,
                 data_len = data.len(),
                 source = source.label(),
+                reason = "unpack_failed",
                 "inbound LXMF unpack failed"
             );
             return;
@@ -2876,8 +2904,7 @@ async fn process_inbound_lxmf(
     let dest_hash = hex::encode(msg.destination_hash);
 
     tracing::info!(
-        from = %source_hash,
-        title = %msg.title,
+        from = %short_id(&source_hash),
         len = msg.content.len(),
         source = source.label(),
         "inbound LXMF message received"
@@ -2912,7 +2939,7 @@ async fn process_inbound_lxmf(
         })
         .unwrap_or((None, None));
     if inbound_source_blackholed(source_identity, blackhole_tx).await {
-        tracing::debug!(from = %source_hash, "Dropping LXM from blackholed identity");
+        tracing::debug!(from = %short_id(&source_hash), "Dropping LXM from blackholed identity");
         return;
     }
 
@@ -2945,7 +2972,7 @@ async fn process_inbound_lxmf(
             expires,
         ));
         tracing::debug!(
-            from = %hex::encode(msg.source_hash),
+            from = %short_id(&hex::encode(msg.source_hash)),
             "stored inbound ticket for future stamp bypass"
         );
     }
@@ -3004,7 +3031,7 @@ async fn process_inbound_lxmf(
     .await
     .expect("db task panicked");
     if already_exists {
-        tracing::debug!(msg_id = %msg_id, identity_id = %identity_id, "inbound LXMF duplicate — skipping");
+        tracing::debug!(msg_id = %short_id(&msg_id), identity_id = %short_id(&identity_id), "inbound LXMF duplicate — skipping");
         return;
     }
 
@@ -3018,7 +3045,7 @@ async fn process_inbound_lxmf(
     .await
     .expect("db task panicked");
     if blocked {
-        tracing::debug!(from = %source_hash, "inbound message from blocked user — discarding");
+        tracing::debug!(from = %short_id(&source_hash), "inbound message from blocked user — discarding");
         return;
     }
 
@@ -3036,8 +3063,8 @@ async fn process_inbound_lxmf(
         {
             mgr.note_pending_direct_backchannel(msg.source_hash, link_id);
             tracing::debug!(
-                from = %source_hash,
-                link_id = %hex::encode(link_id),
+                from = %short_id(&source_hash),
+                link_id = %short_id(&hex::encode(link_id)),
                 "Direct LXMF payload received; waiting for LINKIDENTIFY before backchannel reuse"
             );
         }
@@ -3196,7 +3223,10 @@ async fn process_inbound_lxmf(
                 .collect();
             state.emit_to_all("contacts_update", contacts_list.into());
         }
-        Err(e) => tracing::error!(error = %e, "contacts refresh after inbound message failed"),
+        Err(_) => tracing::error!(
+            reason = "refresh_failed",
+            "contacts refresh after inbound message failed"
+        ),
     }
 
     let identity_id_for_counts = identity_id.clone();
@@ -3209,8 +3239,11 @@ async fn process_inbound_lxmf(
             let total: i64 = counts.values().sum();
             state.emit_to_all("unread_total", json!({"count": total}));
         }
-        Err(e) => {
-            tracing::error!(error = %e, "unread-total refresh after inbound message failed")
+        Err(_) => {
+            tracing::error!(
+                reason = "refresh_failed",
+                "unread-total refresh after inbound message failed"
+            )
         }
     }
 }
@@ -3479,10 +3512,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             online && state.take_interface_reannounce_suppression(name);
                         if reannounce_suppressed {
                             last_interface_announce = Instant::now();
-                            tracing::info!(
-                                interface = %name,
-                                "interface re-announce suppressed after config restart"
-                            );
+                            tracing::info!("interface re-announce suppressed after config restart");
                             state.add_event(json!({
                                 "timestamp": ev_ts,
                                 "category": "system",
@@ -3665,7 +3695,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                     for a in &announces {
                         let dest_hex = hex::encode(a.dest_hash);
                         tracing::debug!(
-                            dest = %dest_hex,
+                            dest = %short_id(&dest_hex),
                             has_pk = a.public_key.is_some(),
                             has_ratchet = a.ratchet.is_some(),
                             hops = a.hops,
@@ -3683,7 +3713,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             }
                             if is_new {
                                 tracing::debug!(
-                                    dest = %dest_hex,
+                                    dest = %short_id(&dest_hex),
                                     has_ratchet = a.ratchet.is_some(),
                                     "new remote identity cached from announce"
                                 );
@@ -3731,16 +3761,21 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             std::fs::create_dir_all(&received_dir).ok();
                             for (hash_hex, rr) in &changed_ratchets {
                                 let path = received_dir.join(format!("{hash_hex}.ratchet"));
-                                if let Err(e) = rr.save(&path) {
-                                    tracing::warn!("Failed to persist received ratchet: {e}");
+                                if rr.save(&path).is_err() {
+                                    tracing::warn!(
+                                        reason = "write_failed",
+                                        "Failed to persist received ratchet"
+                                    );
                                 }
                             }
                             if let Some(blob) = ki_blob {
                                 let ki_path = ratchet_dir.join("known_identities");
-                                if let Err(e) =
-                                    rns_identity::persistence::atomic_write(&ki_path, &blob)
+                                if rns_identity::persistence::atomic_write(&ki_path, &blob).is_err()
                                 {
-                                    tracing::warn!("Failed to save known identities: {e}");
+                                    tracing::warn!(
+                                        reason = "write_failed",
+                                        "Failed to save known identities"
+                                    );
                                 }
                             }
                         });
@@ -4127,7 +4162,7 @@ async fn check_message_timeouts(state: &AppState) {
                 "method": method,
             }),
         );
-        tracing::debug!(msg_id = %msg_id, "Message timed out after {}s", MESSAGE_TIMEOUT_SECS);
+        tracing::debug!(msg_id = %short_id(msg_id), timeout_secs = MESSAGE_TIMEOUT_SECS, "Message timed out");
         if state
             .network_log_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -4253,10 +4288,7 @@ async fn sweep_undelivered_game_sessions(state: &AppState) {
 
     for (sid, iid, ch) in candidates {
         update_game_session_delivery_state(state, &sid, &iid, &ch, "undelivered").await;
-        tracing::info!(
-            session_id = %sid,
-            "LRGP session timed out without delivery proof — marked undelivered"
-        );
+        tracing::info!("LRGP session timed out without delivery proof — marked undelivered");
     }
 }
 
@@ -4351,36 +4383,22 @@ async fn try_handle_inbound_lrgp(
         _ => return false,
     };
 
-    tracing::info!(
-        from = %sender_hash,
-        "Inbound LRGP game message received"
-    );
+    tracing::info!(from = %short_id(sender_hash), "Inbound LRGP game message received");
 
     let result = match state
         .lrgp_router
         .dispatch_incoming(&envelope, sender_hash, identity_id)
     {
         Ok(r) => r,
-        Err(e) => {
-            let sid_early = envelope
-                .get("s")
-                .and_then(|v| lrgp::envelope::value_as_str(v))
-                .unwrap_or("");
-            let cmd_early = envelope
-                .get("c")
-                .and_then(|v| lrgp::envelope::value_as_str(v))
-                .unwrap_or("");
+        Err(_) => {
             tracing::warn!(
                 target: "ttt_trace",
                 step = "inbound.dispatched",
                 valid = false,
-                sid = %short_id(sid_early),
-                command = %cmd_early,
                 from = %short_id(sender_hash),
-                err = %e,
+                reason = "dispatch_failed",
                 "dispatch_incoming returned error"
             );
-            tracing::warn!("LRGP dispatch error: {e}");
             // Envelope parsed as LRGP; do not fall through to chat.
             return true;
         }
@@ -4409,10 +4427,9 @@ async fn try_handle_inbound_lrgp(
         tracing::warn!(
             target: "ttt_trace",
             step = "inbound.empty_sid_rejected",
-            app_id = %app_id,
-            command = %command,
             from = %short_id(sender_hash),
             my = %short_id(identity_id),
+            reason = "empty_session_id",
             "dropping inbound LRGP envelope with empty session_id"
         );
         return true;
@@ -4422,9 +4439,6 @@ async fn try_handle_inbound_lrgp(
         target: "ttt_trace",
         step = "inbound.dispatched",
         valid = true,
-        sid = %short_id(&session_id),
-        command = %command,
-        app_id = %app_id,
         from = %short_id(sender_hash),
         my = %short_id(identity_id),
         has_session = result.session.is_some(),
@@ -4529,8 +4543,8 @@ async fn try_handle_inbound_lrgp(
             (had_session, sessions, all)
         })
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "LRGP inbound persistence task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "LRGP inbound persistence task panicked");
             (false, Vec::new(), Vec::new())
         })
     };
@@ -4553,8 +4567,6 @@ async fn try_handle_inbound_lrgp(
     tracing::info!(
         target: "ttt_trace",
         step = "inbound.emitted_all",
-        sid = %short_id(&session_id),
-        command = %command,
         from = %short_id(sender_hash),
         total_sessions = all.len(),
         "emitting all_game_sessions + active_games after inbound"

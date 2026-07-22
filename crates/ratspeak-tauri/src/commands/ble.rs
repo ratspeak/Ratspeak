@@ -24,28 +24,17 @@ use crate::error::{AppError, AppResult};
 use crate::helpers::sanitize_text;
 use crate::state::AppState;
 
-/// Relay ble_rnode diagnostics to `ble_diag` events. Call once per process.
+/// Relay typed BLE pairing/product events. Call once per process.
+///
+/// The lower layer's raw `ble_diag` strings may include device names,
+/// addresses, URIs, and platform errors, so they must not cross Tauri IPC.
 #[cfg(feature = "ble")]
-pub fn spawn_ble_diag_broadcaster(state: &Arc<AppState>) {
-    let state_diag = Arc::clone(state);
-    tokio::spawn(async move {
-        let mut rx = rns_interface::ble_rnode::subscribe_ble_diag();
-        loop {
-            match rx.recv().await {
-                Ok(msg) => {
-                    state_diag.emit_to_all("ble_diag", json!({ "msg": msg }));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-
+pub fn spawn_ble_event_broadcaster(_state: &Arc<AppState>) {
     // Linux-only: BlueZ Agent passkey prompts → frontend modal.
     // `attempt_id` lets the UI dedupe stale prompts.
     #[cfg(all(feature = "ble", target_os = "linux"))]
     {
-        let state_pairing = Arc::clone(state);
+        let state_pairing = Arc::clone(_state);
         tokio::spawn(async move {
             let mut rx = rns_interface::ble_rnode::subscribe_linux_pairing_prompts();
             loop {
@@ -69,7 +58,7 @@ pub fn spawn_ble_diag_broadcaster(state: &Arc<AppState>) {
         });
 
         // Linux-only: pair-attempt completion → frontend modal dismiss.
-        let state_finished = Arc::clone(state);
+        let state_finished = Arc::clone(_state);
         tokio::spawn(async move {
             let mut rx = rns_interface::ble_rnode::subscribe_linux_pairing_finished();
             loop {
@@ -92,7 +81,7 @@ pub fn spawn_ble_diag_broadcaster(state: &Arc<AppState>) {
 }
 
 #[cfg(not(feature = "ble"))]
-pub fn spawn_ble_diag_broadcaster(_state: &Arc<AppState>) {}
+pub fn spawn_ble_event_broadcaster(_state: &Arc<AppState>) {}
 
 /// Linux: deliver passkey to bluer Agent. No-op on Apple/Windows (OS dialog).
 #[tauri::command]
@@ -698,7 +687,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                                         }),
                                     );
                                 }
-                                BlePeerEvent::SubscribeReady { address } => {
+                                BlePeerEvent::SubscribeReady { .. } => {
                                     // Kick-announce so the peer learns our identity.
                                     let (packet, transport_tx, dest_hash) = {
                                         let pkt = if let Ok(mut lxmf) = state_relay.lxmf.lock() {
@@ -733,19 +722,17 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                                                 .await
                                             {
                                                 Ok(_) => tracing::info!(
-                                                    peer = %address,
                                                     "Bluetooth Peer kick-announce sent on peer subscribe"
                                                 ),
-                                                Err(e) => tracing::warn!(
-                                                    peer = %address,
-                                                    error = %e,
+                                                Err(_) => tracing::warn!(
+                                                    reason = "announce_failed",
                                                     "Bluetooth Peer kick-announce failed"
                                                 ),
                                             }
                                         });
                                     } else {
                                         tracing::debug!(
-                                            peer = %address,
+                                            reason = "runtime_not_ready",
                                             "Bluetooth Peer kick-announce skipped (RNS or LXMF not initialized)"
                                         );
                                     }

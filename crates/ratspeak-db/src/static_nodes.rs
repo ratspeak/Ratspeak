@@ -62,9 +62,9 @@ pub fn node_for(hash: &[u8; 16]) -> Option<&'static StaticPropNode> {
 fn parse_nodes_json() -> Vec<StaticPropNode> {
     let raw: Vec<RawStaticPropNode> = match serde_json::from_str(NODES_JSON) {
         Ok(v) => v,
-        Err(e) => {
+        Err(_) => {
             tracing::warn!(
-                error = %e,
+                reason = "parse_failed",
                 "static nodes.json failed to parse; bundled list is empty for this session"
             );
             return Vec::new();
@@ -75,15 +75,18 @@ fn parse_nodes_json() -> Vec<StaticPropNode> {
         .filter_map(|r| {
             let bytes = match hex::decode(&r.hash) {
                 Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(hash = %r.hash, error = %e, "static node hash is not valid hex; skipping");
+                Err(_) => {
+                    tracing::warn!(
+                        reason = "invalid_hex",
+                        "static node hash is not valid hex; skipping"
+                    );
                     return None;
                 }
             };
             if bytes.len() != 16 {
                 tracing::warn!(
-                    hash = %r.hash,
                     bytes = bytes.len(),
+                    reason = "invalid_length",
                     "static node hash is not 16 bytes; skipping"
                 );
                 return None;

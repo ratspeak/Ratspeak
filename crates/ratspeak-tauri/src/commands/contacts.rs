@@ -23,8 +23,8 @@ pub async fn api_contacts(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
         db::get_all_contacts(&p, &id_for_db)
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "contacts db task panicked");
+    .unwrap_or_else(|_| {
+        tracing::error!(reason = "task_panicked", "contacts db task panicked");
         Default::default()
     });
     let result: Vec<Value> = contacts
@@ -52,8 +52,11 @@ pub async fn api_blocked_contacts(state: State<'_, Arc<AppState>>) -> AppResult<
         db::get_blocked_contacts(&p, &id_for_db)
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "blocked-contacts db task panicked");
+    .unwrap_or_else(|_| {
+        tracing::error!(
+            reason = "task_panicked",
+            "blocked-contacts db task panicked"
+        );
         Default::default()
     });
 

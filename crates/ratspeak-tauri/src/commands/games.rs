@@ -10,12 +10,11 @@ use tauri::State;
 use crate::commands::shared::{emit_game_sessions, json_to_rmpv_map};
 use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::helpers::{active_lxmf_hash, sanitize_text, validate_hex};
+use crate::helpers::{active_lxmf_hash, diagnostic_short_protocol_id, sanitize_text, validate_hex};
 use crate::state::AppState;
 
 fn short_hex(s: &str) -> &str {
-    let n = s.len().min(8);
-    s.get(..n).unwrap_or("")
+    diagnostic_short_protocol_id(s).unwrap_or("invalid")
 }
 
 fn game_action_result_json(
@@ -130,6 +129,18 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn diagnostic_abbreviation_rejects_noncanonical_game_identifiers() {
+        assert_eq!(short_hex("0123456789abcdef0123456789abcdef"), "01234567");
+        for malformed in [
+            "human-label",
+            "0123456789abcdef",
+            "0123456789abcdef0123456789abcdef0123456789abcdef",
+        ] {
+            assert_eq!(short_hex(malformed), "invalid");
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -151,19 +162,20 @@ pub async fn send_game_action(
     args: SendGameActionArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
-    let dest_hash = sanitize_text(&args.dest_hash, 128);
+    let mut dest_hash = sanitize_text(&args.dest_hash, 128);
     let app_id = sanitize_text(&args.app_id, 64);
     let command = sanitize_text(&args.command, 64);
     let session_id = sanitize_text(&args.session_id, 128);
     let delivery_pref =
         crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref());
 
-    if !validate_hex(&dest_hash, 16, 64) || app_id.is_empty() || command.is_empty() {
+    if !validate_hex(&dest_hash, 32, 32) || app_id.is_empty() || command.is_empty() {
         let payload =
             game_action_result_json(false, &session_id, &command, None, Some("invalid_params"));
         state_arc.emit_to_all("game_action_result", payload.clone());
         return Ok(payload);
     }
+    dest_hash.make_ascii_lowercase();
     // TODO: Once Ratspeak capability discovery has been deployed long enough,
     // reject or warn for contacts that do not advertise `ratspeak.games`.
     crate::commands::messaging::validate_delivery_preference(&state_arc, delivery_pref)?;
@@ -231,13 +243,11 @@ pub async fn send_game_action(
 
     let (envelope, fallback_text) = match dispatch_result {
         Ok(result) => result,
-        Err(e) => {
+        Err(_) => {
             tracing::warn!(
                 target: "ttt_trace",
                 step = "send.dispatch_err",
-                sid = %short_hex(&session_id),
-                command = %command,
-                error = %e,
+                reason = "dispatch_failed",
                 "dispatch_outgoing returned error"
             );
             let payload = game_action_result_json(
@@ -256,25 +266,19 @@ pub async fn send_game_action(
         tracing::info!(
             target: "lrgp_trace",
             step = "send.rejected_local",
-            sid = %short_hex(&session_id),
-            app_id = %app_id,
-            command = %command,
             reason,
-            fallback = %fallback_text,
             "short-circuiting outgoing LRGP action"
         );
 
-        if let Err(e) =
-            state_arc
-                .lrgp_router
-                .rollback_outgoing(&app_id, &session_id, &identity_id, snapshot)
+        if state_arc
+            .lrgp_router
+            .rollback_outgoing(&app_id, &session_id, &identity_id, snapshot)
+            .is_err()
         {
             tracing::warn!(
                 target: "lrgp_trace",
                 step = "send.local_reject.rollback_err",
-                sid = %short_hex(&session_id),
-                app_id = %app_id,
-                error = %e,
+                reason = "rollback_failed",
                 "rollback_outgoing failed after local LRGP rejection"
             );
         }
@@ -287,9 +291,6 @@ pub async fn send_game_action(
     tracing::info!(
         target: "ttt_trace",
         step = "send.dispatch_ok",
-        sid = %short_hex(&session_id),
-        app_id = %app_id,
-        command = %command,
         dest = %short_hex(&dest_hash),
         my = %short_hex(&identity_id),
         "dispatch_outgoing returned envelope"
@@ -352,8 +353,6 @@ pub async fn send_game_action(
     tracing::info!(
         target: "ttt_trace",
         step = "send.lxmf_submitted",
-        sid = %short_hex(&session_id),
-        command = %command,
         msg_id_some = msg_id.is_some(),
         msg_id = %msg_id.as_deref().map(short_hex).unwrap_or(""),
         sender = %short_hex(&sender_hash),
@@ -421,8 +420,6 @@ pub async fn send_game_action(
                 tracing::info!(
                     target: "ttt_trace",
                     step = "send.db_saved_sending",
-                    sid = %short_hex(&session_id),
-                    command = %command,
                     "persisted session with delivery_state=sending"
                 );
             }
@@ -454,23 +451,20 @@ pub async fn send_game_action(
             tracing::warn!(
                 target: "ttt_trace",
                 step = "send.failed",
-                sid = %short_hex(&session_id),
-                command = %command,
                 mgr_ready,
+                reason,
                 "LRGP submit failed \u{2014} rolling back"
             );
 
-            if let Err(e) = state_arc.lrgp_router.rollback_outgoing(
-                &app_id,
-                &session_id,
-                &identity_id,
-                snapshot,
-            ) {
+            if state_arc
+                .lrgp_router
+                .rollback_outgoing(&app_id, &session_id, &identity_id, snapshot)
+                .is_err()
+            {
                 tracing::warn!(
                     target: "ttt_trace",
                     step = "send.rollback_err",
-                    sid = %short_hex(&session_id),
-                    error = %e,
+                    reason = "rollback_failed",
                     "rollback_outgoing failed"
                 );
             }

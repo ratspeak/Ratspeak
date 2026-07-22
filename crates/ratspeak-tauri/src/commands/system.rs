@@ -67,8 +67,8 @@ pub async fn api_startup_progress(state: State<'_, Arc<AppState>>) -> AppResult<
 pub async fn api_setup_status(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let identities = db::spawn_db(state.db.clone(), |p| db::get_all_identities(&p))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "db task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "db task panicked");
             Default::default()
         });
     Ok(json!({ "needs_setup": identities.is_empty() }))
@@ -132,8 +132,11 @@ pub async fn api_setup_complete(
         let _ = db::spawn_db(state.db.clone(), move |p| db::set_active_identity(&p, &ih)).await;
         // Persist the phrase so the first identity can re-display it later too.
         let seed_dir = state.config.data_dir.join("identities").join(&hash);
-        if let Err(e) = ratspeak_runtime::vault::store_plaintext_seed(&seed_dir, &m) {
-            tracing::warn!(error = %e, "could not store recovery-phrase sidecar at setup");
+        if ratspeak_runtime::vault::store_plaintext_seed(&seed_dir, &m).is_err() {
+            tracing::warn!(
+                reason = "write_failed",
+                "could not store recovery-phrase sidecar at setup"
+            );
         }
         (hash, Some(m))
     };
@@ -155,8 +158,11 @@ pub async fn api_setup_complete(
                 db::save_identity(&p, &ih, &lh, "Default", &dnc)
             })
             .await
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "setup save_identity task panicked");
+            .unwrap_or_else(|_| {
+                tracing::error!(
+                    reason = "task_panicked",
+                    "setup save_identity task panicked"
+                );
                 Default::default()
             });
             state.set_lxmf(mgr);
@@ -248,8 +254,8 @@ pub async fn api_unread_count(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             db::get_unread_breakdown(&p, &id_for_db)
         })
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "unread-count db task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "unread-count db task panicked");
             Default::default()
         });
         let total: i64 = rows.iter().map(|(_, _, c, _, _)| *c).sum();
@@ -305,8 +311,8 @@ pub async fn api_system_shutdown(state: State<'_, Arc<AppState>>) -> AppResult<V
 pub async fn api_database_stats(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let stats = db::spawn_db(state.db.clone(), |p| db::get_database_stats(&p))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "database_stats db task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "database_stats db task panicked");
             Default::default()
         });
     Ok(stats)
@@ -432,8 +438,8 @@ pub async fn api_clear_announces(state: State<'_, Arc<AppState>>) -> AppResult<V
         db::clear_discovered_identity_activity(&p)
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "clear_announces db task panicked");
+    .unwrap_or_else(|_| {
+        tracing::error!(reason = "task_panicked", "clear_announces db task panicked");
         0
     });
     state.emit_to_all(
@@ -459,8 +465,8 @@ pub async fn api_clear_messages(state: State<'_, Arc<AppState>>) -> AppResult<Va
         db::clear_all_messages(&p, &id_for_db)
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "clear_messages db task panicked");
+    .unwrap_or_else(|_| {
+        tracing::error!(reason = "task_panicked", "clear_messages db task panicked");
         Default::default()
     });
     remove_stored_file_refs(&state.config.files_dir(), file_refs);
@@ -473,15 +479,15 @@ pub async fn api_clear_contacts(state: State<'_, Arc<AppState>>) -> AppResult<Va
     let id1 = identity_id.clone();
     db::spawn_db(state.db.clone(), move |p| db::clear_all_contacts(&p, &id1))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "clear_contacts db task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "clear_contacts db task panicked");
             Default::default()
         });
     let id2 = identity_id;
     db::spawn_db(state.db.clone(), move |p| db::clear_all_blocked(&p, &id2))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "clear_blocked db task panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "clear_blocked db task panicked");
             Default::default()
         });
     Ok(json!(null))
@@ -494,23 +500,32 @@ pub async fn api_reset_database(state: State<'_, Arc<AppState>>) -> AppResult<Va
     let id1 = identity_id.clone();
     let file_refs = db::spawn_db(state.db.clone(), move |p| db::clear_all_messages(&p, &id1))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "reset_database clear_messages panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(
+                reason = "task_panicked",
+                "reset_database clear_messages panicked"
+            );
             Default::default()
         });
     remove_stored_file_refs(&state.config.files_dir(), file_refs);
     let id2 = identity_id.clone();
     db::spawn_db(state.db.clone(), move |p| db::clear_all_contacts(&p, &id2))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "reset_database clear_contacts panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(
+                reason = "task_panicked",
+                "reset_database clear_contacts panicked"
+            );
             Default::default()
         });
     let id3 = identity_id;
     db::spawn_db(state.db.clone(), move |p| db::clear_all_blocked(&p, &id3))
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "reset_database clear_blocked panicked");
+        .unwrap_or_else(|_| {
+            tracing::error!(
+                reason = "task_panicked",
+                "reset_database clear_blocked panicked"
+            );
             Default::default()
         });
     Ok(json!(null))
@@ -531,16 +546,22 @@ pub async fn api_identity_reset(state: State<'_, Arc<AppState>>) -> AppResult<Va
         let id1 = identity_id.clone();
         let file_refs = db::spawn_db(state.db.clone(), move |p| db::clear_all_messages(&p, &id1))
             .await
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "identity_reset clear_messages panicked");
+            .unwrap_or_else(|_| {
+                tracing::error!(
+                    reason = "task_panicked",
+                    "identity_reset clear_messages panicked"
+                );
                 Default::default()
             });
         remove_stored_file_refs(&state.config.files_dir(), file_refs);
         let id2 = identity_id.clone();
         db::spawn_db(state.db.clone(), move |p| db::clear_all_contacts(&p, &id2))
             .await
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "identity_reset clear_contacts panicked");
+            .unwrap_or_else(|_| {
+                tracing::error!(
+                    reason = "task_panicked",
+                    "identity_reset clear_contacts panicked"
+                );
                 Default::default()
             });
         let id3 = identity_id.clone();
@@ -548,12 +569,15 @@ pub async fn api_identity_reset(state: State<'_, Arc<AppState>>) -> AppResult<Va
             db::delete_identity(&p, &id3, true)
         })
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "identity_reset delete panicked");
-            Err(format!("db task panicked: {e}"))
+        .unwrap_or_else(|_| {
+            tracing::error!(reason = "task_panicked", "identity_reset delete panicked");
+            Err("db task panicked".to_string())
         });
-        if let Err(e) = del_res {
-            tracing::error!("Failed to delete identity during reset: {e}");
+        if del_res.is_err() {
+            tracing::error!(
+                reason = "delete_failed",
+                "Failed to delete identity during reset"
+            );
         }
     }
 
@@ -644,8 +668,8 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
         }
     })
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!(error = %e, "factory_reset db wipe panicked");
+    .unwrap_or_else(|_| {
+        tracing::error!(reason = "task_panicked", "factory_reset db wipe panicked");
         Default::default()
     });
 
@@ -653,47 +677,53 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
     let data_dir = state.config.data_dir.clone();
     let _ = tokio::task::spawn_blocking(move || {
         let identities_dir = data_dir.join("identities");
-        if identities_dir.exists()
-            && let Err(e) = std::fs::remove_dir_all(&identities_dir)
-        {
-            tracing::warn!("Factory reset: failed to remove identities dir: {e}");
+        if identities_dir.exists() && std::fs::remove_dir_all(&identities_dir).is_err() {
+            tracing::warn!(
+                reason = "remove_identities_failed",
+                "Factory reset: failed to remove identities dir"
+            );
         }
         let ratchet_dir = data_dir.join("ratchets");
-        if ratchet_dir.exists()
-            && let Err(e) = std::fs::remove_dir_all(&ratchet_dir)
-        {
-            tracing::warn!("Factory reset: failed to remove ratchets dir: {e}");
+        if ratchet_dir.exists() && std::fs::remove_dir_all(&ratchet_dir).is_err() {
+            tracing::warn!(
+                reason = "remove_ratchets_failed",
+                "Factory reset: failed to remove ratchets dir"
+            );
         }
         let files_dir = data_dir.join("files");
-        if files_dir.exists()
-            && let Err(e) = std::fs::remove_dir_all(&files_dir)
-        {
-            tracing::warn!("Factory reset: failed to remove files dir: {e}");
+        if files_dir.exists() && std::fs::remove_dir_all(&files_dir).is_err() {
+            tracing::warn!(
+                reason = "remove_files_failed",
+                "Factory reset: failed to remove files dir"
+            );
         }
         if let Some(rns_dir) = app_private_rns_config_dir
             && rns_dir.exists()
-            && let Err(e) = std::fs::remove_dir_all(&rns_dir)
+            && std::fs::remove_dir_all(&rns_dir).is_err()
         {
             tracing::warn!(
-                "Factory reset: failed to remove app-private Reticulum config {}: {e}",
-                rns_dir.display()
+                reason = "remove_config_failed",
+                "Factory reset: failed to remove app-private Reticulum config"
             );
         }
         if let Ok(entries) = std::fs::read_dir(&data_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "key")
-                    && let Err(e) = std::fs::remove_file(&path)
+                    && std::fs::remove_file(&path).is_err()
                 {
                     tracing::warn!(
-                        "Factory reset: failed to remove key file {}: {e}",
-                        path.display()
+                        reason = "remove_key_failed",
+                        "Factory reset: failed to remove key file"
                     );
                 }
                 if path.file_name().is_some_and(|n| n == "identity")
-                    && let Err(e) = std::fs::remove_file(&path)
+                    && std::fs::remove_file(&path).is_err()
                 {
-                    tracing::warn!("Factory reset: failed to remove identity file: {e}");
+                    tracing::warn!(
+                        reason = "remove_identity_failed",
+                        "Factory reset: failed to remove identity file"
+                    );
                 }
             }
         }
@@ -701,10 +731,11 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
     .await;
 
     let storage_dir = rns_config_dir.join("storage");
-    if storage_dir.exists()
-        && let Err(e) = std::fs::remove_dir_all(&storage_dir)
-    {
-        tracing::warn!("Factory reset: failed to remove RNS storage dir: {e}");
+    if storage_dir.exists() && std::fs::remove_dir_all(&storage_dir).is_err() {
+        tracing::warn!(
+            reason = "remove_storage_failed",
+            "Factory reset: failed to remove RNS storage dir"
+        );
     }
 
     if let Ok(mut log) = state.event_log.lock() {

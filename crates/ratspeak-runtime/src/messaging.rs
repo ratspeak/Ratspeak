@@ -190,12 +190,18 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
 
     let conversations = match tokio::time::timeout(Duration::from_secs(5), fetch).await {
         Ok(Ok(Ok(c))) => c,
-        Ok(Ok(Err(e))) => {
-            tracing::warn!(?e, "build_conversations_payload db query failed");
+        Ok(Ok(Err(_))) => {
+            tracing::warn!(
+                reason = "query_failed",
+                "build_conversations_payload db query failed"
+            );
             return None;
         }
-        Ok(Err(e)) => {
-            tracing::warn!(?e, "build_conversations_payload db task panicked");
+        Ok(Err(_)) => {
+            tracing::warn!(
+                reason = "task_panicked",
+                "build_conversations_payload db task panicked"
+            );
             return None;
         }
         Err(_) => {
