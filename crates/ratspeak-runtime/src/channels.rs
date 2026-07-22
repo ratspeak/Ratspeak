@@ -188,6 +188,11 @@ pub struct ChannelRoomSnapshot {
     /// False means the hub did not advertise the optional JOINED member list;
     /// the visible members are then best-effort live observations only.
     pub members_complete: bool,
+    /// Hub-local room metadata reported after JOIN. These fields are advisory:
+    /// RRC itself does not standardize room registration, modes, or topics.
+    pub registered: Option<bool>,
+    pub modes: Option<String>,
+    pub topic: Option<String>,
     pub transcript: Vec<ChannelTranscriptItem>,
     pub last_error: Option<String>,
 }
@@ -200,6 +205,9 @@ impl ChannelRoomSnapshot {
             phase_started_at_ms: now_ms(),
             members: Vec::new(),
             members_complete: false,
+            registered: None,
+            modes: None,
+            topic: None,
             transcript: Vec::new(),
             last_error: None,
         }
@@ -1162,10 +1170,11 @@ async fn handle_envelope(active: &mut ActiveSession, envelope: Envelope) -> bool
         MessageType::Part => {}
         MessageType::Parted => apply_parted(active, &envelope),
         MessageType::Message | MessageType::Notice | MessageType::Action => {
-            if envelope.message_type == MessageType::Notice {
-                apply_rrcd_join_notice(active, &envelope);
+            if envelope.message_type != MessageType::Notice
+                || !apply_rrcd_room_status_notice(active, &envelope)
+            {
+                append_content(active, &envelope)
             }
-            append_content(active, &envelope)
         }
         MessageType::Error => append_error(active, &envelope),
         MessageType::ResourceEnvelope | MessageType::Unknown(_) => {}
@@ -1194,8 +1203,7 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     }
     let identities = rrc::member_identities(envelope);
     let includes_self = identities.contains(&active.source);
-    let joining_self = room.phase == ChannelRoomPhase::Joining
-        || (room.phase == ChannelRoomPhase::Error && includes_self);
+    let joining_self = room.phase == ChannelRoomPhase::Joining || includes_self;
     if room.phase == ChannelRoomPhase::Error && !joining_self {
         return;
     }
@@ -1237,28 +1245,60 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     } else {
         envelope.nickname.clone()
     };
-    append_room_item(
-        room,
-        transcript_item(
-            envelope,
-            ChannelItemKind::Join,
-            nickname.clone(),
-            if joining_self {
-                "You joined".into()
-            } else {
-                format!("{} joined", nickname.unwrap_or_else(|| "A member".into()))
-            },
-            joining_self,
-        ),
-    );
+    let join_already_visible = joining_self
+        && room
+            .transcript
+            .iter()
+            .any(|item| item.kind == ChannelItemKind::Join && item.ours);
+    if !join_already_visible {
+        append_room_item(
+            room,
+            transcript_item(
+                envelope,
+                ChannelItemKind::Join,
+                nickname.clone(),
+                if joining_self {
+                    "You joined".into()
+                } else {
+                    format!("{} joined", nickname.unwrap_or_else(|| "A member".into()))
+                },
+                joining_self,
+            ),
+        );
+    }
 }
 
-/// `rrcd` sends a room-scoped status NOTICE only after it has accepted JOIN,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RrcdRoomStatus {
+    registered: bool,
+    modes: Option<String>,
+    topic: Option<String>,
+}
+
+fn parse_rrcd_room_status(room_name: &str, text: &str) -> Option<RrcdRoomStatus> {
+    let status = text.strip_prefix(&format!("room {room_name}: "))?;
+    let (registration, details) = status.split_once("; mode=")?;
+    let registered = match registration.trim() {
+        "registered" => true,
+        "unregistered" => false,
+        _ => return None,
+    };
+    let (modes, topic) = details.split_once("; topic=")?;
+    let modes = modes.trim();
+    let topic = topic.trim();
+    Some(RrcdRoomStatus {
+        registered,
+        modes: (!modes.is_empty()).then(|| modes.to_string()),
+        topic: (!topic.is_empty() && topic != "(none)").then(|| topic.to_string()),
+    })
+}
+
+/// `rrcd` sends this room-scoped status NOTICE after it has accepted JOIN,
 /// added the client to the room, and queued JOINED. A JOINED roster can exceed
 /// a constrained Link MDU on populated rooms, while this short NOTICE still
-/// arrives. Treat the documented success notice as an authenticated fallback
-/// confirmation, without accepting arbitrary traffic as proof of membership.
-fn apply_rrcd_join_notice(active: &mut ActiveSession, envelope: &Envelope) -> bool {
+/// arrives. Consume the authenticated metadata instead of exposing raw mode
+/// flags in chat, and use it as a fallback confirmation when JOINED is absent.
+fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope) -> bool {
     if envelope.source != active.hub_identity {
         return false;
     }
@@ -1277,42 +1317,49 @@ fn apply_rrcd_join_notice(active: &mut ActiveSession, envelope: &Envelope) -> bo
     let Some(text) = rrc::text_body(envelope) else {
         return false;
     };
-    let expected_prefix = format!("room {room_name}: ");
-    let Some(status) = text.strip_prefix(&expected_prefix) else {
+    let Some(status) = parse_rrcd_room_status(&room_name, text) else {
         return false;
     };
-    if !status.starts_with("registered;") && !status.starts_with("unregistered;") {
-        return false;
-    }
     let Some(room) = active.rooms.get_mut(&room_name) else {
         return false;
     };
-    if room.phase != ChannelRoomPhase::Joining {
-        return false;
-    }
+    room.registered = Some(status.registered);
+    room.modes = status.modes;
+    room.topic = status.topic;
 
-    room.phase = ChannelRoomPhase::Joined;
-    room.phase_started_at_ms = now_ms();
-    room.last_error = None;
-    room.members_complete = false;
-    upsert_member(
-        &mut room.members,
-        Some(active.source),
-        Some(active.nickname.clone()),
-        true,
-    );
-    append_room_item(
-        room,
-        ChannelTranscriptItem {
-            id: format!("{}-joined", hex::encode(envelope.message_id)),
-            kind: ChannelItemKind::Join,
-            timestamp_ms: envelope.timestamp_ms,
-            source_hash: Some(hex::encode(active.source)),
-            nickname: Some(active.nickname.clone()),
-            text: "You joined".into(),
-            ours: true,
-        },
-    );
+    if matches!(
+        room.phase,
+        ChannelRoomPhase::Joining | ChannelRoomPhase::Error
+    ) {
+        room.phase = ChannelRoomPhase::Joined;
+        room.phase_started_at_ms = now_ms();
+        room.last_error = None;
+        room.members_complete = false;
+        upsert_member(
+            &mut room.members,
+            Some(active.source),
+            Some(active.nickname.clone()),
+            true,
+        );
+        if !room
+            .transcript
+            .iter()
+            .any(|item| item.kind == ChannelItemKind::Join && item.ours)
+        {
+            append_room_item(
+                room,
+                ChannelTranscriptItem {
+                    id: format!("{}-joined", hex::encode(envelope.message_id)),
+                    kind: ChannelItemKind::Join,
+                    timestamp_ms: envelope.timestamp_ms,
+                    source_hash: Some(hex::encode(active.source)),
+                    nickname: Some(active.nickname.clone()),
+                    text: "You joined".into(),
+                    ours: true,
+                },
+            );
+        }
+    }
     true
 }
 
@@ -1733,6 +1780,40 @@ mod tests {
     }
 
     #[test]
+    fn parses_rrcd_room_status_without_exposing_raw_protocol_copy() {
+        assert_eq!(
+            parse_rrcd_room_status(
+                "general",
+                "room general: registered; mode=+nrt; topic=(none)"
+            ),
+            Some(RrcdRoomStatus {
+                registered: true,
+                modes: Some("+nrt".into()),
+                topic: None,
+            })
+        );
+        assert_eq!(
+            parse_rrcd_room_status(
+                "field-team",
+                "room field-team: unregistered; mode=+n; topic=Field coordination"
+            ),
+            Some(RrcdRoomStatus {
+                registered: false,
+                modes: Some("+n".into()),
+                topic: Some("Field coordination".into()),
+            })
+        );
+        assert!(parse_rrcd_room_status("general", "Welcome to general").is_none());
+        assert!(
+            parse_rrcd_room_status(
+                "general",
+                "room another-room: registered; mode=+nrt; topic=(none)"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn live_transcripts_are_strictly_bounded() {
         let mut room = ChannelRoomSnapshot::joining("field team".into());
         for index in 0..(TRANSCRIPT_LIMIT + 20) {
@@ -2050,6 +2131,9 @@ mod tests {
         })
         .await;
         assert!(!fallback_joined.rooms[0].members_complete);
+        assert_eq!(fallback_joined.rooms[0].registered, Some(true));
+        assert_eq!(fallback_joined.rooms[0].modes.as_deref(), Some("+nrt"));
+        assert_eq!(fallback_joined.rooms[0].topic, None);
         assert!(
             fallback_joined.rooms[0]
                 .members
@@ -2061,6 +2145,37 @@ mod tests {
                 .transcript
                 .iter()
                 .any(|item| item.kind == ChannelItemKind::Join && item.ours)
+        );
+        assert!(
+            fallback_joined.rooms[0]
+                .transcript
+                .iter()
+                .all(|item| !item.text.starts_with("room general: registered;"))
+        );
+
+        // If the larger JOINED roster arrives after the fallback notice, it
+        // completes the member list without duplicating the local join event.
+        let mut late_joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        late_joined.room = Some("general".into());
+        late_joined.body = Some(Value::Array(vec![
+            Value::Bytes(client_identity.hash.to_vec()),
+            Value::Bytes(vec![0x42; 16]),
+        ]));
+        send_server_envelope(&delivery_tx, &mut responder, &late_joined).await;
+        let completed_roster = wait_snapshot(&manager, |snapshot| {
+            snapshot
+                .rooms
+                .first()
+                .is_some_and(|room| room.members_complete && room.members.len() == 2)
+        })
+        .await;
+        assert_eq!(
+            completed_roster.rooms[0]
+                .transcript
+                .iter()
+                .filter(|item| item.kind == ChannelItemKind::Join && item.ours)
+                .count(),
+            1
         );
 
         manager.part("general").await.unwrap();

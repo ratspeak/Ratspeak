@@ -428,10 +428,3 @@
         transform: none !important;
     }
 }
-
-@media (prefers-reduced-motion: reduce) {
-    [data-phase="active"] .channel-live-beacon::after,
-    .channel-session-banner .channel-live-beacon::after {
-        animation: none;
-    }
-}

@@ -67,14 +67,14 @@ function _channelsMessageLimit() {
     return (limits && limits.max_message_body_bytes) || 350;
 }
 
-function _channelsInitials(name, hash) {
-    var clean = String(name || '').trim();
-    if (clean) {
-        var words = clean.split(/\s+/).filter(Boolean);
-        if (words.length > 1) return (words[0][0] + words[words.length - 1][0]).slice(0, 2);
-        return clean.slice(0, 2);
+function _channelsIdentityTone(value) {
+    var text = String(value || 'channel-member');
+    var hash = 2166136261;
+    for (var i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
     }
-    return String(hash || '?').slice(0, 2);
+    return String((hash >>> 0) % 6);
 }
 
 function _channelsFormatTime(timestampMs) {
@@ -103,7 +103,7 @@ function _channelsPhaseLabel(phase) {
         case 'resolving': return 'Finding path';
         case 'connecting': return 'Securing link';
         case 'awaiting_welcome': return 'Waiting for hub';
-        case 'active': return 'Live';
+        case 'active': return 'Connected';
         case 'stale': return 'Recovering';
         case 'error': return 'Session ended';
         case 'offline': return 'Not connected';
@@ -113,12 +113,31 @@ function _channelsPhaseLabel(phase) {
 
 function _channelsRoomPhaseLabel(phase) {
     switch (phase) {
-        case 'joining': return 'Waiting';
+        case 'joining': return 'Joining…';
         case 'joined': return 'Live';
         case 'parting': return 'Leaving';
         case 'error': return 'Not joined';
         default: return 'Not joined';
     }
+}
+
+function _channelsRoomModeLabels(value) {
+    var modes = String(value || '');
+    var enabled = true;
+    var active = {};
+    for (var i = 0; i < modes.length; i++) {
+        if (modes[i] === '+') enabled = true;
+        else if (modes[i] === '-') enabled = false;
+        else active[modes[i]] = enabled;
+    }
+    var labels = [];
+    if (active.i) labels.push('Invite only');
+    if (active.k) labels.push('Key required');
+    if (active.m) labels.push('Moderated');
+    if (active.n) labels.push('Members can post');
+    if (active.p) labels.push('Private');
+    if (active.t) labels.push('Topic managed by operators');
+    return labels;
 }
 
 function _channelsRoomByName(name) {
@@ -345,12 +364,10 @@ function _channelsRenderHubStrip() {
     var strip = _channelsEl('channel-hub-strip');
     var menu = _channelsEl('channel-hub-menu-btn');
     var subtitle = _channelsEl('channels-sidebar-subtitle');
-    var liveDot = _channelsEl('nav-channels-live');
     if (!strip) return;
 
     strip.dataset.phase = channelsSnapshot.phase || 'unavailable';
     if (menu) menu.hidden = channelsSnapshot.phase === 'offline' || channelsSnapshot.phase === 'unavailable';
-    if (liveDot) liveDot.style.display = _channelsIsConnected() ? '' : 'none';
 
     var hub = channelsSnapshot.hub;
     var title = _channelsPhaseLabel(channelsSnapshot.phase);
@@ -358,7 +375,7 @@ function _channelsRenderHubStrip() {
     if (hub) {
         title = _channelsHubName(hub);
         if (channelsSnapshot.phase === 'active') {
-            meta = 'Live as ' + (channelsSnapshot.nickname || 'guest');
+            meta = 'Connected as ' + (channelsSnapshot.nickname || 'guest');
         } else if (channelsSnapshot.phase === 'stale') {
             meta = 'Link is recovering';
         } else if (_channelsIsConnecting()) {
@@ -371,9 +388,7 @@ function _channelsRenderHubStrip() {
     }
     _channelsSetText('channel-hub-strip-title', title);
     _channelsSetText('channel-hub-strip-meta', meta);
-    if (subtitle) {
-        subtitle.textContent = _channelsIsConnected() ? _channelsPhaseLabel(channelsSnapshot.phase) + ' session' : 'Live group conversations';
-    }
+    if (subtitle) subtitle.textContent = 'Group conversations';
 }
 
 function _channelsRenderList() {
@@ -494,7 +509,7 @@ function _channelsBuildRoomRow(room, savedOnly) {
         meta.textContent = room.last_error;
     } else if (room.phase === 'joined') {
         var count = Array.isArray(room.members) ? room.members.length : 0;
-        meta.textContent = count ? count + (count === 1 ? ' person visible' : ' people visible') : 'Live now';
+        meta.textContent = count ? count + (count === 1 ? ' person here' : ' people here') : 'Joined';
     } else {
         meta.textContent = _channelsRoomPhaseLabel(room.phase);
     }
@@ -502,10 +517,12 @@ function _channelsBuildRoomRow(room, savedOnly) {
     copy.appendChild(meta);
     row.appendChild(copy);
 
-    var status = document.createElement('span');
-    status.className = 'channel-row-status' + (!savedOnly && room.phase === 'joined' ? ' joined' : '') + (!savedOnly && room.phase === 'error' ? ' error' : '');
-    status.textContent = savedOnly ? 'Recent' : _channelsRoomPhaseLabel(room.phase);
-    row.appendChild(status);
+    if (savedOnly || room.phase !== 'joined') {
+        var status = document.createElement('span');
+        status.className = 'channel-row-status' + (!savedOnly && room.phase === 'error' ? ' error' : '');
+        status.textContent = savedOnly ? 'Recent' : _channelsRoomPhaseLabel(room.phase);
+        row.appendChild(status);
+    }
 
     row.addEventListener('click', function() {
         if (savedOnly) channelsOpenJoinSheet(room.name);
@@ -517,18 +534,16 @@ function _channelsBuildRoomRow(room, savedOnly) {
 function _channelsRenderRoom() {
     var layout = _channelsEl('channels-layout');
     var header = _channelsEl('channel-room-header');
-    var banner = _channelsEl('channel-session-banner');
     var compose = _channelsEl('channel-compose');
     var transcript = _channelsEl('channel-transcript');
     var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
-    if (!header || !transcript || !compose || !banner) return;
+    if (!header || !transcript || !compose) return;
     if (layout) layout.classList.toggle('has-active-room', !!room);
     if (layout) layout.classList.toggle('room-live', !!room && room.phase === 'joined');
 
     if (!room) {
         if (layout) layout.classList.remove('members-open');
         header.hidden = true;
-        banner.hidden = true;
         compose.hidden = true;
         _channelsRenderRoomEmpty(transcript);
         _channelsRenderMembers(null);
@@ -536,7 +551,6 @@ function _channelsRenderRoom() {
     }
 
     header.hidden = false;
-    banner.hidden = room.phase !== 'joined';
     compose.hidden = room.phase !== 'joined';
     if (room.phase !== 'joined' && layout) layout.classList.remove('members-open');
     var membersToggle = _channelsEl('channel-members-toggle');
@@ -552,21 +566,23 @@ function _channelsRenderRoom() {
     if (room.phase === 'joining') {
         roomMeta = 'Join request sent \u00b7 awaiting hub';
     } else if (room.phase === 'parting') {
-        roomMeta = 'Closing live membership';
+        roomMeta = 'Leaving channel';
     } else if (room.phase === 'error') {
-        roomMeta = 'Messages remain locked';
+        roomMeta = room.last_error || 'Join was not confirmed';
     } else {
-        roomMeta = memberCount ? memberCount + (memberCount === 1 ? ' person visible' : ' people visible') : 'Live session';
-        if (!room.members_complete) roomMeta += ' \u00b7 partial list';
+        roomMeta = memberCount ? memberCount + (memberCount === 1 ? ' person here' : ' people here') : 'No member list';
+        if (room.topic) roomMeta = room.topic + (memberCount ? ' \u00b7 ' + roomMeta : '');
     }
     _channelsSetText('channel-room-meta', roomMeta);
 
     var wasNearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 90;
     transcript.textContent = '';
     var items = [];
-    channelsSnapshot.notices.forEach(function(item) { items.push(item); });
-    (room.transcript || []).forEach(function(item) { items.push(item); });
-    items.sort(function(a, b) { return (a.timestamp_ms || 0) - (b.timestamp_ms || 0); });
+    channelsSnapshot.notices.forEach(function(item) { items.push({ item: item, hubNotice: true }); });
+    (room.transcript || []).forEach(function(item) {
+        items.push({ item: item, hubNotice: _channelsIsHubNotice(item) });
+    });
+    items.sort(function(a, b) { return (a.item.timestamp_ms || 0) - (b.item.timestamp_ms || 0); });
     if (room.phase !== 'joined') {
         transcript.appendChild(_channelsBuildRoomTransition(room));
     }
@@ -574,14 +590,16 @@ function _channelsRenderRoom() {
         var waiting = document.createElement('div');
         waiting.className = 'channel-welcome-state';
         var waitingTitle = document.createElement('h3');
-        waitingTitle.textContent = 'You are here now';
+        waitingTitle.textContent = 'Ready when you are';
         var waitingCopy = document.createElement('p');
-        waitingCopy.textContent = 'Say hello. Only people connected to this hub and channel right now will see it.';
+        waitingCopy.textContent = 'Messages will appear here as people post.';
         waiting.appendChild(waitingTitle);
         waiting.appendChild(waitingCopy);
         transcript.appendChild(waiting);
     } else if (items.length) {
-        items.forEach(function(item) { transcript.appendChild(_channelsBuildTranscriptItem(item)); });
+        items.forEach(function(entry) {
+            transcript.appendChild(_channelsBuildTranscriptItem(entry.item, entry.hubNotice));
+        });
     }
     if (wasNearBottom || channelsActiveRoom !== room.name) {
         requestAnimationFrame(function() { transcript.scrollTop = transcript.scrollHeight; });
@@ -600,7 +618,7 @@ function _channelsBuildRoomTransition(room) {
     if (room.phase !== 'parting') {
         var rail = document.createElement('div');
         rail.className = 'channel-transition-rail';
-        ['Request sent', 'Hub reply', 'Live'].forEach(function(labelText, index) {
+        ['Request sent', 'Hub reply', 'Ready'].forEach(function(labelText, index) {
             var step = document.createElement('span');
             step.className = 'channel-transition-step';
             if (index === 0) step.classList.add('complete');
@@ -624,7 +642,7 @@ function _channelsBuildRoomTransition(room) {
         copy.textContent = 'Ratspeak sent the request to join ' + room.name + '. Messages unlock when the hub confirms your membership.';
     } else if (room.phase === 'parting') {
         title.textContent = 'Leaving ' + room.name + '\u2026';
-        copy.textContent = 'Ratspeak sent the leave request and is closing this live membership.';
+        copy.textContent = 'Ratspeak sent the leave request and is waiting for the hub.';
     } else {
         title.textContent = room.name + ' was not confirmed';
         copy.textContent = room.last_error || 'No confirmation arrived from the hub. You can try again without reconnecting.';
@@ -677,17 +695,17 @@ function _channelsRenderRoomEmpty(transcript) {
         button.textContent = 'Cancel';
     } else if (_channelsIsConnected()) {
         title.textContent = 'Connected. Join a channel.';
-        copy.textContent = 'Channel names are local to this hub. Membership and conversation vanish when the live session ends.';
+        copy.textContent = 'Choose a channel on ' + _channelsHubName(channelsSnapshot.hub) + '.';
         button.dataset.channelAction = 'join';
         button.textContent = 'Join a channel';
     } else if (channelsSnapshot.phase === 'error') {
-        title.textContent = 'That live session ended';
+        title.textContent = 'The channel session ended';
         copy.textContent = channelsSnapshot.last_error || 'The channel Link closed. Reconnect when you are ready.';
         button.dataset.channelAction = 'connect';
         button.textContent = 'Reconnect';
     } else {
-        title.textContent = 'Conversations for right now';
-        copy.textContent = 'Connect to a trusted hub, join a channel, and talk with whoever is there. Nothing here becomes message history.';
+        title.textContent = 'Join a conversation';
+        copy.textContent = 'Connect to a trusted hub, then choose a channel.';
         button.dataset.channelAction = 'connect';
         button.textContent = 'Find a hub';
     }
@@ -698,7 +716,35 @@ function _channelsRenderRoomEmpty(transcript) {
     transcript.appendChild(state);
 }
 
-function _channelsBuildTranscriptItem(item) {
+function _channelsIsHubNotice(item) {
+    if (!item || item.kind !== 'notice' || item.ours) return false;
+    var hubIdentity = channelsSnapshot.hub && channelsSnapshot.hub.identity_hash;
+    return !!hubIdentity && String(item.source_hash || '').toLowerCase() === String(hubIdentity).toLowerCase();
+}
+
+function _channelsBuildHubNotice(item) {
+    var notice = document.createElement('aside');
+    notice.className = 'channel-hub-notice';
+    var heading = document.createElement('div');
+    heading.className = 'channel-hub-notice-heading';
+    var label = document.createElement('span');
+    label.className = 'channel-hub-notice-label';
+    label.textContent = 'Hub';
+    var time = document.createElement('time');
+    time.className = 'channel-event-time';
+    time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
+    time.textContent = _channelsFormatTime(item.timestamp_ms);
+    var body = document.createElement('div');
+    body.className = 'channel-hub-notice-text';
+    body.textContent = item.text || '';
+    heading.appendChild(label);
+    heading.appendChild(time);
+    notice.appendChild(heading);
+    notice.appendChild(body);
+    return notice;
+}
+
+function _channelsBuildTranscriptItem(item, hubNotice) {
     var kind = item.kind || 'message';
     if (kind === 'join' || kind === 'part' || kind === 'error' || kind === 'system') {
         var system = document.createElement('div');
@@ -706,17 +752,22 @@ function _channelsBuildTranscriptItem(item) {
         system.textContent = item.text || '';
         return system;
     }
+    if (hubNotice || _channelsIsHubNotice(item)) return _channelsBuildHubNotice(item);
 
     var event = document.createElement('article');
     event.className = 'channel-event ' + kind + (item.ours ? ' ours' : '');
     var authorText = item.nickname || (item.ours ? (channelsSnapshot.nickname || 'You') : _channelsShortHash(item.source_hash)) || 'Hub';
+    event.dataset.tone = item.ours ? 'self' : _channelsIdentityTone(item.source_hash || authorText);
 
-    var avatar = document.createElement('span');
-    avatar.className = 'channel-event-avatar';
-    avatar.textContent = _channelsInitials(authorText, item.source_hash);
     var author = document.createElement('span');
     author.className = 'channel-event-author';
-    author.textContent = item.ours ? authorText + ' (you)' : authorText;
+    var marker = document.createElement('i');
+    marker.className = 'channel-identity-marker';
+    marker.setAttribute('aria-hidden', 'true');
+    var authorLabel = document.createElement('span');
+    authorLabel.textContent = item.ours ? authorText + ' (you)' : authorText;
+    author.appendChild(marker);
+    author.appendChild(authorLabel);
     var time = document.createElement('time');
     time.className = 'channel-event-time';
     time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
@@ -725,7 +776,6 @@ function _channelsBuildTranscriptItem(item) {
     body.className = 'channel-event-text';
     body.textContent = kind === 'action' ? authorText + ' ' + (item.text || '') : (item.text || '');
 
-    event.appendChild(avatar);
     event.appendChild(author);
     event.appendChild(time);
     event.appendChild(body);
@@ -738,7 +788,7 @@ function _channelsRenderMembers(room) {
     if (!list) return;
     list.textContent = '';
     var members = room && Array.isArray(room.members) ? room.members : [];
-    _channelsSetText('channel-members-count', members.length + (members.length === 1 ? ' visible' : ' visible'));
+    _channelsSetText('channel-members-count', members.length + ' visible');
     if (room && room.phase !== 'joined') {
         if (note) note.textContent = 'Member details appear after the hub confirms your join.';
         var waiting = document.createElement('div');
@@ -750,7 +800,7 @@ function _channelsRenderMembers(room) {
     if (note) {
         note.textContent = room && room.members_complete
             ? 'Member list supplied by this hub.'
-            : 'This hub may not share a complete member list. Visible names are live observations.';
+            : 'The hub may provide only part of the member list.';
     }
     if (!members.length) {
         var empty = document.createElement('div');
@@ -762,9 +812,10 @@ function _channelsRenderMembers(room) {
     members.forEach(function(member) {
         var row = document.createElement('div');
         row.className = 'channel-member-row';
-        var avatar = document.createElement('span');
-        avatar.className = 'channel-member-avatar';
-        avatar.textContent = _channelsInitials(member.nickname, member.identity_hash);
+        row.dataset.tone = member.is_self ? 'self' : _channelsIdentityTone(member.identity_hash || member.nickname);
+        var marker = document.createElement('span');
+        marker.className = 'channel-identity-marker';
+        marker.setAttribute('aria-hidden', 'true');
         var copy = document.createElement('span');
         copy.className = 'channel-member-copy';
         var name = document.createElement('span');
@@ -776,13 +827,8 @@ function _channelsRenderMembers(room) {
             you.className = 'channel-member-you';
             you.textContent = 'You';
             copy.appendChild(you);
-        } else if (member.identity_hash) {
-            var hash = document.createElement('span');
-            hash.className = 'channel-member-hash';
-            hash.textContent = _channelsShortHash(member.identity_hash);
-            copy.appendChild(hash);
         }
-        row.appendChild(avatar);
+        row.appendChild(marker);
         row.appendChild(copy);
         list.appendChild(row);
     });
@@ -848,7 +894,7 @@ function channelsOpenConnectSheet(prefill) {
 
     var copy = document.createElement('p');
     copy.className = 'channel-sheet-copy';
-    copy.textContent = 'Choose a recently heard hub or enter its destination. Ratspeak will authenticate it and open one live session.';
+    copy.textContent = 'Choose a recently heard hub or enter its destination. Ratspeak will authenticate the connection.';
     built.body.appendChild(copy);
 
     var trust = document.createElement('div');
@@ -912,7 +958,7 @@ function channelsOpenConnectSheet(prefill) {
     var nicknameInput = document.createElement('input');
     nicknameInput.type = 'text';
     nicknameInput.className = 'nr-input-sm';
-    nicknameInput.placeholder = 'Nickname for this live session';
+    nicknameInput.placeholder = 'Nickname for this session';
     nicknameInput.maxLength = 32;
     nicknameInput.value = defaultNick;
     built.body.appendChild(_channelsSheetField('Your channel nickname', nicknameInput));
@@ -953,7 +999,7 @@ function channelsOpenConnectSheet(prefill) {
             channelsActiveRoom = null;
             channelsApplySnapshot(snapshot);
             built.dismiss();
-            if (typeof showToast === 'function') showToast('Opening a live channel session\u2026', 'toast-blue', 2600);
+            if (typeof showToast === 'function') showToast('Connecting to channel hub\u2026', 'toast-blue', 2600);
         }).catch(function(err) {
             error.textContent = (err && err.message) || 'Could not connect to this hub.';
             connect.disabled = false;
@@ -1030,7 +1076,7 @@ function channelsOpenJoinSheet(prefillRoom) {
     var built = _rsBuildSheet({ title: 'Join a Channel' }, function() {});
     var copy = document.createElement('p');
     copy.className = 'channel-sheet-copy';
-    copy.textContent = 'Join a channel on ' + _channelsHubName(channelsSnapshot.hub) + '. Names are case-insensitive and membership lasts only for this connection.';
+    copy.textContent = 'Join a channel on ' + _channelsHubName(channelsSnapshot.hub) + '. Names are case-insensitive.';
     built.body.appendChild(copy);
 
     var roomInput = document.createElement('input');
@@ -1129,7 +1175,7 @@ function channelsOpenHubOptions() {
             built.dismiss();
             channelsActiveRoom = null;
             channelsApplySnapshot(snapshot);
-            if (typeof showToast === 'function') showToast('Live channel session ended', 'toast-green', 2200);
+            if (typeof showToast === 'function') showToast('Channel session ended', 'toast-green', 2200);
         }).catch(function(err) {
             disconnect.disabled = false;
             if (typeof showToast === 'function') showToast((err && err.message) || 'Could not disconnect', 'toast-red', 3200);
@@ -1151,9 +1197,22 @@ function channelsOpenRoomOptions() {
     } else if (room.phase === 'error') {
         copy.textContent = room.last_error || 'The hub did not confirm this join. Try again without reconnecting, or leave this channel.';
     } else {
-        copy.textContent = 'Leaving removes you from this live channel and clears its transcript from this device. The channel remains in Recents for easy rejoining.';
+        copy.textContent = 'Leaving removes you from this channel and clears its current transcript. The channel remains in Recents for easy rejoining.';
     }
     built.body.appendChild(copy);
+    if (room.phase === 'joined' && (room.registered != null || room.topic || room.modes)) {
+        var details = document.createElement('div');
+        details.className = 'channel-room-details';
+        if (room.topic) {
+            details.appendChild(_channelsRoomDetail('Topic', room.topic));
+        }
+        if (room.registered != null) {
+            details.appendChild(_channelsRoomDetail('Channel', room.registered ? 'Registered on this hub' : 'Created for this session'));
+        }
+        var modeLabels = _channelsRoomModeLabels(room.modes);
+        if (modeLabels.length) details.appendChild(_channelsRoomDetail('Access', modeLabels.join(' · ')));
+        built.body.appendChild(details);
+    }
     if (room.phase === 'error') {
         var retry = document.createElement('button');
         retry.type = 'button';
@@ -1181,6 +1240,18 @@ function channelsOpenRoomOptions() {
     });
     built.footer.appendChild(leave);
     _channelsPresentSheet(built, leave);
+}
+
+function _channelsRoomDetail(labelText, value) {
+    var row = document.createElement('div');
+    row.className = 'channel-room-detail';
+    var label = document.createElement('span');
+    label.textContent = labelText;
+    var copy = document.createElement('strong');
+    copy.textContent = value;
+    row.appendChild(label);
+    row.appendChild(copy);
+    return row;
 }
 
 function _channelsPartRoom(roomName) {

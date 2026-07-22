@@ -3614,10 +3614,6 @@
         padding: var(--space-5) var(--space-6);
     }
 
-    .channels-sidebar-footnote {
-        padding-bottom: calc(var(--space-6) + var(--sab));
-    }
-
     .channel-room-pane {
         display: none;
         position: absolute;
@@ -3646,16 +3642,6 @@
     .channel-room-actions {
         gap: 0;
         margin-left: var(--space-2);
-    }
-
-    .channel-session-banner {
-        padding: var(--space-4) var(--space-6);
-    }
-
-    .channel-session-banner span:last-child {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
     }
 
     .channel-transcript {
@@ -3771,17 +3757,7 @@
 }
 
 @media (max-width: 380px) {
-    .channel-session-banner strong {
-        display: none;
-    }
-
     .channel-event {
-        grid-template-columns: 26px minmax(0, 1fr) auto;
         column-gap: var(--space-4);
-    }
-
-    .channel-event-avatar {
-        width: 26px;
-        height: 26px;
     }
 }

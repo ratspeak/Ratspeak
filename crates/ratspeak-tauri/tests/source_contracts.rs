@@ -74,7 +74,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(index.contains("data-view=\"channels\""));
     assert!(index.contains("id=\"view-channels\""));
     assert!(index.contains("/static/js/channels.js"));
-    assert!(index.contains("Messages are not saved and disappear when this session ends."));
+    assert!(!index.contains("Messages are not saved and disappear when this session ends."));
+    assert!(!index.contains("id=\"channel-session-banner\""));
     assert!(channels_js.contains("hub relays and can read channel messages"));
     assert!(channels_js.contains("Keys are sent over the authenticated Link and are never saved"));
     assert!(channels_js.contains("RS.listen('channels_snapshot'"));
@@ -82,6 +83,11 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_js.contains("channel-transition-card"));
     assert!(channels_js.contains("Messages unlock when the hub confirms your membership."));
     assert!(channels_js.contains("dataset.channelAction = 'retry-room'"));
+    assert!(channels_js.contains("case 'joined': return 'Live';"));
+    assert_eq!(channels_js.matches("return 'Live'").count(), 1);
+    assert!(channels_js.contains("function _channelsIdentityTone"));
+    assert!(!channels_js.contains("function _channelsInitials"));
+    assert!(channels_js.contains("function _channelsBuildHubNotice"));
     assert!(responsive_css.contains(".channels-layout.view-channel-detail"));
     assert!(responsive_css.contains("body.view-channel-detail .bottom-bar"));
     assert!(responsive_css.contains("calc(56px + var(--sat))"));
@@ -102,7 +108,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("module writes channel traffic to the Ratspeak database."));
     assert!(runtime.contains("TRANSCRIPT_LIMIT"));
     assert!(runtime.contains("JOIN_CONFIRM_TIMEOUT"));
-    assert!(runtime.contains("apply_rrcd_join_notice"));
+    assert!(runtime.contains("apply_rrcd_room_status_notice"));
+    assert!(runtime.contains("parse_rrcd_room_status"));
     assert!(runtime.contains("WELCOME source does not match the authenticated hub"));
     for command in [
         "api_channels",
