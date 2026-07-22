@@ -4304,6 +4304,7 @@ dependencies = [
  "bytes",
  "glob",
  "hex",
+ "libc",
  "lrgp",
  "lxmf-core",
  "mime_guess",

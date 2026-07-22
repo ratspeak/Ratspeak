@@ -850,7 +850,7 @@ fn process_diagnostics_are_explicit_opt_in() {
         source
             .matches(".with(filter_fn(diagnostic_metadata_allowed))")
             .count(),
-        5,
+        6,
         "every platform subscriber path must intersect EnvFilter with the immutable target policy"
     );
     assert!(policy.contains("pub fn target_allowed(target: &str) -> bool"));
@@ -863,6 +863,49 @@ fn process_diagnostics_are_explicit_opt_in() {
     assert!(!core.contains("spawn_ble_diag_broadcaster"));
     assert!(!ble.contains("subscribe_ble_diag"));
     assert!(!events.contains("RS.listen('ble_diag'"));
+}
+
+#[test]
+fn diagnostic_file_writer_is_bounded_nonblocking_and_lifetime_scoped() {
+    let root = repo_root();
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("app shell");
+    let writer = read_source(root.join("crates/ratspeak-tauri/src/diagnostic_writer.rs"))
+        .expect("bounded diagnostic writer");
+
+    assert!(!shell.contains("tracing_appender::rolling::daily"));
+    assert!(!shell.contains("PathBuf::from(\".\")"));
+    assert!(shell.contains("diagnostic_writer::DiagnosticFileRuntime::start("));
+    assert!(shell.contains("let mut tracing_guard = init_tracing();"));
+    assert!(
+        shell.contains("file: Option<ratspeak_tauri::diagnostic_writer::DiagnosticFileRuntime>")
+    );
+    assert!(shell.contains("app.manage(dropped);"));
+    assert!(shell.contains("tracing_guard.shutdown();"));
+
+    for contract in [
+        "pub const ACTIVE_LOG_NAME: &str = \"ratspeak.log\";",
+        "pub const ARCHIVE_COUNT: usize = 4;",
+        "pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;",
+        "pub const MAX_RECORD_BYTES: usize = 16 * 1024;",
+        "pub const WRITER_QUEUE_RECORDS: usize = 2_048;",
+        "mpsc::sync_channel(queue_records)",
+        "try_send(WorkerMessage::Record(record))",
+        "WorkerMessage::Shutdown",
+        "pub fn dropped_counter(&self) -> DroppedLogLines",
+        "pub fn shutdown(mut self) -> io::Result<()>",
+        "metadata.file_type().is_symlink()",
+        "metadata_is_reparse_point",
+        "options.create_new(create_new)",
+        "options.custom_flags(libc::O_NOFOLLOW)",
+        "options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)",
+    ] {
+        assert!(
+            writer.contains(contract),
+            "missing writer contract {contract:?}"
+        );
+    }
+    assert!(!writer.contains("read_dir("));
+    assert!(!writer.contains("glob("));
 }
 
 #[test]
@@ -964,14 +1007,21 @@ fn linux_wayland_webkit_startup_keeps_blank_window_workaround() {
         .find("let linux_webkit_dmabuf_workaround = apply_linux_webkit_rendering_workarounds();")
         .expect("workaround applied at process startup");
     let tracing_pos = source
-        .find("init_tracing();")
+        .find("let mut tracing_guard = init_tracing();")
         .expect("tracing initialization");
     let builder_pos = source
         .find("tauri::Builder::default()")
         .expect("tauri builder construction");
+    let build_pos = source
+        .find(".build(tauri::generate_context!())")
+        .expect("tauri app build");
+    let run_pos = source.find("app.run(").expect("tauri app run");
     assert!(
-        workaround_pos < tracing_pos && tracing_pos < builder_pos,
-        "WebKitGTK env workaround must run before Tauri constructs the webview"
+        workaround_pos < builder_pos
+            && builder_pos < build_pos
+            && build_pos < tracing_pos
+            && tracing_pos < run_pos,
+        "apply the WebKit environment workaround before build, but initialize file tracing only after single-instance build and before run"
     );
 
     // --webview-diag must exit before any webview/env mutation side effects.

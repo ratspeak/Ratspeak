@@ -484,12 +484,34 @@ fn diagnostic_file_enabled() -> bool {
     diagnostics_enabled() && env_flag("RATSPEAK_DIAGNOSTIC_FILE")
 }
 
+#[derive(Default)]
+struct TracingGuard {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    file: Option<ratspeak_tauri::diagnostic_writer::DiagnosticFileRuntime>,
+}
+
+impl TracingGuard {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    fn dropped_counter(&self) -> Option<ratspeak_tauri::diagnostic_writer::DroppedLogLines> {
+        self.file.as_ref().map(|file| file.dropped_counter())
+    }
+
+    fn shutdown(&mut self) {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        if let Some(file) = self.file.take() {
+            let _ = file.shutdown();
+        }
+    }
+}
+
 // Silent by default. Source/dev support diagnostics require
 // RATSPEAK_DIAGNOSTICS=1, and desktop file logs additionally require
 // RATSPEAK_DIAGNOSTIC_FILE=1. RUST_LOG only selects the filter after opt-in.
-fn init_tracing() {
+fn init_tracing() -> TracingGuard {
+    #[allow(unused_mut)]
+    let mut tracing_guard = TracingGuard::default();
     if !diagnostics_enabled() {
-        return;
+        return tracing_guard;
     }
 
     use tracing_subscriber::EnvFilter;
@@ -545,28 +567,51 @@ fn init_tracing() {
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
         if diagnostic_file_enabled() {
-            let log_dir = dirs::data_local_dir()
-                .map(|d| d.join("Ratspeak").join("logs"))
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            let _ = std::fs::create_dir_all(&log_dir);
-            let file_appender = tracing_appender::rolling::daily(&log_dir, "ratspeak.log");
-
-            let _ = tracing_subscriber::registry()
-                .with(filter)
-                .with(filter_fn(diagnostic_metadata_allowed))
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_target(false)
-                        .with_ansi(true)
-                        .with_writer(std::io::stderr),
-                )
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_target(true)
-                        .with_ansi(false)
-                        .with_writer(file_appender),
-                )
-                .try_init();
+            let file_runtime = dirs::data_local_dir()
+                .ok_or_else(|| std::io::Error::other("local data directory unavailable"))
+                .and_then(|dir| {
+                    ratspeak_tauri::diagnostic_writer::DiagnosticFileRuntime::start(
+                        &dir.join("Ratspeak").join("logs"),
+                    )
+                });
+            match file_runtime {
+                Ok(file_runtime) => {
+                    let file_writer = file_runtime.make_writer();
+                    let _ = tracing_subscriber::registry()
+                        .with(filter)
+                        .with(filter_fn(diagnostic_metadata_allowed))
+                        .with(
+                            tracing_subscriber::fmt::layer()
+                                .with_target(false)
+                                .with_ansi(true)
+                                .with_writer(std::io::stderr),
+                        )
+                        .with(
+                            tracing_subscriber::fmt::layer()
+                                .with_target(true)
+                                .with_ansi(false)
+                                .with_writer(move || file_writer.record_writer()),
+                        )
+                        .try_init();
+                    tracing_guard.file = Some(file_runtime);
+                }
+                Err(_) => {
+                    let _ = tracing_subscriber::registry()
+                        .with(filter)
+                        .with(filter_fn(diagnostic_metadata_allowed))
+                        .with(
+                            tracing_subscriber::fmt::layer()
+                                .with_target(false)
+                                .with_ansi(true)
+                                .with_writer(std::io::stderr),
+                        )
+                        .try_init();
+                    tracing::warn!(
+                        reason = "file_writer_unavailable",
+                        "diagnostic file logging unavailable; continuing with stderr"
+                    );
+                }
+            }
         } else {
             let _ = tracing_subscriber::registry()
                 .with(filter)
@@ -580,6 +625,8 @@ fn init_tracing() {
                 .try_init();
         }
     }
+
+    tracing_guard
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -591,10 +638,6 @@ pub fn run() {
     }
 
     let linux_webkit_dmabuf_workaround = apply_linux_webkit_rendering_workarounds();
-    init_tracing();
-    if linux_webkit_dmabuf_workaround {
-        tracing::info!("WebKitGTK < 2.46: disabled DMA-BUF renderer for Wayland startup");
-    }
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
 
@@ -612,7 +655,7 @@ pub fn run() {
         b
     };
 
-    builder
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             open_external_url,
             set_window_decorations,
@@ -1012,8 +1055,21 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building Ratspeak")
-        .run(|app_handle, event| {
+        .expect("error while building Ratspeak");
+
+    // Initialize file diagnostics only after Builder::build has completed.
+    // The desktop single-instance plugin may exit a secondary process during
+    // build; that process must never touch or rotate the primary's logs.
+    let mut tracing_guard = init_tracing();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Some(dropped) = tracing_guard.dropped_counter() {
+        app.manage(dropped);
+    }
+    if linux_webkit_dmabuf_workaround {
+        tracing::info!("WebKitGTK < 2.46: disabled DMA-BUF renderer for Wayland startup");
+    }
+
+    app.run(|app_handle, event| {
             #[cfg(any(target_os = "ios", target_os = "android"))]
             let _ = (&app_handle, &event);
 
@@ -1042,7 +1098,8 @@ pub fn run() {
                 }
                 _ => {}
             }
-        });
+    });
+    tracing_guard.shutdown();
 }
 
 #[cfg(all(

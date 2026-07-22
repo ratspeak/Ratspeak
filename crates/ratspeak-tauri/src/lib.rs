@@ -9,6 +9,8 @@
 
 pub mod commands;
 pub mod config;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod diagnostic_writer;
 pub mod diagnostics;
 pub mod emitter;
 pub mod error;
