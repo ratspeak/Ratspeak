@@ -29,6 +29,7 @@ const COMMAND_BUFFER: usize = 64;
 const CONNECT_UPDATE_BUFFER: usize = 32;
 const CONNECT_PATH_TIMEOUT: Duration = Duration::from_secs(30);
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(15);
+const HUB_GREETING_WINDOW: Duration = Duration::from_secs(30);
 const JOIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 const PART_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
 const ROOM_TRANSITION_TICK: Duration = Duration::from_secs(1);
@@ -221,6 +222,10 @@ pub struct ChannelsSnapshot {
     pub nickname: Option<String>,
     pub hub: Option<ChannelHubSnapshot>,
     pub rooms: Vec<ChannelRoomSnapshot>,
+    /// The first authenticated roomless hub NOTICE after WELCOME. `rrcd`
+    /// delivers its configured greeting this way, so keep it in hub context
+    /// instead of merging it into every room transcript.
+    pub hub_greeting: Option<ChannelTranscriptItem>,
     pub notices: Vec<ChannelTranscriptItem>,
     pub last_error: Option<String>,
     pub updated_at_ms: u64,
@@ -234,6 +239,7 @@ impl ChannelsSnapshot {
             nickname: None,
             hub: None,
             rooms: Vec::new(),
+            hub_greeting: None,
             notices: Vec::new(),
             last_error: None,
             updated_at_ms: now_ms(),
@@ -465,6 +471,8 @@ struct ActiveSession {
     supports_action: bool,
     limits: HubLimits,
     rooms: BTreeMap<String, ChannelRoomSnapshot>,
+    hub_greeting: Option<ChannelTranscriptItem>,
+    hub_greeting_deadline_ms: u64,
     notices: VecDeque<ChannelTranscriptItem>,
     seen_ids: HashSet<[u8; 8]>,
     seen_order: VecDeque<[u8; 8]>,
@@ -661,6 +669,7 @@ async fn run_manager(
                                 mutate_snapshot(&snapshot, |state| {
                                     state.phase = ChannelsPhase::Error;
                                     state.rooms.clear();
+                                    state.hub_greeting = None;
                                     state.notices.clear();
                                     state.last_error = Some(reason);
                                 });
@@ -673,6 +682,7 @@ async fn run_manager(
                         mutate_snapshot(&snapshot, |state| {
                             state.phase = ChannelsPhase::Error;
                             state.rooms.clear();
+                            state.hub_greeting = None;
                             state.notices.clear();
                             state.last_error = Some("Channel link closed".into());
                         });
@@ -895,6 +905,7 @@ async fn handle_connect_update(
             mutate_snapshot(snapshot, |state| {
                 state.phase = ChannelsPhase::Error;
                 state.rooms.clear();
+                state.hub_greeting = None;
                 state.notices.clear();
                 state.last_error = Some(error.to_string());
             });
@@ -922,6 +933,9 @@ async fn handle_connect_update(
                 supports_action: capabilities.actions,
                 limits: welcome.limits.clone(),
                 rooms: BTreeMap::new(),
+                hub_greeting: None,
+                hub_greeting_deadline_ms: now_ms()
+                    .saturating_add(HUB_GREETING_WINDOW.as_millis() as u64),
                 notices: VecDeque::new(),
                 seen_ids: HashSet::new(),
                 seen_order: VecDeque::new(),
@@ -1438,7 +1452,14 @@ fn append_content(active: &mut ActiveSession, envelope: &Envelope) {
     {
         append_room_item(room, item);
     } else if envelope.message_type == MessageType::Notice {
-        append_bounded(&mut active.notices, item, NOTICE_LIMIT);
+        if active.hub_greeting.is_none()
+            && envelope.source == active.hub_identity
+            && now_ms() <= active.hub_greeting_deadline_ms
+        {
+            active.hub_greeting = Some(item);
+        } else {
+            append_bounded(&mut active.notices, item, NOTICE_LIMIT);
+        }
     }
 }
 
@@ -1677,6 +1698,7 @@ fn sync_session_snapshot(active: &ActiveSession, snapshot: &Arc<RwLock<ChannelsS
     mutate_snapshot(snapshot, |state| {
         state.nickname = Some(active.nickname.clone());
         state.rooms = active.rooms.values().cloned().collect();
+        state.hub_greeting = active.hub_greeting.clone();
         state.notices = active.notices.iter().cloned().collect();
     });
 }
@@ -2018,6 +2040,37 @@ mod tests {
                 .hub
                 .as_ref()
                 .is_some_and(|hub| hub.capabilities.actions)
+        );
+
+        let mut greeting = Envelope::new(MessageType::Notice, hub_identity.hash);
+        greeting.body = Some(Value::Text(
+            "Welcome to the test hub. /join general for the main room.".into(),
+        ));
+        send_server_envelope(&delivery_tx, &mut responder, &greeting).await;
+        let greeting_snapshot = wait_snapshot(&manager, |snapshot| {
+            snapshot.hub_greeting.as_ref().is_some_and(|item| {
+                item.text == "Welcome to the test hub. /join general for the main room."
+            })
+        })
+        .await;
+        assert!(greeting_snapshot.notices.is_empty());
+
+        let mut hub_notice = Envelope::new(MessageType::Notice, hub_identity.hash);
+        hub_notice.body = Some(Value::Text("Maintenance window at 04:00".into()));
+        send_server_envelope(&delivery_tx, &mut responder, &hub_notice).await;
+        let notice_snapshot = wait_snapshot(&manager, |snapshot| {
+            snapshot
+                .notices
+                .iter()
+                .any(|item| item.text == "Maintenance window at 04:00")
+        })
+        .await;
+        assert_eq!(
+            notice_snapshot
+                .hub_greeting
+                .as_ref()
+                .map(|item| item.text.as_str()),
+            Some("Welcome to the test hub. /join general for the main room.")
         );
 
         assert_eq!(

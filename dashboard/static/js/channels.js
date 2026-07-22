@@ -7,6 +7,7 @@ var channelsSnapshot = {
     nickname: null,
     hub: null,
     rooms: [],
+    hub_greeting: null,
     notices: [],
     last_error: null,
     updated_at_ms: 0
@@ -26,6 +27,8 @@ var _channelsSaveHubPromise = null;
 var _channelsSavedRoomKeys = {};
 var _channelsSendPending = false;
 var _channelsFieldSeq = 0;
+var _channelsLocalRoomEvents = {};
+var _channelsLocalEventSeq = 0;
 
 function _channelsEl(id) {
     return document.getElementById(id);
@@ -148,6 +151,23 @@ function _channelsRoomByName(name) {
     return null;
 }
 
+function _channelsAddLocalRoomEvent(roomName, text) {
+    var room = String(roomName || '').trim().toLowerCase();
+    if (!room || !text) return;
+    var events = _channelsLocalRoomEvents[room] || [];
+    events.push({
+        id: 'local-channel-' + (++_channelsLocalEventSeq),
+        kind: 'system',
+        timestamp_ms: Date.now(),
+        source_hash: null,
+        nickname: null,
+        text: text,
+        ours: true
+    });
+    if (events.length > 20) events.splice(0, events.length - 20);
+    _channelsLocalRoomEvents[room] = events;
+}
+
 function _channelsSavedHub(destinationHash) {
     for (var i = 0; i < channelsSavedHubs.length; i++) {
         if (channelsSavedHubs[i].destination_hash === destinationHash) return channelsSavedHubs[i];
@@ -199,9 +219,11 @@ function channelsApplySnapshot(snapshot) {
     var oldHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
     channelsSnapshot = snapshot;
     if (!Array.isArray(channelsSnapshot.rooms)) channelsSnapshot.rooms = [];
+    if (!channelsSnapshot.hub_greeting) channelsSnapshot.hub_greeting = null;
     if (!Array.isArray(channelsSnapshot.notices)) channelsSnapshot.notices = [];
 
     var newHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
+    if (newHub !== oldHub) _channelsLocalRoomEvents = {};
     if (newHub && newHub !== oldHub) {
         channelsSavedRooms = [];
         _channelsSavedRoomsHub = null;
@@ -215,6 +237,9 @@ function channelsApplySnapshot(snapshot) {
     if (!channelsActiveRoom && channelsSnapshot.rooms.length) {
         channelsActiveRoom = channelsSnapshot.rooms[0].name;
     }
+    Object.keys(_channelsLocalRoomEvents).forEach(function(roomName) {
+        if (!_channelsRoomByName(roomName)) delete _channelsLocalRoomEvents[roomName];
+    });
 
     _channelsPersistConveniences();
     renderChannels();
@@ -582,6 +607,9 @@ function _channelsRenderRoom() {
     (room.transcript || []).forEach(function(item) {
         items.push({ item: item, hubNotice: _channelsIsHubNotice(item) });
     });
+    (_channelsLocalRoomEvents[room.name] || []).forEach(function(item) {
+        items.push({ item: item, hubNotice: false });
+    });
     items.sort(function(a, b) { return (a.item.timestamp_ms || 0) - (b.item.timestamp_ms || 0); });
     if (room.phase !== 'joined') {
         transcript.appendChild(_channelsBuildRoomTransition(room));
@@ -698,6 +726,10 @@ function _channelsRenderRoomEmpty(transcript) {
         copy.textContent = 'Choose a channel on ' + _channelsHubName(channelsSnapshot.hub) + '.';
         button.dataset.channelAction = 'join';
         button.textContent = 'Join a channel';
+        if (channelsSnapshot.hub_greeting) {
+            transcript.appendChild(_channelsBuildHubGreeting(channelsSnapshot.hub_greeting));
+            state.classList.add('has-hub-greeting');
+        }
     } else if (channelsSnapshot.phase === 'error') {
         title.textContent = 'The channel session ended';
         copy.textContent = channelsSnapshot.last_error || 'The channel Link closed. Reconnect when you are ready.';
@@ -714,6 +746,28 @@ function _channelsRenderRoomEmpty(transcript) {
     state.appendChild(copy);
     state.appendChild(button);
     transcript.appendChild(state);
+}
+
+function _channelsBuildHubGreeting(item, compact) {
+    var greeting = document.createElement('aside');
+    greeting.className = 'channel-hub-greeting' + (compact ? ' compact' : '');
+    greeting.setAttribute('aria-label', 'Hub greeting');
+    var heading = document.createElement('div');
+    heading.className = 'channel-hub-greeting-heading';
+    var label = document.createElement('span');
+    label.className = 'channel-hub-notice-label';
+    label.textContent = 'Hub greeting';
+    var hub = document.createElement('span');
+    hub.className = 'channel-hub-greeting-source';
+    hub.textContent = _channelsHubName(channelsSnapshot.hub);
+    var body = document.createElement('div');
+    body.className = 'channel-hub-notice-text';
+    body.textContent = item.text || '';
+    heading.appendChild(label);
+    heading.appendChild(hub);
+    greeting.appendChild(heading);
+    greeting.appendChild(body);
+    return greeting;
 }
 
 function _channelsIsHubNotice(item) {
@@ -1151,6 +1205,9 @@ function channelsOpenHubOptions() {
     if (hub.version) parts.push('Hub ' + hub.version);
     details.textContent = parts.join(' \u00b7 ');
     built.body.appendChild(details);
+    if (channelsSnapshot.hub_greeting) {
+        built.body.appendChild(_channelsBuildHubGreeting(channelsSnapshot.hub_greeting, true));
+    }
     var trust = document.createElement('div');
     trust.className = 'channel-sheet-trust-note';
     trust.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>This hub is authenticated and the Link is encrypted. The hub can still read and relay everything posted to its channels.</span>';
@@ -1273,6 +1330,34 @@ function channelsDisconnect() {
     });
 }
 
+function _channelsHandleComposerResult(result, originRoom) {
+    result = result || {};
+    var command = result.local_command;
+    var targetRoom = String(result.room || originRoom || '').trim().toLowerCase();
+    if (command === 'join') {
+        channelsActiveRoom = targetRoom;
+        if (result.already_joined) {
+            _channelsAddLocalRoomEvent(targetRoom, 'You\u2019re already in ' + targetRoom + '.');
+            channelsSelectRoom(targetRoom);
+            return Promise.resolve();
+        }
+        return channelsLoad(true).then(function() { channelsSelectRoom(targetRoom); });
+    }
+    if (command === 'part') {
+        if (result.already_parting) {
+            _channelsAddLocalRoomEvent(targetRoom, 'Already leaving ' + targetRoom + '.');
+            renderChannels();
+            return Promise.resolve();
+        }
+        if (targetRoom === channelsActiveRoom && _channelsCompact() && RS.viewStack &&
+                RS.viewStack.top() && RS.viewStack.top().viewId === 'channel-detail') {
+            RS.viewStack.pop();
+        }
+        return channelsLoad(true);
+    }
+    return Promise.resolve();
+}
+
 function channelsSendMessage() {
     var input = _channelsEl('channel-message-input');
     var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
@@ -1289,9 +1374,10 @@ function channelsSendMessage() {
     _channelsUpdateComposer();
     RS.invoke('send_channel_message', {
         args: { room: room.name, text: text }
-    }).then(function() {
+    }).then(function(result) {
         input.value = '';
         input.style.height = '';
+        return _channelsHandleComposerResult(result, room.name);
     }).catch(function(error) {
         if (typeof showToast === 'function') showToast((error && error.message) || 'Could not send channel message', 'toast-red', 3500);
     }).then(function() {
@@ -1376,6 +1462,7 @@ RS.listen('lxmf_identity', function() {
     channelsSavedRooms = [];
     channelsActiveRoom = null;
     channelsPendingHubLabel = '';
+    _channelsLocalRoomEvents = {};
     _channelsSavedRoomsHub = null;
     _channelsSaveHubKey = null;
     _channelsSaveHubPromise = null;

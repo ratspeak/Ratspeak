@@ -88,6 +88,9 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_js.contains("function _channelsIdentityTone"));
     assert!(!channels_js.contains("function _channelsInitials"));
     assert!(channels_js.contains("function _channelsBuildHubNotice"));
+    assert!(channels_js.contains("function _channelsBuildHubGreeting"));
+    assert!(channels_js.contains("You\\u2019re already in "));
+    assert!(channels_js.contains("result.local_command"));
     assert!(responsive_css.contains(".channels-layout.view-channel-detail"));
     assert!(responsive_css.contains("body.view-channel-detail .bottom-bar"));
     assert!(responsive_css.contains("calc(56px + var(--sat))"));
@@ -96,6 +99,7 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_css.contains(".channel-members-scrim"));
     assert!(channels_css.contains(".channels-layout:not(.room-live)"));
     assert!(channels_css.contains(".channel-transition-rail"));
+    assert!(channels_css.contains(".channel-hub-greeting"));
     assert!(channels_js.contains("layout.classList.remove('members-open')"));
     assert!(build_css.contains("09-channels.css"));
     assert!(tauri_build.contains(r#""09-channels.css""#));
@@ -110,7 +114,12 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("JOIN_CONFIRM_TIMEOUT"));
     assert!(runtime.contains("apply_rrcd_room_status_notice"));
     assert!(runtime.contains("parse_rrcd_room_status"));
+    assert!(runtime.contains("pub hub_greeting: Option<ChannelTranscriptItem>"));
     assert!(runtime.contains("WELCOME source does not match the authenticated hub"));
+    assert!(commands.contains("fn parse_local_composer_command"));
+    assert!(commands.contains("LocalComposerCommand::Join"));
+    assert!(commands.contains("LocalComposerCommand::Part"));
+    assert!(commands.contains("\"/list\""));
     for command in [
         "api_channels",
         "discover_channel_hubs",

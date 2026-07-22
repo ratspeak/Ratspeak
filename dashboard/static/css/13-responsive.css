@@ -3653,6 +3653,15 @@
         padding: var(--space-10) var(--space-8);
     }
 
+    .channel-welcome-state.has-hub-greeting {
+        min-height: 190px;
+        padding-top: var(--space-6);
+    }
+
+    .channel-hub-greeting {
+        padding: var(--space-4) var(--space-5);
+    }
+
     .channel-welcome-mark {
         width: 68px;
         height: 68px;

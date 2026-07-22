@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use ratspeak_runtime::channels::{ChannelsError, ChannelsSnapshot, DiscoveredChannelHub};
+use ratspeak_runtime::channels::{
+    ChannelRoomPhase, ChannelsError, ChannelsSnapshot, DiscoveredChannelHub,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tauri::State;
@@ -34,6 +36,32 @@ pub struct ChannelRoomArgs {
 pub struct SendChannelMessageArgs {
     pub room: String,
     pub text: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LocalComposerCommand {
+    Join(Option<String>),
+    Part(Option<String>),
+}
+
+/// `/join` and `/part` are client navigation conveniences, not RRC hub
+/// commands. Keep every other slash command untouched so rrcd-specific
+/// commands such as `/list`, `/who`, and `/topic` reach the hub verbatim.
+fn parse_local_composer_command(text: &str) -> Option<LocalComposerCommand> {
+    let command_line = text.trim().strip_prefix('/')?;
+    let verb_end = command_line
+        .find(char::is_whitespace)
+        .unwrap_or(command_line.len());
+    let verb = &command_line[..verb_end];
+    let argument = command_line[verb_end..].trim().to_ascii_lowercase();
+    let argument = (!argument.is_empty()).then_some(argument);
+    if verb.eq_ignore_ascii_case("join") {
+        Some(LocalComposerCommand::Join(argument))
+    } else if verb.eq_ignore_ascii_case("part") {
+        Some(LocalComposerCommand::Part(argument))
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,11 +162,74 @@ pub async fn send_channel_message(
     state: State<'_, Arc<AppState>>,
     args: SendChannelMessageArgs,
 ) -> AppResult<Value> {
-    channels_handle(&state)?
-        .send(&args.room, &args.text)
-        .await
-        .map_err(map_error)?;
-    Ok(json!({ "accepted": true }))
+    let channels = channels_handle(&state)?;
+    match parse_local_composer_command(&args.text) {
+        Some(LocalComposerCommand::Join(None)) => {
+            Err(AppError::bad_request("Use /join <channel>."))
+        }
+        Some(LocalComposerCommand::Join(Some(requested_room))) => {
+            let snapshot = channels.snapshot();
+            let max_room_bytes = snapshot
+                .hub
+                .as_ref()
+                .and_then(|hub| hub.limits.max_room_name_bytes)
+                .unwrap_or(64);
+            let room = ratspeak_runtime::rrc::normalize_room(&requested_room, max_room_bytes)
+                .map_err(|error| AppError::bad_request(error.to_string()))?;
+            if snapshot.rooms.iter().any(|candidate| {
+                candidate.name == room && candidate.phase == ChannelRoomPhase::Joined
+            }) {
+                return Ok(json!({
+                    "accepted": true,
+                    "local_command": "join",
+                    "room": room,
+                    "already_joined": true
+                }));
+            }
+            let room = channels.join(&room, None).await.map_err(map_error)?;
+            Ok(json!({
+                "accepted": true,
+                "local_command": "join",
+                "room": room,
+                "joining": true
+            }))
+        }
+        Some(LocalComposerCommand::Part(requested_room)) => {
+            let snapshot = channels.snapshot();
+            let max_room_bytes = snapshot
+                .hub
+                .as_ref()
+                .and_then(|hub| hub.limits.max_room_name_bytes)
+                .unwrap_or(64);
+            let requested_room = requested_room.unwrap_or(args.room);
+            let room = ratspeak_runtime::rrc::normalize_room(&requested_room, max_room_bytes)
+                .map_err(|error| AppError::bad_request(error.to_string()))?;
+            if snapshot.rooms.iter().any(|candidate| {
+                candidate.name == room && candidate.phase == ChannelRoomPhase::Parting
+            }) {
+                return Ok(json!({
+                    "accepted": true,
+                    "local_command": "part",
+                    "room": room,
+                    "already_parting": true
+                }));
+            }
+            channels.part(&room).await.map_err(map_error)?;
+            Ok(json!({
+                "accepted": true,
+                "local_command": "part",
+                "room": room,
+                "parting": true
+            }))
+        }
+        None => {
+            channels
+                .send(&args.room, &args.text)
+                .await
+                .map_err(map_error)?;
+            Ok(json!({ "accepted": true }))
+        }
+    }
 }
 
 #[tauri::command]
@@ -320,5 +411,31 @@ mod tests {
     fn session_state_errors_are_conflicts() {
         let error = map_error(ChannelsError::NotConnected);
         assert_eq!(error.code, "conflict");
+    }
+
+    #[test]
+    fn composer_routes_only_client_navigation_commands_locally() {
+        assert_eq!(
+            parse_local_composer_command(" /JOIN Field Team "),
+            Some(LocalComposerCommand::Join(Some("field team".into())))
+        );
+        assert_eq!(
+            parse_local_composer_command("/part"),
+            Some(LocalComposerCommand::Part(None))
+        );
+        assert_eq!(
+            parse_local_composer_command("/part General"),
+            Some(LocalComposerCommand::Part(Some("general".into())))
+        );
+        for forwarded in [
+            "/list",
+            "/who general",
+            "/topic general Field work",
+            "/mode general +m",
+            "/me waves",
+            "ordinary message",
+        ] {
+            assert_eq!(parse_local_composer_command(forwarded), None);
+        }
     }
 }
