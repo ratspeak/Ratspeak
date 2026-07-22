@@ -1153,10 +1153,10 @@ async fn reconcile_audio_session(
         .as_ref()
         .is_some_and(|session| session.link_id == active.link_id && session.profile == profile);
     if current_matches {
-        if let Some(session) = audio_session.as_mut() {
-            if session.retry_missing_audio(control_tx.clone()).await {
-                emit_audio_session_state(state, "recovered", session);
-            }
+        if let Some(session) = audio_session.as_mut()
+            && session.retry_missing_audio(control_tx.clone()).await
+        {
+            emit_audio_session_state(state, "recovered", session);
         }
         return;
     }

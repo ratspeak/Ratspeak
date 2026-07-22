@@ -62,4 +62,7 @@ strip = "debuginfo"
 strip = true
 lto = true
 codegen-units = 1
-panic = "abort"
+# The Activity worker is an isolation boundary and deliberately recovers from
+# an unwinding worker panic after purging its session. Abort mode would make
+# that production recovery path unreachable.
+panic = "unwind"

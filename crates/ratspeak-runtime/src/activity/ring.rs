@@ -2,7 +2,7 @@
 
 #![allow(
     dead_code,
-    reason = "Stage 1A defines the bounded ring; Stage 1B wires its consumer"
+    reason = "some bounded-ring inspection is currently exercised only by tests"
 )]
 
 use std::collections::VecDeque;
@@ -160,6 +160,47 @@ impl ActivityRing {
     /// Masked copy only. No stored/raw handle can escape the ring.
     pub(crate) fn snapshot(&self) -> Vec<ActivityEventV1> {
         self.entries.iter().map(StoredEventV1::masked).collect()
+    }
+
+    /// Builds a masked replay page without ever cloning raw vault fields.
+    /// The caller supplies already-clamped limits; an individual event is
+    /// always permitted because the schema cap is lower than replay's minimum
+    /// byte budget.
+    pub(crate) fn snapshot_after(
+        &self,
+        after: Option<u64>,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Vec<ActivityEventV1> {
+        let mut events = Vec::with_capacity(max_events.min(self.entries.len()));
+        let mut encoded_bytes = 2usize; // JSON array delimiters.
+        for stored in self
+            .entries
+            .iter()
+            .filter(|event| after.is_none_or(|cursor| event.sequence() > cursor))
+        {
+            if events.len() >= max_events {
+                break;
+            }
+            let event = stored.masked();
+            let Ok(event_bytes) = serde_json::to_vec(&event).map(|value| value.len()) else {
+                break;
+            };
+            let separator = usize::from(!events.is_empty());
+            if !events.is_empty()
+                && encoded_bytes
+                    .saturating_add(separator)
+                    .saturating_add(event_bytes)
+                    > max_bytes
+            {
+                break;
+            }
+            encoded_bytes = encoded_bytes
+                .saturating_add(separator)
+                .saturating_add(event_bytes);
+            events.push(event);
+        }
+        events
     }
 }
 

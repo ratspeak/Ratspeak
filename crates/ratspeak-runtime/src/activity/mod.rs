@@ -1,19 +1,33 @@
 //! Typed, privacy-sealed Activity recorder primitives.
 //!
-//! Stage 1A intentionally contains no worker, Tauri command, `AppState`
-//! integration, or producer migration. It defines the only accepted path from
-//! sealed catalog drafts to masked wire values and a bounded raw-value vault.
+//! Stage 1B owns the only accepted path from sealed catalog drafts through a
+//! nonblocking admission gate and supervised single-consumer worker to masked,
+//! bounded replay/batch values. It is attached to `AppState` lifecycle resets;
+//! domain-producer migration and the public Tauri API arrive in later stages.
 
+mod admission;
 pub(crate) mod catalog;
 mod classified;
 mod coalesce;
+mod gate;
 mod health;
+mod lifecycle;
 mod pseudonym;
+mod replay;
 mod ring;
 mod schema;
+mod worker;
 
-pub use classified::{ActivityRejectReason, CorrelationId};
+pub use classified::{ActivityDraft, ActivityRejectReason, CorrelationId};
 pub use health::ActivityHealthSnapshot;
+pub use lifecycle::{ActivityRecordOutcome, ActivityRecorder, TraceCaptureDuration};
+pub use replay::{
+    ACTIVITY_BATCH_MAX_BYTES, ACTIVITY_BATCH_MAX_EVENTS, ACTIVITY_BATCH_MAX_LATENCY_MS,
+    ACTIVITY_REPLAY_MAX_BYTES, ACTIVITY_REPLAY_MAX_EVENTS, ACTIVITY_REPLAY_MIN_BYTES,
+    ActivityBatchSink, ActivityBatchV1, ActivityCaptureState, ActivityPublishError,
+    ActivityRecorderError, ActivityReplayResultV1, ActivityReplayV1, ActivityStatusV1,
+    ActivityWorkerState,
+};
 pub use schema::{
     ACTIVITY_SCHEMA_VERSION, ActivityArea, ActivityAttributeKey, ActivityDirection,
     ActivityEventV1, ActivityOutcome, ActivitySeverity, CaptureProfile, DecimalU64, EndpointClass,

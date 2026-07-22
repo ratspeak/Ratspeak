@@ -6,7 +6,7 @@
 
 #![allow(
     dead_code,
-    reason = "Stage 1A seals the producer catalog before Stage 2 migrates producers"
+    reason = "the sealed catalog intentionally precedes Stage 2 producer migration"
 )]
 
 use super::classified::{
@@ -30,6 +30,10 @@ impl ObservationTime {
             unix_ms,
             elapsed_ms,
         }
+    }
+
+    pub(super) const fn unix_ms(self) -> u64 {
+        self.unix_ms
     }
 }
 
@@ -359,6 +363,103 @@ pub fn diagnostics_dropped(input: DiagnosticsDropped) -> ActivityDraft {
     )
 }
 
+pub(super) fn diagnostics_capture_started(
+    time: ObservationTime,
+    profile: super::schema::CaptureProfile,
+) -> ActivityDraft {
+    diagnostics_profile_boundary(kinds::DIAGNOSTICS_CAPTURE_STARTED, time, profile)
+}
+
+pub(super) fn diagnostics_capture_stopped(
+    time: ObservationTime,
+    profile: super::schema::CaptureProfile,
+) -> ActivityDraft {
+    diagnostics_profile_boundary(kinds::DIAGNOSTICS_CAPTURE_STOPPED, time, profile)
+}
+
+pub(super) fn diagnostics_capture_resumed(time: ObservationTime) -> ActivityDraft {
+    diagnostics_profile_boundary(
+        kinds::DIAGNOSTICS_CAPTURE_RESUMED,
+        time,
+        super::schema::CaptureProfile::Normal,
+    )
+}
+
+pub(super) fn diagnostics_capture_cleared(
+    time: ObservationTime,
+    profile: super::schema::CaptureProfile,
+) -> ActivityDraft {
+    diagnostics_profile_boundary(kinds::DIAGNOSTICS_CAPTURE_CLEARED, time, profile)
+}
+
+pub(super) fn diagnostics_profile_changed(
+    time: ObservationTime,
+    profile: super::schema::CaptureProfile,
+) -> ActivityDraft {
+    diagnostics_profile_boundary(kinds::DIAGNOSTICS_PROFILE_CHANGED, time, profile)
+}
+
+fn diagnostics_profile_boundary(
+    kind: super::schema::ActivityKindCode,
+    time: ObservationTime,
+    profile: super::schema::CaptureProfile,
+) -> ActivityDraft {
+    ActivityDraft::new(
+        kind,
+        ActivitySeverity::Info,
+        ActivityDirection::Local,
+        ActivityOutcome::Success,
+        time.unix_ms,
+        time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .operational_code(ActivityAttributeKey::Profile, profile.code())
+    .expect("capture profile codes are compile-time allowlisted")
+}
+
+pub(super) struct DiagnosticsEvicted {
+    pub(super) time: ObservationTime,
+    pub(super) count: u64,
+    pub(super) bytes: u64,
+    pub(super) span_ms: u64,
+}
+
+pub(super) fn diagnostics_evicted(input: DiagnosticsEvicted) -> ActivityDraft {
+    ActivityDraft::new(
+        kinds::DIAGNOSTICS_EVICTED,
+        ActivitySeverity::Warning,
+        ActivityDirection::Local,
+        ActivityOutcome::Dropped,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .exact(
+        ActivityAttributeKey::EvictedCount,
+        ExactValue::Unsigned(input.count),
+    )
+    .exact(
+        ActivityAttributeKey::ByteLength,
+        ExactValue::Unsigned(input.bytes),
+    )
+    .exact(
+        ActivityAttributeKey::TimeSpanMs,
+        ExactValue::Unsigned(input.span_ms),
+    )
+}
+
+pub(super) fn diagnostics_worker_recovered(time: ObservationTime) -> ActivityDraft {
+    ActivityDraft::new(
+        kinds::DIAGNOSTICS_WORKER_RECOVERED,
+        ActivitySeverity::Warning,
+        ActivityDirection::Local,
+        ActivityOutcome::Degraded,
+        time.unix_ms,
+        time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+}
+
 pub struct ChannelNavigationReference {
     pub time: ObservationTime,
     pub room: ChannelRoomToken,
@@ -416,6 +517,43 @@ pub(super) fn test_network_event(
         &destination,
     )?
     .sensitive_endpoint(ActivityAttributeKey::Endpoint, endpoint.0))
+}
+
+#[cfg(test)]
+pub(super) fn test_large_error_event(
+    timestamp_unix_ms: u64,
+    elapsed_ms: u64,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    const LARGE_CODE: &str = concat!(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    let mut draft = ActivityDraft::new(
+        kinds::LXMF_DELIVERY_FAILED,
+        ActivitySeverity::Error,
+        ActivityDirection::Outbound,
+        ActivityOutcome::Failed,
+        timestamp_unix_ms,
+        elapsed_ms,
+        CoalescingPolicy::Never,
+    );
+    for key in [
+        ActivityAttributeKey::Validation,
+        ActivityAttributeKey::Reason,
+        ActivityAttributeKey::State,
+        ActivityAttributeKey::Method,
+        ActivityAttributeKey::Capability,
+        ActivityAttributeKey::Profile,
+        ActivityAttributeKey::InterfaceClass,
+        ActivityAttributeKey::ProtocolVersion,
+        ActivityAttributeKey::Room,
+        ActivityAttributeKey::Hub,
+    ] {
+        draft = draft.operational_code(key, LARGE_CODE)?;
+    }
+    Ok(draft)
 }
 
 #[cfg(test)]

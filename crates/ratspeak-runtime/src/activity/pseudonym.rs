@@ -1,9 +1,6 @@
 //! Capture-session privacy state and the raw-to-masked sealing boundary.
 
-#![allow(
-    dead_code,
-    reason = "Stage 1A defines capture privacy; Stage 1B owns its lifecycle"
-)]
+#![allow(dead_code, reason = "some capture-vault inspection remains test-only")]
 
 use std::collections::HashMap;
 use std::mem;

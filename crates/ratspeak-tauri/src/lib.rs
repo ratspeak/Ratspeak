@@ -75,7 +75,10 @@ pub async fn init_core(
     let init_state = app_state.clone();
     let init_data_dir = data_dir.clone();
     tokio::spawn(async move {
-        init_rns_lxmf(Arc::clone(&init_state), init_data_dir).await;
+        {
+            let _identity_lifecycle = init_state.identity_switch_lock.lock().await;
+            init_rns_lxmf(Arc::clone(&init_state), init_data_dir).await;
+        }
         commands::ble::restore_ble_peer_if_requested(init_state).await;
     });
 

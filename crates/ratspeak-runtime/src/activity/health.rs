@@ -4,13 +4,8 @@
 //! It cannot retain event payloads, classified values, errors, or arbitrary
 //! strings.
 
-#![allow(
-    dead_code,
-    reason = "Stage 1A defines health accounting; Stage 1B wires the recorder"
-)]
-
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use serde::Serialize;
 
@@ -29,6 +24,8 @@ pub(crate) struct ActivityHealth {
     ipc_failure: AtomicU64,
     replay_gap: AtomicU64,
     coalesced_inputs: AtomicU64,
+    worker_recovery: AtomicU64,
+    loss_observations: LossObservations,
 }
 
 impl ActivityHealth {
@@ -42,12 +39,22 @@ impl ActivityHealth {
         self.add_ingress_full(1);
     }
 
+    pub(crate) fn increment_ingress_full_at(&self, observed_unix_ms: u64) {
+        self.increment_ingress_full();
+        self.loss_observations.note(1, observed_unix_ms);
+    }
+
     pub(crate) fn add_ingress_full(&self, count: u64) {
         saturating_atomic_add(&self.ingress_full, count);
     }
 
     pub(crate) fn increment_rate_limited(&self) {
         self.add_rate_limited(1);
+    }
+
+    pub(crate) fn increment_rate_limited_at(&self, observed_unix_ms: u64) {
+        self.increment_rate_limited();
+        self.loss_observations.note(1, observed_unix_ms);
     }
 
     pub(crate) fn add_rate_limited(&self, count: u64) {
@@ -58,10 +65,16 @@ impl ActivityHealth {
         self.add_oversized_invalid_rejected(1);
     }
 
+    pub(crate) fn increment_oversized_invalid_rejected_at(&self, observed_unix_ms: u64) {
+        self.increment_oversized_invalid_rejected();
+        self.loss_observations.note(1, observed_unix_ms);
+    }
+
     pub(crate) fn add_oversized_invalid_rejected(&self, count: u64) {
         saturating_atomic_add(&self.oversized_invalid_rejected, count);
     }
 
+    #[cfg(test)]
     pub(crate) fn increment_count_limit_evicted_events(&self) {
         self.add_count_limit_evicted_events(1);
     }
@@ -70,6 +83,7 @@ impl ActivityHealth {
         saturating_atomic_add(&self.count_limit_evicted_events, count);
     }
 
+    #[cfg(test)]
     pub(crate) fn increment_byte_limit_evicted_events(&self) {
         self.add_byte_limit_evicted_events(1);
     }
@@ -94,12 +108,25 @@ impl ActivityHealth {
         saturating_atomic_add(&self.replay_gap, count);
     }
 
+    #[cfg(test)]
     pub(crate) fn increment_coalesced_inputs(&self) {
         self.add_coalesced_inputs(1);
     }
 
     pub(crate) fn add_coalesced_inputs(&self, count: u64) {
         saturating_atomic_add(&self.coalesced_inputs, count);
+    }
+
+    pub(crate) fn increment_worker_recovery(&self) {
+        self.add_worker_recovery(1);
+    }
+
+    pub(crate) fn add_worker_recovery(&self, count: u64) {
+        saturating_atomic_add(&self.worker_recovery, count);
+    }
+
+    pub(crate) fn take_loss_window(&self) -> Option<LossWindow> {
+        self.loss_observations.take()
     }
 
     /// Takes an exact, JavaScript-safe copy of every cumulative counter.
@@ -118,6 +145,7 @@ impl ActivityHealth {
             ipc_failure: decimal_snapshot(&self.ipc_failure),
             replay_gap: decimal_snapshot(&self.replay_gap),
             coalesced_inputs: decimal_snapshot(&self.coalesced_inputs),
+            worker_recovery: decimal_snapshot(&self.worker_recovery),
         }
     }
 }
@@ -154,6 +182,7 @@ pub struct ActivityHealthSnapshot {
     ipc_failure: String,
     replay_gap: String,
     coalesced_inputs: String,
+    worker_recovery: String,
 }
 
 impl ActivityHealthSnapshot {
@@ -196,13 +225,138 @@ impl ActivityHealthSnapshot {
     pub fn coalesced_inputs(&self) -> &str {
         &self.coalesced_inputs
     }
+
+    #[must_use]
+    pub fn worker_recovery(&self) -> &str {
+        &self.worker_recovery
+    }
+}
+
+const NO_LOSS_TIMESTAMP: u64 = u64::MAX;
+
+#[derive(Debug)]
+struct LossObservationSlot {
+    readers: AtomicUsize,
+    count: AtomicU64,
+    first_unix_ms: AtomicU64,
+    last_unix_ms: AtomicU64,
+}
+
+impl LossObservationSlot {
+    const fn new() -> Self {
+        Self {
+            readers: AtomicUsize::new(0),
+            count: AtomicU64::new(0),
+            first_unix_ms: AtomicU64::new(NO_LOSS_TIMESTAMP),
+            last_unix_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.count.store(0, Ordering::Relaxed);
+        self.first_unix_ms
+            .store(NO_LOSS_TIMESTAMP, Ordering::Relaxed);
+        self.last_unix_ms.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Double-buffered numeric-only observation window. Loss producers never wait:
+/// they briefly enter the currently published slot, revalidate it, and update
+/// atomics. The single consumer rotates slots and waits only on its own worker
+/// thread before draining the now-inactive slot.
+#[derive(Debug)]
+struct LossObservations {
+    active_epoch: AtomicU64,
+    slots: [LossObservationSlot; 2],
+}
+
+impl Default for LossObservations {
+    fn default() -> Self {
+        Self {
+            active_epoch: AtomicU64::new(0),
+            slots: [LossObservationSlot::new(), LossObservationSlot::new()],
+        }
+    }
+}
+
+impl LossObservations {
+    fn note(&self, count: u64, observed_unix_ms: u64) {
+        if count == 0 {
+            return;
+        }
+        loop {
+            let epoch = self.active_epoch.load(Ordering::Acquire);
+            let slot = &self.slots[(epoch & 1) as usize];
+            if slot
+                .readers
+                .fetch_update(Ordering::Acquire, Ordering::Relaxed, |readers| {
+                    readers.checked_add(1)
+                })
+                .is_err()
+            {
+                return;
+            }
+            if self.active_epoch.load(Ordering::Acquire) != epoch {
+                slot.readers.fetch_sub(1, Ordering::Release);
+                continue;
+            }
+
+            saturating_atomic_add(&slot.count, count);
+            slot.first_unix_ms
+                .fetch_min(observed_unix_ms, Ordering::Relaxed);
+            slot.last_unix_ms
+                .fetch_max(observed_unix_ms, Ordering::Relaxed);
+            slot.readers.fetch_sub(1, Ordering::Release);
+            return;
+        }
+    }
+
+    fn take(&self) -> Option<LossWindow> {
+        let old_epoch = self.active_epoch.load(Ordering::Acquire);
+        let old = (old_epoch & 1) as usize;
+        if self.slots[old].count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let next_epoch = old_epoch.checked_add(1)?;
+        let next = (next_epoch & 1) as usize;
+        let next_slot = &self.slots[next];
+        next_slot.reset();
+        // The Activity worker is the sole consumer. Publishing an exact epoch
+        // makes stale-slot fencing explicit even when the same physical slot
+        // becomes active again after two rotations.
+        self.active_epoch.store(next_epoch, Ordering::Release);
+
+        let old_slot = &self.slots[old];
+        while old_slot.readers.load(Ordering::Acquire) != 0 {
+            std::hint::spin_loop();
+            std::thread::yield_now();
+        }
+        let count = old_slot.count.swap(0, Ordering::AcqRel);
+        let first_observed_unix_ms = old_slot
+            .first_unix_ms
+            .swap(NO_LOSS_TIMESTAMP, Ordering::AcqRel);
+        let last_observed_unix_ms = old_slot.last_unix_ms.swap(0, Ordering::AcqRel);
+        if count == 0 {
+            return None;
+        }
+        let first_observed_unix_ms = if first_observed_unix_ms == NO_LOSS_TIMESTAMP {
+            last_observed_unix_ms
+        } else {
+            first_observed_unix_ms
+        };
+        Some(LossWindow {
+            count,
+            first_observed_unix_ms,
+            last_observed_unix_ms,
+        })
+    }
 }
 
 /// A completed interval of observed losses.
 ///
-/// Timestamps record consumer observation order, not chronological minima and
-/// maxima. This remains a numeric-only type so loss accounting cannot carry
-/// event content or arbitrary reasons.
+/// Timestamps are the chronological minimum and maximum producer observation
+/// times in the completed window. This remains a numeric-only type so loss
+/// accounting cannot carry event content or arbitrary reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LossWindow {
     count: u64,
@@ -224,93 +378,6 @@ impl LossWindow {
     #[must_use]
     pub(crate) const fn last_observed_unix_ms(&self) -> u64 {
         self.last_observed_unix_ms
-    }
-}
-
-/// Consumer-owned accumulator for the next visible loss marker.
-///
-/// This type is intentionally non-atomic: the single Activity consumer owns
-/// it. A zero-count observation is ignored and cannot open or extend a window.
-#[derive(Debug, Default)]
-pub(crate) struct PendingLossWindow {
-    count: u64,
-    first_observed_unix_ms: Option<u64>,
-    last_observed_unix_ms: Option<u64>,
-}
-
-impl PendingLossWindow {
-    #[must_use]
-    pub(crate) const fn new() -> Self {
-        Self {
-            count: 0,
-            first_observed_unix_ms: None,
-            last_observed_unix_ms: None,
-        }
-    }
-
-    #[must_use]
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
-    #[must_use]
-    pub(crate) const fn count(&self) -> u64 {
-        self.count
-    }
-
-    #[must_use]
-    pub(crate) const fn first_observed_unix_ms(&self) -> Option<u64> {
-        self.first_observed_unix_ms
-    }
-
-    #[must_use]
-    pub(crate) const fn last_observed_unix_ms(&self) -> Option<u64> {
-        self.last_observed_unix_ms
-    }
-
-    /// Adds `count` losses observed at `observed_unix_ms`.
-    ///
-    /// The count saturates at `u64::MAX`. First and last timestamps follow call
-    /// order even if the wall clock moves backwards between observations.
-    pub(crate) fn note(&mut self, count: u64, observed_unix_ms: u64) {
-        if count == 0 {
-            return;
-        }
-
-        if self.is_empty() {
-            self.first_observed_unix_ms = Some(observed_unix_ms);
-        }
-        self.count = self.count.saturating_add(count);
-        self.last_observed_unix_ms = Some(observed_unix_ms);
-    }
-
-    /// Returns the accumulated window and atomically clears this owned state.
-    pub(crate) fn take(&mut self) -> Option<LossWindow> {
-        if self.is_empty() {
-            return None;
-        }
-
-        let count = self.count;
-        let first_observed_unix_ms = self
-            .first_observed_unix_ms
-            .expect("non-empty loss window has a first observation");
-        let last_observed_unix_ms = self
-            .last_observed_unix_ms
-            .expect("non-empty loss window has a last observation");
-        self.clear();
-
-        Some(LossWindow {
-            count,
-            first_observed_unix_ms,
-            last_observed_unix_ms,
-        })
-    }
-
-    /// Discards all pending loss observations.
-    pub(crate) fn clear(&mut self) {
-        self.count = 0;
-        self.first_observed_unix_ms = None;
-        self.last_observed_unix_ms = None;
     }
 }
 
@@ -338,6 +405,8 @@ mod tests {
         health.add_replay_gap(8);
         health.increment_coalesced_inputs();
         health.add_coalesced_inputs(9);
+        health.increment_worker_recovery();
+        health.add_worker_recovery(10);
 
         let snapshot = health.snapshot();
         assert_eq!(snapshot.ingress_full(), "3");
@@ -348,6 +417,7 @@ mod tests {
         assert_eq!(snapshot.ipc_failure(), "8");
         assert_eq!(snapshot.replay_gap(), "9");
         assert_eq!(snapshot.coalesced_inputs(), "10");
+        assert_eq!(snapshot.worker_recovery(), "11");
     }
 
     #[test]
@@ -362,6 +432,7 @@ mod tests {
         health.add_ipc_failure(0);
         health.add_replay_gap(0);
         health.add_coalesced_inputs(0);
+        health.add_worker_recovery(0);
 
         let snapshot = health.snapshot();
         assert_eq!(snapshot.ingress_full(), "0");
@@ -372,6 +443,7 @@ mod tests {
         assert_eq!(snapshot.ipc_failure(), "0");
         assert_eq!(snapshot.replay_gap(), "0");
         assert_eq!(snapshot.coalesced_inputs(), "0");
+        assert_eq!(snapshot.worker_recovery(), "0");
     }
 
     #[test]
@@ -394,6 +466,8 @@ mod tests {
         health.increment_replay_gap();
         health.add_coalesced_inputs(u64::MAX - 4);
         health.add_coalesced_inputs(12);
+        health.add_worker_recovery(u64::MAX);
+        health.increment_worker_recovery();
 
         let snapshot = health.snapshot();
         let max = u64::MAX.to_string();
@@ -405,6 +479,7 @@ mod tests {
         assert_eq!(snapshot.ipc_failure(), max);
         assert_eq!(snapshot.replay_gap(), max);
         assert_eq!(snapshot.coalesced_inputs(), max);
+        assert_eq!(snapshot.worker_recovery(), max);
     }
 
     #[test]
@@ -439,6 +514,7 @@ mod tests {
         health.add_ipc_failure(5);
         health.add_replay_gap(6);
         health.add_coalesced_inputs(7);
+        health.add_worker_recovery(8);
 
         assert_eq!(
             serde_json::to_value(health.snapshot()).expect("snapshot should serialize"),
@@ -451,53 +527,52 @@ mod tests {
                 "ipc_failure": "5",
                 "replay_gap": "6",
                 "coalesced_inputs": "7",
+                "worker_recovery": "8",
             })
         );
     }
 
     #[test]
-    fn loss_window_uses_observation_order_not_timestamp_sorting() {
-        let mut pending = PendingLossWindow::new();
+    fn loss_window_uses_chronological_timestamp_bounds() {
+        let health = ActivityHealth::new();
+        health.loss_observations.note(2, 500);
+        health.loss_observations.note(3, 100);
+        health.loss_observations.note(4, 300);
 
-        pending.note(2, 500);
-        pending.note(3, 100);
-        pending.note(4, 300);
-
-        assert!(!pending.is_empty());
-        assert_eq!(pending.count(), 9);
-        assert_eq!(pending.first_observed_unix_ms(), Some(500));
-        assert_eq!(pending.last_observed_unix_ms(), Some(300));
-
-        let window = pending
-            .take()
+        let window = health
+            .take_loss_window()
             .expect("observations should produce a window");
         assert_eq!(window.count(), 9);
-        assert_eq!(window.first_observed_unix_ms(), 500);
-        assert_eq!(window.last_observed_unix_ms(), 300);
+        assert_eq!(window.first_observed_unix_ms(), 100);
+        assert_eq!(window.last_observed_unix_ms(), 500);
+        assert_eq!(health.take_loss_window(), None);
     }
 
     #[test]
     fn zero_loss_note_does_not_open_or_extend_a_window() {
-        let mut pending = PendingLossWindow::new();
-        pending.note(0, 100);
-        assert!(pending.is_empty());
-        assert_eq!(pending.first_observed_unix_ms(), None);
-        assert_eq!(pending.last_observed_unix_ms(), None);
+        let observations = LossObservations::default();
+        observations.note(0, 100);
+        assert_eq!(observations.take(), None);
 
-        pending.note(1, 200);
-        pending.note(0, 300);
-        assert_eq!(pending.count(), 1);
-        assert_eq!(pending.first_observed_unix_ms(), Some(200));
-        assert_eq!(pending.last_observed_unix_ms(), Some(200));
+        observations.note(1, 200);
+        observations.note(0, 300);
+        assert_eq!(
+            observations.take(),
+            Some(LossWindow {
+                count: 1,
+                first_observed_unix_ms: 200,
+                last_observed_unix_ms: 200,
+            })
+        );
     }
 
     #[test]
     fn loss_count_saturates_while_last_observation_keeps_advancing() {
-        let mut pending = PendingLossWindow::new();
-        pending.note(u64::MAX, 10);
-        pending.note(1, 20);
+        let observations = LossObservations::default();
+        observations.note(u64::MAX, 10);
+        observations.note(1, 20);
 
-        let window = pending
+        let window = observations
             .take()
             .expect("observations should produce a window");
         assert_eq!(window.count(), u64::MAX);
@@ -506,27 +581,23 @@ mod tests {
     }
 
     #[test]
-    fn take_returns_window_then_resets_for_the_next_interval() {
-        let mut pending = PendingLossWindow::new();
-        pending.note(2, 10);
+    fn take_rotates_then_accepts_a_distinct_next_interval() {
+        let observations = LossObservations::default();
+        observations.note(2, 10);
 
         assert_eq!(
-            pending.take(),
+            observations.take(),
             Some(LossWindow {
                 count: 2,
                 first_observed_unix_ms: 10,
                 last_observed_unix_ms: 10,
             })
         );
-        assert!(pending.is_empty());
-        assert_eq!(pending.count(), 0);
-        assert_eq!(pending.first_observed_unix_ms(), None);
-        assert_eq!(pending.last_observed_unix_ms(), None);
-        assert_eq!(pending.take(), None);
+        assert_eq!(observations.take(), None);
 
-        pending.note(3, 50);
+        observations.note(3, 50);
         assert_eq!(
-            pending.take(),
+            observations.take(),
             Some(LossWindow {
                 count: 3,
                 first_observed_unix_ms: 50,
@@ -536,16 +607,29 @@ mod tests {
     }
 
     #[test]
-    fn clear_discards_all_pending_observations() {
-        let mut pending = PendingLossWindow::new();
-        pending.note(7, 700);
-        pending.note(8, 800);
-        pending.clear();
+    fn concurrent_loss_observations_are_not_lost() {
+        let health = ActivityHealth::new();
+        let workers: Vec<_> = (0..4u64)
+            .map(|worker| {
+                let health = Arc::clone(&health);
+                std::thread::spawn(move || {
+                    for _ in 0..2_500 {
+                        health.increment_ingress_full_at(1_000 + worker);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("loss producer should finish");
+        }
 
-        assert!(pending.is_empty());
-        assert_eq!(pending.count(), 0);
-        assert_eq!(pending.first_observed_unix_ms(), None);
-        assert_eq!(pending.last_observed_unix_ms(), None);
-        assert_eq!(pending.take(), None);
+        let window = health
+            .take_loss_window()
+            .expect("concurrent observations should produce a window");
+        assert_eq!(window.count(), 10_000);
+        assert_eq!(window.first_observed_unix_ms(), 1_000);
+        assert_eq!(window.last_observed_unix_ms(), 1_003);
+        assert_eq!(health.snapshot().ingress_full(), "10000");
+        assert_eq!(health.take_loss_window(), None);
     }
 }

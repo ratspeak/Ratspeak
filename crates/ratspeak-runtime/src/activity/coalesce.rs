@@ -2,7 +2,7 @@
 
 #![allow(
     dead_code,
-    reason = "Stage 1A defines preflush coalescing; Stage 1B wires its worker"
+    reason = "some reviewed coalescing inspection remains test-only"
 )]
 
 use super::classified::{ReadyDraft, ValidatedDraft};

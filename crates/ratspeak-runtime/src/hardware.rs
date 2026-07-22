@@ -127,6 +127,19 @@ fn find_identity_by_serial(data_dir: &Path, serial: u32) -> Option<HwExisting> {
     None
 }
 
+/// Return the device serial recorded for a local hardware identity. This is
+/// used by destructive command paths to prove whether the inserted token backs
+/// a live or locked runtime before permitting a key mutation.
+pub fn registered_device_serial(data_dir: &Path, hash_hex: &str) -> Option<u32> {
+    let hwid_path = data_dir
+        .join("identities")
+        .join(hash_hex)
+        .join("identity.hwid");
+    rns_ratkey::HwidConfig::from_file(&hwid_path)
+        .ok()
+        .map(|cfg| cfg.device.serial)
+}
+
 fn slot_occupied(session: &mut PcscPivSession, slot: u8) -> bool {
     session.read_metadata(slot).is_ok()
 }
@@ -158,20 +171,29 @@ fn guard_overwrite(data_dir: &Path, session: &mut PcscPivSession) -> Result<(), 
     Ok(())
 }
 
+/// Credentials and the command-layer-pinned token serial for a destructive PIV
+/// identity mutation. Keeping them together prevents a caller from adding a
+/// provisioning path that omits the token-swap check.
+pub struct PinnedProvisionRequest<'a> {
+    pub expected_serial: u32,
+    pub pin: &'a str,
+    pub current_pin: Option<&'a str>,
+    pub nickname: &'a str,
+    pub force: bool,
+}
+
 pub fn provision_recoverable(
     data_dir: &Path,
     db: &DbPool,
-    pin: &str,
-    current_pin: Option<&str>,
-    nickname: &str,
-    force: bool,
+    request: PinnedProvisionRequest<'_>,
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
-    if !force {
+    verify_expected_serial(session.serial(), request.expected_serial)?;
+    if !request.force {
         guard_overwrite(data_dir, &mut session)?;
     }
-    prepare_for_provisioning(&mut session, pin, current_pin)?;
-    let cfg = base_config(data_dir, nickname);
+    prepare_for_provisioning(&mut session, request.pin, request.current_pin)?;
+    let cfg = base_config(data_dir, request.nickname);
     let (result, mnemonic) =
         provision::provision_recoverable(&mut session, &DEFAULT_MGMT_KEY, &cfg)
             .map_err(|e| e.to_string())?;
@@ -180,7 +202,7 @@ pub fn provision_recoverable(
         db,
         &result.identity_hash_hex,
         &result.identity_hash,
-        nickname,
+        request.nickname,
     )?;
     Ok(HwProvisioned {
         hash: result.identity_hash_hex,
@@ -192,17 +214,15 @@ pub fn provision_recoverable(
 pub fn provision_hardware_only(
     data_dir: &Path,
     db: &DbPool,
-    pin: &str,
-    current_pin: Option<&str>,
-    nickname: &str,
-    force: bool,
+    request: PinnedProvisionRequest<'_>,
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
-    if !force {
+    verify_expected_serial(session.serial(), request.expected_serial)?;
+    if !request.force {
         guard_overwrite(data_dir, &mut session)?;
     }
-    prepare_for_provisioning(&mut session, pin, current_pin)?;
-    let cfg = base_config(data_dir, nickname);
+    prepare_for_provisioning(&mut session, request.pin, request.current_pin)?;
+    let cfg = base_config(data_dir, request.nickname);
     let result = provision::provision_hardware_only(&mut session, &DEFAULT_MGMT_KEY, &cfg)
         .map_err(|e| e.to_string())?;
     let lxmf_hash = register(
@@ -210,7 +230,7 @@ pub fn provision_hardware_only(
         db,
         &result.identity_hash_hex,
         &result.identity_hash,
-        nickname,
+        request.nickname,
     )?;
     Ok(HwProvisioned {
         hash: result.identity_hash_hex,
@@ -246,17 +266,15 @@ pub fn restore(
     data_dir: &Path,
     db: &DbPool,
     phrase: &str,
-    pin: &str,
-    current_pin: Option<&str>,
-    nickname: &str,
-    force: bool,
+    request: PinnedProvisionRequest<'_>,
 ) -> Result<HwProvisioned, String> {
     let mut session = connect()?;
-    if !force {
+    verify_expected_serial(session.serial(), request.expected_serial)?;
+    if !request.force {
         guard_overwrite(data_dir, &mut session)?;
     }
-    prepare_for_provisioning(&mut session, pin, current_pin)?;
-    let cfg = base_config(data_dir, nickname);
+    prepare_for_provisioning(&mut session, request.pin, request.current_pin)?;
+    let cfg = base_config(data_dir, request.nickname);
     let result = provision::restore(&mut session, &DEFAULT_MGMT_KEY, &cfg, phrase)
         .map_err(|e| e.to_string())?;
     let lxmf_hash = register(
@@ -264,7 +282,7 @@ pub fn restore(
         db,
         &result.identity_hash_hex,
         &result.identity_hash,
-        nickname,
+        request.nickname,
     )?;
     Ok(HwProvisioned {
         hash: result.identity_hash_hex,
@@ -282,8 +300,9 @@ pub fn remove(data_dir: &Path, db: &DbPool, hash_hex: &str) -> Result<(), String
     Ok(())
 }
 
-pub fn reset_piv_application() -> Result<(), String> {
+pub fn reset_piv_application(expected_serial: u32) -> Result<(), String> {
     let mut session = connect()?;
+    verify_expected_serial(session.serial(), expected_serial)?;
     block_pin_for_reset(&mut session)?;
     block_recovery_counter_for_reset(&mut session)?;
     session.reset_piv().map_err(format_reset_piv_error)
@@ -327,6 +346,14 @@ pub fn change_pin(
 
 fn connect() -> Result<PcscPivSession, String> {
     PcscPivSession::connect().map_err(|_| NOT_DETECTED.to_string())
+}
+
+fn verify_expected_serial(actual_serial: Option<u32>, expected_serial: u32) -> Result<(), String> {
+    if actual_serial == Some(expected_serial) {
+        Ok(())
+    } else {
+        Err("Inserted security key changed; hardware operation was cancelled.".to_string())
+    }
 }
 
 fn base_config(data_dir: &Path, nickname: &str) -> ProvisionConfig {
@@ -461,8 +488,9 @@ fn format_reset_piv_error(e: RatkeyError) -> String {
     }
 }
 
-/// Compute the LXMF destination hash + insert the `identities` DB row. The `.hwid`
-/// is already on disk (written during provisioning).
+/// Compute the LXMF destination hash and persist an `identities` row without
+/// changing which identity is active. The `.hwid` is already on disk (written
+/// during provisioning); activation is an explicit command-layer operation.
 fn register(
     data_dir: &Path,
     db: &DbPool,
@@ -480,21 +508,26 @@ fn register(
         nickname.to_string()
     };
     ratspeak_db::save_identity(db, hash_hex, &lxmf_hex, nickname, &display_name);
-    // Activate it so a first-setup restart loads the new hardware identity
-    // (otherwise no active identity exists and a software one is generated).
-    ratspeak_db::set_active_identity(db, hash_hex).map_err(|e| format!("activate: {e}"))?;
-    let active_hash = ratspeak_db::get_active_identity(db)
-        .and_then(|identity| {
-            identity
-                .get("hash")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        })
-        .ok_or_else(|| "activate: active identity did not persist".to_string())?;
-    if active_hash != hash_hex {
-        return Err(format!(
-            "activate: active identity did not persist (expected {hash_hex}, got {active_hash})"
-        ));
+    if ratspeak_db::get_identity(db, hash_hex).is_none() {
+        return Err("Could not save hardware identity.".to_string());
     }
     Ok(lxmf_hex)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_expected_serial;
+
+    #[test]
+    fn destructive_operations_require_the_pinned_device_serial() {
+        assert_eq!(verify_expected_serial(Some(42), 42), Ok(()));
+        assert_eq!(
+            verify_expected_serial(Some(7), 42),
+            Err("Inserted security key changed; hardware operation was cancelled.".to_string())
+        );
+        assert_eq!(
+            verify_expected_serial(None, 42),
+            Err("Inserted security key changed; hardware operation was cancelled.".to_string())
+        );
+    }
 }

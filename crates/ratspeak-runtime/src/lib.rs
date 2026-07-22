@@ -43,6 +43,7 @@ use ratspeak_core::{LXMF_DELIVERY_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 use rns_identity::destination::Destination;
 use serde_json::{Value, json};
 
+use activity::ActivityRecorderError;
 use state::AppState;
 
 const CHANNEL_BUFFER_SIZE: usize = 64;
@@ -295,16 +296,19 @@ pub async fn shutdown_ble_peer_for_exit() {
     rns_interface::ble_peer::stop_ble_peer_interface().await;
 }
 
-/// Soft-restart: stop all RNS/LXMF tasks, then re-init.
-pub async fn restart_rns_lxmf(state: Arc<AppState>) {
-    shutdown_rns_lxmf(&state).await;
+/// Soft-restart: serialize identity lifecycle, stop RNS/LXMF, then re-init.
+/// Activity reset failure leaves the current protocol runtime untouched.
+pub async fn restart_rns_lxmf(state: Arc<AppState>) -> Result<(), ActivityRecorderError> {
+    let _identity_lifecycle = state.identity_switch_lock.lock().await;
+    shutdown_rns_lxmf(&state).await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
     if let Ok(mut sig) = state.session_shutdown.write() {
         *sig = rns_runtime::lifecycle::ShutdownSignal::new();
     }
     state.set_startup_stage("checking");
     let data_dir = state.config.data_root.clone();
-    init_rns_lxmf(state, data_dir).await;
+    init_rns_lxmf(Arc::clone(&state), data_dir).await;
+    Ok(())
 }
 
 fn seed_identity_rns_config_from_app_private(
@@ -504,7 +508,10 @@ fn reconcile_persisted_transport_mode_for_startup(state: &AppState, config_dir: 
 }
 
 /// Soft-shutdown: stop RNS/LXMF tasks without re-init. App stays open.
-pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
+/// Activity reset must acknowledge before any protocol teardown begins.
+pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityRecorderError> {
+    state.activity.hard_reset().await?;
+
     // Supersede any pending auto-lock timer for the session being torn down.
     state
         .hw_lock_gen
@@ -548,6 +555,7 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
     tokio::time::sleep(Duration::from_millis(300)).await;
     state.set_startup_stage("stopped");
     state.emit_to_all("system_status", json!({"status": "stopped"}));
+    Ok(())
 }
 
 async fn teardown_rns_runtime_interfaces(handle: &rns_runtime::reticulum::ReticulumHandle) {
@@ -613,7 +621,14 @@ async fn lock_hardware_session(state: Arc<AppState>, generation: u64) {
     });
     let Some(hash) = hash else { return };
     tracing::info!(identity = %short_id(&hash), "hardware session auto-lock timeout — locking");
-    shutdown_rns_lxmf(&state).await;
+    if let Err(error) = shutdown_rns_lxmf(&state).await {
+        tracing::error!(
+            %error,
+            identity = %short_id(&hash),
+            "hardware session auto-lock aborted because Activity reset failed"
+        );
+        return;
+    }
     state.set_hw_locked(Some(hash.clone()));
     state.set_startup_stage("hw_locked");
     state.emit_to_all(

@@ -58,6 +58,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 # Utilities
+crossbeam-channel = "0.5"
 indexmap = "2"
 hex = { workspace = true }
 uuid = { version = "1", features = ["v4"] }

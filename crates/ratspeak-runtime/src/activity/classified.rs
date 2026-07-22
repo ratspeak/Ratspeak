@@ -5,7 +5,7 @@
 
 #![allow(
     dead_code,
-    reason = "Stage 1A defines the sealed draft pipeline; Stage 1B wires its worker"
+    reason = "reviewed draft variants intentionally precede Stage 2 producers"
 )]
 
 use std::fmt;
@@ -255,6 +255,26 @@ impl ActivityDraft {
     pub(super) fn with_parent_sequence(mut self, parent_sequence: u64) -> Self {
         self.parent_sequence = Some(parent_sequence);
         self
+    }
+
+    pub(super) const fn area(&self) -> super::schema::ActivityArea {
+        self.kind.area()
+    }
+
+    pub(super) const fn severity(&self) -> ActivitySeverity {
+        self.severity
+    }
+
+    pub(super) const fn capture_scope(&self) -> super::schema::CaptureScope {
+        self.kind.capture_scope()
+    }
+
+    pub(super) const fn rate_domain(&self) -> super::schema::RateDomain {
+        self.kind.rate_domain()
+    }
+
+    pub(super) const fn is_ambient(&self) -> bool {
+        self.kind.ambient()
     }
 
     #[cfg(test)]

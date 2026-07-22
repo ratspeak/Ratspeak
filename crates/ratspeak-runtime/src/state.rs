@@ -11,6 +11,7 @@ use ratspeak_core::{Emitter, NativeNotification, NativeNotifier};
 use rns_runtime::lifecycle::ShutdownSignal;
 use tokio::sync::watch;
 
+use crate::activity::ActivityRecorder;
 use crate::channels::ChannelsManagerHandle;
 use crate::config::DashboardConfig;
 use crate::lxmf::LxmfManager;
@@ -34,6 +35,9 @@ pub struct AppState {
     /// IPC fan-out — concrete impl is `TauriEmitter` in production builds and
     /// a no-op stub in headless tests. Set at construction; never re-assigned.
     pub emitter: Arc<dyn Emitter>,
+    /// Process-lived typed Activity recorder. Capture begins Off; identity and
+    /// app lifecycle barriers explicitly purge its session-owned privacy state.
+    pub activity: ActivityRecorder,
     pub notifier: Arc<dyn NativeNotifier>,
     /// Keyed by dest_hash hex; IndexMap insertion-order drives FIFO eviction.
     pub announce_history: RwLock<IndexMap<String, serde_json::Value>>,
@@ -62,6 +66,9 @@ pub struct AppState {
     pub lrgp_msg_to_session: Mutex<HashMap<String, LrgpMsgMeta>>,
     pub session_shutdown: RwLock<ShutdownSignal>,
     pub is_foreground: Arc<AtomicBool>,
+    /// Monotonic ticket used to discard a stale asynchronous foreground
+    /// transition after a newer background/foreground edge has arrived.
+    foreground_transition_generation: AtomicU64,
     /// Edge-trigger wake for long-sleeping background loops.
     pub foreground_changed: Arc<tokio::sync::Notify>,
     pub propagation_node: Mutex<Option<Arc<Mutex<lxmf_core::propagation_node::PropagationNode>>>>,
@@ -190,6 +197,7 @@ impl AppState {
             startup_stage: RwLock::new("starting".into()),
             event_log: Mutex::new(VecDeque::with_capacity(200)),
             emitter,
+            activity: ActivityRecorder::new(),
             notifier,
             announce_history: RwLock::new(IndexMap::new()),
             alerts: Mutex::new(Vec::new()),
@@ -210,6 +218,7 @@ impl AppState {
             lrgp_msg_to_session: Mutex::new(HashMap::new()),
             session_shutdown: RwLock::new(ShutdownSignal::new()),
             is_foreground: Arc::new(AtomicBool::new(true)),
+            foreground_transition_generation: AtomicU64::new(0),
             foreground_changed: Arc::new(tokio::sync::Notify::new()),
             propagation_node: Mutex::new(None),
             last_stats: RwLock::new(None),
@@ -288,6 +297,18 @@ impl AppState {
 
     pub fn is_foreground(&self) -> bool {
         self.is_foreground.load(Ordering::Relaxed)
+    }
+
+    pub fn begin_foreground_transition(&self) -> u64 {
+        self.foreground_transition_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
+
+    pub fn is_current_foreground_transition(&self, generation: u64) -> bool {
+        self.foreground_transition_generation
+            .load(Ordering::Acquire)
+            == generation
     }
 
     pub fn native_notifications_enabled(&self) -> bool {
@@ -725,6 +746,16 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].0, "event");
         assert_eq!(events[1].0, "network_event");
+    }
+
+    #[test]
+    fn newer_foreground_transition_supersedes_an_awaiting_resume() {
+        let state = make_state();
+        let pending_resume = state.begin_foreground_transition();
+        let background = state.begin_foreground_transition();
+
+        assert!(!state.is_current_foreground_transition(pending_resume));
+        assert!(state.is_current_foreground_transition(background));
     }
 
     #[test]

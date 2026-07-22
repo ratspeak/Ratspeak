@@ -6,7 +6,7 @@
 
 #![allow(
     dead_code,
-    reason = "Stage 1A reserves the reviewed code catalog before producer migration"
+    reason = "reviewed wire/catalog variants precede Stage 2 producer migration"
 )]
 
 use serde::Serialize;
@@ -66,6 +66,15 @@ pub enum ActivitySeverity {
 pub enum CaptureProfile {
     Normal,
     Trace,
+}
+
+impl CaptureProfile {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Trace => "trace",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -414,14 +423,27 @@ pub(super) struct ActivityKindCode {
     code: &'static str,
     area: ActivityArea,
     summary_code: &'static str,
+    capture_scope: CaptureScope,
+    rate_domain: RateDomain,
+    ambient: bool,
 }
 
 impl ActivityKindCode {
-    const fn new(code: &'static str, area: ActivityArea, summary_code: &'static str) -> Self {
+    const fn new(
+        code: &'static str,
+        area: ActivityArea,
+        summary_code: &'static str,
+        capture_scope: CaptureScope,
+        rate_domain: RateDomain,
+        ambient: bool,
+    ) -> Self {
         Self {
             code,
             area,
             summary_code,
+            capture_scope,
+            rate_domain,
+            ambient,
         }
     }
 
@@ -436,12 +458,91 @@ impl ActivityKindCode {
     pub(super) const fn summary_code(self) -> &'static str {
         self.summary_code
     }
+
+    pub(super) const fn capture_scope(self) -> CaptureScope {
+        self.capture_scope
+    }
+
+    pub(super) const fn rate_domain(self) -> RateDomain {
+        self.rate_domain
+    }
+
+    pub(super) const fn ambient(self) -> bool {
+        self.ambient
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum CaptureScope {
+    Normal,
+    TraceOnly,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum RateDomain {
+    Network,
+    Interfaces,
+    Links,
+    Messages,
+    Channels,
+    Calls,
+    Apps,
+    Ratspeak,
+}
+
+impl RateDomain {
+    pub(super) const COUNT: usize = 8;
+
+    pub(super) const fn index(self) -> usize {
+        match self {
+            Self::Network => 0,
+            Self::Interfaces => 1,
+            Self::Links => 2,
+            Self::Messages => 3,
+            Self::Channels => 4,
+            Self::Calls => 5,
+            Self::Apps => 6,
+            Self::Ratspeak => 7,
+        }
+    }
+
+    const fn from_area(area: ActivityArea) -> Self {
+        match area {
+            ActivityArea::Network => Self::Network,
+            ActivityArea::Interfaces => Self::Interfaces,
+            ActivityArea::Links => Self::Links,
+            ActivityArea::Messages => Self::Messages,
+            ActivityArea::Channels => Self::Channels,
+            ActivityArea::Calls => Self::Calls,
+            ActivityArea::Apps => Self::Apps,
+            ActivityArea::Ratspeak => Self::Ratspeak,
+        }
+    }
 }
 
 macro_rules! kind {
     ($name:ident, $code:literal, $area:ident) => {
-        pub(in crate::activity) const $name: ActivityKindCode =
-            ActivityKindCode::new($code, ActivityArea::$area, $code);
+        pub(in crate::activity) const $name: ActivityKindCode = ActivityKindCode::new(
+            $code,
+            ActivityArea::$area,
+            $code,
+            CaptureScope::Normal,
+            RateDomain::from_area(ActivityArea::$area),
+            false,
+        );
+    };
+}
+
+macro_rules! trace_ambient_kind {
+    ($name:ident, $code:literal, $area:ident) => {
+        pub(in crate::activity) const $name: ActivityKindCode = ActivityKindCode::new(
+            $code,
+            ActivityArea::$area,
+            $code,
+            CaptureScope::TraceOnly,
+            RateDomain::from_area(ActivityArea::$area),
+            true,
+        );
     };
 }
 
@@ -504,9 +605,9 @@ pub(super) mod kinds {
     kind!(RNS_ANNOUNCE_SENT, "rns.announce.sent", Network);
     kind!(RNS_ANNOUNCE_FAILED, "rns.announce.failed", Network);
     kind!(RNS_ANNOUNCE_HELD, "rns.announce.held", Network);
-    kind!(RNS_ANNOUNCE_OBSERVED, "rns.announce.observed", Network);
+    trace_ambient_kind!(RNS_ANNOUNCE_OBSERVED, "rns.announce.observed", Network);
     kind!(RNS_SECURITY_DROPPED, "rns.security.dropped", Network);
-    kind!(RNS_PACKET_SAMPLED, "rns.packet.sampled", Network);
+    trace_ambient_kind!(RNS_PACKET_SAMPLED, "rns.packet.sampled", Network);
 
     kind!(INTERFACE_CONFIGURED, "interface.configured", Interfaces);
     kind!(INTERFACE_CONNECTING, "interface.connecting", Interfaces);
@@ -698,8 +799,8 @@ pub(super) mod kinds {
         "channels.envelope.rejected",
         Channels
     );
-    kind!(CHANNELS_HEARTBEAT_PING, "channels.heartbeat.ping", Channels);
-    kind!(CHANNELS_HEARTBEAT_PONG, "channels.heartbeat.pong", Channels);
+    trace_ambient_kind!(CHANNELS_HEARTBEAT_PING, "channels.heartbeat.ping", Channels);
+    trace_ambient_kind!(CHANNELS_HEARTBEAT_PONG, "channels.heartbeat.pong", Channels);
     kind!(
         CHANNELS_HEARTBEAT_TIMED_OUT,
         "channels.heartbeat.timed_out",

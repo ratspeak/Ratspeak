@@ -1156,7 +1156,30 @@ fn show_main_window(app: &tauri::AppHandle) {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn set_desktop_foreground(app: &tauri::AppHandle, foreground: bool) {
     if let Some(state) = app.try_state::<std::sync::Arc<ratspeak_tauri::state::AppState>>() {
-        ratspeak_tauri::commands::system::set_foreground_state(state.inner(), foreground);
+        let state = std::sync::Arc::clone(state.inner());
+        let transition = state.begin_foreground_transition();
+        if foreground {
+            tauri::async_runtime::spawn(async move {
+                if state.activity.expire_trace_if_due().await.is_ok() {
+                    let _ = ratspeak_tauri::commands::system::set_foreground_state_if_current(
+                        &state,
+                        true,
+                        transition,
+                    );
+                } else {
+                    tracing::error!(
+                        reason = "activity_lifecycle_unavailable",
+                        "foreground resume held because Activity expiry could not be checked"
+                    );
+                }
+            });
+        } else {
+            let _ = ratspeak_tauri::commands::system::set_foreground_state_if_current(
+                &state,
+                false,
+                transition,
+            );
+        }
     }
 }
 
@@ -1165,11 +1188,23 @@ fn shutdown_desktop_core_for_exit(app: &tauri::AppHandle) {
     tauri::async_runtime::block_on(async {
         if let Some(state) = app.try_state::<std::sync::Arc<ratspeak_tauri::state::AppState>>() {
             let state = std::sync::Arc::clone(state.inner());
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                ratspeak_tauri::shutdown_rns_lxmf(&state),
-            )
-            .await;
+            let shutdown = async {
+                let _identity_lifecycle = state.identity_switch_lock.lock().await;
+                ratspeak_tauri::shutdown_rns_lxmf(&state).await?;
+                state.activity.shutdown().await
+            };
+            match tokio::time::timeout(std::time::Duration::from_secs(5), shutdown).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "desktop shutdown lifecycle boundary failed");
+                }
+                Err(_) => {
+                    tracing::error!(
+                        reason = "lifecycle_timeout",
+                        "desktop shutdown lifecycle boundary timed out"
+                    );
+                }
+            }
         }
 
         // Release the WinRT GattServiceProvider before exit so Windows does
