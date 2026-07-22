@@ -29,6 +29,9 @@ const COMMAND_BUFFER: usize = 64;
 const CONNECT_UPDATE_BUFFER: usize = 32;
 const CONNECT_PATH_TIMEOUT: Duration = Duration::from_secs(30);
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(15);
+const JOIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+const PART_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
+const ROOM_TRANSITION_TICK: Duration = Duration::from_secs(1);
 const DEFAULT_NICK_MAX_BYTES: usize = 32;
 const DEFAULT_ROOM_MAX_BYTES: usize = 64;
 const DEFAULT_MESSAGE_MAX_BYTES: usize = 350;
@@ -178,6 +181,9 @@ pub struct ChannelTranscriptItem {
 pub struct ChannelRoomSnapshot {
     pub name: String,
     pub phase: ChannelRoomPhase,
+    /// Wall-clock time when the current room transition began. This lets the
+    /// UI explain an in-flight JOIN/PART without persisting session state.
+    pub phase_started_at_ms: u64,
     pub members: Vec<ChannelMemberSnapshot>,
     /// False means the hub did not advertise the optional JOINED member list;
     /// the visible members are then best-effort live observations only.
@@ -191,6 +197,7 @@ impl ChannelRoomSnapshot {
         Self {
             name,
             phase: ChannelRoomPhase::Joining,
+            phase_started_at_ms: now_ms(),
             members: Vec::new(),
             members_complete: false,
             transcript: Vec::new(),
@@ -515,6 +522,8 @@ async fn run_manager(
     let mut active: Option<ActiveSession> = None;
     let mut attempt: u64 = 0;
     let mut connect_cancel: Option<oneshot::Sender<()>> = None;
+    let mut room_transition_tick = tokio::time::interval(ROOM_TRANSITION_TICK);
+    room_transition_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -606,6 +615,14 @@ async fn run_manager(
                     &emitter,
                     source,
                 ).await;
+            }
+            _ = room_transition_tick.tick() => {
+                if let Some(active) = active.as_mut()
+                    && expire_room_transitions(&mut active.rooms, now_ms())
+                {
+                    sync_session_snapshot(active, &snapshot);
+                    emit_snapshot(&emitter, &snapshot);
+                }
             }
             event = async {
                 match active.as_mut() {
@@ -954,6 +971,13 @@ async fn join_room(
             }
         }
     }
+    if let Some(pending) = active
+        .rooms
+        .values()
+        .find(|candidate| candidate.phase == ChannelRoomPhase::Joining)
+    {
+        return Err(ChannelsError::AlreadyJoining(pending.name.clone()));
+    }
     if active
         .limits
         .max_rooms_per_session
@@ -998,6 +1022,7 @@ async fn part_room(
         .ok_or_else(|| ChannelsError::NotJoined(room.clone()))?;
     if let Some(room_state) = active.rooms.get_mut(&room) {
         room_state.phase = ChannelRoomPhase::Parting;
+        room_state.phase_started_at_ms = now_ms();
         room_state.last_error = None;
     }
     let envelope =
@@ -1137,6 +1162,9 @@ async fn handle_envelope(active: &mut ActiveSession, envelope: Envelope) -> bool
         MessageType::Part => {}
         MessageType::Parted => apply_parted(active, &envelope),
         MessageType::Message | MessageType::Notice | MessageType::Action => {
+            if envelope.message_type == MessageType::Notice {
+                apply_rrcd_join_notice(active, &envelope);
+            }
             append_content(active, &envelope)
         }
         MessageType::Error => append_error(active, &envelope),
@@ -1161,13 +1189,22 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     let Some(room) = active.rooms.get_mut(&room_name) else {
         return;
     };
-    let joining_self = room.phase == ChannelRoomPhase::Joining;
+    if room.phase == ChannelRoomPhase::Parting {
+        return;
+    }
+    let identities = rrc::member_identities(envelope);
+    let includes_self = identities.contains(&active.source);
+    let joining_self = room.phase == ChannelRoomPhase::Joining
+        || (room.phase == ChannelRoomPhase::Error && includes_self);
+    if room.phase == ChannelRoomPhase::Error && !joining_self {
+        return;
+    }
     room.phase = ChannelRoomPhase::Joined;
+    room.phase_started_at_ms = now_ms();
     room.last_error = None;
 
-    let identities = rrc::member_identities(envelope);
     if !identities.is_empty() {
-        if joining_self {
+        if joining_self || includes_self {
             room.members.clear();
         }
         for identity in identities {
@@ -1182,7 +1219,7 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
                 identity == active.source,
             );
         }
-        room.members_complete = joining_self;
+        room.members_complete = joining_self || includes_self;
     } else if joining_self {
         upsert_member(
             &mut room.members,
@@ -1214,6 +1251,69 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
             joining_self,
         ),
     );
+}
+
+/// `rrcd` sends a room-scoped status NOTICE only after it has accepted JOIN,
+/// added the client to the room, and queued JOINED. A JOINED roster can exceed
+/// a constrained Link MDU on populated rooms, while this short NOTICE still
+/// arrives. Treat the documented success notice as an authenticated fallback
+/// confirmation, without accepting arbitrary traffic as proof of membership.
+fn apply_rrcd_join_notice(active: &mut ActiveSession, envelope: &Envelope) -> bool {
+    if envelope.source != active.hub_identity {
+        return false;
+    }
+    let Some(room_name) = envelope.room.as_deref() else {
+        return false;
+    };
+    let Ok(room_name) = rrc::normalize_room(
+        room_name,
+        active
+            .limits
+            .max_room_name_bytes
+            .unwrap_or(DEFAULT_ROOM_MAX_BYTES),
+    ) else {
+        return false;
+    };
+    let Some(text) = rrc::text_body(envelope) else {
+        return false;
+    };
+    let expected_prefix = format!("room {room_name}: ");
+    let Some(status) = text.strip_prefix(&expected_prefix) else {
+        return false;
+    };
+    if !status.starts_with("registered;") && !status.starts_with("unregistered;") {
+        return false;
+    }
+    let Some(room) = active.rooms.get_mut(&room_name) else {
+        return false;
+    };
+    if room.phase != ChannelRoomPhase::Joining {
+        return false;
+    }
+
+    room.phase = ChannelRoomPhase::Joined;
+    room.phase_started_at_ms = now_ms();
+    room.last_error = None;
+    room.members_complete = false;
+    upsert_member(
+        &mut room.members,
+        Some(active.source),
+        Some(active.nickname.clone()),
+        true,
+    );
+    append_room_item(
+        room,
+        ChannelTranscriptItem {
+            id: format!("{}-joined", hex::encode(envelope.message_id)),
+            kind: ChannelItemKind::Join,
+            timestamp_ms: envelope.timestamp_ms,
+            source_hash: Some(hex::encode(active.source)),
+            nickname: Some(active.nickname.clone()),
+            text: "You joined".into(),
+            ours: true,
+        },
+    );
+    true
 }
 
 fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
@@ -1304,20 +1404,83 @@ fn append_error(active: &mut ActiveSession, envelope: &Envelope) {
         text.to_string(),
         false,
     );
-    if let Some(room_name) = envelope.room.as_deref()
-        && let Some(room) = active.rooms.get_mut(room_name)
+    let explicit_room = envelope.room.as_deref().and_then(|room| {
+        rrc::normalize_room(
+            room,
+            active
+                .limits
+                .max_room_name_bytes
+                .unwrap_or(DEFAULT_ROOM_MAX_BYTES),
+        )
+        .ok()
+    });
+    let inferred_room = if explicit_room.is_none() {
+        let mut joining = active
+            .rooms
+            .values()
+            .filter(|room| room.phase == ChannelRoomPhase::Joining);
+        let first = joining.next().map(|room| room.name.clone());
+        if joining.next().is_none() {
+            first
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(room_name) = explicit_room.or(inferred_room)
+        && let Some(room) = active.rooms.get_mut(&room_name)
     {
         if room.phase == ChannelRoomPhase::Joining {
             room.phase = ChannelRoomPhase::Error;
+            room.phase_started_at_ms = now_ms();
             room.last_error = Some(text.to_string());
         } else if room.phase == ChannelRoomPhase::Parting {
             room.phase = ChannelRoomPhase::Joined;
+            room.phase_started_at_ms = now_ms();
             room.last_error = Some(text.to_string());
         }
         append_room_item(room, item);
     } else {
         append_bounded(&mut active.notices, item, NOTICE_LIMIT);
     }
+}
+
+fn expire_room_transitions(
+    rooms: &mut BTreeMap<String, ChannelRoomSnapshot>,
+    timestamp_ms: u64,
+) -> bool {
+    let join_timeout_ms = JOIN_CONFIRM_TIMEOUT.as_millis() as u64;
+    let part_timeout_ms = PART_CONFIRM_TIMEOUT.as_millis() as u64;
+    let mut changed = false;
+    let mut parted = Vec::new();
+
+    for (name, room) in rooms.iter_mut() {
+        let elapsed = timestamp_ms.saturating_sub(room.phase_started_at_ms);
+        match room.phase {
+            ChannelRoomPhase::Joining if elapsed >= join_timeout_ms => {
+                room.phase = ChannelRoomPhase::Error;
+                room.phase_started_at_ms = timestamp_ms;
+                room.last_error = Some(
+                    "No confirmation arrived from the hub. Try joining again or leave this channel."
+                        .into(),
+                );
+                changed = true;
+            }
+            ChannelRoomPhase::Parting if elapsed >= part_timeout_ms => {
+                parted.push(name.clone());
+            }
+            ChannelRoomPhase::Joining
+            | ChannelRoomPhase::Joined
+            | ChannelRoomPhase::Parting
+            | ChannelRoomPhase::Error => {}
+        }
+    }
+    for name in parted {
+        rooms.remove(&name);
+        changed = true;
+    }
+    changed
 }
 
 fn transcript_item(
@@ -1590,6 +1753,29 @@ mod tests {
         assert_eq!(room.transcript.first().unwrap().id, "20");
     }
 
+    #[test]
+    fn room_transitions_finish_instead_of_sticking_forever() {
+        let mut rooms = BTreeMap::new();
+        let mut joining = ChannelRoomSnapshot::joining("general".into());
+        joining.phase_started_at_ms = 1_000;
+        rooms.insert(joining.name.clone(), joining);
+
+        assert!(expire_room_transitions(
+            &mut rooms,
+            1_000 + JOIN_CONFIRM_TIMEOUT.as_millis() as u64
+        ));
+        assert_eq!(rooms["general"].phase, ChannelRoomPhase::Error);
+        assert!(rooms["general"].last_error.is_some());
+
+        rooms.get_mut("general").unwrap().phase = ChannelRoomPhase::Parting;
+        rooms.get_mut("general").unwrap().phase_started_at_ms = 50_000;
+        assert!(expire_room_transitions(
+            &mut rooms,
+            50_000 + PART_CONFIRM_TIMEOUT.as_millis() as u64
+        ));
+        assert!(rooms.is_empty());
+    }
+
     #[tokio::test]
     async fn authenticated_session_runs_welcome_room_message_ping_and_part() {
         let client_identity = Identity::new();
@@ -1833,6 +2019,61 @@ mod tests {
         assert_eq!(part.message_type, MessageType::Part);
         let mut parted = Envelope::new(MessageType::Parted, hub_identity.hash);
         parted.room = Some("field team".into());
+        parted.body = Some(Value::Array(vec![Value::Bytes(
+            client_identity.hash.to_vec(),
+        )]));
+        send_server_envelope(&delivery_tx, &mut responder, &parted).await;
+        wait_snapshot(&manager, |snapshot| snapshot.rooms.is_empty()).await;
+
+        // rrcd emits this documented room status NOTICE only after accepting
+        // JOIN. It is the compatibility confirmation when a populated room's
+        // optional JOINED roster is too large for the Link MDU.
+        assert_eq!(manager.join("general", None).await.unwrap(), "general");
+        let join = receive_client_envelope(
+            &mut transport_rx,
+            &delivery_tx,
+            &mut responder,
+            &hub_signing,
+        )
+        .await;
+        assert_eq!(join.message_type, MessageType::Join);
+        let mut room_status = Envelope::new(MessageType::Notice, hub_identity.hash);
+        room_status.room = Some("general".into());
+        room_status.body = Some(Value::Text(
+            "room general: registered; mode=+nrt; topic=(none)".into(),
+        ));
+        send_server_envelope(&delivery_tx, &mut responder, &room_status).await;
+        let fallback_joined = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.name == "general" && room.phase == ChannelRoomPhase::Joined
+            })
+        })
+        .await;
+        assert!(!fallback_joined.rooms[0].members_complete);
+        assert!(
+            fallback_joined.rooms[0]
+                .members
+                .iter()
+                .any(|member| member.is_self)
+        );
+        assert!(
+            fallback_joined.rooms[0]
+                .transcript
+                .iter()
+                .any(|item| item.kind == ChannelItemKind::Join && item.ours)
+        );
+
+        manager.part("general").await.unwrap();
+        let part = receive_client_envelope(
+            &mut transport_rx,
+            &delivery_tx,
+            &mut responder,
+            &hub_signing,
+        )
+        .await;
+        assert_eq!(part.message_type, MessageType::Part);
+        let mut parted = Envelope::new(MessageType::Parted, hub_identity.hash);
+        parted.room = Some("general".into());
         parted.body = Some(Value::Array(vec![Value::Bytes(
             client_identity.hash.to_vec(),
         )]));

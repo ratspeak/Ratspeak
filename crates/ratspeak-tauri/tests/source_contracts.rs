@@ -79,12 +79,17 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_js.contains("Keys are sent over the authenticated Link and are never saved"));
     assert!(channels_js.contains("RS.listen('channels_snapshot'"));
     assert!(channels_js.contains("TextEncoder"));
+    assert!(channels_js.contains("channel-transition-card"));
+    assert!(channels_js.contains("Messages unlock when the hub confirms your membership."));
+    assert!(channels_js.contains("dataset.channelAction = 'retry-room'"));
     assert!(responsive_css.contains(".channels-layout.view-channel-detail"));
     assert!(responsive_css.contains("body.view-channel-detail .bottom-bar"));
     assert!(responsive_css.contains("calc(56px + var(--sat))"));
     assert!(responsive_css.contains("body.view-channel-detail .main-content"));
-    assert!(responsive_css.contains(".channels-layout.has-active-room.members-open"));
+    assert!(responsive_css.contains(".channels-layout.room-live.members-open"));
     assert!(channels_css.contains(".channel-members-scrim"));
+    assert!(channels_css.contains(".channels-layout:not(.room-live)"));
+    assert!(channels_css.contains(".channel-transition-rail"));
     assert!(channels_js.contains("layout.classList.remove('members-open')"));
     assert!(build_css.contains("09-channels.css"));
     assert!(tauri_build.contains(r#""09-channels.css""#));
@@ -96,6 +101,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("Nothing in this"));
     assert!(runtime.contains("module writes channel traffic to the Ratspeak database."));
     assert!(runtime.contains("TRANSCRIPT_LIMIT"));
+    assert!(runtime.contains("JOIN_CONFIRM_TIMEOUT"));
+    assert!(runtime.contains("apply_rrcd_join_notice"));
     assert!(runtime.contains("WELCOME source does not match the authenticated hub"));
     for command in [
         "api_channels",

@@ -3514,7 +3514,7 @@
         transition: transform var(--transition-base);
     }
 
-    .channels-layout.has-active-room.members-open .channel-members-pane {
+    .channels-layout.room-live.members-open .channel-members-pane {
         transform: translateX(0);
     }
 
@@ -3672,6 +3672,16 @@
         height: 68px;
     }
 
+    .channel-transition-card {
+        margin-bottom: var(--space-6);
+        padding: var(--space-6);
+    }
+
+    .channel-transition-actions .nr-btn {
+        min-height: 42px;
+        flex: 1 1 132px;
+    }
+
     .channel-event {
         margin-bottom: var(--space-5);
         padding: var(--space-4) var(--space-2);
@@ -3705,11 +3715,11 @@
         transition: transform var(--transition-base);
     }
 
-    .channels-layout.has-active-room.members-open .channel-members-pane {
+    .channels-layout.room-live.members-open .channel-members-pane {
         transform: translateY(0);
     }
 
-    .channels-layout.has-active-room.members-open .channel-members-scrim {
+    .channels-layout.room-live.members-open .channel-members-scrim {
         display: block;
         position: absolute;
         z-index: calc(var(--z-bottom-sheet) - 1);

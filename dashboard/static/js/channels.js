@@ -103,14 +103,21 @@ function _channelsPhaseLabel(phase) {
         case 'resolving': return 'Finding path';
         case 'connecting': return 'Securing link';
         case 'awaiting_welcome': return 'Waiting for hub';
-        case 'joining': return 'Joining';
-        case 'joined': return 'Live';
-        case 'parting': return 'Leaving';
         case 'active': return 'Live';
         case 'stale': return 'Recovering';
         case 'error': return 'Session ended';
         case 'offline': return 'Not connected';
         default: return 'Unavailable';
+    }
+}
+
+function _channelsRoomPhaseLabel(phase) {
+    switch (phase) {
+        case 'joining': return 'Waiting';
+        case 'joined': return 'Live';
+        case 'parting': return 'Leaving';
+        case 'error': return 'Not joined';
+        default: return 'Not joined';
     }
 }
 
@@ -467,6 +474,7 @@ function _channelsBuildRoomRow(room, savedOnly) {
     row.type = 'button';
     row.className = 'channel-room-row' + (!savedOnly && room.name === channelsActiveRoom ? ' active' : '');
     row.dataset.room = room.name;
+    if (!savedOnly) row.dataset.phase = room.phase || 'joining';
 
     var icon = document.createElement('span');
     icon.className = 'channel-room-row-icon';
@@ -488,15 +496,15 @@ function _channelsBuildRoomRow(room, savedOnly) {
         var count = Array.isArray(room.members) ? room.members.length : 0;
         meta.textContent = count ? count + (count === 1 ? ' person visible' : ' people visible') : 'Live now';
     } else {
-        meta.textContent = _channelsPhaseLabel(room.phase);
+        meta.textContent = _channelsRoomPhaseLabel(room.phase);
     }
     copy.appendChild(title);
     copy.appendChild(meta);
     row.appendChild(copy);
 
     var status = document.createElement('span');
-    status.className = 'channel-row-status' + (!savedOnly && room.phase === 'joined' ? ' joined' : '');
-    status.textContent = savedOnly ? 'Recent' : (room.phase === 'joined' ? 'Live' : _channelsPhaseLabel(room.phase));
+    status.className = 'channel-row-status' + (!savedOnly && room.phase === 'joined' ? ' joined' : '') + (!savedOnly && room.phase === 'error' ? ' error' : '');
+    status.textContent = savedOnly ? 'Recent' : _channelsRoomPhaseLabel(room.phase);
     row.appendChild(status);
 
     row.addEventListener('click', function() {
@@ -515,6 +523,7 @@ function _channelsRenderRoom() {
     var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
     if (!header || !transcript || !compose || !banner) return;
     if (layout) layout.classList.toggle('has-active-room', !!room);
+    if (layout) layout.classList.toggle('room-live', !!room && room.phase === 'joined');
 
     if (!room) {
         if (layout) layout.classList.remove('members-open');
@@ -529,15 +538,27 @@ function _channelsRenderRoom() {
     header.hidden = false;
     banner.hidden = room.phase !== 'joined';
     compose.hidden = room.phase !== 'joined';
+    if (room.phase !== 'joined' && layout) layout.classList.remove('members-open');
+    var membersToggle = _channelsEl('channel-members-toggle');
+    if (membersToggle) membersToggle.hidden = room.phase !== 'joined';
     _channelsSetText('channel-room-title', room.name);
     var phase = _channelsEl('channel-room-phase');
     if (phase) {
         phase.dataset.phase = room.phase || 'joining';
-        phase.textContent = room.phase === 'joined' ? 'Live' : _channelsPhaseLabel(room.phase);
+        phase.textContent = _channelsRoomPhaseLabel(room.phase);
     }
     var memberCount = Array.isArray(room.members) ? room.members.length : 0;
-    var roomMeta = memberCount ? memberCount + (memberCount === 1 ? ' person visible' : ' people visible') : 'Live session';
-    if (!room.members_complete) roomMeta += ' \u00b7 partial list';
+    var roomMeta;
+    if (room.phase === 'joining') {
+        roomMeta = 'Join request sent \u00b7 awaiting hub';
+    } else if (room.phase === 'parting') {
+        roomMeta = 'Closing live membership';
+    } else if (room.phase === 'error') {
+        roomMeta = 'Messages remain locked';
+    } else {
+        roomMeta = memberCount ? memberCount + (memberCount === 1 ? ' person visible' : ' people visible') : 'Live session';
+        if (!room.members_complete) roomMeta += ' \u00b7 partial list';
+    }
     _channelsSetText('channel-room-meta', roomMeta);
 
     var wasNearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 90;
@@ -546,19 +567,20 @@ function _channelsRenderRoom() {
     channelsSnapshot.notices.forEach(function(item) { items.push(item); });
     (room.transcript || []).forEach(function(item) { items.push(item); });
     items.sort(function(a, b) { return (a.timestamp_ms || 0) - (b.timestamp_ms || 0); });
-    if (!items.length) {
+    if (room.phase !== 'joined') {
+        transcript.appendChild(_channelsBuildRoomTransition(room));
+    }
+    if (!items.length && room.phase === 'joined') {
         var waiting = document.createElement('div');
         waiting.className = 'channel-welcome-state';
         var waitingTitle = document.createElement('h3');
-        waitingTitle.textContent = room.phase === 'joined' ? 'You are here now' : 'Joining ' + room.name + '\u2026';
+        waitingTitle.textContent = 'You are here now';
         var waitingCopy = document.createElement('p');
-        waitingCopy.textContent = room.phase === 'joined'
-            ? 'Say hello. Only people connected to this hub and channel right now will see it.'
-            : 'The hub is confirming your channel membership.';
+        waitingCopy.textContent = 'Say hello. Only people connected to this hub and channel right now will see it.';
         waiting.appendChild(waitingTitle);
         waiting.appendChild(waitingCopy);
         transcript.appendChild(waiting);
-    } else {
+    } else if (items.length) {
         items.forEach(function(item) { transcript.appendChild(_channelsBuildTranscriptItem(item)); });
     }
     if (wasNearBottom || channelsActiveRoom !== room.name) {
@@ -566,6 +588,72 @@ function _channelsRenderRoom() {
     }
     _channelsRenderMembers(room);
     _channelsUpdateComposer();
+}
+
+function _channelsBuildRoomTransition(room) {
+    var card = document.createElement('section');
+    card.className = 'channel-transition-card';
+    card.dataset.phase = room.phase || 'joining';
+    card.setAttribute('role', 'status');
+    card.setAttribute('aria-live', 'polite');
+
+    if (room.phase !== 'parting') {
+        var rail = document.createElement('div');
+        rail.className = 'channel-transition-rail';
+        ['Request sent', 'Hub reply', 'Live'].forEach(function(labelText, index) {
+            var step = document.createElement('span');
+            step.className = 'channel-transition-step';
+            if (index === 0) step.classList.add('complete');
+            if (index === 1 && room.phase === 'joining') step.classList.add('current');
+            if (index === 1 && room.phase === 'error') step.classList.add('failed');
+            var dot = document.createElement('i');
+            dot.setAttribute('aria-hidden', 'true');
+            var label = document.createElement('span');
+            label.textContent = labelText;
+            step.appendChild(dot);
+            step.appendChild(label);
+            rail.appendChild(step);
+        });
+        card.appendChild(rail);
+    }
+
+    var title = document.createElement('h3');
+    var copy = document.createElement('p');
+    if (room.phase === 'joining') {
+        title.textContent = 'Waiting for ' + _channelsHubName(channelsSnapshot.hub);
+        copy.textContent = 'Ratspeak sent the request to join ' + room.name + '. Messages unlock when the hub confirms your membership.';
+    } else if (room.phase === 'parting') {
+        title.textContent = 'Leaving ' + room.name + '\u2026';
+        copy.textContent = 'Ratspeak sent the leave request and is closing this live membership.';
+    } else {
+        title.textContent = room.name + ' was not confirmed';
+        copy.textContent = room.last_error || 'No confirmation arrived from the hub. You can try again without reconnecting.';
+    }
+    card.appendChild(title);
+    card.appendChild(copy);
+
+    if (room.phase === 'joining' || room.phase === 'error') {
+        var actions = document.createElement('div');
+        actions.className = 'channel-transition-actions';
+        if (room.phase === 'error') {
+            var retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'nr-btn nr-btn-primary nr-btn-sm';
+            retry.dataset.channelAction = 'retry-room';
+            retry.dataset.room = room.name;
+            retry.textContent = 'Try again';
+            actions.appendChild(retry);
+        }
+        var cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'nr-btn nr-btn-secondary nr-btn-sm';
+        cancel.dataset.channelAction = 'leave-room';
+        cancel.dataset.room = room.name;
+        cancel.textContent = room.phase === 'joining' ? 'Cancel join' : 'Leave channel';
+        actions.appendChild(cancel);
+        card.appendChild(actions);
+    }
+    return card;
 }
 
 function _channelsRenderRoomEmpty(transcript) {
@@ -651,6 +739,14 @@ function _channelsRenderMembers(room) {
     list.textContent = '';
     var members = room && Array.isArray(room.members) ? room.members : [];
     _channelsSetText('channel-members-count', members.length + (members.length === 1 ? ' visible' : ' visible'));
+    if (room && room.phase !== 'joined') {
+        if (note) note.textContent = 'Member details appear after the hub confirms your join.';
+        var waiting = document.createElement('div');
+        waiting.className = 'channel-members-empty';
+        waiting.textContent = 'Waiting for channel membership.';
+        list.appendChild(waiting);
+        return;
+    }
     if (note) {
         note.textContent = room && room.members_complete
             ? 'Member list supplied by this hub.'
@@ -1050,17 +1146,34 @@ function channelsOpenRoomOptions() {
     var built = _rsBuildSheet({ title: room.name }, function() {});
     var copy = document.createElement('p');
     copy.className = 'channel-sheet-copy';
-    copy.textContent = 'Leaving removes you from this live channel and clears its transcript from this device. The channel remains in Recents for easy rejoining.';
+    if (room.phase === 'joining') {
+        copy.textContent = 'Canceling sends a leave request in case the hub already accepted your join. This attempt will then disappear.';
+    } else if (room.phase === 'error') {
+        copy.textContent = room.last_error || 'The hub did not confirm this join. Try again without reconnecting, or leave this channel.';
+    } else {
+        copy.textContent = 'Leaving removes you from this live channel and clears its transcript from this device. The channel remains in Recents for easy rejoining.';
+    }
     built.body.appendChild(copy);
+    if (room.phase === 'error') {
+        var retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'nr-btn nr-btn-primary';
+        retry.textContent = 'Try again';
+        retry.addEventListener('click', function() {
+            built.dismiss();
+            channelsOpenJoinSheet(room.name);
+        });
+        built.footer.appendChild(retry);
+    }
     var leave = document.createElement('button');
     leave.type = 'button';
-    leave.className = 'nr-btn nr-btn-danger';
-    leave.textContent = 'Leave channel';
+    leave.className = room.phase === 'joined' ? 'nr-btn nr-btn-danger' : 'nr-btn nr-btn-secondary';
+    leave.textContent = room.phase === 'joining' ? 'Cancel join' : (room.phase === 'parting' ? 'Leaving\u2026' : 'Leave channel');
+    leave.disabled = room.phase === 'parting';
     leave.addEventListener('click', function() {
         leave.disabled = true;
-        RS.invoke('part_channel', { args: { room: room.name } }).then(function() {
+        _channelsPartRoom(room.name).then(function() {
             built.dismiss();
-            if (_channelsCompact() && RS.viewStack && RS.viewStack.top() && RS.viewStack.top().viewId === 'channel-detail') RS.viewStack.pop();
         }).catch(function(err) {
             leave.disabled = false;
             if (typeof showToast === 'function') showToast((err && err.message) || 'Could not leave channel', 'toast-red', 3200);
@@ -1068,6 +1181,15 @@ function channelsOpenRoomOptions() {
     });
     built.footer.appendChild(leave);
     _channelsPresentSheet(built, leave);
+}
+
+function _channelsPartRoom(roomName) {
+    return RS.invoke('part_channel', { args: { room: roomName } }).then(function(result) {
+        if (_channelsCompact() && RS.viewStack && RS.viewStack.top() && RS.viewStack.top().viewId === 'channel-detail') {
+            RS.viewStack.pop();
+        }
+        return result;
+    });
 }
 
 function channelsDisconnect() {
@@ -1122,6 +1244,14 @@ function _channelsBindUI() {
         if (action === 'connect') channelsOpenConnectSheet();
         else if (action === 'join') channelsOpenJoinSheet();
         else if (action === 'disconnect') channelsDisconnect();
+        else if (action === 'retry-room') channelsOpenJoinSheet(actionEl.dataset.room || '');
+        else if (action === 'leave-room') {
+            actionEl.disabled = true;
+            _channelsPartRoom(actionEl.dataset.room || '').catch(function(error) {
+                actionEl.disabled = false;
+                if (typeof showToast === 'function') showToast((error && error.message) || 'Could not leave channel', 'toast-red', 3200);
+            });
+        }
     });
 
     var connect = _channelsEl('channels-connect-btn');
