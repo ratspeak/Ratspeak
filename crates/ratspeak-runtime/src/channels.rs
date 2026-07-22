@@ -160,8 +160,8 @@ impl ChannelHubSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelMemberSnapshot {
-    /// Stable Reticulum identity hash when the hub supplies one. Some hubs omit
-    /// optional member lists, in which case only an advisory nickname is known.
+    /// Stable Reticulum identity hash from a hub roster or the reported source
+    /// of observed room content. Some hubs omit both, leaving only a nickname.
     pub identity_hash: Option<String>,
     pub nickname: Option<String>,
     pub is_self: bool,
@@ -1229,6 +1229,9 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
         if joining_self || includes_self {
             room.members.clear();
         }
+        let single_member_nickname = (identities.len() == 1)
+            .then(|| envelope.nickname.clone())
+            .flatten();
         for identity in identities {
             upsert_member(
                 &mut room.members,
@@ -1236,7 +1239,7 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
                 if identity == active.source {
                     Some(active.nickname.clone())
                 } else {
-                    envelope.nickname.clone()
+                    single_member_nickname.clone()
                 },
                 identity == active.source,
             );
@@ -1450,6 +1453,35 @@ fn append_content(active: &mut ActiveSession, envelope: &Envelope) {
     if let Some(room_name) = envelope.room.as_deref()
         && let Some(room) = active.rooms.get_mut(room_name)
     {
+        // RRC content received over the authenticated hub Link is a live,
+        // hub-attested observation of its source, not an independently signed
+        // peer claim. Once membership is confirmed, a room message/action is
+        // still useful evidence for the best-effort visible member list.
+        if room.phase == ChannelRoomPhase::Joined
+            && matches!(
+                envelope.message_type,
+                MessageType::Message | MessageType::Action
+            )
+            && envelope.source != active.hub_identity
+        {
+            let max_nick = active
+                .limits
+                .max_nick_bytes
+                .unwrap_or(DEFAULT_NICK_MAX_BYTES);
+            let nickname = envelope
+                .nickname
+                .as_deref()
+                .and_then(|value| rrc::normalize_nickname(value, max_nick).ok());
+            let inserted = upsert_member(
+                &mut room.members,
+                Some(envelope.source),
+                nickname,
+                envelope.source == active.source,
+            );
+            if inserted {
+                room.members_complete = false;
+            }
+        }
         append_room_item(room, item);
     } else if envelope.message_type == MessageType::Notice {
         if active.hub_greeting.is_none()
@@ -1589,30 +1621,38 @@ fn upsert_member(
     identity: Option<[u8; 16]>,
     nickname: Option<String>,
     is_self: bool,
-) {
+) -> bool {
     let identity_hash = identity.map(hex::encode);
-    let existing_index = if let Some(hash) = identity_hash.as_deref() {
-        members
-            .iter()
-            .position(|member| member.identity_hash.as_deref() == Some(hash))
-    } else {
-        nickname.as_deref().and_then(|nick| {
-            members.iter().position(|member| {
-                member.identity_hash.is_none() && member.nickname.as_deref() == Some(nick)
-            })
+    let existing_index = identity_hash
+        .as_deref()
+        .and_then(|hash| {
+            members
+                .iter()
+                .position(|member| member.identity_hash.as_deref() == Some(hash))
         })
-    };
+        .or_else(|| {
+            nickname.as_deref().and_then(|nick| {
+                members.iter().position(|member| {
+                    member.identity_hash.is_none() && member.nickname.as_deref() == Some(nick)
+                })
+            })
+        });
     if let Some(existing) = existing_index.and_then(|index| members.get_mut(index)) {
+        if existing.identity_hash.is_none() {
+            existing.identity_hash = identity_hash;
+        }
         if nickname.is_some() {
             existing.nickname = nickname;
         }
         existing.is_self |= is_self;
+        false
     } else {
         members.push(ChannelMemberSnapshot {
             identity_hash,
             nickname,
             is_self,
         });
+        true
     }
 }
 
@@ -1854,6 +1894,38 @@ mod tests {
         }
         assert_eq!(room.transcript.len(), TRANSCRIPT_LIMIT);
         assert_eq!(room.transcript.first().unwrap().id, "20");
+    }
+
+    #[test]
+    fn observed_member_upsert_promotes_nickname_only_rows_without_duplicates() {
+        let mut members = vec![ChannelMemberSnapshot {
+            identity_hash: None,
+            nickname: Some("Field Rat".into()),
+            is_self: false,
+        }];
+        let identity = [0x42; 16];
+        let identity_hash = hex::encode(identity);
+
+        assert!(!upsert_member(
+            &mut members,
+            Some(identity),
+            Some("Field Rat".into()),
+            false,
+        ));
+        assert_eq!(members.len(), 1);
+        assert_eq!(
+            members[0].identity_hash.as_deref(),
+            Some(identity_hash.as_str())
+        );
+
+        assert!(!upsert_member(
+            &mut members,
+            Some(identity),
+            Some("Field Rat 2".into()),
+            false,
+        ));
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].nickname.as_deref(), Some("Field Rat 2"));
     }
 
     #[test]
@@ -2205,6 +2277,75 @@ mod tests {
                 .iter()
                 .all(|item| !item.text.starts_with("room general: registered;"))
         );
+
+        // A room message is live evidence that its hub-reported source is
+        // present even when the optional JOINED roster was not delivered.
+        // ACTION updates the same observed member instead of duplicating it,
+        // and a later authenticated PARTED removes that observation.
+        let observed_identity = [0x43; 16];
+        let observed_hash = hex::encode(observed_identity);
+        let mut observed_message = Envelope::room_text(
+            MessageType::Message,
+            observed_identity,
+            "general",
+            "Observer",
+            "checking in",
+        );
+        observed_message.timestamp_ms = now_ms();
+        send_server_envelope(&delivery_tx, &mut responder, &observed_message).await;
+        let observed = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.members.iter().any(|member| {
+                    member.identity_hash.as_deref() == Some(observed_hash.as_str())
+                        && member.nickname.as_deref() == Some("Observer")
+                })
+            })
+        })
+        .await;
+        assert!(!observed.rooms[0].members_complete);
+
+        let observed_action = Envelope::room_text(
+            MessageType::Action,
+            observed_identity,
+            "general",
+            "Observer",
+            "waves",
+        );
+        send_server_envelope(&delivery_tx, &mut responder, &observed_action).await;
+        let updated_observation = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.transcript
+                    .iter()
+                    .any(|item| item.kind == ChannelItemKind::Action && item.text == "waves")
+            })
+        })
+        .await;
+        assert_eq!(
+            updated_observation.rooms[0]
+                .members
+                .iter()
+                .filter(|member| {
+                    member.identity_hash.as_deref() == Some(observed_hash.as_str())
+                })
+                .count(),
+            1
+        );
+
+        let mut observed_parted = Envelope::new(MessageType::Parted, hub_identity.hash);
+        observed_parted.room = Some("general".into());
+        observed_parted.nickname = Some("Observer".into());
+        observed_parted.body = Some(Value::Array(vec![Value::Bytes(observed_identity.to_vec())]));
+        send_server_envelope(&delivery_tx, &mut responder, &observed_parted).await;
+        let observation_removed = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                !room
+                    .members
+                    .iter()
+                    .any(|member| member.identity_hash.as_deref() == Some(observed_hash.as_str()))
+            })
+        })
+        .await;
+        assert_eq!(observation_removed.rooms[0].members.len(), 1);
 
         // If the larger JOINED roster arrives after the fallback notice, it
         // completes the member list without duplicating the local join event.

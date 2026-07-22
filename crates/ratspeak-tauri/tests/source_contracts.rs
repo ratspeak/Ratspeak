@@ -74,6 +74,9 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(index.contains("data-view=\"channels\""));
     assert!(index.contains("id=\"view-channels\""));
     assert!(index.contains("/static/js/channels.js"));
+    assert!(index.contains("id=\"channel-message-input\""));
+    assert!(index.contains("autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\""));
+    assert!(index.contains("id=\"channel-members-back\""));
     assert!(!index.contains("Messages are not saved and disappear when this session ends."));
     assert!(!index.contains("id=\"channel-session-banner\""));
     assert!(channels_js.contains("hub relays and can read channel messages"));
@@ -89,6 +92,12 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(!channels_js.contains("function _channelsInitials"));
     assert!(channels_js.contains("function _channelsBuildHubNotice"));
     assert!(channels_js.contains("function _channelsBuildHubGreeting"));
+    assert!(channels_js.contains("function _channelsGroupPresenceEvents"));
+    assert!(channels_js.contains("function _channelsBuildPresenceGroup"));
+    assert!(channels_js.contains("function _channelsRenderMemberDetail"));
+    assert!(channels_js.contains("PeersCache.enriched()"));
+    assert!(channels_js.contains("services.indexOf('lxmf.delivery')"));
+    assert!(channels_js.contains("disableAutoCorrect(roomInput)"));
     assert!(channels_js.contains("You\\u2019re already in "));
     assert!(channels_js.contains("result.local_command"));
     assert!(responsive_css.contains(".channels-layout.view-channel-detail"));
@@ -100,6 +109,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_css.contains(".channels-layout:not(.room-live)"));
     assert!(channels_css.contains(".channel-transition-rail"));
     assert!(channels_css.contains(".channel-hub-greeting"));
+    assert!(channels_css.contains(".channel-presence-summary"));
+    assert!(channels_css.contains(".channel-member-detail-fields"));
     assert!(channels_js.contains("layout.classList.remove('members-open')"));
     assert!(build_css.contains("09-channels.css"));
     assert!(tauri_build.contains(r#""09-channels.css""#));
@@ -114,6 +125,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("JOIN_CONFIRM_TIMEOUT"));
     assert!(runtime.contains("apply_rrcd_room_status_notice"));
     assert!(runtime.contains("parse_rrcd_room_status"));
+    assert!(runtime.contains("hub-attested observation of its source"));
+    assert!(runtime.contains("room.members_complete = false"));
     assert!(runtime.contains("pub hub_greeting: Option<ChannelTranscriptItem>"));
     assert!(runtime.contains("WELCOME source does not match the authenticated hub"));
     assert!(commands.contains("fn parse_local_composer_command"));

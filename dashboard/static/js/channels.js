@@ -29,6 +29,11 @@ var _channelsSendPending = false;
 var _channelsFieldSeq = 0;
 var _channelsLocalRoomEvents = {};
 var _channelsLocalEventSeq = 0;
+var _channelsExpandedPresenceGroups = {};
+var _channelsPresenceGroupSeq = 0;
+var _channelsSelectedMemberKey = null;
+var _channelsMemberReturnFocusKey = null;
+var CHANNEL_PRESENCE_GROUP_WINDOW_MS = 5 * 60 * 1000;
 
 function _channelsEl(id) {
     return document.getElementById(id);
@@ -223,7 +228,12 @@ function channelsApplySnapshot(snapshot) {
     if (!Array.isArray(channelsSnapshot.notices)) channelsSnapshot.notices = [];
 
     var newHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
-    if (newHub !== oldHub) _channelsLocalRoomEvents = {};
+    if (newHub !== oldHub) {
+        _channelsLocalRoomEvents = {};
+        _channelsExpandedPresenceGroups = {};
+        _channelsSelectedMemberKey = null;
+        _channelsMemberReturnFocusKey = null;
+    }
     if (newHub && newHub !== oldHub) {
         channelsSavedRooms = [];
         _channelsSavedRoomsHub = null;
@@ -603,14 +613,21 @@ function _channelsRenderRoom() {
     var wasNearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 90;
     transcript.textContent = '';
     var items = [];
-    channelsSnapshot.notices.forEach(function(item) { items.push({ item: item, hubNotice: true }); });
+    var itemOrder = 0;
+    channelsSnapshot.notices.forEach(function(item) {
+        items.push({ item: item, hubNotice: true, order: itemOrder++ });
+    });
     (room.transcript || []).forEach(function(item) {
-        items.push({ item: item, hubNotice: _channelsIsHubNotice(item) });
+        items.push({ item: item, hubNotice: _channelsIsHubNotice(item), order: itemOrder++ });
     });
     (_channelsLocalRoomEvents[room.name] || []).forEach(function(item) {
-        items.push({ item: item, hubNotice: false });
+        items.push({ item: item, hubNotice: false, order: itemOrder++ });
     });
-    items.sort(function(a, b) { return (a.item.timestamp_ms || 0) - (b.item.timestamp_ms || 0); });
+    items.sort(function(a, b) {
+        var byTime = (a.item.timestamp_ms || 0) - (b.item.timestamp_ms || 0);
+        return byTime || a.order - b.order;
+    });
+    var renderedItems = _channelsGroupPresenceEvents(items, room.name);
     if (room.phase !== 'joined') {
         transcript.appendChild(_channelsBuildRoomTransition(room));
     }
@@ -624,9 +641,13 @@ function _channelsRenderRoom() {
         waiting.appendChild(waitingTitle);
         waiting.appendChild(waitingCopy);
         transcript.appendChild(waiting);
-    } else if (items.length) {
-        items.forEach(function(entry) {
-            transcript.appendChild(_channelsBuildTranscriptItem(entry.item, entry.hubNotice));
+    } else if (renderedItems.length) {
+        renderedItems.forEach(function(entry) {
+            if (entry.presenceGroup) {
+                transcript.appendChild(_channelsBuildPresenceGroup(entry.presenceGroup));
+            } else {
+                transcript.appendChild(_channelsBuildTranscriptItem(entry.item, entry.hubNotice));
+            }
         });
     }
     if (wasNearBottom || channelsActiveRoom !== room.name) {
@@ -798,6 +819,120 @@ function _channelsBuildHubNotice(item) {
     return notice;
 }
 
+function _channelsIsPresenceEvent(entry) {
+    if (!entry || entry.hubNotice || !entry.item || entry.item.ours) return false;
+    return entry.item.kind === 'join' || entry.item.kind === 'part';
+}
+
+function _channelsGroupPresenceEvents(entries, roomName) {
+    var rendered = [];
+    var run = [];
+
+    function flushRun() {
+        if (!run.length) return;
+        if (run.length === 1) {
+            rendered.push(run[0]);
+        } else {
+            var first = run[0].item;
+            rendered.push({
+                presenceGroup: {
+                    key: roomName + '|' + first.kind + '|' + (first.id || first.timestamp_ms || run[0].order),
+                    kind: first.kind,
+                    entries: run.slice()
+                }
+            });
+        }
+        run = [];
+    }
+
+    entries.forEach(function(entry) {
+        if (!_channelsIsPresenceEvent(entry)) {
+            flushRun();
+            rendered.push(entry);
+            return;
+        }
+        var previous = run.length ? run[run.length - 1].item : null;
+        var timestamp = Number(entry.item.timestamp_ms) || 0;
+        var previousTimestamp = previous ? (Number(previous.timestamp_ms) || 0) : timestamp;
+        var sameRun = previous && previous.kind === entry.item.kind &&
+            timestamp - previousTimestamp <= CHANNEL_PRESENCE_GROUP_WINDOW_MS;
+        if (previous && !sameRun) flushRun();
+        run.push(entry);
+    });
+    flushRun();
+    return rendered;
+}
+
+function _channelsPresenceName(item) {
+    if (item.nickname) return item.nickname;
+    if (item.source_hash) return _channelsShortHash(item.source_hash);
+    var text = String(item.text || '');
+    var suffix = item.kind === 'part' ? ' left' : ' joined';
+    return text.slice(-suffix.length) === suffix ? text.slice(0, -suffix.length) : 'A member';
+}
+
+function _channelsBuildPresenceGroup(group) {
+    var expanded = !!_channelsExpandedPresenceGroups[group.key];
+    var wrapper = document.createElement('div');
+    wrapper.className = 'channel-presence-group' + (expanded ? ' expanded' : '');
+
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'channel-presence-summary';
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    var listId = 'channel-presence-group-' + (++_channelsPresenceGroupSeq);
+    toggle.setAttribute('aria-controls', listId);
+
+    var label = document.createElement('span');
+    var count = group.entries.length;
+    label.textContent = count + (group.kind === 'part' ? ' people left' : ' people joined');
+    var chevron = document.createElement('span');
+    chevron.className = 'channel-presence-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+    toggle.appendChild(label);
+    toggle.appendChild(chevron);
+
+    var list = document.createElement('div');
+    list.id = listId;
+    list.className = 'channel-presence-list';
+    list.setAttribute('role', 'list');
+    list.hidden = !expanded;
+    group.entries.forEach(function(entry) {
+        var item = entry.item;
+        var nameText = _channelsPresenceName(item);
+        var row = document.createElement('div');
+        row.className = 'channel-presence-item';
+        row.setAttribute('role', 'listitem');
+        row.dataset.tone = _channelsIdentityTone(item.source_hash || nameText);
+        var marker = document.createElement('span');
+        marker.className = 'channel-identity-marker';
+        marker.setAttribute('aria-hidden', 'true');
+        var copy = document.createElement('span');
+        copy.className = 'channel-presence-item-copy';
+        copy.textContent = nameText + (group.kind === 'part' ? ' left' : ' joined');
+        var time = document.createElement('time');
+        time.className = 'channel-event-time';
+        time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
+        time.textContent = _channelsFormatTime(item.timestamp_ms);
+        row.appendChild(marker);
+        row.appendChild(copy);
+        row.appendChild(time);
+        list.appendChild(row);
+    });
+
+    toggle.addEventListener('click', function() {
+        expanded = !expanded;
+        _channelsExpandedPresenceGroups[group.key] = expanded;
+        toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        wrapper.classList.toggle('expanded', expanded);
+        list.hidden = !expanded;
+    });
+    wrapper.appendChild(toggle);
+    wrapper.appendChild(list);
+    return wrapper;
+}
+
 function _channelsBuildTranscriptItem(item, hubNotice) {
     var kind = item.kind || 'message';
     if (kind === 'join' || kind === 'part' || kind === 'error' || kind === 'system') {
@@ -836,12 +971,233 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     return event;
 }
 
+function _channelsMemberName(member) {
+    return member.nickname || _channelsShortHash(member.identity_hash) || 'Channel member';
+}
+
+function _channelsMemberKey(member) {
+    var identity = String(member.identity_hash || '').toLowerCase();
+    if (identity) return 'identity:' + identity;
+    return 'nickname:' + String(member.nickname || 'channel-member').toLowerCase();
+}
+
+function _channelsMemberByKey(members, key) {
+    for (var i = 0; i < members.length; i++) {
+        if (_channelsMemberKey(members[i]) === key) return members[i];
+    }
+    return null;
+}
+
+function _channelsPeerForIdentity(identityHash) {
+    var target = String(identityHash || '').toLowerCase();
+    if (!target || typeof PeersCache === 'undefined' || !PeersCache || typeof PeersCache.enriched !== 'function') return null;
+    var peers = PeersCache.enriched();
+    for (var i = 0; i < peers.length; i++) {
+        if (String(peers[i].identity_hash || '').toLowerCase() === target) return peers[i];
+    }
+    return null;
+}
+
+function _channelsPeerLxmfAddress(peer) {
+    if (!peer || !peer.hash) return '';
+    var services = Array.isArray(peer.services) ? peer.services : [];
+    return services.indexOf('lxmf.delivery') !== -1 ? peer.hash : '';
+}
+
+function _channelsMemberDetails(member) {
+    var identityHash = String(member.identity_hash || '').toLowerCase();
+    var peer = member.is_self ? null : _channelsPeerForIdentity(identityHash);
+    var active = member.is_self && typeof activeIdentity === 'function' ? activeIdentity() : null;
+    var activeMatches = active && (!identityHash || String(active.hash || '').toLowerCase() === identityHash);
+    var liveSelf = member.is_self && typeof lxmfIdentity !== 'undefined' ? lxmfIdentity : null;
+    var liveSelfMatches = liveSelf && (!identityHash || String(liveSelf.identity_hash || '').toLowerCase() === identityHash);
+    var lxmfAddress = member.is_self
+        ? String((activeMatches ? active.lxmf_hash : '') || (liveSelfMatches ? liveSelf.hash : '') || '')
+        : _channelsPeerLxmfAddress(peer);
+    var knownName = member.is_self
+        ? String((activeMatches ? (active.display_name || active.nickname) : '') || (liveSelfMatches ? liveSelf.display_name : '') || '')
+        : String(peer && peer.display_name || '');
+    if (peer && knownName === peer.hash) knownName = '';
+    var profileStatus = member.is_self && liveSelfMatches
+        ? String(liveSelf.status || liveSelf.profile_status || '')
+        : String(peer && peer.profile_status || '');
+    return {
+        identityHash: identityHash,
+        lxmfAddress: lxmfAddress,
+        knownName: knownName,
+        profileStatus: profileStatus,
+        peer: peer,
+        active: activeMatches ? active : null
+    };
+}
+
+function _channelsMemberDetailField(labelText, value, copyLabel) {
+    var row = document.createElement('div');
+    row.className = 'channel-room-detail channel-member-detail-field';
+    if (copyLabel) row.classList.add('copyable');
+    var label = document.createElement('span');
+    label.textContent = labelText;
+    var valueWrap = document.createElement('span');
+    valueWrap.className = 'channel-member-detail-value';
+    var copy = document.createElement('strong');
+    copy.textContent = value;
+    if (labelText === 'Identity hash' || labelText === 'LXMF address') copy.classList.add('mono');
+    valueWrap.appendChild(copy);
+    if (copyLabel) {
+        var copyButton = document.createElement('button');
+        copyButton.type = 'button';
+        copyButton.className = 'channel-member-copy-button';
+        copyButton.title = 'Copy ' + copyLabel.toLowerCase();
+        copyButton.setAttribute('aria-label', 'Copy ' + copyLabel.toLowerCase());
+        copyButton.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+        copyButton.addEventListener('click', function() {
+            RS.copyText(value).then(function(ok) {
+                if (ok && typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast(copyLabel);
+            });
+        });
+        valueWrap.appendChild(copyButton);
+    }
+    row.appendChild(label);
+    row.appendChild(valueWrap);
+    return row;
+}
+
+function _channelsRenderMemberDetail(room, member, list, note) {
+    var pane = _channelsEl('channel-members-pane');
+    var back = _channelsEl('channel-members-back');
+    var details = _channelsMemberDetails(member);
+    var channelName = _channelsMemberName(member);
+    if (pane) pane.classList.add('showing-detail');
+    if (back) back.hidden = false;
+    _channelsSetText('channel-members-label', 'People here');
+    _channelsSetText('channel-members-count', channelName);
+    if (note) note.hidden = true;
+    list.classList.add('showing-detail');
+
+    var hero = document.createElement('div');
+    hero.className = 'channel-member-detail-hero';
+    var avatar = document.createElement('div');
+    avatar.className = 'channel-member-detail-avatar';
+    if (typeof identityAvatar === 'function') {
+        avatar.innerHTML = identityAvatar(details.lxmfAddress || details.identityHash || channelName, 52);
+    } else {
+        var fallback = document.createElement('span');
+        fallback.className = 'channel-identity-marker';
+        avatar.appendChild(fallback);
+    }
+    var heroCopy = document.createElement('div');
+    heroCopy.className = 'channel-member-detail-hero-copy';
+    var name = document.createElement('strong');
+    name.textContent = channelName;
+    var presence = document.createElement('span');
+    presence.textContent = 'Visible in ' + room.name;
+    heroCopy.appendChild(name);
+    heroCopy.appendChild(presence);
+    if (member.is_self) {
+        var you = document.createElement('span');
+        you.className = 'channel-member-you';
+        you.textContent = 'You';
+        heroCopy.appendChild(you);
+    }
+    hero.appendChild(avatar);
+    hero.appendChild(heroCopy);
+    list.appendChild(hero);
+
+    var fields = document.createElement('div');
+    fields.className = 'channel-room-details channel-member-detail-fields';
+    fields.appendChild(_channelsMemberDetailField('Channel name', channelName));
+    if (details.knownName && details.knownName.toLowerCase() !== channelName.toLowerCase()) {
+        fields.appendChild(_channelsMemberDetailField('Known as', details.knownName));
+    }
+    if (details.identityHash) {
+        fields.appendChild(_channelsMemberDetailField('Identity hash', details.identityHash, 'Identity hash'));
+    }
+    if (details.lxmfAddress) {
+        fields.appendChild(_channelsMemberDetailField('LXMF address', details.lxmfAddress, 'LXMF address'));
+    }
+    if (details.profileStatus) {
+        fields.appendChild(_channelsMemberDetailField('Status', details.profileStatus));
+    }
+    if (details.peer && details.peer.last_seen != null) {
+        var lastHeard = typeof formatLastHeard === 'function'
+            ? formatLastHeard(details.peer.last_seen)
+            : new Date(details.peer.last_seen * 1000).toLocaleString();
+        fields.appendChild(_channelsMemberDetailField('Last heard', lastHeard));
+    }
+    if (details.peer && details.peer.route_label) {
+        fields.appendChild(_channelsMemberDetailField('Route', details.peer.route_label));
+    }
+    if (details.peer) {
+        fields.appendChild(_channelsMemberDetailField('Saved contact', details.peer.is_contact ? 'Yes' : 'No'));
+    }
+    list.appendChild(fields);
+
+    if (!details.identityHash || !details.lxmfAddress) {
+        var hint = document.createElement('p');
+        hint.className = 'channel-member-detail-note';
+        hint.textContent = !details.identityHash
+            ? 'This hub has supplied only a channel nickname for this person.'
+            : 'No known LXMF address for this identity yet.';
+        list.appendChild(hint);
+    }
+
+    if (!member.is_self && details.lxmfAddress && typeof openConversationWith === 'function') {
+        var actions = document.createElement('div');
+        actions.className = 'channel-member-detail-actions entity-action-grid';
+        var message = document.createElement('button');
+        message.type = 'button';
+        message.className = 'nr-btn entity-action-btn';
+        message.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg><span>Message</span>';
+        message.addEventListener('click', function() {
+            channelsCloseMemberPane();
+            openConversationWith(details.lxmfAddress);
+        });
+        actions.appendChild(message);
+        list.appendChild(actions);
+    }
+}
+
+function _channelsShowMemberList() {
+    var focusKey = _channelsMemberReturnFocusKey;
+    _channelsSelectedMemberKey = null;
+    _channelsMemberReturnFocusKey = null;
+    _channelsRenderMembers(channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null);
+    if (focusKey) requestAnimationFrame(function() {
+        var rows = document.querySelectorAll('.channel-member-row');
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].dataset.memberKey === focusKey) {
+                rows[i].focus();
+                break;
+            }
+        }
+    });
+}
+
 function _channelsRenderMembers(room) {
     var list = _channelsEl('channel-members-list');
     var note = _channelsEl('channel-members-note');
+    var pane = _channelsEl('channel-members-pane');
+    var back = _channelsEl('channel-members-back');
     if (!list) return;
     list.textContent = '';
+    list.classList.remove('showing-detail');
+    if (pane) pane.classList.remove('showing-detail');
+    if (back) back.hidden = true;
+    if (note) note.hidden = false;
     var members = room && Array.isArray(room.members) ? room.members : [];
+    var selectedMember = _channelsSelectedMemberKey
+        ? _channelsMemberByKey(members, _channelsSelectedMemberKey)
+        : null;
+    if (_channelsSelectedMemberKey && !selectedMember) {
+        _channelsSelectedMemberKey = null;
+        _channelsMemberReturnFocusKey = null;
+    }
+    if (room && selectedMember) {
+        _channelsRenderMemberDetail(room, selectedMember, list, note);
+        return;
+    }
+
+    _channelsSetText('channel-members-label', 'People here');
     _channelsSetText('channel-members-count', members.length + ' visible');
     if (room && room.phase !== 'joined') {
         if (note) note.textContent = 'Member details appear after the hub confirms your join.';
@@ -864,9 +1220,14 @@ function _channelsRenderMembers(room) {
         return;
     }
     members.forEach(function(member) {
-        var row = document.createElement('div');
+        var memberKey = _channelsMemberKey(member);
+        var nameText = _channelsMemberName(member);
+        var row = document.createElement('button');
+        row.type = 'button';
         row.className = 'channel-member-row';
+        row.dataset.memberKey = memberKey;
         row.dataset.tone = member.is_self ? 'self' : _channelsIdentityTone(member.identity_hash || member.nickname);
+        row.setAttribute('aria-label', 'View details for ' + nameText);
         var marker = document.createElement('span');
         marker.className = 'channel-identity-marker';
         marker.setAttribute('aria-hidden', 'true');
@@ -874,7 +1235,7 @@ function _channelsRenderMembers(room) {
         copy.className = 'channel-member-copy';
         var name = document.createElement('span');
         name.className = 'channel-member-name';
-        name.textContent = member.nickname || _channelsShortHash(member.identity_hash) || 'Channel member';
+        name.textContent = nameText;
         copy.appendChild(name);
         if (member.is_self) {
             var you = document.createElement('span');
@@ -882,8 +1243,29 @@ function _channelsRenderMembers(room) {
             you.textContent = 'You';
             copy.appendChild(you);
         }
+        var disclosure = document.createElement('span');
+        disclosure.className = 'channel-member-disclosure';
+        disclosure.setAttribute('aria-hidden', 'true');
+        disclosure.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
         row.appendChild(marker);
         row.appendChild(copy);
+        row.appendChild(disclosure);
+        row.addEventListener('click', function() {
+            _channelsSelectedMemberKey = memberKey;
+            _channelsMemberReturnFocusKey = memberKey;
+            _channelsRenderMembers(room);
+            requestAnimationFrame(function() {
+                var backButton = _channelsEl('channel-members-back');
+                if (backButton) backButton.focus();
+            });
+            if (typeof PeersCache !== 'undefined' && PeersCache &&
+                    typeof PeersCache.isInitialized === 'function' && !PeersCache.isInitialized() &&
+                    typeof PeersCache.init === 'function') {
+                PeersCache.init().then(function() {
+                    if (_channelsSelectedMemberKey === memberKey) _channelsRenderMembers(room);
+                }).catch(function() {});
+            }
+        });
         list.appendChild(row);
     });
 }
@@ -916,6 +1298,10 @@ function _channelsUpdateComposer() {
 function channelsSelectRoom(roomName) {
     var room = _channelsRoomByName(roomName);
     if (!room) return;
+    if (channelsActiveRoom !== room.name) {
+        _channelsSelectedMemberKey = null;
+        _channelsMemberReturnFocusKey = null;
+    }
     channelsActiveRoom = room.name;
     renderChannels();
     if (_channelsCompact() && RS.viewStack) {
@@ -933,6 +1319,9 @@ function _onChannelDetailExit() {
 }
 
 function channelsCloseMemberPane() {
+    _channelsSelectedMemberKey = null;
+    _channelsMemberReturnFocusKey = null;
+    _channelsRenderMembers(channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null);
     var layout = _channelsEl('channels-layout');
     if (layout) layout.classList.remove('members-open');
 }
@@ -1137,6 +1526,12 @@ function channelsOpenJoinSheet(prefillRoom) {
     roomInput.type = 'text';
     roomInput.className = 'nr-input-sm';
     roomInput.placeholder = 'Channel name';
+    roomInput.autocomplete = 'off';
+    roomInput.setAttribute('autocorrect', 'off');
+    roomInput.setAttribute('autocapitalize', 'none');
+    roomInput.setAttribute('spellcheck', 'false');
+    roomInput.setAttribute('writingsuggestions', 'false');
+    if (typeof disableAutoCorrect === 'function') disableAutoCorrect(roomInput);
     roomInput.maxLength = (channelsSnapshot.hub && channelsSnapshot.hub.limits && channelsSnapshot.hub.limits.max_room_name_bytes) || 64;
     roomInput.value = prefillRoom || '';
     built.body.appendChild(_channelsSheetField('Channel', roomInput));
@@ -1432,10 +1827,23 @@ function _channelsBindUI() {
     });
     var membersClose = _channelsEl('channel-members-close');
     if (membersClose) membersClose.addEventListener('click', channelsCloseMemberPane);
+    var membersBack = _channelsEl('channel-members-back');
+    if (membersBack) membersBack.addEventListener('click', _channelsShowMemberList);
     var membersScrim = _channelsEl('channel-members-scrim');
     if (membersScrim) membersScrim.addEventListener('click', channelsCloseMemberPane);
+    var membersPane = _channelsEl('channel-members-pane');
+    if (membersPane) membersPane.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape' && _channelsSelectedMemberKey) {
+            event.preventDefault();
+            event.stopPropagation();
+            _channelsShowMemberList();
+        }
+    });
     var input = _channelsEl('channel-message-input');
     if (input) {
+        input.autocomplete = 'off';
+        input.setAttribute('writingsuggestions', 'false');
+        if (typeof disableAutoCorrect === 'function') disableAutoCorrect(input);
         input.addEventListener('input', function() {
             input.style.height = 'auto';
             input.style.height = Math.min(input.scrollHeight, 132) + 'px';
@@ -1463,6 +1871,9 @@ RS.listen('lxmf_identity', function() {
     channelsActiveRoom = null;
     channelsPendingHubLabel = '';
     _channelsLocalRoomEvents = {};
+    _channelsExpandedPresenceGroups = {};
+    _channelsSelectedMemberKey = null;
+    _channelsMemberReturnFocusKey = null;
     _channelsSavedRoomsHub = null;
     _channelsSaveHubKey = null;
     _channelsSaveHubPromise = null;
