@@ -6,6 +6,7 @@
 // `Send` bounds or stalls the executor.
 #![warn(clippy::await_holding_lock)]
 
+pub mod activity;
 pub mod announce_handlers;
 pub mod blackhole;
 pub mod channels;
