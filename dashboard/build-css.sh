@@ -16,6 +16,7 @@ cat \
     "$CSS_DIR/07-components.css" \
     "$CSS_DIR/08-modals.css" \
     "$CSS_DIR/09-messaging.css" \
+    "$CSS_DIR/09-channels.css" \
     "$CSS_DIR/10-views.css" \
     "$CSS_DIR/11-games.css" \
     "$CSS_DIR/12-animations.css" \

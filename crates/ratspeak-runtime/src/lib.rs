@@ -8,6 +8,7 @@
 
 pub mod announce_handlers;
 pub mod blackhole;
+pub mod channels;
 #[cfg(feature = "hardware")]
 pub mod hardware;
 pub mod helpers;
@@ -17,6 +18,7 @@ pub mod messaging;
 pub mod propagation;
 pub mod rns;
 pub mod rns_config;
+pub mod rrc;
 pub mod state;
 pub mod vault;
 #[cfg(feature = "lxst-voice")]
@@ -518,6 +520,9 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) {
     state.emit_to_all("system_status", json!({"status": "stopping"}));
     #[cfg(feature = "lxst-voice")]
     voice::shutdown_voice_service(state).await;
+    if let Some(channels) = state.take_channels() {
+        channels.shutdown().await;
+    }
     if let Ok(sig) = state.session_shutdown.read() {
         sig.trigger();
     }
@@ -1465,7 +1470,27 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             // Clone the transport handle before moving rns_mgr into state;
             // the announce handler below still needs it.
             let transport_tx_for_handler = rns_mgr.handle.transport_tx.clone();
+            let channels_identity = state
+                .lxmf
+                .lock()
+                .ok()
+                .and_then(|lxmf| lxmf.as_ref().map(|manager| manager.identity.clone()));
+            let channels_shutdown = state
+                .session_shutdown
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            let channels_transport = rns_mgr.handle.transport_tx.clone();
             state.set_rns(rns_mgr);
+            if let Some(identity) = channels_identity {
+                state.set_channels(channels::ChannelsManagerHandle::start(
+                    channels_transport,
+                    identity,
+                    state.emitter.clone(),
+                    channels_shutdown,
+                ));
+                tracing::info!("Channels runtime initialized");
+            }
             tracing::info!("RNS runtime initialized");
             #[cfg(feature = "lxst-voice")]
             if let Err(e) = voice::start_voice_service(&state).await {

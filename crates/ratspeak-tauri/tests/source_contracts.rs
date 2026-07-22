@@ -52,6 +52,71 @@ fn rust_struct_literal_blocks<'a>(source: &'a str, marker: &str) -> Vec<&'a str>
 }
 
 #[test]
+fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let channels_js =
+        read_source(root.join("dashboard/static/js/channels.js")).expect("channels js");
+    let channels_css =
+        read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
+    let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let build_css = read_source(root.join("dashboard/build-css.sh")).expect("css build script");
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/channels.rs"))
+        .expect("channels runtime");
+    let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channels.rs"))
+        .expect("channels commands");
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
+
+    assert!(index.contains("data-view=\"channels\""));
+    assert!(index.contains("id=\"view-channels\""));
+    assert!(index.contains("/static/js/channels.js"));
+    assert!(index.contains("Messages are not saved and disappear when this session ends."));
+    assert!(channels_js.contains("hub relays and can read channel messages"));
+    assert!(channels_js.contains("Keys are sent over the authenticated Link and are never saved"));
+    assert!(channels_js.contains("RS.listen('channels_snapshot'"));
+    assert!(channels_js.contains("TextEncoder"));
+    assert!(channels_css.contains(".channels-layout.view-channel-detail"));
+    assert!(channels_css.contains("body.view-channel-detail .bottom-bar"));
+    assert!(build_css.contains("09-channels.css"));
+
+    assert!(nav_js.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];"));
+    assert!(nav_js.contains("if (viewId === 'channels') return 'message';"));
+    assert!(!nav_js.contains("MOBILE_TAB_SLOTS = ['peers', 'message', 'channels'"));
+
+    assert!(runtime.contains("Nothing in this"));
+    assert!(runtime.contains("module writes channel traffic to the Ratspeak database."));
+    assert!(runtime.contains("TRANSCRIPT_LIMIT"));
+    assert!(runtime.contains("WELCOME source does not match the authenticated hub"));
+    for command in [
+        "api_channels",
+        "discover_channel_hubs",
+        "connect_channel_hub",
+        "disconnect_channel_hub",
+        "join_channel",
+        "part_channel",
+        "send_channel_message",
+        "api_saved_channel_hubs",
+        "api_saved_channel_rooms",
+    ] {
+        assert!(commands.contains(&format!("fn {command}")));
+        assert!(tauri_lib.contains(command));
+    }
+
+    let channel_schema = db
+        .split("CREATE TABLE IF NOT EXISTS channel_hubs")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("CREATE INDEX IF NOT EXISTS idx_channel_rooms")
+                .next()
+        })
+        .expect("channel bookmark schema");
+    assert!(!channel_schema.contains("message_body"));
+    assert!(!channel_schema.contains("transcript"));
+    assert!(!channel_schema.contains("member_hash"));
+}
+
+#[test]
 fn privacy_announce_usage_setting_is_wired() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");

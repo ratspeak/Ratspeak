@@ -3,6 +3,7 @@
 //! delegate blocking work to `db::spawn_db` or a worker task.
 
 pub mod ble;
+pub mod channels;
 pub mod contact_card;
 pub mod contacts;
 pub mod games;

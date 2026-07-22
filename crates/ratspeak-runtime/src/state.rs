@@ -11,6 +11,7 @@ use ratspeak_core::{Emitter, NativeNotification, NativeNotifier};
 use rns_runtime::lifecycle::ShutdownSignal;
 use tokio::sync::watch;
 
+use crate::channels::ChannelsManagerHandle;
 use crate::config::DashboardConfig;
 use crate::lxmf::LxmfManager;
 use crate::rns::RnsManager;
@@ -38,6 +39,9 @@ pub struct AppState {
     pub announce_history: RwLock<IndexMap<String, serde_json::Value>>,
     pub alerts: Mutex<Vec<serde_json::Value>>,
     pub rns: RwLock<Option<RnsManager>>,
+    /// Session-scoped live Channels runtime. It is torn down before RNS so an
+    /// active hub Link can send its closing packet cleanly.
+    pub channels: RwLock<Option<ChannelsManagerHandle>>,
     pub lxmf: Mutex<Option<LxmfManager>>,
     #[cfg(feature = "lxst-voice")]
     pub lxst_voice: Mutex<Option<crate::voice::LxstVoiceServiceHandle>>,
@@ -190,6 +194,7 @@ impl AppState {
             announce_history: RwLock::new(IndexMap::new()),
             alerts: Mutex::new(Vec::new()),
             rns: RwLock::new(None),
+            channels: RwLock::new(None),
             lxmf: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
             lxst_voice: Mutex::new(None),
@@ -333,6 +338,9 @@ impl AppState {
     }
 
     pub fn clear_identity_scoped_runtime_state(&self) {
+        if let Ok(mut channels) = self.channels.write() {
+            *channels = None;
+        }
         if let Ok(mut known) = self.known_path_hashes.lock() {
             known.clear();
         }
@@ -455,6 +463,26 @@ impl AppState {
         if let Ok(mut r) = self.rns.write() {
             *r = Some(rns);
         }
+    }
+
+    pub fn set_channels(&self, channels: ChannelsManagerHandle) {
+        if let Ok(mut current) = self.channels.write() {
+            *current = Some(channels);
+        }
+    }
+
+    pub fn channels_handle(&self) -> Option<ChannelsManagerHandle> {
+        self.channels
+            .read()
+            .ok()
+            .and_then(|channels| channels.clone())
+    }
+
+    pub fn take_channels(&self) -> Option<ChannelsManagerHandle> {
+        self.channels
+            .write()
+            .ok()
+            .and_then(|mut channels| channels.take())
     }
 
     pub fn set_last_stats(&self, stats: serde_json::Value) {

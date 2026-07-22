@@ -1,9 +1,9 @@
 var currentView = 'dashboard';
-var VIEWS = ['dashboard', 'message', 'contacts', 'identity', 'peers', 'network', 'games', 'settings'];
+var VIEWS = ['dashboard', 'message', 'channels', 'contacts', 'identity', 'peers', 'network', 'games', 'settings'];
 
 // Tab-bar destinations use replaceState; MORE_VIEWS live under the hamburger.
-var TAB_VIEWS = ['peers', 'message', 'contacts', 'identity', 'network', 'games', 'settings'];
-var PRIMARY_TAB_VIEWS = ['peers', 'message', 'contacts'];
+var TAB_VIEWS = ['peers', 'message', 'channels', 'contacts', 'identity', 'network', 'games', 'settings'];
+var PRIMARY_TAB_VIEWS = ['peers', 'message', 'channels', 'contacts'];
 var MORE_VIEWS = ['identity', 'network', 'games', 'settings'];
 var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];
 var DEFAULT_MORE_VIEW = 'identity';
@@ -17,6 +17,7 @@ try {
 } catch(e) {}
 
 function _mobileTabSlot(viewId) {
+    if (viewId === 'channels') return 'message';
     return MORE_VIEWS.indexOf(viewId) !== -1 ? 'more' : viewId;
 }
 
@@ -291,7 +292,7 @@ function switchView(viewId, opts) {
     _rememberPrimaryView(viewId);
     document.querySelectorAll('.bottom-bar-item').forEach(function(item) {
         item.classList.remove('active');
-        if (item.dataset.view === viewId) item.classList.add('active');
+        if (item.dataset.view === _mobileTabSlot(viewId)) item.classList.add('active');
     });
     var hamburger = document.getElementById('bottom-bar-hamburger');
     if (hamburger) {
@@ -331,6 +332,12 @@ function switchView(viewId, opts) {
         // Pop chat-detail so view-chat-detail body/layout classes clear.
         var top = RS.viewStack.top();
         if (top && top.viewId === 'chat-detail') RS.viewStack.pop();
+    }
+
+    if (previousView === 'channels' && viewId !== 'channels') {
+        var topChannel = RS.viewStack.top();
+        if (topChannel && topChannel.viewId === 'channel-detail') RS.viewStack.pop();
+        if (typeof channelsCloseMemberPane === 'function') channelsCloseMemberPane();
     }
 
     if (previousView === 'games' && viewId !== 'games') {
@@ -429,6 +436,10 @@ var VIEW_LIFECYCLE = {
         if (typeof renderMsgProfileStrip === 'function') requestAnimationFrame(renderMsgProfileStrip);
         // Heal renders skipped while this view was hidden.
         if (typeof renderContactList === 'function') renderContactList();
+    },
+
+    channels: function() {
+        if (typeof channelsLoad === 'function') channelsLoad();
     },
 
     contacts: function() {
@@ -1353,6 +1364,8 @@ function initTabSwipe() {
             if (lxmfLayout && lxmfLayout.classList.contains('view-chat-detail')) return true;
             var gamesLayout = document.querySelector('.games-layout');
             if (gamesLayout && gamesLayout.classList.contains('view-game-detail')) return true;
+            var channelsLayout = document.querySelector('.channels-layout');
+            if (channelsLayout && channelsLayout.classList.contains('view-channel-detail')) return true;
             return false;
         },
         onCommit: function(_target, dx) {

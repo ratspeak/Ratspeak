@@ -24,6 +24,9 @@ RS._viewStack = RS._viewStack || [];
         },
         'game-detail': function(remove) {
             _toggleViewClass('.games-layout', 'view-game-detail', remove);
+        },
+        'channel-detail': function(remove) {
+            _toggleViewClass('.channels-layout', 'view-channel-detail', remove);
         }
     };
 
@@ -66,6 +69,9 @@ RS._viewStack = RS._viewStack || [];
             classOff(true);
             if (popped.viewId === 'chat-detail' && typeof _onChatDetailExit === 'function') {
                 _onChatDetailExit(popped);
+            }
+            if (popped.viewId === 'channel-detail' && typeof _onChannelDetailExit === 'function') {
+                _onChannelDetailExit(popped);
             }
             if (typeof opts.onPop === 'function') opts.onPop();
             return;

@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 33;
+const SCHEMA_VERSION: i64 = 34;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -324,6 +324,36 @@ CREATE TABLE IF NOT EXISTS identity_activity (
     lxmf_compression_support TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
+
+-- Channels persists connection conveniences, never live room traffic. Room
+-- membership and transcripts remain in the runtime and disappear with Link
+-- teardown.
+CREATE TABLE IF NOT EXISTS channel_hubs (
+    identity_id       TEXT NOT NULL,
+    destination_hash  TEXT NOT NULL,
+    label             TEXT NOT NULL DEFAULT '',
+    nickname          TEXT NOT NULL DEFAULT '',
+    added_at           REAL NOT NULL,
+    last_connected    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (identity_id, destination_hash),
+    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS channel_rooms (
+    identity_id          TEXT NOT NULL,
+    hub_destination_hash TEXT NOT NULL,
+    room_name            TEXT NOT NULL,
+    added_at              REAL NOT NULL,
+    last_joined           REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (identity_id, hub_destination_hash, room_name),
+    FOREIGN KEY (identity_id, hub_destination_hash)
+        REFERENCES channel_hubs(identity_id, destination_hash) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_hubs_identity_recent
+    ON channel_hubs(identity_id, last_connected DESC);
+CREATE INDEX IF NOT EXISTS idx_channel_rooms_identity_hub
+    ON channel_rooms(identity_id, hub_destination_hash, room_name);
 
 CREATE INDEX IF NOT EXISTS idx_contacts_identity ON contacts(identity_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_identity_name ON contacts(identity_id, display_name);
@@ -1248,6 +1278,40 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             }
             conn.execute_batch("UPDATE schema_version SET version = 33;")?;
             tracing::info!("Migrated to schema version 33 (LXMF peer compression capability)");
+            Ok(())
+        })?;
+    }
+
+    if from_version < 34 {
+        migration_step(conn, 34, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS channel_hubs (
+                    identity_id       TEXT NOT NULL,
+                    destination_hash  TEXT NOT NULL,
+                    label             TEXT NOT NULL DEFAULT '',
+                    nickname          TEXT NOT NULL DEFAULT '',
+                    added_at           REAL NOT NULL,
+                    last_connected    REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, destination_hash),
+                    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS channel_rooms (
+                    identity_id          TEXT NOT NULL,
+                    hub_destination_hash TEXT NOT NULL,
+                    room_name            TEXT NOT NULL,
+                    added_at              REAL NOT NULL,
+                    last_joined           REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, hub_destination_hash, room_name),
+                    FOREIGN KEY (identity_id, hub_destination_hash)
+                        REFERENCES channel_hubs(identity_id, destination_hash) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_channel_hubs_identity_recent
+                    ON channel_hubs(identity_id, last_connected DESC);
+                CREATE INDEX IF NOT EXISTS idx_channel_rooms_identity_hub
+                    ON channel_rooms(identity_id, hub_destination_hash, room_name);
+                UPDATE schema_version SET version = 34;",
+            )?;
+            tracing::info!("Migrated to schema version 34 (Channels bookmarks)");
             Ok(())
         })?;
     }
@@ -2402,6 +2466,236 @@ pub fn try_set_setting(pool: &DbPool, key: &str, value: &str) -> Result<(), Stri
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SavedChannelHub {
+    pub destination_hash: String,
+    pub label: String,
+    pub nickname: String,
+    pub added_at: f64,
+    pub last_connected: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SavedChannelRoom {
+    pub hub_destination_hash: String,
+    pub room_name: String,
+    pub added_at: f64,
+    pub last_joined: f64,
+}
+
+pub fn list_saved_channel_hubs(
+    pool: &DbPool,
+    identity_id: &str,
+) -> Result<Vec<SavedChannelHub>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT destination_hash, label, nickname, added_at, last_connected
+             FROM channel_hubs
+             WHERE identity_id = ?1
+             ORDER BY last_connected DESC, label COLLATE NOCASE, destination_hash",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![identity_id], |row| {
+            Ok(SavedChannelHub {
+                destination_hash: row.get(0)?,
+                label: row.get(1)?,
+                nickname: row.get(2)?,
+                added_at: row.get(3)?,
+                last_connected: row.get(4)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+pub fn save_channel_hub(
+    pool: &DbPool,
+    identity_id: &str,
+    destination_hash: &str,
+    label: &str,
+    nickname: &str,
+    connected: bool,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let now = now_ts();
+    conn.execute(
+        "INSERT INTO channel_hubs
+            (identity_id, destination_hash, label, nickname, added_at, last_connected)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(identity_id, destination_hash) DO UPDATE SET
+            label = excluded.label,
+            nickname = excluded.nickname,
+            last_connected = CASE
+                WHEN excluded.last_connected > 0 THEN excluded.last_connected
+                ELSE channel_hubs.last_connected
+            END",
+        params![
+            identity_id,
+            destination_hash,
+            label,
+            nickname,
+            now,
+            if connected { now } else { 0.0 }
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn remove_channel_hub(
+    pool: &DbPool,
+    identity_id: &str,
+    destination_hash: &str,
+) -> Result<bool, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM channel_hubs WHERE identity_id = ?1 AND destination_hash = ?2",
+        params![identity_id, destination_hash],
+    )
+    .map(|changed| changed > 0)
+    .map_err(|error| error.to_string())
+}
+
+pub fn list_saved_channel_rooms(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+) -> Result<Vec<SavedChannelRoom>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT hub_destination_hash, room_name, added_at, last_joined
+             FROM channel_rooms
+             WHERE identity_id = ?1 AND hub_destination_hash = ?2
+             ORDER BY last_joined DESC, room_name COLLATE NOCASE",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![identity_id, hub_destination_hash], |row| {
+            Ok(SavedChannelRoom {
+                hub_destination_hash: row.get(0)?,
+                room_name: row.get(1)?,
+                added_at: row.get(2)?,
+                last_joined: row.get(3)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+pub fn save_channel_room(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    joined: bool,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let now = now_ts();
+    conn.execute(
+        "INSERT INTO channel_rooms
+            (identity_id, hub_destination_hash, room_name, added_at, last_joined)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(identity_id, hub_destination_hash, room_name) DO UPDATE SET
+            last_joined = CASE
+                WHEN excluded.last_joined > 0 THEN excluded.last_joined
+                ELSE channel_rooms.last_joined
+            END",
+        params![
+            identity_id,
+            hub_destination_hash,
+            room_name,
+            now,
+            if joined { now } else { 0.0 }
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn remove_channel_room(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+) -> Result<bool, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM channel_rooms
+         WHERE identity_id = ?1 AND hub_destination_hash = ?2 AND room_name = ?3",
+        params![identity_id, hub_destination_hash, room_name],
+    )
+    .map(|changed| changed > 0)
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod channel_bookmark_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn test_pool() -> DbPool {
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|connection| connection.execute_batch("PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    #[test]
+    fn hubs_and_rooms_are_identity_scoped_and_hub_delete_cascades() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        save_identity(&pool, "identity-b", "lxmf-b", "B", "B");
+
+        save_channel_hub(
+            &pool,
+            "identity-a",
+            "00112233445566778899aabbccddeeff",
+            "Mountain relay",
+            "Field Rat",
+            false,
+        )
+        .unwrap();
+        save_channel_room(
+            &pool,
+            "identity-a",
+            "00112233445566778899aabbccddeeff",
+            "field team",
+            true,
+        )
+        .unwrap();
+
+        let hubs = list_saved_channel_hubs(&pool, "identity-a").unwrap();
+        assert_eq!(hubs.len(), 1);
+        assert_eq!(hubs[0].label, "Mountain relay");
+        assert!(
+            list_saved_channel_hubs(&pool, "identity-b")
+                .unwrap()
+                .is_empty()
+        );
+        let rooms =
+            list_saved_channel_rooms(&pool, "identity-a", "00112233445566778899aabbccddeeff")
+                .unwrap();
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].room_name, "field team");
+        assert!(rooms[0].last_joined > 0.0);
+
+        assert!(
+            remove_channel_hub(&pool, "identity-a", "00112233445566778899aabbccddeeff").unwrap()
+        );
+        assert!(
+            list_saved_channel_rooms(&pool, "identity-a", "00112233445566778899aabbccddeeff")
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 /// Overridable via `known_identities_prune_days` (0 disables).
@@ -4520,6 +4814,8 @@ mod migration_tests {
             "messages",
             "connection_history",
             "messages_fts",
+            "channel_hubs",
+            "channel_rooms",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -4536,6 +4832,8 @@ mod migration_tests {
             "idx_messages_identity_state",
             "idx_messages_source_identity",
             "idx_messages_dest_identity",
+            "idx_channel_hubs_identity_recent",
+            "idx_channel_rooms_identity_hub",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -4849,6 +5147,32 @@ mod migration_tests {
             )
             .unwrap();
         assert_eq!(kept, 1);
+    }
+
+    #[test]
+    fn migration_from_v33_adds_channel_bookmark_tables() {
+        let pool = empty_pool();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (33);",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        for table in ["channel_hubs", "channel_rooms"] {
+            assert!(table_exists(&conn, table).unwrap());
+        }
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }
 

@@ -25,7 +25,7 @@ pub use ratspeak_runtime::shutdown_ble_peer_for_exit;
 #[cfg(feature = "lxst-voice")]
 pub use ratspeak_runtime::voice;
 pub use ratspeak_runtime::{
-    announce_handlers, helpers, identity_prune, lxmf, propagation, rns, rns_config, state,
+    announce_handlers, channels, helpers, identity_prune, lxmf, propagation, rns, rns_config, state,
 };
 pub use ratspeak_runtime::{
     any_interface_online_cached, apply_lxmf_settings_from_state, init_rns_lxmf,

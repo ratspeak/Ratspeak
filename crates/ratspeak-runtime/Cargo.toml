@@ -50,6 +50,7 @@ cpal = { workspace = true, optional = true }
 # Async + serialization
 tokio = { workspace = true }
 bytes = { workspace = true }
+ciborium = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rmpv = { workspace = true }
