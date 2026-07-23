@@ -117,7 +117,8 @@ fn legacy_level(event: &ActivityEventV1) -> &'static str {
         "essential"
     } else if matches!(
         event.kind(),
-        "rns.path.observed"
+        "diagnostics.sampled"
+            | "rns.path.observed"
             | "rns.announce.observed"
             | "rns.packet.sampled"
             | "lxmf.delivery.progress"
@@ -146,7 +147,9 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         | "diagnostics.capture_resumed"
         | "diagnostics.capture_cleared"
         | "diagnostics.profile_changed" => return None,
-        "diagnostics.dropped" => "Activity events dropped",
+        "diagnostics.sampled" => "Activity observations summarized",
+        "diagnostics.dropped" => "Activity entries not recorded",
+        "diagnostics.rejected" => "Activity entries rejected",
         "diagnostics.evicted" => "Older Activity events removed",
         "diagnostics.worker_recovered" => "Activity recorder recovered",
         "app.runtime.started" => "Ratspeak runtime started",
@@ -423,12 +426,44 @@ fn interface_timeout_legacy_message(class: Option<&str>, reason: Option<&str>) -
 fn legacy_detail(event: &ActivityEventV1) -> String {
     let mut fragments = Vec::with_capacity(2);
     match event.kind() {
+        "diagnostics.sampled" => {
+            push_unsigned(
+                &mut fragments,
+                event,
+                ActivityAttributeKey::SampledCount,
+                "Summarized ",
+                "",
+            );
+            push_unsigned(
+                &mut fragments,
+                event,
+                ActivityAttributeKey::TimeSpanMs,
+                "",
+                " ms",
+            );
+        }
         "diagnostics.dropped" => {
             push_unsigned(
                 &mut fragments,
                 event,
                 ActivityAttributeKey::DroppedCount,
                 "Dropped ",
+                "",
+            );
+            push_unsigned(
+                &mut fragments,
+                event,
+                ActivityAttributeKey::TimeSpanMs,
+                "",
+                " ms",
+            );
+        }
+        "diagnostics.rejected" => {
+            push_unsigned(
+                &mut fragments,
+                event,
+                ActivityAttributeKey::RejectedCount,
+                "Rejected ",
                 "",
             );
             push_unsigned(

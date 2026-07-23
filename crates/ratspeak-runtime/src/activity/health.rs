@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use serde::Serialize;
 
+use super::schema::RateDomain;
+
 /// Cumulative, process-local health counters for the Activity recorder.
 ///
 /// [`ActivityHealth::new`] returns an [`Arc`] because producers share these
@@ -25,7 +27,9 @@ pub(crate) struct ActivityHealth {
     replay_gap: AtomicU64,
     coalesced_inputs: AtomicU64,
     worker_recovery: AtomicU64,
-    loss_observations: LossObservations,
+    sampled_observations: [LossObservations; RateDomain::COUNT],
+    ingress_full_observations: LossObservations,
+    invalid_observations: LossObservations,
 }
 
 impl ActivityHealth {
@@ -41,7 +45,7 @@ impl ActivityHealth {
 
     pub(crate) fn increment_ingress_full_at(&self, observed_unix_ms: u64) {
         self.increment_ingress_full();
-        self.loss_observations.note(1, observed_unix_ms);
+        self.ingress_full_observations.note(1, observed_unix_ms);
     }
 
     pub(crate) fn add_ingress_full(&self, count: u64) {
@@ -52,9 +56,9 @@ impl ActivityHealth {
         self.add_rate_limited(1);
     }
 
-    pub(crate) fn increment_rate_limited_at(&self, observed_unix_ms: u64) {
+    pub(crate) fn increment_rate_limited_at(&self, observed_unix_ms: u64, domain: RateDomain) {
         self.increment_rate_limited();
-        self.loss_observations.note(1, observed_unix_ms);
+        self.sampled_observations[domain.index()].note(1, observed_unix_ms);
     }
 
     pub(crate) fn add_rate_limited(&self, count: u64) {
@@ -67,7 +71,7 @@ impl ActivityHealth {
 
     pub(crate) fn increment_oversized_invalid_rejected_at(&self, observed_unix_ms: u64) {
         self.increment_oversized_invalid_rejected();
-        self.loss_observations.note(1, observed_unix_ms);
+        self.invalid_observations.note(1, observed_unix_ms);
     }
 
     pub(crate) fn add_oversized_invalid_rejected(&self, count: u64) {
@@ -125,8 +129,12 @@ impl ActivityHealth {
         saturating_atomic_add(&self.worker_recovery, count);
     }
 
-    pub(crate) fn take_loss_window(&self) -> Option<LossWindow> {
-        self.loss_observations.take()
+    pub(crate) fn take_capture_windows(&self) -> CaptureWindows {
+        CaptureWindows {
+            sampled: std::array::from_fn(|index| self.sampled_observations[index].take()),
+            ingress_full: self.ingress_full_observations.take(),
+            invalid: self.invalid_observations.take(),
+        }
     }
 
     /// Takes an exact, JavaScript-safe copy of every cumulative counter.
@@ -381,6 +389,33 @@ impl LossWindow {
     }
 }
 
+/// Exact, payload-free summaries drained by the Activity worker.
+///
+/// Rate-limited observations are kept per fixed domain so the UI can say what
+/// was summarized. Recorder pressure and invalid drafts remain separate
+/// because those are genuine capture failures rather than intentional
+/// sampling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CaptureWindows {
+    sampled: [Option<LossWindow>; RateDomain::COUNT],
+    ingress_full: Option<LossWindow>,
+    invalid: Option<LossWindow>,
+}
+
+impl CaptureWindows {
+    pub(crate) fn sampled(&self, domain: RateDomain) -> Option<LossWindow> {
+        self.sampled[domain.index()]
+    }
+
+    pub(crate) const fn ingress_full(&self) -> Option<LossWindow> {
+        self.ingress_full
+    }
+
+    pub(crate) const fn invalid(&self) -> Option<LossWindow> {
+        self.invalid
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,18 +569,18 @@ mod tests {
 
     #[test]
     fn loss_window_uses_chronological_timestamp_bounds() {
-        let health = ActivityHealth::new();
-        health.loss_observations.note(2, 500);
-        health.loss_observations.note(3, 100);
-        health.loss_observations.note(4, 300);
+        let observations = LossObservations::default();
+        observations.note(2, 500);
+        observations.note(3, 100);
+        observations.note(4, 300);
 
-        let window = health
-            .take_loss_window()
+        let window = observations
+            .take()
             .expect("observations should produce a window");
         assert_eq!(window.count(), 9);
         assert_eq!(window.first_observed_unix_ms(), 100);
         assert_eq!(window.last_observed_unix_ms(), 500);
-        assert_eq!(health.take_loss_window(), None);
+        assert_eq!(observations.take(), None);
     }
 
     #[test]
@@ -623,13 +658,53 @@ mod tests {
             worker.join().expect("loss producer should finish");
         }
 
-        let window = health
-            .take_loss_window()
+        let windows = health.take_capture_windows();
+        let window = windows
+            .ingress_full()
             .expect("concurrent observations should produce a window");
         assert_eq!(window.count(), 10_000);
         assert_eq!(window.first_observed_unix_ms(), 1_000);
         assert_eq!(window.last_observed_unix_ms(), 1_003);
         assert_eq!(health.snapshot().ingress_full(), "10000");
-        assert_eq!(health.take_loss_window(), None);
+        assert_eq!(health.take_capture_windows().ingress_full(), None);
+    }
+
+    #[test]
+    fn sampled_windows_remain_separate_by_domain_and_from_capture_failures() {
+        let health = ActivityHealth::new();
+        health.increment_rate_limited_at(100, RateDomain::Network);
+        health.increment_rate_limited_at(125, RateDomain::Network);
+        health.increment_rate_limited_at(150, RateDomain::Channels);
+        health.increment_ingress_full_at(175);
+        health.increment_oversized_invalid_rejected_at(200);
+
+        let windows = health.take_capture_windows();
+        let network = windows
+            .sampled(RateDomain::Network)
+            .expect("network samples should be summarized");
+        assert_eq!(network.count(), 2);
+        assert_eq!(network.first_observed_unix_ms(), 100);
+        assert_eq!(network.last_observed_unix_ms(), 125);
+        assert_eq!(
+            windows
+                .sampled(RateDomain::Channels)
+                .expect("channel samples should be summarized")
+                .count(),
+            1
+        );
+        assert_eq!(
+            windows
+                .ingress_full()
+                .expect("ingress pressure should remain distinct")
+                .count(),
+            1
+        );
+        assert_eq!(
+            windows
+                .invalid()
+                .expect("invalid drafts should remain distinct")
+                .count(),
+            1
+        );
     }
 }

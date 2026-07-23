@@ -15,6 +15,10 @@ const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const NORMAL_RATE_PER_SECOND: u64 = 50;
 const TRACE_RATE_PER_SECOND: u64 = 100;
 const AMBIENT_RATE_PER_SECOND: u64 = 5;
+// Stats polling delivers newly observed paths and announces in short batches.
+// Keep the five-per-second sustained sampler while allowing one ordinary poll
+// batch through without manufacturing loss from the polling boundary itself.
+const AMBIENT_BURST_CAPACITY: u64 = 25;
 
 pub(super) trait MonotonicClock: Send + Sync {
     fn now_tick(&self) -> u64;
@@ -129,7 +133,7 @@ impl RateAdmission {
             normal: ProfileBuckets::per_second(NORMAL_RATE_PER_SECOND),
             trace: ProfileBuckets::per_second(TRACE_RATE_PER_SECOND),
             ambient: array::from_fn(|_| {
-                GcraBucket::per_second(AMBIENT_RATE_PER_SECOND, AMBIENT_RATE_PER_SECOND)
+                GcraBucket::per_second(AMBIENT_RATE_PER_SECOND, AMBIENT_BURST_CAPACITY)
             }),
         }
     }
@@ -286,11 +290,11 @@ mod tests {
     }
 
     #[test]
-    fn ambient_bucket_is_five_per_second_and_errors_bypass_every_bucket() {
+    fn ambient_bucket_allows_poll_bursts_but_sustains_five_per_second() {
         let clock = Arc::new(FakeClock::default());
-        let rate = RateAdmission::new(clock);
+        let rate = RateAdmission::new(clock.clone());
         rate.reset(CaptureProfile::Trace);
-        for _ in 0..AMBIENT_RATE_PER_SECOND {
+        for _ in 0..AMBIENT_BURST_CAPACITY {
             assert!(rate.allow(
                 CaptureProfile::Trace,
                 ActivitySeverity::Info,
@@ -299,6 +303,13 @@ mod tests {
             ));
         }
         assert!(!rate.allow(
+            CaptureProfile::Trace,
+            ActivitySeverity::Info,
+            RateDomain::Network,
+            true
+        ));
+        clock.advance(NANOS_PER_SECOND / AMBIENT_RATE_PER_SECOND);
+        assert!(rate.allow(
             CaptureProfile::Trace,
             ActivitySeverity::Info,
             RateDomain::Network,

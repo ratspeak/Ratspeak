@@ -139,10 +139,13 @@ pub enum ActivityAttributeKey {
     ProtocolVersion,
     QueueCount,
     RatePerMinute,
+    RejectedCount,
     Reason,
     Room,
     RttMs,
+    SampledCount,
     Session,
+    SourceArea,
     State,
     TimeSpanMs,
     Validation,
@@ -497,6 +500,16 @@ pub(super) enum RateDomain {
 
 impl RateDomain {
     pub(super) const COUNT: usize = 8;
+    pub(super) const ALL: [Self; Self::COUNT] = [
+        Self::Network,
+        Self::Interfaces,
+        Self::Links,
+        Self::Messages,
+        Self::Channels,
+        Self::Calls,
+        Self::Apps,
+        Self::Ratspeak,
+    ];
 
     pub(super) const fn index(self) -> usize {
         match self {
@@ -508,6 +521,19 @@ impl RateDomain {
             Self::Calls => 5,
             Self::Apps => 6,
             Self::Ratspeak => 7,
+        }
+    }
+
+    pub(super) const fn code(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Interfaces => "interfaces",
+            Self::Links => "links",
+            Self::Messages => "messages",
+            Self::Channels => "channels",
+            Self::Calls => "calls",
+            Self::Apps => "apps",
+            Self::Ratspeak => "ratspeak",
         }
     }
 
@@ -581,7 +607,9 @@ pub(super) mod kinds {
         "diagnostics.profile_changed",
         Ratspeak
     );
+    kind!(DIAGNOSTICS_SAMPLED, "diagnostics.sampled", Ratspeak);
     kind!(DIAGNOSTICS_DROPPED, "diagnostics.dropped", Ratspeak);
+    kind!(DIAGNOSTICS_REJECTED, "diagnostics.rejected", Ratspeak);
     kind!(DIAGNOSTICS_EVICTED, "diagnostics.evicted", Ratspeak);
     kind!(
         DIAGNOSTICS_WORKER_RECOVERED,

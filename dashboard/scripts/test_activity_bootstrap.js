@@ -129,6 +129,36 @@ function loadControllerLibrary() {
 
 var controllerLibrary = loadControllerLibrary();
 
+function loadPresentationLibrary() {
+    var start = activitySource.indexOf('function activityAttribute(event, key)');
+    var end = activitySource.indexOf('\nfunction activityTimestampIso', start);
+    assert(start !== -1 && end !== -1, 'presentation source markers must exist');
+    var window = {};
+    var context = {
+        window: window,
+        ACTIVITY_AREA_LABELS: {
+            network: 'Network',
+            channels: 'Channels',
+            ratspeak: 'Ratspeak'
+        },
+        Array: Array,
+        Object: Object,
+        String: String
+    };
+    var exportSource = '\nwindow.ActivityPresentation = {' +
+        'summary: activityEventSummary,' +
+        'format: activityFormatAttributeValue,' +
+        'label: activityAttributeLabel,' +
+        'area: activityPresentationArea' +
+        '};';
+    vm.runInNewContext(activitySource.slice(start, end) + exportSource, context, {
+        filename: 'activity-presentation.js'
+    });
+    return window.ActivityPresentation;
+}
+
+var presentationLibrary = loadPresentationLibrary();
+
 function makeImmediateController(invoke, opts) {
     opts = opts || {};
     var handlers = {};
@@ -1134,6 +1164,45 @@ test('Activity state stays session-only and the transformed controls are explici
     assert.strictEqual(indexSource.indexOf('activity-status-dot'), -1);
     assert(activitySource.indexOf("? 'Live'") !== -1);
     assert.strictEqual(activitySource.indexOf("? 'Recording'"), -1);
+});
+
+test('sampled observations are summarized without presenting them as failures', function() {
+    var sampled = {
+        kind: 'diagnostics.sampled',
+        summary_code: 'diagnostics.sampled',
+        attributes: [
+            { key: 'sampled_count', value: { type: 'unsigned', value: 11 } },
+            { key: 'source_area', value: { type: 'code', value: 'network' } },
+            { key: 'reason', value: { type: 'code', value: 'sustained_rate_limit' } },
+            { key: 'time_span_ms', value: { type: 'unsigned', value: 0 } }
+        ]
+    };
+    assert.strictEqual(
+        presentationLibrary.summary(sampled),
+        '11 Network observations summarized'
+    );
+    assert.strictEqual(presentationLibrary.label('sampled_count'), 'Summarized');
+    assert.strictEqual(
+        presentationLibrary.format(sampled.attributes[1]),
+        'Network'
+    );
+    assert.strictEqual(
+        presentationLibrary.format(sampled.attributes[2]),
+        'High-volume activity'
+    );
+    assert.strictEqual(presentationLibrary.area(sampled), 'network');
+
+    var dropped = {
+        kind: 'diagnostics.dropped',
+        summary_code: 'diagnostics.dropped',
+        attributes: [
+            { key: 'dropped_count', value: { type: 'unsigned', value: 1 } }
+        ]
+    };
+    assert.strictEqual(
+        presentationLibrary.summary(dropped),
+        '1 Activity entry was not recorded'
+    );
 });
 
 (async function run() {

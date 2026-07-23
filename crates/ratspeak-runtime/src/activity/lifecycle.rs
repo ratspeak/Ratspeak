@@ -193,16 +193,17 @@ impl ActivityRecorder {
         if draft.capture_scope() == CaptureScope::TraceOnly && profile != CaptureProfile::Trace {
             return ActivityRecordOutcome::ProfileFiltered;
         }
-        if !self.inner.shared.rate.allow(
-            profile,
-            draft.severity(),
-            draft.rate_domain(),
-            draft.is_ambient(),
-        ) {
-            self.inner
-                .shared
-                .health
-                .increment_rate_limited_at(self.inner.shared.observation_clock.observe().unix_ms());
+        let rate_domain = draft.rate_domain();
+        if !self
+            .inner
+            .shared
+            .rate
+            .allow(profile, draft.severity(), rate_domain, draft.is_ambient())
+        {
+            self.inner.shared.health.increment_rate_limited_at(
+                self.inner.shared.observation_clock.observe().unix_ms(),
+                rate_domain,
+            );
             return ActivityRecordOutcome::RateLimited;
         }
         if self.inner.shared.gate.generation() != generation {
@@ -901,7 +902,7 @@ mod tests {
         ACTIVITY_BATCH_MAX_BYTES, ACTIVITY_BATCH_MAX_EVENTS, ActivityBatchV1, ActivityCaptureState,
         ActivityPublishError, ActivityReplayResultV1, ActivityTraceStateV1, ActivityWorkerState,
     };
-    use super::super::schema::ACTIVITY_SCHEMA_VERSION;
+    use super::super::schema::{ACTIVITY_SCHEMA_VERSION, ActivityEventV1, RateDomain};
     use super::*;
 
     #[derive(Default)]
@@ -1991,7 +1992,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stop_ack_is_the_final_publish_after_a_queued_loss_marker() {
+    async fn stop_ack_publishes_sampling_separately_from_capture_loss() {
         let sink = Arc::new(RecordingSink::default());
         let recorder = ActivityRecorder::with_batch_sink(sink.clone());
         recorder.start().await.unwrap();
@@ -1999,25 +2000,40 @@ mod tests {
             .inner
             .shared
             .health
-            .increment_rate_limited_at(1_000);
+            .increment_rate_limited_at(1_000, RateDomain::Network);
         recorder
             .inner
             .shared
             .health
             .increment_ingress_full_at(1_042);
+        recorder
+            .inner
+            .shared
+            .health
+            .increment_oversized_invalid_rejected_at(1_084);
 
         let stopped = recorder.stop().await.unwrap();
         assert_eq!(stopped.counters().rate_limited(), "1");
         assert_eq!(stopped.counters().ingress_full(), "1");
+        assert_eq!(stopped.counters().oversized_invalid_rejected(), "1");
         let batches_at_ack = sink.batches();
+        let sampled = batches_at_ack
+            .iter()
+            .flat_map(|batch| batch.events())
+            .find(|event| event.kind() == "diagnostics.sampled")
+            .expect("Stop must summarize pending sampled observations");
         let dropped = batches_at_ack
             .iter()
             .flat_map(|batch| batch.events())
             .find(|event| event.kind() == "diagnostics.dropped")
-            .expect("Stop must publish the pending loss marker");
-        let dropped_json = serde_json::to_value(dropped).unwrap();
-        let unsigned_attribute = |key: &str| {
-            dropped_json["attributes"]
+            .expect("Stop must publish genuine pending capture loss");
+        let rejected = batches_at_ack
+            .iter()
+            .flat_map(|batch| batch.events())
+            .find(|event| event.kind() == "diagnostics.rejected")
+            .expect("Stop must publish rejected Activity drafts separately");
+        let unsigned_attribute = |event: &ActivityEventV1, key: &str| {
+            serde_json::to_value(event).unwrap()["attributes"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2025,8 +2041,31 @@ mod tests {
                 .and_then(|attribute| attribute["value"]["value"].as_u64())
                 .unwrap()
         };
-        assert_eq!(unsigned_attribute("dropped_count"), 2);
-        assert_eq!(unsigned_attribute("time_span_ms"), 42);
+        assert_eq!(unsigned_attribute(sampled, "sampled_count"), 1);
+        assert_eq!(unsigned_attribute(sampled, "time_span_ms"), 0);
+        assert_eq!(unsigned_attribute(dropped, "dropped_count"), 1);
+        assert_eq!(unsigned_attribute(dropped, "time_span_ms"), 0);
+        assert_eq!(unsigned_attribute(rejected, "rejected_count"), 1);
+        assert_eq!(unsigned_attribute(rejected, "time_span_ms"), 0);
+        let sampled_json = serde_json::to_value(sampled).unwrap();
+        assert_eq!(
+            sampled_json["attributes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|attribute| attribute["key"] == "source_area")
+                .and_then(|attribute| attribute["value"]["value"].as_str()),
+            Some("network")
+        );
+        assert_eq!(
+            sampled_json["attributes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|attribute| attribute["key"] == "reason")
+                .and_then(|attribute| attribute["value"]["value"].as_str()),
+            Some("sustained_rate_limit")
+        );
         let final_kind = batches_at_ack
             .last()
             .and_then(|batch| batch.events().last())

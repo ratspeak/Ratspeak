@@ -10,7 +10,10 @@ use crossbeam_channel::{Receiver, TryRecvError};
 use tokio::sync::oneshot;
 
 use super::admission::{LowPermit, LowPermitPool, RateAdmission};
-use super::catalog::{self, DiagnosticsDropped, DiagnosticsEvicted, ObservationTime};
+use super::catalog::{
+    self, DiagnosticsDropped, DiagnosticsEvicted, DiagnosticsRejected, DiagnosticsSampled,
+    ObservationTime,
+};
 use super::classified::{ActivityDraft, DraftContext, ReadyDraft};
 use super::coalesce::{CoalesceOutput, PreflushCoalescer};
 use super::gate::AdmissionGate;
@@ -23,7 +26,9 @@ use super::replay::{
     ActivityReplayResultV1, ActivityReplayV1, ActivityStatusV1, ActivityWorkerState, StatusMirror,
 };
 use super::ring::{ActivityRing, RingError, RingPush};
-use super::schema::{ActivityAttributeKey, CaptureProfile, CaptureScope, MAX_ENCODED_EVENT_BYTES};
+use super::schema::{
+    ActivityAttributeKey, CaptureProfile, CaptureScope, MAX_ENCODED_EVENT_BYTES, RateDomain,
+};
 
 const WORKER_TICK: Duration = Duration::from_millis(10);
 const MAX_INGRESS_BURST_BEFORE_SERVICE: usize = 16;
@@ -236,7 +241,7 @@ fn supervisor(
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                 let _ = shared.gate.wait_quiescent();
-                let _ = shared.health.take_loss_window();
+                let _ = shared.health.take_capture_windows();
                 reject_all(
                     &ingress_rx,
                     &urgent_rx,
@@ -472,7 +477,7 @@ impl WorkerCore {
         let privacy = CapturePrivacy::random();
         let ring =
             ActivityRing::platform_default().map_err(|_| ActivityRecorderError::RingUnavailable)?;
-        let _ = self.shared.health.take_loss_window();
+        let _ = self.shared.health.take_capture_windows();
         let mut session = SessionCore::new(privacy, ring, generation, CaptureProfile::Normal);
         let now = self.observation_time();
         session.commit_control(
@@ -529,7 +534,7 @@ impl WorkerCore {
             .trace_deadline
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        let _ = self.shared.health.take_loss_window();
+        let _ = self.shared.health.take_capture_windows();
         self.drain_ingress(ActivityRecorderError::Superseded);
         self.drain_queries(ActivityRecorderError::Superseded);
         self.shared.mirror.update(|status| {
@@ -712,7 +717,7 @@ impl WorkerCore {
         let now = self.observation_time();
         let session = self.session.as_mut().expect("checked above");
         session.discard_pending();
-        let _ = self.shared.health.take_loss_window();
+        let _ = self.shared.health.take_capture_windows();
         session.ring.clear();
         session.generation = generation;
         session.commit_control(
@@ -1218,7 +1223,25 @@ impl SessionCore {
         shared: &WorkerShared,
         sink: &dyn ActivityBatchSink,
     ) {
-        if let Some(loss) = shared.health.take_loss_window() {
+        let windows = shared.health.take_capture_windows();
+        for domain in RateDomain::ALL {
+            let Some(sampled) = windows.sampled(domain) else {
+                continue;
+            };
+            let span_ms = sampled
+                .last_observed_unix_ms()
+                .abs_diff(sampled.first_observed_unix_ms());
+            let Ok(marker) = catalog::diagnostics_sampled(DiagnosticsSampled {
+                time: now,
+                count: sampled.count(),
+                span_ms,
+                source: domain,
+            }) else {
+                continue;
+            };
+            let _ = self.commit_health_marker(marker, shared, sink);
+        }
+        if let Some(loss) = windows.ingress_full() {
             let span_ms = loss
                 .last_observed_unix_ms()
                 .abs_diff(loss.first_observed_unix_ms());
@@ -1226,6 +1249,20 @@ impl SessionCore {
                 catalog::diagnostics_dropped(DiagnosticsDropped {
                     time: now,
                     count: loss.count(),
+                    span_ms,
+                }),
+                shared,
+                sink,
+            );
+        }
+        if let Some(rejected) = windows.invalid() {
+            let span_ms = rejected
+                .last_observed_unix_ms()
+                .abs_diff(rejected.first_observed_unix_ms());
+            let _ = self.commit_health_marker(
+                catalog::diagnostics_rejected(DiagnosticsRejected {
+                    time: now,
+                    count: rejected.count(),
                     span_ms,
                 }),
                 shared,

@@ -17,7 +17,7 @@ use super::classified::{
 };
 use super::schema::{
     ActivityAttributeKey, ActivityDirection, ActivityOutcome, ActivitySeverity, EndpointClass,
-    IdentifierKind, kinds,
+    IdentifierKind, RateDomain, kinds,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2079,6 +2079,37 @@ pub fn lxst_activity(input: LxstActivity) -> Result<ActivityDraft, ActivityRejec
     Ok(draft)
 }
 
+pub(super) struct DiagnosticsSampled {
+    pub time: ObservationTime,
+    pub count: u64,
+    pub span_ms: u64,
+    pub source: RateDomain,
+}
+
+pub(super) fn diagnostics_sampled(
+    input: DiagnosticsSampled,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    let draft = ActivityDraft::new(
+        kinds::DIAGNOSTICS_SAMPLED,
+        ActivitySeverity::Info,
+        ActivityDirection::Local,
+        ActivityOutcome::None,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .exact(
+        ActivityAttributeKey::SampledCount,
+        ExactValue::Unsigned(input.count),
+    )
+    .operational_code(ActivityAttributeKey::SourceArea, input.source.code())?
+    .operational_code(ActivityAttributeKey::Reason, "sustained_rate_limit")?;
+    Ok(draft.exact(
+        ActivityAttributeKey::TimeSpanMs,
+        ExactValue::Unsigned(input.span_ms),
+    ))
+}
+
 pub struct DiagnosticsDropped {
     pub time: ObservationTime,
     pub count: u64,
@@ -2097,6 +2128,32 @@ pub fn diagnostics_dropped(input: DiagnosticsDropped) -> ActivityDraft {
     )
     .exact(
         ActivityAttributeKey::DroppedCount,
+        ExactValue::Unsigned(input.count),
+    )
+    .exact(
+        ActivityAttributeKey::TimeSpanMs,
+        ExactValue::Unsigned(input.span_ms),
+    )
+}
+
+pub(super) struct DiagnosticsRejected {
+    pub time: ObservationTime,
+    pub count: u64,
+    pub span_ms: u64,
+}
+
+pub(super) fn diagnostics_rejected(input: DiagnosticsRejected) -> ActivityDraft {
+    ActivityDraft::new(
+        kinds::DIAGNOSTICS_REJECTED,
+        ActivitySeverity::Warning,
+        ActivityDirection::Local,
+        ActivityOutcome::Rejected,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .exact(
+        ActivityAttributeKey::RejectedCount,
         ExactValue::Unsigned(input.count),
     )
     .exact(

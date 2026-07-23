@@ -1130,7 +1130,8 @@ function renderActivityFilters() {
     var problemCount = 0;
     for (var i = 0; i < activityEvents.length; i++) {
         var event = activityEvents[i];
-        areaCounts[event.area] = (areaCounts[event.area] || 0) + 1;
+        var eventArea = activityPresentationArea(event);
+        areaCounts[eventArea] = (areaCounts[eventArea] || 0) + 1;
         if (activityIsProblem(event)) problemCount++;
     }
     if (activityAreaFilter !== 'all' && !areaCounts[activityAreaFilter]) {
@@ -1209,7 +1210,7 @@ function activityIsProblem(event) {
 }
 
 function activityEventMatches(event) {
-    if (activityAreaFilter !== 'all' && event.area !== activityAreaFilter) return false;
+    if (activityAreaFilter !== 'all' && activityPresentationArea(event) !== activityAreaFilter) return false;
     if (activityProblemsOnly && !activityIsProblem(event)) return false;
     if (!activitySearchQuery) return true;
     return activityEventSearchText(event).indexOf(activitySearchQuery) !== -1;
@@ -1247,6 +1248,21 @@ function activityCodeValue(event, key) {
     return attribute && attribute.value && attribute.value.type === 'code'
         ? attribute.value.value
         : null;
+}
+
+function activityUnsignedValue(event, key) {
+    var attribute = activityAttribute(event, key);
+    return attribute && attribute.value && attribute.value.type === 'unsigned'
+        ? String(attribute.value.value)
+        : null;
+}
+
+function activityPresentationArea(event) {
+    if (event && event.kind === 'diagnostics.sampled') {
+        var source = activityCodeValue(event, 'source_area');
+        if (source && ACTIVITY_AREA_LABELS[source]) return source;
+    }
+    return event && event.area ? event.area : 'ratspeak';
 }
 
 function activityResetReveals() {
@@ -1421,8 +1437,21 @@ function activityEventSummary(event) {
         if (announce && announce.displayName) return announce.displayName + ' announced';
         if (announce && announce.isLxmf) return 'LXMF announce observed';
     }
+    if (code === 'diagnostics.sampled') {
+        var sampled = activityUnsignedValue(event, 'sampled_count') || 'Some';
+        var sourceCode = activityCodeValue(event, 'source_area') || '';
+        var source = ACTIVITY_AREA_LABELS[sourceCode] || activityHumanizeCode(sourceCode || 'activity');
+        return sampled + ' ' + source + ' observation' + (sampled === '1' ? '' : 's') + ' summarized';
+    }
+    if (code === 'diagnostics.dropped') {
+        var dropped = activityUnsignedValue(event, 'dropped_count') || 'Some';
+        return dropped + ' Activity entr' + (dropped === '1' ? 'y was' : 'ies were') + ' not recorded';
+    }
+    if (code === 'diagnostics.rejected') {
+        var rejected = activityUnsignedValue(event, 'rejected_count') || 'Some';
+        return rejected + ' Activity entr' + (rejected === '1' ? 'y was' : 'ies were') + ' rejected';
+    }
     var special = {
-        'diagnostics.dropped': 'Activity events dropped',
         'diagnostics.evicted': 'Older Activity events removed',
         'diagnostics.worker_recovered': 'Activity recorder recovered',
         'storage.db.failed': 'Local storage unavailable',
@@ -1575,6 +1604,12 @@ function activityFormatAttributeValue(attribute) {
     var type = attribute.value.type;
     var value = attribute.value.value;
     if (type === 'boolean') return value ? 'Yes' : 'No';
+    if (attribute.key === 'source_area') {
+        return ACTIVITY_AREA_LABELS[value] || activityHumanizeCode(value);
+    }
+    if (attribute.key === 'reason' && value === 'sustained_rate_limit') {
+        return 'High-volume activity';
+    }
     if (type === 'code') return String(value);
     if (type === 'endpoint') {
         return activityHumanizeCode(value && value.class ? value.class : 'unknown') + ' endpoint';
@@ -1613,7 +1648,10 @@ function activityAttributeLabel(key) {
         max_rooms: 'Maximum channels',
         queue_count: 'Queued',
         rate_per_minute: 'Rate',
+        rejected_count: 'Rejected',
         rtt_ms: 'Round trip',
+        sampled_count: 'Summarized',
+        source_area: 'Source',
         time_span_ms: 'Time span'
     };
     return labels[key] || activityHumanizeCode(key);
@@ -1702,8 +1740,9 @@ function renderActivityFeed() {
         var expanded = event.sequence === activityExpandedSequence;
         var problem = activityIsProblem(event);
         var outcome = event.outcome && event.outcome !== 'none' ? event.outcome : '';
+        var presentationArea = activityPresentationArea(event);
         html += '<div class="activity-event' + (expanded ? ' expanded' : '') + (problem ? ' is-problem' : '') +
-            '" data-area="' + escapeHtml(event.area) + '" data-sequence="' + escapeHtml(event.sequence) +
+            '" data-area="' + escapeHtml(presentationArea) + '" data-sequence="' + escapeHtml(event.sequence) +
             '" data-activity-sequence="' + escapeHtml(event.sequence) + '">' +
                 '<span class="activity-event-rail"><span></span></span>' +
                 '<div class="activity-event-content">' +
@@ -1714,7 +1753,7 @@ function renderActivityFeed() {
                             escapeHtml(formatActivityTime(event.timestamp_unix_ms)) + '</time>' +
                     '</div>' +
                     '<div class="activity-event-meta">' +
-                        '<span>' + escapeHtml(ACTIVITY_AREA_LABELS[event.area] || activityHumanizeCode(event.area)) + '</span>' +
+                        '<span>' + escapeHtml(ACTIVITY_AREA_LABELS[presentationArea] || activityHumanizeCode(presentationArea)) + '</span>' +
                         (outcome ? '<span data-outcome="' + escapeHtml(outcome) + '">' +
                             escapeHtml(activityOutcomeLabel(outcome)) + '</span>' : '') +
                         (event.count > 1 ? '<span>' + escapeHtml(String(event.count)) + ' events</span>' : '') +
