@@ -7,8 +7,8 @@
 Ratspeak is a native desktop and mobile client for E2EE conversations over
 Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/image sharing, voice calls (experimental), LoRa capability, WiFi, BLE, TCP, offline messaging, turn-based games, and more.
 
-[Docs](https://ratspeak.org/docs.html) |
-[Build from source](https://ratspeak.org/docs.html#getting-started/building-from-source) |
+[Docs](https://docs.ratspeak.org/) |
+[Build from source](https://docs.ratspeak.org/docs/reference/building-from-source) |
 [rsReticulum](https://github.com/ratspeak/rsReticulum) |
 [rsLXMF](https://github.com/ratspeak/rsLXMF) |
 [rsLXST](https://github.com/ratspeak/rsLXST)
@@ -64,14 +64,14 @@ Use the download page when public builds are available:
 
 For setup help, see:
 
-- [Install and Platform Setup](https://ratspeak.org/docs.html#getting-started/install-and-platform-setup)
-- [Your First Session](https://ratspeak.org/docs.html#getting-started/your-first-session)
-- [Troubleshooting](https://ratspeak.org/docs.html#reference/troubleshooting)
+- [Install and Platform Setup](https://docs.ratspeak.org/docs/getting-started/install-and-platform-setup)
+- [Your First Session](https://docs.ratspeak.org/docs/getting-started/your-first-session)
+- [Troubleshooting](https://docs.ratspeak.org/docs/reference/troubleshooting)
 
 ## Build From Source
 
 The full build guide is here:
-[Building from Source](https://ratspeak.org/docs.html#getting-started/building-from-source).
+[Building from Source](https://docs.ratspeak.org/docs/reference/building-from-source).
 It covers desktop prerequisites, Android APKs, iOS signing, and the required
 sibling checkout layout.
 
