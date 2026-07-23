@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::pending;
 use std::io::Cursor;
 use std::sync::{Arc, RwLock, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ciborium::value::Value;
 use ratspeak_core::Emitter;
@@ -559,6 +559,7 @@ struct RoomActivityContext {
 struct ActiveSession {
     handle: rns_runtime::link_session::LinkSessionHandle,
     events: mpsc::Receiver<LinkSessionEvent>,
+    connected_at: Instant,
     source: [u8; 16],
     hub_identity: [u8; 16],
     nickname: String,
@@ -577,6 +578,23 @@ struct ActiveSession {
 }
 
 impl ActiveSession {
+    fn closed_transition(
+        &self,
+        reason: activity::ChannelSessionCloseReason,
+    ) -> activity::ChannelSessionTransition {
+        activity::ChannelSessionTransition::Closed {
+            reason,
+            link: Some(activity::LinkId::new(self.handle.link_id())),
+            duration_ms: Some(
+                self.connected_at
+                    .elapsed()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            ),
+        }
+    }
+
     fn remember(&mut self, message_id: [u8; 8]) -> bool {
         if !self.seen_ids.insert(message_id) {
             return false;
@@ -876,9 +894,7 @@ async fn run_manager(
                     record_session_spontaneous(
                         &activity,
                         session.activity,
-                        activity::ChannelSessionTransition::Closed {
-                            reason: activity::ChannelSessionCloseReason::Local,
-                        },
+                        session.closed_transition(activity::ChannelSessionCloseReason::Local),
                     );
                 }
                 close_active(&mut active).await;
@@ -901,9 +917,7 @@ async fn run_manager(
                         record_session_spontaneous(
                             &activity,
                             session.activity,
-                            activity::ChannelSessionTransition::Closed {
-                                reason: activity::ChannelSessionCloseReason::Local,
-                            },
+                            session.closed_transition(activity::ChannelSessionCloseReason::Local),
                         );
                     }
                     close_active(&mut active).await;
@@ -931,9 +945,7 @@ async fn run_manager(
                                 &activity,
                                 session.activity,
                                 activity_fence,
-                                activity::ChannelSessionTransition::Closed {
-                                    reason: activity::ChannelSessionCloseReason::Local,
-                                },
+                                session.closed_transition(activity::ChannelSessionCloseReason::Local),
                             );
                         }
                         close_active(&mut active).await;
@@ -994,9 +1006,7 @@ async fn run_manager(
                                 &activity,
                                 session.activity,
                                 activity_fence,
-                                activity::ChannelSessionTransition::Closed {
-                                    reason: activity::ChannelSessionCloseReason::Local,
-                                },
+                                session.closed_transition(activity::ChannelSessionCloseReason::Local),
                             );
                         }
                         close_active(&mut active).await;
@@ -1071,9 +1081,7 @@ async fn run_manager(
                                 &activity,
                                 session.activity,
                                 activity_fence,
-                                activity::ChannelSessionTransition::Closed {
-                                    reason: activity::ChannelSessionCloseReason::Local,
-                                },
+                                session.closed_transition(activity::ChannelSessionCloseReason::Local),
                             );
                         }
                         close_active(&mut active).await;
@@ -1163,9 +1171,7 @@ async fn run_manager(
                                 record_session_spontaneous(
                                     &activity,
                                     session.activity,
-                                    activity::ChannelSessionTransition::Closed {
-                                        reason: activity_reason,
-                                    },
+                                    session.closed_transition(activity_reason),
                                 );
                                 active = None;
                                 mutate_snapshot(&snapshot, |state| {
@@ -1185,9 +1191,9 @@ async fn run_manager(
                             record_session_spontaneous(
                                 &activity,
                                 session.activity,
-                                activity::ChannelSessionTransition::Closed {
-                                    reason: activity::ChannelSessionCloseReason::StreamEnded,
-                                },
+                                session.closed_transition(
+                                    activity::ChannelSessionCloseReason::StreamEnded,
+                                ),
                             );
                         }
                         active = None;
@@ -1591,6 +1597,8 @@ async fn connect_to_hub(
                         attempt,
                         activity::ChannelSessionTransition::Closed {
                             reason: channel_close_reason(reason),
+                            link: Some(link),
+                            duration_ms: None,
                         },
                     )
                     .await;
@@ -1901,6 +1909,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
             let mut live = ActiveSession {
                 handle: session.handle,
                 events: session.events,
+                connected_at: Instant::now(),
                 source,
                 hub_identity,
                 nickname: nickname.clone(),
@@ -3467,8 +3476,7 @@ mod tests {
             other => panic!("expected Link destination registration, got {other:?}"),
         };
         let request = next_outbound(&mut transport_rx).await;
-        let (_, request_offset) =
-            rns_wire::header::PacketHeader::unpack(&request.raw).unwrap();
+        let (_, request_offset) = rns_wire::header::PacketHeader::unpack(&request.raw).unwrap();
         let (mut responder, link_proof) = Link::new_responder(
             &request.raw[request_offset..],
             &hub_signing,

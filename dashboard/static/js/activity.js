@@ -1456,6 +1456,9 @@ function copyActivityIdentifier(sequence, field) {
 
 function activityEventSummary(event) {
     var code = event.summary_code || event.kind || 'activity.event';
+    if (code === 'channels.session.closed' && activityCodeValue(event, 'reason') === 'remote') {
+        return 'Hub ended channel session';
+    }
     if (code === 'rns.announce.observed') {
         var announce = activityAnnounceContext(event);
         if (announce && announce.displayName) return announce.displayName + ' announced';
@@ -1634,6 +1637,9 @@ function activityFormatAttributeValue(attribute) {
     if (attribute.key === 'reason' && value === 'sustained_rate_limit') {
         return 'High-volume activity';
     }
+    if (attribute.key === 'reason' && value === 'remote') {
+        return 'Remote Link teardown';
+    }
     if (type === 'code') return String(value);
     if (type === 'endpoint') {
         return activityHumanizeCode(value && value.class ? value.class : 'unknown') + ' endpoint';
@@ -1701,6 +1707,12 @@ function activityEventDetails(event) {
         rows.push(['Name', '<span class="activity-identity-name">' + escapeHtml(announce.displayName) + '</span>']);
     }
     rows.push(['Event', '<code>' + escapeHtml(event.kind) + '</code>']);
+    if (event.kind === 'channels.session.closed' && activityCodeValue(event, 'reason') === 'remote') {
+        rows.push([
+            'Meaning',
+            '<span>The hub ended the authenticated Reticulum Link. The close signal carries no detailed reason.</span>'
+        ]);
+    }
     (event.attributes || []).forEach(function(attribute) {
         if (attribute.value && attribute.value.type === 'identifier') {
             rows.push([

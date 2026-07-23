@@ -1035,6 +1035,8 @@ pub enum ChannelSessionTransition {
     Recovered,
     Closed {
         reason: ChannelSessionCloseReason,
+        link: Option<LinkId>,
+        duration_ms: Option<u64>,
     },
 }
 
@@ -1163,6 +1165,7 @@ pub fn channels_session_activity(
         ),
         ChannelSessionTransition::Closed {
             reason: ChannelSessionCloseReason::Local,
+            ..
         } => (
             kinds::CHANNELS_SESSION_CLOSED,
             ActivitySeverity::Info,
@@ -1172,6 +1175,7 @@ pub fn channels_session_activity(
         ),
         ChannelSessionTransition::Closed {
             reason: ChannelSessionCloseReason::Timeout,
+            ..
         } => (
             kinds::CHANNELS_SESSION_CLOSED,
             ActivitySeverity::Error,
@@ -1179,7 +1183,17 @@ pub fn channels_session_activity(
             ActivityOutcome::TimedOut,
             Some(ChannelSessionCloseReason::Timeout.code()),
         ),
-        ChannelSessionTransition::Closed { reason } => (
+        ChannelSessionTransition::Closed {
+            reason: ChannelSessionCloseReason::Remote,
+            ..
+        } => (
+            kinds::CHANNELS_SESSION_CLOSED,
+            ActivitySeverity::Error,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Failed,
+            Some(ChannelSessionCloseReason::Remote.code()),
+        ),
+        ChannelSessionTransition::Closed { reason, .. } => (
             kinds::CHANNELS_SESSION_CLOSED,
             ActivitySeverity::Error,
             ActivityDirection::Local,
@@ -1265,6 +1279,23 @@ pub fn channels_session_activity(
                 }
             }
         }
+        ChannelSessionTransition::Closed {
+            link, duration_ms, ..
+        } => {
+            if let Some(link) = link {
+                draft = draft.protocol_identifier(
+                    ActivityAttributeKey::Link,
+                    IdentifierKind::Link,
+                    &link.0,
+                )?;
+            }
+            if let Some(duration_ms) = duration_ms {
+                draft = draft.exact(
+                    ActivityAttributeKey::DurationMs,
+                    ExactValue::Unsigned(duration_ms),
+                );
+            }
+        }
         ChannelSessionTransition::ConnectRequested
         | ChannelSessionTransition::Cancelled
         | ChannelSessionTransition::PathRequested
@@ -1273,8 +1304,7 @@ pub fn channels_session_activity(
         | ChannelSessionTransition::WelcomeRejected { .. }
         | ChannelSessionTransition::Failed { .. }
         | ChannelSessionTransition::Stale
-        | ChannelSessionTransition::Recovered
-        | ChannelSessionTransition::Closed { .. } => {}
+        | ChannelSessionTransition::Recovered => {}
     }
     Ok(draft.with_correlation(input.correlation_id))
 }

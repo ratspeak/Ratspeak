@@ -1036,6 +1036,48 @@ test('canonical channel events render as readable, filterable rows with privacy-
     assert(ui.ids['activity-feed'].innerHTML.indexOf('masked-hub-token-123456') === -1);
 });
 
+test('remote channel closes explain the authenticated teardown without guessing a cause', function() {
+    var ui = loadUiHarness();
+    var ctx = ui.context;
+    var closeEvent = event(SESSION_A, '8', 'channels.session.closed');
+    closeEvent.area = 'channels';
+    closeEvent.kind = 'channels.session.closed';
+    closeEvent.summary_code = 'channels.session.closed';
+    closeEvent.direction = 'inbound';
+    closeEvent.outcome = 'failed';
+    closeEvent.attributes = [{
+        key: 'hub',
+        value: {
+            type: 'identifier',
+            value: { kind: 'hub', pseudonym: 'masked-hub-token', ordinal: 2 }
+        }
+    }, {
+        key: 'reason',
+        value: { type: 'code', value: 'remote' }
+    }, {
+        key: 'link',
+        value: {
+            type: 'identifier',
+            value: { kind: 'link', pseudonym: 'masked-link-token', ordinal: 4 }
+        }
+    }, {
+        key: 'duration_ms',
+        value: { type: 'unsigned', value: 321000 }
+    }];
+    ctx.activityEvents = [closeEvent];
+    ctx.activityExpandedSequence = '8';
+    ctx.renderActivityFeed();
+
+    var html = ui.ids['activity-feed'].innerHTML;
+    assert(html.indexOf('Hub ended channel session') !== -1);
+    assert(html.indexOf('Remote Link teardown') !== -1);
+    assert(html.indexOf('authenticated Reticulum Link') !== -1);
+    assert(html.indexOf('carries no detailed reason') !== -1);
+    assert(html.indexOf('321000 ms') !== -1);
+    assert(html.indexOf('Inbound') !== -1);
+    assert(html.indexOf('data-field="link"') !== -1);
+});
+
 test('identifier controls reveal first and copy only after disclosure', async function() {
     var ui = loadUiHarness();
     var ctx = ui.context;
