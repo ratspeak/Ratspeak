@@ -3487,7 +3487,7 @@ mod tests {
         )
         .await;
 
-        let lrrtt = next_outbound(&mut transport_rx).await;
+        let lrrtt = next_attached_outbound(&mut transport_rx).await;
         let (lrrtt_header, lrrtt_offset) =
             rns_wire::header::PacketHeader::unpack(&lrrtt.raw).unwrap();
         assert_eq!(
@@ -3498,7 +3498,7 @@ mod tests {
             .receive_rtt_packet(&lrrtt.raw[lrrtt_offset..])
             .unwrap();
 
-        let identify = next_outbound(&mut transport_rx).await;
+        let identify = next_attached_outbound(&mut transport_rx).await;
         let (identify_header, identify_offset) =
             rns_wire::header::PacketHeader::unpack(&identify.raw).unwrap();
         assert_eq!(
@@ -3890,12 +3890,24 @@ mod tests {
         }
     }
 
+    async fn next_attached_outbound(rx: &mut mpsc::Receiver<TransportMessage>) -> OutboundRequest {
+        loop {
+            if let TransportMessage::OutboundAttached {
+                request,
+                interface_id: 1,
+            } = timeout_transport(rx).await
+            {
+                return request;
+            }
+        }
+    }
+
     async fn next_outbound_with_context(
         rx: &mut mpsc::Receiver<TransportMessage>,
         wanted: rns_wire::context::PacketContext,
     ) -> OutboundRequest {
         loop {
-            let request = next_outbound(rx).await;
+            let request = next_attached_outbound(rx).await;
             if rns_wire::header::PacketHeader::unpack(&request.raw)
                 .is_ok_and(|(header, _)| header.context == wanted)
             {
@@ -3911,7 +3923,7 @@ mod tests {
         signing_key: &rns_crypto::ed25519::Ed25519PrivateKey,
     ) -> Envelope {
         loop {
-            let request = next_outbound(rx).await;
+            let request = next_attached_outbound(rx).await;
             let Ok((header, offset)) = rns_wire::header::PacketHeader::unpack(&request.raw) else {
                 continue;
             };
