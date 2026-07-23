@@ -4543,10 +4543,17 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
     }
     let activity_frontend =
         read_source(root.join("dashboard/static/js/activity.js")).expect("activity frontend");
-    assert!(activity_frontend.contains("RS.listen('network_event',"));
+    assert!(!activity_frontend.contains("RS.listen('network_event',"));
+    assert!(!activity_frontend.contains("RS.listen('network_log_level_changed',"));
     assert!(!activity_frontend.contains("typeof events !== 'undefined'"));
-    assert!(emitter.contains("pub const LEGACY_ACTIVITY_EVENT: &str = \"network_event\";"));
-    assert!(emitter.contains("\"startup\" => \"Startup\""));
+    let publish_start = emitter
+        .find("fn try_publish(&self")
+        .expect("typed Activity publisher");
+    let publish_end = emitter[publish_start..]
+        .find("fn try_publish_status")
+        .map(|offset| publish_start + offset)
+        .expect("typed status publisher");
+    assert!(!emitter[publish_start..publish_end].contains("network_event"));
     let runtime_compact = runtime
         .chars()
         .filter(|character| !character.is_whitespace())
@@ -4578,17 +4585,24 @@ fn activity_bootstrap_is_listener_first_and_session_local() {
     assert!(activity.contains("invoke('activity_replay', {"));
     assert!(activity.contains("['activity_status_v1', handleStatusNotification]"));
     assert!(activity.contains("['activity_boundary_v1', handleBoundary]"));
-    assert!(activity.contains("['activity_legacy_cleared_v1', handleLegacyClear]"));
+    assert!(activity.contains("['activity_batch_v1', handleBatch]"));
+    assert!(activity.contains("onEvents(state.events.slice()"));
     assert!(activity.contains("if (state.identityQuarantine) return;"));
     assert!(activity.contains("if (authoritative && state.identityQuarantine)"));
     assert!(activity.contains("payload.identity_generation !== state.identityGeneration"));
-    assert!(activity.contains("reason === 'identity_hard_reset'"));
-    assert!(activity.contains("activityPruneLegacyBefore(status.ingress_generation);"));
     assert!(activity.contains("after: after"));
     assert!(activity.contains("activityBootstrap.start();"));
-    assert!(!activity.contains("parseInt("));
-    assert!(!activity.contains("BigInt("));
-    assert!(!activity.contains("Number("));
+    let controller_start = activity
+        .find("var ACTIVITY_U64_MAX")
+        .expect("Activity controller start");
+    let controller_end = activity[controller_start..]
+        .find("\nvar activityBootstrap =")
+        .map(|offset| controller_start + offset)
+        .expect("Activity controller end");
+    let controller = &activity[controller_start..controller_end];
+    assert!(!controller.contains("parseInt("));
+    assert!(!controller.contains("BigInt("));
+    assert!(!controller.contains("Number("));
 
     assert!(state.contains("options.required === true"));
     assert!(state.contains("err.code = 'event_bridge_unavailable'"));

@@ -59,6 +59,8 @@ fn typed_activity_commands_are_unconditionally_registered() {
         app.contains(&contiguous),
         "Activity commands must remain an unconditional registry block"
     );
+    assert!(!app.contains("commands::network::enable_network_log,"));
+    assert!(!app.contains("commands::network::set_network_log_level,"));
 }
 
 #[test]
@@ -66,8 +68,6 @@ fn activity_lifecycle_commands_follow_identity_then_activity_lock_order() {
     let root = repo_root();
     let activity = fs::read_to_string(root.join("crates/ratspeak-tauri/src/commands/activity.rs"))
         .expect("activity commands");
-    let network = fs::read_to_string(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
-        .expect("legacy activity commands");
     let system = fs::read_to_string(root.join("crates/ratspeak-tauri/src/commands/system.rs"))
         .expect("foreground command");
 
@@ -100,31 +100,6 @@ fn activity_lifecycle_commands_follow_identity_then_activity_lock_order() {
             snapshot < identity,
             "late request-fence snapshot in {command}"
         );
-        assert!(
-            control < validation,
-            "request fence checked before both locks in {command}"
-        );
-    }
-
-    for command in ["enable_network_log", "set_network_log_level"] {
-        let body = command_body(&network, command);
-        let identity = body
-            .find("identity_switch_lock.lock().await")
-            .expect("identity lifecycle lock");
-        let control = body
-            .find("activity_control_lock.lock().await")
-            .expect("activity control lock");
-        let snapshot = body
-            .find("activity_request_fence()")
-            .expect("legacy Activity request-fence snapshot");
-        let validation = body
-            .find("ensure_legacy_activity_request_fence")
-            .expect("legacy Activity request-fence validation");
-        assert!(
-            snapshot < identity,
-            "late request-fence snapshot in {command}"
-        );
-        assert!(identity < control, "wrong lock order in {command}");
         assert!(
             control < validation,
             "request fence checked before both locks in {command}"

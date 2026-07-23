@@ -124,10 +124,6 @@ function loadControllerLibrary() {
         isMobile: function() { return false; }
     };
     vm.runInNewContext(activitySource.slice(start, end), context, { filename: 'activity-controller.js' });
-    window.RS.testLegacyAllowed = context.activityLegacyEventAllowed;
-    window.RS.testSetLegacyBlocked = function(value) {
-        context.activityLegacyBlocked = !!value;
-    };
     return window.RS;
 }
 
@@ -139,6 +135,7 @@ function makeImmediateController(invoke, opts) {
     var listenOrder = [];
     var invokeCalls = [];
     var statuses = [];
+    var eventSnapshots = [];
     var identityTransitions = 0;
     var controller = controllerLibrary.createActivityBootstrap({
         listen: function(name, handler, options) {
@@ -158,6 +155,10 @@ function makeImmediateController(invoke, opts) {
             statuses.push(value);
             if (typeof opts.onStatus === 'function') opts.onStatus(value);
         },
+        onEvents: function(values) {
+            eventSnapshots.push(values);
+            if (typeof opts.onEvents === 'function') opts.onEvents(values);
+        },
         onIdentityTransition: function() { identityTransitions++; },
         diagnose: function() {}
     });
@@ -167,6 +168,7 @@ function makeImmediateController(invoke, opts) {
         listenOrder: listenOrder,
         invokeCalls: invokeCalls,
         statuses: statuses,
+        eventSnapshots: eventSnapshots,
         identityTransitions: function() { return identityTransitions; }
     };
 }
@@ -225,7 +227,6 @@ test('all identity and batch listeners attach before the first status query', as
         'identity_error',
         'activity_status_v1',
         'activity_boundary_v1',
-        'activity_legacy_cleared_v1',
         'activity_batch_v1'
     ];
     for (var i = 0; i < expected.length; i++) {
@@ -296,6 +297,11 @@ test('interleaved live batch is queued, merged with replay, and caught up by fin
     var snapshot = harness.controller.snapshot();
     assert.strictEqual(snapshot.phase, 'live');
     assert.deepStrictEqual(snapshot.events.map(function(value) { return value.sequence; }), ['1', '2', '3']);
+    assert.deepStrictEqual(
+        harness.eventSnapshots[harness.eventSnapshots.length - 1].map(function(value) { return value.sequence; }),
+        ['1', '2', '3'],
+        'reconciled canonical events are published to the UI'
+    );
 });
 
 test('initial replay uses a null exclusive cursor and paginates with exact snake_case DTO fields', async function() {
@@ -372,10 +378,13 @@ test('decimal u64 helpers sort and deduplicate above 2^53 through u64 max withou
     await flush(50);
     assert.strictEqual(maxHarness.controller.snapshot().events[0].sequence, '18446744073709551615');
 
-    assert.strictEqual(/\bNumber\b/.test(activitySource), false);
-    assert.strictEqual(activitySource.indexOf('parse' + 'Int'), -1);
-    assert.strictEqual(activitySource.indexOf('Big' + 'Int'), -1);
-    assert.strictEqual(activitySource.indexOf('big' + 'int'), -1);
+    var controllerStart = activitySource.indexOf('var ACTIVITY_U64_MAX');
+    var controllerEnd = activitySource.indexOf('\nvar activityBootstrap =', controllerStart);
+    var controllerSource = activitySource.slice(controllerStart, controllerEnd);
+    assert.strictEqual(/\bNumber\b/.test(controllerSource), false);
+    assert.strictEqual(controllerSource.indexOf('parse' + 'Int'), -1);
+    assert.strictEqual(controllerSource.indexOf('Big' + 'Int'), -1);
+    assert.strictEqual(controllerSource.indexOf('big' + 'int'), -1);
 });
 
 test('replay gaps recover with a fresh null-cursor resync', async function() {
@@ -504,7 +513,7 @@ test('identity transition invalidates stale replay, clears state, sends no Stop,
     assert(after > before, 'identity_error must rebootstrap');
 });
 
-test('identity transition quarantines delayed status and legacy events until its hard-reset fence', async function() {
+test('identity transition quarantines delayed status and events until its hard-reset fence', async function() {
     var current = status(SESSION_A, 'capturing', '1', '1', 'normal', '1');
     var harness = makeImmediateController(function(name) {
         if (name === 'activity_status') return Promise.resolve(current);
@@ -524,9 +533,7 @@ test('identity transition quarantines delayed status and legacy events until its
     assert.strictEqual(harness.controller.snapshot().phase, 'identity_transition');
     assert.strictEqual(harness.controller.snapshot().events.length, 0);
     assert.strictEqual(harness.controller.snapshot().identityQuarantine, true);
-    assert.strictEqual(harness.controller.snapshot().legacyBlocked, true);
     assert.strictEqual(harness.statuses.length, statusCount);
-    assert.strictEqual(controllerLibrary.testLegacyAllowed({ capture_generation: '1' }), false);
 
     var off = status(null, 'off', null, null, null, '2');
     harness.handlers.activity_boundary_v1({
@@ -538,7 +545,6 @@ test('identity transition quarantines delayed status and legacy events until its
     });
     assert.strictEqual(harness.controller.snapshot().phase, 'identity_transition');
     assert.strictEqual(harness.controller.snapshot().identityQuarantine, true);
-    assert.strictEqual(harness.controller.snapshot().legacyBlocked, true);
 });
 
 test('post-switch quarantine survives phase changes until authoritative status resolves', async function() {
@@ -555,12 +561,6 @@ test('post-switch quarantine survives phase changes until authoritative status r
         return Promise.resolve(replayPage(SESSION_A, [event(SESSION_A, '1')], {
             oldest: '1', latest: '1', nextAfter: '1'
         }));
-    }, {
-        onStatus: function() {
-            // Model the production callback that reopens the compatibility
-            // stream only when the controller deliberately accepts a status.
-            controllerLibrary.testSetLegacyBlocked(false);
-        }
     });
     harness.controller.start();
     await flush(60);
@@ -577,12 +577,10 @@ test('post-switch quarantine survives phase changes until authoritative status r
     );
     assert.strictEqual(harness.statuses.length, acceptedBefore);
     assert.strictEqual(harness.controller.snapshot().identityQuarantine, true);
-    assert.strictEqual(controllerLibrary.testLegacyAllowed({ capture_generation: '1' }), false);
 
     postSwitchStatus.resolve(status(null, 'off', null, null, null, '2'));
     await flush(60);
     assert.strictEqual(harness.controller.snapshot().identityQuarantine, false);
-    assert.strictEqual(controllerLibrary.testLegacyAllowed({ capture_generation: '2' }), true);
 });
 
 test('queued live data is bounded and overflow recovers from the backend ring', async function() {
@@ -760,12 +758,14 @@ test('foreground notification fires only after successful backend lifecycle hand
     assert(activitySource.indexOf("detail.persisted") !== -1);
 });
 
-function FakeElement(id, dataLevel) {
+function FakeElement(id, dataProfile) {
     this.id = id;
     this.style = {};
     this.attributes = {};
     this.disabled = false;
     this.checked = false;
+    this.value = '';
+    this.textContent = '';
     this.innerHTML = '';
     this.children = [];
     this.scrollHeight = 0;
@@ -773,7 +773,8 @@ function FakeElement(id, dataLevel) {
     this.clientHeight = 0;
     this.isConnected = true;
     this.focusCount = 0;
-    this.dataLevel = dataLevel || null;
+    this.dataProfile = dataProfile || null;
+    this.parentElement = null;
     var classes = Object.create(null);
     this.classList = {
         add: function(name) { classes[name] = true; },
@@ -785,7 +786,7 @@ function FakeElement(id, dataLevel) {
 FakeElement.prototype.setAttribute = function(name, value) { this.attributes[name] = String(value); };
 FakeElement.prototype.removeAttribute = function(name) { delete this.attributes[name]; };
 FakeElement.prototype.getAttribute = function(name) {
-    if (name === 'data-level') return this.dataLevel;
+    if (name === 'data-profile') return this.dataProfile;
     return this.attributes[name] == null ? null : this.attributes[name];
 };
 FakeElement.prototype.addEventListener = function() {};
@@ -796,20 +797,22 @@ FakeElement.prototype.focus = function() { this.focusCount++; };
 function loadUiHarness(options) {
     options = options || {};
     var end = activitySource.indexOf('\nvar REASON_LABELS');
-    assert(end !== -1, 'legacy Activity source boundary must exist');
+    assert(end !== -1, 'Activity UI source boundary must exist');
     var ids = {};
-    ['activity-enable-btn', 'activity-enabled-toggle', 'activity-clear-btn', 'activity-privacy-gate',
-        'activity-active', 'activity-feed', 'activity-filters'].forEach(function(id) {
+    ['activity-enable-btn', 'activity-capture-btn', 'activity-clear-btn', 'activity-privacy-gate',
+        'activity-active', 'activity-feed', 'activity-filters', 'activity-status',
+        'activity-status-label', 'activity-result-count', 'activity-search-input'].forEach(function(id) {
         ids[id] = new FakeElement(id);
     });
-    var levels = ['essential', 'standard', 'detailed'].map(function(level) {
-        return new FakeElement('level-' + level, level);
+    var profiles = ['normal', 'trace'].map(function(profile) {
+        return new FakeElement('profile-' + profile, profile);
     });
     var documentHandlers = {};
     var document = {
-        activeElement: ids['activity-enabled-toggle'],
+        activeElement: ids['activity-capture-btn'],
         getElementById: function(id) { return ids[id] || null; },
-        querySelectorAll: function(selector) { return selector === '.activity-level-btn' ? levels : []; },
+        querySelectorAll: function(selector) { return selector === '.activity-profile-btn' ? profiles : []; },
+        querySelector: function() { return null; },
         createElement: function(id) { return new FakeElement(id); },
         addEventListener: function(name, handler) { documentHandlers[name] = handler; }
     };
@@ -847,7 +850,7 @@ function loadUiHarness(options) {
     return {
         context: context,
         ids: ids,
-        levels: levels,
+        profiles: profiles,
         documentHandlers: documentHandlers,
         resyncs: resyncs,
         setInvoke: function(value) { invoke = value; }
@@ -872,26 +875,26 @@ test('pending controls are tokened, disabled/aria-busy, roll back with status re
     var capturing = status(SESSION_A, 'capturing', '1', '1');
     var stopped = status(SESSION_A, 'stopped', '1', '1');
     ctx.applyActivityStatus(capturing);
-    ctx.activityLog = [{ type: 'message', message: 'keep', timestamp: 1, level: 'standard' }];
+    ctx.activityEvents = [event(SESSION_A, '1')];
 
     var stopGate = deferred();
     ui.setInvoke(function(name) {
-        assert.strictEqual(name, 'enable_network_log');
+        assert.strictEqual(name, 'activity_stop');
         return stopGate.promise;
     });
-    var stop = ctx.toggleActivityEnabled(false);
-    assert.strictEqual(ctx.activityLog.length, 1);
-    assert.strictEqual(ui.ids['activity-enabled-toggle'].disabled, true);
-    assert.strictEqual(ui.ids['activity-enabled-toggle'].attributes['aria-busy'], 'true');
-    stopGate.resolve({ activity: stopped });
+    var stop = ctx.setActivityCapture(false);
+    assert.strictEqual(ctx.activityEvents.length, 1);
+    assert.strictEqual(ui.ids['activity-capture-btn'].disabled, true);
+    assert.strictEqual(ui.ids['activity-capture-btn'].attributes['aria-busy'], 'true');
+    stopGate.resolve(stopped);
     await stop;
     assert.strictEqual(ctx.activityCaptureState, 'stopped');
-    assert.strictEqual(ctx.activityLog.length, 1, 'Stop retains visible rows');
+    assert.strictEqual(ctx.activityEvents.length, 1, 'Pause retains visible rows');
     assert.strictEqual(ui.ids['activity-active'].style.display, '');
-    assert.strictEqual(ui.ids['activity-enabled-toggle'].checked, false);
-    assert.strictEqual(ui.ids['activity-enabled-toggle'].disabled, false);
-    assert.strictEqual(ui.ids['activity-enabled-toggle'].attributes['aria-busy'], undefined);
-    assert(ui.ids['activity-enabled-toggle'].focusCount > 0);
+    assert.strictEqual(ui.ids['activity-capture-btn'].textContent, 'Resume');
+    assert.strictEqual(ui.ids['activity-capture-btn'].disabled, false);
+    assert.strictEqual(ui.ids['activity-capture-btn'].attributes['aria-busy'], undefined);
+    assert(ui.ids['activity-capture-btn'].focusCount > 0);
 
     ctx.applyActivityStatus(capturing);
     var invokeCount = 0;
@@ -901,25 +904,11 @@ test('pending controls are tokened, disabled/aria-busy, roll back with status re
         assert.strictEqual(name, 'activity_status');
         return Promise.resolve(capturing);
     });
-    await ctx.toggleActivityEnabled(false);
+    await ctx.setActivityCapture(false);
     assert.strictEqual(ctx.activityCaptureState, 'capturing');
-    assert.strictEqual(ctx.activityLog.length, 1);
-    assert.strictEqual(ui.ids['activity-enabled-toggle'].disabled, false);
+    assert.strictEqual(ctx.activityEvents.length, 1);
+    assert.strictEqual(ui.ids['activity-capture-btn'].disabled, false);
     assert(ui.resyncs.indexOf('control_status_reconciled') !== -1);
-
-    var first = deferred();
-    var second = deferred();
-    ui.setInvoke(function(name, args) {
-        if (name !== 'enable_network_log') throw new Error('unexpected ' + name);
-        return args.args.enabled ? second.promise : first.promise;
-    });
-    var older = ctx.toggleActivityEnabled(false);
-    var newer = ctx.toggleActivityEnabled(true);
-    first.resolve({ activity: stopped });
-    await flush();
-    second.resolve({ activity: capturing });
-    await Promise.all([older, newer]);
-    assert.strictEqual(ctx.activityCaptureState, 'capturing', 'stale control acknowledgement must not win');
 });
 
 test('Clear waits for acknowledgement, clears only on success, and failure retains rows', async function() {
@@ -927,21 +916,21 @@ test('Clear waits for acknowledgement, clears only on success, and failure retai
     var ctx = ui.context;
     var stopped = status(SESSION_A, 'stopped', '2', '2');
     ctx.applyActivityStatus(stopped);
-    ctx.activityLog = [{ type: 'error', message: 'retain until ack', timestamp: 1, level: 'essential' }];
+    ctx.activityEvents = [event(SESSION_A, '2')];
     var clearGate = deferred();
     ui.setInvoke(function(name) {
         assert.strictEqual(name, 'activity_clear');
         return clearGate.promise;
     });
     var clearing = ctx.clearActivity();
-    assert.strictEqual(ctx.activityLog.length, 1);
+    assert.strictEqual(ctx.activityEvents.length, 1);
     assert.strictEqual(ui.ids['activity-clear-btn'].disabled, true);
     clearGate.resolve(stopped);
     await clearing;
-    assert.strictEqual(ctx.activityLog.length, 0);
+    assert.strictEqual(ctx.activityEvents.length, 0);
     assert(ui.resyncs.indexOf('clear_acknowledged') !== -1);
 
-    ctx.activityLog = [{ type: 'error', message: 'survives failure', timestamp: 1, level: 'essential' }];
+    ctx.activityEvents = [event(SESSION_A, '2')];
     var calls = 0;
     ui.setInvoke(function(name) {
         calls++;
@@ -950,49 +939,74 @@ test('Clear waits for acknowledgement, clears only on success, and failure retai
         return Promise.resolve(stopped);
     });
     await ctx.clearActivity();
-    assert.strictEqual(ctx.activityLog.length, 1);
+    assert.strictEqual(ctx.activityEvents.length, 1);
     assert.strictEqual(ui.ids['activity-clear-btn'].disabled, false);
 });
 
-test('legacy profile buttons remain explicit and session-only while mapping through compatibility commands', async function() {
+test('Normal and Trace controls call the typed profile command and Resume uses the typed capture command', async function() {
     var ui = loadUiHarness();
     var ctx = ui.context;
     ctx.applyActivityStatus(status(SESSION_A, 'capturing', '1', '1'));
-    var levels = [];
+    var profiles = [];
     ui.setInvoke(function(name, args) {
-        assert.strictEqual(name, 'set_network_log_level');
-        levels.push(args.level);
-        return Promise.resolve({
-            level: args.level,
-            activity: status(SESSION_A, 'capturing', '1', '1', args.level === 'detailed' ? 'trace' : 'normal')
-        });
+        assert.strictEqual(name, 'activity_set_profile');
+        profiles.push(args.args.profile);
+        return Promise.resolve(status(SESSION_A, 'capturing', '1', '1', args.args.profile));
     });
-    await ctx.setActivityLevel('essential');
-    await ctx.setActivityLevel('standard');
-    await ctx.setActivityLevel('detailed');
-    assert.deepStrictEqual(levels, ['essential', 'standard', 'detailed']);
-    assert.strictEqual(ctx.activityLevel, 'detailed');
-    assert.strictEqual(ui.levels[2].attributes['aria-pressed'], 'true');
+    await ctx.setActivityProfile('trace');
+    await ctx.setActivityProfile('normal');
+    assert.deepStrictEqual(profiles, ['trace', 'normal']);
+    assert.strictEqual(ctx.activityProfile, 'normal');
+    assert.strictEqual(ui.profiles[0].attributes['aria-pressed'], 'true');
 
     ctx.applyActivityStatus(status(SESSION_A, 'stopped', '1', '1', 'trace'));
-    assert.strictEqual(ctx.activityLevel, 'standard', 'Stopped Trace normalizes the Resume selector');
-    var resumeArgs = null;
-    ui.setInvoke(function(name, args) {
-        assert.strictEqual(name, 'enable_network_log');
-        resumeArgs = args.args;
-        return Promise.resolve({ activity: status(SESSION_A, 'capturing', '1', '2', 'normal') });
+    assert.strictEqual(ctx.activityProfile, 'trace');
+    ui.setInvoke(function(name) {
+        assert.strictEqual(name, 'activity_resume');
+        return Promise.resolve(status(SESSION_A, 'capturing', '1', '2', 'normal'));
     });
-    await ctx.toggleActivityEnabled(true);
-    assert.strictEqual(resumeArgs.level, 'standard');
+    await ctx.setActivityCapture(true);
+    assert.strictEqual(ctx.activityProfile, 'normal');
 });
 
-test('identity UI reset clears typed/visible state and resets Detailed without a Stop command', async function() {
+test('canonical channel events render as readable, filterable rows with expandable masked details', function() {
     var ui = loadUiHarness();
     var ctx = ui.context;
-    ctx.activityLevel = 'detailed';
+    var channelEvent = event(SESSION_A, '7', 'channels.room.join_requested');
+    channelEvent.area = 'channels';
+    channelEvent.kind = 'channels.room.join_requested';
+    channelEvent.summary_code = 'channels.room.join_requested';
+    channelEvent.outcome = 'started';
+    channelEvent.timestamp_unix_ms = 1700000000000;
+    channelEvent.attributes = [{
+        key: 'hub',
+        value: {
+            type: 'identifier',
+            value: { kind: 'hub', pseudonym: 'masked-hub-token-123456', ordinal: 2 }
+        }
+    }];
+    ctx.activityEvents = [channelEvent];
+    ctx.renderActivityFilters();
+    assert(ui.ids['activity-filters'].innerHTML.indexOf('Channels') !== -1);
+    assert(ui.ids['activity-filters'].innerHTML.indexOf('Links') === -1);
+
+    ctx.renderActivityFeed();
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('Channel join requested') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-area="channels"') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('masked-hub-token-123456') === -1);
+
+    ctx.activityExpandedSequence = '7';
+    ctx.renderActivityFeed();
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('channels.room.join_requested') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('Hub 2 · masked-hu…3456') !== -1);
+});
+
+test('identity UI reset clears canonical visible state without issuing a Stop command', async function() {
+    var ui = loadUiHarness();
+    var ctx = ui.context;
+    ctx.activityProfile = 'trace';
     ctx.activityCaptureState = 'capturing';
-    ctx.activityEnabled = true;
-    ctx.activityLog = [{ type: 'message', message: 'old identity', timestamp: 1, level: 'standard' }];
+    ctx.activityEvents = [event(SESSION_A, '1')];
     var commands = [];
     ctx.RS.invoke = function(name) { commands.push(name); return Promise.resolve(); };
     ctx.activityBootstrap = controllerLibrary.createActivityBootstrap({
@@ -1003,20 +1017,19 @@ test('identity UI reset clears typed/visible state and resets Detailed without a
             ctx._activityControlPending = false;
             ctx.activityStatus = null;
             ctx.activityCaptureState = 'off';
-            ctx.activityEnabled = false;
-            ctx.activityLevel = 'standard';
-            ctx.activityLog = [];
+            ctx.activityProfile = 'normal';
+            ctx.activityEvents = [];
         },
         retryDelays: [],
         diagnose: function() {}
     });
     ctx.activityBootstrap.identityTransition();
-    assert.strictEqual(ctx.activityLevel, 'standard');
-    assert.strictEqual(ctx.activityLog.length, 0);
+    assert.strictEqual(ctx.activityProfile, 'normal');
+    assert.strictEqual(ctx.activityEvents.length, 0);
     assert.strictEqual(commands.indexOf('activity_stop'), -1);
 });
 
-test('typed batches never render or feed the legacy activityLog', async function() {
+test('typed batches publish canonical events without a legacy network_event listener', async function() {
     var statusCalls = 0;
     var harness = makeImmediateController(function(name) {
         if (name === 'activity_status') {
@@ -1027,27 +1040,29 @@ test('typed batches never render or feed the legacy activityLog', async function
             oldest: '1', latest: '1', nextAfter: '1'
         }));
     });
-    var legacy = [{ message: 'legacy only' }];
     harness.controller.start();
     await flush(60);
     harness.handlers.activity_batch_v1(batch(SESSION_A, [event(SESSION_A, '1')]));
     await flush();
-    assert.strictEqual(legacy.length, 1);
-    var handleStart = activitySource.indexOf('function handleBatch');
-    var handleEnd = activitySource.indexOf('\n    var listenerSpecs', handleStart);
-    var handleSource = activitySource.slice(handleStart, handleEnd);
-    assert.strictEqual(handleSource.indexOf('activityLog'), -1);
-    assert.strictEqual(handleSource.indexOf('addActivityEntry'), -1);
+    assert.deepStrictEqual(
+        harness.eventSnapshots[harness.eventSnapshots.length - 1].map(function(value) { return value.sequence; }),
+        ['1']
+    );
+    assert.strictEqual(activitySource.indexOf("RS.listen('network_event'"), -1);
+    assert.strictEqual(activitySource.indexOf("RS.listen('network_log_level_changed'"), -1);
 });
 
-test('Activity state is never persisted and only safe accessibility attributes were added', function() {
+test('Activity state stays session-only and the transformed controls are explicit and accessible', function() {
     assert.strictEqual(activitySource.indexOf('localStorage'), -1);
     assert.strictEqual(activitySource.indexOf('sessionStorage'), -1);
-    assert.strictEqual(activitySource.indexOf('rs-activity-level'), -1);
-    assert(indexSource.indexOf('id="activity-enabled-toggle" aria-label="Capture network activity"') !== -1);
-    assert(indexSource.indexOf('data-level="essential" aria-pressed="false"') !== -1);
-    assert(indexSource.indexOf('data-level="standard" aria-pressed="true"') !== -1);
-    assert(indexSource.indexOf('data-level="detailed" aria-pressed="false"') !== -1);
+    assert.strictEqual(activitySource.indexOf('enable_network_log'), -1);
+    assert.strictEqual(activitySource.indexOf('set_network_log_level'), -1);
+    assert(indexSource.indexOf('id="activity-capture-btn"') !== -1);
+    assert(indexSource.indexOf('data-profile="normal" aria-pressed="true"') !== -1);
+    assert(indexSource.indexOf('data-profile="trace" aria-pressed="false"') !== -1);
+    assert(indexSource.indexOf('id="activity-search-input" type="search"') !== -1);
+    assert(indexSource.indexOf('autocapitalize="off"') !== -1);
+    assert(indexSource.indexOf('role="log" aria-live="polite"') !== -1);
 });
 
 (async function run() {

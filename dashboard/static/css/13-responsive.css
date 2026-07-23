@@ -24,10 +24,58 @@
     .network-main.subtab-activity .network-activity {
         flex: 1;
         max-height: none;
-        overflow-y: auto;
+        overflow: hidden;
         margin-bottom: var(--space-4);
     }
-    .activity-header { display: none; }
+    .activity-header {
+        padding: var(--space-4) var(--space-5);
+        align-items: center;
+    }
+    .activity-subtitle { display: none; }
+    .activity-controls .nr-btn {
+        min-height: 36px;
+        padding-inline: var(--space-4);
+    }
+    .activity-toolbar {
+        padding: var(--space-3) var(--space-4);
+    }
+    .activity-filter-bar {
+        align-items: stretch;
+        flex-direction: column;
+        gap: var(--space-2);
+        padding: var(--space-3) var(--space-4);
+    }
+    .activity-filters {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        scrollbar-width: none;
+        padding-bottom: 1px;
+    }
+    .activity-filters::-webkit-scrollbar { display: none; }
+    .activity-filter-chip { flex-shrink: 0; }
+    .activity-filter-problems { margin-left: 0; }
+    .activity-result-count { align-self: flex-end; }
+    .activity-event {
+        grid-template-columns: 16px minmax(0, 1fr) 16px;
+        gap: var(--space-2);
+        padding: var(--space-4);
+    }
+    .activity-event-heading {
+        align-items: flex-start;
+        gap: var(--space-3);
+    }
+    .activity-event-summary {
+        font-size: var(--mobile-list-detail-size);
+    }
+    .activity-event-details {
+        margin-top: var(--space-3);
+        padding: var(--space-3);
+    }
+    .activity-event-details > div {
+        grid-template-columns: minmax(76px, 0.34fr) minmax(0, 1fr);
+        gap: var(--space-3);
+    }
     .pulse-identity { display: none; }
     .network-pulse {
         padding: var(--space-3) var(--space-5);
@@ -3119,7 +3167,7 @@
     .conn-iface-stats,
     .conn-iface-empty,
     .activity-empty,
-    .activity-entry,
+    .activity-event,
     .system-subsection-desc,
     .relay-card-details,
     .inline-hint,
@@ -3148,8 +3196,8 @@
     .conv-time,
     .contacts-row-status,
     .games-session-time,
-    .activity-entry-time,
-    .activity-entry-detail,
+    .activity-event-time,
+    .activity-event-meta,
     .settings-relay-badge {
         font-size: var(--mobile-list-meta-size);
         line-height: 1.3;
@@ -3235,7 +3283,7 @@
         min-height: 44px;
         font-size: var(--mobile-list-detail-size);
     }
-    .activity-level-btn,
+    .activity-profile-btn,
     .activity-filter-chip {
         min-height: 34px;
         font-size: var(--mobile-list-meta-size);
@@ -3287,10 +3335,9 @@
         font-size: var(--mobile-list-title-size);
     }
 
-    .activity-entry {
+    .activity-event {
         min-height: 44px;
-        padding: var(--space-3) var(--space-5);
-        align-items: flex-start;
+        padding: var(--space-3) var(--space-4);
     }
 
     .settings-row-label,

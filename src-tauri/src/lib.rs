@@ -724,8 +724,6 @@ pub fn run() {
             ratspeak_tauri::commands::contacts::purge_unverified_blackholes,
             ratspeak_tauri::commands::contacts::check_contact_status,
             ratspeak_tauri::commands::system::dismiss_alert,
-            ratspeak_tauri::commands::network::enable_network_log,
-            ratspeak_tauri::commands::network::set_network_log_level,
             ratspeak_tauri::commands::network::set_propagation_node,
             ratspeak_tauri::commands::network::set_propagation_mode,
             ratspeak_tauri::commands::network::set_propagation_hosting,

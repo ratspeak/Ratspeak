@@ -483,7 +483,7 @@ fn empty_ingress_diagnostics() -> Value {
     })
 }
 
-async fn emit_ingress_diagnostics_snapshot(
+pub(crate) async fn emit_ingress_diagnostics_snapshot(
     state: &Arc<AppState>,
     expected_fence: crate::state::ActivityRequestFence,
 ) {

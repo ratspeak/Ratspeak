@@ -1,20 +1,13 @@
-var activityLog = [];
-var activityEnabled = false;
-var activityLevel = 'standard';
+var activityEvents = [];
 var activityCaptureState = 'off';
 var activityStatus = null;
-var activityFilters = {
-    all: true,
-    announce: true,
-    path: true,
-    message: true,
-    lxst: true,
-    interface: true,
-    link: true,
-    error: true
-};
+var activityProfile = 'normal';
+var activityAreaFilter = 'all';
+var activityProblemsOnly = false;
+var activitySearchQuery = '';
+var activityExpandedSequence = null;
 
-var ACTIVITY_MAX_ENTRIES = 500;
+var ACTIVITY_MAX_RENDERED = 500;
 var _activityRenderScheduled = false;
 var _activityControlToken = 0;
 var _activityControlPending = false;
@@ -23,32 +16,63 @@ var _activityControlPending = false;
 var activityStickToBottom = true;
 var ACTIVITY_STICK_TOLERANCE_PX = 8;
 
-var ACTIVITY_FILTER_LABELS = {
-    all: 'All',
-    announce: 'Announces',
-    path: 'Paths',
-    message: 'Messages',
-    lxst: 'LXST',
-    interface: 'Interfaces',
-    link: 'Links',
-    error: 'Errors'
+var ACTIVITY_AREA_ORDER = [
+    'network',
+    'interfaces',
+    'links',
+    'messages',
+    'channels',
+    'calls',
+    'apps',
+    'ratspeak'
+];
+
+var ACTIVITY_AREA_LABELS = {
+    network: 'Network',
+    interfaces: 'Interfaces',
+    links: 'Links',
+    messages: 'Messages',
+    channels: 'Channels',
+    calls: 'Calls',
+    apps: 'Apps',
+    ratspeak: 'Ratspeak'
 };
 
-// essential < standard < detailed
-var LEVEL_HIERARCHY = { essential: 0, standard: 1, detailed: 2 };
-
-var LEVEL_TYPES = {
-    essential: ['error'],
-    standard: ['error', 'message', 'lxst', 'interface', 'link'],
-    detailed: ['error', 'message', 'lxst', 'interface', 'link', 'announce', 'path']
+var ACTIVITY_SUBJECT_LABELS = {
+    'diagnostics.capture': 'Capture',
+    'diagnostics.worker': 'Activity recorder',
+    'diagnostics': 'Activity',
+    'app.runtime': 'Ratspeak',
+    'storage.db': 'Local storage',
+    'ipc': 'App event',
+    'rns.transport': 'Reticulum',
+    'rns.path': 'Path',
+    'rns.announce': 'Announce',
+    'rns.security': 'Network input',
+    'rns.packet': 'Packet',
+    'rns.link': 'Link',
+    'resource': 'Resource transfer',
+    'lxmf.delivery': 'Message',
+    'lxmf.propagation': 'Offline Inbox',
+    'lxmf.inbound': 'Incoming message',
+    'lxst.service': 'Voice service',
+    'lxst.call': 'Call',
+    'lxst.media': 'Call media',
+    'channels.session': 'Channel session',
+    'channels.room': 'Channel',
+    'channels.envelope': 'Channel message',
+    'channels.heartbeat': 'Channel heartbeat',
+    'interface': 'Interface',
+    'lrgp.action': 'Game action'
 };
+var ACTIVITY_SUBJECT_PREFIXES = Object.keys(ACTIVITY_SUBJECT_LABELS).sort(function(left, right) {
+    return right.length - left.length;
+});
 
 var ACTIVITY_U64_MAX = '18446744073709551615';
 var ACTIVITY_REPLAY_MAX_EVENTS = 50;
 var ACTIVITY_REPLAY_MAX_BYTES = 65536;
 var ACTIVITY_LISTENER_RETRY_DELAYS = [100, 200, 400, 800, 1600, 2000];
-var activityLegacyGenerationFloor = null;
-var activityLegacyBlocked = false;
 
 function activityIsCanonicalU64(value, allowZero) {
     if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) return false;
@@ -76,27 +100,6 @@ function activityIncrementU64(value) {
         digits[i] = '0';
     }
     return '1' + digits.join('');
-}
-
-function activityAdvanceLegacyGenerationFloor(generation) {
-    if (!activityIsCanonicalU64(generation, true)) return false;
-    if (activityLegacyGenerationFloor == null
-        || activityCompareU64(generation, activityLegacyGenerationFloor) > 0) {
-        activityLegacyGenerationFloor = generation;
-    }
-    return true;
-}
-
-function activityLegacyEventAllowed(entry) {
-    if (activityLegacyBlocked) return false;
-    if (!entry || !activityIsCanonicalU64(entry.capture_generation, true)) return false;
-    return activityLegacyGenerationFloor == null
-        || activityCompareU64(entry.capture_generation, activityLegacyGenerationFloor) >= 0;
-}
-
-function activityPruneLegacyBefore(generation) {
-    if (!activityAdvanceLegacyGenerationFloor(generation)) return;
-    activityLog = activityLog.filter(activityLegacyEventAllowed);
 }
 
 function activitySequenceSort(left, right) {
@@ -207,9 +210,9 @@ function createActivityBootstrap(dependencies) {
         || (typeof isMobile === 'function' && isMobile());
     var maxEvents = deps.maxEvents || (mobileRuntime ? 2000 : 5000);
     var onStatus = deps.onStatus || function() {};
+    var onEvents = deps.onEvents || function() {};
     var onIdentityTransition = deps.onIdentityTransition || function() {};
     var onPrivacyBoundary = deps.onPrivacyBoundary || function() {};
-    var onLegacyClear = deps.onLegacyClear || function() {};
     var diagnose = deps.diagnose || function() {
         if (window.RS && typeof window.RS.diag === 'function') {
             var args = Array.prototype.slice.call(arguments);
@@ -244,6 +247,10 @@ function createActivityBootstrap(dependencies) {
     function transition(phase, reason) {
         state.phase = phase;
         if (reason) state.lastReason = reason;
+    }
+
+    function publishEvents() {
+        onEvents(state.events.slice(), state.status, state.phase);
     }
 
     function nextEpoch(phase, reason) {
@@ -314,7 +321,6 @@ function createActivityBootstrap(dependencies) {
             ? payload.generation
             : null;
         state.identityQuarantine = true;
-        activityLegacyBlocked = true;
         onIdentityTransition();
         if (mustReattach) {
             state.retryTimer = schedule(function() {
@@ -350,6 +356,7 @@ function createActivityBootstrap(dependencies) {
         }
         var merged = activityMergeEvents(state.events, batch.events, maxEvents);
         state.events = merged.events;
+        publishEvents();
         if (merged.conflict || !activityEventsAreContiguous(state.events)) {
             requestResync(merged.conflict ? 'conflicting_duplicate' : 'live_sequence_gap', true);
         }
@@ -374,6 +381,7 @@ function createActivityBootstrap(dependencies) {
         } else if (state.captureSession === status.capture_session) {
             state.events = pruneBeforeOldest(state.events, status.oldest);
             state.queuedLive = pruneBeforeOldest(state.queuedLive, status.oldest);
+            publishEvents();
         }
         state.status = status;
         onStatus(status);
@@ -415,17 +423,6 @@ function createActivityBootstrap(dependencies) {
         requestResync(reason, true);
     }
 
-    function handleLegacyClear(payload) {
-        if (state.identityQuarantine) return;
-        if (!payload || payload.version !== 1
-            || !activityIsCanonicalU64(payload.capture_generation, true)) {
-            requestResync('invalid_legacy_clear_notification', true);
-            return;
-        }
-        onLegacyClear(payload.capture_generation);
-        requestResync('legacy_clear_notification', true);
-    }
-
     var listenerSpecs = [
         ['identity_switching', beginIdentityTransition],
         ['identity_switched', function(payload) {
@@ -437,7 +434,6 @@ function createActivityBootstrap(dependencies) {
         }],
         ['activity_status_v1', handleStatusNotification],
         ['activity_boundary_v1', handleBoundary],
-        ['activity_legacy_cleared_v1', handleLegacyClear],
         ['activity_batch_v1', handleBatch]
     ];
 
@@ -599,6 +595,7 @@ function createActivityBootstrap(dependencies) {
         state.queueInvalid = false;
         state.recoveryAttempts = 0;
         transition('live', 'reconciled');
+        publishEvents();
         if (state.pendingResync) {
             state.pendingResync = false;
             requestResync('pending_resync', true);
@@ -744,7 +741,6 @@ function createActivityBootstrap(dependencies) {
             listenersAttached: state.listenersAttached,
             identityGeneration: state.identityGeneration,
             identityQuarantine: state.identityQuarantine,
-            legacyBlocked: activityLegacyBlocked,
             lastReason: state.lastReason
         };
     }
@@ -769,44 +765,45 @@ window.RS.createActivityBootstrap = createActivityBootstrap;
 
 var activityBootstrap = createActivityBootstrap({
     onStatus: function(status) {
-        if (activityLegacyBlocked) {
-            activityLegacyGenerationFloor = status.ingress_generation;
-            activityLegacyBlocked = false;
-        }
         applyActivityStatus(status);
+    },
+    onEvents: function(events) {
+        activityEvents = events.slice();
+        if (activityExpandedSequence && !activityEvents.some(function(event) {
+            return event.sequence === activityExpandedSequence;
+        })) {
+            activityExpandedSequence = null;
+        }
+        scheduleActivityRender();
     },
     onIdentityTransition: function() {
         _activityControlToken += 1;
         _activityControlPending = false;
         activityStatus = null;
         activityCaptureState = 'off';
-        activityEnabled = false;
-        activityLevel = 'standard';
-        activityLog = [];
+        activityProfile = 'normal';
+        activityEvents = [];
+        activityAreaFilter = 'all';
+        activityProblemsOnly = false;
+        activitySearchQuery = '';
+        activityExpandedSequence = null;
         activityStickToBottom = true;
         setActivityControlPending(false);
         updateActivityUI();
+        renderActivityFilters();
         renderActivityFeed();
     },
-    onPrivacyBoundary: function(status, reason) {
+    onPrivacyBoundary: function(status) {
         _activityControlToken += 1;
         _activityControlPending = false;
         activityStatus = status;
         activityCaptureState = 'off';
-        activityEnabled = false;
-        activityLevel = 'standard';
-        activityLegacyGenerationFloor = status && status.ingress_generation
-            ? status.ingress_generation
-            : null;
-        activityLegacyBlocked = reason === 'identity_hard_reset';
-        activityLog = [];
+        activityProfile = 'normal';
+        activityEvents = [];
+        activityExpandedSequence = null;
         setActivityControlPending(false);
         updateActivityUI();
-        renderActivityFeed();
-    },
-    onLegacyClear: function(generation) {
-        activityPruneLegacyBefore(generation);
-        activityStickToBottom = true;
+        renderActivityFilters();
         renderActivityFeed();
     }
 });
@@ -814,31 +811,21 @@ window.RS.activityBootstrap = activityBootstrap;
 
 function applyActivityStatus(status) {
     if (!activityValidStatus(status)) return false;
-    if (activityLegacyBlocked) return false;
     if (activityStatus && activityStatusIsOlder(status, activityStatus)) return false;
     activityStatus = status;
     activityCaptureState = status.state;
-    activityEnabled = status.state === 'capturing';
-    if (status.state === 'stopped') {
-        // Resume is always a Normal capture transition, even when the retained
-        // buffer's historical stop boundary reports Trace.
-        activityLevel = 'standard';
-    } else if (status.profile === 'trace') {
-        activityLevel = 'detailed';
-    } else if (activityLevel === 'detailed') {
-        activityLevel = 'standard';
-    }
+    activityProfile = status.profile === 'trace' ? 'trace' : 'normal';
     updateActivityUI();
     return true;
 }
 
 function activityControlElements() {
     var elements = [];
-    ['activity-enable-btn', 'activity-enabled-toggle', 'activity-clear-btn'].forEach(function(id) {
+    ['activity-enable-btn', 'activity-capture-btn', 'activity-clear-btn'].forEach(function(id) {
         var element = document.getElementById(id);
         if (element) elements.push(element);
     });
-    document.querySelectorAll('.activity-level-btn').forEach(function(element) { elements.push(element); });
+    document.querySelectorAll('.activity-profile-btn').forEach(function(element) { elements.push(element); });
     return elements;
 }
 
@@ -857,10 +844,9 @@ function beginActivityControl(origin) {
         token: ++_activityControlToken,
         origin: origin,
         focus: document.activeElement,
-        enabled: activityEnabled,
         captureState: activityCaptureState,
         status: activityStatus,
-        level: activityLevel
+        profile: activityProfile
     };
     setActivityControlPending(true);
     return context;
@@ -877,10 +863,9 @@ function finishActivityControl(context) {
 
 function rollbackActivityControl(context) {
     if (context.token !== _activityControlToken) return;
-    activityEnabled = context.enabled;
     activityCaptureState = context.captureState;
     activityStatus = context.status;
-    activityLevel = context.level;
+    activityProfile = context.profile;
     updateActivityUI();
 }
 
@@ -896,25 +881,25 @@ function reconcileActivityStatus(context) {
 function initActivity() {
     updateActivityUI();
     renderActivityFilters();
+    renderActivityFeed();
 
     var enableBtn = document.getElementById('activity-enable-btn');
     if (enableBtn) {
         enableBtn.addEventListener('click', function() {
-            toggleActivityEnabled(true);
+            setActivityCapture(true);
         });
     }
 
-    var toggle = document.getElementById('activity-enabled-toggle');
-    if (toggle) {
-        toggle.addEventListener('change', function() {
-            toggleActivityEnabled(this.checked);
+    var captureBtn = document.getElementById('activity-capture-btn');
+    if (captureBtn) {
+        captureBtn.addEventListener('click', function() {
+            setActivityCapture(activityCaptureState !== 'capturing');
         });
     }
 
-    var levelBtns = document.querySelectorAll('.activity-level-btn');
-    levelBtns.forEach(function(btn) {
+    document.querySelectorAll('.activity-profile-btn').forEach(function(btn) {
         btn.addEventListener('click', function() {
-            setActivityLevel(this.getAttribute('data-level'));
+            setActivityProfile(this.getAttribute('data-profile'));
         });
     });
 
@@ -925,35 +910,50 @@ function initActivity() {
         });
     }
 
+    var searchInput = document.getElementById('activity-search-input');
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            activitySearchQuery = this.value.trim().toLowerCase();
+            activityStickToBottom = !activitySearchQuery;
+            renderActivityFeed();
+        });
+    }
+
+    var filters = document.getElementById('activity-filters');
+    if (filters) {
+        filters.addEventListener('click', function(event) {
+            var button = activityClosestEventTarget(event.target, 'activity-filter-chip', filters);
+            if (!button) return;
+            var area = button.getAttribute('data-area');
+            if (area) {
+                activityAreaFilter = area;
+            } else if (button.getAttribute('data-problems') === 'true') {
+                activityProblemsOnly = !activityProblemsOnly;
+            }
+            activityStickToBottom = false;
+            renderActivityFilters();
+            renderActivityFeed();
+        });
+    }
+
     var feed = document.getElementById('activity-feed');
     if (feed) {
         feed.addEventListener('scroll', function() {
             var distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
             activityStickToBottom = distanceFromBottom <= ACTIVITY_STICK_TOLERANCE_PX;
         }, { passive: true });
+        feed.addEventListener('click', function(event) {
+            var row = activityClosestEventTarget(event.target, 'activity-event', feed);
+            if (row) toggleActivityEvent(row.getAttribute('data-sequence'));
+        });
+        feed.addEventListener('keydown', function(event) {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            var row = activityClosestEventTarget(event.target, 'activity-event', feed);
+            if (!row) return;
+            event.preventDefault();
+            toggleActivityEvent(row.getAttribute('data-sequence'));
+        });
     }
-
-    RS.listen('network_event', function(data) {
-        if (!activityEnabled) return;
-        if (!activityLegacyEventAllowed(data)) return;
-        addActivityEntry(data);
-    });
-
-    RS.listen('network_log_level_changed', function(data) {
-        if (!data || !activityValidStatus(data.activity)
-            || activityLegacyBlocked
-            || (activityStatus && activityStatusIsOlder(data.activity, activityStatus))) {
-            return;
-        }
-        if (data && data.level) {
-            activityLevel = data.level;
-            updateLevelButtons();
-        }
-        applyActivityStatus(data.activity);
-        if (data && data.restart_required) {
-            showToast('Log level updated. Restart required to take effect', 'toast-orange', 5000);
-        }
-    });
 
     document.addEventListener('rs-lifecycle-foreground-handled', function(event) {
         var detail = event && event.detail ? event.detail : {};
@@ -965,21 +965,37 @@ function initActivity() {
     activityBootstrap.start();
 }
 
-function toggleActivityEnabled(enabled) {
-    var context = beginActivityControl(enabled ? 'start' : 'stop');
+function setActivityCapture(enabled) {
+    var command = null;
+    var toastText = null;
+    var toastClass = 'toast-green';
+    if (enabled && activityCaptureState === 'off') {
+        command = 'activity_start';
+        toastText = 'Activity started';
+    } else if (enabled && activityCaptureState === 'stopped') {
+        command = 'activity_resume';
+        toastText = 'Activity resumed';
+    } else if (!enabled && activityCaptureState === 'capturing') {
+        command = 'activity_stop';
+        toastText = 'Activity paused';
+        toastClass = 'toast-orange';
+    }
+    if (!command || _activityControlPending) return Promise.resolve(activityStatus);
+
+    var context = beginActivityControl(command);
     updateActivityUI();
-    return RS.invoke('enable_network_log', { args: { enabled: enabled, level: activityLevel } }).then(function(response) {
-        if (context.token !== _activityControlToken) return response;
-        if (!response || !applyActivityStatus(response.activity)) {
-            return reconcileActivityStatus(context).then(function() { return response; });
+    return RS.invoke(command).then(function(status) {
+        if (context.token !== _activityControlToken) return status;
+        if (!applyActivityStatus(status)) {
+            return reconcileActivityStatus(context).then(function() { return status; });
         }
         activityBootstrap.forceResync('capture_control_acknowledged');
-        return response;
-    }).then(function(response) {
+        return status;
+    }).then(function(status) {
         if (context.token === _activityControlToken && typeof showToast === 'function') {
-            showToast(enabled ? 'Network logging enabled' : 'Network logging stopped', enabled ? 'toast-green' : 'toast-orange', 2000);
+            showToast(toastText, toastClass, 2000);
         }
-        return response;
+        return status;
     }).catch(function(error) {
         rollbackActivityControl(context);
         return reconcileActivityStatus(context).then(function() { throw error; });
@@ -991,28 +1007,26 @@ function toggleActivityEnabled(enabled) {
     });
 }
 
-function setActivityLevel(level) {
-    if (!LEVEL_HIERARCHY.hasOwnProperty(level)) return;
+function setActivityProfile(profile) {
+    if (profile !== 'normal' && profile !== 'trace') return Promise.resolve(activityStatus);
+    if (activityCaptureState !== 'capturing' || profile === activityProfile || _activityControlPending) {
+        return Promise.resolve(activityStatus);
+    }
     var context = beginActivityControl('profile');
-    activityLevel = level;
-    updateLevelButtons();
-    return RS.invoke('set_network_log_level', { level: level }).then(function(response) {
-        if (context.token !== _activityControlToken) return response;
-        if (response && response.level && LEVEL_HIERARCHY.hasOwnProperty(response.level)) {
-            activityLevel = response.level;
-        }
-        if (!response || !applyActivityStatus(response.activity)) {
-            return reconcileActivityStatus(context).then(function() { return response; });
+    return RS.invoke('activity_set_profile', { args: { profile: profile } }).then(function(status) {
+        if (context.token !== _activityControlToken) return status;
+        if (!applyActivityStatus(status)) {
+            return reconcileActivityStatus(context).then(function() { return status; });
         }
         activityBootstrap.forceResync('profile_control_acknowledged');
-        return response;
+        return status;
     }).catch(function(error) {
         rollbackActivityControl(context);
         return reconcileActivityStatus(context).then(function() { throw error; });
     }).catch(function() {
         if (typeof showToast === 'function') showToast('Activity profile could not be changed', 'toast-red', 4000);
     }).then(function(result) {
-        updateLevelButtons();
+        updateProfileButtons();
         renderActivityFeed();
         finishActivityControl(context);
         return result;
@@ -1024,8 +1038,10 @@ function clearActivity() {
     return RS.invoke('activity_clear').then(function(status) {
         if (context.token !== _activityControlToken) return status;
         if (!applyActivityStatus(status)) throw new Error('Invalid Activity clear acknowledgement');
-        activityPruneLegacyBefore(status.ingress_generation);
+        activityEvents = [];
+        activityExpandedSequence = null;
         activityStickToBottom = true;
+        renderActivityFilters();
         renderActivityFeed();
         activityBootstrap.forceResync('clear_acknowledged');
         return status;
@@ -1044,31 +1060,47 @@ function updateActivityUI() {
     var gate = document.getElementById('activity-privacy-gate');
     var active = document.getElementById('activity-active');
     var clearBtn = document.getElementById('activity-clear-btn');
-    var toggle = document.getElementById('activity-enabled-toggle');
+    var captureBtn = document.getElementById('activity-capture-btn');
+    var status = document.getElementById('activity-status');
+    var statusLabel = document.getElementById('activity-status-label');
 
     var hasSession = activityCaptureState === 'capturing' || activityCaptureState === 'stopped';
     if (hasSession) {
         if (gate) gate.style.display = 'none';
         if (active) active.style.display = '';
         if (clearBtn) clearBtn.style.display = '';
-        if (toggle) toggle.checked = activityCaptureState === 'capturing';
+        if (captureBtn) {
+            captureBtn.style.display = '';
+            captureBtn.textContent = activityCaptureState === 'capturing' ? 'Pause' : 'Resume';
+            captureBtn.setAttribute(
+                'aria-label',
+                activityCaptureState === 'capturing' ? 'Pause Activity capture' : 'Resume Activity capture'
+            );
+            captureBtn.setAttribute('data-state', activityCaptureState);
+        }
     } else {
         if (gate) gate.style.display = '';
         if (active) active.style.display = 'none';
         if (clearBtn) clearBtn.style.display = 'none';
-        if (toggle) toggle.checked = false;
+        if (captureBtn) captureBtn.style.display = 'none';
     }
-    if (toggle) toggle.disabled = _activityControlPending;
-    if (clearBtn) clearBtn.disabled = _activityControlPending;
+    if (status) status.setAttribute('data-state', activityCaptureState);
+    if (statusLabel) {
+        statusLabel.textContent = activityCaptureState === 'capturing'
+            ? 'Recording'
+            : (activityCaptureState === 'stopped' ? 'Paused' : 'Off');
+    }
+    if (captureBtn) captureBtn.disabled = _activityControlPending;
+    if (clearBtn) clearBtn.disabled = _activityControlPending || activityEvents.length === 0;
     var enableBtn = document.getElementById('activity-enable-btn');
     if (enableBtn) enableBtn.disabled = _activityControlPending;
-    updateLevelButtons();
+    updateProfileButtons();
 }
 
-function updateLevelButtons() {
-    var btns = document.querySelectorAll('.activity-level-btn');
+function updateProfileButtons() {
+    var btns = document.querySelectorAll('.activity-profile-btn');
     btns.forEach(function(btn) {
-        if (btn.getAttribute('data-level') === activityLevel) {
+        if (btn.getAttribute('data-profile') === activityProfile) {
             btn.classList.add('active');
             btn.setAttribute('aria-pressed', 'true');
         } else {
@@ -1083,59 +1115,55 @@ function renderActivityFilters() {
     var container = document.getElementById('activity-filters');
     if (!container) return;
 
-    var html = '';
-    var types = ['all', 'announce', 'path', 'message', 'lxst', 'interface', 'link', 'error'];
-    for (var i = 0; i < types.length; i++) {
-        var type = types[i];
-        var label = ACTIVITY_FILTER_LABELS[type];
-        var isActive = activityFilters[type];
-        html += '<button class="activity-filter-chip' + (isActive ? ' active' : '') + '" data-filter="' + type + '" aria-pressed="' + (isActive ? 'true' : 'false') + '">' + label + '</button>';
+    var areaCounts = Object.create(null);
+    var problemCount = 0;
+    for (var i = 0; i < activityEvents.length; i++) {
+        var event = activityEvents[i];
+        areaCounts[event.area] = (areaCounts[event.area] || 0) + 1;
+        if (activityIsProblem(event)) problemCount++;
+    }
+    if (activityAreaFilter !== 'all' && !areaCounts[activityAreaFilter]) {
+        activityAreaFilter = 'all';
+    }
+    var html = '<button class="activity-filter-chip' + (activityAreaFilter === 'all' ? ' active' : '') +
+        '" data-area="all" aria-pressed="' + (activityAreaFilter === 'all' ? 'true' : 'false') + '">All</button>';
+    for (var areaIndex = 0; areaIndex < ACTIVITY_AREA_ORDER.length; areaIndex++) {
+        var area = ACTIVITY_AREA_ORDER[areaIndex];
+        if (!areaCounts[area]) continue;
+        var isActive = activityAreaFilter === area;
+        html += '<button class="activity-filter-chip' + (isActive ? ' active' : '') +
+            '" data-area="' + area + '" aria-pressed="' + (isActive ? 'true' : 'false') + '">' +
+            escapeHtml(ACTIVITY_AREA_LABELS[area] || activityHumanizeCode(area)) + '</button>';
+    }
+    if (problemCount > 0) {
+        html += '<button class="activity-filter-chip activity-filter-problems' +
+            (activityProblemsOnly ? ' active' : '') +
+            '" data-problems="true" aria-pressed="' + (activityProblemsOnly ? 'true' : 'false') +
+            '">Problems <span>' + problemCount + '</span></button>';
+    } else {
+        activityProblemsOnly = false;
     }
     container.innerHTML = html;
-
-    container.querySelectorAll('.activity-filter-chip').forEach(function(chip) {
-        chip.addEventListener('click', function() {
-            toggleActivityFilter(this.getAttribute('data-filter'));
-        });
-    });
 }
 
-function toggleActivityFilter(type) {
-    if (type === 'all') {
-        var allOn = activityFilters.all;
-        var keys = Object.keys(activityFilters);
-        for (var i = 0; i < keys.length; i++) {
-            activityFilters[keys[i]] = !allOn;
-        }
-    } else {
-        activityFilters[type] = !activityFilters[type];
-        var allSelected = true;
-        var filterKeys = ['announce', 'path', 'message', 'lxst', 'interface', 'link', 'error'];
-        for (var i = 0; i < filterKeys.length; i++) {
-            if (!activityFilters[filterKeys[i]]) { allSelected = false; break; }
-        }
-        activityFilters.all = allSelected;
+function activityClosestEventTarget(target, className, boundary) {
+    var current = target;
+    while (current && current !== boundary) {
+        if (current.classList && current.classList.contains(className)) return current;
+        current = current.parentElement;
     }
-    renderActivityFilters();
+    return null;
+}
+
+function toggleActivityEvent(sequence) {
+    if (!activityIsCanonicalU64(sequence, false)) return;
+    activityExpandedSequence = activityExpandedSequence === sequence ? null : sequence;
+    activityStickToBottom = false;
     renderActivityFeed();
-}
-
-function addActivityEntry(entry) {
-    if (!activityLegacyEventAllowed(entry)) return;
-    var item = {
-        type: entry.type || 'interface',
-        message: entry.message || '',
-        detail: entry.detail || '',
-        timestamp: entry.timestamp || Date.now(),
-        level: entry.level || 'standard',
-        capture_generation: entry.capture_generation
-    };
-
-    activityLog.push(item);
-    if (activityLog.length > ACTIVITY_MAX_ENTRIES) {
-        activityLog = activityLog.slice(-ACTIVITY_MAX_ENTRIES);
+    var row = document.querySelector('[data-activity-sequence="' + sequence + '"]');
+    if (row && typeof row.focus === 'function') {
+        try { row.focus({ preventScroll: true }); } catch (_) { row.focus(); }
     }
-    scheduleActivityRender();
 }
 
 function scheduleActivityRender() {
@@ -1143,67 +1171,353 @@ function scheduleActivityRender() {
     _activityRenderScheduled = true;
     requestAnimationFrame(function() {
         _activityRenderScheduled = false;
+        renderActivityFilters();
         renderActivityFeed();
+        updateActivityUI();
     });
 }
 
-function isEntryVisible(entry) {
-    if (!activityFilters.all && !activityFilters[entry.type]) return false;
-    var entryRank = LEVEL_HIERARCHY[entry.level];
-    if (entryRank === undefined) entryRank = 1;
-    var configRank = LEVEL_HIERARCHY[activityLevel];
-    if (configRank === undefined) configRank = 1;
-    if (entryRank > configRank) return false;
-    return true;
+function activityIsProblem(event) {
+    if (event.severity === 'warning' || event.severity === 'error') return true;
+    return ['degraded', 'rejected', 'failed', 'timed_out', 'dropped'].indexOf(event.outcome) !== -1;
 }
 
-function appendActivityEntry(entry) {
-    var feed = document.getElementById('activity-feed');
-    if (!feed) return;
+function activityEventMatches(event) {
+    if (activityAreaFilter !== 'all' && event.area !== activityAreaFilter) return false;
+    if (activityProblemsOnly && !activityIsProblem(event)) return false;
+    if (!activitySearchQuery) return true;
+    return activityEventSearchText(event).indexOf(activitySearchQuery) !== -1;
+}
 
-    var empty = feed.querySelector('.activity-empty');
-    if (empty) empty.remove();
+function activityEventSearchText(event) {
+    var values = [
+        activityEventSummary(event),
+        event.kind,
+        event.summary_code,
+        event.area,
+        event.direction,
+        event.outcome,
+        event.severity,
+        event.correlation_id || ''
+    ];
+    (event.attributes || []).forEach(function(attribute) {
+        values.push(attribute.key, activityFormatAttributeValue(attribute));
+    });
+    return values.join(' ').toLowerCase();
+}
 
-    var div = document.createElement('div');
-    div.className = 'activity-entry';
-    div.setAttribute('data-type', entry.type);
-
-    var time = formatActivityTime(entry.timestamp);
-    div.innerHTML =
-        '<span class="activity-entry-time">' + time + '</span>' +
-        '<span class="activity-entry-text">' + escapeHtml(entry.message) + '</span>' +
-        (entry.detail ? '<span class="activity-entry-detail">' + escapeHtml(entry.detail) + '</span>' : '');
-
-    feed.appendChild(div);
-    while (feed.children.length > ACTIVITY_MAX_ENTRIES) {
-        feed.removeChild(feed.firstElementChild);
+function activityAttribute(event, key) {
+    var attributes = event && Array.isArray(event.attributes) ? event.attributes : [];
+    for (var i = 0; i < attributes.length; i++) {
+        if (attributes[i].key === key) return attributes[i];
     }
+    return null;
+}
 
-    if (activityStickToBottom) {
-        feed.scrollTop = feed.scrollHeight;
+function activityCodeValue(event, key) {
+    var attribute = activityAttribute(event, key);
+    return attribute && attribute.value && attribute.value.type === 'code'
+        ? attribute.value.value
+        : null;
+}
+
+function activityEventSummary(event) {
+    var code = event.summary_code || event.kind || 'activity.event';
+    var special = {
+        'diagnostics.dropped': 'Activity events dropped',
+        'diagnostics.evicted': 'Older Activity events removed',
+        'diagnostics.worker_recovered': 'Activity recorder recovered',
+        'storage.db.failed': 'Local storage unavailable',
+        'ipc.failed': 'App event delivery failed',
+        'rns.security.dropped': 'Network input rejected',
+        'rns.announce.ingress_burst_started': 'High announce traffic detected',
+        'rns.announce.ingress_burst_cleared': 'Announce traffic returned to normal',
+        'lxmf.propagation.started': 'Storing message in Offline Inbox',
+        'lxmf.propagation.succeeded': 'Message stored in Offline Inbox',
+        'lxmf.propagation.failed': 'Offline Inbox delivery failed',
+        'channels.session.greeting_observed': 'Hub greeting received',
+        'channels.session.negotiated': 'Channel session ready'
+    };
+    if (special[code]) return special[code];
+
+    var prefix = '';
+    var subject = '';
+    for (var i = 0; i < ACTIVITY_SUBJECT_PREFIXES.length; i++) {
+        var candidate = ACTIVITY_SUBJECT_PREFIXES[i];
+        if (code === candidate || code.indexOf(candidate + '.') === 0) {
+            prefix = candidate;
+            subject = ACTIVITY_SUBJECT_LABELS[candidate];
+            break;
+        }
     }
+    if (prefix === 'interface') {
+        subject = activityInterfaceLabel(activityCodeValue(event, 'interface_class'));
+    }
+    if (!subject) {
+        var pieces = code.split('.');
+        subject = activityHumanizeCode(pieces.slice(0, Math.max(1, pieces.length - 1)).join(' '));
+        prefix = pieces.slice(0, Math.max(1, pieces.length - 1)).join('.');
+    }
+    var actionCode = code === prefix ? '' : code.slice(prefix.length + 1);
+    var actions = {
+        'ready': 'ready',
+        'started': 'started',
+        'stopped': 'stopped',
+        'unavailable': 'unavailable',
+        'failed': 'failed',
+        'requested': 'requested',
+        'discovered': 'found',
+        'observed': 'observed',
+        'timed_out': 'timed out',
+        'sent': 'sent',
+        'held': 'queued',
+        'suppressed': 'suppressed',
+        'dropped': 'dropped',
+        'authenticated': 'authenticated',
+        'identified': 'identified',
+        'stale': 'became stale',
+        'recovered': 'recovered',
+        'closed': 'closed',
+        'progress': 'in progress',
+        'succeeded': 'completed',
+        'queued': 'queued',
+        'submission_failed': 'could not be queued',
+        'method_selected': 'delivery method selected',
+        'path_pending': 'waiting for a path',
+        'link_establishing': 'establishing a link',
+        'link_ready': 'link ready',
+        'link_reused': 'link reused',
+        'direct_pending': 'waiting for direct delivery',
+        'resource_started': 'resource transfer started',
+        'awaiting_proof': 'awaiting proof',
+        'delivered': 'delivered',
+        'rejected': 'rejected',
+        'deferred': 'deferred',
+        'retrying': 'retrying',
+        'accepted': 'received',
+        'connecting': 'connecting',
+        'configured': 'configured',
+        'cancelled': 'cancelled',
+        'online': 'online',
+        'offline': 'offline',
+        'degraded': 'degraded',
+        'paused': 'paused',
+        'removed': 'removed',
+        'connect_requested': 'connection requested',
+        'path_requested': 'path requested',
+        'path_discovered': 'path found',
+        'path_timed_out': 'path timed out',
+        'link_requested': 'link requested',
+        'link_authenticated': 'link authenticated',
+        'link_identification_sent': 'identity sent',
+        'hello_sent': 'hello sent',
+        'welcome_validated': 'welcome accepted',
+        'welcome_rejected': 'welcome rejected',
+        'join_requested': 'join requested',
+        'join_cancelled': 'join cancelled',
+        'join_rejected': 'join rejected',
+        'join_timed_out': 'join timed out',
+        'joined': 'joined',
+        'part_requested': 'leave requested',
+        'part_cancelled': 'leave cancelled',
+        'part_rejected': 'leave rejected',
+        'part_timed_out': 'leave timed out',
+        'parted': 'left',
+        'received': 'received',
+        'ping': 'ping sent',
+        'pong': 'pong received',
+        'profile_changed': 'detail changed',
+        'capture_started': 'started',
+        'capture_stopped': 'paused',
+        'capture_resumed': 'resumed',
+        'capture_cleared': 'cleared'
+    };
+    return (subject + (actionCode ? ' ' + (actions[actionCode] || activityHumanizeCode(actionCode).toLowerCase()) : '')).trim();
+}
+
+function activityInterfaceLabel(code) {
+    var labels = {
+        auto: 'Local Network',
+        ble_peer: 'Bluetooth Peer',
+        rnode: 'LoRa radio',
+        tcp_client: 'TCP client',
+        tcp_server: 'TCP server',
+        backbone_client: 'Backbone client',
+        backbone_server: 'Backbone server'
+    };
+    return labels[code] || 'Interface';
+}
+
+function activityHumanizeCode(value) {
+    var text = String(value || '').replace(/[._]+/g, ' ').trim();
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : 'Unknown';
+}
+
+function activityFormatBytes(bytes) {
+    var value = Number(bytes);
+    if (!isFinite(value) || value < 0) return String(bytes);
+    if (value < 1024) return value + ' B';
+    var units = ['KB', 'MB', 'GB'];
+    var unit = -1;
+    do {
+        value /= 1024;
+        unit++;
+    } while (value >= 1024 && unit < units.length - 1);
+    return (value >= 10 ? value.toFixed(0) : value.toFixed(1)) + ' ' + units[unit];
+}
+
+function activityShortToken(value) {
+    var text = String(value || '');
+    if (text.length <= 16) return text;
+    return text.slice(0, 9) + '…' + text.slice(-4);
+}
+
+function activityFormatAttributeValue(attribute) {
+    if (!attribute || !attribute.value) return 'Unknown';
+    var type = attribute.value.type;
+    var value = attribute.value.value;
+    if (type === 'boolean') return value ? 'Yes' : 'No';
+    if (type === 'code') return String(value);
+    if (type === 'endpoint') {
+        return activityHumanizeCode(value && value.class ? value.class : 'unknown') + ' endpoint';
+    }
+    if (type === 'identifier') {
+        var kind = activityHumanizeCode(value && value.kind ? value.kind : attribute.key);
+        var token = value && value.pseudonym ? activityShortToken(value.pseudonym) : '';
+        if (value && value.ordinal != null) {
+            return kind + ' ' + value.ordinal + (token ? ' · ' + token : '');
+        }
+        return token ? kind + ' · ' + token : kind;
+    }
+    if (attribute.key === 'byte_length' || attribute.key === 'mdu' || attribute.key === 'max_message_bytes'
+        || attribute.key === 'max_nick_bytes' || attribute.key === 'max_room_bytes') {
+        return activityFormatBytes(value);
+    }
+    if (attribute.key === 'duration_ms' || attribute.key === 'rtt_ms' || attribute.key === 'time_span_ms') {
+        return String(value) + ' ms';
+    }
+    if (attribute.key === 'percent') return String(value) + '%';
+    return String(value);
+}
+
+function activityAttributeLabel(key) {
+    var labels = {
+        byte_length: 'Size',
+        dropped_count: 'Dropped',
+        duplicate: 'Duplicate',
+        duration_ms: 'Duration',
+        endpoint: 'Endpoint',
+        evicted_count: 'Removed',
+        interface_class: 'Interface',
+        max_message_bytes: 'Maximum message',
+        max_nick_bytes: 'Maximum nickname',
+        max_room_bytes: 'Maximum channel name',
+        max_rooms: 'Maximum channels',
+        queue_count: 'Queued',
+        rate_per_minute: 'Rate',
+        rtt_ms: 'Round trip',
+        time_span_ms: 'Time span'
+    };
+    return labels[key] || activityHumanizeCode(key);
+}
+
+function activityOutcomeLabel(outcome) {
+    var labels = {
+        timed_out: 'Timed out',
+        in_progress: 'In progress'
+    };
+    return labels[outcome] || activityHumanizeCode(outcome);
+}
+
+function activityTimestampIso(timestamp) {
+    var date = new Date(timestamp);
+    return isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function activityEventDetails(event) {
+    var rows = [
+        ['Event', '<code>' + escapeHtml(event.kind) + '</code>']
+    ];
+    (event.attributes || []).forEach(function(attribute) {
+        rows.push([
+            activityAttributeLabel(attribute.key),
+            '<code>' + escapeHtml(activityFormatAttributeValue(attribute)) + '</code>'
+        ]);
+    });
+    if (event.correlation_id) {
+        rows.push(['Correlation', '<code>' + escapeHtml(activityShortToken(event.correlation_id)) + '</code>']);
+    }
+    if (event.direction && event.direction !== 'none') {
+        rows.push(['Direction', escapeHtml(activityHumanizeCode(event.direction))]);
+    }
+    rows.push(['Capture', escapeHtml(activityHumanizeCode(event.capture_profile || 'normal'))]);
+    rows.push(['Sequence', '<code>#' + escapeHtml(event.sequence) + '</code>']);
+
+    var html = '<dl class="activity-event-details">';
+    for (var i = 0; i < rows.length; i++) {
+        html += '<div><dt>' + escapeHtml(rows[i][0]) + '</dt><dd>' + rows[i][1] + '</dd></div>';
+    }
+    return html + '</dl>';
 }
 
 function renderActivityFeed() {
     var feed = document.getElementById('activity-feed');
     if (!feed) return;
 
-    var filtered = activityLog.filter(isEntryVisible);
+    var filtered = activityEvents.filter(activityEventMatches);
+    var visible = filtered.length > ACTIVITY_MAX_RENDERED
+        ? filtered.slice(filtered.length - ACTIVITY_MAX_RENDERED)
+        : filtered;
+    var count = document.getElementById('activity-result-count');
+    if (count) {
+        if (filtered.length === activityEvents.length) {
+            count.textContent = filtered.length + (filtered.length === 1 ? ' event' : ' events');
+        } else {
+            count.textContent = filtered.length + ' of ' + activityEvents.length;
+        }
+        if (visible.length < filtered.length) {
+            count.textContent = 'Latest ' + visible.length + ' of ' + filtered.length;
+        }
+    }
 
-    if (filtered.length === 0) {
-        feed.innerHTML = '<div class="activity-empty">Listening for network events...</div>';
+    if (visible.length === 0) {
+        var emptyMessage = activityEvents.length
+            ? 'No activity matches these filters.'
+            : (activityCaptureState === 'stopped' ? 'No activity was captured.' : 'Waiting for activity…');
+        feed.innerHTML = '<div class="activity-empty">' + emptyMessage + '</div>';
         return;
     }
 
     var html = '';
-    for (var i = 0; i < filtered.length; i++) {
-        var entry = filtered[i];
-        var time = formatActivityTime(entry.timestamp);
-        html += '<div class="activity-entry" data-type="' + entry.type + '">' +
-            '<span class="activity-entry-time">' + time + '</span>' +
-            '<span class="activity-entry-text">' + escapeHtml(entry.message) + '</span>' +
-            (entry.detail ? '<span class="activity-entry-detail">' + escapeHtml(entry.detail) + '</span>' : '') +
-        '</div>';
+    for (var i = 0; i < visible.length; i++) {
+        var event = visible[i];
+        var expanded = event.sequence === activityExpandedSequence;
+        var problem = activityIsProblem(event);
+        var outcome = event.outcome && event.outcome !== 'none' ? event.outcome : '';
+        html += '<div class="activity-event' + (expanded ? ' expanded' : '') + (problem ? ' is-problem' : '') +
+            '" data-area="' + escapeHtml(event.area) + '" data-sequence="' + escapeHtml(event.sequence) +
+            '" data-activity-sequence="' + escapeHtml(event.sequence) + '" role="button" tabindex="0" aria-expanded="' +
+            (expanded ? 'true' : 'false') + '">' +
+                '<span class="activity-event-rail"><span></span></span>' +
+                '<div class="activity-event-content">' +
+                    '<div class="activity-event-heading">' +
+                        '<span class="activity-event-summary">' + escapeHtml(activityEventSummary(event)) + '</span>' +
+                        '<time class="activity-event-time" datetime="' +
+                            escapeHtml(activityTimestampIso(event.timestamp_unix_ms)) + '">' +
+                            escapeHtml(formatActivityTime(event.timestamp_unix_ms)) + '</time>' +
+                    '</div>' +
+                    '<div class="activity-event-meta">' +
+                        '<span>' + escapeHtml(ACTIVITY_AREA_LABELS[event.area] || activityHumanizeCode(event.area)) + '</span>' +
+                        (outcome ? '<span data-outcome="' + escapeHtml(outcome) + '">' +
+                            escapeHtml(activityOutcomeLabel(outcome)) + '</span>' : '') +
+                        (event.count > 1 ? '<span>' + escapeHtml(String(event.count)) + ' events</span>' : '') +
+                    '</div>' +
+                    (expanded ? activityEventDetails(event) : '') +
+                '</div>' +
+                '<svg class="activity-event-chevron" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+                    '<polyline points="6 9 12 15 18 9"></polyline>' +
+                '</svg>' +
+            '</div>';
     }
     feed.innerHTML = html;
     if (activityStickToBottom) {

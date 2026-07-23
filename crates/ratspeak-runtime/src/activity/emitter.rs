@@ -5,13 +5,16 @@ use std::sync::Arc;
 use ratspeak_core::{EmitError, Emitter};
 
 use super::replay::{ActivityBatchSink, ActivityBatchV1, ActivityPublishError, ActivityStatusV1};
+#[cfg(test)]
 use super::schema::{
     ActivityAttributeKey, ActivityAttributeV1, ActivityEventV1, ActivitySeverity, ActivityValueV1,
 };
 
 pub const ACTIVITY_BATCH_EVENT: &str = "activity_batch_v1";
 pub const ACTIVITY_STATUS_EVENT: &str = "activity_status_v1";
+#[cfg(test)]
 pub const LEGACY_ACTIVITY_EVENT: &str = "network_event";
+#[cfg(test)]
 const LEGACY_DETAIL_MAX_CHARS: usize = 32;
 
 pub(crate) struct EmitterBatchSink {
@@ -27,29 +30,9 @@ impl EmitterBatchSink {
 impl ActivityBatchSink for EmitterBatchSink {
     fn try_publish(&self, batch: &ActivityBatchV1) -> Result<(), ActivityPublishError> {
         let payload = serde_json::to_value(batch).map_err(|_| ActivityPublishError::Rejected)?;
-        let typed_result = self
-            .emitter
+        self.emitter
             .try_emit(ACTIVITY_BATCH_EVENT, payload)
-            .map_err(map_emit_error);
-
-        // Temporary Stage 2 compatibility: the old Activity surface still
-        // listens for flattened `network_event` rows. Derive those rows only
-        // from the immutable masked event, after classification/redaction and
-        // never from a producer's raw inputs. Stage 4 removes this projector.
-        for event in batch.events() {
-            let Some(legacy) = LegacyActivityProjection::from_masked(event) else {
-                continue;
-            };
-            let payload = match serde_json::to_value(legacy) {
-                Ok(payload) => payload,
-                Err(_) => continue,
-            };
-            let _ = self.emitter.try_emit(LEGACY_ACTIVITY_EVENT, payload);
-        }
-
-        // Compatibility projection is deliberately best effort and cannot
-        // contaminate the typed recorder's IPC-health accounting.
-        typed_result
+            .map_err(map_emit_error)
     }
 
     fn try_publish_status(&self, status: &ActivityStatusV1) -> Result<(), ActivityPublishError> {
@@ -67,6 +50,7 @@ fn map_emit_error(error: EmitError) -> ActivityPublishError {
     }
 }
 
+#[cfg(test)]
 #[derive(serde::Serialize)]
 struct LegacyActivityProjection {
     #[serde(rename = "type")]
@@ -81,6 +65,7 @@ struct LegacyActivityProjection {
     capture_generation: String,
 }
 
+#[cfg(test)]
 impl LegacyActivityProjection {
     fn from_masked(event: &ActivityEventV1) -> Option<Self> {
         let message = legacy_message(event)?;
@@ -98,6 +83,7 @@ impl LegacyActivityProjection {
     }
 }
 
+#[cfg(test)]
 fn legacy_type(event: &ActivityEventV1) -> &'static str {
     if event.severity() == ActivitySeverity::Error {
         return "error";
@@ -122,6 +108,7 @@ fn legacy_type(event: &ActivityEventV1) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn legacy_level(event: &ActivityEventV1) -> &'static str {
     if matches!(
         event.severity(),
@@ -141,6 +128,7 @@ fn legacy_level(event: &ActivityEventV1) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
     let kind = event.kind();
     if kind.starts_with("interface.") {
@@ -232,6 +220,7 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
     })
 }
 
+#[cfg(test)]
 fn interface_legacy_message(
     kind: &str,
     class: Option<&str>,
@@ -310,6 +299,7 @@ fn interface_legacy_message(
     })
 }
 
+#[cfg(test)]
 fn interface_cancelled_legacy_message(class: Option<&str>) -> &'static str {
     match class {
         Some("auto") => "Local Network setup cancelled",
@@ -323,6 +313,7 @@ fn interface_cancelled_legacy_message(class: Option<&str>) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn interface_degraded_legacy_message(class: Option<&str>, reason: Option<&str>) -> &'static str {
     match (class, reason) {
         (Some("auto"), Some("multicast_unavailable")) => "Local Network discovery is limited",
@@ -333,6 +324,7 @@ fn interface_degraded_legacy_message(class: Option<&str>, reason: Option<&str>) 
     }
 }
 
+#[cfg(test)]
 fn interface_failure_legacy_message(class: Option<&str>, reason: Option<&str>) -> &'static str {
     match (class, reason) {
         (Some("auto"), Some("configure_failed")) => "Local Network could not be configured",
@@ -410,6 +402,7 @@ fn interface_failure_legacy_message(class: Option<&str>, reason: Option<&str>) -
     }
 }
 
+#[cfg(test)]
 fn interface_timeout_legacy_message(class: Option<&str>, reason: Option<&str>) -> &'static str {
     match (class, reason) {
         (Some("auto"), Some("startup_timed_out")) => "Local Network startup timed out",
@@ -426,6 +419,7 @@ fn interface_timeout_legacy_message(class: Option<&str>, reason: Option<&str>) -
     }
 }
 
+#[cfg(test)]
 fn legacy_detail(event: &ActivityEventV1) -> String {
     let mut fragments = Vec::with_capacity(2);
     match event.kind() {
@@ -638,6 +632,7 @@ fn legacy_detail(event: &ActivityEventV1) -> String {
     truncate_fragment(&fragments.join(" · "), LEGACY_DETAIL_MAX_CHARS)
 }
 
+#[cfg(test)]
 fn truncate_fragment(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -652,6 +647,7 @@ fn truncate_fragment(value: &str, max_chars: usize) -> String {
         .collect()
 }
 
+#[cfg(test)]
 fn attribute(event: &ActivityEventV1, key: ActivityAttributeKey) -> Option<&ActivityAttributeV1> {
     event
         .attributes
@@ -659,6 +655,7 @@ fn attribute(event: &ActivityEventV1, key: ActivityAttributeKey) -> Option<&Acti
         .find(|attribute| attribute.key == key)
 }
 
+#[cfg(test)]
 fn attribute_code(event: &ActivityEventV1, key: ActivityAttributeKey) -> Option<&str> {
     match &attribute(event, key)?.value {
         ActivityValueV1::Code(value) => Some(value.as_str()),
@@ -666,6 +663,7 @@ fn attribute_code(event: &ActivityEventV1, key: ActivityAttributeKey) -> Option<
     }
 }
 
+#[cfg(test)]
 fn push_ordinal(
     fragments: &mut Vec<String>,
     event: &ActivityEventV1,
@@ -689,6 +687,7 @@ fn push_ordinal(
     }
 }
 
+#[cfg(test)]
 fn push_unsigned(
     fragments: &mut Vec<String>,
     event: &ActivityEventV1,
@@ -709,6 +708,7 @@ fn push_unsigned(
     fragments.push(format!("{prefix}{value}{suffix}"));
 }
 
+#[cfg(test)]
 fn push_code(fragments: &mut Vec<String>, event: &ActivityEventV1, key: ActivityAttributeKey) {
     if fragments.len() >= 2 {
         return;
@@ -718,6 +718,7 @@ fn push_code(fragments: &mut Vec<String>, event: &ActivityEventV1, key: Activity
     }
 }
 
+#[cfg(test)]
 fn friendly_code(value: &str) -> Option<&'static str> {
     Some(match value {
         "automatic" => "Automatic",
@@ -779,7 +780,7 @@ fn friendly_code(value: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use serde_json::Value;
@@ -798,8 +799,6 @@ mod tests {
     struct RecordingEmitter {
         events: Mutex<Vec<(String, Value)>>,
         reject_typed: AtomicBool,
-        reject_legacy: AtomicBool,
-        legacy_attempts: AtomicUsize,
     }
 
     impl RecordingEmitter {
@@ -827,12 +826,6 @@ mod tests {
         fn try_emit(&self, event: &str, payload: Value) -> Result<(), EmitError> {
             if event == ACTIVITY_BATCH_EVENT && self.reject_typed.load(Ordering::Relaxed) {
                 return Err(EmitError::Rejected);
-            }
-            if event == LEGACY_ACTIVITY_EVENT {
-                self.legacy_attempts.fetch_add(1, Ordering::Relaxed);
-                if self.reject_legacy.load(Ordering::Relaxed) {
-                    return Err(EmitError::Rejected);
-                }
             }
             self.events
                 .lock()
@@ -2117,7 +2110,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn compatibility_rows_are_allowlisted_masked_and_session_addressable() {
+    async fn typed_batches_are_masked_and_session_addressable_without_legacy_rows() {
         let emitter = Arc::new(RecordingEmitter::default());
         let recorder =
             ActivityRecorder::with_batch_sink(Arc::new(EmitterBatchSink::new(emitter.clone())));
@@ -2161,29 +2154,24 @@ mod tests {
             }),
             ActivityRecordOutcome::Accepted
         );
-        wait_until(|| emitter.payloads(LEGACY_ACTIVITY_EVENT).len() >= 3).await;
-
-        let rows = emitter.payloads(LEGACY_ACTIVITY_EVENT);
-        let path = rows
-            .iter()
-            .find(|row| row["message"] == "Path requested")
-            .unwrap();
-        assert_eq!(path["type"], "path");
-        assert_eq!(path["level"], "standard");
-        assert_eq!(path["severity"], "info");
-        assert_eq!(path["capture_session"], session);
-        assert!(path["sequence"].as_str().is_some());
-        assert!(path["capture_generation"].as_str().is_some());
-        assert!(
-            path["detail"]
-                .as_str()
-                .is_some_and(|detail| detail.chars().count() <= LEGACY_DETAIL_MAX_CHARS)
-        );
-        let lxst = rows
-            .iter()
-            .find(|row| row["message"] == "LXST voice service started")
-            .unwrap();
-        assert_eq!(lxst["type"], "lxst");
+        wait_until(|| {
+            let batches = emitter.payloads(ACTIVITY_BATCH_EVENT);
+            [
+                "rns.path.requested",
+                "interface.configured",
+                "lxst.service.started",
+            ]
+            .into_iter()
+            .all(|kind| {
+                batches.iter().any(|batch| {
+                    batch["events"]
+                        .as_array()
+                        .is_some_and(|events| events.iter().any(|event| event["kind"] == kind))
+                })
+            })
+        })
+        .await;
+        assert!(emitter.payloads(LEGACY_ACTIVITY_EVENT).is_empty());
 
         let payload_text = emitter.all_payload_text();
         assert!(!payload_text.contains(&hex::encode(raw_destination)));
@@ -2292,32 +2280,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn rejected_compatibility_rows_do_not_count_as_typed_ipc_failures() {
-        let emitter = Arc::new(RecordingEmitter::default());
-        emitter.reject_legacy.store(true, Ordering::Relaxed);
-        let recorder =
-            ActivityRecorder::with_batch_sink(Arc::new(EmitterBatchSink::new(emitter.clone())));
-        recorder.start().await.unwrap();
-        assert_eq!(
-            recorder.record_event(|| {
-                Ok(producer::app_runtime(producer::AppRuntimeTransition::Ready))
-            }),
-            ActivityRecordOutcome::Accepted
-        );
-        wait_until(|| emitter.legacy_attempts.load(Ordering::Relaxed) > 0).await;
-        assert_eq!(recorder.status().counters().ipc_failure(), "0");
-        assert!(emitter.payloads(ACTIVITY_BATCH_EVENT).iter().any(|batch| {
-            batch["events"].as_array().is_some_and(|events| {
-                events
-                    .iter()
-                    .any(|event| event["kind"] == "app.runtime.ready")
-            })
-        }));
-        recorder.shutdown().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn rejected_typed_batches_still_count_when_compatibility_succeeds() {
+    async fn rejected_typed_batches_count_as_ipc_failures() {
         let emitter = Arc::new(RecordingEmitter::default());
         let recorder =
             ActivityRecorder::with_batch_sink(Arc::new(EmitterBatchSink::new(emitter.clone())));
@@ -2329,14 +2292,8 @@ mod tests {
             }),
             ActivityRecordOutcome::Accepted
         );
-        wait_until(|| {
-            recorder.status().counters().ipc_failure() != "0"
-                && emitter
-                    .payloads(LEGACY_ACTIVITY_EVENT)
-                    .iter()
-                    .any(|row| row["message"] == "Ratspeak runtime ready")
-        })
-        .await;
+        wait_until(|| recorder.status().counters().ipc_failure() != "0").await;
+        assert!(emitter.payloads(LEGACY_ACTIVITY_EVENT).is_empty());
         recorder.shutdown().await.unwrap();
     }
 }

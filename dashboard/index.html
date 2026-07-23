@@ -854,9 +854,19 @@
                         </div>
 
                         <div class="activity-header">
-                            <span class="activity-title">Network Activity</span>
+                            <div class="activity-heading">
+                                <div class="activity-title-row">
+                                    <span class="activity-title">Activity</span>
+                                    <span class="activity-status" id="activity-status" data-state="off">
+                                        <span class="activity-status-dot" aria-hidden="true"></span>
+                                        <span id="activity-status-label">Off</span>
+                                    </span>
+                                </div>
+                                <span class="activity-subtitle">Network, messages, channels and calls</span>
+                            </div>
                             <div class="activity-controls">
-                                <button class="nr-btn nr-btn-xs" id="activity-clear-btn" style="display:none;">Clear</button>
+                                <button class="nr-btn nr-btn-xs nr-btn-ghost" id="activity-capture-btn" style="display:none;">Stop</button>
+                                <button class="nr-btn nr-btn-xs nr-btn-ghost" id="activity-clear-btn" style="display:none;">Clear</button>
                             </div>
                         </div>
 
@@ -864,26 +874,31 @@
                             <svg class="activity-privacy-icon" viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5">
                                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                             </svg>
-                            <span class="activity-privacy-label">Privacy mode is active</span>
-                            <span class="activity-privacy-desc">No activity is being collected or saved. Enable for this session to see network events in real time.</span>
-                            <button class="nr-btn nr-btn-sm" id="activity-enable-btn">Enable For This Session</button>
+                            <span class="activity-privacy-label">Activity is off</span>
+                            <span class="activity-privacy-desc">Start a private, on-device view of what Ratspeak is doing.</span>
+                            <button class="nr-btn nr-btn-sm" id="activity-enable-btn">Start Activity</button>
                         </div>
 
                         <div class="activity-active" id="activity-active" style="display:none;">
                             <div class="activity-toolbar">
-                                <div class="activity-level-select" id="activity-level-select">
-                                    <button class="activity-level-btn" data-level="essential" aria-pressed="false">Essential</button>
-                                    <button class="activity-level-btn active" data-level="standard" aria-pressed="true">Standard</button>
-                                    <button class="activity-level-btn" data-level="detailed" aria-pressed="false">Detailed</button>
-                                </div>
-                                <label class="prop-toggle activity-toggle">
-                                    <input type="checkbox" id="activity-enabled-toggle" aria-label="Capture network activity" checked>
-                                    <span class="prop-slider"></span>
+                                <label class="activity-search">
+                                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                                        <circle cx="11" cy="11" r="7"/>
+                                        <line x1="16.5" y1="16.5" x2="21" y2="21"/>
+                                    </svg>
+                                    <input id="activity-search-input" type="search" placeholder="Search activity" aria-label="Search activity" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
                                 </label>
+                                <div class="activity-profile-select" id="activity-profile-select" aria-label="Capture detail">
+                                    <button class="activity-profile-btn active" data-profile="normal" aria-pressed="true">Normal</button>
+                                    <button class="activity-profile-btn" data-profile="trace" aria-pressed="false">Trace</button>
+                                </div>
                             </div>
-                            <div class="activity-filters" id="activity-filters"></div>
-                            <div class="activity-feed" id="activity-feed">
-                                <div class="activity-empty">Listening for network events...</div>
+                            <div class="activity-filter-bar">
+                                <div class="activity-filters" id="activity-filters" aria-label="Filter activity"></div>
+                                <span class="activity-result-count" id="activity-result-count"></span>
+                            </div>
+                            <div class="activity-feed" id="activity-feed" role="log" aria-live="polite">
+                                <div class="activity-empty">Waiting for activity…</div>
                             </div>
                         </div>
                     </div>

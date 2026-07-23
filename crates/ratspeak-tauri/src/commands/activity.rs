@@ -94,11 +94,14 @@ pub async fn activity_status(state: State<'_, Arc<AppState>>) -> AppResult<Activ
 #[tauri::command]
 pub async fn activity_start(state: State<'_, Arc<AppState>>) -> AppResult<ActivityStatusV1> {
     let request_fence = state.activity_request_fence();
-    let _identity_lifecycle = state.identity_switch_lock.lock().await;
-    let _activity_control = state.activity_control_lock.lock().await;
-    ensure_activity_request_fence(&state, request_fence)?;
-    let status = state.activity.start().await.map_err(map_recorder_error)?;
-    publish_legacy_compatibility(&state, &status, true, "standard");
+    let status = {
+        let _identity_lifecycle = state.identity_switch_lock.lock().await;
+        let _activity_control = state.activity_control_lock.lock().await;
+        ensure_activity_request_fence(&state, request_fence)?;
+        state.activity.start().await.map_err(map_recorder_error)?
+    };
+    let diagnostics_fence = state.activity_request_fence();
+    super::network::emit_ingress_diagnostics_snapshot(state.inner(), diagnostics_fence).await;
     Ok(status)
 }
 
@@ -108,22 +111,20 @@ pub async fn activity_stop(state: State<'_, Arc<AppState>>) -> AppResult<Activit
     let _identity_lifecycle = state.identity_switch_lock.lock().await;
     let _activity_control = state.activity_control_lock.lock().await;
     ensure_activity_request_fence(&state, request_fence)?;
-    state
-        .network_log_enabled
-        .store(false, std::sync::atomic::Ordering::Release);
-    let status = state.activity.stop().await.map_err(map_recorder_error)?;
-    publish_legacy_compatibility(&state, &status, false, "standard");
-    Ok(status)
+    state.activity.stop().await.map_err(map_recorder_error)
 }
 
 #[tauri::command]
 pub async fn activity_resume(state: State<'_, Arc<AppState>>) -> AppResult<ActivityStatusV1> {
     let request_fence = state.activity_request_fence();
-    let _identity_lifecycle = state.identity_switch_lock.lock().await;
-    let _activity_control = state.activity_control_lock.lock().await;
-    ensure_activity_request_fence(&state, request_fence)?;
-    let status = state.activity.resume().await.map_err(map_recorder_error)?;
-    publish_legacy_compatibility(&state, &status, true, "standard");
+    let status = {
+        let _identity_lifecycle = state.identity_switch_lock.lock().await;
+        let _activity_control = state.activity_control_lock.lock().await;
+        ensure_activity_request_fence(&state, request_fence)?;
+        state.activity.resume().await.map_err(map_recorder_error)?
+    };
+    let diagnostics_fence = state.activity_request_fence();
+    super::network::emit_ingress_diagnostics_snapshot(state.inner(), diagnostics_fence).await;
     Ok(status)
 }
 
@@ -142,16 +143,6 @@ pub async fn activity_set_profile(
         .set_profile(profile, trace_duration)
         .await
         .map_err(map_recorder_error)?;
-    publish_legacy_compatibility(
-        &state,
-        &status,
-        true,
-        if profile == CaptureProfile::Trace {
-            "detailed"
-        } else {
-            "standard"
-        },
-    );
     Ok(status)
 }
 
@@ -179,26 +170,7 @@ pub async fn activity_clear(state: State<'_, Arc<AppState>>) -> AppResult<Activi
     let _identity_lifecycle = state.identity_switch_lock.lock().await;
     let _activity_control = state.activity_control_lock.lock().await;
     ensure_activity_request_fence(&state, request_fence)?;
-    let legacy_was_enabled = state
-        .network_log_enabled
-        .swap(false, std::sync::atomic::Ordering::AcqRel);
-    let status = state.activity.clear().await.map_err(map_recorder_error)?;
-    let legacy_enabled = legacy_was_enabled
-        && status.state() == ratspeak_runtime::activity::ActivityCaptureState::Capturing;
-    let level = if legacy_enabled && status.profile() == Some(CaptureProfile::Trace) {
-        "detailed"
-    } else {
-        "standard"
-    };
-    publish_legacy_compatibility(&state, &status, legacy_enabled, level);
-    state.emit_to_all(
-        "activity_legacy_cleared_v1",
-        serde_json::json!({
-            "version": 1,
-            "capture_generation": status.ingress_generation().to_string(),
-        }),
-    );
-    Ok(status)
+    state.activity.clear().await.map_err(map_recorder_error)
 }
 
 #[tauri::command]
@@ -252,30 +224,6 @@ fn ensure_activity_request_fence(
             "The active session changed before the Activity request could run.",
         ))
     }
-}
-
-fn publish_legacy_compatibility(
-    state: &AppState,
-    status: &ActivityStatusV1,
-    enabled: bool,
-    level: &str,
-) {
-    state
-        .network_log_enabled
-        .store(enabled, std::sync::atomic::Ordering::Release);
-    if let Ok(mut stored) = state.network_log_level.write() {
-        *stored = level.to_string();
-    }
-    state.emit_to_all(
-        "network_log_level_changed",
-        serde_json::json!({
-            "level": level,
-            "enabled": enabled,
-            "restart_required": false,
-            "identity_generation": state.current_identity_session_generation().to_string(),
-            "activity": status,
-        }),
-    );
 }
 
 fn parse_decimal_u64(value: &str, allow_zero: bool) -> AppResult<u64> {
