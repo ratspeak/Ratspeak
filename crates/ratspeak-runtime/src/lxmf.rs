@@ -609,6 +609,9 @@ pub type PropagationHealth = (
 #[derive(Debug, Clone, PartialEq)]
 pub struct LxmfDeliveryProgressUpdate {
     pub msg_id: String,
+    pub kind: LxmfDeliveryProgressKind,
+    pub event_method: LxmfDeliveryProgressMethod,
+    pub delivery_representation: LxmfDeliveryProgressRepresentation,
     pub step: &'static str,
     pub method: &'static str,
     pub progress: Option<f64>,
@@ -619,6 +622,37 @@ pub struct LxmfDeliveryProgressUpdate {
     pub queued_deliveries: usize,
     pub in_flight_deliveries: usize,
     pub reason: Option<String>,
+}
+
+/// Typed delivery evidence retained beside the legacy product display string.
+/// Activity consumes this enum directly and never parses `step` or `reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LxmfDeliveryProgressKind {
+    LinkEstablishing,
+    LinkEstablished,
+    DirectLinkPending,
+    DirectLinkReused,
+    BackchannelLinkReused,
+    TransferStarted,
+    TransferProgress,
+    AwaitingProof,
+    Delivered,
+    Rejected,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LxmfDeliveryProgressMethod {
+    Direct,
+    PropagationDeposit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LxmfDeliveryProgressRepresentation {
+    Unknown,
+    Packet,
+    Resource,
+    Paper,
 }
 
 /// Result of a locally accepted outbound LXMF submission. The method is read
@@ -3827,6 +3861,33 @@ impl LxmfManager {
         event: LxmfDeliveryEvent,
     ) -> Option<LxmfDeliveryProgressUpdate> {
         let msg_hash = event.msg_hash?;
+        let kind = match event.kind {
+            LxmfDeliveryEventKind::LinkEstablishing => LxmfDeliveryProgressKind::LinkEstablishing,
+            LxmfDeliveryEventKind::LinkEstablished => LxmfDeliveryProgressKind::LinkEstablished,
+            LxmfDeliveryEventKind::DirectLinkPending => LxmfDeliveryProgressKind::DirectLinkPending,
+            LxmfDeliveryEventKind::DirectLinkReused => LxmfDeliveryProgressKind::DirectLinkReused,
+            LxmfDeliveryEventKind::BackchannelLinkReused => {
+                LxmfDeliveryProgressKind::BackchannelLinkReused
+            }
+            LxmfDeliveryEventKind::TransferStarted => LxmfDeliveryProgressKind::TransferStarted,
+            LxmfDeliveryEventKind::TransferProgress => LxmfDeliveryProgressKind::TransferProgress,
+            LxmfDeliveryEventKind::AwaitingProof => LxmfDeliveryProgressKind::AwaitingProof,
+            LxmfDeliveryEventKind::Delivered => LxmfDeliveryProgressKind::Delivered,
+            LxmfDeliveryEventKind::Rejected => LxmfDeliveryProgressKind::Rejected,
+            LxmfDeliveryEventKind::Failed => LxmfDeliveryProgressKind::Failed,
+        };
+        let event_method = match event.method {
+            LxmfDeliveryEventMethod::Direct => LxmfDeliveryProgressMethod::Direct,
+            LxmfDeliveryEventMethod::PropagationDeposit => {
+                LxmfDeliveryProgressMethod::PropagationDeposit
+            }
+        };
+        let delivery_representation = match event.representation {
+            DeliveryRepresentation::Unknown => LxmfDeliveryProgressRepresentation::Unknown,
+            DeliveryRepresentation::Packet => LxmfDeliveryProgressRepresentation::Packet,
+            DeliveryRepresentation::Resource => LxmfDeliveryProgressRepresentation::Resource,
+            DeliveryRepresentation::Paper => LxmfDeliveryProgressRepresentation::Paper,
+        };
         let step = match event.kind {
             LxmfDeliveryEventKind::LinkEstablishing => "link_establishing",
             LxmfDeliveryEventKind::LinkEstablished => {
@@ -3872,6 +3933,9 @@ impl LxmfManager {
         };
         Some(LxmfDeliveryProgressUpdate {
             msg_id: hex::encode(msg_hash),
+            kind,
+            event_method,
+            delivery_representation,
             step,
             method: match event.method {
                 LxmfDeliveryEventMethod::Direct => "direct",
@@ -6236,6 +6300,12 @@ mod tests {
 
         let advertised = LxmfManager::progress_update_from_link_event(base.clone()).unwrap();
         assert_eq!(advertised.step, "resource_advertised");
+        assert_eq!(advertised.kind, LxmfDeliveryProgressKind::TransferStarted);
+        assert_eq!(advertised.event_method, LxmfDeliveryProgressMethod::Direct);
+        assert_eq!(
+            advertised.delivery_representation,
+            LxmfDeliveryProgressRepresentation::Resource
+        );
 
         let transferring = LxmfManager::progress_update_from_link_event(LxmfDeliveryEvent {
             kind: LxmfDeliveryEventKind::TransferProgress,

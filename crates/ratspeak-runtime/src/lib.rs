@@ -54,14 +54,71 @@ const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
 
-fn lxmf_progress_activity_step(step: &str) -> Option<producer::LxmfProgressStep> {
-    match step {
-        "link_establishing" => Some(producer::LxmfProgressStep::LinkEstablishing),
-        "resource_link_ready" => Some(producer::LxmfProgressStep::LinkReady),
-        "resource_advertised" => Some(producer::LxmfProgressStep::ResourceStarted),
-        "resource_transferring" => Some(producer::LxmfProgressStep::ResourceProgress),
+fn lxmf_progress_activity_step(
+    update: &lxmf::LxmfDeliveryProgressUpdate,
+) -> Option<producer::LxmfProgressStep> {
+    use lxmf::{LxmfDeliveryProgressKind as Kind, LxmfDeliveryProgressRepresentation as Repr};
+
+    match (update.kind, update.delivery_representation) {
+        (Kind::LinkEstablishing, _) => Some(producer::LxmfProgressStep::LinkEstablishing),
+        (Kind::LinkEstablished, _) => Some(producer::LxmfProgressStep::LinkReady),
+        (Kind::DirectLinkPending, _) => Some(producer::LxmfProgressStep::DirectPending),
+        (Kind::DirectLinkReused | Kind::BackchannelLinkReused, _) => {
+            Some(producer::LxmfProgressStep::LinkReused)
+        }
+        (Kind::TransferStarted, Repr::Resource) => {
+            Some(producer::LxmfProgressStep::ResourceStarted)
+        }
+        (Kind::TransferProgress, Repr::Resource) => {
+            Some(producer::LxmfProgressStep::ResourceProgress)
+        }
+        (Kind::AwaitingProof, _) => Some(producer::LxmfProgressStep::AwaitingProof),
         _ => None,
     }
+}
+
+fn lxmf_progress_activity_method(
+    method: lxmf::LxmfDeliveryProgressMethod,
+) -> producer::LxmfDeliveryMethod {
+    match method {
+        lxmf::LxmfDeliveryProgressMethod::Direct => producer::LxmfDeliveryMethod::Direct,
+        lxmf::LxmfDeliveryProgressMethod::PropagationDeposit => {
+            producer::LxmfDeliveryMethod::Propagated
+        }
+    }
+}
+
+fn lxmf_progress_supersedes_state(
+    updates: &[lxmf::LxmfDeliveryProgressUpdate],
+    message_id: &str,
+    state: &str,
+) -> bool {
+    use lxmf::LxmfDeliveryProgressKind as Kind;
+
+    updates.iter().any(|update| {
+        if update.msg_id != message_id {
+            return false;
+        }
+        match state {
+            "reusing_backchannel" => matches!(
+                update.kind,
+                Kind::DirectLinkReused | Kind::BackchannelLinkReused
+            ),
+            "sending_via_link" => matches!(
+                update.kind,
+                Kind::LinkEstablishing
+                    | Kind::LinkEstablished
+                    | Kind::DirectLinkPending
+                    | Kind::DirectLinkReused
+                    | Kind::BackchannelLinkReused
+                    | Kind::TransferStarted
+                    | Kind::TransferProgress
+                    | Kind::AwaitingProof
+            ),
+            "sent" => matches!(update.kind, Kind::AwaitingProof),
+            _ => false,
+        }
+    })
 }
 
 fn record_activity_if_current<F>(state: &AppState, origin: ActivityRequestFence, make: F)
@@ -78,37 +135,111 @@ fn record_lxmf_progress(
     origin: ActivityRequestFence,
     update: &lxmf::LxmfDeliveryProgressUpdate,
 ) {
-    let Some(step) = lxmf_progress_activity_step(update.step) else {
-        return;
-    };
-    record_activity_if_current(state, origin, || {
-        let message = producer::MessageId::from_hex(&update.msg_id)?;
-        let destination = producer::DestinationHash::from_hex(&update.dest_hash)?;
-        let link = update
-            .link_id
-            .as_deref()
-            .map(producer::LinkId::from_hex)
-            .transpose()?;
-        let method = producer::LxmfDeliveryMethod::from_code(update.method)
-            .ok_or(activity::ActivityRejectReason::InvalidOperationalCode)?;
-        let percent = update.progress.map(|progress| {
-            (progress * 100.0)
-                .round()
-                .clamp(0.0, 100.0)
-                .min(f64::from(u8::MAX)) as u8
+    if let Some(step) = lxmf_progress_activity_step(update) {
+        record_activity_if_current(state, origin, || {
+            let message = producer::MessageId::from_hex(&update.msg_id)?;
+            let destination = producer::DestinationHash::from_hex(&update.dest_hash)?;
+            let link = update
+                .link_id
+                .as_deref()
+                .map(producer::LinkId::from_hex)
+                .transpose()?;
+            let percent = update.progress.map(|progress| {
+                (progress * 100.0)
+                    .round()
+                    .clamp(0.0, 100.0)
+                    .min(f64::from(u8::MAX)) as u8
+            });
+            Ok(producer::lxmf_delivery_progress(
+                producer::LxmfDeliveryProgress {
+                    message,
+                    destination,
+                    link,
+                    method: lxmf_progress_activity_method(update.event_method),
+                    step,
+                    percent,
+                    attempts: update.attempts,
+                },
+            ))
         });
-        Ok(producer::lxmf_delivery_progress(
-            producer::LxmfDeliveryProgress {
-                message,
-                destination,
-                link,
-                method,
-                step,
-                percent,
-                attempts: update.attempts,
-            },
-        ))
-    });
+    }
+}
+
+#[cfg(test)]
+mod activity_delivery_adapter_tests {
+    use super::*;
+
+    fn update(
+        kind: lxmf::LxmfDeliveryProgressKind,
+        representation: lxmf::LxmfDeliveryProgressRepresentation,
+    ) -> lxmf::LxmfDeliveryProgressUpdate {
+        lxmf::LxmfDeliveryProgressUpdate {
+            msg_id: "11".repeat(32),
+            kind,
+            event_method: lxmf::LxmfDeliveryProgressMethod::Direct,
+            delivery_representation: representation,
+            step: "legacy_display_text_must_not_drive_activity",
+            method: "legacy_method_text_must_not_drive_activity",
+            progress: Some(0.5),
+            link_id: Some("22".repeat(16)),
+            dest_hash: "33".repeat(16),
+            attempts: 1,
+            representation: "legacy_representation_text_must_not_drive_activity",
+            queued_deliveries: 0,
+            in_flight_deliveries: 1,
+            reason: Some("peer-controlled prose must stay product-only".into()),
+        }
+    }
+
+    #[test]
+    fn activity_delivery_adapter_consumes_typed_evidence_only() {
+        let established = update(
+            lxmf::LxmfDeliveryProgressKind::LinkEstablished,
+            lxmf::LxmfDeliveryProgressRepresentation::Unknown,
+        );
+        assert!(matches!(
+            lxmf_progress_activity_step(&established),
+            Some(producer::LxmfProgressStep::LinkReady)
+        ));
+
+        let resource = update(
+            lxmf::LxmfDeliveryProgressKind::TransferStarted,
+            lxmf::LxmfDeliveryProgressRepresentation::Resource,
+        );
+        assert!(matches!(
+            lxmf_progress_activity_step(&resource),
+            Some(producer::LxmfProgressStep::ResourceStarted)
+        ));
+
+        let failed = update(
+            lxmf::LxmfDeliveryProgressKind::Failed,
+            lxmf::LxmfDeliveryProgressRepresentation::Resource,
+        );
+        assert!(lxmf_progress_activity_step(&failed).is_none());
+    }
+
+    #[test]
+    fn typed_progress_suppresses_only_the_matching_coarse_state() {
+        let established = update(
+            lxmf::LxmfDeliveryProgressKind::LinkEstablished,
+            lxmf::LxmfDeliveryProgressRepresentation::Unknown,
+        );
+        assert!(lxmf_progress_supersedes_state(
+            std::slice::from_ref(&established),
+            &established.msg_id,
+            "sending_via_link",
+        ));
+        assert!(!lxmf_progress_supersedes_state(
+            std::slice::from_ref(&established),
+            &established.msg_id,
+            "routing",
+        ));
+        assert!(!lxmf_progress_supersedes_state(
+            &[established],
+            &"44".repeat(32),
+            "sending_via_link",
+        ));
+    }
 }
 
 pub fn telephony_hash_for_identity_hex(identity_hash_hex: &str) -> Option<String> {
@@ -1899,7 +2030,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             "failed" => Some(producer::LxmfDeliveryState::Failed),
                             _ => None,
                         };
-                        if let Some(activity_state) = activity_state {
+                        if let Some(activity_state) = activity_state
+                            && !lxmf_progress_supersedes_state(
+                                &delivery_progress,
+                                msg_id,
+                                new_state,
+                            )
+                        {
                             record_activity_if_current(&tick_state, tick_activity_origin, || {
                                 let message = producer::MessageId::from_hex(msg_id)?;
                                 let method = method

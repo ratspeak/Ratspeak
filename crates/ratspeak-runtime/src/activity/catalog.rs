@@ -1660,8 +1660,11 @@ pub fn lxmf_delivery_state_changed(
 pub enum LxmfProgressStep {
     LinkEstablishing,
     LinkReady,
+    DirectPending,
+    LinkReused,
     ResourceStarted,
     ResourceProgress,
+    AwaitingProof,
 }
 
 pub struct LxmfDeliveryProgress {
@@ -1689,6 +1692,16 @@ pub fn lxmf_delivery_progress(
             ActivitySeverity::Info,
             ActivityOutcome::Progress,
         ),
+        LxmfProgressStep::DirectPending => (
+            kinds::LXMF_DELIVERY_DIRECT_PENDING,
+            ActivitySeverity::Info,
+            ActivityOutcome::Progress,
+        ),
+        LxmfProgressStep::LinkReused => (
+            kinds::LXMF_DELIVERY_LINK_REUSED,
+            ActivitySeverity::Info,
+            ActivityOutcome::Progress,
+        ),
         LxmfProgressStep::ResourceStarted => (
             kinds::LXMF_DELIVERY_RESOURCE_STARTED,
             ActivitySeverity::Info,
@@ -1696,6 +1709,11 @@ pub fn lxmf_delivery_progress(
         ),
         LxmfProgressStep::ResourceProgress => (
             kinds::LXMF_DELIVERY_PROGRESS,
+            ActivitySeverity::Info,
+            ActivityOutcome::Progress,
+        ),
+        LxmfProgressStep::AwaitingProof => (
+            kinds::LXMF_DELIVERY_AWAITING_PROOF,
             ActivitySeverity::Info,
             ActivityOutcome::Progress,
         ),
@@ -2472,6 +2490,40 @@ mod tests {
                 super::super::classified::DraftValue::Exact(ExactValue::Boolean(value))
                     if value == expected_duplicate
             ));
+        }
+    }
+
+    #[test]
+    fn lxmf_typed_progress_uses_specific_nonterminal_kinds() {
+        for (step, expected_kind) in [
+            (
+                LxmfProgressStep::DirectPending,
+                "lxmf.delivery.direct_pending",
+            ),
+            (LxmfProgressStep::LinkReused, "lxmf.delivery.link_reused"),
+            (
+                LxmfProgressStep::AwaitingProof,
+                "lxmf.delivery.awaiting_proof",
+            ),
+        ] {
+            let event = lxmf_delivery_progress(LxmfDeliveryProgress {
+                time: ObservationTime::new(4, 4),
+                message: MessageId::new([0x51; 32]),
+                destination: DestinationHash::new([0x52; 16]),
+                link: Some(LinkId::new([0x53; 16])),
+                method: LxmfDeliveryMethod::Direct,
+                step,
+                percent: None,
+                attempts: 1,
+            })
+            .unwrap()
+            .validate(super::super::classified::DraftContext {
+                capture_session: "11".repeat(16),
+                capture_generation: 1,
+                capture_profile: super::super::schema::CaptureProfile::Normal,
+            })
+            .unwrap();
+            assert_eq!(event.kind.code(), expected_kind);
         }
     }
 

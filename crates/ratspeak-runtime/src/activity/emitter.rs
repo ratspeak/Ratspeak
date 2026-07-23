@@ -198,8 +198,8 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         "lxmf.delivery.submission_failed" => "Message could not be queued",
         "lxmf.delivery.method_selected" => "Delivery method selected",
         "lxmf.delivery.path_pending" => "Message path pending",
-        "lxmf.delivery.link_establishing" => "Establishing direct link",
-        "lxmf.delivery.link_ready" => "Direct link ready",
+        "lxmf.delivery.link_establishing" => "Establishing delivery link",
+        "lxmf.delivery.link_ready" => "Delivery link ready",
         "lxmf.delivery.link_reused" => "Direct link reused",
         "lxmf.delivery.direct_pending" => "Waiting for direct delivery",
         "lxmf.delivery.resource_started" => "Resource transfer advertised",
@@ -1803,7 +1803,7 @@ mod tests {
                 Normal,
                 [Message, Destination, Method, Attempts],
                 "message",
-                "Establishing direct link",
+                "Establishing delivery link",
                 "standard"
             ),
             projection_case!(
@@ -1822,7 +1822,7 @@ mod tests {
                 Normal,
                 [Message, Destination, Method, Attempts, Link],
                 "message",
-                "Direct link ready",
+                "Delivery link ready",
                 "standard"
             ),
             projection_case!(

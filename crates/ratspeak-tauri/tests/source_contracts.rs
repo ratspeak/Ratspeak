@@ -162,6 +162,35 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
 }
 
 #[test]
+fn activity_lxmf_progress_is_typed_and_content_free() {
+    let root = repo_root();
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs"))
+        .expect("runtime Activity adapter");
+    let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("LXMF adapter");
+
+    let progress_adapter = runtime
+        .split("fn lxmf_progress_activity_step(")
+        .nth(1)
+        .and_then(|tail| tail.split("#[cfg(test)]").next())
+        .expect("typed LXMF Activity adapter");
+    assert!(progress_adapter.contains("update.kind"));
+    assert!(progress_adapter.contains("update.event_method"));
+    assert!(progress_adapter.contains("update.delivery_representation"));
+    assert!(!progress_adapter.contains("update.step"));
+    assert!(!progress_adapter.contains("update.reason"));
+    assert!(!progress_adapter.contains("from_code(update.method)"));
+    assert!(runtime.contains("lxmf_progress_supersedes_state"));
+
+    for typed_field in [
+        "pub kind: LxmfDeliveryProgressKind",
+        "pub event_method: LxmfDeliveryProgressMethod",
+        "pub delivery_representation: LxmfDeliveryProgressRepresentation",
+    ] {
+        assert!(lxmf.contains(typed_field));
+    }
+}
+
+#[test]
 fn privacy_announce_usage_setting_is_wired() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
