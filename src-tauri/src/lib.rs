@@ -670,6 +670,16 @@ pub fn run() {
             ratspeak_tauri::commands::network::api_propagation,
             ratspeak_tauri::commands::network::api_propagation_nodes,
             ratspeak_tauri::commands::network::api_hub_interfaces,
+            ratspeak_tauri::commands::activity::activity_status,
+            ratspeak_tauri::commands::activity::activity_start,
+            ratspeak_tauri::commands::activity::activity_stop,
+            ratspeak_tauri::commands::activity::activity_resume,
+            ratspeak_tauri::commands::activity::activity_set_profile,
+            ratspeak_tauri::commands::activity::activity_replay,
+            ratspeak_tauri::commands::activity::activity_clear,
+            ratspeak_tauri::commands::activity::activity_detail,
+            ratspeak_tauri::commands::activity::activity_reveal,
+            ratspeak_tauri::commands::activity::activity_safe_copy,
             ratspeak_tauri::commands::channels::api_channels,
             ratspeak_tauri::commands::channels::discover_channel_hubs,
             ratspeak_tauri::commands::channels::connect_channel_hub,
@@ -1160,7 +1170,12 @@ fn set_desktop_foreground(app: &tauri::AppHandle, foreground: bool) {
         let transition = state.begin_foreground_transition();
         if foreground {
             tauri::async_runtime::spawn(async move {
-                if state.activity.expire_trace_if_due().await.is_ok() {
+                let expiry = {
+                    let _identity_lifecycle = state.identity_switch_lock.lock().await;
+                    let _activity_control = state.activity_control_lock.lock().await;
+                    state.activity.expire_trace_if_due().await
+                };
+                if expiry.is_ok() {
                     let _ = ratspeak_tauri::commands::system::set_foreground_state_if_current(
                         &state,
                         true,
@@ -1191,6 +1206,7 @@ fn shutdown_desktop_core_for_exit(app: &tauri::AppHandle) {
             let shutdown = async {
                 let _identity_lifecycle = state.identity_switch_lock.lock().await;
                 ratspeak_tauri::shutdown_rns_lxmf(&state).await?;
+                let _activity_control = state.activity_control_lock.lock().await;
                 state.activity.shutdown().await
             };
             match tokio::time::timeout(std::time::Duration::from_secs(5), shutdown).await {

@@ -262,6 +262,7 @@ function _scheduleEventRender() {
 }
 RS.listen('event', function(ev) {
     if (!ev || typeof ev !== 'object') return;
+    if (typeof activityLegacyEventAllowed === 'function' && !activityLegacyEventAllowed(ev)) return;
     // Throttle status entries to one every ~280s.
     if (ev.type === 'status' || ev.category === 'status') {
         var lastStatus = null;
@@ -285,6 +286,10 @@ RS.listen('event', function(ev) {
 });
 
 RS.listen('event_log', function(batch) {
+    if (!Array.isArray(batch)) return;
+    if (typeof activityLegacyEventAllowed === 'function') {
+        batch = batch.filter(activityLegacyEventAllowed);
+    }
     events = events.concat(batch);
     if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);
     renderLog();

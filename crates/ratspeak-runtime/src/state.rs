@@ -1,7 +1,7 @@
 //! Shared application state. Narrowest sync primitive per field: `RwLock` for
 //! read-heavy caches, `Mutex` for write-heavy maps, `AtomicBool` for single flags.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -12,6 +12,7 @@ use rns_runtime::lifecycle::ShutdownSignal;
 use tokio::sync::watch;
 
 use crate::activity::ActivityRecorder;
+use crate::activity::emitter::EmitterBatchSink;
 use crate::channels::ChannelsManagerHandle;
 use crate::config::DashboardConfig;
 use crate::lxmf::LxmfManager;
@@ -24,6 +25,71 @@ pub use ratspeak_db::DbPool;
 
 const INTERFACE_REANNOUNCE_SUPPRESSION_TTL: Duration = Duration::from_secs(120);
 
+/// Snapshot used to reject an Activity command that was queued before either
+/// an identity transition or a same-identity runtime privacy reset. Callers
+/// must capture this before waiting for lifecycle locks and validate it only
+/// after acquiring both locks in identity-then-Activity order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActivityRequestFence {
+    identity_session_generation: u64,
+    activity_boundary_generation: u64,
+    identity_lock_epoch: u64,
+}
+
+impl ActivityRequestFence {
+    pub fn identity_session_generation(self) -> u64 {
+        self.identity_session_generation
+    }
+}
+
+/// Async identity/runtime transition lock with a span epoch. The epoch is odd
+/// while any holder owns the lock and advances again when that holder drops,
+/// allowing Activity commands to distinguish a request born during a
+/// transition from one that was merely queued before a point-in-time reset.
+pub struct IdentitySwitchLock {
+    inner: tokio::sync::Mutex<()>,
+    epoch: AtomicU64,
+}
+
+impl IdentitySwitchLock {
+    pub fn new() -> Self {
+        Self {
+            inner: tokio::sync::Mutex::new(()),
+            epoch: AtomicU64::new(0),
+        }
+    }
+
+    pub async fn lock(&self) -> IdentitySwitchGuard<'_> {
+        let guard = self.inner.lock().await;
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        IdentitySwitchGuard {
+            _guard: guard,
+            epoch: &self.epoch,
+        }
+    }
+
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+}
+
+impl Default for IdentitySwitchLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct IdentitySwitchGuard<'a> {
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+    epoch: &'a AtomicU64,
+}
+
+impl Drop for IdentitySwitchGuard<'_> {
+    fn drop(&mut self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 /// Uses `std::sync::{Mutex, RwLock}`, not tokio variants. Critical sections
 /// must finish before `.await` or run in `spawn_blocking`
 /// (`clippy::await_holding_lock` enforces this).
@@ -31,13 +97,20 @@ pub struct AppState {
     pub config: DashboardConfig,
     pub db: DbPool,
     pub startup_stage: RwLock<String>,
-    pub event_log: Mutex<VecDeque<serde_json::Value>>,
     /// IPC fan-out — concrete impl is `TauriEmitter` in production builds and
     /// a no-op stub in headless tests. Set at construction; never re-assigned.
     pub emitter: Arc<dyn Emitter>,
     /// Process-lived typed Activity recorder. Capture begins Off; identity and
     /// app lifecycle barriers explicitly purge its session-owned privacy state.
     pub activity: ActivityRecorder,
+    /// Serializes typed and legacy Activity lifecycle commands with runtime
+    /// hard-reset reconciliation. Read-only replay/detail queries use the
+    /// recorder's own privacy barrier instead.
+    pub activity_control_lock: tokio::sync::Mutex<()>,
+    /// Invalidates WebView lifecycle requests that were queued before any
+    /// acknowledged runtime/identity hard reset, including same-identity soft
+    /// restarts that do not advance `identity_session_generation`.
+    activity_boundary_generation: AtomicU64,
     pub notifier: Arc<dyn NativeNotifier>,
     /// Keyed by dest_hash hex; IndexMap insertion-order drives FIFO eviction.
     pub announce_history: RwLock<IndexMap<String, serde_json::Value>>,
@@ -124,7 +197,7 @@ pub struct AppState {
     pub native_notifications_enabled: AtomicBool,
     /// Serializes read-modify-write edits to the active Reticulum config file.
     pub rns_config_lock: Mutex<()>,
-    pub identity_switch_lock: tokio::sync::Mutex<()>,
+    pub identity_switch_lock: IdentitySwitchLock,
     pub ble_peer_enable_lock: tokio::sync::Mutex<()>,
     pub identity_session_generation: AtomicU64,
     /// Secret handed to the next protected-identity load (hardware PIN or
@@ -190,14 +263,18 @@ impl AppState {
                 .and_then(|v| v.parse::<u8>().ok())
                 .map(|v| v != 0)
                 .unwrap_or(true);
+        let activity = ActivityRecorder::with_batch_sink(Arc::new(EmitterBatchSink::new(
+            Arc::clone(&emitter),
+        )));
 
         Self {
             config,
             db,
             startup_stage: RwLock::new("starting".into()),
-            event_log: Mutex::new(VecDeque::with_capacity(200)),
             emitter,
-            activity: ActivityRecorder::new(),
+            activity,
+            activity_control_lock: tokio::sync::Mutex::new(()),
+            activity_boundary_generation: AtomicU64::new(0),
             notifier,
             announce_history: RwLock::new(IndexMap::new()),
             alerts: Mutex::new(Vec::new()),
@@ -249,7 +326,7 @@ impl AppState {
             pn_parse_failures: AtomicU64::new(0),
             native_notifications_enabled: AtomicBool::new(initial_notifications_enabled),
             rns_config_lock: Mutex::new(()),
-            identity_switch_lock: tokio::sync::Mutex::new(()),
+            identity_switch_lock: IdentitySwitchLock::new(),
             ble_peer_enable_lock: tokio::sync::Mutex::new(()),
             identity_session_generation: AtomicU64::new(0),
             hw_pending_pin: Mutex::new(None),
@@ -335,6 +412,60 @@ impl AppState {
             + 1
     }
 
+    pub fn current_identity_session_generation(&self) -> u64 {
+        self.identity_session_generation.load(Ordering::SeqCst)
+    }
+
+    pub fn current_activity_boundary_generation(&self) -> u64 {
+        self.activity_boundary_generation.load(Ordering::SeqCst)
+    }
+
+    pub fn activity_request_fence(&self) -> ActivityRequestFence {
+        self.activity_request_fence_after_epoch(|| {})
+    }
+
+    fn activity_request_fence_after_epoch(
+        &self,
+        after_epoch: impl FnOnce(),
+    ) -> ActivityRequestFence {
+        // The lock epoch is the temporal linearization point and must be read
+        // first. If any lock span begins or ends after this sample, validation
+        // observes more than the request's own single acquisition and rejects
+        // the work. Loading it last would allow a snapshot to straddle a
+        // transition release while retaining the transition's new generations.
+        let identity_lock_epoch = self.identity_switch_lock.epoch();
+        after_epoch();
+        let identity_session_generation = self.current_identity_session_generation();
+        let activity_boundary_generation = self.current_activity_boundary_generation();
+        ActivityRequestFence {
+            identity_session_generation,
+            activity_boundary_generation,
+            identity_lock_epoch,
+        }
+    }
+
+    /// Validate only while the caller owns `identity_switch_lock`. A request
+    /// born while another transition held the lock observes at least a release
+    /// plus this acquisition and therefore cannot match the single expected
+    /// epoch advance.
+    pub fn is_current_activity_request_fence_after_identity_lock(
+        &self,
+        fence: ActivityRequestFence,
+    ) -> bool {
+        self.current_identity_session_generation() == fence.identity_session_generation
+            && self.current_activity_boundary_generation() == fence.activity_boundary_generation
+            && fence
+                .identity_lock_epoch
+                .checked_add(1)
+                .is_some_and(|expected| self.identity_switch_lock.epoch() == expected)
+    }
+
+    pub fn bump_activity_boundary_generation(&self) -> u64 {
+        self.activity_boundary_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1
+    }
+
     pub fn suppress_next_interface_reannounce(&self, name: &str) {
         if name.is_empty() {
             return;
@@ -371,9 +502,6 @@ impl AppState {
         }
         if let Ok(mut alerts) = self.alerts.lock() {
             alerts.clear();
-        }
-        if let Ok(mut events) = self.event_log.lock() {
-            events.clear();
         }
         if let Ok(mut seen) = self.seen_announce_hashes.lock() {
             seen.clear();
@@ -450,34 +578,57 @@ impl AppState {
         self.emitter.emit(event, data);
     }
 
+    /// Temporary Stage 1C compatibility gate for legacy diagnostic streams.
+    /// The typed recorder is authoritative: if worker recovery or another
+    /// privacy boundary moved it out of Capturing, close the advisory legacy
+    /// flag before any legacy value can be retained or cross IPC.
+    pub fn legacy_activity_capture_enabled(&self) -> bool {
+        if !self.network_log_enabled.load(Ordering::Acquire) {
+            return false;
+        }
+        let (capture_state, capture_profile) = self.activity.capture_state_profile();
+        if capture_state == crate::activity::ActivityCaptureState::Capturing {
+            // The temporary selector is advisory. An automatic or explicit
+            // Trace→Normal boundary must cap it immediately even if the old UI
+            // has not processed the typed status notification yet.
+            if capture_profile != Some(crate::activity::CaptureProfile::Trace)
+                && let Ok(mut level) = self.network_log_level.write()
+                && level.as_str() == "detailed"
+            {
+                *level = "standard".to_string();
+            }
+            return true;
+        }
+        self.network_log_enabled.store(false, Ordering::Release);
+        if let Ok(mut level) = self.network_log_level.write()
+            && level.as_str() == "detailed"
+        {
+            *level = "standard".to_string();
+        }
+        false
+    }
+
     pub fn add_event(&self, event: serde_json::Value) {
-        if !self.network_log_enabled.load(Ordering::Relaxed) {
+        if !self.legacy_activity_capture_enabled() {
             return;
         }
 
-        let stored = {
-            if let Ok(mut log) = self.event_log.lock() {
-                if log.len() >= self.config.max_log_entries {
-                    log.pop_front();
-                }
-                log.push_back(event.clone());
-                true
-            } else {
-                false
-            }
-        };
-        if stored {
-            self.emit_to_all("event", event);
-        }
-    }
-
-    pub fn get_recent_events(&self, count: usize) -> Vec<serde_json::Value> {
-        if let Ok(log) = self.event_log.lock() {
-            let skip = log.len().saturating_sub(count);
-            log.iter().skip(skip).cloned().collect()
-        } else {
-            Vec::new()
-        }
+        let _ = self
+            .activity
+            .with_capture_admission(|generation, _profile| {
+                let mut event = event;
+                let Some(object) = event.as_object_mut() else {
+                    return;
+                };
+                object.insert(
+                    "capture_generation".to_string(),
+                    serde_json::Value::String(generation.to_string()),
+                );
+                // The old backend event ring had no production reader and
+                // retained raw prose across worker recovery. Keep only the
+                // generation-fenced compatibility broadcast until Stage 2.
+                self.emit_to_all("event", event);
+            });
     }
 
     pub fn set_rns(&self, rns: RnsManager) {
@@ -532,47 +683,53 @@ impl AppState {
         detail: &str,
         event_level: &str,
     ) {
-        if !self.network_log_enabled.load(Ordering::Relaxed) {
+        if !self.legacy_activity_capture_enabled() {
             return;
         }
 
-        let level_rank = |l: &str| -> u8 {
-            match l {
-                "essential" => 0,
-                "standard" => 1,
-                "detailed" => 2,
-                _ => 1,
+        let _ = self.activity.with_capture_admission(|generation, profile| {
+            let level_rank = |level: &str| -> u8 {
+                match level {
+                    "essential" => 0,
+                    "standard" => 1,
+                    "detailed" => 2,
+                    _ => 1,
+                }
+            };
+
+            let configured = self
+                .network_log_level
+                .read()
+                .map(|level| level.clone())
+                .unwrap_or_else(|_| "standard".into());
+
+            let event_rank = level_rank(event_level);
+            let configured_rank = level_rank(&configured).min(match profile {
+                crate::activity::CaptureProfile::Normal => 1,
+                crate::activity::CaptureProfile::Trace => 2,
+            });
+
+            if event_rank > configured_rank {
+                return;
             }
-        };
 
-        let configured = self
-            .network_log_level
-            .read()
-            .map(|l| l.clone())
-            .unwrap_or_else(|_| "standard".into());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
 
-        let event_rank = level_rank(event_level);
-        let configured_rank = level_rank(&configured);
-
-        if event_rank > configured_rank {
-            return;
-        }
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        self.emit_to_all(
-            "network_event",
-            serde_json::json!({
-                "type": event_type,
-                "message": message,
-                "detail": detail,
-                "timestamp": now,
-                "level": event_level,
-            }),
-        );
+            self.emit_to_all(
+                "network_event",
+                serde_json::json!({
+                    "type": event_type,
+                    "message": message,
+                    "detail": detail,
+                    "timestamp": now,
+                    "level": event_level,
+                    "capture_generation": generation.to_string(),
+                }),
+            );
+        });
     }
 
     /// Re-anchor send times to "now" so post-suspend resumes don't fail every
@@ -658,11 +815,28 @@ mod tests {
     }
 
     impl ratspeak_core::Emitter for RecordingEmitter {
-        fn emit(&self, event: &str, payload: serde_json::Value) {
+        fn try_emit(
+            &self,
+            event: &str,
+            payload: serde_json::Value,
+        ) -> Result<(), ratspeak_core::EmitError> {
             self.events
                 .lock()
                 .unwrap()
                 .push((event.to_string(), payload));
+            Ok(())
+        }
+    }
+
+    struct FailingEmitter;
+
+    impl ratspeak_core::Emitter for FailingEmitter {
+        fn try_emit(
+            &self,
+            _event: &str,
+            _payload: serde_json::Value,
+        ) -> Result<(), ratspeak_core::EmitError> {
+            Err(ratspeak_core::EmitError::Unavailable)
         }
     }
 
@@ -684,6 +858,57 @@ mod tests {
 
     fn make_state() -> AppState {
         make_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    #[tokio::test]
+    async fn activity_request_fence_is_invalidated_by_both_privacy_boundaries() {
+        let state = make_state();
+        let initial = state.activity_request_fence();
+        let initial_guard = state.identity_switch_lock.lock().await;
+        assert!(state.is_current_activity_request_fence_after_identity_lock(initial));
+
+        state.bump_activity_boundary_generation();
+        assert!(!state.is_current_activity_request_fence_after_identity_lock(initial));
+        drop(initial_guard);
+
+        let after_runtime_reset = state.activity_request_fence();
+        let identity_guard = state.identity_switch_lock.lock().await;
+        assert!(state.is_current_activity_request_fence_after_identity_lock(after_runtime_reset));
+
+        state.bump_identity_session_generation();
+        assert!(!state.is_current_activity_request_fence_after_identity_lock(after_runtime_reset));
+        drop(identity_guard);
+    }
+
+    #[tokio::test]
+    async fn request_born_during_identity_lock_span_is_rejected_afterward() {
+        let state = make_state();
+        let transition = state.identity_switch_lock.lock().await;
+        let born_during_transition = state.activity_request_fence();
+        drop(transition);
+
+        let command = state.identity_switch_lock.lock().await;
+        assert!(
+            !state.is_current_activity_request_fence_after_identity_lock(born_during_transition)
+        );
+        drop(command);
+    }
+
+    #[tokio::test]
+    async fn request_snapshot_straddling_a_transition_release_is_rejected() {
+        let state = make_state();
+        let fence = state.activity_request_fence_after_epoch(|| {
+            // Deterministically model one complete intervening lock span at
+            // the exact hook after the snapshot's epoch linearization point.
+            state
+                .identity_switch_lock
+                .epoch
+                .fetch_add(2, Ordering::SeqCst);
+        });
+
+        let command = state.identity_switch_lock.lock().await;
+        assert!(!state.is_current_activity_request_fence_after_identity_lock(fence));
+        drop(command);
     }
 
     #[test]
@@ -718,8 +943,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn event_buffers_are_privacy_gated_by_default() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn legacy_broadcasts_are_privacy_gated_by_the_typed_capture_state() {
         let emitter = Arc::new(RecordingEmitter::default());
         let state = make_state_with_emitter(emitter.clone());
 
@@ -730,10 +955,10 @@ mod tests {
         }));
         state.emit_network_event("message", "should not emit", "detail", "standard");
 
-        assert!(state.get_recent_events(10).is_empty());
         assert!(emitter.events.lock().unwrap().is_empty());
 
-        state.network_log_enabled.store(true, Ordering::Relaxed);
+        state.activity.start().await.unwrap();
+        state.network_log_enabled.store(true, Ordering::Release);
         state.add_event(serde_json::json!({
             "timestamp": 1,
             "category": "system",
@@ -741,11 +966,157 @@ mod tests {
         }));
         state.emit_network_event("message", "emitted after opt-in", "detail", "standard");
 
-        assert_eq!(state.get_recent_events(10).len(), 1);
-        let events = emitter.events.lock().unwrap();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].0, "event");
-        assert_eq!(events[1].0, "network_event");
+        {
+            let events = emitter.events.lock().unwrap();
+            let legacy: Vec<_> = events
+                .iter()
+                .filter_map(|(name, payload)| {
+                    matches!(name.as_str(), "event" | "network_event")
+                        .then_some((name.as_str(), payload))
+                })
+                .collect();
+            assert_eq!(
+                legacy.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+                ["event", "network_event"]
+            );
+            assert!(
+                legacy
+                    .iter()
+                    .all(|(_, payload)| payload["capture_generation"].is_string())
+            );
+        }
+        state.activity.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_legacy_opt_in_closes_when_the_typed_recorder_is_off() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let state = make_state_with_emitter(emitter.clone());
+        state.network_log_enabled.store(true, Ordering::Release);
+
+        state.add_event(serde_json::json!({
+            "timestamp": 1,
+            "category": "system",
+            "message": "must not cross the recovered-off boundary",
+        }));
+        state.emit_network_event(
+            "message",
+            "must not cross the recovered-off boundary",
+            "detail",
+            "standard",
+        );
+
+        assert!(!state.network_log_enabled.load(Ordering::Acquire));
+        assert!(emitter.events.lock().unwrap().is_empty());
+        state.activity.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn normal_capture_caps_a_stale_detailed_legacy_selector() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let state = make_state_with_emitter(emitter.clone());
+        state.activity.start().await.unwrap();
+        state.network_log_enabled.store(true, Ordering::Release);
+        *state.network_log_level.write().unwrap() = "detailed".to_string();
+        emitter.events.lock().unwrap().clear();
+
+        state.emit_network_event("link", "trace-only", "secret detail", "detailed");
+        assert!(
+            emitter
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(name, _)| name != "network_event")
+        );
+        assert_eq!(state.network_log_level.read().unwrap().as_str(), "standard");
+
+        state.emit_network_event("link", "normal", "safe detail", "standard");
+        {
+            let events = emitter.events.lock().unwrap();
+            let legacy = events
+                .iter()
+                .find(|(name, _)| name == "network_event")
+                .expect("Normal capture should still admit Standard compatibility events");
+            assert_eq!(legacy.1["message"], "normal");
+        }
+        state.activity.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn activity_batches_use_the_result_bearing_app_emitter() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let state = make_state_with_emitter(emitter.clone());
+        let started = state.activity.start().await.unwrap();
+        let session = started.capture_session().unwrap().to_string();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if emitter
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(event, _)| event == crate::activity::ACTIVITY_BATCH_EVENT)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the typed batch should reach the app emitter");
+
+        {
+            let events = emitter.events.lock().unwrap();
+            let payload = &events
+                .iter()
+                .find(|(event, _)| event == crate::activity::ACTIVITY_BATCH_EVENT)
+                .unwrap()
+                .1;
+            assert_eq!(payload["version"], 1);
+            assert_eq!(payload["capture_session"], session);
+            assert_eq!(payload["events"][0]["kind"], "diagnostics.capture_started");
+            let status = events
+                .iter()
+                .find(|(event, _)| event == crate::activity::ACTIVITY_STATUS_EVENT)
+                .expect("the lifecycle acknowledgement should also publish canonical status");
+            assert_eq!(status.1["capture_session"], session);
+            assert_eq!(status.1["state"], "capturing");
+        }
+        state.activity.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn emitter_failure_is_counted_while_the_batch_remains_replayable() {
+        let state = make_state_with_emitter(Arc::new(FailingEmitter));
+        let session = state
+            .activity
+            .start()
+            .await
+            .unwrap()
+            .capture_session()
+            .unwrap()
+            .to_string();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state.activity.status().counters().ipc_failure() == "0" {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a rejected typed batch should increment IPC health");
+
+        let crate::activity::ActivityReplayResultV1::Page { page } = state
+            .activity
+            .replay(session, None, 50, 64 * 1024)
+            .await
+            .unwrap()
+        else {
+            panic!("the failed publish should remain replayable");
+        };
+        assert_eq!(page.events().len(), 1);
+        assert_eq!(page.events()[0].kind(), "diagnostics.capture_started");
+        state.activity.shutdown().await.unwrap();
     }
 
     #[test]

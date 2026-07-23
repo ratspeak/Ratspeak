@@ -15,14 +15,15 @@ use super::classified::{ActivityDraft, DraftContext, ReadyDraft};
 use super::coalesce::{CoalesceOutput, PreflushCoalescer};
 use super::gate::AdmissionGate;
 use super::health::ActivityHealth;
-use super::pseudonym::CapturePrivacy;
+use super::pseudonym::{CapturePrivacy, StoredEventV1};
+use super::query::{ActivityDetailResultV1, ActivityRevealResultV1, ActivitySafeCopyResultV1};
 use super::replay::{
     ACTIVITY_BATCH_MAX_BYTES, ACTIVITY_BATCH_MAX_EVENTS, ACTIVITY_BATCH_MAX_LATENCY_MS,
     ActivityBatchSink, ActivityBatchV1, ActivityCaptureState, ActivityRecorderError,
     ActivityReplayResultV1, ActivityReplayV1, ActivityStatusV1, ActivityWorkerState, StatusMirror,
 };
 use super::ring::{ActivityRing, RingError, RingPush};
-use super::schema::{CaptureProfile, CaptureScope, MAX_ENCODED_EVENT_BYTES};
+use super::schema::{ActivityAttributeKey, CaptureProfile, CaptureScope, MAX_ENCODED_EVENT_BYTES};
 
 const WORKER_TICK: Duration = Duration::from_millis(10);
 const MAX_INGRESS_BURST_BEFORE_SERVICE: usize = 16;
@@ -93,10 +94,28 @@ pub(super) struct ReplayRequest {
     pub(super) max_bytes: usize,
 }
 
+pub(super) struct EventQueryRequest {
+    pub(super) capture_session: String,
+    pub(super) sequence: u64,
+}
+
 pub(super) enum QueryCommand {
     Replay {
         request: ReplayRequest,
         reply: oneshot::Sender<Result<ActivityReplayResultV1, ActivityRecorderError>>,
+    },
+    Detail {
+        request: EventQueryRequest,
+        reply: oneshot::Sender<Result<ActivityDetailResultV1, ActivityRecorderError>>,
+    },
+    Reveal {
+        request: EventQueryRequest,
+        key: ActivityAttributeKey,
+        reply: oneshot::Sender<Result<ActivityRevealResultV1, ActivityRecorderError>>,
+    },
+    SafeCopy {
+        request: EventQueryRequest,
+        reply: oneshot::Sender<Result<ActivitySafeCopyResultV1, ActivityRecorderError>>,
     },
 }
 
@@ -114,7 +133,15 @@ pub(super) struct WorkerShared {
 
 impl WorkerShared {
     pub(super) fn status(&self) -> ActivityStatusV1 {
-        self.mirror.snapshot(self.health.snapshot())
+        let generation = self.gate.generation();
+        let trace_deadline = self
+            .trace_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .and_then(|(stored_generation, deadline)| {
+                (stored_generation == generation).then_some(deadline)
+            });
+        self.mirror.snapshot(self.health.snapshot(), trace_deadline)
     }
 }
 
@@ -171,6 +198,7 @@ fn supervisor(
                     status.oldest = None;
                     status.latest = None;
                 });
+                publish_status(&shared, sink.as_ref());
                 return;
             }
             Err(_) => {
@@ -184,6 +212,7 @@ fn supervisor(
                     status.oldest = None;
                     status.latest = None;
                 });
+                publish_status(&shared, sink.as_ref());
 
                 let generation = match shared.gate.hard_reset() {
                     Ok(generation) => generation,
@@ -191,6 +220,7 @@ fn supervisor(
                         shared.mirror.update(|status| {
                             status.worker_state = ActivityWorkerState::Unavailable;
                         });
+                        publish_status(&shared, sink.as_ref());
                         reject_all(
                             &ingress_rx,
                             &urgent_rx,
@@ -220,6 +250,7 @@ fn supervisor(
                             status.worker_state = ActivityWorkerState::Unavailable;
                             status.ingress_generation = generation;
                         });
+                        publish_status(&shared, sink.as_ref());
                         return;
                     }
                 };
@@ -230,6 +261,7 @@ fn supervisor(
                     status.worker_epoch = worker_epoch;
                     status.ingress_generation = generation;
                 });
+                publish_status(&shared, sink.as_ref());
             }
         }
     }
@@ -253,8 +285,14 @@ fn reject_all(
     while let Ok(command) = urgent_rx.try_recv() {
         reject_urgent(command, error);
     }
-    while let Ok(QueryCommand::Replay { reply, .. }) = query_rx.try_recv() {
-        let _ = reply.send(Err(error));
+    while let Ok(query) = query_rx.try_recv() {
+        reject_query(query, error);
+    }
+}
+
+fn publish_status(shared: &WorkerShared, sink: &dyn ActivityBatchSink) {
+    if sink.try_publish_status(&shared.status()).is_err() {
+        shared.health.increment_ipc_failure();
     }
 }
 
@@ -268,6 +306,23 @@ fn reject_urgent(command: UrgentCommand, error: ActivityRecorderError) {
         }
         #[cfg(test)]
         UrgentCommand::InjectFault => {}
+    }
+}
+
+fn reject_query(query: QueryCommand, error: ActivityRecorderError) {
+    match query {
+        QueryCommand::Replay { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
+        QueryCommand::Detail { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
+        QueryCommand::Reveal { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
+        QueryCommand::SafeCopy { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
     }
 }
 
@@ -436,6 +491,7 @@ impl WorkerCore {
         }
         self.session = Some(session);
         self.publish_session(ActivityCaptureState::Capturing);
+        publish_status(&self.shared, self.sink.as_ref());
         Ok(self.open_ack(generation, CaptureProfile::Normal, None, true))
     }
 
@@ -460,6 +516,7 @@ impl WorkerCore {
             self.sink.as_ref(),
         )?;
         self.publish_session(ActivityCaptureState::Capturing);
+        publish_status(&self.shared, self.sink.as_ref());
         Ok(self.open_ack(generation, CaptureProfile::Normal, None, true))
     }
 
@@ -486,6 +543,7 @@ impl WorkerCore {
             status.worker_state = ActivityWorkerState::Running;
             status.worker_epoch = self.worker_epoch;
         });
+        publish_status(&self.shared, self.sink.as_ref());
         Ok(())
     }
 
@@ -502,8 +560,8 @@ impl WorkerCore {
     }
 
     fn drain_queries(&self, error: ActivityRecorderError) {
-        while let Ok(QueryCommand::Replay { reply, .. }) = self.query_rx.try_recv() {
-            let _ = reply.send(Err(error));
+        while let Ok(query) = self.query_rx.try_recv() {
+            reject_query(query, error);
         }
     }
 
@@ -621,6 +679,7 @@ impl WorkerCore {
         session.state = ActivityCaptureState::Stopped;
         let profile = session.profile;
         self.publish_session(ActivityCaptureState::Stopped);
+        publish_status(&self.shared, self.sink.as_ref());
         Ok(self.open_ack(generation, profile, None, false))
     }
 
@@ -664,6 +723,7 @@ impl WorkerCore {
         )?;
         let reopen = state == ActivityCaptureState::Capturing;
         self.publish_session(state);
+        publish_status(&self.shared, self.sink.as_ref());
         Ok(self.open_ack(generation, profile, trace_deadline, reopen))
     }
 
@@ -709,6 +769,7 @@ impl WorkerCore {
             self.sink.as_ref(),
         )?;
         self.publish_session(ActivityCaptureState::Capturing);
+        publish_status(&self.shared, self.sink.as_ref());
         Ok(self.open_ack(generation, target, trace_deadline, true))
     }
 
@@ -718,6 +779,94 @@ impl WorkerCore {
                 let result = self.replay(request);
                 let _ = reply.send(result);
             }
+            QueryCommand::Detail { request, reply } => {
+                let result = self.detail(&request);
+                let _ = reply.send(result);
+            }
+            QueryCommand::Reveal {
+                request,
+                key,
+                reply,
+            } => {
+                let result = self.reveal(&request, key);
+                let _ = reply.send(result);
+            }
+            QueryCommand::SafeCopy { request, reply } => {
+                let result = self.safe_copy(&request);
+                let _ = reply.send(result);
+            }
+        }
+    }
+
+    fn event_lookup<'a>(&'a self, request: &EventQueryRequest) -> EventLookup<'a> {
+        let Some(session) = self.session.as_ref() else {
+            return EventLookup::SessionMismatch;
+        };
+        if request.capture_session != session.privacy.capture_session() {
+            return EventLookup::SessionMismatch;
+        }
+        session
+            .ring
+            .get(request.sequence)
+            .map_or(EventLookup::NotFound, EventLookup::Found)
+    }
+
+    fn detail(
+        &self,
+        request: &EventQueryRequest,
+    ) -> Result<ActivityDetailResultV1, ActivityRecorderError> {
+        Ok(match self.event_lookup(request) {
+            EventLookup::Found(event) => ActivityDetailResultV1::found(event.masked()),
+            EventLookup::NotFound => ActivityDetailResultV1::not_found(),
+            EventLookup::SessionMismatch => {
+                ActivityDetailResultV1::session_mismatch(self.shared.status())
+            }
+        })
+    }
+
+    fn reveal(
+        &self,
+        request: &EventQueryRequest,
+        key: ActivityAttributeKey,
+    ) -> Result<ActivityRevealResultV1, ActivityRecorderError> {
+        Ok(match self.event_lookup(request) {
+            EventLookup::Found(event) => {
+                if let Some(identifier) = event.reveal_identifier(key) {
+                    ActivityRevealResultV1::identifier(
+                        key,
+                        identifier.kind,
+                        hex::encode(identifier.raw),
+                    )
+                } else if let Some(endpoint) = event.reveal_endpoint(key) {
+                    ActivityRevealResultV1::endpoint(key, endpoint.class, endpoint.raw.to_string())
+                } else {
+                    ActivityRevealResultV1::not_revealable()
+                }
+            }
+            EventLookup::NotFound => ActivityRevealResultV1::not_found(),
+            EventLookup::SessionMismatch => {
+                ActivityRevealResultV1::session_mismatch(self.shared.status())
+            }
+        })
+    }
+
+    fn safe_copy(
+        &self,
+        request: &EventQueryRequest,
+    ) -> Result<ActivitySafeCopyResultV1, ActivityRecorderError> {
+        match self.event_lookup(request) {
+            EventLookup::Found(event) => {
+                let copy = event
+                    .safe_copy()
+                    .map_err(|_| ActivityRecorderError::RingUnavailable)?;
+                let json = serde_json::to_string(&copy)
+                    .map_err(|_| ActivityRecorderError::RingUnavailable)?;
+                Ok(ActivitySafeCopyResultV1::found(json))
+            }
+            EventLookup::NotFound => Ok(ActivitySafeCopyResultV1::not_found()),
+            EventLookup::SessionMismatch => Ok(ActivitySafeCopyResultV1::session_mismatch(
+                self.shared.status(),
+            )),
         }
     }
 
@@ -1138,6 +1287,12 @@ impl SessionCore {
             self.pending_batch.len(),
         )
     }
+}
+
+enum EventLookup<'a> {
+    Found(&'a StoredEventV1),
+    NotFound,
+    SessionMismatch,
 }
 
 fn map_ring_error(error: RingError) -> ActivityRecorderError {

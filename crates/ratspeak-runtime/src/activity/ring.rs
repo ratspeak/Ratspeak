@@ -157,6 +157,15 @@ impl ActivityRing {
         self.entries.back().map(StoredEventV1::sequence)
     }
 
+    /// Worker-only raw-vault lookup. The borrowed value cannot cross the
+    /// Activity query boundary; callers must immediately project it to an
+    /// owned masked, safe-copy, or explicit-reveal response.
+    pub(crate) fn get(&self, sequence: u64) -> Option<&StoredEventV1> {
+        self.entries
+            .iter()
+            .find(|event| event.sequence() == sequence)
+    }
+
     /// Masked copy only. No stored/raw handle can escape the ring.
     pub(crate) fn snapshot(&self) -> Vec<ActivityEventV1> {
         self.entries.iter().map(StoredEventV1::masked).collect()

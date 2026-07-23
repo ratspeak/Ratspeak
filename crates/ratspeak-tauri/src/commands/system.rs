@@ -219,6 +219,8 @@ pub async fn api_set_foreground(
     let fg = args.foreground.unwrap_or(true);
     let transition = state.begin_foreground_transition();
     if fg {
+        let _identity_lifecycle = state.identity_switch_lock.lock().await;
+        let _activity_control = state.activity_control_lock.lock().await;
         state
             .activity
             .expire_trace_if_due()
@@ -745,9 +747,6 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
         );
     }
 
-    if let Ok(mut log) = state.event_log.lock() {
-        log.clear();
-    }
     if let Ok(mut announces) = state.announce_history.write() {
         announces.clear();
     }

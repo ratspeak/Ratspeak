@@ -510,7 +510,30 @@ fn reconcile_persisted_transport_mode_for_startup(state: &AppState, config_dir: 
 /// Soft-shutdown: stop RNS/LXMF tasks without re-init. App stays open.
 /// Activity reset must acknowledge before any protocol teardown begins.
 pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityRecorderError> {
-    state.activity.hard_reset().await?;
+    {
+        let _activity_control = state.activity_control_lock.lock().await;
+        state.bump_activity_boundary_generation();
+        state
+            .network_log_enabled
+            .store(false, std::sync::atomic::Ordering::Release);
+        if let Ok(mut level) = state.network_log_level.write() {
+            *level = "standard".to_string();
+        }
+        let status = state.activity.hard_reset().await?;
+        // The worker's status notification makes recovery observable. This
+        // second boundary gives frontend privacy teardown one acknowledged,
+        // cross-runtime fence for the temporary one-shot legacy broadcasts.
+        state.emit_to_all(
+            "activity_boundary_v1",
+            json!({
+                "version": 1,
+                "kind": "hard_reset",
+                "identity_generation": state.current_identity_session_generation().to_string(),
+                "capture_generation": status.ingress_generation().to_string(),
+                "status": status,
+            }),
+        );
+    }
 
     // Supersede any pending auto-lock timer for the session being torn down.
     state
@@ -4690,11 +4713,16 @@ mod inbound_pipeline_tests {
     }
 
     impl ratspeak_core::Emitter for RecordingEmitter {
-        fn emit(&self, event: &str, payload: serde_json::Value) {
+        fn try_emit(
+            &self,
+            event: &str,
+            payload: serde_json::Value,
+        ) -> Result<(), ratspeak_core::EmitError> {
             self.events
                 .lock()
                 .unwrap()
                 .push((event.to_string(), payload));
+            Ok(())
         }
     }
 

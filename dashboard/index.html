@@ -872,12 +872,12 @@
                         <div class="activity-active" id="activity-active" style="display:none;">
                             <div class="activity-toolbar">
                                 <div class="activity-level-select" id="activity-level-select">
-                                    <button class="activity-level-btn" data-level="essential">Essential</button>
-                                    <button class="activity-level-btn active" data-level="standard">Standard</button>
-                                    <button class="activity-level-btn" data-level="detailed">Detailed</button>
+                                    <button class="activity-level-btn" data-level="essential" aria-pressed="false">Essential</button>
+                                    <button class="activity-level-btn active" data-level="standard" aria-pressed="true">Standard</button>
+                                    <button class="activity-level-btn" data-level="detailed" aria-pressed="false">Detailed</button>
                                 </div>
                                 <label class="prop-toggle activity-toggle">
-                                    <input type="checkbox" id="activity-enabled-toggle" checked>
+                                    <input type="checkbox" id="activity-enabled-toggle" aria-label="Capture network activity" checked>
                                     <span class="prop-slider"></span>
                                 </label>
                             </div>

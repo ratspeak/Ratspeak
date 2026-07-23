@@ -1,6 +1,7 @@
 //! Masked, JavaScript-safe Activity status, batch, and replay contracts.
 
 use std::sync::RwLock;
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -33,6 +34,13 @@ pub enum ActivityWorkerState {
     Shutdown,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ActivityTraceStateV1 {
+    Limited { remaining_ms: u64 },
+    UntilStopped,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ActivityRecorderError {
     #[error("activity worker is unavailable")]
@@ -63,6 +71,14 @@ pub enum ActivityPublishError {
 /// the core/Tauri emitter without changing worker ownership or retry rules.
 pub trait ActivityBatchSink: Send + Sync + 'static {
     fn try_publish(&self, batch: &ActivityBatchV1) -> Result<(), ActivityPublishError>;
+
+    /// Lifecycle/status notifications are intentionally separate from data
+    /// batches. Implementations may ignore them (headless tests do); the Tauri
+    /// adapter uses them to make expiry, recovery, Clear, and hard reset
+    /// immediately observable without polling.
+    fn try_publish_status(&self, _status: &ActivityStatusV1) -> Result<(), ActivityPublishError> {
+        Ok(())
+    }
 }
 
 pub(super) struct NoopBatchSink;
@@ -159,6 +175,8 @@ pub struct ActivityStatusV1 {
     latest: Option<DecimalU64>,
     worker_state: ActivityWorkerState,
     worker_epoch: DecimalU64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trace: Option<ActivityTraceStateV1>,
     counters: ActivityHealthSnapshot,
 }
 
@@ -199,6 +217,10 @@ impl ActivityStatusV1 {
 
     pub const fn worker_epoch(&self) -> u64 {
         self.worker_epoch.get()
+    }
+
+    pub const fn trace(&self) -> Option<ActivityTraceStateV1> {
+        self.trace
     }
 
     pub fn counters(&self) -> &ActivityHealthSnapshot {
@@ -246,12 +268,40 @@ impl StatusMirror {
         update(&mut fields);
     }
 
-    pub(super) fn snapshot(&self, counters: ActivityHealthSnapshot) -> ActivityStatusV1 {
+    /// Allocation-free producer-side snapshot used only by the temporary
+    /// legacy diagnostics bridge. The admission lease remains authoritative;
+    /// this mirror is used to self-close stale compatibility flags after
+    /// worker recovery and to normalize a stale Detailed selector.
+    pub(super) fn capture_state_profile(&self) -> (ActivityCaptureState, Option<CaptureProfile>) {
+        let fields = self
+            .fields
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (fields.state, fields.profile)
+    }
+
+    pub(super) fn snapshot(
+        &self,
+        counters: ActivityHealthSnapshot,
+        trace_deadline: Option<Instant>,
+    ) -> ActivityStatusV1 {
         let fields = self
             .fields
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let trace = (fields.state == ActivityCaptureState::Capturing
+            && fields.profile == Some(CaptureProfile::Trace))
+        .then(|| {
+            trace_deadline.map_or(ActivityTraceStateV1::UntilStopped, |deadline| {
+                ActivityTraceStateV1::Limited {
+                    remaining_ms: deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis()
+                        .min(u128::from(u64::MAX)) as u64,
+                }
+            })
+        });
         ActivityStatusV1 {
             version: ACTIVITY_SCHEMA_VERSION,
             capture_session: fields.capture_session,
@@ -262,6 +312,7 @@ impl StatusMirror {
             latest: fields.latest.map(DecimalU64::new),
             worker_state: fields.worker_state,
             worker_epoch: DecimalU64::new(fields.worker_epoch),
+            trace,
             counters,
         }
     }

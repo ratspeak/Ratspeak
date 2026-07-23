@@ -1161,7 +1161,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
         "identity_switching",
         json!({
             "hash": hash_hex,
-            "generation": generation,
+            "generation": generation.to_string(),
         }),
     );
 
@@ -1202,9 +1202,17 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
     if state.hw_locked_hash().as_deref() == Some(hash_hex.as_str()) {
         state.emit_to_all(
             "identity_switched",
-            json!({ "hash": hash_hex, "locked": true }),
+            json!({
+                "hash": hash_hex,
+                "locked": true,
+                "generation": generation.to_string(),
+            }),
         );
-        return Ok(json!({ "hash": hash_hex, "locked": true }));
+        return Ok(json!({
+            "hash": hash_hex,
+            "locked": true,
+            "generation": generation.to_string(),
+        }));
     }
 
     let (loaded_identity, loaded_lxmf, loaded_display, loaded_status) = {
@@ -1263,7 +1271,7 @@ async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppR
         "lxmf_hash": loaded_lxmf,
         "display_name": loaded_display,
         "status": loaded_status,
-        "generation": generation,
+        "generation": generation.to_string(),
     });
     let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state));
     emit_hub_interfaces(&state, ifaces);

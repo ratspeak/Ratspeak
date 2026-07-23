@@ -3808,13 +3808,42 @@ fn identity_switch_refreshes_interface_state_without_stale_public_servers() {
 }
 
 #[test]
-fn network_activity_opt_in_is_session_local() {
-    let source =
-        read_source(repo_root().join("dashboard/static/js/activity.js")).expect("activity js");
+fn activity_bootstrap_is_listener_first_and_session_local() {
+    let root = repo_root();
+    let activity = read_source(root.join("dashboard/static/js/activity.js")).expect("activity js");
+    let state = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
+    let identity = read_source(root.join("crates/ratspeak-tauri/src/commands/identity.rs"))
+        .expect("identity commands");
 
-    assert!(source.contains("localStorage.removeItem('rs-activity-enabled')"));
-    assert!(!source.contains("localStorage.setItem('rs-activity-enabled'"));
-    assert!(source.contains("enabled: false, level: activityLevel"));
+    assert!(!activity.contains("localStorage"));
+    assert!(!activity.contains("sessionStorage"));
+    assert!(!activity.contains("enabled: false, level: activityLevel"));
+    assert!(activity.contains("{ required: true }"));
+    assert!(activity.contains("invoke('activity_status')"));
+    assert!(activity.contains("invoke('activity_replay', {"));
+    assert!(activity.contains("['activity_status_v1', handleStatusNotification]"));
+    assert!(activity.contains("['activity_boundary_v1', handleBoundary]"));
+    assert!(activity.contains("['activity_legacy_cleared_v1', handleLegacyClear]"));
+    assert!(activity.contains("if (state.identityQuarantine) return;"));
+    assert!(activity.contains("if (authoritative && state.identityQuarantine)"));
+    assert!(activity.contains("payload.identity_generation !== state.identityGeneration"));
+    assert!(activity.contains("reason === 'identity_hard_reset'"));
+    assert!(activity.contains("activityPruneLegacyBefore(status.ingress_generation);"));
+    assert!(activity.contains("after: after"));
+    assert!(activity.contains("activityBootstrap.start();"));
+    assert!(!activity.contains("parseInt("));
+    assert!(!activity.contains("BigInt("));
+    assert!(!activity.contains("Number("));
+
+    assert!(state.contains("options.required === true"));
+    assert!(state.contains("err.code = 'event_bridge_unavailable'"));
+    assert!(state.contains("rs-lifecycle-foreground-handled"));
+    assert!(
+        identity
+            .matches(r#""generation": generation.to_string()"#)
+            .count()
+            >= 3
+    );
 }
 
 #[test]
@@ -4055,7 +4084,10 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
         read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs")).expect("network");
     assert!(network.contains("dest_hash = dest_hash.to_ascii_lowercase();"));
     assert!(network.contains("async fn ingress_path_diagnostics"));
-    assert!(network.contains("emit_ingress_diagnostics_snapshot(state.inner()).await;"));
+    assert!(
+        network
+            .contains("emit_ingress_diagnostics_snapshot(state.inner(), diagnostics_fence).await;")
+    );
     assert!(network.contains("\"interfaces_holding_announces\""));
 }
 

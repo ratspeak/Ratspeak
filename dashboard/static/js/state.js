@@ -332,10 +332,11 @@ function pathCountSummary(stats) {
 }
 
 // Tauri event bridge. Returns Promise<unlisten-fn>; await before assuming
-// the handler is live. Polls up to 1s for `window.__TAURI__.event` to appear,
-// since iOS WKWebView can inject Tauri globals after DOMContentLoaded — pre-fix
-// this would silently no-op listeners and the events never reached the page.
-window.RS.listen = function(eventName, handler) {
+// the handler is live. Required subscriptions reject with a static error so
+// callers such as Activity can retry a late iOS bridge instead of mistaking a
+// no-op unlisten function for a successfully installed listener.
+window.RS.listen = function(eventName, handler, options) {
+    options = options || {};
     function attach() {
         return window.__TAURI__.event.listen(eventName, function(ev) {
             try { handler(ev && ev.payload); } catch (e) { window.RS.diag('error', '[RS.listen]', eventName, e); }
@@ -344,7 +345,7 @@ window.RS.listen = function(eventName, handler) {
     if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
         return attach();
     }
-    return new Promise(function(resolve) {
+    return new Promise(function(resolve, reject) {
         var attempts = 0;
         var iv = setInterval(function() {
             attempts++;
@@ -353,8 +354,14 @@ window.RS.listen = function(eventName, handler) {
                 resolve(attach());
             } else if (attempts >= 20) {
                 clearInterval(iv);
-                window.RS.diag('warn', '[RS.listen] Tauri event bridge never appeared, dropping subscription:', eventName);
-                resolve(function() {});
+                if (options.required === true) {
+                    var err = new Error('Required Tauri event bridge is unavailable');
+                    err.code = 'event_bridge_unavailable';
+                    reject(err);
+                } else {
+                    window.RS.diag('warn', '[RS.listen] Tauri event bridge never appeared, dropping subscription:', eventName);
+                    resolve(function() {});
+                }
             }
         }, 50);
     });
@@ -827,8 +834,17 @@ function animateCountUp(element, target, duration) {
 
 var _lifecycleWasHidden = false;
 
-function _postLifecycleForeground(foreground) {
-    return RS.invoke('api_set_foreground', { args: { foreground: foreground } }).catch(function() {});
+function _postLifecycleForeground(foreground, detail) {
+    return RS.invoke('api_set_foreground', { args: { foreground: foreground } }).then(function() {
+        if (foreground) {
+            var eventDetail = detail || {};
+            eventDetail.foreground = true;
+            try {
+                document.dispatchEvent(new CustomEvent('rs-lifecycle-foreground-handled', { detail: eventDetail }));
+            } catch (_) {}
+        }
+        return true;
+    }, function() { return false; });
 }
 
 function _currentLifecycleForeground() {
@@ -855,15 +871,15 @@ function _refreshAfterResume() {
 }
 
 // visibilitychange doesn't fire on initial visible state.
-_postLifecycleForeground(_currentLifecycleForeground());
+_postLifecycleForeground(_currentLifecycleForeground(), { source: 'initial', persisted: false });
 _lifecycleWasHidden = document.hidden;
 
 function _handleLifecycleChange() {
     var foreground = _currentLifecycleForeground();
     var nowVisible = !document.hidden;
-    _postLifecycleForeground(foreground);
+    var lifecycleHandled = _postLifecycleForeground(foreground, { source: 'lifecycle', persisted: false });
     if (!window.__RATSPEAK_DESKTOP__ && nowVisible && _lifecycleWasHidden) {
-        _refreshAfterResume();
+        lifecycleHandled.then(function(handled) { if (handled) _refreshAfterResume(); });
     }
     _lifecycleWasHidden = !nowVisible;
 }
@@ -877,8 +893,9 @@ if (!window.__RATSPEAK_DESKTOP__) {
     // pageshow covers mobile Safari bfcache where visibilitychange may not fire.
     window.addEventListener('pageshow', function(e) {
         if (e.persisted) {
-            _postLifecycleForeground(true);
-            _refreshAfterResume();
+            _postLifecycleForeground(true, { source: 'pageshow', persisted: true }).then(function(handled) {
+                if (handled) _refreshAfterResume();
+            });
             _lifecycleWasHidden = false;
         }
     });

@@ -12,15 +12,18 @@ use super::admission::{INGRESS_CAPACITY, LowPermitPool, ProcessClock, RateAdmiss
 use super::classified::{ActivityDraft, ActivityRejectReason};
 use super::gate::{AdmissionGate, GateError};
 use super::health::ActivityHealth;
+use super::query::{
+    ActivityDetailResultV1, ActivityIpcResponse, ActivityRevealResultV1, ActivitySafeCopyResultV1,
+};
 use super::replay::{
     ACTIVITY_REPLAY_MAX_BYTES, ACTIVITY_REPLAY_MAX_EVENTS, ACTIVITY_REPLAY_MIN_BYTES,
     ActivityBatchSink, ActivityRecorderError, ActivityReplayResultV1, ActivityStatusV1,
     NoopBatchSink, StatusMirror,
 };
-use super::schema::{ActivitySeverity, CaptureProfile, CaptureScope};
+use super::schema::{ActivityAttributeKey, ActivitySeverity, CaptureProfile, CaptureScope};
 use super::worker::{
-    BarrierAck, IngressDraft, IngressItem, OrderedBarrier, OrderedBarrierKind, QueryCommand,
-    ReplayRequest, UrgentCommand, WorkerShared, spawn_worker,
+    BarrierAck, EventQueryRequest, IngressDraft, IngressItem, OrderedBarrier, OrderedBarrierKind,
+    QueryCommand, ReplayRequest, UrgentCommand, WorkerShared, spawn_worker,
 };
 
 const URGENT_CAPACITY: usize = 16;
@@ -56,7 +59,7 @@ struct RecorderInner {
     urgent_tx: Sender<UrgentCommand>,
     query_tx: Sender<QueryCommand>,
     lifecycle_lock: tokio::sync::Mutex<()>,
-    replay_lock: tokio::sync::RwLock<()>,
+    replay_lock: Arc<tokio::sync::RwLock<()>>,
     join: Mutex<Option<JoinHandle<()>>>,
     shutdown: AtomicBool,
 }
@@ -108,7 +111,7 @@ impl ActivityRecorder {
                 urgent_tx,
                 query_tx,
                 lifecycle_lock: tokio::sync::Mutex::new(()),
-                replay_lock: tokio::sync::RwLock::new(()),
+                replay_lock: Arc::new(tokio::sync::RwLock::new(())),
                 join: Mutex::new(join),
                 shutdown: AtomicBool::new(false),
             }),
@@ -210,6 +213,40 @@ impl ActivityRecorder {
         self.inner.shared.status()
     }
 
+    /// Temporary in-process bridge for legacy diagnostic emitters. The action
+    /// runs only while the same admission gate as typed producers is open, and
+    /// its lease makes Stop/hard reset wait until the synchronous retention or
+    /// IPC attempt has completed. No caller may await inside this closure.
+    pub(crate) fn with_capture_admission<T>(
+        &self,
+        action: impl FnOnce(u64, CaptureProfile) -> T,
+    ) -> Option<T> {
+        if !self.inner.shared.available.load(Ordering::Acquire) {
+            return None;
+        }
+        let lease = self.inner.shared.gate.try_admit()?;
+        if lease.profile() == CaptureProfile::Trace
+            && lease
+                .trace_deadline()
+                .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.inner.shared.gate.close();
+            drop(lease);
+            return None;
+        }
+        let output = action(lease.generation(), lease.profile());
+        drop(lease);
+        Some(output)
+    }
+
+    /// Allocation-free compatibility snapshot. It is intentionally weaker
+    /// than an admission lease and must never authorize an emission by itself.
+    pub fn capture_state_profile(
+        &self,
+    ) -> (super::replay::ActivityCaptureState, Option<CaptureProfile>) {
+        self.inner.shared.mirror.capture_state_profile()
+    }
+
     pub async fn start(&self) -> Result<ActivityStatusV1, ActivityRecorderError> {
         let _lifecycle = self.lock_lifecycle().await?;
         if self.status().state() != super::replay::ActivityCaptureState::Off {
@@ -277,6 +314,13 @@ impl ActivityRecorder {
         let _lifecycle = self.lock_lifecycle().await?;
         self.inner.shared.gate.close();
         self.wait_quiescent().await?;
+        // Clear is also a response-serialization privacy boundary: wait until
+        // every replay/detail/reveal/copy value admitted before this point has
+        // finished crossing IPC before raw ring values are purged and the
+        // acknowledgement is returned.
+        let _replay = tokio::time::timeout(LIFECYCLE_TIMEOUT, self.inner.replay_lock.write())
+            .await
+            .map_err(|_| ActivityRecorderError::TimedOut)?;
         let expected_generation = self.inner.shared.gate.generation();
         let trace_deadline = self.trace_deadline();
         let ack = self
@@ -380,15 +424,36 @@ impl ActivityRecorder {
         max_events: usize,
         max_bytes: usize,
     ) -> Result<ActivityReplayResultV1, ActivityRecorderError> {
-        if !is_capture_session_token(&capture_session)
-            || max_events == 0
-            || max_bytes < ACTIVITY_REPLAY_MIN_BYTES
-        {
-            return Err(ActivityRecorderError::InvalidRequest);
-        }
-        let _replay = tokio::time::timeout(LIFECYCLE_TIMEOUT, self.inner.replay_lock.read())
+        validate_replay_request(&capture_session, max_events, max_bytes)?;
+        let _replay = self.lock_replay().await?;
+        self.replay_unlocked(capture_session, after, max_events, max_bytes)
             .await
-            .map_err(|_| ActivityRecorderError::TimedOut)?;
+    }
+
+    /// IPC form whose owned privacy lease survives until serde has consumed
+    /// the response inside Tauri's generated command wrapper.
+    pub async fn replay_for_ipc(
+        &self,
+        capture_session: String,
+        after: Option<u64>,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Result<ActivityIpcResponse<ActivityReplayResultV1>, ActivityRecorderError> {
+        validate_replay_request(&capture_session, max_events, max_bytes)?;
+        let privacy_lease = self.lock_replay_owned().await?;
+        let value = self
+            .replay_unlocked(capture_session, after, max_events, max_bytes)
+            .await?;
+        Ok(ActivityIpcResponse::new(value, privacy_lease))
+    }
+
+    async fn replay_unlocked(
+        &self,
+        capture_session: String,
+        after: Option<u64>,
+        max_events: usize,
+        max_bytes: usize,
+    ) -> Result<ActivityReplayResultV1, ActivityRecorderError> {
         let request = ReplayRequest {
             capture_session,
             after,
@@ -404,6 +469,118 @@ impl ActivityRecorder {
             Err(TrySendError::Full(_)) => Err(ActivityRecorderError::ControlBusy),
             Err(TrySendError::Disconnected(_)) => Err(ActivityRecorderError::WorkerUnavailable),
         }
+    }
+
+    pub async fn detail(
+        &self,
+        capture_session: String,
+        sequence: u64,
+    ) -> Result<ActivityDetailResultV1, ActivityRecorderError> {
+        let request = event_query_request(capture_session, sequence)?;
+        let _replay = self.lock_replay().await?;
+        self.detail_unlocked(request).await
+    }
+
+    pub async fn detail_for_ipc(
+        &self,
+        capture_session: String,
+        sequence: u64,
+    ) -> Result<ActivityIpcResponse<ActivityDetailResultV1>, ActivityRecorderError> {
+        let request = event_query_request(capture_session, sequence)?;
+        let privacy_lease = self.lock_replay_owned().await?;
+        let value = self.detail_unlocked(request).await?;
+        Ok(ActivityIpcResponse::new(value, privacy_lease))
+    }
+
+    async fn detail_unlocked(
+        &self,
+        request: EventQueryRequest,
+    ) -> Result<ActivityDetailResultV1, ActivityRecorderError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send_query(
+            QueryCommand::Detail {
+                request,
+                reply: reply_tx,
+            },
+            reply_rx,
+        )
+        .await
+    }
+
+    pub async fn reveal(
+        &self,
+        capture_session: String,
+        sequence: u64,
+        key: ActivityAttributeKey,
+    ) -> Result<ActivityRevealResultV1, ActivityRecorderError> {
+        let request = event_query_request(capture_session, sequence)?;
+        let _replay = self.lock_replay().await?;
+        self.reveal_unlocked(request, key).await
+    }
+
+    pub async fn reveal_for_ipc(
+        &self,
+        capture_session: String,
+        sequence: u64,
+        key: ActivityAttributeKey,
+    ) -> Result<ActivityIpcResponse<ActivityRevealResultV1>, ActivityRecorderError> {
+        let request = event_query_request(capture_session, sequence)?;
+        let privacy_lease = self.lock_replay_owned().await?;
+        let value = self.reveal_unlocked(request, key).await?;
+        Ok(ActivityIpcResponse::new(value, privacy_lease))
+    }
+
+    async fn reveal_unlocked(
+        &self,
+        request: EventQueryRequest,
+        key: ActivityAttributeKey,
+    ) -> Result<ActivityRevealResultV1, ActivityRecorderError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send_query(
+            QueryCommand::Reveal {
+                request,
+                key,
+                reply: reply_tx,
+            },
+            reply_rx,
+        )
+        .await
+    }
+
+    pub async fn safe_copy(
+        &self,
+        capture_session: String,
+        sequence: u64,
+    ) -> Result<ActivitySafeCopyResultV1, ActivityRecorderError> {
+        let request = event_query_request(capture_session, sequence)?;
+        let _replay = self.lock_replay().await?;
+        self.safe_copy_unlocked(request).await
+    }
+
+    pub async fn safe_copy_for_ipc(
+        &self,
+        capture_session: String,
+        sequence: u64,
+    ) -> Result<ActivityIpcResponse<ActivitySafeCopyResultV1>, ActivityRecorderError> {
+        let request = event_query_request(capture_session, sequence)?;
+        let privacy_lease = self.lock_replay_owned().await?;
+        let value = self.safe_copy_unlocked(request).await?;
+        Ok(ActivityIpcResponse::new(value, privacy_lease))
+    }
+
+    async fn safe_copy_unlocked(
+        &self,
+        request: EventQueryRequest,
+    ) -> Result<ActivitySafeCopyResultV1, ActivityRecorderError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send_query(
+            QueryCommand::SafeCopy {
+                request,
+                reply: reply_tx,
+            },
+            reply_rx,
+        )
+        .await
     }
 
     /// App-exit-only finalizer. Identity/runtime transitions use
@@ -448,6 +625,37 @@ impl ActivityRecorder {
         tokio::time::timeout(LIFECYCLE_TIMEOUT, self.inner.lifecycle_lock.lock())
             .await
             .map_err(|_| ActivityRecorderError::TimedOut)
+    }
+
+    async fn lock_replay(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, ActivityRecorderError> {
+        tokio::time::timeout(LIFECYCLE_TIMEOUT, self.inner.replay_lock.read())
+            .await
+            .map_err(|_| ActivityRecorderError::TimedOut)
+    }
+
+    async fn lock_replay_owned(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, ActivityRecorderError> {
+        tokio::time::timeout(
+            LIFECYCLE_TIMEOUT,
+            Arc::clone(&self.inner.replay_lock).read_owned(),
+        )
+        .await
+        .map_err(|_| ActivityRecorderError::TimedOut)
+    }
+
+    async fn send_query<T>(
+        &self,
+        command: QueryCommand,
+        reply: oneshot::Receiver<Result<T, ActivityRecorderError>>,
+    ) -> Result<T, ActivityRecorderError> {
+        match self.inner.query_tx.try_send(command) {
+            Ok(()) => await_ack(reply).await?,
+            Err(TrySendError::Full(_)) => Err(ActivityRecorderError::ControlBusy),
+            Err(TrySendError::Disconnected(_)) => Err(ActivityRecorderError::WorkerUnavailable),
+        }
     }
 
     async fn wait_quiescent(&self) -> Result<(), ActivityRecorderError> {
@@ -568,6 +776,34 @@ fn is_capture_session_token(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn validate_replay_request(
+    capture_session: &str,
+    max_events: usize,
+    max_bytes: usize,
+) -> Result<(), ActivityRecorderError> {
+    if !is_capture_session_token(capture_session)
+        || max_events == 0
+        || max_bytes < ACTIVITY_REPLAY_MIN_BYTES
+    {
+        Err(ActivityRecorderError::InvalidRequest)
+    } else {
+        Ok(())
+    }
+}
+
+fn event_query_request(
+    capture_session: String,
+    sequence: u64,
+) -> Result<EventQueryRequest, ActivityRecorderError> {
+    if sequence == 0 || !is_capture_session_token(&capture_session) {
+        return Err(ActivityRecorderError::InvalidRequest);
+    }
+    Ok(EventQueryRequest {
+        capture_session,
+        sequence,
+    })
+}
+
 fn loss_observation_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -633,25 +869,34 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use super::super::catalog::{
-        self, DeliveryFailureReason, DestinationHash, LxmfDeliveryFailed, MessageId,
-        ObservationTime,
+        self, ChannelNavigationReference, ChannelRoomToken, DeliveryFailureReason, DestinationHash,
+        LxmfDeliveryFailed, MessageId, NavigationToken, ObservationTime,
     };
     use super::super::classified::{CoalescingPolicy, CorrelationId};
     use super::super::replay::{
         ACTIVITY_BATCH_MAX_BYTES, ACTIVITY_BATCH_MAX_EVENTS, ActivityBatchV1, ActivityCaptureState,
-        ActivityPublishError, ActivityReplayResultV1, ActivityWorkerState,
+        ActivityPublishError, ActivityReplayResultV1, ActivityTraceStateV1, ActivityWorkerState,
     };
+    use super::super::schema::ACTIVITY_SCHEMA_VERSION;
     use super::*;
 
     #[derive(Default)]
     struct RecordingSink {
         batches: Mutex<Vec<ActivityBatchV1>>,
+        statuses: Mutex<Vec<ActivityStatusV1>>,
         fail: AtomicBool,
     }
 
     impl RecordingSink {
         fn batches(&self) -> Vec<ActivityBatchV1> {
             self.batches
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+
+        fn statuses(&self) -> Vec<ActivityStatusV1> {
+            self.statuses
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone()
@@ -667,6 +912,20 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(batch.clone());
+            Ok(())
+        }
+
+        fn try_publish_status(
+            &self,
+            status: &ActivityStatusV1,
+        ) -> Result<(), ActivityPublishError> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(ActivityPublishError::Unavailable);
+            }
+            self.statuses
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(status.clone());
             Ok(())
         }
     }
@@ -770,6 +1029,233 @@ mod tests {
         assert_eq!(page.events().len(), 3);
         assert_eq!(page.next_after(), Some(3));
         assert!(!page.has_more());
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hard_reset_fences_the_temporary_legacy_capture_admission() {
+        let recorder = ActivityRecorder::new();
+        recorder.start().await.unwrap();
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let admitted_recorder = recorder.clone();
+        let admitted = tokio::task::spawn_blocking(move || {
+            admitted_recorder.with_capture_admission(|_, _| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("legacy emission should enter before reset");
+
+        let reset_recorder = recorder.clone();
+        let reset = tokio::spawn(async move { reset_recorder.hard_reset().await });
+        wait_until(|| recorder.record(|| normal_draft(9)) == ActivityRecordOutcome::CaptureOff)
+            .await;
+        assert!(recorder.with_capture_admission(|_, _| ()).is_none());
+        assert!(!reset.is_finished());
+
+        release_tx.send(()).unwrap();
+        assert_eq!(admitted.await.unwrap(), Some(()));
+        let reset_status = reset.await.unwrap().unwrap();
+        assert_eq!(reset_status.state(), ActivityCaptureState::Off);
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn detail_reveal_and_safe_copy_keep_raw_values_on_explicit_paths_only() {
+        let recorder = ActivityRecorder::new();
+        let session = recorder
+            .start()
+            .await
+            .unwrap()
+            .capture_session()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            recorder.record(|| normal_draft(0xab)),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| recorder.status().latest().is_some_and(|latest| latest >= 2)).await;
+
+        let detail = recorder.detail(session.clone(), 2).await.unwrap();
+        let detail_json = serde_json::to_value(detail).unwrap();
+        assert_eq!(detail_json["result"], "found");
+        assert_eq!(detail_json["version"], ACTIVITY_SCHEMA_VERSION);
+        assert_eq!(detail_json["event"]["kind"], "rns.path.discovered");
+        let detail_text = serde_json::to_string(&detail_json).unwrap();
+        assert!(!detail_text.contains("abababababababababababababababab"));
+        assert!(!detail_text.contains("example.net:4242"));
+
+        let identifier = recorder
+            .reveal(session.clone(), 2, ActivityAttributeKey::Destination)
+            .await
+            .unwrap();
+        let identifier_json = serde_json::to_value(identifier).unwrap();
+        assert_eq!(identifier_json["result"], "identifier");
+        assert_eq!(identifier_json["kind"], "destination");
+        assert_eq!(identifier_json["value"], "abababababababababababababababab");
+
+        let endpoint = recorder
+            .reveal(session.clone(), 2, ActivityAttributeKey::Endpoint)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(endpoint).unwrap()["result"],
+            "not_revealable"
+        );
+
+        let safe_copy = recorder.safe_copy(session.clone(), 2).await.unwrap();
+        let safe_copy_json = serde_json::to_value(safe_copy).unwrap();
+        assert_eq!(safe_copy_json["result"], "found");
+        let sanitized_text = safe_copy_json["json"].as_str().unwrap();
+        assert!(!sanitized_text.contains("abababababababababababababababab"));
+        assert!(!sanitized_text.contains("example.net:4242"));
+        let sanitized: serde_json::Value = serde_json::from_str(sanitized_text).unwrap();
+        let endpoint_attribute = sanitized["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|attribute| attribute["key"] == "endpoint")
+            .unwrap();
+        assert_eq!(endpoint_attribute["value"]["type"], "endpoint");
+        assert_eq!(endpoint_attribute["value"]["value"]["class"], "tcp");
+        assert!(
+            endpoint_attribute["value"]["value"]["pseudonym"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+
+        assert_eq!(
+            recorder.record(|| {
+                catalog::channels_room_joined(ChannelNavigationReference {
+                    time: ObservationTime::new(200, 200),
+                    room: ChannelRoomToken::from_bytes([0x4c; 16]),
+                    navigation_token: NavigationToken::from_bytes([0x9d; 16]),
+                })
+            }),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| recorder.status().latest().is_some_and(|latest| latest >= 3)).await;
+        let navigation_copy = recorder.safe_copy(session.clone(), 3).await.unwrap();
+        let navigation_outer = serde_json::to_value(navigation_copy).unwrap();
+        let navigation_text = navigation_outer["json"].as_str().unwrap();
+        assert!(!navigation_text.contains("9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d"));
+        let navigation_json: serde_json::Value = serde_json::from_str(navigation_text).unwrap();
+        assert!(
+            navigation_json["attributes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|attribute| attribute["key"] != "session")
+        );
+        let navigation_reveal = recorder
+            .reveal(session, 3, ActivityAttributeKey::Session)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(navigation_reveal).unwrap()["result"],
+            "not_revealable"
+        );
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trace_capture_allows_transient_endpoint_reveal_but_safe_copy_stays_masked() {
+        let recorder = ActivityRecorder::new();
+        let session = recorder
+            .start()
+            .await
+            .unwrap()
+            .capture_session()
+            .unwrap()
+            .to_string();
+        let trace_status = recorder
+            .set_profile(
+                CaptureProfile::Trace,
+                Some(TraceCaptureDuration::UntilStopped),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            trace_status.trace(),
+            Some(ActivityTraceStateV1::UntilStopped)
+        );
+        assert_eq!(
+            recorder.record(|| normal_draft(0xcd)),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| recorder.status().latest().is_some_and(|latest| latest >= 3)).await;
+
+        let endpoint = recorder
+            .reveal(session.clone(), 3, ActivityAttributeKey::Endpoint)
+            .await
+            .unwrap();
+        let endpoint_json = serde_json::to_value(endpoint).unwrap();
+        assert_eq!(endpoint_json["result"], "endpoint");
+        assert_eq!(endpoint_json["class"], "tcp");
+        assert_eq!(endpoint_json["value"], "example.net:4242");
+
+        let safe_copy = recorder.safe_copy(session, 3).await.unwrap();
+        let safe_copy_json = serde_json::to_value(safe_copy).unwrap();
+        let sanitized = safe_copy_json["json"].as_str().unwrap();
+        assert!(!sanitized.contains("example.net:4242"));
+
+        let stopped = recorder.stop().await.unwrap();
+        assert_eq!(stopped.state(), ActivityCaptureState::Stopped);
+        assert_eq!(stopped.profile(), Some(CaptureProfile::Trace));
+        assert_eq!(stopped.trace(), None);
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn event_queries_distinguish_not_found_session_mismatch_and_invalid_requests() {
+        let recorder = ActivityRecorder::new();
+        let session = recorder
+            .start()
+            .await
+            .unwrap()
+            .capture_session()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            recorder.record(|| normal_draft(21)),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| recorder.status().latest().is_some_and(|latest| latest >= 2)).await;
+        recorder.clear().await.unwrap();
+
+        let detail = recorder.detail(session.clone(), 2).await.unwrap();
+        assert_eq!(serde_json::to_value(detail).unwrap()["result"], "not_found");
+        let reveal = recorder
+            .reveal(session.clone(), 2, ActivityAttributeKey::Destination)
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(reveal).unwrap()["result"], "not_found");
+        let safe_copy = recorder.safe_copy(session.clone(), 2).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(safe_copy).unwrap()["result"],
+            "not_found"
+        );
+
+        let mut foreign = session.clone().into_bytes();
+        foreign[0] = if foreign[0] == b'0' { b'1' } else { b'0' };
+        let foreign = String::from_utf8(foreign).unwrap();
+        let mismatch = recorder.detail(foreign, 3).await.unwrap();
+        let mismatch_json = serde_json::to_value(mismatch).unwrap();
+        assert_eq!(mismatch_json["result"], "session_mismatch");
+        assert_eq!(mismatch_json["status"]["capture_session"], session);
+
+        assert_eq!(
+            recorder.detail("not-a-session".to_string(), 1).await,
+            Err(ActivityRecorderError::InvalidRequest)
+        );
+        assert_eq!(
+            recorder.detail(session, 0).await,
+            Err(ActivityRecorderError::InvalidRequest)
+        );
         recorder.shutdown().await.unwrap();
     }
 
@@ -959,15 +1445,23 @@ mod tests {
     async fn clear_preserves_a_finite_trace_deadline() {
         let recorder = ActivityRecorder::new();
         recorder.start().await.unwrap();
-        recorder
+        let trace = recorder
             .set_profile(
                 CaptureProfile::Trace,
                 Some(TraceCaptureDuration::Limited(Duration::from_millis(35))),
             )
             .await
             .unwrap();
+        assert!(matches!(
+            trace.trace(),
+            Some(ActivityTraceStateV1::Limited { remaining_ms }) if remaining_ms <= 35
+        ));
         let cleared = recorder.clear().await.unwrap();
         assert_eq!(cleared.profile(), Some(CaptureProfile::Trace));
+        assert!(matches!(
+            cleared.trace(),
+            Some(ActivityTraceStateV1::Limited { remaining_ms }) if remaining_ms <= 35
+        ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         let expired = recorder.expire_trace_if_due().await.unwrap();
@@ -1083,6 +1577,98 @@ mod tests {
         let status = reset.await.unwrap().unwrap();
         assert_eq!(status.state(), ActivityCaptureState::Off);
         assert!(status.capture_session().is_none());
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clear_ack_waits_until_an_ipc_reveal_response_is_serialized_and_dropped() {
+        let recorder = ActivityRecorder::new();
+        let session = recorder
+            .start()
+            .await
+            .unwrap()
+            .capture_session()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            recorder.record(|| normal_draft(0x31)),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| recorder.status().latest().is_some_and(|latest| latest >= 2)).await;
+
+        let response = recorder
+            .reveal_for_ipc(session, 2, ActivityAttributeKey::Destination)
+            .await
+            .unwrap();
+        let clear_recorder = recorder.clone();
+        let clear = tokio::spawn(async move { clear_recorder.clear().await });
+        wait_until(|| recorder.record(|| normal_draft(0x32)) == ActivityRecordOutcome::CaptureOff)
+            .await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!clear.is_finished());
+
+        let serialized = serde_json::to_value(&response).unwrap();
+        assert_eq!(serialized["result"], "identifier");
+        assert_eq!(serialized["value"], "31313131313131313131313131313131");
+        drop(response);
+
+        let status = clear.await.unwrap().unwrap();
+        assert_eq!(status.state(), ActivityCaptureState::Capturing);
+        assert!(status.oldest().is_some_and(|oldest| oldest >= 3));
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hard_reset_ack_waits_until_an_ipc_detail_response_is_serialized_and_dropped() {
+        let recorder = ActivityRecorder::new();
+        let session = recorder
+            .start()
+            .await
+            .unwrap()
+            .capture_session()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            recorder.record(|| normal_draft(0x41)),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| recorder.status().latest().is_some_and(|latest| latest >= 2)).await;
+
+        let response = recorder.detail_for_ipc(session, 2).await.unwrap();
+        let reset_recorder = recorder.clone();
+        let reset = tokio::spawn(async move { reset_recorder.hard_reset().await });
+        wait_until(|| recorder.record(|| normal_draft(0x42)) == ActivityRecordOutcome::CaptureOff)
+            .await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!reset.is_finished());
+
+        let serialized = serde_json::to_value(&response).unwrap();
+        assert_eq!(serialized["result"], "found");
+        assert_eq!(serialized["event"]["kind"], "rns.path.discovered");
+        drop(response);
+
+        let status = reset.await.unwrap().unwrap();
+        assert_eq!(status.state(), ActivityCaptureState::Off);
+        assert!(status.capture_session().is_none());
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn expired_trace_never_authorizes_the_temporary_legacy_bridge() {
+        let recorder = ActivityRecorder::new();
+        recorder.start().await.unwrap();
+        recorder
+            .set_profile(
+                CaptureProfile::Trace,
+                Some(TraceCaptureDuration::Limited(Duration::from_millis(1))),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let admitted = recorder.with_capture_admission(|_, profile| profile);
+        assert_ne!(admitted, Some(CaptureProfile::Trace));
+        recorder.hard_reset().await.unwrap();
         recorder.shutdown().await.unwrap();
     }
 
@@ -1290,7 +1876,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn sink_failure_is_counted_while_ring_replay_remains_available() {
+    async fn sink_failures_are_counted_while_ring_replay_remains_available() {
         let sink = Arc::new(RecordingSink::default());
         sink.fail.store(true, Ordering::Relaxed);
         let recorder = ActivityRecorder::with_batch_sink(sink);
@@ -1302,7 +1888,9 @@ mod tests {
             .unwrap()
             .to_string();
         recorder.stop().await.unwrap();
-        assert_eq!(recorder.status().counters().ipc_failure(), "1");
+        // Start status, the Stop-flushed event batch, and Stop status are
+        // separate result-bearing deliveries and each failed attempt counts.
+        assert_eq!(recorder.status().counters().ipc_failure(), "3");
         let ActivityReplayResultV1::Page { page } =
             recorder.replay(session, None, 50, 64 * 1024).await.unwrap()
         else {
@@ -1361,7 +1949,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn supervised_fault_drops_old_privacy_and_restarts_closed() {
-        let recorder = ActivityRecorder::new();
+        let sink = Arc::new(RecordingSink::default());
+        let recorder = ActivityRecorder::with_batch_sink(sink.clone());
         let first = recorder
             .start()
             .await
@@ -1382,6 +1971,11 @@ mod tests {
         assert_eq!(recovered.state(), ActivityCaptureState::Off);
         assert!(recovered.capture_session().is_none());
         assert_eq!(recovered.counters().worker_recovery(), "1");
+        assert!(sink.statuses().iter().any(|status| {
+            status.worker_state() == ActivityWorkerState::Recovered
+                && status.state() == ActivityCaptureState::Off
+                && status.capture_session().is_none()
+        }));
 
         let second = recorder
             .start()
