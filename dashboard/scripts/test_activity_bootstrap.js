@@ -969,7 +969,7 @@ test('Normal and Trace controls call the typed profile command and Resume uses t
     assert.strictEqual(ctx.activityProfile, 'normal');
 });
 
-test('canonical channel events render as readable, filterable rows with expandable masked details', function() {
+test('canonical channel events render as readable, filterable rows with privacy-gated details', function() {
     var ui = loadUiHarness();
     var ctx = ui.context;
     var channelEvent = event(SESSION_A, '7', 'channels.room.join_requested');
@@ -998,7 +998,75 @@ test('canonical channel events render as readable, filterable rows with expandab
     ctx.activityExpandedSequence = '7';
     ctx.renderActivityFeed();
     assert(ui.ids['activity-feed'].innerHTML.indexOf('channels.room.join_requested') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('Hub 2 · masked-hu…3456') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('Reveal and copy') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-field="hub"') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('masked-hub-token-123456') === -1);
+});
+
+test('expanded announces resolve a known name and copy the full LXMF address', async function() {
+    var ui = loadUiHarness();
+    var ctx = ui.context;
+    var rawAddress = '00112233445566778899aabbccddeeff';
+    var announceEvent = event(SESSION_A, '9', 'rns.announce.observed');
+    announceEvent.area = 'network';
+    announceEvent.kind = 'rns.announce.observed';
+    announceEvent.summary_code = 'rns.announce.observed';
+    announceEvent.timestamp_unix_ms = 1700000000000;
+    announceEvent.attributes = [{
+        key: 'destination',
+        value: {
+            type: 'identifier',
+            value: { kind: 'destination', pseudonym: 'masked-destination', ordinal: 4 }
+        }
+    }, {
+        key: 'hops',
+        value: { type: 'unsigned', value: 2 }
+    }];
+    ctx.activityEvents = [announceEvent];
+    ctx.activityExpandedSequence = '9';
+    ctx.PeersCache = {
+        get: function(hash) {
+            assert.strictEqual(hash, rawAddress);
+            return {
+                hash: hash,
+                display_name: 'Alice',
+                services: ['lxmf.delivery']
+            };
+        }
+    };
+    ctx.announceCache = [{ hash: rawAddress, display_name: 'Alice' }];
+    var revealCalls = 0;
+    ui.setInvoke(function(name, args) {
+        revealCalls++;
+        assert.strictEqual(name, 'activity_reveal');
+        assert.strictEqual(args.args.capture_session, SESSION_A);
+        assert.strictEqual(args.args.sequence, '9');
+        assert.strictEqual(args.args.field, 'destination');
+        return Promise.resolve({
+            result: 'identifier',
+            key: 'destination',
+            kind: 'destination',
+            value: rawAddress
+        });
+    });
+
+    await ctx.activityRevealField(announceEvent, 'destination');
+    ctx.renderActivityFeed();
+    var html = ui.ids['activity-feed'].innerHTML;
+    assert(html.indexOf('Alice announced') !== -1);
+    assert(html.indexOf('activity-identity-name">Alice') !== -1);
+    assert(html.indexOf('LXMF address') !== -1);
+    assert(html.indexOf('001122334…eeff') !== -1);
+    assert(html.indexOf(rawAddress) === -1, 'full address must not be painted into the Activity DOM');
+
+    var copied = null;
+    ctx.RS.copyText = function(value) {
+        copied = value;
+        return Promise.resolve(true);
+    };
+    assert.strictEqual(await ctx.copyActivityIdentifier('9', 'destination'), true);
+    assert.strictEqual(copied, rawAddress);
+    assert.strictEqual(revealCalls, 1, 'copy should reuse the explicit reveal');
 });
 
 test('identity UI reset clears canonical visible state without issuing a Stop command', async function() {
@@ -1063,6 +1131,9 @@ test('Activity state stays session-only and the transformed controls are explici
     assert(indexSource.indexOf('id="activity-search-input" type="search"') !== -1);
     assert(indexSource.indexOf('autocapitalize="off"') !== -1);
     assert(indexSource.indexOf('role="log" aria-live="polite"') !== -1);
+    assert.strictEqual(indexSource.indexOf('activity-status-dot'), -1);
+    assert(activitySource.indexOf("? 'Live'") !== -1);
+    assert.strictEqual(activitySource.indexOf("? 'Recording'"), -1);
 });
 
 (async function run() {

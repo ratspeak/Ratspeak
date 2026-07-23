@@ -1859,6 +1859,7 @@ RS.listen('identity_switched', function(data) {
 
     if (typeof events !== 'undefined') events = [];
     if (typeof activityEvents !== 'undefined') activityEvents = [];
+    if (typeof activityResetReveals === 'function') activityResetReveals();
 
     var msgList = document.getElementById('lxmf-messages');
     if (msgList) msgList.innerHTML = '<div class="lxmf-empty">Select a contact to view conversation.</div>';

@@ -6,6 +6,8 @@ var activityAreaFilter = 'all';
 var activityProblemsOnly = false;
 var activitySearchQuery = '';
 var activityExpandedSequence = null;
+var activityRevealedFields = Object.create(null);
+var activityRevealPending = Object.create(null);
 
 var ACTIVITY_MAX_RENDERED = 500;
 var _activityRenderScheduled = false;
@@ -787,6 +789,7 @@ var activityBootstrap = createActivityBootstrap({
         activityProblemsOnly = false;
         activitySearchQuery = '';
         activityExpandedSequence = null;
+        activityResetReveals();
         activityStickToBottom = true;
         setActivityControlPending(false);
         updateActivityUI();
@@ -801,6 +804,7 @@ var activityBootstrap = createActivityBootstrap({
         activityProfile = 'normal';
         activityEvents = [];
         activityExpandedSequence = null;
+        activityResetReveals();
         setActivityControlPending(false);
         updateActivityUI();
         renderActivityFilters();
@@ -812,6 +816,10 @@ window.RS.activityBootstrap = activityBootstrap;
 function applyActivityStatus(status) {
     if (!activityValidStatus(status)) return false;
     if (activityStatus && activityStatusIsOlder(status, activityStatus)) return false;
+    var previousSession = activityStatus && activityStatus.capture_session;
+    if (previousSession && previousSession !== status.capture_session) {
+        activityResetReveals();
+    }
     activityStatus = status;
     activityCaptureState = status.state;
     activityProfile = status.profile === 'trace' ? 'trace' : 'normal';
@@ -943,15 +951,17 @@ function initActivity() {
             activityStickToBottom = distanceFromBottom <= ACTIVITY_STICK_TOLERANCE_PX;
         }, { passive: true });
         feed.addEventListener('click', function(event) {
+            var copyControl = activityClosestEventTarget(event.target, 'activity-copy-value', feed);
+            if (copyControl) {
+                event.stopPropagation();
+                copyActivityIdentifier(
+                    copyControl.getAttribute('data-sequence'),
+                    copyControl.getAttribute('data-field')
+                );
+                return;
+            }
             var row = activityClosestEventTarget(event.target, 'activity-event', feed);
             if (row) toggleActivityEvent(row.getAttribute('data-sequence'));
-        });
-        feed.addEventListener('keydown', function(event) {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            var row = activityClosestEventTarget(event.target, 'activity-event', feed);
-            if (!row) return;
-            event.preventDefault();
-            toggleActivityEvent(row.getAttribute('data-sequence'));
         });
     }
 
@@ -1040,6 +1050,7 @@ function clearActivity() {
         if (!applyActivityStatus(status)) throw new Error('Invalid Activity clear acknowledgement');
         activityEvents = [];
         activityExpandedSequence = null;
+        activityResetReveals();
         activityStickToBottom = true;
         renderActivityFilters();
         renderActivityFeed();
@@ -1087,7 +1098,7 @@ function updateActivityUI() {
     if (status) status.setAttribute('data-state', activityCaptureState);
     if (statusLabel) {
         statusLabel.textContent = activityCaptureState === 'capturing'
-            ? 'Recording'
+            ? 'Live'
             : (activityCaptureState === 'stopped' ? 'Paused' : 'Off');
     }
     if (captureBtn) captureBtn.disabled = _activityControlPending;
@@ -1157,13 +1168,28 @@ function activityClosestEventTarget(target, className, boundary) {
 
 function toggleActivityEvent(sequence) {
     if (!activityIsCanonicalU64(sequence, false)) return;
-    activityExpandedSequence = activityExpandedSequence === sequence ? null : sequence;
+    var expanding = activityExpandedSequence !== sequence;
+    activityExpandedSequence = expanding ? sequence : null;
     activityStickToBottom = false;
     renderActivityFeed();
-    var row = document.querySelector('[data-activity-sequence="' + sequence + '"]');
-    if (row && typeof row.focus === 'function') {
-        try { row.focus({ preventScroll: true }); } catch (_) { row.focus(); }
+    if (expanding) {
+        var event = activityEventBySequence(sequence);
+        if (event && event.kind === 'rns.announce.observed') {
+            activityRevealField(event, 'destination');
+        }
     }
+    var row = document.querySelector('[data-activity-sequence="' + sequence + '"]');
+    var toggle = row && row.querySelector ? row.querySelector('.activity-event-toggle') : null;
+    if (toggle && typeof toggle.focus === 'function') {
+        try { toggle.focus({ preventScroll: true }); } catch (_) { toggle.focus(); }
+    }
+}
+
+function activityEventBySequence(sequence) {
+    for (var i = 0; i < activityEvents.length; i++) {
+        if (activityEvents[i].sequence === sequence) return activityEvents[i];
+    }
+    return null;
 }
 
 function scheduleActivityRender() {
@@ -1203,6 +1229,8 @@ function activityEventSearchText(event) {
     (event.attributes || []).forEach(function(attribute) {
         values.push(attribute.key, activityFormatAttributeValue(attribute));
     });
+    var announce = activityAnnounceContext(event);
+    if (announce) values.push(announce.displayName, announce.hash, announce.isLxmf ? 'lxmf' : '');
     return values.join(' ').toLowerCase();
 }
 
@@ -1221,8 +1249,178 @@ function activityCodeValue(event, key) {
         : null;
 }
 
+function activityResetReveals() {
+    activityRevealedFields = Object.create(null);
+    activityRevealPending = Object.create(null);
+}
+
+function activityRevealKey(event, field) {
+    return event.capture_session + ':' + event.sequence + ':' + field;
+}
+
+function activityRevealedField(event, field) {
+    var key = activityRevealKey(event, field);
+    return Object.prototype.hasOwnProperty.call(activityRevealedFields, key)
+        ? activityRevealedFields[key]
+        : null;
+}
+
+function activityRevealField(event, field) {
+    if (!event || !activityIsCanonicalU64(event.sequence, false) || !event.capture_session) {
+        return Promise.resolve(null);
+    }
+    var attribute = activityAttribute(event, field);
+    if (!attribute || !attribute.value || attribute.value.type !== 'identifier') {
+        return Promise.resolve(null);
+    }
+    var key = activityRevealKey(event, field);
+    if (Object.prototype.hasOwnProperty.call(activityRevealedFields, key)) {
+        return Promise.resolve(activityRevealedFields[key]);
+    }
+    if (activityRevealPending[key]) return activityRevealPending[key];
+
+    var request = RS.invoke('activity_reveal', {
+        args: {
+            capture_session: event.capture_session,
+            sequence: event.sequence,
+            field: field
+        }
+    }).then(function(result) {
+        var current = activityEventBySequence(event.sequence);
+        if (!current || current.capture_session !== event.capture_session) return null;
+        if (!result || result.result !== 'identifier' || result.key !== field) return null;
+        var value = typeof result.value === 'string' ? result.value.toLowerCase() : '';
+        if (!/^(?:[0-9a-f]{32}|[0-9a-f]{64})$/.test(value)) return null;
+        activityRevealedFields[key] = value;
+        scheduleActivityRender();
+        return value;
+    }).catch(function() {
+        return null;
+    });
+    activityRevealPending[key] = request.then(function(value) {
+        delete activityRevealPending[key];
+        return value;
+    }, function() {
+        delete activityRevealPending[key];
+        return null;
+    });
+    scheduleActivityRender();
+    return activityRevealPending[key];
+}
+
+function activityKnownPeerForHash(hash) {
+    if (!hash) return null;
+    if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.get === 'function') {
+        var peer = PeersCache.get(hash);
+        if (peer) return peer;
+    }
+    if (typeof lxmfContacts !== 'undefined' && Array.isArray(lxmfContacts)) {
+        for (var i = 0; i < lxmfContacts.length; i++) {
+            if (lxmfContacts[i] && String(lxmfContacts[i].hash || '').toLowerCase() === hash) {
+                return {
+                    hash: hash,
+                    display_name: lxmfContacts[i].display_name || '',
+                    services: ['lxmf.delivery']
+                };
+            }
+        }
+    }
+    return null;
+}
+
+function activityKnownAnnounceForHash(hash) {
+    if (!hash || typeof announceCache === 'undefined' || !Array.isArray(announceCache)) return null;
+    for (var i = 0; i < announceCache.length; i++) {
+        var entry = announceCache[i];
+        if (entry && String(entry.hash || '').toLowerCase() === hash) return entry;
+    }
+    return null;
+}
+
+function activitySafeDisplayName(value) {
+    var name = String(value || '')
+        .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return Array.from(name).slice(0, 64).join('');
+}
+
+function activityAnnounceContext(event) {
+    if (!event || event.kind !== 'rns.announce.observed') return null;
+    var hash = activityRevealedField(event, 'destination');
+    if (!hash) return null;
+    var peer = activityKnownPeerForHash(hash);
+    var announce = activityKnownAnnounceForHash(hash);
+    var services = peer && Array.isArray(peer.services) ? peer.services : [];
+    var name = activitySafeDisplayName(
+        (peer && peer.display_name) || (announce && announce.display_name) || ''
+    );
+    if (name === hash) name = '';
+    return {
+        hash: hash,
+        displayName: name,
+        isLxmf: services.indexOf('lxmf.delivery') !== -1
+    };
+}
+
+function activityIdentifierLabel(event, field) {
+    var announce = activityAnnounceContext(event);
+    if (field === 'destination' && announce && announce.isLxmf) return 'LXMF address';
+    var labels = {
+        destination: 'Destination',
+        hub: 'Hub address',
+        identity: 'Identity hash',
+        link: 'Link identifier',
+        message: 'Message identifier',
+        room: 'Channel identifier',
+        session: 'Session identifier'
+    };
+    return labels[field] || activityAttributeLabel(field);
+}
+
+function activityCopyIcon() {
+    return '<svg class="activity-copy-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
+        '<rect x="8" y="8" width="10" height="10" rx="1.5"></rect>' +
+        '<path d="M6 15H5.5A1.5 1.5 0 0 1 4 13.5v-8A1.5 1.5 0 0 1 5.5 4h8A1.5 1.5 0 0 1 15 5.5V6"></path>' +
+    '</svg>';
+}
+
+function activityIdentifierControl(event, attribute) {
+    var field = attribute.key;
+    var raw = activityRevealedField(event, field);
+    var pending = !!activityRevealPending[activityRevealKey(event, field)];
+    var label = activityIdentifierLabel(event, field);
+    var text = raw ? activityShortToken(raw) : (pending ? 'Revealing…' : 'Reveal and copy');
+    var title = raw ? 'Copy full ' + label.toLowerCase() : 'Reveal and copy ' + label.toLowerCase();
+    return '<button type="button" class="activity-copy-value" data-sequence="' +
+        escapeHtml(event.sequence) + '" data-field="' + escapeHtml(field) + '" aria-label="' +
+        escapeHtml(title) + '" title="' + escapeHtml(title) + '"' + (pending ? ' disabled' : '') + '>' +
+        '<code>' + escapeHtml(text) + '</code>' + activityCopyIcon() + '</button>';
+}
+
+function copyActivityIdentifier(sequence, field) {
+    var event = activityEventBySequence(sequence);
+    if (!event || !field) return Promise.resolve(false);
+    var label = activityIdentifierLabel(event, field);
+    return activityRevealField(event, field).then(function(value) {
+        if (!value || !RS.copyText) return false;
+        return RS.copyText(value);
+    }).then(function(copied) {
+        if (typeof showToast === 'function') {
+            if (copied) showToast(label + ' copied', 'toast-green', 1800);
+            else showToast('Could not copy ' + label.toLowerCase(), 'toast-red', 3000);
+        }
+        return !!copied;
+    });
+}
+
 function activityEventSummary(event) {
     var code = event.summary_code || event.kind || 'activity.event';
+    if (code === 'rns.announce.observed') {
+        var announce = activityAnnounceContext(event);
+        if (announce && announce.displayName) return announce.displayName + ' announced';
+        if (announce && announce.isLxmf) return 'LXMF announce observed';
+    }
     var special = {
         'diagnostics.dropped': 'Activity events dropped',
         'diagnostics.evicted': 'Older Activity events removed',
@@ -1435,10 +1633,20 @@ function activityTimestampIso(timestamp) {
 }
 
 function activityEventDetails(event) {
-    var rows = [
-        ['Event', '<code>' + escapeHtml(event.kind) + '</code>']
-    ];
+    var rows = [];
+    var announce = activityAnnounceContext(event);
+    if (announce && announce.displayName) {
+        rows.push(['Name', '<span class="activity-identity-name">' + escapeHtml(announce.displayName) + '</span>']);
+    }
+    rows.push(['Event', '<code>' + escapeHtml(event.kind) + '</code>']);
     (event.attributes || []).forEach(function(attribute) {
+        if (attribute.value && attribute.value.type === 'identifier') {
+            rows.push([
+                activityIdentifierLabel(event, attribute.key),
+                activityIdentifierControl(event, attribute)
+            ]);
+            return;
+        }
         rows.push([
             activityAttributeLabel(attribute.key),
             '<code>' + escapeHtml(activityFormatAttributeValue(attribute)) + '</code>'
@@ -1496,8 +1704,7 @@ function renderActivityFeed() {
         var outcome = event.outcome && event.outcome !== 'none' ? event.outcome : '';
         html += '<div class="activity-event' + (expanded ? ' expanded' : '') + (problem ? ' is-problem' : '') +
             '" data-area="' + escapeHtml(event.area) + '" data-sequence="' + escapeHtml(event.sequence) +
-            '" data-activity-sequence="' + escapeHtml(event.sequence) + '" role="button" tabindex="0" aria-expanded="' +
-            (expanded ? 'true' : 'false') + '">' +
+            '" data-activity-sequence="' + escapeHtml(event.sequence) + '">' +
                 '<span class="activity-event-rail"><span></span></span>' +
                 '<div class="activity-event-content">' +
                     '<div class="activity-event-heading">' +
@@ -1514,9 +1721,13 @@ function renderActivityFeed() {
                     '</div>' +
                     (expanded ? activityEventDetails(event) : '') +
                 '</div>' +
-                '<svg class="activity-event-chevron" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
-                    '<polyline points="6 9 12 15 18 9"></polyline>' +
-                '</svg>' +
+                '<button type="button" class="activity-event-toggle" data-sequence="' +
+                    escapeHtml(event.sequence) + '" aria-expanded="' + (expanded ? 'true' : 'false') +
+                    '" aria-label="' + (expanded ? 'Hide event details' : 'Show event details') + '">' +
+                    '<svg class="activity-event-chevron" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+                        '<polyline points="6 9 12 15 18 9"></polyline>' +
+                    '</svg>' +
+                '</button>' +
             '</div>';
     }
     feed.innerHTML = html;
