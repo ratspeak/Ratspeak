@@ -127,6 +127,10 @@ pub enum ActivityAttributeKey {
     Identity,
     InterfaceClass,
     Link,
+    MaxMessageBytes,
+    MaxNickBytes,
+    MaxRoomBytes,
+    MaxRooms,
     Mdu,
     Message,
     Method,
@@ -134,6 +138,7 @@ pub enum ActivityAttributeKey {
     Profile,
     ProtocolVersion,
     QueueCount,
+    RatePerMinute,
     Reason,
     Room,
     RttMs,
@@ -719,12 +724,12 @@ pub(super) mod kinds {
         "channels.session.cancelled",
         Channels
     );
-    kind!(
+    trace_ambient_kind!(
         CHANNELS_SESSION_PATH_REQUESTED,
         "channels.session.path_requested",
         Channels
     );
-    kind!(
+    trace_ambient_kind!(
         CHANNELS_SESSION_PATH_DISCOVERED,
         "channels.session.path_discovered",
         Channels
@@ -734,7 +739,7 @@ pub(super) mod kinds {
         "channels.session.path_timed_out",
         Channels
     );
-    kind!(
+    trace_ambient_kind!(
         CHANNELS_SESSION_LINK_REQUESTED,
         "channels.session.link_requested",
         Channels
@@ -744,19 +749,19 @@ pub(super) mod kinds {
         "channels.session.link_authenticated",
         Channels
     );
-    kind!(
-        CHANNELS_SESSION_LINK_IDENTIFIED,
-        "channels.session.link_identified",
+    trace_ambient_kind!(
+        CHANNELS_SESSION_LINK_IDENTIFICATION_SENT,
+        "channels.session.link_identification_sent",
         Channels
     );
-    kind!(
+    trace_ambient_kind!(
         CHANNELS_SESSION_HELLO_SENT,
         "channels.session.hello_sent",
         Channels
     );
     kind!(
-        CHANNELS_SESSION_WELCOME_RECEIVED,
-        "channels.session.welcome_received",
+        CHANNELS_SESSION_WELCOME_VALIDATED,
+        "channels.session.welcome_validated",
         Channels
     );
     kind!(
@@ -764,12 +769,13 @@ pub(super) mod kinds {
         "channels.session.welcome_rejected",
         Channels
     );
-    kind!(
+    kind!(CHANNELS_SESSION_FAILED, "channels.session.failed", Channels);
+    trace_ambient_kind!(
         CHANNELS_SESSION_NEGOTIATED,
         "channels.session.negotiated",
         Channels
     );
-    kind!(
+    trace_ambient_kind!(
         CHANNELS_SESSION_GREETING_OBSERVED,
         "channels.session.greeting_observed",
         Channels
@@ -813,8 +819,18 @@ pub(super) mod kinds {
         "channels.room.part_timed_out",
         Channels
     );
-    kind!(CHANNELS_ENVELOPE_SENT, "channels.envelope.sent", Channels);
     kind!(
+        CHANNELS_ROOM_PART_REJECTED,
+        "channels.room.part_rejected",
+        Channels
+    );
+    kind!(
+        CHANNELS_ROOM_PART_CANCELLED,
+        "channels.room.part_cancelled",
+        Channels
+    );
+    trace_ambient_kind!(CHANNELS_ENVELOPE_SENT, "channels.envelope.sent", Channels);
+    trace_ambient_kind!(
         CHANNELS_ENVELOPE_RECEIVED,
         "channels.envelope.received",
         Channels

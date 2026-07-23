@@ -4,10 +4,10 @@
 //! exist only while the authenticated Reticulum Link is alive. Nothing in this
 //! module writes channel traffic to the Ratspeak database.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::pending;
 use std::io::Cursor;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ciborium::value::Value;
@@ -23,7 +23,9 @@ use rns_transport::messages::{
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::activity::{CorrelationId, producer as activity};
 use crate::rrc::{self, Envelope, HubLimits, MessageType, WelcomeInfo};
+use crate::state::{ActivityRequestFence, AppState};
 
 const COMMAND_BUFFER: usize = 64;
 const CONNECT_UPDATE_BUFFER: usize = 32;
@@ -39,6 +41,52 @@ const DEFAULT_MESSAGE_MAX_BYTES: usize = 350;
 const TRANSCRIPT_LIMIT: usize = 300;
 const NOTICE_LIMIT: usize = 100;
 const SEEN_MESSAGE_LIMIT: usize = 2_048;
+
+#[derive(Clone)]
+struct ChannelsActivity {
+    state: Weak<AppState>,
+}
+
+impl ChannelsActivity {
+    fn new(state: Weak<AppState>) -> Self {
+        Self { state }
+    }
+
+    fn capture_fence(&self) -> Option<ActivityRequestFence> {
+        self.state
+            .upgrade()
+            .map(|state| state.activity_request_fence())
+    }
+
+    fn record_fenced<F>(&self, fence: Option<ActivityRequestFence>, make: F)
+    where
+        F: FnOnce() -> activity::ProducerEvent,
+    {
+        let (Some(state), Some(fence)) = (self.state.upgrade(), fence) else {
+            return;
+        };
+        let validation_state = Arc::clone(&state);
+        let _ = state.activity.record_event_fenced(
+            move || validation_state.is_current_activity_origin_fence(fence),
+            move || Ok(make()),
+        );
+    }
+
+    fn record_spontaneous<F>(&self, make: F)
+    where
+        F: FnOnce() -> activity::ProducerEvent,
+    {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let fence = state.activity_request_fence();
+        let validation_state = Arc::clone(&state);
+        let _ = state.activity.record_event_fenced(
+            move || validation_state.is_current_activity_origin_fence(fence),
+            move || Ok(make()),
+        );
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -314,26 +362,32 @@ enum ChannelsCommand {
     Connect {
         destination_hash: [u8; 16],
         nickname: String,
+        activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
     Disconnect {
+        activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
     Join {
         room: String,
         key: Option<String>,
+        activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<String, ChannelsError>>,
     },
     Part {
         room: String,
+        activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
     Send {
         room: String,
         text: String,
+        activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
     Shutdown {
+        activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<()>,
     },
 }
@@ -342,6 +396,7 @@ enum ChannelsCommand {
 pub struct ChannelsManagerHandle {
     command_tx: mpsc::Sender<ChannelsCommand>,
     snapshot: Arc<RwLock<ChannelsSnapshot>>,
+    activity: ChannelsActivity,
 }
 
 impl ChannelsManagerHandle {
@@ -350,9 +405,11 @@ impl ChannelsManagerHandle {
         identity: Identity,
         emitter: Arc<dyn Emitter>,
         shutdown: ShutdownSignal,
+        state: Weak<AppState>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_BUFFER);
         let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::offline()));
+        let activity = ChannelsActivity::new(state);
         tokio::spawn(run_manager(
             transport_tx,
             identity,
@@ -360,10 +417,12 @@ impl ChannelsManagerHandle {
             shutdown,
             command_rx,
             snapshot.clone(),
+            activity.clone(),
         ));
         Self {
             command_tx,
             snapshot,
+            activity,
         }
     }
 
@@ -390,11 +449,13 @@ impl ChannelsManagerHandle {
     ) -> Result<(), ChannelsError> {
         let destination_hash = parse_destination_hash(destination_hash)?;
         let nickname = rrc::normalize_nickname(nickname, DEFAULT_NICK_MAX_BYTES)?;
+        let activity_fence = self.activity.capture_fence();
         let (result_tx, result_rx) = oneshot::channel();
         self.command_tx
             .send(ChannelsCommand::Connect {
                 destination_hash,
                 nickname,
+                activity_fence,
                 result_tx,
             })
             .await
@@ -403,20 +464,26 @@ impl ChannelsManagerHandle {
     }
 
     pub async fn disconnect(&self) -> Result<(), ChannelsError> {
+        let activity_fence = self.activity.capture_fence();
         let (result_tx, result_rx) = oneshot::channel();
         self.command_tx
-            .send(ChannelsCommand::Disconnect { result_tx })
+            .send(ChannelsCommand::Disconnect {
+                activity_fence,
+                result_tx,
+            })
             .await
             .map_err(|_| ChannelsError::Stopped)?;
         result_rx.await.map_err(|_| ChannelsError::Stopped)?
     }
 
     pub async fn join(&self, room: &str, key: Option<String>) -> Result<String, ChannelsError> {
+        let activity_fence = self.activity.capture_fence();
         let (result_tx, result_rx) = oneshot::channel();
         self.command_tx
             .send(ChannelsCommand::Join {
                 room: room.to_string(),
                 key,
+                activity_fence,
                 result_tx,
             })
             .await
@@ -425,10 +492,12 @@ impl ChannelsManagerHandle {
     }
 
     pub async fn part(&self, room: &str) -> Result<(), ChannelsError> {
+        let activity_fence = self.activity.capture_fence();
         let (result_tx, result_rx) = oneshot::channel();
         self.command_tx
             .send(ChannelsCommand::Part {
                 room: room.to_string(),
+                activity_fence,
                 result_tx,
             })
             .await
@@ -437,11 +506,13 @@ impl ChannelsManagerHandle {
     }
 
     pub async fn send(&self, room: &str, text: &str) -> Result<(), ChannelsError> {
+        let activity_fence = self.activity.capture_fence();
         let (result_tx, result_rx) = oneshot::channel();
         self.command_tx
             .send(ChannelsCommand::Send {
                 room: room.to_string(),
                 text: text.to_string(),
+                activity_fence,
                 result_tx,
             })
             .await
@@ -450,16 +521,39 @@ impl ChannelsManagerHandle {
     }
 
     pub async fn shutdown(&self) {
+        let activity_fence = self.activity.capture_fence();
         let (result_tx, result_rx) = oneshot::channel();
         if self
             .command_tx
-            .send(ChannelsCommand::Shutdown { result_tx })
+            .send(ChannelsCommand::Shutdown {
+                activity_fence,
+                result_tx,
+            })
             .await
             .is_ok()
         {
             let _ = tokio::time::timeout(Duration::from_secs(2), result_rx).await;
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct SessionActivityContext {
+    hub: activity::DestinationHash,
+    correlation_id: CorrelationId,
+    origin: Option<ActivityRequestFence>,
+}
+
+#[derive(Clone, Copy)]
+struct RoomOperationContext {
+    correlation_id: CorrelationId,
+    origin: Option<ActivityRequestFence>,
+}
+
+struct RoomActivityContext {
+    token: activity::ChannelRoomToken,
+    join: Option<RoomOperationContext>,
+    part: Option<RoomOperationContext>,
 }
 
 struct ActiveSession {
@@ -476,6 +570,10 @@ struct ActiveSession {
     notices: VecDeque<ChannelTranscriptItem>,
     seen_ids: HashSet<[u8; 8]>,
     seen_order: VecDeque<[u8; 8]>,
+    message_tokens: HashMap<[u8; 8], activity::ChannelMessageToken>,
+    message_token_order: VecDeque<[u8; 8]>,
+    room_activity: BTreeMap<String, RoomActivityContext>,
+    activity: SessionActivityContext,
 }
 
 impl ActiveSession {
@@ -491,6 +589,40 @@ impl ActiveSession {
         }
         true
     }
+
+    fn message_token(&mut self, message_id: [u8; 8]) -> activity::ChannelMessageToken {
+        if let Some(token) = self.message_tokens.get(&message_id) {
+            return *token;
+        }
+        let token = activity::ChannelMessageToken::random();
+        self.message_tokens.insert(message_id, token);
+        self.message_token_order.push_back(message_id);
+        while self.message_token_order.len() > SEEN_MESSAGE_LIMIT {
+            if let Some(oldest) = self.message_token_order.pop_front() {
+                self.message_tokens.remove(&oldest);
+            }
+        }
+        token
+    }
+
+    fn room_token(&self, room: Option<&str>) -> Option<activity::ChannelRoomToken> {
+        room.and_then(|room| self.room_activity.get(room).map(|context| context.token))
+    }
+
+    fn envelope_correlation(&self, envelope: &Envelope) -> CorrelationId {
+        let operation = envelope.room.as_deref().and_then(|room| {
+            self.room_activity
+                .get(room)
+                .and_then(|context| match envelope.message_type {
+                    MessageType::Join | MessageType::Joined => context.join,
+                    MessageType::Part | MessageType::Parted => context.part,
+                    _ => None,
+                })
+        });
+        operation
+            .map(|operation| operation.correlation_id)
+            .unwrap_or(self.activity.correlation_id)
+    }
 }
 
 struct ConnectedSession {
@@ -501,10 +633,172 @@ struct ConnectedSession {
     hops: u8,
     nickname: String,
     welcome: WelcomeInfo,
-    buffered: Vec<Envelope>,
+    buffered: Vec<(Envelope, u32)>,
+    activity: SessionActivityContext,
+}
+
+#[derive(Clone, Copy)]
+enum ConnectFailure {
+    PathTimedOut,
+    WelcomeRejected(activity::ChannelSessionFailureReason),
+    Failed(activity::ChannelSessionFailureReason),
+}
+
+struct ConnectAttemptError {
+    product: ChannelsError,
+    activity: ConnectFailure,
+}
+
+fn record_session_origin(
+    recorder: &ChannelsActivity,
+    context: SessionActivityContext,
+    transition: activity::ChannelSessionTransition,
+) {
+    recorder.record_fenced(context.origin, move || {
+        activity::channels_session_activity(activity::ChannelsSessionActivity {
+            hub: context.hub,
+            correlation_id: context.correlation_id,
+            transition,
+        })
+    });
+}
+
+fn record_session_command(
+    recorder: &ChannelsActivity,
+    context: SessionActivityContext,
+    command_fence: Option<ActivityRequestFence>,
+    transition: activity::ChannelSessionTransition,
+) {
+    recorder.record_fenced(command_fence, move || {
+        activity::channels_session_activity(activity::ChannelsSessionActivity {
+            hub: context.hub,
+            correlation_id: context.correlation_id,
+            transition,
+        })
+    });
+}
+
+fn record_session_spontaneous(
+    recorder: &ChannelsActivity,
+    context: SessionActivityContext,
+    transition: activity::ChannelSessionTransition,
+) {
+    recorder.record_spontaneous(move || {
+        activity::channels_session_activity(activity::ChannelsSessionActivity {
+            hub: context.hub,
+            correlation_id: context.correlation_id,
+            transition,
+        })
+    });
+}
+
+fn record_room_operation(
+    recorder: &ChannelsActivity,
+    session: SessionActivityContext,
+    room: activity::ChannelRoomToken,
+    operation: RoomOperationContext,
+    transition: activity::ChannelRoomTransition,
+) {
+    recorder.record_fenced(operation.origin, move || {
+        activity::channels_room_activity(activity::ChannelsRoomActivity {
+            hub: session.hub,
+            room,
+            correlation_id: operation.correlation_id,
+            transition,
+        })
+    });
+}
+
+fn record_room_spontaneous(
+    recorder: &ChannelsActivity,
+    session: SessionActivityContext,
+    room: activity::ChannelRoomToken,
+    correlation_id: CorrelationId,
+    transition: activity::ChannelRoomTransition,
+) {
+    recorder.record_spontaneous(move || {
+        activity::channels_room_activity(activity::ChannelsRoomActivity {
+            hub: session.hub,
+            room,
+            correlation_id,
+            transition,
+        })
+    });
+}
+
+fn record_pending_room_cancellations(
+    recorder: &ChannelsActivity,
+    session: &ActiveSession,
+    command_fence: Option<ActivityRequestFence>,
+) {
+    for context in session.room_activity.values() {
+        if let Some(join) = context.join {
+            record_room_operation(
+                recorder,
+                session.activity,
+                context.token,
+                RoomOperationContext {
+                    origin: command_fence,
+                    ..join
+                },
+                activity::ChannelRoomTransition::JoinCancelled,
+            );
+        }
+        if let Some(part) = context.part {
+            record_room_operation(
+                recorder,
+                session.activity,
+                context.token,
+                RoomOperationContext {
+                    origin: command_fence,
+                    ..part
+                },
+                activity::ChannelRoomTransition::PartCancelled,
+            );
+        }
+    }
+}
+
+fn record_lost_room_operations(recorder: &ChannelsActivity, session: &ActiveSession) {
+    for context in session.room_activity.values() {
+        if let Some(join) = context.join {
+            record_room_spontaneous(
+                recorder,
+                session.activity,
+                context.token,
+                join.correlation_id,
+                activity::ChannelRoomTransition::JoinRejected {
+                    reason: activity::ChannelRoomFailureReason::SessionClosed,
+                },
+            );
+        }
+        if let Some(part) = context.part {
+            record_room_spontaneous(
+                recorder,
+                session.activity,
+                context.token,
+                part.correlation_id,
+                activity::ChannelRoomTransition::PartRejected {
+                    reason: activity::ChannelRoomFailureReason::SessionClosed,
+                },
+            );
+        }
+    }
 }
 
 enum ConnectUpdate {
+    SessionActivity {
+        attempt: u64,
+        transition: activity::ChannelSessionTransition,
+    },
+    EnvelopeActivity {
+        attempt: u64,
+        outbound: bool,
+        message: Option<activity::ChannelMessageToken>,
+        envelope_kind: Option<activity::ChannelEnvelopeKind>,
+        encoded_bytes: u32,
+        validation: activity::SourceValidation,
+    },
     Discovered {
         attempt: u64,
         hub_identity: [u8; 16],
@@ -522,7 +816,30 @@ enum ConnectUpdate {
     Failed {
         attempt: u64,
         error: ChannelsError,
+        failure: ConnectFailure,
     },
+}
+
+struct ConnectAttemptInput {
+    attempt: u64,
+    transport_tx: mpsc::Sender<TransportMessage>,
+    identity: Identity,
+    destination_hash: [u8; 16],
+    nickname: String,
+    update_tx: mpsc::Sender<ConnectUpdate>,
+    cancel_rx: oneshot::Receiver<()>,
+    activity_context: SessionActivityContext,
+}
+
+struct ConnectUpdateContext<'a> {
+    current_attempt: u64,
+    connect_cancel: &'a mut Option<oneshot::Sender<()>>,
+    active: &'a mut Option<ActiveSession>,
+    snapshot: &'a Arc<RwLock<ChannelsSnapshot>>,
+    emitter: &'a Arc<dyn Emitter>,
+    activity_recorder: &'a ChannelsActivity,
+    pending_connect_activity: &'a mut Option<SessionActivityContext>,
+    source: [u8; 16],
 }
 
 async fn run_manager(
@@ -532,19 +849,38 @@ async fn run_manager(
     shutdown: ShutdownSignal,
     mut command_rx: mpsc::Receiver<ChannelsCommand>,
     snapshot: Arc<RwLock<ChannelsSnapshot>>,
+    activity: ChannelsActivity,
 ) {
     let source = identity.hash;
     let (connect_update_tx, mut connect_update_rx) = mpsc::channel(CONNECT_UPDATE_BUFFER);
     let mut active: Option<ActiveSession> = None;
     let mut attempt: u64 = 0;
     let mut connect_cancel: Option<oneshot::Sender<()>> = None;
+    let mut pending_connect_activity: Option<SessionActivityContext> = None;
     let mut room_transition_tick = tokio::time::interval(ROOM_TRANSITION_TICK);
     room_transition_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
             _ = shutdown.wait() => {
+                invalidate_connect_attempt(&mut attempt);
+                if let Some(context) = pending_connect_activity.take() {
+                    record_session_spontaneous(
+                        &activity,
+                        context,
+                        activity::ChannelSessionTransition::Cancelled,
+                    );
+                }
                 cancel_connection(&mut connect_cancel);
+                if let Some(session) = active.as_ref() {
+                    record_session_spontaneous(
+                        &activity,
+                        session.activity,
+                        activity::ChannelSessionTransition::Closed {
+                            reason: activity::ChannelSessionCloseReason::Local,
+                        },
+                    );
+                }
                 close_active(&mut active).await;
                 replace_snapshot(&snapshot, ChannelsSnapshot::offline());
                 emit_snapshot(&emitter, &snapshot);
@@ -552,6 +888,7 @@ async fn run_manager(
             }
             command = command_rx.recv() => {
                 let Some(command) = command else {
+                    invalidate_connect_attempt(&mut attempt);
                     cancel_connection(&mut connect_cancel);
                     close_active(&mut active).await;
                     break;
@@ -560,16 +897,41 @@ async fn run_manager(
                     ChannelsCommand::Discover { result_tx } => {
                         let _ = result_tx.send(discover_hubs(&transport_tx).await);
                     }
-                    ChannelsCommand::Connect { destination_hash, nickname, result_tx } => {
+                    ChannelsCommand::Connect {
+                        destination_hash,
+                        nickname,
+                        activity_fence,
+                        result_tx,
+                    } => {
                         let phase = snapshot.read().ok().map(|s| s.phase);
                         if matches!(phase, Some(ChannelsPhase::Resolving | ChannelsPhase::Connecting | ChannelsPhase::AwaitingWelcome)) {
                             let _ = result_tx.send(Err(ChannelsError::AlreadyConnecting));
                             continue;
                         }
+                        let this_attempt = invalidate_connect_attempt(&mut attempt);
                         cancel_connection(&mut connect_cancel);
+                        if let Some(session) = active.as_ref() {
+                            record_session_command(
+                                &activity,
+                                session.activity,
+                                activity_fence,
+                                activity::ChannelSessionTransition::Closed {
+                                    reason: activity::ChannelSessionCloseReason::Local,
+                                },
+                            );
+                        }
                         close_active(&mut active).await;
-                        attempt = attempt.wrapping_add(1);
-                        let this_attempt = attempt;
+                        let activity_context = SessionActivityContext {
+                            hub: activity::DestinationHash::new(destination_hash),
+                            correlation_id: CorrelationId::random(),
+                            origin: activity_fence,
+                        };
+                        record_session_origin(
+                            &activity,
+                            activity_context,
+                            activity::ChannelSessionTransition::ConnectRequested,
+                        );
+                        pending_connect_activity = Some(activity_context);
                         mutate_snapshot(&snapshot, |state| {
                             *state = ChannelsSnapshot::offline();
                             state.phase = ChannelsPhase::Resolving;
@@ -580,38 +942,124 @@ async fn run_manager(
 
                         let (cancel_tx, cancel_rx) = oneshot::channel();
                         connect_cancel = Some(cancel_tx);
-                        tokio::spawn(run_connect_attempt(
-                            this_attempt,
-                            transport_tx.clone(),
-                            identity.clone(),
+                        tokio::spawn(run_connect_attempt(ConnectAttemptInput {
+                            attempt: this_attempt,
+                            transport_tx: transport_tx.clone(),
+                            identity: identity.clone(),
                             destination_hash,
                             nickname,
-                            connect_update_tx.clone(),
+                            update_tx: connect_update_tx.clone(),
                             cancel_rx,
-                        ));
+                            activity_context,
+                        }));
                         let _ = result_tx.send(Ok(()));
                     }
-                    ChannelsCommand::Disconnect { result_tx } => {
+                    ChannelsCommand::Disconnect {
+                        activity_fence,
+                        result_tx,
+                    } => {
+                        invalidate_connect_attempt(&mut attempt);
+                        if let Some(context) = pending_connect_activity.take() {
+                            record_session_command(
+                                &activity,
+                                context,
+                                activity_fence,
+                                activity::ChannelSessionTransition::Cancelled,
+                            );
+                        }
                         cancel_connection(&mut connect_cancel);
+                        if let Some(session) = active.as_ref() {
+                            record_pending_room_cancellations(
+                                &activity,
+                                session,
+                                activity_fence,
+                            );
+                            record_session_command(
+                                &activity,
+                                session.activity,
+                                activity_fence,
+                                activity::ChannelSessionTransition::Closed {
+                                    reason: activity::ChannelSessionCloseReason::Local,
+                                },
+                            );
+                        }
                         close_active(&mut active).await;
                         replace_snapshot(&snapshot, ChannelsSnapshot::offline());
                         emit_snapshot(&emitter, &snapshot);
                         let _ = result_tx.send(Ok(()));
                     }
-                    ChannelsCommand::Join { room, key, result_tx } => {
-                        let result = join_room(active.as_mut(), &snapshot, &emitter, room, key).await;
+                    ChannelsCommand::Join {
+                        room,
+                        key,
+                        activity_fence,
+                        result_tx,
+                    } => {
+                        let result = join_room(
+                            active.as_mut(),
+                            &snapshot,
+                            &emitter,
+                            &activity,
+                            room,
+                            key,
+                            activity_fence,
+                        ).await;
                         let _ = result_tx.send(result);
                     }
-                    ChannelsCommand::Part { room, result_tx } => {
-                        let result = part_room(active.as_mut(), &snapshot, &emitter, room).await;
+                    ChannelsCommand::Part {
+                        room,
+                        activity_fence,
+                        result_tx,
+                    } => {
+                        let result = part_room(
+                            active.as_mut(),
+                            &snapshot,
+                            &emitter,
+                            &activity,
+                            room,
+                            activity_fence,
+                        ).await;
                         let _ = result_tx.send(result);
                     }
-                    ChannelsCommand::Send { room, text, result_tx } => {
-                        let result = send_room_text(active.as_mut(), room, text).await;
+                    ChannelsCommand::Send {
+                        room,
+                        text,
+                        activity_fence,
+                        result_tx,
+                    } => {
+                        let result =
+                            send_room_text(active.as_mut(), &activity, room, text, activity_fence)
+                                .await;
                         let _ = result_tx.send(result);
                     }
-                    ChannelsCommand::Shutdown { result_tx } => {
+                    ChannelsCommand::Shutdown {
+                        activity_fence,
+                        result_tx,
+                    } => {
+                        invalidate_connect_attempt(&mut attempt);
+                        if let Some(context) = pending_connect_activity.take() {
+                            record_session_command(
+                                &activity,
+                                context,
+                                activity_fence,
+                                activity::ChannelSessionTransition::Cancelled,
+                            );
+                        }
                         cancel_connection(&mut connect_cancel);
+                        if let Some(session) = active.as_ref() {
+                            record_pending_room_cancellations(
+                                &activity,
+                                session,
+                                activity_fence,
+                            );
+                            record_session_command(
+                                &activity,
+                                session.activity,
+                                activity_fence,
+                                activity::ChannelSessionTransition::Closed {
+                                    reason: activity::ChannelSessionCloseReason::Local,
+                                },
+                            );
+                        }
                         close_active(&mut active).await;
                         replace_snapshot(&snapshot, ChannelsSnapshot::offline());
                         emit_snapshot(&emitter, &snapshot);
@@ -624,17 +1072,27 @@ async fn run_manager(
                 let Some(update) = update else { continue; };
                 handle_connect_update(
                     update,
-                    attempt,
-                    &mut connect_cancel,
-                    &mut active,
-                    &snapshot,
-                    &emitter,
-                    source,
+                    ConnectUpdateContext {
+                        current_attempt: attempt,
+                        connect_cancel: &mut connect_cancel,
+                        active: &mut active,
+                        snapshot: &snapshot,
+                        emitter: &emitter,
+                        activity_recorder: &activity,
+                        pending_connect_activity: &mut pending_connect_activity,
+                        source,
+                    },
                 ).await;
             }
             _ = room_transition_tick.tick() => {
                 if let Some(active) = active.as_mut()
-                    && expire_room_transitions(&mut active.rooms, now_ms())
+                    && expire_room_transitions(
+                        &mut active.rooms,
+                        &mut active.room_activity,
+                        active.activity,
+                        &activity,
+                        now_ms(),
+                    )
                 {
                     sync_session_snapshot(active, &snapshot);
                     emit_snapshot(&emitter, &snapshot);
@@ -648,36 +1106,74 @@ async fn run_manager(
             } => {
                 match event {
                     Some(event) => {
-                        let outcome = handle_link_event(active.as_mut().expect("active branch"), event).await;
+                        let outcome = handle_link_event(
+                            active.as_mut().expect("active branch"),
+                            &activity,
+                            event,
+                        ).await;
                         match outcome {
                             LinkEventOutcome::Keep => {
                                 sync_session_snapshot(active.as_ref().expect("active session"), &snapshot);
                             }
                             LinkEventOutcome::Stale => {
+                                let session = active.as_ref().expect("active session");
+                                record_session_spontaneous(
+                                    &activity,
+                                    session.activity,
+                                    activity::ChannelSessionTransition::Stale,
+                                );
                                 sync_session_snapshot(active.as_ref().expect("active session"), &snapshot);
                                 mutate_snapshot(&snapshot, |state| state.phase = ChannelsPhase::Stale);
                             }
                             LinkEventOutcome::Recovered => {
+                                let session = active.as_ref().expect("active session");
+                                record_session_spontaneous(
+                                    &activity,
+                                    session.activity,
+                                    activity::ChannelSessionTransition::Recovered,
+                                );
                                 sync_session_snapshot(active.as_ref().expect("active session"), &snapshot);
                                 mutate_snapshot(&snapshot, |state| {
                                     state.phase = ChannelsPhase::Active;
                                     state.last_error = None;
                                 });
                             }
-                            LinkEventOutcome::Closed(reason) => {
+                            LinkEventOutcome::Closed {
+                                product_reason,
+                                activity_reason,
+                            } => {
+                                let session = active.as_ref().expect("active session");
+                                record_lost_room_operations(&activity, session);
+                                record_session_spontaneous(
+                                    &activity,
+                                    session.activity,
+                                    activity::ChannelSessionTransition::Closed {
+                                        reason: activity_reason,
+                                    },
+                                );
                                 active = None;
                                 mutate_snapshot(&snapshot, |state| {
                                     state.phase = ChannelsPhase::Error;
                                     state.rooms.clear();
                                     state.hub_greeting = None;
                                     state.notices.clear();
-                                    state.last_error = Some(reason);
+                                    state.last_error = Some(product_reason);
                                 });
                             }
                         }
                         emit_snapshot(&emitter, &snapshot);
                     }
                     None => {
+                        if let Some(session) = active.as_ref() {
+                            record_lost_room_operations(&activity, session);
+                            record_session_spontaneous(
+                                &activity,
+                                session.activity,
+                                activity::ChannelSessionTransition::Closed {
+                                    reason: activity::ChannelSessionCloseReason::StreamEnded,
+                                },
+                            );
+                        }
                         active = None;
                         mutate_snapshot(&snapshot, |state| {
                             state.phase = ChannelsPhase::Error;
@@ -694,15 +1190,17 @@ async fn run_manager(
     }
 }
 
-async fn run_connect_attempt(
-    attempt: u64,
-    transport_tx: mpsc::Sender<TransportMessage>,
-    identity: Identity,
-    destination_hash: [u8; 16],
-    nickname: String,
-    update_tx: mpsc::Sender<ConnectUpdate>,
-    cancel_rx: oneshot::Receiver<()>,
-) {
+async fn run_connect_attempt(input: ConnectAttemptInput) {
+    let ConnectAttemptInput {
+        attempt,
+        transport_tx,
+        identity,
+        destination_hash,
+        nickname,
+        update_tx,
+        cancel_rx,
+        activity_context,
+    } = input;
     let connect = connect_to_hub(
         attempt,
         transport_tx,
@@ -710,13 +1208,18 @@ async fn run_connect_attempt(
         destination_hash,
         nickname,
         update_tx.clone(),
+        activity_context,
     );
     tokio::select! {
         _ = cancel_rx => {}
         result = connect => {
             let update = match result {
                 Ok(connected) => ConnectUpdate::Ready { attempt, connected: Box::new(connected) },
-                Err(error) => ConnectUpdate::Failed { attempt, error },
+                Err(error) => ConnectUpdate::Failed {
+                    attempt,
+                    error: error.product,
+                    failure: error.activity,
+                },
             };
             let _ = update_tx.send(update).await;
         }
@@ -730,18 +1233,32 @@ async fn connect_to_hub(
     destination_hash: [u8; 16],
     nickname: String,
     update_tx: mpsc::Sender<ConnectUpdate>,
-) -> Result<ConnectedSession, ChannelsError> {
+    activity_context: SessionActivityContext,
+) -> Result<ConnectedSession, ConnectAttemptError> {
+    send_session_activity_update(
+        &update_tx,
+        attempt,
+        activity::ChannelSessionTransition::PathRequested,
+    )
+    .await;
     let announce = rns_runtime::link_session::discover_destination(
         &transport_tx,
         destination_hash,
         CONNECT_PATH_TIMEOUT,
     )
-    .await?;
-    let public_key = announce
-        .public_key
-        .ok_or_else(|| ChannelsError::Transport("channel hub announce has no public key".into()))?;
+    .await
+    .map_err(path_connect_error)?;
+    let public_key = announce.public_key.ok_or_else(|| ConnectAttemptError {
+        product: ChannelsError::Transport("channel hub announce has no public key".into()),
+        activity: ConnectFailure::Failed(activity::ChannelSessionFailureReason::InvalidAnnounce),
+    })?;
     let hub_identity = Identity::from_public_key(&public_key)
-        .map_err(|error| ChannelsError::Transport(error.to_string()))?
+        .map_err(|error| ConnectAttemptError {
+            product: ChannelsError::Transport(error.to_string()),
+            activity: ConnectFailure::Failed(
+                activity::ChannelSessionFailureReason::InvalidAnnounce,
+            ),
+        })?
         .hash;
     let announced_name = parse_announce_hub_name(announce.app_data.as_deref());
     let hops = announce.hops.max(1);
@@ -754,6 +1271,12 @@ async fn connect_to_hub(
         })
         .await;
 
+    send_session_activity_update(
+        &update_tx,
+        attempt,
+        activity::ChannelSessionTransition::LinkRequested,
+    )
+    .await;
     let mut session = LinkSession::connect(
         transport_tx,
         identity.clone(),
@@ -766,10 +1289,50 @@ async fn connect_to_hub(
             identify: true,
         },
     )
-    .await?;
+    .await
+    .map_err(link_connect_error)?;
+    let link = activity::LinkId::new(session.handle.link_id());
+    send_session_activity_update(
+        &update_tx,
+        attempt,
+        activity::ChannelSessionTransition::LinkAuthenticated { link },
+    )
+    .await;
+    send_session_activity_update(
+        &update_tx,
+        attempt,
+        activity::ChannelSessionTransition::LinkIdentificationSent { link },
+    )
+    .await;
 
     let hello = Envelope::hello(identity.hash, &nickname, env!("CARGO_PKG_VERSION"));
-    session.handle.send_packet(rrc::encode(&hello)?).await?;
+    let hello_bytes = rrc::encode(&hello).map_err(|error| ConnectAttemptError {
+        product: ChannelsError::from(error),
+        activity: ConnectFailure::Failed(activity::ChannelSessionFailureReason::SendFailed),
+    })?;
+    session
+        .handle
+        .send_packet(hello_bytes.clone())
+        .await
+        .map_err(send_connect_error)?;
+    send_connect_envelope_update(
+        &update_tx,
+        attempt,
+        true,
+        Some(activity::ChannelMessageToken::random()),
+        Some(activity::ChannelEnvelopeKind::Hello),
+        hello_bytes.len(),
+        activity::SourceValidation::Accepted,
+    )
+    .await;
+    send_session_activity_update(
+        &update_tx,
+        attempt,
+        activity::ChannelSessionTransition::HelloSent {
+            encoded_bytes: bounded_encoded_len(hello_bytes.len()),
+        },
+    )
+    .await;
     let _ = update_tx
         .send(ConnectUpdate::AwaitingWelcome {
             attempt,
@@ -784,66 +1347,268 @@ async fn connect_to_hub(
                 LinkSessionEvent::Packet { data, .. } => {
                     let envelope = match rrc::decode(&data) {
                         Ok(envelope) => envelope,
-                        Err(_) => {
+                        Err(error) => {
+                            let unsupported =
+                                matches!(error, rrc::ProtocolError::UnsupportedVersion(_));
+                            let validation = if unsupported {
+                                activity::SourceValidation::Unsupported
+                            } else {
+                                activity::SourceValidation::Malformed
+                            };
+                            send_connect_envelope_update(
+                                &update_tx,
+                                attempt,
+                                false,
+                                None,
+                                None,
+                                data.len(),
+                                validation,
+                            )
+                            .await;
                             tracing::debug!(
                                 reason = "decode_failed",
                                 "ignoring malformed pre-WELCOME channel envelope"
                             );
+                            if unsupported {
+                                return Err(ConnectAttemptError {
+                                    product: ChannelsError::Protocol(
+                                        "channel hub uses an unsupported RRC version".into(),
+                                    ),
+                                    activity: ConnectFailure::WelcomeRejected(
+                                        activity::ChannelSessionFailureReason::UnsupportedVersion,
+                                    ),
+                                });
+                            }
                             continue;
                         }
                     };
+                    let envelope_kind = channel_envelope_kind(envelope.message_type);
+                    let message_token = activity::ChannelMessageToken::random();
+                    let must_be_hub = matches!(
+                        envelope.message_type,
+                        MessageType::Welcome | MessageType::Ping | MessageType::Error
+                    );
+                    if must_be_hub && envelope.source != hub_identity {
+                        send_connect_envelope_update(
+                            &update_tx,
+                            attempt,
+                            false,
+                            Some(message_token),
+                            envelope_kind,
+                            data.len(),
+                            activity::SourceValidation::NonHub,
+                        )
+                        .await;
+                        if envelope.message_type == MessageType::Welcome {
+                            return Err(ConnectAttemptError {
+                                product: ChannelsError::Protocol(
+                                    "WELCOME source does not match the authenticated hub".into(),
+                                ),
+                                activity: ConnectFailure::WelcomeRejected(
+                                    activity::ChannelSessionFailureReason::WrongSource,
+                                ),
+                            });
+                        }
+                        continue;
+                    }
                     match envelope.message_type {
                         MessageType::Welcome => {
-                            if envelope.source != hub_identity {
-                                return Err(ChannelsError::Protocol(
-                                    "WELCOME source does not match the authenticated hub".into(),
-                                ));
-                            }
                             let welcome = rrc::parse_welcome(&envelope);
                             let max_nick = welcome
                                 .limits
                                 .max_nick_bytes
                                 .unwrap_or(DEFAULT_NICK_MAX_BYTES);
-                            rrc::normalize_nickname(&nickname, max_nick)?;
+                            rrc::normalize_nickname(&nickname, max_nick).map_err(|error| {
+                                ConnectAttemptError {
+                                    product: ChannelsError::from(error),
+                                    activity: ConnectFailure::WelcomeRejected(
+                                        activity::ChannelSessionFailureReason::MalformedWelcome,
+                                    ),
+                                }
+                            })?;
+                            send_connect_envelope_update(
+                                &update_tx,
+                                attempt,
+                                false,
+                                Some(message_token),
+                                envelope_kind,
+                                data.len(),
+                                activity::SourceValidation::Accepted,
+                            )
+                            .await;
+                            send_session_activity_update(
+                                &update_tx,
+                                attempt,
+                                activity::ChannelSessionTransition::WelcomeValidated {
+                                    encoded_bytes: bounded_encoded_len(data.len()),
+                                },
+                            )
+                            .await;
+                            send_session_activity_update(
+                                &update_tx,
+                                attempt,
+                                activity::ChannelSessionTransition::Negotiated {
+                                    protocol_version: envelope.version,
+                                    capabilities: activity::ChannelNegotiatedCapabilities {
+                                        actions: welcome
+                                            .capabilities
+                                            .get(&rrc::CAP_ACTION)
+                                            .copied()
+                                            .unwrap_or(false),
+                                        direct_notices: welcome
+                                            .capabilities
+                                            .get(&rrc::CAP_DIRECT_NOTICE)
+                                            .copied()
+                                            .unwrap_or(false),
+                                        resource_envelopes: welcome
+                                            .capabilities
+                                            .get(&rrc::CAP_RESOURCE_ENVELOPE)
+                                            .copied()
+                                            .unwrap_or(false),
+                                    },
+                                    limits: negotiated_limits(&welcome.limits),
+                                    link_mdu: session.handle.mdu() as u64,
+                                },
+                            )
+                            .await;
                             return Ok(welcome);
                         }
                         MessageType::Ping => {
+                            send_connect_envelope_update(
+                                &update_tx,
+                                attempt,
+                                false,
+                                Some(message_token),
+                                envelope_kind,
+                                data.len(),
+                                activity::SourceValidation::Accepted,
+                            )
+                            .await;
                             let pong = Envelope::pong(identity.hash, &envelope);
-                            session.handle.send_packet(rrc::encode(&pong)?).await?;
+                            let pong_bytes =
+                                rrc::encode(&pong).map_err(|error| ConnectAttemptError {
+                                    product: ChannelsError::from(error),
+                                    activity: ConnectFailure::Failed(
+                                        activity::ChannelSessionFailureReason::SendFailed,
+                                    ),
+                                })?;
+                            session
+                                .handle
+                                .send_packet(pong_bytes.clone())
+                                .await
+                                .map_err(send_connect_error)?;
+                            send_connect_envelope_update(
+                                &update_tx,
+                                attempt,
+                                true,
+                                Some(activity::ChannelMessageToken::random()),
+                                Some(activity::ChannelEnvelopeKind::Pong),
+                                pong_bytes.len(),
+                                activity::SourceValidation::Accepted,
+                            )
+                            .await;
                         }
                         MessageType::Error => {
-                            return Err(ChannelsError::HubRejected(
-                                rrc::text_body(&envelope)
-                                    .unwrap_or("connection rejected")
-                                    .to_string(),
-                            ));
+                            send_connect_envelope_update(
+                                &update_tx,
+                                attempt,
+                                false,
+                                Some(message_token),
+                                envelope_kind,
+                                data.len(),
+                                activity::SourceValidation::Accepted,
+                            )
+                            .await;
+                            return Err(ConnectAttemptError {
+                                product: ChannelsError::HubRejected(
+                                    rrc::text_body(&envelope)
+                                        .unwrap_or("connection rejected")
+                                        .to_string(),
+                                ),
+                                activity: ConnectFailure::WelcomeRejected(
+                                    activity::ChannelSessionFailureReason::HubRejected,
+                                ),
+                            });
                         }
-                        MessageType::Notice => buffered.push(envelope),
-                        _ => {}
+                        MessageType::ResourceEnvelope | MessageType::Unknown(_) => {
+                            send_connect_envelope_update(
+                                &update_tx,
+                                attempt,
+                                false,
+                                Some(message_token),
+                                envelope_kind,
+                                data.len(),
+                                activity::SourceValidation::Unsupported,
+                            )
+                            .await;
+                        }
+                        MessageType::Notice => {
+                            send_connect_envelope_update(
+                                &update_tx,
+                                attempt,
+                                false,
+                                Some(message_token),
+                                envelope_kind,
+                                data.len(),
+                                activity::SourceValidation::Accepted,
+                            )
+                            .await;
+                            buffered.push((envelope, bounded_encoded_len(data.len())));
+                        }
+                        _ => {
+                            send_connect_envelope_update(
+                                &update_tx,
+                                attempt,
+                                false,
+                                Some(message_token),
+                                envelope_kind,
+                                data.len(),
+                                activity::SourceValidation::Accepted,
+                            )
+                            .await;
+                        }
                     }
                 }
                 LinkSessionEvent::Closed { reason } => {
-                    return Err(ChannelsError::Transport(format!(
-                        "link closed before WELCOME ({})",
-                        close_reason_label(reason)
-                    )));
+                    return Err(ConnectAttemptError {
+                        product: ChannelsError::Transport(format!(
+                            "link closed before WELCOME ({})",
+                            close_reason_label(reason)
+                        )),
+                        activity: ConnectFailure::Failed(
+                            activity::ChannelSessionFailureReason::TransportUnavailable,
+                        ),
+                    });
                 }
                 LinkSessionEvent::Stale => {
-                    return Err(ChannelsError::Transport(
-                        "channel link became stale before WELCOME".into(),
-                    ));
+                    return Err(ConnectAttemptError {
+                        product: ChannelsError::Transport(
+                            "channel link became stale before WELCOME".into(),
+                        ),
+                        activity: ConnectFailure::Failed(
+                            activity::ChannelSessionFailureReason::TransportUnavailable,
+                        ),
+                    });
                 }
                 LinkSessionEvent::Recovered | LinkSessionEvent::PacketDelivered { .. } => {}
             }
         }
-        Err(ChannelsError::Transport(
-            "channel link closed before WELCOME".into(),
-        ))
+        Err(ConnectAttemptError {
+            product: ChannelsError::Transport("channel link closed before WELCOME".into()),
+            activity: ConnectFailure::Failed(
+                activity::ChannelSessionFailureReason::TransportUnavailable,
+            ),
+        })
     };
 
     let welcome = tokio::time::timeout(WELCOME_TIMEOUT, wait_for_welcome)
         .await
-        .map_err(|_| ChannelsError::Transport("timed out waiting for WELCOME".into()))??;
+        .map_err(|_| ConnectAttemptError {
+            product: ChannelsError::Transport("timed out waiting for WELCOME".into()),
+            activity: ConnectFailure::WelcomeRejected(
+                activity::ChannelSessionFailureReason::WelcomeTimedOut,
+            ),
+        })??;
 
     Ok(ConnectedSession {
         session,
@@ -854,20 +1619,139 @@ async fn connect_to_hub(
         nickname,
         welcome,
         buffered,
+        activity: activity_context,
     })
 }
 
-async fn handle_connect_update(
-    update: ConnectUpdate,
-    current_attempt: u64,
-    connect_cancel: &mut Option<oneshot::Sender<()>>,
-    active: &mut Option<ActiveSession>,
-    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
-    emitter: &Arc<dyn Emitter>,
-    source: [u8; 16],
+async fn send_session_activity_update(
+    update_tx: &mpsc::Sender<ConnectUpdate>,
+    attempt: u64,
+    transition: activity::ChannelSessionTransition,
 ) {
+    let _ = update_tx
+        .send(ConnectUpdate::SessionActivity {
+            attempt,
+            transition,
+        })
+        .await;
+}
+
+async fn send_connect_envelope_update(
+    update_tx: &mpsc::Sender<ConnectUpdate>,
+    attempt: u64,
+    outbound: bool,
+    message: Option<activity::ChannelMessageToken>,
+    envelope_kind: Option<activity::ChannelEnvelopeKind>,
+    encoded_bytes: usize,
+    validation: activity::SourceValidation,
+) {
+    let _ = update_tx
+        .send(ConnectUpdate::EnvelopeActivity {
+            attempt,
+            outbound,
+            message,
+            envelope_kind,
+            encoded_bytes: bounded_encoded_len(encoded_bytes),
+            validation,
+        })
+        .await;
+}
+
+fn bounded_encoded_len(encoded_bytes: usize) -> u32 {
+    encoded_bytes.min(u32::MAX as usize) as u32
+}
+
+fn path_connect_error(error: LinkSessionError) -> ConnectAttemptError {
+    let failure = if matches!(error, LinkSessionError::Timeout(_)) {
+        ConnectFailure::PathTimedOut
+    } else {
+        ConnectFailure::Failed(activity::ChannelSessionFailureReason::PathLookupFailed)
+    };
+    ConnectAttemptError {
+        product: ChannelsError::from(error),
+        activity: failure,
+    }
+}
+
+fn link_connect_error(error: LinkSessionError) -> ConnectAttemptError {
+    let reason = match error {
+        LinkSessionError::ProofInvalid(_)
+        | LinkSessionError::HandshakeFailed(_)
+        | LinkSessionError::Timeout(_) => {
+            activity::ChannelSessionFailureReason::AuthenticationFailed
+        }
+        LinkSessionError::IdentificationUnavailable => {
+            activity::ChannelSessionFailureReason::IdentificationFailed
+        }
+        LinkSessionError::PublicKeyUnavailable => {
+            activity::ChannelSessionFailureReason::InvalidAnnounce
+        }
+        LinkSessionError::TransportUnavailable | LinkSessionError::SessionClosed => {
+            activity::ChannelSessionFailureReason::TransportUnavailable
+        }
+        LinkSessionError::LinkCrypto
+        | LinkSessionError::LinkNotActive
+        | LinkSessionError::PayloadTooLarge { .. } => {
+            activity::ChannelSessionFailureReason::SendFailed
+        }
+    };
+    ConnectAttemptError {
+        product: ChannelsError::from(error),
+        activity: ConnectFailure::Failed(reason),
+    }
+}
+
+fn send_connect_error(error: LinkSessionError) -> ConnectAttemptError {
+    ConnectAttemptError {
+        product: ChannelsError::from(error),
+        activity: ConnectFailure::Failed(activity::ChannelSessionFailureReason::SendFailed),
+    }
+}
+
+fn negotiated_limits(limits: &HubLimits) -> activity::ChannelNegotiatedLimits {
+    activity::ChannelNegotiatedLimits {
+        max_nick_bytes: limits.max_nick_bytes.map(|value| value as u64),
+        max_room_bytes: limits.max_room_name_bytes.map(|value| value as u64),
+        max_message_bytes: limits.max_message_body_bytes.map(|value| value as u64),
+        max_rooms: limits.max_rooms_per_session.map(|value| value as u64),
+        rate_per_minute: limits.rate_messages_per_minute.map(|value| value as u64),
+    }
+}
+
+fn channel_envelope_kind(message_type: MessageType) -> Option<activity::ChannelEnvelopeKind> {
+    Some(match message_type {
+        MessageType::Hello => activity::ChannelEnvelopeKind::Hello,
+        MessageType::Welcome => activity::ChannelEnvelopeKind::Welcome,
+        MessageType::Join => activity::ChannelEnvelopeKind::Join,
+        MessageType::Joined => activity::ChannelEnvelopeKind::Joined,
+        MessageType::Part => activity::ChannelEnvelopeKind::Part,
+        MessageType::Parted => activity::ChannelEnvelopeKind::Parted,
+        MessageType::Message => activity::ChannelEnvelopeKind::Message,
+        MessageType::Notice => activity::ChannelEnvelopeKind::Notice,
+        MessageType::Action => activity::ChannelEnvelopeKind::Action,
+        MessageType::Ping => activity::ChannelEnvelopeKind::Ping,
+        MessageType::Pong => activity::ChannelEnvelopeKind::Pong,
+        MessageType::Error => activity::ChannelEnvelopeKind::Error,
+        MessageType::ResourceEnvelope => activity::ChannelEnvelopeKind::Resource,
+        MessageType::Unknown(_) => return None,
+    })
+}
+
+async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateContext<'_>) {
+    let ConnectUpdateContext {
+        current_attempt,
+        connect_cancel,
+        active,
+        snapshot,
+        emitter,
+        activity_recorder,
+        pending_connect_activity,
+        source,
+    } = context;
     let update_attempt = match &update {
-        ConnectUpdate::Discovered { attempt, .. }
+        ConnectUpdate::SessionActivity { attempt, .. }
+        | ConnectUpdate::EnvelopeActivity { attempt, .. }
+        | ConnectUpdate::Discovered { attempt, .. }
         | ConnectUpdate::AwaitingWelcome { attempt, .. }
         | ConnectUpdate::Ready { attempt, .. }
         | ConnectUpdate::Failed { attempt, .. } => *attempt,
@@ -880,12 +1764,53 @@ async fn handle_connect_update(
     }
 
     match update {
+        ConnectUpdate::SessionActivity { transition, .. } => {
+            if let Some(context) = *pending_connect_activity {
+                record_session_origin(activity_recorder, context, transition);
+            }
+            return;
+        }
+        ConnectUpdate::EnvelopeActivity {
+            outbound,
+            message,
+            envelope_kind,
+            encoded_bytes,
+            validation,
+            ..
+        } => {
+            if let Some(context) = *pending_connect_activity {
+                activity_recorder.record_fenced(context.origin, move || {
+                    let input = activity::ChannelsEnvelopeActivity {
+                        hub: context.hub,
+                        room: None,
+                        message,
+                        envelope_kind,
+                        encoded_bytes,
+                        validation,
+                        correlation_id: context.correlation_id,
+                    };
+                    if outbound {
+                        activity::channels_envelope_sent(input)
+                    } else {
+                        activity::channels_envelope_received(input)
+                    }
+                });
+            }
+            return;
+        }
         ConnectUpdate::Discovered {
             hub_identity,
             announced_name,
             hops,
             ..
         } => {
+            if let Some(context) = *pending_connect_activity {
+                record_session_origin(
+                    activity_recorder,
+                    context,
+                    activity::ChannelSessionTransition::PathDiscovered { hops },
+                );
+            }
             mutate_snapshot(snapshot, |state| {
                 state.phase = ChannelsPhase::Connecting;
                 if let Some(hub) = state.hub.as_mut() {
@@ -903,8 +1828,22 @@ async fn handle_connect_update(
                 }
             });
         }
-        ConnectUpdate::Failed { error, .. } => {
+        ConnectUpdate::Failed { error, failure, .. } => {
             *connect_cancel = None;
+            if let Some(context) = pending_connect_activity.take() {
+                let transition = match failure {
+                    ConnectFailure::PathTimedOut => {
+                        activity::ChannelSessionTransition::PathTimedOut
+                    }
+                    ConnectFailure::WelcomeRejected(reason) => {
+                        activity::ChannelSessionTransition::WelcomeRejected { reason }
+                    }
+                    ConnectFailure::Failed(reason) => {
+                        activity::ChannelSessionTransition::Failed { reason }
+                    }
+                };
+                record_session_origin(activity_recorder, context, transition);
+            }
             mutate_snapshot(snapshot, |state| {
                 state.phase = ChannelsPhase::Error;
                 state.rooms.clear();
@@ -915,6 +1854,7 @@ async fn handle_connect_update(
         }
         ConnectUpdate::Ready { connected, .. } => {
             *connect_cancel = None;
+            *pending_connect_activity = None;
             let ConnectedSession {
                 session,
                 destination_hash,
@@ -924,6 +1864,7 @@ async fn handle_connect_update(
                 nickname,
                 welcome,
                 buffered,
+                activity,
             } = *connected;
             let capabilities = ChannelHubCapabilitiesSnapshot::from(&welcome);
             let limits_snapshot = ChannelHubLimitsSnapshot::from(&welcome.limits);
@@ -942,9 +1883,14 @@ async fn handle_connect_update(
                 notices: VecDeque::new(),
                 seen_ids: HashSet::new(),
                 seen_order: VecDeque::new(),
+                message_tokens: HashMap::new(),
+                message_token_order: VecDeque::new(),
+                room_activity: BTreeMap::new(),
+                activity,
             };
-            for envelope in buffered {
-                let _ = handle_envelope(&mut live, envelope).await;
+            for (envelope, encoded_bytes) in buffered {
+                let _ =
+                    handle_envelope(&mut live, activity_recorder, envelope, encoded_bytes).await;
             }
             mutate_snapshot(snapshot, |state| {
                 *state = ChannelsSnapshot::offline();
@@ -974,8 +1920,10 @@ async fn join_room(
     active: Option<&mut ActiveSession>,
     snapshot: &Arc<RwLock<ChannelsSnapshot>>,
     emitter: &Arc<dyn Emitter>,
+    activity_recorder: &ChannelsActivity,
     room: String,
     key: Option<String>,
+    activity_fence: Option<ActivityRequestFence>,
 ) -> Result<String, ChannelsError> {
     let active = active.ok_or(ChannelsError::NotConnected)?;
     let max_room = active
@@ -993,6 +1941,7 @@ async fn join_room(
             // the next explicit join must be a real retry on the wire.
             ChannelRoomPhase::Error => {
                 active.rooms.remove(&room);
+                active.room_activity.remove(&room);
             }
         }
     }
@@ -1011,16 +1960,48 @@ async fn join_room(
         return Err(ChannelsError::RoomLimitReached);
     }
 
+    let room_token = activity::ChannelRoomToken::random();
+    let operation = RoomOperationContext {
+        correlation_id: CorrelationId::random(),
+        origin: activity_fence,
+    };
     active
         .rooms
         .insert(room.clone(), ChannelRoomSnapshot::joining(room.clone()));
+    active.room_activity.insert(
+        room.clone(),
+        RoomActivityContext {
+            token: room_token,
+            join: Some(operation),
+            part: None,
+        },
+    );
+    record_room_operation(
+        activity_recorder,
+        active.activity,
+        room_token,
+        operation,
+        activity::ChannelRoomTransition::JoinRequested,
+    );
     let mut envelope =
         Envelope::room_command(MessageType::Join, active.source, &room, &active.nickname);
     if let Some(key) = key.filter(|key| !key.is_empty()) {
         envelope.body = Some(Value::Text(key));
     }
-    if let Err(error) = send_envelope(&active.handle, &envelope).await {
+    if let Err(error) =
+        send_active_envelope(active, activity_recorder, &envelope, activity_fence).await
+    {
         active.rooms.remove(&room);
+        active.room_activity.remove(&room);
+        record_room_operation(
+            activity_recorder,
+            active.activity,
+            room_token,
+            operation,
+            activity::ChannelRoomTransition::JoinRejected {
+                reason: activity::ChannelRoomFailureReason::SendFailed,
+            },
+        );
         return Err(error);
     }
     sync_session_snapshot(active, snapshot);
@@ -1032,7 +2013,9 @@ async fn part_room(
     active: Option<&mut ActiveSession>,
     snapshot: &Arc<RwLock<ChannelsSnapshot>>,
     emitter: &Arc<dyn Emitter>,
+    activity_recorder: &ChannelsActivity,
     room: String,
+    activity_fence: Option<ActivityRequestFence>,
 ) -> Result<(), ChannelsError> {
     let active = active.ok_or(ChannelsError::NotConnected)?;
     let max_room = active
@@ -1045,6 +2028,48 @@ async fn part_room(
         .get(&room)
         .map(|room| room.phase)
         .ok_or_else(|| ChannelsError::NotJoined(room.clone()))?;
+    let room_token = active
+        .room_activity
+        .get(&room)
+        .map(|context| context.token)
+        .unwrap_or_else(activity::ChannelRoomToken::random);
+    if prior == ChannelRoomPhase::Joining
+        && let Some(join) = active
+            .room_activity
+            .get_mut(&room)
+            .and_then(|context| context.join.take())
+    {
+        record_room_operation(
+            activity_recorder,
+            active.activity,
+            room_token,
+            RoomOperationContext {
+                origin: activity_fence,
+                ..join
+            },
+            activity::ChannelRoomTransition::JoinCancelled,
+        );
+    }
+    let operation = RoomOperationContext {
+        correlation_id: CorrelationId::random(),
+        origin: activity_fence,
+    };
+    active
+        .room_activity
+        .entry(room.clone())
+        .and_modify(|context| context.part = Some(operation))
+        .or_insert(RoomActivityContext {
+            token: room_token,
+            join: None,
+            part: Some(operation),
+        });
+    record_room_operation(
+        activity_recorder,
+        active.activity,
+        room_token,
+        operation,
+        activity::ChannelRoomTransition::PartRequested,
+    );
     if let Some(room_state) = active.rooms.get_mut(&room) {
         room_state.phase = ChannelRoomPhase::Parting;
         room_state.phase_started_at_ms = now_ms();
@@ -1052,10 +2077,24 @@ async fn part_room(
     }
     let envelope =
         Envelope::room_command(MessageType::Part, active.source, &room, &active.nickname);
-    if let Err(error) = send_envelope(&active.handle, &envelope).await {
+    if let Err(error) =
+        send_active_envelope(active, activity_recorder, &envelope, activity_fence).await
+    {
         if let Some(room_state) = active.rooms.get_mut(&room) {
             room_state.phase = prior;
         }
+        if let Some(context) = active.room_activity.get_mut(&room) {
+            context.part = None;
+        }
+        record_room_operation(
+            activity_recorder,
+            active.activity,
+            room_token,
+            operation,
+            activity::ChannelRoomTransition::PartRejected {
+                reason: activity::ChannelRoomFailureReason::SendFailed,
+            },
+        );
         return Err(error);
     }
     sync_session_snapshot(active, snapshot);
@@ -1065,8 +2104,10 @@ async fn part_room(
 
 async fn send_room_text(
     active: Option<&mut ActiveSession>,
+    activity_recorder: &ChannelsActivity,
     room: String,
     text: String,
+    activity_fence: Option<ActivityRequestFence>,
 ) -> Result<(), ChannelsError> {
     let active = active.ok_or(ChannelsError::NotConnected)?;
     if text.trim().is_empty() {
@@ -1101,30 +2142,64 @@ async fn send_room_text(
         return Err(ChannelsError::MessageTooLong(max_message));
     }
     let envelope = Envelope::room_text(message_type, active.source, &room, &active.nickname, &body);
-    send_envelope(&active.handle, &envelope).await.map(|_| ())
+    send_active_envelope(active, activity_recorder, &envelope, activity_fence)
+        .await
+        .map(|_| ())
 }
 
 enum LinkEventOutcome {
     Keep,
     Stale,
     Recovered,
-    Closed(String),
+    Closed {
+        product_reason: String,
+        activity_reason: activity::ChannelSessionCloseReason,
+    },
 }
 
 async fn handle_link_event(
     active: &mut ActiveSession,
+    activity_recorder: &ChannelsActivity,
     event: LinkSessionEvent,
 ) -> LinkEventOutcome {
     match event {
         LinkSessionEvent::Packet { data, .. } => match rrc::decode(&data) {
             Ok(envelope) => {
-                if handle_envelope(active, envelope).await {
+                if handle_envelope(
+                    active,
+                    activity_recorder,
+                    envelope,
+                    bounded_encoded_len(data.len()),
+                )
+                .await
+                {
                     LinkEventOutcome::Keep
                 } else {
-                    LinkEventOutcome::Closed("Channel link send failed".into())
+                    LinkEventOutcome::Closed {
+                        product_reason: "Channel link send failed".into(),
+                        activity_reason: activity::ChannelSessionCloseReason::SendFailed,
+                    }
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                let context = active.activity;
+                let validation = if matches!(error, rrc::ProtocolError::UnsupportedVersion(_)) {
+                    activity::SourceValidation::Unsupported
+                } else {
+                    activity::SourceValidation::Malformed
+                };
+                let encoded_bytes = bounded_encoded_len(data.len());
+                activity_recorder.record_spontaneous(move || {
+                    activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
+                        hub: context.hub,
+                        room: None,
+                        message: None,
+                        envelope_kind: None,
+                        encoded_bytes,
+                        validation,
+                        correlation_id: context.correlation_id,
+                    })
+                });
                 tracing::debug!(
                     reason = "decode_failed",
                     "ignoring malformed channel envelope"
@@ -1137,15 +2212,28 @@ async fn handle_link_event(
         LinkSessionEvent::Recovered => LinkEventOutcome::Recovered,
         LinkSessionEvent::Closed { reason } => {
             tracing::info!(reason = close_reason_label(reason), "channel Link closed");
-            LinkEventOutcome::Closed(format!(
-                "Channel hub disconnected ({})",
-                close_reason_label(reason)
-            ))
+            LinkEventOutcome::Closed {
+                product_reason: format!(
+                    "Channel hub disconnected ({})",
+                    close_reason_label(reason)
+                ),
+                activity_reason: channel_close_reason(reason),
+            }
         }
     }
 }
 
-async fn handle_envelope(active: &mut ActiveSession, envelope: Envelope) -> bool {
+async fn handle_envelope(
+    active: &mut ActiveSession,
+    activity_recorder: &ChannelsActivity,
+    envelope: Envelope,
+    encoded_bytes: u32,
+) -> bool {
+    let message = active.message_token(envelope.message_id);
+    let room = active.room_token(envelope.room.as_deref());
+    let envelope_kind = channel_envelope_kind(envelope.message_type);
+    let correlation_id = active.envelope_correlation(&envelope);
+    let session = active.activity;
     if matches!(
         envelope.message_type,
         MessageType::Welcome
@@ -1155,6 +2243,17 @@ async fn handle_envelope(active: &mut ActiveSession, envelope: Envelope) -> bool
             | MessageType::Error
     ) && envelope.source != active.hub_identity
     {
+        activity_recorder.record_spontaneous(move || {
+            activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
+                hub: session.hub,
+                room,
+                message: Some(message),
+                envelope_kind,
+                encoded_bytes,
+                validation: activity::SourceValidation::NonHub,
+                correlation_id,
+            })
+        });
         tracing::debug!(
             message_type = ?envelope.message_type,
             reason = "unauthenticated_control_source",
@@ -1162,14 +2261,56 @@ async fn handle_envelope(active: &mut ActiveSession, envelope: Envelope) -> bool
         );
         return true;
     }
+    if !active.remember(envelope.message_id) {
+        activity_recorder.record_spontaneous(move || {
+            activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
+                hub: session.hub,
+                room,
+                message: Some(message),
+                envelope_kind,
+                encoded_bytes,
+                validation: activity::SourceValidation::Duplicate,
+                correlation_id,
+            })
+        });
+        return true;
+    }
+    if matches!(
+        envelope.message_type,
+        MessageType::ResourceEnvelope | MessageType::Unknown(_)
+    ) {
+        activity_recorder.record_spontaneous(move || {
+            activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
+                hub: session.hub,
+                room,
+                message: Some(message),
+                envelope_kind,
+                encoded_bytes,
+                validation: activity::SourceValidation::Unsupported,
+                correlation_id,
+            })
+        });
+        return true;
+    }
+    activity_recorder.record_spontaneous(move || {
+        activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
+            hub: session.hub,
+            room,
+            message: Some(message),
+            envelope_kind,
+            encoded_bytes,
+            validation: activity::SourceValidation::Accepted,
+            correlation_id,
+        })
+    });
     if envelope.message_type == MessageType::Ping {
         let pong = Envelope::pong(active.source, &envelope);
-        if send_envelope(&active.handle, &pong).await.is_err() {
+        if send_active_envelope_spontaneous(active, activity_recorder, &pong)
+            .await
+            .is_err()
+        {
             return false;
         }
-    }
-    if !active.remember(envelope.message_id) {
-        return true;
     }
 
     match envelope.message_type {
@@ -1186,20 +2327,154 @@ async fn handle_envelope(active: &mut ActiveSession, envelope: Envelope) -> bool
             }
         }
         MessageType::Join => {}
-        MessageType::Joined => apply_joined(active, &envelope),
+        MessageType::Joined => {
+            let confirmation = join_confirmation_context(active, &envelope);
+            apply_joined(active, &envelope);
+            record_join_confirmation(
+                active,
+                activity_recorder,
+                confirmation,
+                activity::ChannelJoinEvidence::JoinedRoster,
+            );
+        }
         MessageType::Part => {}
-        MessageType::Parted => apply_parted(active, &envelope),
+        MessageType::Parted => {
+            let confirmation = part_confirmation_context(active, &envelope);
+            apply_parted(active, &envelope);
+            record_part_confirmation(active, activity_recorder, confirmation);
+        }
         MessageType::Message | MessageType::Notice | MessageType::Action => {
-            if envelope.message_type != MessageType::Notice
-                || !apply_rrcd_room_status_notice(active, &envelope)
-            {
-                append_content(active, &envelope)
+            if envelope.message_type == MessageType::Notice {
+                let confirmation = join_confirmation_context(active, &envelope);
+                if apply_rrcd_room_status_notice(active, &envelope) {
+                    record_join_confirmation(
+                        active,
+                        activity_recorder,
+                        confirmation,
+                        activity::ChannelJoinEvidence::RrcdStatusNotice,
+                    );
+                } else {
+                    append_content(active, activity_recorder, &envelope, encoded_bytes)
+                }
+            } else {
+                append_content(active, activity_recorder, &envelope, encoded_bytes)
             }
         }
-        MessageType::Error => append_error(active, &envelope),
+        MessageType::Error => append_error(active, activity_recorder, &envelope),
         MessageType::ResourceEnvelope | MessageType::Unknown(_) => {}
     }
     true
+}
+
+#[derive(Clone)]
+struct RoomConfirmationContext {
+    room: String,
+    token: activity::ChannelRoomToken,
+    operation: Option<RoomOperationContext>,
+    prior_phase: ChannelRoomPhase,
+}
+
+fn normalized_envelope_room(active: &ActiveSession, envelope: &Envelope) -> Option<String> {
+    rrc::normalize_room(
+        envelope.room.as_deref()?,
+        active
+            .limits
+            .max_room_name_bytes
+            .unwrap_or(DEFAULT_ROOM_MAX_BYTES),
+    )
+    .ok()
+}
+
+fn join_confirmation_context(
+    active: &ActiveSession,
+    envelope: &Envelope,
+) -> Option<RoomConfirmationContext> {
+    let room = normalized_envelope_room(active, envelope)?;
+    let prior_phase = active.rooms.get(&room)?.phase;
+    let context = active.room_activity.get(&room)?;
+    Some(RoomConfirmationContext {
+        room,
+        token: context.token,
+        operation: context.join,
+        prior_phase,
+    })
+}
+
+fn part_confirmation_context(
+    active: &ActiveSession,
+    envelope: &Envelope,
+) -> Option<RoomConfirmationContext> {
+    let room = normalized_envelope_room(active, envelope)?;
+    let prior_phase = active.rooms.get(&room)?.phase;
+    let context = active.room_activity.get(&room)?;
+    Some(RoomConfirmationContext {
+        room,
+        token: context.token,
+        operation: context.part,
+        prior_phase,
+    })
+}
+
+fn record_join_confirmation(
+    active: &mut ActiveSession,
+    recorder: &ChannelsActivity,
+    confirmation: Option<RoomConfirmationContext>,
+    evidence: activity::ChannelJoinEvidence,
+) {
+    let Some(confirmation) = confirmation else {
+        return;
+    };
+    if confirmation.prior_phase == ChannelRoomPhase::Joined
+        || !active
+            .rooms
+            .get(&confirmation.room)
+            .is_some_and(|room| room.phase == ChannelRoomPhase::Joined)
+    {
+        return;
+    }
+    if let Some(context) = active.room_activity.get_mut(&confirmation.room) {
+        context.join = None;
+    }
+    if let Some(operation) = confirmation.operation {
+        record_room_operation(
+            recorder,
+            active.activity,
+            confirmation.token,
+            operation,
+            activity::ChannelRoomTransition::Joined { evidence },
+        );
+    } else {
+        record_room_spontaneous(
+            recorder,
+            active.activity,
+            confirmation.token,
+            active.activity.correlation_id,
+            activity::ChannelRoomTransition::Joined { evidence },
+        );
+    }
+}
+
+fn record_part_confirmation(
+    active: &mut ActiveSession,
+    recorder: &ChannelsActivity,
+    confirmation: Option<RoomConfirmationContext>,
+) {
+    let Some(confirmation) = confirmation else {
+        return;
+    };
+    if confirmation.prior_phase != ChannelRoomPhase::Parting {
+        return;
+    }
+    active.room_activity.remove(&confirmation.room);
+    if let Some(operation) = confirmation.operation {
+        record_room_operation(
+            recorder,
+            active.activity,
+            confirmation.token,
+            operation,
+            activity::ChannelRoomTransition::Parted,
+        );
+    }
 }
 
 fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
@@ -1440,7 +2715,12 @@ fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
     );
 }
 
-fn append_content(active: &mut ActiveSession, envelope: &Envelope) {
+fn append_content(
+    active: &mut ActiveSession,
+    activity_recorder: &ChannelsActivity,
+    envelope: &Envelope,
+    encoded_bytes: u32,
+) {
     let Some(text) = rrc::text_body(envelope) else {
         return;
     };
@@ -1495,13 +2775,22 @@ fn append_content(active: &mut ActiveSession, envelope: &Envelope) {
             && now_ms() <= active.hub_greeting_deadline_ms
         {
             active.hub_greeting = Some(item);
+            record_session_spontaneous(
+                activity_recorder,
+                active.activity,
+                activity::ChannelSessionTransition::GreetingObserved { encoded_bytes },
+            );
         } else {
             append_bounded(&mut active.notices, item, NOTICE_LIMIT);
         }
     }
 }
 
-fn append_error(active: &mut ActiveSession, envelope: &Envelope) {
+fn append_error(
+    active: &mut ActiveSession,
+    activity_recorder: &ChannelsActivity,
+    envelope: &Envelope,
+) {
     let text = rrc::text_body(envelope).unwrap_or("Channel hub reported an error");
     let item = transcript_item(
         envelope,
@@ -1537,6 +2826,7 @@ fn append_error(active: &mut ActiveSession, envelope: &Envelope) {
     if let Some(room_name) = explicit_room.or(inferred_room)
         && let Some(room) = active.rooms.get_mut(&room_name)
     {
+        let prior_phase = room.phase;
         if room.phase == ChannelRoomPhase::Joining {
             room.phase = ChannelRoomPhase::Error;
             room.phase_started_at_ms = now_ms();
@@ -1547,6 +2837,35 @@ fn append_error(active: &mut ActiveSession, envelope: &Envelope) {
             room.last_error = Some(text.to_string());
         }
         append_room_item(room, item);
+        let operation = active
+            .room_activity
+            .get_mut(&room_name)
+            .and_then(|context| {
+                let operation = match prior_phase {
+                    ChannelRoomPhase::Joining => context.join.take(),
+                    ChannelRoomPhase::Parting => context.part.take(),
+                    ChannelRoomPhase::Joined | ChannelRoomPhase::Error => None,
+                };
+                operation.map(|operation| (context.token, operation))
+            });
+        if let Some((room_token, operation)) = operation {
+            let transition = match prior_phase {
+                ChannelRoomPhase::Joining => activity::ChannelRoomTransition::JoinRejected {
+                    reason: activity::ChannelRoomFailureReason::HubRejected,
+                },
+                ChannelRoomPhase::Parting => activity::ChannelRoomTransition::PartRejected {
+                    reason: activity::ChannelRoomFailureReason::HubRejected,
+                },
+                ChannelRoomPhase::Joined | ChannelRoomPhase::Error => return,
+            };
+            record_room_operation(
+                activity_recorder,
+                active.activity,
+                room_token,
+                operation,
+                transition,
+            );
+        }
     } else {
         append_bounded(&mut active.notices, item, NOTICE_LIMIT);
     }
@@ -1554,12 +2873,16 @@ fn append_error(active: &mut ActiveSession, envelope: &Envelope) {
 
 fn expire_room_transitions(
     rooms: &mut BTreeMap<String, ChannelRoomSnapshot>,
+    room_activity: &mut BTreeMap<String, RoomActivityContext>,
+    session_activity: SessionActivityContext,
+    activity_recorder: &ChannelsActivity,
     timestamp_ms: u64,
 ) -> bool {
     let join_timeout_ms = JOIN_CONFIRM_TIMEOUT.as_millis() as u64;
     let part_timeout_ms = PART_CONFIRM_TIMEOUT.as_millis() as u64;
     let mut changed = false;
-    let mut parted = Vec::new();
+    let mut joined_out = Vec::new();
+    let mut parted_out = Vec::new();
 
     for (name, room) in rooms.iter_mut() {
         let elapsed = timestamp_ms.saturating_sub(room.phase_started_at_ms);
@@ -1571,10 +2894,11 @@ fn expire_room_transitions(
                     "No confirmation arrived from the hub. Try joining again or leave this channel."
                         .into(),
                 );
+                joined_out.push(name.clone());
                 changed = true;
             }
             ChannelRoomPhase::Parting if elapsed >= part_timeout_ms => {
-                parted.push(name.clone());
+                parted_out.push(name.clone());
             }
             ChannelRoomPhase::Joining
             | ChannelRoomPhase::Joined
@@ -1582,8 +2906,35 @@ fn expire_room_transitions(
             | ChannelRoomPhase::Error => {}
         }
     }
-    for name in parted {
+    for name in joined_out {
+        if let Some((token, operation)) = room_activity.get_mut(&name).and_then(|context| {
+            context
+                .join
+                .take()
+                .map(|operation| (context.token, operation))
+        }) {
+            record_room_operation(
+                activity_recorder,
+                session_activity,
+                token,
+                operation,
+                activity::ChannelRoomTransition::JoinTimedOut,
+            );
+        }
+    }
+    for name in parted_out {
         rooms.remove(&name);
+        if let Some(context) = room_activity.remove(&name)
+            && let Some(operation) = context.part
+        {
+            record_room_operation(
+                activity_recorder,
+                session_activity,
+                context.token,
+                operation,
+                activity::ChannelRoomTransition::PartTimedOut,
+            );
+        }
         changed = true;
     }
     changed
@@ -1662,11 +3013,54 @@ fn upsert_member(
     }
 }
 
-async fn send_envelope(
-    handle: &rns_runtime::link_session::LinkSessionHandle,
+async fn send_active_envelope(
+    active: &mut ActiveSession,
+    activity_recorder: &ChannelsActivity,
+    envelope: &Envelope,
+    activity_fence: Option<ActivityRequestFence>,
+) -> Result<rns_runtime::link_session::LinkSessionPacketReceipt, ChannelsError> {
+    send_active_envelope_inner(active, activity_recorder, envelope, Some(activity_fence)).await
+}
+
+async fn send_active_envelope_spontaneous(
+    active: &mut ActiveSession,
+    activity_recorder: &ChannelsActivity,
     envelope: &Envelope,
 ) -> Result<rns_runtime::link_session::LinkSessionPacketReceipt, ChannelsError> {
-    Ok(handle.send_packet(rrc::encode(envelope)?).await?)
+    send_active_envelope_inner(active, activity_recorder, envelope, None).await
+}
+
+async fn send_active_envelope_inner(
+    active: &mut ActiveSession,
+    activity_recorder: &ChannelsActivity,
+    envelope: &Envelope,
+    command_fence: Option<Option<ActivityRequestFence>>,
+) -> Result<rns_runtime::link_session::LinkSessionPacketReceipt, ChannelsError> {
+    let encoded = rrc::encode(envelope)?;
+    let encoded_bytes = bounded_encoded_len(encoded.len());
+    let receipt = active.handle.send_packet(encoded).await?;
+    let message = active.message_token(envelope.message_id);
+    let room = active.room_token(envelope.room.as_deref());
+    let envelope_kind = channel_envelope_kind(envelope.message_type);
+    let correlation_id = active.envelope_correlation(envelope);
+    let session = active.activity;
+    let make = move || {
+        activity::channels_envelope_sent(activity::ChannelsEnvelopeActivity {
+            hub: session.hub,
+            room,
+            message: Some(message),
+            envelope_kind,
+            encoded_bytes,
+            validation: activity::SourceValidation::Accepted,
+            correlation_id,
+        })
+    };
+    if let Some(fence) = command_fence {
+        activity_recorder.record_fenced(fence, make);
+    } else {
+        activity_recorder.record_spontaneous(make);
+    }
+    Ok(receipt)
 }
 
 async fn discover_hubs(
@@ -1784,6 +3178,11 @@ fn cancel_connection(cancel: &mut Option<oneshot::Sender<()>>) {
     }
 }
 
+fn invalidate_connect_attempt(attempt: &mut u64) -> u64 {
+    *attempt = attempt.wrapping_add(1);
+    *attempt
+}
+
 async fn close_active(active: &mut Option<ActiveSession>) {
     if let Some(active) = active.take() {
         active.handle.close().await;
@@ -1796,6 +3195,17 @@ fn close_reason_label(reason: LinkSessionCloseReason) -> &'static str {
         LinkSessionCloseReason::Remote => "remote",
         LinkSessionCloseReason::Timeout => "timeout",
         LinkSessionCloseReason::TransportUnavailable => "transport unavailable",
+    }
+}
+
+fn channel_close_reason(reason: LinkSessionCloseReason) -> activity::ChannelSessionCloseReason {
+    match reason {
+        LinkSessionCloseReason::Local => activity::ChannelSessionCloseReason::Local,
+        LinkSessionCloseReason::Remote => activity::ChannelSessionCloseReason::Remote,
+        LinkSessionCloseReason::Timeout => activity::ChannelSessionCloseReason::Timeout,
+        LinkSessionCloseReason::TransportUnavailable => {
+            activity::ChannelSessionCloseReason::TransportUnavailable
+        }
     }
 }
 
@@ -1940,12 +3350,22 @@ mod tests {
     #[test]
     fn room_transitions_finish_instead_of_sticking_forever() {
         let mut rooms = BTreeMap::new();
+        let mut room_activity = BTreeMap::new();
+        let activity_recorder = ChannelsActivity::new(Weak::new());
+        let session_activity = SessionActivityContext {
+            hub: activity::DestinationHash::new([0x11; 16]),
+            correlation_id: CorrelationId::random(),
+            origin: None,
+        };
         let mut joining = ChannelRoomSnapshot::joining("general".into());
         joining.phase_started_at_ms = 1_000;
         rooms.insert(joining.name.clone(), joining);
 
         assert!(expire_room_transitions(
             &mut rooms,
+            &mut room_activity,
+            session_activity,
+            &activity_recorder,
             1_000 + JOIN_CONFIRM_TIMEOUT.as_millis() as u64
         ));
         assert_eq!(rooms["general"].phase, ChannelRoomPhase::Error);
@@ -1955,6 +3375,9 @@ mod tests {
         rooms.get_mut("general").unwrap().phase_started_at_ms = 50_000;
         assert!(expire_room_transitions(
             &mut rooms,
+            &mut room_activity,
+            session_activity,
+            &activity_recorder,
             50_000 + PART_CONFIRM_TIMEOUT.as_millis() as u64
         ));
         assert!(rooms.is_empty());
@@ -1974,6 +3397,7 @@ mod tests {
             client_identity.clone(),
             Arc::new(ratspeak_core::NoopEmitter),
             ShutdownSignal::new(),
+            Weak::new(),
         );
 
         manager

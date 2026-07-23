@@ -156,6 +156,23 @@ impl ChannelRoomToken {
     }
 }
 
+/// Random volatile token assigned to one RRC envelope identifier. The RRC
+/// message id is only used as an in-memory lookup key by Channels; Activity
+/// receives this unrelated 256-bit token.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ChannelMessageToken([u8; 32]);
+
+impl ChannelMessageToken {
+    pub fn random() -> Self {
+        Self(rns_crypto::random::random_32())
+    }
+
+    #[cfg(test)]
+    pub(super) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
 /// Random, session-local lookup key into navigation state owned outside
 /// Activity. There is no constructor from labels, paths, or arbitrary bytes.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -757,24 +774,36 @@ fn rns_path_event(
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChannelEnvelopeKind {
     Action,
+    Error,
+    Hello,
     Join,
+    Joined,
     Message,
     Part,
+    Parted,
     Ping,
     Pong,
-    Status,
+    Notice,
+    Resource,
+    Welcome,
 }
 
 impl ChannelEnvelopeKind {
     const fn code(self) -> &'static str {
         match self {
             Self::Action => "action",
+            Self::Error => "error",
+            Self::Hello => "hello",
             Self::Join => "join",
+            Self::Joined => "joined",
             Self::Message => "message",
             Self::Part => "part",
+            Self::Parted => "parted",
             Self::Ping => "ping",
             Self::Pong => "pong",
-            Self::Status => "status",
+            Self::Notice => "notice",
+            Self::Resource => "resource",
+            Self::Welcome => "welcome",
         }
     }
 }
@@ -783,7 +812,9 @@ impl ChannelEnvelopeKind {
 pub enum SourceValidation {
     Accepted,
     Duplicate,
+    Malformed,
     NonHub,
+    Unsupported,
     WrongSource,
 }
 
@@ -792,41 +823,61 @@ impl SourceValidation {
         match self {
             Self::Accepted => "accepted",
             Self::Duplicate => "duplicate",
+            Self::Malformed => "malformed",
             Self::NonHub => "non_hub",
+            Self::Unsupported => "unsupported",
             Self::WrongSource => "wrong_source",
         }
     }
 }
 
-pub struct ChannelsEnvelopeReceived {
+pub struct ChannelsEnvelopeActivity {
     pub time: ObservationTime,
     pub hub: DestinationHash,
-    pub room: ChannelRoomToken,
-    pub envelope_kind: ChannelEnvelopeKind,
+    pub room: Option<ChannelRoomToken>,
+    pub message: Option<ChannelMessageToken>,
+    pub envelope_kind: Option<ChannelEnvelopeKind>,
     pub encoded_bytes: u32,
     pub validation: SourceValidation,
     pub correlation_id: CorrelationId,
 }
 
+pub fn channels_envelope_sent(
+    input: ChannelsEnvelopeActivity,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    channels_envelope(input, ActivityDirection::Outbound)
+}
+
 pub fn channels_envelope_received(
-    input: ChannelsEnvelopeReceived,
+    input: ChannelsEnvelopeActivity,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    channels_envelope(input, ActivityDirection::Inbound)
+}
+
+fn channels_envelope(
+    input: ChannelsEnvelopeActivity,
+    direction: ActivityDirection,
 ) -> Result<ActivityDraft, ActivityRejectReason> {
     let (kind, severity, outcome, coalescing, duplicate) = match input.validation {
         SourceValidation::Accepted => (
-            kinds::CHANNELS_ENVELOPE_RECEIVED,
+            if direction == ActivityDirection::Outbound {
+                kinds::CHANNELS_ENVELOPE_SENT
+            } else {
+                kinds::CHANNELS_ENVELOPE_RECEIVED
+            },
             ActivitySeverity::Info,
             ActivityOutcome::Success,
             CoalescingPolicy::AdjacentEquivalent,
             false,
         ),
-        SourceValidation::Duplicate => (
+        SourceValidation::Duplicate | SourceValidation::Unsupported => (
             kinds::CHANNELS_ENVELOPE_RECEIVED,
             ActivitySeverity::Info,
             ActivityOutcome::Dropped,
             CoalescingPolicy::Never,
-            true,
+            matches!(input.validation, SourceValidation::Duplicate),
         ),
-        SourceValidation::NonHub | SourceValidation::WrongSource => (
+        SourceValidation::Malformed | SourceValidation::NonHub | SourceValidation::WrongSource => (
             kinds::CHANNELS_ENVELOPE_REJECTED,
             ActivitySeverity::Warning,
             ActivityOutcome::Rejected,
@@ -837,20 +888,14 @@ pub fn channels_envelope_received(
     let draft = ActivityDraft::new(
         kind,
         severity,
-        ActivityDirection::Inbound,
+        direction,
         outcome,
         input.time.unix_ms,
         input.time.elapsed_ms,
         coalescing,
     )
-    .protocol_identifier(ActivityAttributeKey::Hub, IdentifierKind::Hub, &input.hub.0)?
-    .protocol_identifier(
-        ActivityAttributeKey::Room,
-        IdentifierKind::Room,
-        &input.room.0,
-    )?
-    .operational_code(ActivityAttributeKey::Method, input.envelope_kind.code())?;
-    let draft = draft
+    .protocol_identifier(ActivityAttributeKey::Hub, IdentifierKind::Hub, &input.hub.0)?;
+    let mut draft = draft
         .exact(
             ActivityAttributeKey::ByteLength,
             ExactValue::Unsigned(u64::from(input.encoded_bytes)),
@@ -860,6 +905,540 @@ pub fn channels_envelope_received(
             ExactValue::Boolean(duplicate),
         )
         .operational_code(ActivityAttributeKey::Validation, input.validation.code())?;
+    if let Some(room) = input.room {
+        draft =
+            draft.protocol_identifier(ActivityAttributeKey::Room, IdentifierKind::Room, &room.0)?;
+    }
+    if let Some(message) = input.message {
+        draft = draft.protocol_identifier(
+            ActivityAttributeKey::Message,
+            IdentifierKind::Message,
+            &message.0,
+        )?;
+    }
+    if let Some(envelope_kind) = input.envelope_kind {
+        draft = draft.operational_code(ActivityAttributeKey::Method, envelope_kind.code())?;
+    }
+    Ok(draft.with_correlation(input.correlation_id))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChannelSessionFailureReason {
+    AuthenticationFailed,
+    HubRejected,
+    IdentificationFailed,
+    InvalidAnnounce,
+    MalformedWelcome,
+    PathLookupFailed,
+    SendFailed,
+    TransportUnavailable,
+    UnsupportedVersion,
+    WelcomeTimedOut,
+    WrongSource,
+}
+
+impl ChannelSessionFailureReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::AuthenticationFailed => "authentication_failed",
+            Self::HubRejected => "hub_rejected",
+            Self::IdentificationFailed => "identification_failed",
+            Self::InvalidAnnounce => "invalid_announce",
+            Self::MalformedWelcome => "malformed_welcome",
+            Self::PathLookupFailed => "path_lookup_failed",
+            Self::SendFailed => "send_failed",
+            Self::TransportUnavailable => "transport_unavailable",
+            Self::UnsupportedVersion => "unsupported_version",
+            Self::WelcomeTimedOut => "welcome_timed_out",
+            Self::WrongSource => "wrong_source",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChannelSessionCloseReason {
+    Local,
+    Remote,
+    SendFailed,
+    StreamEnded,
+    Timeout,
+    TransportUnavailable,
+}
+
+impl ChannelSessionCloseReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+            Self::SendFailed => "send_failed",
+            Self::StreamEnded => "stream_ended",
+            Self::Timeout => "timeout",
+            Self::TransportUnavailable => "transport_unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChannelNegotiatedCapabilities {
+    pub actions: bool,
+    pub direct_notices: bool,
+    pub resource_envelopes: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChannelNegotiatedLimits {
+    pub max_nick_bytes: Option<u64>,
+    pub max_room_bytes: Option<u64>,
+    pub max_message_bytes: Option<u64>,
+    pub max_rooms: Option<u64>,
+    pub rate_per_minute: Option<u64>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChannelSessionTransition {
+    ConnectRequested,
+    Cancelled,
+    PathRequested,
+    PathDiscovered {
+        hops: u8,
+    },
+    PathTimedOut,
+    LinkRequested,
+    LinkAuthenticated {
+        link: LinkId,
+    },
+    LinkIdentificationSent {
+        link: LinkId,
+    },
+    HelloSent {
+        encoded_bytes: u32,
+    },
+    WelcomeValidated {
+        encoded_bytes: u32,
+    },
+    WelcomeRejected {
+        reason: ChannelSessionFailureReason,
+    },
+    Failed {
+        reason: ChannelSessionFailureReason,
+    },
+    Negotiated {
+        protocol_version: u64,
+        capabilities: ChannelNegotiatedCapabilities,
+        limits: ChannelNegotiatedLimits,
+        link_mdu: u64,
+    },
+    GreetingObserved {
+        encoded_bytes: u32,
+    },
+    Stale,
+    Recovered,
+    Closed {
+        reason: ChannelSessionCloseReason,
+    },
+}
+
+pub struct ChannelsSessionActivity {
+    pub time: ObservationTime,
+    pub hub: DestinationHash,
+    pub correlation_id: CorrelationId,
+    pub transition: ChannelSessionTransition,
+}
+
+pub fn channels_session_activity(
+    input: ChannelsSessionActivity,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    let (kind, severity, direction, outcome, reason) = match input.transition {
+        ChannelSessionTransition::ConnectRequested => (
+            kinds::CHANNELS_SESSION_CONNECT_REQUESTED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Started,
+            None,
+        ),
+        ChannelSessionTransition::Cancelled => (
+            kinds::CHANNELS_SESSION_CANCELLED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::PathRequested => (
+            kinds::CHANNELS_SESSION_PATH_REQUESTED,
+            ActivitySeverity::Info,
+            ActivityDirection::Outbound,
+            ActivityOutcome::Started,
+            None,
+        ),
+        ChannelSessionTransition::PathDiscovered { .. } => (
+            kinds::CHANNELS_SESSION_PATH_DISCOVERED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::PathTimedOut => (
+            kinds::CHANNELS_SESSION_PATH_TIMED_OUT,
+            ActivitySeverity::Error,
+            ActivityDirection::Local,
+            ActivityOutcome::TimedOut,
+            None,
+        ),
+        ChannelSessionTransition::LinkRequested => (
+            kinds::CHANNELS_SESSION_LINK_REQUESTED,
+            ActivitySeverity::Info,
+            ActivityDirection::Outbound,
+            ActivityOutcome::Started,
+            None,
+        ),
+        ChannelSessionTransition::LinkAuthenticated { .. } => (
+            kinds::CHANNELS_SESSION_LINK_AUTHENTICATED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::LinkIdentificationSent { .. } => (
+            kinds::CHANNELS_SESSION_LINK_IDENTIFICATION_SENT,
+            ActivitySeverity::Info,
+            ActivityDirection::Outbound,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::HelloSent { .. } => (
+            kinds::CHANNELS_SESSION_HELLO_SENT,
+            ActivitySeverity::Info,
+            ActivityDirection::Outbound,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::WelcomeValidated { .. } => (
+            kinds::CHANNELS_SESSION_WELCOME_VALIDATED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::WelcomeRejected { reason } => (
+            kinds::CHANNELS_SESSION_WELCOME_REJECTED,
+            ActivitySeverity::Error,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Rejected,
+            Some(reason.code()),
+        ),
+        ChannelSessionTransition::Failed { reason } => (
+            kinds::CHANNELS_SESSION_FAILED,
+            ActivitySeverity::Error,
+            ActivityDirection::Local,
+            ActivityOutcome::Failed,
+            Some(reason.code()),
+        ),
+        ChannelSessionTransition::Negotiated { .. } => (
+            kinds::CHANNELS_SESSION_NEGOTIATED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::GreetingObserved { .. } => (
+            kinds::CHANNELS_SESSION_GREETING_OBSERVED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::Stale => (
+            kinds::CHANNELS_SESSION_STALE,
+            ActivitySeverity::Warning,
+            ActivityDirection::Local,
+            ActivityOutcome::Degraded,
+            None,
+        ),
+        ChannelSessionTransition::Recovered => (
+            kinds::CHANNELS_SESSION_RECOVERED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Success,
+            None,
+        ),
+        ChannelSessionTransition::Closed {
+            reason: ChannelSessionCloseReason::Local,
+        } => (
+            kinds::CHANNELS_SESSION_CLOSED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Success,
+            Some(ChannelSessionCloseReason::Local.code()),
+        ),
+        ChannelSessionTransition::Closed {
+            reason: ChannelSessionCloseReason::Timeout,
+        } => (
+            kinds::CHANNELS_SESSION_CLOSED,
+            ActivitySeverity::Error,
+            ActivityDirection::Local,
+            ActivityOutcome::TimedOut,
+            Some(ChannelSessionCloseReason::Timeout.code()),
+        ),
+        ChannelSessionTransition::Closed { reason } => (
+            kinds::CHANNELS_SESSION_CLOSED,
+            ActivitySeverity::Error,
+            ActivityDirection::Local,
+            ActivityOutcome::Failed,
+            Some(reason.code()),
+        ),
+    };
+    let mut draft = ActivityDraft::new(
+        kind,
+        severity,
+        direction,
+        outcome,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .protocol_identifier(ActivityAttributeKey::Hub, IdentifierKind::Hub, &input.hub.0)?;
+    if let Some(reason) = reason {
+        draft = draft.operational_code(ActivityAttributeKey::Reason, reason)?;
+    }
+    match input.transition {
+        ChannelSessionTransition::PathDiscovered { hops } => {
+            draft = draft.exact(
+                ActivityAttributeKey::Hops,
+                ExactValue::Unsigned(u64::from(hops)),
+            );
+        }
+        ChannelSessionTransition::LinkAuthenticated { link }
+        | ChannelSessionTransition::LinkIdentificationSent { link } => {
+            draft = draft.protocol_identifier(
+                ActivityAttributeKey::Link,
+                IdentifierKind::Link,
+                &link.0,
+            )?;
+            if matches!(
+                input.transition,
+                ChannelSessionTransition::LinkIdentificationSent { .. }
+            ) {
+                draft = draft.operational_code(ActivityAttributeKey::State, "sent")?;
+            }
+        }
+        ChannelSessionTransition::HelloSent { encoded_bytes }
+        | ChannelSessionTransition::WelcomeValidated { encoded_bytes }
+        | ChannelSessionTransition::GreetingObserved { encoded_bytes } => {
+            draft = draft.exact(
+                ActivityAttributeKey::ByteLength,
+                ExactValue::Unsigned(u64::from(encoded_bytes)),
+            );
+        }
+        ChannelSessionTransition::Negotiated {
+            protocol_version,
+            capabilities,
+            limits,
+            link_mdu,
+        } => {
+            draft = draft
+                .exact(
+                    ActivityAttributeKey::ProtocolVersion,
+                    ExactValue::Unsigned(protocol_version),
+                )
+                .exact(ActivityAttributeKey::Mdu, ExactValue::Unsigned(link_mdu));
+            for (enabled, capability) in [
+                (capabilities.actions, "action"),
+                (capabilities.direct_notices, "direct_notice"),
+                (capabilities.resource_envelopes, "resource_envelope"),
+            ] {
+                if enabled {
+                    draft = draft.operational_code(ActivityAttributeKey::Capability, capability)?;
+                }
+            }
+            for (key, value) in [
+                (ActivityAttributeKey::MaxNickBytes, limits.max_nick_bytes),
+                (ActivityAttributeKey::MaxRoomBytes, limits.max_room_bytes),
+                (
+                    ActivityAttributeKey::MaxMessageBytes,
+                    limits.max_message_bytes,
+                ),
+                (ActivityAttributeKey::MaxRooms, limits.max_rooms),
+                (ActivityAttributeKey::RatePerMinute, limits.rate_per_minute),
+            ] {
+                if let Some(value) = value {
+                    draft = draft.exact(key, ExactValue::Unsigned(value));
+                }
+            }
+        }
+        ChannelSessionTransition::ConnectRequested
+        | ChannelSessionTransition::Cancelled
+        | ChannelSessionTransition::PathRequested
+        | ChannelSessionTransition::PathTimedOut
+        | ChannelSessionTransition::LinkRequested
+        | ChannelSessionTransition::WelcomeRejected { .. }
+        | ChannelSessionTransition::Failed { .. }
+        | ChannelSessionTransition::Stale
+        | ChannelSessionTransition::Recovered
+        | ChannelSessionTransition::Closed { .. } => {}
+    }
+    Ok(draft.with_correlation(input.correlation_id))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChannelJoinEvidence {
+    JoinedRoster,
+    RrcdStatusNotice,
+}
+
+impl ChannelJoinEvidence {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::JoinedRoster => "joined_roster",
+            Self::RrcdStatusNotice => "rrcd_status_notice",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChannelRoomFailureReason {
+    HubRejected,
+    SendFailed,
+    SessionClosed,
+}
+
+impl ChannelRoomFailureReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::HubRejected => "hub_rejected",
+            Self::SendFailed => "send_failed",
+            Self::SessionClosed => "session_closed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChannelRoomTransition {
+    JoinRequested,
+    Joined { evidence: ChannelJoinEvidence },
+    JoinRejected { reason: ChannelRoomFailureReason },
+    JoinTimedOut,
+    JoinCancelled,
+    PartRequested,
+    Parted,
+    PartRejected { reason: ChannelRoomFailureReason },
+    PartTimedOut,
+    PartCancelled,
+}
+
+pub struct ChannelsRoomActivity {
+    pub time: ObservationTime,
+    pub hub: DestinationHash,
+    pub room: ChannelRoomToken,
+    pub correlation_id: CorrelationId,
+    pub transition: ChannelRoomTransition,
+}
+
+pub fn channels_room_activity(
+    input: ChannelsRoomActivity,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    let (kind, severity, direction, outcome, reason, evidence) = match input.transition {
+        ChannelRoomTransition::JoinRequested => (
+            kinds::CHANNELS_ROOM_JOIN_REQUESTED,
+            ActivitySeverity::Info,
+            ActivityDirection::Outbound,
+            ActivityOutcome::Started,
+            None,
+            None,
+        ),
+        ChannelRoomTransition::Joined { evidence } => (
+            kinds::CHANNELS_ROOM_JOINED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            None,
+            Some(evidence.code()),
+        ),
+        ChannelRoomTransition::JoinRejected { reason } => (
+            kinds::CHANNELS_ROOM_JOIN_REJECTED,
+            ActivitySeverity::Warning,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Rejected,
+            Some(reason.code()),
+            None,
+        ),
+        ChannelRoomTransition::JoinTimedOut => (
+            kinds::CHANNELS_ROOM_JOIN_TIMED_OUT,
+            ActivitySeverity::Error,
+            ActivityDirection::Local,
+            ActivityOutcome::TimedOut,
+            None,
+            None,
+        ),
+        ChannelRoomTransition::JoinCancelled => (
+            kinds::CHANNELS_ROOM_JOIN_CANCELLED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Success,
+            None,
+            None,
+        ),
+        ChannelRoomTransition::PartRequested => (
+            kinds::CHANNELS_ROOM_PART_REQUESTED,
+            ActivitySeverity::Info,
+            ActivityDirection::Outbound,
+            ActivityOutcome::Started,
+            None,
+            None,
+        ),
+        ChannelRoomTransition::Parted => (
+            kinds::CHANNELS_ROOM_PARTED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            None,
+            None,
+        ),
+        ChannelRoomTransition::PartRejected { reason } => (
+            kinds::CHANNELS_ROOM_PART_REJECTED,
+            ActivitySeverity::Warning,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Rejected,
+            Some(reason.code()),
+            None,
+        ),
+        ChannelRoomTransition::PartTimedOut => (
+            kinds::CHANNELS_ROOM_PART_TIMED_OUT,
+            ActivitySeverity::Warning,
+            ActivityDirection::Local,
+            ActivityOutcome::TimedOut,
+            None,
+            None,
+        ),
+        ChannelRoomTransition::PartCancelled => (
+            kinds::CHANNELS_ROOM_PART_CANCELLED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Success,
+            None,
+            None,
+        ),
+    };
+    let mut draft = ActivityDraft::new(
+        kind,
+        severity,
+        direction,
+        outcome,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .protocol_identifier(ActivityAttributeKey::Hub, IdentifierKind::Hub, &input.hub.0)?
+    .protocol_identifier(
+        ActivityAttributeKey::Room,
+        IdentifierKind::Room,
+        &input.room.0,
+    )?;
+    if let Some(reason) = reason {
+        draft = draft.operational_code(ActivityAttributeKey::Reason, reason)?;
+    }
+    if let Some(evidence) = evidence {
+        draft = draft.operational_code(ActivityAttributeKey::Validation, evidence)?;
+    }
     Ok(draft.with_correlation(input.correlation_id))
 }
 
@@ -1796,11 +2375,12 @@ mod tests {
 
     #[test]
     fn channel_inputs_have_no_human_label_or_content_field() {
-        let draft = channels_envelope_received(ChannelsEnvelopeReceived {
+        let draft = channels_envelope_received(ChannelsEnvelopeActivity {
             time: ObservationTime::new(1, 1),
             hub: DestinationHash::new([1; 16]),
-            room: ChannelRoomToken::from_bytes([2; 16]),
-            envelope_kind: ChannelEnvelopeKind::Message,
+            room: Some(ChannelRoomToken::from_bytes([2; 16])),
+            message: Some(ChannelMessageToken::from_bytes([6; 32])),
+            envelope_kind: Some(ChannelEnvelopeKind::Message),
             encoded_bytes: 42,
             validation: SourceValidation::Accepted,
             correlation_id: CorrelationId::from_bytes([3; 16]),
@@ -1837,17 +2417,30 @@ mod tests {
                 false,
             ),
             (
+                SourceValidation::Unsupported,
+                ActivityOutcome::Dropped,
+                false,
+                false,
+            ),
+            (
+                SourceValidation::Malformed,
+                ActivityOutcome::Rejected,
+                false,
+                false,
+            ),
+            (
                 SourceValidation::WrongSource,
                 ActivityOutcome::Rejected,
                 false,
                 false,
             ),
         ] {
-            let draft = channels_envelope_received(ChannelsEnvelopeReceived {
+            let draft = channels_envelope_received(ChannelsEnvelopeActivity {
                 time: ObservationTime::new(1, 1),
                 hub: DestinationHash::new([1; 16]),
-                room: ChannelRoomToken::from_bytes([2; 16]),
-                envelope_kind: ChannelEnvelopeKind::Message,
+                room: Some(ChannelRoomToken::from_bytes([2; 16])),
+                message: Some(ChannelMessageToken::from_bytes([6; 32])),
+                envelope_kind: Some(ChannelEnvelopeKind::Message),
                 encoded_bytes: 42,
                 validation,
                 correlation_id: CorrelationId::from_bytes([3; 16]),

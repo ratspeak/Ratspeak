@@ -1595,6 +1595,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     identity,
                     state.emitter.clone(),
                     channels_shutdown,
+                    Arc::downgrade(&state),
                 ));
                 tracing::info!("Channels runtime initialized");
             }
