@@ -147,6 +147,7 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         return interface_legacy_message(
             kind,
             attribute_code(event, ActivityAttributeKey::InterfaceClass),
+            attribute_code(event, ActivityAttributeKey::Reason),
         );
     }
     Some(match kind {
@@ -231,69 +232,198 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
     })
 }
 
-fn interface_legacy_message(kind: &str, class: Option<&str>) -> Option<&'static str> {
+fn interface_legacy_message(
+    kind: &str,
+    class: Option<&str>,
+    reason: Option<&str>,
+) -> Option<&'static str> {
     let state = match kind {
         "interface.configured" => "configured",
         "interface.connecting" => "connecting",
+        "interface.cancelled" => "cancelled",
         "interface.online" => "online",
         "interface.offline" => "offline",
+        "interface.degraded" => "degraded",
         "interface.paused" => "paused",
         "interface.removed" => "removed",
         "interface.failed" => "failed",
+        "interface.timed_out" => "timed_out",
         _ => return None,
     };
+    match state {
+        "cancelled" => return Some(interface_cancelled_legacy_message(class)),
+        "degraded" => return Some(interface_degraded_legacy_message(class, reason)),
+        "failed" => return Some(interface_failure_legacy_message(class, reason)),
+        "timed_out" => return Some(interface_timeout_legacy_message(class, reason)),
+        _ => {}
+    }
     Some(match (class, state) {
-        (Some("auto"), "configured") => "Local Network interface configured",
-        (Some("auto"), "connecting") => "Local Network interface connecting",
-        (Some("auto"), "online") => "Local Network interface online",
-        (Some("auto"), "offline") => "Local Network interface offline",
-        (Some("auto"), "paused") => "Local Network interface paused",
-        (Some("auto"), "removed") => "Local Network interface removed",
-        (Some("auto"), "failed") => "Local Network interface failed",
-        (Some("rnode"), "configured") => "RNode interface configured",
-        (Some("rnode"), "connecting") => "RNode interface connecting",
-        (Some("rnode"), "online") => "RNode interface online",
-        (Some("rnode"), "offline") => "RNode interface offline",
-        (Some("rnode"), "paused") => "RNode interface paused",
-        (Some("rnode"), "removed") => "RNode interface removed",
-        (Some("rnode"), "failed") => "RNode interface failed",
+        (Some("auto"), "configured") => "Local Network configured",
+        (Some("auto"), "connecting") => "Local Network starting",
+        (Some("auto"), "online") => "Local Network enabled",
+        (Some("auto"), "offline") => "Local Network connectivity interrupted",
+        (Some("auto"), "paused") => "Local Network paused",
+        (Some("auto"), "removed") => "Local Network disabled",
+        (Some("ble_peer"), "configured") => "Bluetooth Peer configured",
+        (Some("ble_peer"), "connecting") => "Bluetooth Peer starting",
+        (Some("ble_peer"), "online") => "Bluetooth Peer ready",
+        (Some("ble_peer"), "offline") => "Bluetooth Peer unavailable",
+        (Some("ble_peer"), "paused") => "Bluetooth Peer paused",
+        (Some("ble_peer"), "removed") => "Bluetooth Peer stopped",
+        (Some("rnode"), "configured") => "LoRa radio configured",
+        (Some("rnode"), "connecting") => "LoRa radio connecting",
+        (Some("rnode"), "online") => "LoRa radio connected",
+        (Some("rnode"), "offline") => "LoRa radio disconnected",
+        (Some("rnode"), "paused") => "LoRa radio paused",
+        (Some("rnode"), "removed") => "LoRa radio removed",
         (Some("tcp_client"), "configured") => "TCP client configured",
         (Some("tcp_client"), "connecting") => "TCP client connecting",
         (Some("tcp_client"), "online") => "TCP client online",
         (Some("tcp_client"), "offline") => "TCP client offline",
         (Some("tcp_client"), "paused") => "TCP client paused",
         (Some("tcp_client"), "removed") => "TCP client removed",
-        (Some("tcp_client"), "failed") => "TCP client failed",
         (Some("tcp_server"), "configured") => "TCP server configured",
         (Some("tcp_server"), "connecting") => "TCP server starting",
         (Some("tcp_server"), "online") => "TCP server online",
         (Some("tcp_server"), "offline") => "TCP server offline",
         (Some("tcp_server"), "paused") => "TCP server paused",
         (Some("tcp_server"), "removed") => "TCP server removed",
-        (Some("tcp_server"), "failed") => "TCP server failed",
         (Some("backbone_client"), "configured") => "Backbone client configured",
         (Some("backbone_client"), "connecting") => "Backbone client connecting",
         (Some("backbone_client"), "online") => "Backbone client online",
         (Some("backbone_client"), "offline") => "Backbone client offline",
         (Some("backbone_client"), "paused") => "Backbone client paused",
         (Some("backbone_client"), "removed") => "Backbone client removed",
-        (Some("backbone_client"), "failed") => "Backbone client failed",
         (Some("backbone_server"), "configured") => "Backbone server configured",
         (Some("backbone_server"), "connecting") => "Backbone server starting",
         (Some("backbone_server"), "online") => "Backbone server online",
         (Some("backbone_server"), "offline") => "Backbone server offline",
         (Some("backbone_server"), "paused") => "Backbone server paused",
         (Some("backbone_server"), "removed") => "Backbone server removed",
-        (Some("backbone_server"), "failed") => "Backbone server failed",
         (_, "configured") => "Interface configured",
         (_, "connecting") => "Interface connecting",
         (_, "online") => "Interface online",
         (_, "offline") => "Interface offline",
         (_, "paused") => "Interface paused",
         (_, "removed") => "Interface removed",
-        (_, "failed") => "Interface operation failed",
         _ => return None,
     })
+}
+
+fn interface_cancelled_legacy_message(class: Option<&str>) -> &'static str {
+    match class {
+        Some("auto") => "Local Network setup cancelled",
+        Some("ble_peer") => "Bluetooth Peer setup cancelled",
+        Some("rnode") => "LoRa radio setup cancelled",
+        Some("tcp_client") => "TCP client connection cancelled",
+        Some("tcp_server") => "TCP server setup cancelled",
+        Some("backbone_client") => "Backbone client connection cancelled",
+        Some("backbone_server") => "Backbone server setup cancelled",
+        _ => "Interface setup cancelled",
+    }
+}
+
+fn interface_degraded_legacy_message(class: Option<&str>, reason: Option<&str>) -> &'static str {
+    match (class, reason) {
+        (Some("auto"), Some("multicast_unavailable")) => "Local Network discovery is limited",
+        (Some("auto"), _) => "Local Network access is limited",
+        (Some("ble_peer"), _) => "Bluetooth Peer visibility is limited",
+        (Some("rnode"), _) => "LoRa radio connection is limited",
+        _ => "Interface availability is limited",
+    }
+}
+
+fn interface_failure_legacy_message(class: Option<&str>, reason: Option<&str>) -> &'static str {
+    match (class, reason) {
+        (Some("auto"), Some("configure_failed")) => "Local Network could not be configured",
+        (Some("auto"), Some("connect_failed")) => "Local Network could not connect",
+        (Some("auto"), Some("listen_failed")) => "Local Network could not accept connections",
+        (Some("auto"), Some("remove_failed")) => "Local Network could not be disabled",
+        (Some("auto"), Some("resume_failed")) => "Local Network could not resume",
+        (Some("auto"), Some("runtime_failed")) => "Local Network encountered an error",
+        (Some("auto"), Some("update_failed")) => "Local Network could not be updated",
+        (Some("auto"), _) => "Local Network operation failed",
+        (Some("ble_peer"), Some("configure_failed")) => "Bluetooth Peer could not be configured",
+        (Some("ble_peer"), Some("connect_failed")) => "Bluetooth Peer could not connect",
+        (Some("ble_peer"), Some("listen_failed")) => "Bluetooth Peer could not accept connections",
+        (Some("ble_peer"), Some("remove_failed")) => "Bluetooth Peer could not stop",
+        (Some("ble_peer"), Some("resume_failed")) => "Bluetooth Peer could not resume",
+        (Some("ble_peer"), Some("runtime_failed")) => "Bluetooth Peer encountered an error",
+        (Some("ble_peer"), Some("update_failed")) => "Bluetooth Peer could not be updated",
+        (Some("ble_peer"), _) => "Bluetooth Peer operation failed",
+        (Some("rnode"), Some("configure_failed")) => "LoRa radio could not be configured",
+        (Some("rnode"), Some("connect_failed")) => "LoRa radio could not connect",
+        (Some("rnode"), Some("listen_failed")) => "LoRa radio could not accept connections",
+        (Some("rnode"), Some("remove_failed")) => "LoRa radio could not be removed",
+        (Some("rnode"), Some("resume_failed")) => "LoRa radio could not resume",
+        (Some("rnode"), Some("runtime_failed")) => "LoRa radio encountered an error",
+        (Some("rnode"), Some("update_failed")) => "LoRa radio could not be updated",
+        (Some("rnode"), _) => "LoRa radio operation failed",
+        (Some("tcp_client"), Some("configure_failed")) => "TCP client could not be configured",
+        (Some("tcp_client"), Some("connect_failed")) => "TCP client could not connect",
+        (Some("tcp_client"), Some("listen_failed")) => "TCP client could not start listening",
+        (Some("tcp_client"), Some("remove_failed")) => "TCP client could not be removed",
+        (Some("tcp_client"), Some("resume_failed")) => "TCP client could not resume",
+        (Some("tcp_client"), Some("runtime_failed")) => "TCP client encountered an error",
+        (Some("tcp_client"), Some("update_failed")) => "TCP client could not be updated",
+        (Some("tcp_client"), _) => "TCP client operation failed",
+        (Some("tcp_server"), Some("configure_failed")) => "TCP server could not be configured",
+        (Some("tcp_server"), Some("connect_failed")) => "TCP server could not connect",
+        (Some("tcp_server"), Some("listen_failed")) => "TCP server could not start listening",
+        (Some("tcp_server"), Some("remove_failed")) => "TCP server could not be removed",
+        (Some("tcp_server"), Some("resume_failed")) => "TCP server could not resume",
+        (Some("tcp_server"), Some("runtime_failed")) => "TCP server encountered an error",
+        (Some("tcp_server"), Some("update_failed")) => "TCP server could not be updated",
+        (Some("tcp_server"), _) => "TCP server operation failed",
+        (Some("backbone_client"), Some("configure_failed")) => {
+            "Backbone client could not be configured"
+        }
+        (Some("backbone_client"), Some("connect_failed")) => "Backbone client could not connect",
+        (Some("backbone_client"), Some("listen_failed")) => {
+            "Backbone client could not start listening"
+        }
+        (Some("backbone_client"), Some("remove_failed")) => "Backbone client could not be removed",
+        (Some("backbone_client"), Some("resume_failed")) => "Backbone client could not resume",
+        (Some("backbone_client"), Some("runtime_failed")) => "Backbone client encountered an error",
+        (Some("backbone_client"), Some("update_failed")) => "Backbone client could not be updated",
+        (Some("backbone_client"), _) => "Backbone client operation failed",
+        (Some("backbone_server"), Some("configure_failed")) => {
+            "Backbone server could not be configured"
+        }
+        (Some("backbone_server"), Some("connect_failed")) => "Backbone server could not connect",
+        (Some("backbone_server"), Some("listen_failed")) => {
+            "Backbone server could not start listening"
+        }
+        (Some("backbone_server"), Some("remove_failed")) => "Backbone server could not be removed",
+        (Some("backbone_server"), Some("resume_failed")) => "Backbone server could not resume",
+        (Some("backbone_server"), Some("runtime_failed")) => "Backbone server encountered an error",
+        (Some("backbone_server"), Some("update_failed")) => "Backbone server could not be updated",
+        (Some("backbone_server"), _) => "Backbone server operation failed",
+        (_, Some("configure_failed")) => "Interface configuration failed",
+        (_, Some("connect_failed")) => "Interface connection failed",
+        (_, Some("listen_failed")) => "Interface could not start listening",
+        (_, Some("remove_failed")) => "Interface removal failed",
+        (_, Some("resume_failed")) => "Interface resume failed",
+        (_, Some("runtime_failed")) => "Interface runtime failed",
+        (_, Some("update_failed")) => "Interface update failed",
+        _ => "Interface operation failed",
+    }
+}
+
+fn interface_timeout_legacy_message(class: Option<&str>, reason: Option<&str>) -> &'static str {
+    match (class, reason) {
+        (Some("auto"), Some("startup_timed_out")) => "Local Network startup timed out",
+        (Some("auto"), _) => "Local Network setup timed out",
+        (Some("ble_peer"), Some("pairing_timed_out")) => "Bluetooth Peer pairing timed out",
+        (Some("ble_peer"), Some("startup_timed_out")) => "Bluetooth Peer startup timed out",
+        (Some("ble_peer"), _) => "Bluetooth Peer setup timed out",
+        (Some("rnode"), Some("pairing_timed_out")) => "LoRa radio pairing timed out",
+        (Some("rnode"), Some("startup_timed_out")) => "LoRa radio startup timed out",
+        (Some("rnode"), _) => "LoRa radio setup timed out",
+        (_, Some("pairing_timed_out")) => "Interface pairing timed out",
+        (_, Some("startup_timed_out")) => "Interface startup timed out",
+        _ => "Interface setup timed out",
+    }
 }
 
 fn legacy_detail(event: &ActivityEventV1) -> String {
@@ -395,7 +525,7 @@ fn legacy_detail(event: &ActivityEventV1) -> String {
                 " hops",
             );
         }
-        "interface.failed" => {
+        "interface.failed" | "interface.degraded" | "interface.timed_out" => {
             push_code(&mut fragments, event, ActivityAttributeKey::Reason);
             push_code(&mut fragments, event, ActivityAttributeKey::State);
         }
@@ -609,6 +739,11 @@ fn friendly_code(value: &str) -> Option<&'static str> {
         "resume_failed" => "Resume failed",
         "runtime_failed" => "Runtime failed",
         "update_failed" => "Update failed",
+        "multicast_unavailable" => "Peer discovery unavailable",
+        "peripheral_unavailable" => "Incoming connections unavailable",
+        "setup_timed_out" => "Setup timed out",
+        "pairing_timed_out" => "Pairing timed out",
+        "startup_timed_out" => "Startup timed out",
         "config_restored" => "Config restored",
         "restart_failed" => "Restart failed",
         "write_failed" => "Rollback write failed",
@@ -779,11 +914,14 @@ mod tests {
             | "app.runtime.stopped"
             | "interface.configured"
             | "interface.connecting"
+            | "interface.cancelled"
             | "interface.online"
             | "interface.offline"
+            | "interface.degraded"
             | "interface.paused"
             | "interface.removed"
             | "interface.failed"
+            | "interface.timed_out"
             | "rns.announce.held"
             | "rns.announce.ingress_burst_cleared"
             | "rns.announce.suppressed"
@@ -848,6 +986,7 @@ mod tests {
             "app.runtime.ready"
             | "app.runtime.stopped"
             | "interface.configured"
+            | "interface.cancelled"
             | "interface.online"
             | "interface.paused"
             | "interface.removed"
@@ -861,9 +1000,10 @@ mod tests {
             | "lxmf.inbound.accepted"
             | "lxst.service.stopped"
             | "lxst.call.ended" => ActivityOutcome::Success,
-            "interface.offline" | "rns.announce.ingress_burst_started" | "lxst.media.warning" => {
-                ActivityOutcome::Degraded
-            }
+            "interface.offline"
+            | "interface.degraded"
+            | "rns.announce.ingress_burst_started"
+            | "lxst.media.warning" => ActivityOutcome::Degraded,
             "rns.announce.suppressed" => ActivityOutcome::Dropped,
             "lxmf.delivery.rejected" | "lxst.call.rejected" => ActivityOutcome::Rejected,
             "app.runtime.unavailable"
@@ -874,8 +1014,170 @@ mod tests {
             | "lxmf.propagation.failed"
             | "lxst.service.failed"
             | "lxst.call.failed" => ActivityOutcome::Failed,
+            "interface.timed_out" => ActivityOutcome::TimedOut,
             _ => panic!("missing expected outcome for {kind}"),
         }
+    }
+
+    #[test]
+    fn interface_failure_compatibility_copy_tracks_the_operation_reason() {
+        for (class, reason, expected) in [
+            (
+                Some("auto"),
+                Some("configure_failed"),
+                "Local Network could not be configured",
+            ),
+            (
+                Some("auto"),
+                Some("connect_failed"),
+                "Local Network could not connect",
+            ),
+            (
+                Some("auto"),
+                Some("runtime_failed"),
+                "Local Network encountered an error",
+            ),
+            (
+                Some("auto"),
+                Some("remove_failed"),
+                "Local Network could not be disabled",
+            ),
+            (
+                Some("auto"),
+                Some("resume_failed"),
+                "Local Network could not resume",
+            ),
+            (
+                Some("auto"),
+                Some("update_failed"),
+                "Local Network could not be updated",
+            ),
+            (
+                Some("ble_peer"),
+                Some("configure_failed"),
+                "Bluetooth Peer could not be configured",
+            ),
+            (
+                Some("ble_peer"),
+                Some("connect_failed"),
+                "Bluetooth Peer could not connect",
+            ),
+            (
+                Some("ble_peer"),
+                Some("runtime_failed"),
+                "Bluetooth Peer encountered an error",
+            ),
+            (
+                Some("ble_peer"),
+                Some("remove_failed"),
+                "Bluetooth Peer could not stop",
+            ),
+            (
+                Some("ble_peer"),
+                Some("resume_failed"),
+                "Bluetooth Peer could not resume",
+            ),
+            (
+                Some("ble_peer"),
+                Some("update_failed"),
+                "Bluetooth Peer could not be updated",
+            ),
+            (
+                Some("rnode"),
+                Some("configure_failed"),
+                "LoRa radio could not be configured",
+            ),
+            (
+                Some("rnode"),
+                Some("connect_failed"),
+                "LoRa radio could not connect",
+            ),
+            (
+                Some("rnode"),
+                Some("runtime_failed"),
+                "LoRa radio encountered an error",
+            ),
+            (
+                Some("rnode"),
+                Some("remove_failed"),
+                "LoRa radio could not be removed",
+            ),
+            (
+                Some("rnode"),
+                Some("resume_failed"),
+                "LoRa radio could not resume",
+            ),
+            (
+                Some("rnode"),
+                Some("update_failed"),
+                "LoRa radio could not be updated",
+            ),
+        ] {
+            assert_eq!(
+                interface_legacy_message("interface.failed", class, reason),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn interface_terminal_and_degradation_copy_is_closed_and_product_facing() {
+        assert_eq!(
+            interface_legacy_message("interface.cancelled", Some("auto"), None),
+            Some("Local Network setup cancelled")
+        );
+        assert_eq!(
+            interface_legacy_message("interface.cancelled", Some("ble_peer"), None),
+            Some("Bluetooth Peer setup cancelled")
+        );
+        assert_eq!(
+            interface_legacy_message("interface.cancelled", Some("rnode"), None),
+            Some("LoRa radio setup cancelled")
+        );
+        assert_eq!(
+            interface_legacy_message(
+                "interface.timed_out",
+                Some("auto"),
+                Some("startup_timed_out"),
+            ),
+            Some("Local Network startup timed out")
+        );
+        assert_eq!(
+            interface_legacy_message(
+                "interface.timed_out",
+                Some("ble_peer"),
+                Some("setup_timed_out"),
+            ),
+            Some("Bluetooth Peer setup timed out")
+        );
+        assert_eq!(
+            interface_legacy_message(
+                "interface.timed_out",
+                Some("rnode"),
+                Some("pairing_timed_out"),
+            ),
+            Some("LoRa radio pairing timed out")
+        );
+        assert_eq!(
+            interface_legacy_message(
+                "interface.degraded",
+                Some("auto"),
+                Some("multicast_unavailable"),
+            ),
+            Some("Local Network discovery is limited")
+        );
+        assert_eq!(
+            interface_legacy_message(
+                "interface.degraded",
+                Some("ble_peer"),
+                Some("peripheral_unavailable"),
+            ),
+            Some("Bluetooth Peer visibility is limited")
+        );
+        assert_eq!(
+            friendly_code("peripheral_unavailable"),
+            Some("Incoming connections unavailable")
+        );
     }
 
     #[test]
@@ -969,6 +1271,21 @@ mod tests {
             ),
             projection_case!(
                 producer::interface_activity(producer::InterfaceActivity {
+                    class: InterfaceClass::BluetoothPeer,
+                    transition: InterfaceTransition::Cancelled,
+                    endpoint: None,
+                }),
+                "interface.cancelled",
+                Interfaces,
+                Info,
+                Normal,
+                [InterfaceClass],
+                "interface",
+                "Bluetooth Peer setup cancelled",
+                "standard"
+            ),
+            projection_case!(
+                producer::interface_activity(producer::InterfaceActivity {
                     class: InterfaceClass::Auto,
                     transition: InterfaceTransition::Online,
                     endpoint: None,
@@ -979,7 +1296,7 @@ mod tests {
                 Normal,
                 [InterfaceClass],
                 "interface",
-                "Local Network interface online",
+                "Local Network enabled",
                 "standard"
             ),
             projection_case!(
@@ -994,7 +1311,41 @@ mod tests {
                 Normal,
                 [InterfaceClass],
                 "interface",
-                "RNode interface offline",
+                "LoRa radio disconnected",
+                "essential"
+            ),
+            projection_case!(
+                producer::interface_activity(producer::InterfaceActivity {
+                    class: InterfaceClass::BluetoothPeer,
+                    transition: InterfaceTransition::Degraded {
+                        reason: producer::InterfaceDegradationReason::PeripheralUnavailable,
+                    },
+                    endpoint: None,
+                }),
+                "interface.degraded",
+                Interfaces,
+                Warning,
+                Normal,
+                [InterfaceClass, Reason],
+                "interface",
+                "Bluetooth Peer visibility is limited",
+                "essential"
+            ),
+            projection_case!(
+                producer::interface_activity(producer::InterfaceActivity {
+                    class: InterfaceClass::Auto,
+                    transition: InterfaceTransition::Degraded {
+                        reason: producer::InterfaceDegradationReason::MulticastUnavailable,
+                    },
+                    endpoint: None,
+                }),
+                "interface.degraded",
+                Interfaces,
+                Warning,
+                Normal,
+                [InterfaceClass, Reason],
+                "interface",
+                "Local Network discovery is limited",
                 "essential"
             ),
             projection_case!(
@@ -1042,7 +1393,24 @@ mod tests {
                 Normal,
                 [InterfaceClass, Reason, State],
                 "error",
-                "TCP server failed",
+                "TCP server could not start listening",
+                "essential"
+            ),
+            projection_case!(
+                producer::interface_activity(producer::InterfaceActivity {
+                    class: InterfaceClass::RNode,
+                    transition: InterfaceTransition::TimedOut {
+                        reason: producer::InterfaceTimeoutReason::Pairing,
+                    },
+                    endpoint: None,
+                }),
+                "interface.timed_out",
+                Interfaces,
+                Error,
+                Normal,
+                [InterfaceClass, Reason],
+                "error",
+                "LoRa radio pairing timed out",
                 "essential"
             ),
             projection_case!(
@@ -1845,11 +2213,14 @@ mod tests {
             "app.runtime.started",
             "interface.configured",
             "interface.connecting",
+            "interface.cancelled",
             "interface.online",
             "interface.offline",
+            "interface.degraded",
             "interface.paused",
             "interface.removed",
             "interface.failed",
+            "interface.timed_out",
             "rns.path.requested",
             "rns.path.discovered",
             "rns.path.observed",

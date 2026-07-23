@@ -1707,8 +1707,9 @@ function submitRnodeInterface() {
                 message: isEdit ? 'Restarting BLE LoRa radio...' : 'Connecting BLE LoRa radio...',
                 operation: isEdit ? 'update_lora' : 'add_lora',
                 onCancel: function() {
-                    // Drop half-written config so the list has no orphan.
-                    if (!isEdit) RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});
+                    // Rust only rolls back config created by a fresh add; edits
+                    // still need their active native/runtime connect cancelled.
+                    RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});
                     window._activeProgressDialog = null;
                 },
             });

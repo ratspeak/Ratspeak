@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
+import org.json.JSONObject
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.ServerSocket
@@ -72,6 +73,7 @@ class RatspeakBleGatt(private val context: Context) {
 
         // Error prefixes the JS side recognises to drive UX.
         const val ERR_PAIRING_MODE = "ERR_PAIRING_MODE"
+        const val ERR_BOND_TIMEOUT = "ERR_BOND_TIMEOUT"
         const val ERR_STALE_BOND = "ERR_STALE_BOND"
     }
 
@@ -100,6 +102,7 @@ class RatspeakBleGatt(private val context: Context) {
     private val writeStatus = AtomicBoolean(false)
     private var bondReceiver: BroadcastReceiver? = null
     private var webViewRef: WebView? = null
+    private var activityOperation: String = ""
     private val lastGattStatus = AtomicInteger(BluetoothGatt.GATT_SUCCESS)
     private val bleWriteLock = Object()
     private val cleanupLock = Object()
@@ -108,8 +111,11 @@ class RatspeakBleGatt(private val context: Context) {
 
     private val handler = Handler(Looper.getMainLooper())
 
-    /** Register the WebView so connect phases can push progress updates to JS. */
-    fun attachWebView(webView: WebView?) { webViewRef = webView }
+    /** Register the WebView and opaque operation token for scoped progress updates. */
+    fun attachWebView(webView: WebView?, operation: String) {
+        webViewRef = webView
+        activityOperation = operation
+    }
 
     @SuppressLint("MissingPermission")
     fun connect(address: String, localPort: Int): String? {
@@ -160,7 +166,10 @@ class RatspeakBleGatt(private val context: Context) {
                 }
                 if (!waitForBondState(device) && device.bondState != BluetoothDevice.BOND_BONDED) {
                     unregisterBondReceiver()
-                    return err("$ERR_PAIRING_MODE Bonding timed out (${bondStr(device.bondState)})")
+                    return err(
+                        "$ERR_PAIRING_MODE $ERR_BOND_TIMEOUT Bonding timed out " +
+                            "(${bondStr(device.bondState)})"
+                    )
                 }
                 if (device.bondState != BluetoothDevice.BOND_BONDED) {
                     unregisterBondReceiver()
@@ -587,9 +596,12 @@ class RatspeakBleGatt(private val context: Context) {
     /** Push a connection-phase update to JS for UI progress. */
     private fun emitProgress(phase: String) {
         val wv = webViewRef ?: return
+        val payload = JSONObject()
+            .put("activity_operation", activityOperation)
+            .put("phase", phase)
         handler.post {
             wv.evaluateJavascript(
-                "if(typeof window._onBleConnectProgress==='function')window._onBleConnectProgress('$phase');",
+                "if(typeof window._onBleConnectProgress==='function')window._onBleConnectProgress($payload);",
                 null
             )
         }

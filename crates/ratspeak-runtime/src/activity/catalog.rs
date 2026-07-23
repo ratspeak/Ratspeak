@@ -229,6 +229,7 @@ pub enum InterfaceClass {
     Auto,
     BackboneClient,
     BackboneServer,
+    BluetoothPeer,
     RNode,
     TcpClient,
     TcpServer,
@@ -241,10 +242,43 @@ impl InterfaceClass {
             Self::Auto => "auto",
             Self::BackboneClient => "backbone_client",
             Self::BackboneServer => "backbone_server",
+            Self::BluetoothPeer => "ble_peer",
             Self::RNode => "rnode",
             Self::TcpClient => "tcp_client",
             Self::TcpServer => "tcp_server",
             Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceDegradationReason {
+    MulticastUnavailable,
+    PeripheralUnavailable,
+}
+
+impl InterfaceDegradationReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::MulticastUnavailable => "multicast_unavailable",
+            Self::PeripheralUnavailable => "peripheral_unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceTimeoutReason {
+    Setup,
+    Pairing,
+    Startup,
+}
+
+impl InterfaceTimeoutReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Setup => "setup_timed_out",
+            Self::Pairing => "pairing_timed_out",
+            Self::Startup => "startup_timed_out",
         }
     }
 }
@@ -294,13 +328,20 @@ impl InterfaceRollback {
 pub enum InterfaceTransition {
     Configured,
     Connecting,
+    Cancelled,
     Online,
     Offline,
+    Degraded {
+        reason: InterfaceDegradationReason,
+    },
     Paused,
     Removed,
     Failed {
         reason: InterfaceFailureReason,
         rollback: Option<InterfaceRollback>,
+    },
+    TimedOut {
+        reason: InterfaceTimeoutReason,
     },
 }
 
@@ -327,6 +368,13 @@ pub fn interface_activity(input: InterfaceActivity) -> Result<ActivityDraft, Act
             None,
             None,
         ),
+        InterfaceTransition::Cancelled => (
+            kinds::INTERFACE_CANCELLED,
+            ActivitySeverity::Info,
+            ActivityOutcome::Success,
+            None,
+            None,
+        ),
         InterfaceTransition::Online => (
             kinds::INTERFACE_ONLINE,
             ActivitySeverity::Info,
@@ -339,6 +387,13 @@ pub fn interface_activity(input: InterfaceActivity) -> Result<ActivityDraft, Act
             ActivitySeverity::Warning,
             ActivityOutcome::Degraded,
             None,
+            None,
+        ),
+        InterfaceTransition::Degraded { reason } => (
+            kinds::INTERFACE_DEGRADED,
+            ActivitySeverity::Warning,
+            ActivityOutcome::Degraded,
+            Some(reason.code()),
             None,
         ),
         InterfaceTransition::Paused => (
@@ -359,8 +414,15 @@ pub fn interface_activity(input: InterfaceActivity) -> Result<ActivityDraft, Act
             kinds::INTERFACE_FAILED,
             ActivitySeverity::Error,
             ActivityOutcome::Failed,
-            Some(reason),
+            Some(reason.code()),
             rollback,
+        ),
+        InterfaceTransition::TimedOut { reason } => (
+            kinds::INTERFACE_TIMED_OUT,
+            ActivitySeverity::Error,
+            ActivityOutcome::TimedOut,
+            Some(reason.code()),
+            None,
         ),
     };
     let mut draft = ActivityDraft::new(
@@ -374,7 +436,7 @@ pub fn interface_activity(input: InterfaceActivity) -> Result<ActivityDraft, Act
     )
     .operational_code(ActivityAttributeKey::InterfaceClass, input.class.code())?;
     if let Some(reason) = reason {
-        draft = draft.operational_code(ActivityAttributeKey::Reason, reason.code())?;
+        draft = draft.operational_code(ActivityAttributeKey::Reason, reason)?;
     }
     if let Some(rollback) = rollback {
         draft = draft.operational_code(ActivityAttributeKey::State, rollback.code())?;
@@ -1650,6 +1712,86 @@ mod tests {
             TcpEndpoint::new("<script>".to_string()),
             Err(ActivityRejectReason::InvalidEndpoint)
         ));
+    }
+
+    #[test]
+    fn interface_terminal_and_degradation_reasons_are_closed_typed_codes() {
+        for (transition, expected_kind, expected_outcome, expected_reason) in [
+            (
+                InterfaceTransition::Degraded {
+                    reason: InterfaceDegradationReason::MulticastUnavailable,
+                },
+                "interface.degraded",
+                ActivityOutcome::Degraded,
+                Some("multicast_unavailable"),
+            ),
+            (
+                InterfaceTransition::Degraded {
+                    reason: InterfaceDegradationReason::PeripheralUnavailable,
+                },
+                "interface.degraded",
+                ActivityOutcome::Degraded,
+                Some("peripheral_unavailable"),
+            ),
+            (
+                InterfaceTransition::TimedOut {
+                    reason: InterfaceTimeoutReason::Setup,
+                },
+                "interface.timed_out",
+                ActivityOutcome::TimedOut,
+                Some("setup_timed_out"),
+            ),
+            (
+                InterfaceTransition::TimedOut {
+                    reason: InterfaceTimeoutReason::Pairing,
+                },
+                "interface.timed_out",
+                ActivityOutcome::TimedOut,
+                Some("pairing_timed_out"),
+            ),
+            (
+                InterfaceTransition::TimedOut {
+                    reason: InterfaceTimeoutReason::Startup,
+                },
+                "interface.timed_out",
+                ActivityOutcome::TimedOut,
+                Some("startup_timed_out"),
+            ),
+            (
+                InterfaceTransition::Cancelled,
+                "interface.cancelled",
+                ActivityOutcome::Success,
+                None,
+            ),
+        ] {
+            let validated = interface_activity(InterfaceActivity {
+                time: ObservationTime::new(1, 1),
+                class: InterfaceClass::BluetoothPeer,
+                transition,
+                endpoint: None,
+            })
+            .unwrap()
+            .validate(super::super::classified::DraftContext {
+                capture_session: "11".repeat(16),
+                capture_generation: 1,
+                capture_profile: super::super::schema::CaptureProfile::Normal,
+            })
+            .unwrap();
+
+            assert_eq!(validated.kind.code(), expected_kind);
+            assert_eq!(validated.outcome, expected_outcome);
+            assert_eq!(validated.direction, ActivityDirection::Local);
+            assert!(matches!(validated.coalescing, CoalescingPolicy::Never));
+            let reason = validated
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key == ActivityAttributeKey::Reason)
+                .map(|attribute| match attribute.value {
+                    super::super::classified::DraftValue::OperationalCode(code) => code,
+                    _ => panic!("reason must remain an operational code"),
+                });
+            assert_eq!(reason, expected_reason);
+        }
     }
 
     #[test]

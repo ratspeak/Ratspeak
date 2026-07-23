@@ -2,6 +2,7 @@
 //! read-heavy caches, `Mutex` for write-heavy maps, `AtomicBool` for single flags.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -24,6 +25,9 @@ pub use ratspeak_core::types::{
 pub use ratspeak_db::DbPool;
 
 const INTERFACE_REANNOUNCE_SUPPRESSION_TTL: Duration = Duration::from_secs(120);
+// The WebView abandons native connects at 180s. Keep a cleanup margin so its
+// typed timeout callback can still consume the token under scheduler delay.
+const BLE_RNODE_ACTIVITY_OPERATION_TTL: Duration = Duration::from_secs(240);
 
 /// Snapshot used to reject an Activity command that was queued before either
 /// an identity transition or a same-identity runtime privacy reset. Callers
@@ -34,6 +38,36 @@ pub struct ActivityRequestFence {
     identity_session_generation: u64,
     activity_boundary_generation: u64,
     identity_lock_epoch: u64,
+}
+
+struct BleRnodeActivityOperation {
+    token: [u8; 16],
+    activity_fence: ActivityRequestFence,
+    started_at: Instant,
+    phase: BleRnodeActivityOperationPhase,
+    rollback_context: Option<BleRnodeRollbackContext>,
+}
+
+struct BleRnodeRollbackContext {
+    config_dir: PathBuf,
+    name: String,
+    marker: u64,
+}
+
+#[doc(hidden)]
+pub type BleRnodeRollback = (PathBuf, String, u64);
+#[doc(hidden)]
+pub type BleRnodeActivityTake = (ActivityRequestFence, Option<BleRnodeRollback>);
+#[doc(hidden)]
+pub type BleRnodeActivityCancellation = (String, ActivityRequestFence, Option<BleRnodeRollback>);
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BleRnodeActivityOperationPhase {
+    PendingNative,
+    Initializing,
+    Completing,
+    Cancelling,
+    CancellationCompleting,
 }
 
 impl ActivityRequestFence {
@@ -182,6 +216,11 @@ pub struct AppState {
     pub opportunistic_announce_inflight: Mutex<HashSet<String>>,
     /// One-shot interface-up re-announce suppression keyed by interface name.
     pub interface_reannounce_suppression: Mutex<HashMap<String, Instant>>,
+    /// One-shot bridge from an Android native BLE-RNode request back to the
+    /// operation and Activity origin that launched it. Product-side bridge
+    /// admission uses only this opaque token and the identity generation;
+    /// Activity capture state never gates the legitimate connect operation.
+    ble_rnode_activity_operation: Mutex<Option<BleRnodeActivityOperation>>,
     /// Coalesces conversation-list broadcasts; spawned task debounces 100ms.
     pub conversations_broadcast_pending: AtomicBool,
     /// 10s session-local throttle on Refresh button. `None` = never throttled.
@@ -318,6 +357,7 @@ impl AppState {
             last_opportunistic_announce_at: Mutex::new(None),
             opportunistic_announce_inflight: Mutex::new(HashSet::new()),
             interface_reannounce_suppression: Mutex::new(HashMap::new()),
+            ble_rnode_activity_operation: Mutex::new(None),
             conversations_broadcast_pending: AtomicBool::new(false),
             last_refresh_request_at: Mutex::new(None),
             last_static_probe_at: Mutex::new(None),
@@ -502,6 +542,283 @@ impl AppState {
         suppressions.remove(name).is_some()
     }
 
+    pub fn begin_ble_rnode_activity_operation(
+        &self,
+        fence: ActivityRequestFence,
+        rollback_context: Option<BleRnodeRollback>,
+    ) -> String {
+        let mut token = rns_crypto::random::random_16();
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending
+            .as_ref()
+            .is_some_and(|previous| previous.token == token)
+        {
+            token[0] ^= 1;
+        }
+        *pending = Some(BleRnodeActivityOperation {
+            token,
+            activity_fence: fence,
+            started_at: Instant::now(),
+            phase: BleRnodeActivityOperationPhase::PendingNative,
+            rollback_context: rollback_context.map(|(config_dir, name, marker)| {
+                BleRnodeRollbackContext {
+                    config_dir,
+                    name,
+                    marker,
+                }
+            }),
+        });
+        hex::encode(token)
+    }
+
+    pub fn is_current_ble_rnode_activity_operation(&self, token_hex: &str) -> bool {
+        let Ok(token) = hex::decode(token_hex).and_then(|bytes| {
+            <[u8; 16]>::try_from(bytes).map_err(|_| hex::FromHexError::InvalidStringLength)
+        }) else {
+            return false;
+        };
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.as_ref().is_some_and(|operation| {
+            operation.started_at.elapsed() > BLE_RNODE_ACTIVITY_OPERATION_TTL
+        }) {
+            *pending = None;
+            return false;
+        }
+        pending.as_ref().is_some_and(|operation| {
+            operation.token == token
+                && matches!(
+                    operation.phase,
+                    BleRnodeActivityOperationPhase::PendingNative
+                        | BleRnodeActivityOperationPhase::Initializing
+                )
+        })
+    }
+
+    /// Atomically turns the current BLE-RNode operation into a cancellation
+    /// lease. A replacement operation overwrites this lease under the same
+    /// mutex, so delayed teardown can prove that it still belongs to the
+    /// operation the user cancelled.
+    pub fn begin_ble_rnode_activity_cancellation(&self) -> Option<BleRnodeActivityCancellation> {
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.as_ref().is_some_and(|operation| {
+            operation.started_at.elapsed() > BLE_RNODE_ACTIVITY_OPERATION_TTL
+        }) {
+            *pending = None;
+            return None;
+        }
+        let operation = pending.as_mut()?;
+        if matches!(
+            operation.phase,
+            BleRnodeActivityOperationPhase::Cancelling
+                | BleRnodeActivityOperationPhase::CancellationCompleting
+        ) {
+            return None;
+        }
+        operation.phase = BleRnodeActivityOperationPhase::Cancelling;
+        operation.started_at = Instant::now();
+        let rollback_context = operation
+            .rollback_context
+            .take()
+            .map(|context| (context.config_dir, context.name, context.marker));
+        Some((
+            hex::encode(operation.token),
+            operation.activity_fence,
+            rollback_context,
+        ))
+    }
+
+    /// Claims a cancellation only after the caller has captured the exact
+    /// runtime interface id it intends to tear down. If another operation has
+    /// started in the meantime, its replacement of the lease makes this fail.
+    pub fn claim_ble_rnode_activity_cancellation(&self, token_hex: &str) -> bool {
+        let Ok(token) = hex::decode(token_hex).and_then(|bytes| {
+            <[u8; 16]>::try_from(bytes).map_err(|_| hex::FromHexError::InvalidStringLength)
+        }) else {
+            return false;
+        };
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.as_ref().is_some_and(|operation| {
+            operation.started_at.elapsed() > BLE_RNODE_ACTIVITY_OPERATION_TTL
+        }) {
+            *pending = None;
+            return false;
+        }
+        let Some(operation) = pending.as_mut() else {
+            return false;
+        };
+        if operation.token != token || operation.phase != BleRnodeActivityOperationPhase::Cancelling
+        {
+            return false;
+        }
+        operation.phase = BleRnodeActivityOperationPhase::CancellationCompleting;
+        operation.started_at = Instant::now();
+        true
+    }
+
+    pub fn take_completing_ble_rnode_activity_cancellation(
+        &self,
+        token_hex: &str,
+    ) -> Option<ActivityRequestFence> {
+        self.take_ble_rnode_activity_operation_in_phase(
+            token_hex,
+            BleRnodeActivityOperationPhase::CancellationCompleting,
+        )
+        .map(|(fence, _)| fence)
+    }
+
+    pub fn claim_ble_rnode_activity_operation(
+        &self,
+        token_hex: &str,
+    ) -> Option<ActivityRequestFence> {
+        let token: [u8; 16] = hex::decode(token_hex).ok()?.try_into().ok()?;
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.as_ref().is_some_and(|operation| {
+            operation.started_at.elapsed() > BLE_RNODE_ACTIVITY_OPERATION_TTL
+        }) {
+            *pending = None;
+            return None;
+        }
+        let operation = pending.as_mut()?;
+        if operation.token != token
+            || operation.phase != BleRnodeActivityOperationPhase::PendingNative
+        {
+            return None;
+        }
+        operation.phase = BleRnodeActivityOperationPhase::Initializing;
+        operation.started_at = Instant::now();
+        Some(operation.activity_fence)
+    }
+
+    pub fn take_pending_ble_rnode_activity_operation(
+        &self,
+        token_hex: &str,
+    ) -> Option<BleRnodeActivityTake> {
+        self.take_ble_rnode_activity_operation_in_phase(
+            token_hex,
+            BleRnodeActivityOperationPhase::PendingNative,
+        )
+    }
+
+    pub fn take_initializing_ble_rnode_activity_operation(
+        &self,
+        token_hex: &str,
+    ) -> Option<BleRnodeActivityTake> {
+        self.take_ble_rnode_activity_operation_in_phase(
+            token_hex,
+            BleRnodeActivityOperationPhase::Initializing,
+        )
+    }
+
+    pub fn claim_ble_rnode_activity_operation_completion(
+        &self,
+        token_hex: &str,
+    ) -> Option<ActivityRequestFence> {
+        let token: [u8; 16] = hex::decode(token_hex).ok()?.try_into().ok()?;
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.as_ref().is_some_and(|operation| {
+            operation.started_at.elapsed() > BLE_RNODE_ACTIVITY_OPERATION_TTL
+        }) {
+            *pending = None;
+            return None;
+        }
+        let operation = pending.as_mut()?;
+        if operation.token != token
+            || operation.phase != BleRnodeActivityOperationPhase::Initializing
+        {
+            return None;
+        }
+        operation.phase = BleRnodeActivityOperationPhase::Completing;
+        operation.started_at = Instant::now();
+        Some(operation.activity_fence)
+    }
+
+    pub fn take_completing_ble_rnode_activity_operation(
+        &self,
+        token_hex: &str,
+    ) -> Option<BleRnodeActivityTake> {
+        self.take_ble_rnode_activity_operation_in_phase(
+            token_hex,
+            BleRnodeActivityOperationPhase::Completing,
+        )
+    }
+
+    fn take_ble_rnode_activity_operation_in_phase(
+        &self,
+        token_hex: &str,
+        expected_phase: BleRnodeActivityOperationPhase,
+    ) -> Option<BleRnodeActivityTake> {
+        let token: [u8; 16] = hex::decode(token_hex).ok()?.try_into().ok()?;
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.as_ref().is_some_and(|operation| {
+            operation.started_at.elapsed() > BLE_RNODE_ACTIVITY_OPERATION_TTL
+        }) {
+            *pending = None;
+            return None;
+        }
+        if pending
+            .as_ref()
+            .is_some_and(|operation| operation.token == token && operation.phase == expected_phase)
+        {
+            pending.take().map(|operation| {
+                let rollback_context = operation
+                    .rollback_context
+                    .map(|context| (context.config_dir, context.name, context.marker));
+                (operation.activity_fence, rollback_context)
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn invalidate_ble_rnode_activity_operation(&self) -> Option<BleRnodeActivityCancellation> {
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.as_ref().is_some_and(|operation| {
+            matches!(
+                operation.phase,
+                BleRnodeActivityOperationPhase::Cancelling
+                    | BleRnodeActivityOperationPhase::CancellationCompleting
+            )
+        }) {
+            *pending = None;
+            return None;
+        }
+        let operation = pending.take()?;
+        (operation.started_at.elapsed() <= BLE_RNODE_ACTIVITY_OPERATION_TTL).then(|| {
+            let rollback_context = operation
+                .rollback_context
+                .map(|context| (context.config_dir, context.name, context.marker));
+            (
+                hex::encode(operation.token),
+                operation.activity_fence,
+                rollback_context,
+            )
+        })
+    }
+
     pub fn clear_identity_scoped_runtime_state(&self) {
         if let Ok(mut channels) = self.channels.write() {
             *channels = None;
@@ -558,6 +875,9 @@ impl AppState {
         }
         if let Ok(mut suppressions) = self.interface_reannounce_suppression.lock() {
             suppressions.clear();
+        }
+        if let Ok(mut pending) = self.ble_rnode_activity_operation.lock() {
+            *pending = None;
         }
         if let Ok(mut last) = self.last_refresh_request_at.lock() {
             *last = None;
@@ -921,6 +1241,232 @@ mod tests {
                 .lock()
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn ble_rnode_activity_operation_is_one_shot_and_replacement_safe() {
+        let state = make_state();
+        let first_fence = state.activity_request_fence();
+        let first = state.begin_ble_rnode_activity_operation(first_fence, None);
+        let second_fence = state.activity_request_fence();
+        let second = state.begin_ble_rnode_activity_operation(second_fence, None);
+
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
+        assert_ne!(first, second);
+        assert!(!state.is_current_ble_rnode_activity_operation(&first));
+        assert!(state.is_current_ble_rnode_activity_operation(&second));
+        assert_eq!(state.claim_ble_rnode_activity_operation(&first), None);
+        assert_eq!(
+            state.claim_ble_rnode_activity_operation(&second),
+            Some(second_fence)
+        );
+        assert_eq!(state.claim_ble_rnode_activity_operation(&second), None);
+        assert!(state.is_current_ble_rnode_activity_operation(&second));
+        assert_eq!(
+            state.take_initializing_ble_rnode_activity_operation(&second),
+            Some((second_fence, None))
+        );
+        assert!(!state.is_current_ble_rnode_activity_operation(&second));
+        assert_eq!(
+            state.take_initializing_ble_rnode_activity_operation(&second),
+            None
+        );
+    }
+
+    #[test]
+    fn ble_rnode_activity_operation_can_be_cancelled_and_expires() {
+        let state = make_state();
+        let cancelled_fence = state.activity_request_fence();
+        let cancelled = state.begin_ble_rnode_activity_operation(cancelled_fence, None);
+
+        assert_eq!(
+            state.invalidate_ble_rnode_activity_operation(),
+            Some((cancelled.clone(), cancelled_fence, None))
+        );
+        assert!(!state.is_current_ble_rnode_activity_operation(&cancelled));
+        assert_eq!(state.invalidate_ble_rnode_activity_operation(), None);
+
+        let initializing_fence = state.activity_request_fence();
+        let initializing = state.begin_ble_rnode_activity_operation(initializing_fence, None);
+        assert_eq!(
+            state.claim_ble_rnode_activity_operation(&initializing),
+            Some(initializing_fence)
+        );
+        assert_eq!(
+            state.invalidate_ble_rnode_activity_operation(),
+            Some((initializing.clone(), initializing_fence, None))
+        );
+        assert_eq!(
+            state.take_initializing_ble_rnode_activity_operation(&initializing),
+            None
+        );
+
+        let expired =
+            state.begin_ble_rnode_activity_operation(state.activity_request_fence(), None);
+        {
+            let mut pending = state
+                .ble_rnode_activity_operation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            pending.as_mut().expect("pending operation").started_at =
+                Instant::now() - BLE_RNODE_ACTIVITY_OPERATION_TTL - Duration::from_secs(1);
+        }
+        assert!(!state.is_current_ble_rnode_activity_operation(&expired));
+        assert_eq!(
+            state.take_pending_ble_rnode_activity_operation(&expired),
+            None
+        );
+    }
+
+    #[test]
+    fn identity_runtime_clear_invalidates_ble_rnode_activity_operation() {
+        let state = make_state();
+        let token = state.begin_ble_rnode_activity_operation(state.activity_request_fence(), None);
+
+        state.clear_identity_scoped_runtime_state();
+
+        assert_eq!(
+            state.take_pending_ble_rnode_activity_operation(&token),
+            None
+        );
+    }
+
+    #[test]
+    fn activity_boundary_change_makes_ble_rnode_operation_origin_stale() {
+        let state = make_state();
+        let origin = state.activity_request_fence();
+        let token = state.begin_ble_rnode_activity_operation(origin, None);
+
+        state.bump_activity_boundary_generation();
+
+        let (recovered, _) = state
+            .take_pending_ble_rnode_activity_operation(&token)
+            .expect("valid one-shot token");
+        assert_eq!(recovered, origin);
+        assert!(!state.is_current_activity_origin_fence(recovered));
+    }
+
+    #[test]
+    fn stale_ble_failure_cannot_take_newer_rollback_context() {
+        let state = make_state();
+        let first_fence = state.activity_request_fence();
+        let first = state.begin_ble_rnode_activity_operation(
+            first_fence,
+            Some((PathBuf::from("/identity-a"), "LoRa".to_string(), 11)),
+        );
+        let second_fence = state.activity_request_fence();
+        let second = state.begin_ble_rnode_activity_operation(
+            second_fence,
+            Some((PathBuf::from("/identity-b"), "LoRa".to_string(), 22)),
+        );
+
+        assert_eq!(
+            state.take_pending_ble_rnode_activity_operation(&first),
+            None
+        );
+        assert_eq!(
+            state.take_pending_ble_rnode_activity_operation(&second),
+            Some((
+                second_fence,
+                Some((PathBuf::from("/identity-b"), "LoRa".to_string(), 22))
+            ))
+        );
+    }
+
+    #[test]
+    fn ble_completion_ownership_is_lost_when_new_operation_replaces_it() {
+        let state = make_state();
+        let first_fence = state.activity_request_fence();
+        let first = state.begin_ble_rnode_activity_operation(first_fence, None);
+        assert_eq!(
+            state.claim_ble_rnode_activity_operation(&first),
+            Some(first_fence)
+        );
+        assert_eq!(
+            state.claim_ble_rnode_activity_operation_completion(&first),
+            Some(first_fence)
+        );
+
+        let second = state.begin_ble_rnode_activity_operation(state.activity_request_fence(), None);
+
+        assert_eq!(
+            state.take_completing_ble_rnode_activity_operation(&first),
+            None
+        );
+        assert!(state.is_current_ble_rnode_activity_operation(&second));
+    }
+
+    #[test]
+    fn ble_cancellation_lease_cannot_claim_a_replacement_operation() {
+        let state = make_state();
+        let first_fence = state.activity_request_fence();
+        let first = state.begin_ble_rnode_activity_operation(
+            first_fence,
+            Some((PathBuf::from("/identity-a"), "LoRa".to_string(), 11)),
+        );
+        let (cancel_token, cancel_fence, rollback_context) = state
+            .begin_ble_rnode_activity_cancellation()
+            .expect("current operation should become a cancellation lease");
+        assert_eq!(cancel_token, first);
+        assert_eq!(cancel_fence, first_fence);
+        assert_eq!(
+            rollback_context,
+            Some((PathBuf::from("/identity-a"), "LoRa".to_string(), 11))
+        );
+        assert!(!state.is_current_ble_rnode_activity_operation(&first));
+
+        let second = state.begin_ble_rnode_activity_operation(
+            state.activity_request_fence(),
+            Some((PathBuf::from("/identity-b"), "LoRa".to_string(), 22)),
+        );
+
+        assert!(!state.claim_ble_rnode_activity_cancellation(&cancel_token));
+        assert_eq!(
+            state.take_completing_ble_rnode_activity_cancellation(&cancel_token),
+            None
+        );
+        assert!(state.is_current_ble_rnode_activity_operation(&second));
+    }
+
+    #[test]
+    fn ble_claimed_cancellation_suppresses_terminal_after_replacement() {
+        let state = make_state();
+        let first_fence = state.activity_request_fence();
+        let first = state.begin_ble_rnode_activity_operation(first_fence, None);
+        let (cancel_token, _, _) = state
+            .begin_ble_rnode_activity_cancellation()
+            .expect("current operation should become a cancellation lease");
+        assert_eq!(cancel_token, first);
+        assert!(state.claim_ble_rnode_activity_cancellation(&cancel_token));
+
+        let second = state.begin_ble_rnode_activity_operation(state.activity_request_fence(), None);
+
+        assert_eq!(
+            state.take_completing_ble_rnode_activity_cancellation(&cancel_token),
+            None
+        );
+        assert!(state.is_current_ble_rnode_activity_operation(&second));
+    }
+
+    #[test]
+    fn ble_cancellation_terminal_requires_the_exact_claimed_lease() {
+        let state = make_state();
+        let fence = state.activity_request_fence();
+        let token = state.begin_ble_rnode_activity_operation(fence, None);
+        let (cancel_token, _, _) = state
+            .begin_ble_rnode_activity_cancellation()
+            .expect("current operation should become a cancellation lease");
+        assert_eq!(cancel_token, token);
+        assert!(state.claim_ble_rnode_activity_cancellation(&cancel_token));
+        assert_eq!(
+            state.take_completing_ble_rnode_activity_cancellation(&cancel_token),
+            Some(fence)
+        );
+        assert_eq!(
+            state.take_completing_ble_rnode_activity_cancellation(&cancel_token),
+            None
         );
     }
 

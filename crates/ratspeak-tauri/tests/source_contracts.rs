@@ -867,6 +867,426 @@ fn process_diagnostics_are_explicit_opt_in() {
 }
 
 #[test]
+fn semantic_ble_and_auto_activity_adapters_preserve_the_privacy_boundary() {
+    let root = repo_root();
+    let ble =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("BLE commands");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interface commands");
+    let adapter =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/interface_activity.rs"))
+            .expect("interface Activity adapter");
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let events = read_source(root.join("dashboard/static/js/tauri_events.js"))
+        .expect("frontend event listeners");
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("command registration");
+
+    assert!(adapter.contains("record_event_fenced("));
+    assert!(adapter.contains("is_current_activity_origin_fence(fence)"));
+    assert!(!adapter.contains("reason: String"));
+    assert!(!adapter.contains("address"));
+    assert!(!adapter.contains("device"));
+    assert!(!adapter.contains("ifname"));
+
+    assert!(ble.contains("ble_peer_activity_transition("));
+    assert!(ble.contains("ble_rnode_activity_transition("));
+    assert!(ble.contains("InterfaceDegradationReason::PeripheralUnavailable"));
+    assert!(ble.contains("let mut peripheral_degradation_recorded = false;"));
+    assert!(ble.contains("activity_fence: ActivityRequestFence"));
+    assert!(!ble.contains("subscribe_ble_diag"));
+    assert!(!ble.contains(".record_event("));
+
+    let auto_relay = interfaces
+        .split("pub fn spawn_auto_event_broadcaster")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub async fn api_list_network_interfaces")
+                .next()
+        })
+        .expect("AutoInterface product relay");
+    assert!(auto_relay.contains("AutoInterfaceEvent::JoinFailed"));
+    assert!(auto_relay.contains("AutoInterfaceEvent::CarrierState"));
+    assert!(auto_relay.contains("emit_to_all("));
+    assert!(!auto_relay.contains("record_interface_activity"));
+    assert!(!auto_relay.contains("activity.record"));
+
+    assert!(state.contains("rns_crypto::random::random_16()"));
+    assert!(state.contains("claim_ble_rnode_activity_operation"));
+    assert!(state.contains("take_pending_ble_rnode_activity_operation"));
+    assert!(state.contains("take_initializing_ble_rnode_activity_operation"));
+    assert!(state.contains("BleRnodeActivityOperationPhase::Initializing"));
+    assert!(state.contains("BleRnodeActivityOperationPhase::Completing"));
+    assert!(state.contains("rollback_context: Option<BleRnodeRollbackContext>"));
+    assert!(state.contains("pending.take().map(|operation| {"));
+    assert!(state.contains("*pending = None;"));
+    assert!(shell.contains("commands::ble::ble_rnode_bridge_failed"));
+
+    let native_failure = events
+        .split("RS.invoke('ble_rnode_bridge_failed'")
+        .nth(1)
+        .and_then(|tail| tail.split("var errRaw").next())
+        .expect("typed native bridge failure callback");
+    assert!(native_failure.contains("activity_operation"));
+    assert!(native_failure.contains("failure_code: nativeFailureCode"));
+    assert!(!native_failure.contains("result.error"));
+    assert!(!native_failure.contains("cancel_ble_connect"));
+
+    let bridge_failure = ble
+        .split("pub async fn ble_rnode_bridge_failed")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn cancel_ble_connect").next())
+        .expect("typed native bridge failure command");
+    let token_accept = bridge_failure
+        .find("take_pending_ble_rnode_activity_operation")
+        .expect("exact operation acceptance");
+    let rollback = bridge_failure
+        .find("rollback_ble_rnode_context")
+        .expect("backend-owned failure rollback");
+    assert!(
+        token_accept < rollback,
+        "a stale rejected failure must not reach config rollback"
+    );
+
+    for product_event in [
+        "ble_peer_discovered",
+        "ble_peer_connected",
+        "ble_peer_disconnected",
+        "ble_peer_peripheral_unavailable",
+        "auto_unavailable",
+        "auto_carrier_state",
+        "ble_rnode_passkey_prompt",
+        "ble_rnode_pairing_finished",
+        "ble_rnode_connect_native",
+        "ble_rnode_disconnect_native",
+    ] {
+        assert!(
+            ble.contains(product_event)
+                || interfaces.contains(product_event)
+                || events.contains(product_event),
+            "dedicated product stream {product_event} must remain"
+        );
+    }
+}
+
+#[test]
+fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
+    let root = repo_root();
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let ble =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("BLE commands");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interface commands");
+    let events = read_source(root.join("dashboard/static/js/tauri_events.js"))
+        .expect("frontend event listeners");
+    let main_activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("Android MainActivity");
+    let gatt =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBleGatt.kt",
+        ))
+        .expect("Android GATT bridge");
+
+    assert!(
+        state.contains("BLE_RNODE_ACTIVITY_OPERATION_TTL: Duration = Duration::from_secs(240)")
+    );
+    assert!(state.contains("BleRnodeActivityOperationPhase::PendingNative"));
+    assert!(state.contains("BleRnodeActivityOperationPhase::Initializing"));
+    assert!(state.contains("BleRnodeActivityOperationPhase::Completing"));
+    assert!(state.contains("claim_ble_rnode_activity_operation"));
+    assert!(state.contains("claim_ble_rnode_activity_operation_completion"));
+    assert!(state.contains("take_pending_ble_rnode_activity_operation"));
+    assert!(state.contains("take_initializing_ble_rnode_activity_operation"));
+    assert!(state.contains("take_completing_ble_rnode_activity_operation"));
+    assert!(state.contains("rollback_context: Option<BleRnodeRollbackContext>"));
+    assert!(state.contains("ble_completion_ownership_is_lost_when_new_operation_replaces_it"));
+    assert!(state.contains("stale_ble_failure_cannot_take_newer_rollback_context"));
+
+    assert!(ble.contains("claim_ble_rnode_activity_operation(&activity_operation)"));
+    assert!(ble.contains("take_initializing_ble_rnode_activity_operation"));
+    assert!(ble.contains("claim_ble_rnode_activity_operation_completion"));
+    assert!(ble.contains("take_completing_ble_rnode_activity_operation"));
+    assert!(ble.contains("disconnect_native_ble_rnode_operation"));
+    assert!(ble.contains("json!({ \"activity_operation\": activity_operation })"));
+    assert!(ble.contains("teardown_ble_rnode_interface(&rns, id)"));
+
+    let mut native_emissions = 0usize;
+    let mut remainder = interfaces.as_str();
+    while let Some(index) = remainder.find("\"ble_rnode_connect_native\"") {
+        native_emissions += 1;
+        let tail = &remainder[index..];
+        let nearby = &tail[..tail.len().min(1600)];
+        assert!(
+            nearby.contains("\"activity_operation\": activity_operation"),
+            "every Android BLE reconnect/resume emission must carry its operation token"
+        );
+        remainder = &tail["\"ble_rnode_connect_native\"".len()..];
+    }
+    assert!(
+        native_emissions >= 2,
+        "add and reconnect/resume paths must both emit native BLE work"
+    );
+    assert!(interfaces.contains("schedule_android_ble_rnode_operation_watchdog"));
+    assert!(interfaces.contains("Duration::from_secs(180)"));
+    assert!(interfaces.contains("take_pending_ble_rnode_activity_operation"));
+    assert!(interfaces.contains("rollback_fresh_lora_add_marker"));
+    assert!(interfaces.contains("RnodeActivityOutcome::SetupTimedOut"));
+    assert!(interfaces.contains("Some(\"setup_timeout\")"));
+
+    assert!(events.contains("result.activity_operation !== activityOperation"));
+    assert!(events.contains("progress.activity_operation !== activityOperation"));
+    assert!(events.contains("_BLE_RNODE_NATIVE_TIMEOUT_MS = 180000"));
+    assert!(events.contains("disconnectBleDeviceForOperation(activityOperation)"));
+    assert!(events.contains("data.tcp_port,\n            activityOperation"));
+    assert!(events.contains("failure_code: 'setup_timeout'"));
+    assert!(!events.contains("rollbackOnly"));
+    assert!(!events.contains("cancel_ble_connect"));
+
+    let bridge_ready = ble
+        .split("pub async fn ble_rnode_bridge_ready")
+        .nth(1)
+        .and_then(|tail| tail.split("pub struct BleRnodeBridgeFailureArgs").next())
+        .expect("Android BLE bridge-ready command");
+    let timeout_completion = bridge_ready
+        .split("if start.elapsed() > timeout {")
+        .nth(1)
+        .and_then(|tail| tail.split("tokio::time::sleep").next())
+        .expect("RNode initialization timeout completion");
+    let completion_claim = timeout_completion
+        .find("claim_ble_rnode_activity_operation_completion")
+        .expect("initialization completion claim");
+    let teardown = timeout_completion
+        .find("teardown_ble_rnode_interface")
+        .expect("initialization timeout teardown");
+    let completion_take = timeout_completion
+        .find("take_completing_ble_rnode_activity_operation")
+        .expect("exact completion take");
+    assert!(completion_claim < teardown && teardown < completion_take);
+    assert!(bridge_ready.contains("clear_ble_rnode_rollback_context"));
+
+    assert!(main_activity.contains(
+        "fun connectBleDevice(address: String, localPort: Int, activityOperation: String)"
+    ));
+    assert!(main_activity.contains(".put(\"activity_operation\", activityOperation)"));
+    assert!(
+        main_activity.contains("fun disconnectBleDeviceForOperation(activityOperation: String)")
+    );
+    assert!(main_activity.contains("if (bleConnectOperation != activityOperation)"));
+    assert!(main_activity.contains(".put(\"failure_code\", \"connect_failed\")"));
+    assert!(main_activity.contains("error.contains(RatspeakBleGatt.ERR_BOND_TIMEOUT)"));
+    assert!(main_activity.contains("\"bond_timeout\""));
+    assert!(
+        main_activity
+            .contains("window.RatspeakAndroid.disconnectBleDeviceForOperation($operationJson)")
+    );
+    assert!(gatt.contains("fun attachWebView(webView: WebView?, operation: String)"));
+    assert!(gatt.contains(".put(\"activity_operation\", activityOperation)"));
+    assert!(gatt.contains("const val ERR_BOND_TIMEOUT = \"ERR_BOND_TIMEOUT\""));
+    assert!(gatt.contains("$ERR_PAIRING_MODE $ERR_BOND_TIMEOUT Bonding timed out"));
+    assert!(ble.contains("enum BleRnodeNativeFailureCode"));
+    assert!(ble.contains("BondTimeout"));
+    assert!(ble.contains("SetupTimeout"));
+    assert!(!ble.contains("pub timed_out: bool"));
+}
+
+#[test]
+fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_auto_events() {
+    let root = repo_root();
+    let ble =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("BLE commands");
+    let shared =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs")).expect("shared");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interface commands");
+    let rns_config =
+        read_source(root.join("crates/ratspeak-runtime/src/rns_config.rs")).expect("rns config");
+
+    let expiry = ble
+        .split("fn schedule_ble_peer_expiry")
+        .nth(1)
+        .and_then(|tail| tail.split("#[tauri::command]").next())
+        .expect("BLE Peer expiry scheduler");
+    assert!(expiry.contains("activity_fence: ActivityRequestFence"));
+    assert!(!expiry.contains("activity_request_fence()"));
+    assert!(
+        expiry
+            .contains("let changed = disable_ble_peer_inner_if_expiry(&state3, expires_at).await")
+    );
+    assert!(ble.contains("InterfaceTimeoutReason::Setup"));
+    assert!(ble.contains("if changed {\n            record_interface_activity"));
+    assert!(shared.contains("pub(crate) async fn disable_ble_peer_inner"));
+    assert!(shared.contains("pub(crate) async fn disable_ble_peer_inner_if_expiry"));
+    assert!(shared.contains("was_requested || had_live_interface"));
+    assert!(rns_config.contains("pub enum RemoveInterfaceOutcome"));
+    assert!(rns_config.contains("pub fn remove_interface_checked"));
+    assert!(rns_config.contains("if !removed {"));
+    assert!(rns_config.contains("RemoveInterfaceOutcome::NotFound"));
+
+    let cancel_ble = ble
+        .split("pub async fn cancel_ble_connect")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn disconnect_ble_rnode").next())
+        .expect("BLE cancellation command");
+    assert!(!cancel_ble.contains("rollback_only"));
+    let cancellation_lease = cancel_ble
+        .find("state_arc.begin_ble_rnode_activity_cancellation()")
+        .expect("user cancellation lease");
+    let exact_rollback = cancel_ble
+        .find("rollback_ble_rnode_context")
+        .expect("exact Android cancellation rollback");
+    assert!(
+        !cancel_ble.contains("rollback_current_fresh_lora_add"),
+        "cancellation without an exact operation owner must not delete a same-name replacement"
+    );
+    let teardown_spawn = cancel_ble
+        .find("tokio::spawn")
+        .expect("awaited runtime teardown spawn");
+    let teardown_claim = cancel_ble
+        .find("claim_ble_rnode_activity_cancellation")
+        .expect("exact cancellation teardown claim");
+    let runtime_teardown = cancel_ble
+        .find("teardown_ble_rnode_interface")
+        .expect("exact-id runtime teardown");
+    let terminal_take = cancel_ble
+        .find("take_completing_ble_rnode_activity_cancellation")
+        .expect("post-await cancellation terminal take");
+    let terminal_status = cancel_ble
+        .find("BLE connect for")
+        .expect("cancellation terminal status");
+    assert!(
+        cancellation_lease < exact_rollback
+            && exact_rollback < teardown_spawn
+            && teardown_spawn < teardown_claim
+            && teardown_claim < runtime_teardown
+            && runtime_teardown < terminal_take
+            && terminal_take < terminal_status,
+        "cancellation must own exact rollback, teardown, and terminal publication"
+    );
+    assert!(shared.contains("const FRESH_LORA_ADD_TTL"));
+    assert!(shared.contains("const MAX_FRESH_LORA_ADDS"));
+    assert!(shared.contains("type FreshLoraAddKey = (PathBuf, String)"));
+    assert!(shared.contains("struct FreshLoraAddEntry"));
+    assert!(shared.contains("entry.marker == expected_marker"));
+    assert!(shared.contains("rollback_fresh_lora_add_marker"));
+    assert!(!shared.contains("rollback_current_fresh_lora_add"));
+    assert!(shared.contains("fresh_lora_success_and_edit_clear_delete_authorization"));
+    assert!(shared.contains("stale_same_name_marker_cannot_delete_replacement_config"));
+    let atomic_rollback = shared
+        .split("pub(crate) fn rollback_fresh_lora_add_marker")
+        .nth(1)
+        .and_then(|tail| tail.split("pub(crate) fn remove_stored_file_refs").next())
+        .expect("atomic versioned fresh-add rollback");
+    assert!(atomic_rollback.contains("with_rns_config_lock"));
+    assert!(atomic_rollback.contains("take_fresh_lora_add"));
+    assert!(atomic_rollback.contains("remove_interface_checked"));
+
+    let disconnect_ble = ble
+        .split("pub async fn disconnect_ble_rnode")
+        .nth(1)
+        .and_then(|tail| tail.split("#[cfg(test)]").next())
+        .expect("BLE RNode disconnect command");
+    assert!(disconnect_ble.contains("remove_interface_checked"));
+    assert!(disconnect_ble.contains("RemoveInterfaceOutcome::Removed"));
+    assert!(disconnect_ble.contains("RemoveInterfaceOutcome::NotFound"));
+    assert!(disconnect_ble.contains("RemoveInterfaceOutcome::WriteFailed"));
+
+    let add_lora = interfaces
+        .split("pub async fn add_lora_interface")
+        .nth(1)
+        .and_then(|tail| tail.split("pub struct UpdateLoraArgs").next())
+        .expect("add_lora command");
+    for outcome in [
+        "RnodeActivityOutcome::Configured",
+        "RnodeActivityOutcome::Connecting",
+        "RnodeActivityOutcome::Online",
+        "RnodeActivityOutcome::ConfigureFailed",
+        "RnodeActivityOutcome::ConnectFailed",
+        "RnodeActivityOutcome::PairingTimedOut",
+        "RnodeActivityOutcome::StartupTimedOut",
+        "RnodeActivityOutcome::RuntimeFailed",
+    ] {
+        assert!(
+            add_lora.contains(outcome),
+            "add_lora transport matrix is missing {outcome}"
+        );
+    }
+    assert!(add_lora.contains("teardown_ble_rnode_interface(&rns, id)"));
+    assert!(add_lora.contains("teardown_rnode_interface(&rns, id)"));
+    let freshness_transaction = add_lora
+        .split("let (fresh_marker, existing_rnode_port, config_written)")
+        .nth(1)
+        .and_then(|tail| tail.split("let fresh_add = fresh_marker.is_some()").next())
+        .expect("fresh BLE add config transaction");
+    assert!(freshness_transaction.contains("with_rns_config_lock"));
+    let stale_clear = freshness_transaction
+        .find("mark_lora_add_freshness(&config_dir, &name, false)")
+        .expect("stale marker clear");
+    let config_write = freshness_transaction
+        .find("crate::rns_config::add_rnode_interface")
+        .expect("RNode config write");
+    let marker_install = freshness_transaction
+        .rfind("mark_lora_add_freshness(&config_dir, &name, fresh_add)")
+        .expect("versioned marker install");
+    assert!(stale_clear < config_write && config_write < marker_install);
+    assert!(add_lora.contains("clear_fresh_lora_add_marker"));
+    assert!(add_lora.contains("rollback_fresh_lora_add_marker"));
+
+    let update_lora = interfaces
+        .split("pub async fn update_lora_interface")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn teardown_rnode_handoff_broadcast")
+                .next()
+        })
+        .expect("update_lora command");
+    assert!(update_lora.contains("mark_lora_add_freshness"));
+    assert!(update_lora.contains("&old_name"));
+    assert!(update_lora.contains("&name"));
+
+    let handoff = interfaces
+        .split("async fn teardown_rnode_handoff_broadcast")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn remove_lora_interface").next())
+        .expect("Android RNode handoff");
+    assert!(handoff.contains("remove_interface_checked"));
+    assert!(handoff.contains("RemoveInterfaceOutcome::NotFound => {}"));
+    assert!(handoff.contains("RemoveInterfaceOutcome::WriteFailed"));
+    assert!(handoff.contains("return false;"));
+
+    let remove_lora = interfaces
+        .split("pub async fn remove_lora_interface")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn enable_auto_interface").next())
+        .expect("RNode removal command");
+    assert!(remove_lora.contains("remove_interface_checked"));
+    assert!(remove_lora.contains("RemoveInterfaceOutcome::Removed"));
+    assert!(remove_lora.contains("RemoveInterfaceOutcome::NotFound"));
+    assert!(remove_lora.contains("RemoveInterfaceOutcome::WriteFailed"));
+
+    let enable_auto = interfaces
+        .split("pub async fn enable_auto_interface")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn disable_auto_interface").next())
+        .expect("enable_auto command");
+    let subscribe = enable_auto
+        .find("let mut initial_auto_events = rns_interface::auto::subscribe_auto_events()")
+        .expect("command-scoped Auto subscriber");
+    let spawn = enable_auto
+        .find("spawn_auto_interface_runtime_with_config")
+        .expect("Auto spawn");
+    assert!(
+        subscribe < spawn,
+        "Auto must subscribe before its owned spawn"
+    );
+    assert!(enable_auto.contains("drain_initial_auto_join_failure"));
+    assert!(enable_auto.contains("AutoActivityOutcome::MulticastUnavailable"));
+    assert!(enable_auto.contains("AutoActivityOutcome::TimedOut"));
+}
+
+#[test]
 fn diagnostic_file_writer_is_bounded_nonblocking_and_lifetime_scoped() {
     let root = repo_root();
     let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("app shell");
@@ -1215,8 +1635,12 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
     assert!(ble_rs.contains("let _enable_guard = state_arc.ble_peer_enable_lock.lock().await;"));
     assert!(ble_rs.contains("async fn live_ble_peer_interface_id"));
     assert!(ble_rs.contains("Bluetooth Peer already enabled"));
-    assert!(ble_rs.contains("current_expires_at == expires_at"));
-    assert!(ble_rs.contains("spawn_enable_ble_peer_task(state, duration_secs, expires_at);"));
+    assert!(ble_rs.contains("let activity_fence = state.activity_request_fence();"));
+    assert!(
+        ble_rs.contains(
+            "spawn_enable_ble_peer_task(state, activity_fence, duration_secs, expires_at);"
+        )
+    );
     assert!(ble_rs.contains("const BLE_RECENT_DISCONNECTS_V2_SETTING"));
     assert!(ble_rs.contains("ble_recent_disconnect_seed_addresses"));
     assert!(ble_rs.contains("update_ble_recent_disconnect_records"));
@@ -1231,6 +1655,8 @@ fn ble_peer_requested_state_survives_restart_when_valid() {
 
     let shared_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
         .expect("shared source");
+    assert!(shared_rs.contains("current_expires_at == expected_expires_at"));
+    assert!(shared_rs.contains("ble_peer_expiry_only_disables_the_exact_requested_generation"));
     assert!(shared_rs.contains("db::set_setting(&p, \"ble_peer_expires_at\", \"0\");"));
     assert!(shared_rs.contains("\"ble_peer_status_changed\""));
 
@@ -1674,9 +2100,12 @@ fn failed_lora_reconnects_keep_persisted_interface_config() {
         interfaces_rs
             .contains("find_config_interface_with_group(&config_dir, None, &name).is_none()")
     );
-    assert!(interfaces_rs.contains("mark_lora_add_freshness(&name, fresh_add)"));
-    // Desktop pairing-timeout rollback only deletes entries the add created.
-    assert!(interfaces_rs.contains("if fresh_add {"));
+    assert!(interfaces_rs.contains("mark_lora_add_freshness(&config_dir, &name, fresh_add)"));
+    // Desktop pairing-timeout rollback consumes only the exact versioned
+    // marker installed by its own config transaction.
+    assert!(interfaces_rs.contains("if let Some(marker) = fresh_marker"));
+    assert!(interfaces_rs.contains("rollback_fresh_lora_add_marker"));
+    assert!(interfaces_rs.contains("clear_fresh_lora_add_marker"));
     // Failed resume flips the entry back to paused instead of deleting it or
     // leaving a dead enabled config.
     assert!(
@@ -1688,19 +2117,30 @@ fn failed_lora_reconnects_keep_persisted_interface_config() {
         .expect("shared commands");
     assert!(shared_rs.contains("pub(crate) fn mark_lora_add_freshness"));
     assert!(shared_rs.contains("pub(crate) fn take_fresh_lora_add"));
+    assert!(shared_rs.contains("type FreshLoraAddKey = (PathBuf, String)"));
+    assert!(shared_rs.contains("struct FreshLoraAddEntry"));
+    assert!(shared_rs.contains("entry.marker == expected_marker"));
+    assert!(shared_rs.contains("const FRESH_LORA_ADD_TTL"));
+    assert!(shared_rs.contains("const MAX_FRESH_LORA_ADDS"));
 
     let ble_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble commands");
-    assert!(ble_rs.contains("take_fresh_lora_add(&name)"));
-    assert!(ble_rs.contains("if fresh_add {"));
+    assert!(ble_rs.contains("rollback_ble_rnode_context"));
+    assert!(ble_rs.contains("clear_ble_rnode_rollback_context"));
 
-    // JS guards: auto-rollback only when Rust requested it; manual cancel
-    // only invokes the cancel command for adds, never for edits.
+    // Native failure cleanup is exact-token backend work; the frontend never
+    // chains a delayed cancellation command. User cancellation still reaches
+    // edit reconnects, whose config transaction clears any old marker.
     let events_js =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
-    assert!(events_js.contains("if (data.rollback_on_error && data.name) {"));
+    assert!(!events_js.contains("cancel_ble_connect"));
+    assert!(!events_js.contains("rollbackOnly"));
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
-    assert!(modals_js.contains(
+    assert!(
+        modals_js
+            .contains("RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});")
+    );
+    assert!(!modals_js.contains(
         "if (!isEdit) RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});"
     ));
 }
@@ -3849,7 +4289,7 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
     for relative in [
         "crates/ratspeak-runtime/src/lib.rs",
         "crates/ratspeak-runtime/src/voice.rs",
-        "crates/ratspeak-tauri/src/commands/interfaces.rs",
+        "crates/ratspeak-tauri/src/commands/interface_activity.rs",
         "crates/ratspeak-tauri/src/commands/messaging.rs",
         "crates/ratspeak-tauri/src/commands/network.rs",
     ] {

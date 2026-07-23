@@ -827,6 +827,7 @@ pub fn run() {
             ratspeak_tauri::commands::ble::scan_ble_mesh_peers,
             ratspeak_tauri::commands::ble::scan_ble_devices,
             ratspeak_tauri::commands::ble::ble_rnode_bridge_ready,
+            ratspeak_tauri::commands::ble::ble_rnode_bridge_failed,
             ratspeak_tauri::commands::ble::cancel_ble_connect,
             ratspeak_tauri::commands::ble::disconnect_ble_rnode,
             ratspeak_tauri::commands::ble::submit_ble_rnode_passkey,

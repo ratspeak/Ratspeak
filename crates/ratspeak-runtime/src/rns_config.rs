@@ -721,6 +721,38 @@ pub fn remove_interface(config_dir: &Path, name: &str) -> bool {
     remove_interfaces(config_dir, &[name.to_string()])
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveInterfaceOutcome {
+    Removed,
+    NotFound,
+    WriteFailed,
+}
+
+/// Removes one interface without rewriting unchanged config and reports
+/// whether the requested block actually existed.
+pub fn remove_interface_checked(config_dir: &Path, name: &str) -> RemoveInterfaceOutcome {
+    if !safe_interface_name(name) {
+        return RemoveInterfaceOutcome::WriteFailed;
+    }
+
+    let content = match std::fs::read_to_string(config_dir.join("config")) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RemoveInterfaceOutcome::NotFound;
+        }
+        Err(_) => return RemoveInterfaceOutcome::WriteFailed,
+    };
+    let (result, removed) = remove_interface_blocks_from_content(&content, &[name]);
+    if !removed {
+        return RemoveInterfaceOutcome::NotFound;
+    }
+
+    match write_config_result(config_dir, &result) {
+        Ok(()) => RemoveInterfaceOutcome::Removed,
+        Err(_) => RemoveInterfaceOutcome::WriteFailed,
+    }
+}
+
 pub fn remove_interfaces(config_dir: &Path, names: &[String]) -> bool {
     if names.iter().any(|name| !safe_interface_name(name)) {
         return false;
@@ -1923,6 +1955,58 @@ mod tests {
         assert_eq!(count_header(&content, "Default Interface"), 0);
         assert_eq!(count_header(&content, "Local Network"), 0);
         assert_eq!(count_header(&content, "Keep"), 1);
+    }
+
+    #[test]
+    fn checked_interface_remove_reports_change_without_rewriting_not_found_config() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        let before = read_config(&dir).unwrap();
+
+        assert_eq!(
+            remove_interface_checked(&dir, "Missing"),
+            RemoveInterfaceOutcome::NotFound
+        );
+        assert_eq!(read_config(&dir).unwrap(), before);
+        assert!(!dir.join("config.backup").exists());
+
+        assert_eq!(
+            remove_interface_checked(&dir, "Keep"),
+            RemoveInterfaceOutcome::Removed
+        );
+        assert_eq!(count_header(&read_config(&dir).unwrap(), "Keep"), 0);
+    }
+
+    #[test]
+    fn checked_interface_remove_distinguishes_absence_from_io_failure() {
+        let missing = temp_config_dir().join("missing");
+        assert_eq!(
+            remove_interface_checked(&missing, "Keep"),
+            RemoveInterfaceOutcome::NotFound
+        );
+
+        let not_a_directory = temp_config_dir().join("plain-file");
+        std::fs::write(&not_a_directory, "not a directory").unwrap();
+        assert_eq!(
+            remove_interface_checked(&not_a_directory, "Keep"),
+            RemoveInterfaceOutcome::WriteFailed
+        );
+        assert_eq!(
+            remove_interface_checked(&missing, "Unsafe]]\nName"),
+            RemoveInterfaceOutcome::WriteFailed
+        );
+
+        let write_failure = temp_config_dir();
+        write_base_config(&write_failure);
+        std::fs::create_dir(write_failure.join("config.backup")).unwrap();
+        assert_eq!(
+            remove_interface_checked(&write_failure, "Keep"),
+            RemoveInterfaceOutcome::WriteFailed
+        );
+        assert_eq!(
+            count_header(&read_config(&write_failure).unwrap(), "Keep"),
+            1
+        );
     }
 
     #[test]

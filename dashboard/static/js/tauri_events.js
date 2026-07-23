@@ -982,24 +982,67 @@ RS.listen('ble_rnode_pairing_finished', function(data) {
     _bleRnodeDismissModal(record);
 });
 
-// Android-only: interface teardown must close the Kotlin GATT link, or the
-// RNode stays connected and never advertises again.
-RS.listen('ble_rnode_disconnect_native', function() {
+var _BLE_RNODE_NATIVE_TIMEOUT_MS = 180000;
+
+function _clearBleRnodeNativeOperation(activityOperation) {
+    if (activityOperation &&
+        window._bleRnodeActivityOperation !== activityOperation) return false;
+    if (window._bleRnodeActivityTimeout) {
+        clearTimeout(window._bleRnodeActivityTimeout);
+        window._bleRnodeActivityTimeout = null;
+    }
+    window._bleRnodeActivityOperation = null;
+    window._onBleConnectResult = null;
+    window._onBleConnectProgress = null;
+    return true;
+}
+
+function _disconnectAndroidBleRnode(activityOperation) {
+    if (activityOperation) {
+        if (typeof window.RatspeakAndroid !== 'undefined' &&
+            typeof window.RatspeakAndroid.disconnectBleDeviceForOperation === 'function') {
+            try {
+                window.RatspeakAndroid.disconnectBleDeviceForOperation(activityOperation);
+            } catch (_) {}
+        }
+        return;
+    }
     if (typeof window.RatspeakAndroid !== 'undefined' &&
         typeof window.RatspeakAndroid.disconnectBleDevice === 'function') {
         try { window.RatspeakAndroid.disconnectBleDevice(); } catch (_) {}
     }
+}
+
+// Android-only: interface teardown must close the Kotlin GATT link, or the
+// RNode stays connected and never advertises again.
+RS.listen('ble_rnode_disconnect_native', function(data) {
+    var activityOperation = (data && data.activity_operation) || '';
+    _clearBleRnodeNativeOperation(activityOperation);
+    _disconnectAndroidBleRnode(activityOperation);
 });
 
 // Android-only: Rust asks Kotlin to open GATT + TCP bridge first.
 RS.listen('ble_rnode_connect_native', function(data) {
+    data = data || {};
+    var activityOperation = data.activity_operation || '';
+    if (!/^[0-9a-fA-F]{32}$/.test(activityOperation)) {
+        showToast('BLE connection could not start.', 'toast-red', 5000);
+        return;
+    }
+
     if (typeof window.RatspeakAndroid === 'undefined' ||
         typeof window.RatspeakAndroid.connectBleDevice !== 'function') {
         RS.invoke('ble_rnode_bridge_ready', {
-            args: { tcp_port: 0 }
+            args: {
+                activity_operation: activityOperation,
+                tcp_port: 0
+            }
         }).catch(function() {});
         return;
     }
+
+    _clearBleRnodeNativeOperation();
+    window._bleRnodeActivityOperation = activityOperation;
 
     // Bonding can take a while; phase updates keep the dialog meaningful.
     var PHASE_MESSAGES = {
@@ -1014,7 +1057,9 @@ RS.listen('ble_rnode_connect_native', function(data) {
         bridge: 'Opening TCP bridge...',
         ready: 'Connected — linking radio...',
     };
-    window._onBleConnectProgress = function(phase) {
+    window._onBleConnectProgress = function(progress) {
+        if (!progress || progress.activity_operation !== activityOperation) return;
+        var phase = progress.phase || '';
         var pd = window._activeProgressDialog;
         if (pd && pd.isOpen() && PHASE_MESSAGES[phase]) {
             pd.update(PHASE_MESSAGES[phase]);
@@ -1022,11 +1067,12 @@ RS.listen('ble_rnode_connect_native', function(data) {
     };
 
     window._onBleConnectResult = function(result) {
-        window._onBleConnectResult = null;
-        window._onBleConnectProgress = null;
+        if (!result || result.activity_operation !== activityOperation) return;
+        if (!_clearBleRnodeNativeOperation(activityOperation)) return;
         if (result.success) {
             RS.invoke('ble_rnode_bridge_ready', {
                 args: {
+                    activity_operation: activityOperation,
                     tcp_port: data.tcp_port,
                     name: data.name,
                     port: 'ble://' + data.address,
@@ -1039,8 +1085,20 @@ RS.listen('ble_rnode_connect_native', function(data) {
                     airtime_limit_short: data.airtime_limit_short,
                     airtime_limit_long: data.airtime_limit_long,
                 }
-            }).catch(function() {});
+            }).catch(function() {
+                _disconnectAndroidBleRnode(activityOperation);
+            });
         } else {
+            var nativeFailureCode = result.failure_code === 'bond_timeout'
+                ? 'bond_timeout'
+                : 'connect_failed';
+            _disconnectAndroidBleRnode(activityOperation);
+            RS.invoke('ble_rnode_bridge_failed', {
+                args: {
+                    activity_operation: activityOperation,
+                    failure_code: nativeFailureCode
+                }
+            }).catch(function() {});
             var errRaw = result.error || 'Unknown error';
             var pairingMode = errRaw.indexOf('ERR_PAIRING_MODE') === 0;
             var staleBond = errRaw.indexOf('ERR_STALE_BOND') === 0;
@@ -1049,13 +1107,6 @@ RS.listen('ble_rnode_connect_native', function(data) {
                 : staleBond
                     ? 'Paired BLE reconnect failed. Android may have a stale pairing for this RNode; remove it from Android Bluetooth settings, put the RNode in pairing mode, then pair again.'
                 : 'BLE connect failed: ' + errRaw;
-            if (typeof window.RatspeakAndroid !== 'undefined' &&
-                typeof window.RatspeakAndroid.disconnectBleDevice === 'function') {
-                try { window.RatspeakAndroid.disconnectBleDevice(); } catch (_) {}
-            }
-            if (data.rollback_on_error && data.name) {
-                RS.invoke('cancel_ble_connect', { name: data.name }).catch(function() {});
-            }
             var pd = window._activeProgressDialog;
             if (pd && pd.isOpen()) {
                 pd.error(errMsg);
@@ -1076,11 +1127,42 @@ RS.listen('ble_rnode_connect_native', function(data) {
         }
     };
 
+    window._bleRnodeActivityTimeout = setTimeout(function() {
+        if (window._bleRnodeActivityOperation !== activityOperation) return;
+        _clearBleRnodeNativeOperation(activityOperation);
+        _disconnectAndroidBleRnode(activityOperation);
+        RS.invoke('ble_rnode_bridge_failed', {
+            args: {
+                activity_operation: activityOperation,
+                failure_code: 'setup_timeout'
+            }
+        }).catch(function() {});
+        var pd = window._activeProgressDialog;
+        if (pd && pd.isOpen()) {
+            pd.error('BLE connection timed out. Check Bluetooth and pairing permissions, then retry.');
+        } else {
+            showToast('BLE connection timed out.', 'toast-red', 5000);
+        }
+    }, _BLE_RNODE_NATIVE_TIMEOUT_MS);
+
     if (window._activeProgressDialog && window._activeProgressDialog.isOpen()) {
         window._activeProgressDialog.update('Connecting to RNode...\nFresh installs may already be ready; otherwise hold P or OK to allow pairing.');
     }
 
-    window.RatspeakAndroid.connectBleDevice(data.address, data.tcp_port);
+    try {
+        window.RatspeakAndroid.connectBleDevice(
+            data.address,
+            data.tcp_port,
+            activityOperation
+        );
+    } catch (e) {
+        window._onBleConnectResult({
+            success: false,
+            activity_operation: activityOperation,
+            failure_code: 'connect_failed',
+            error: (e && e.message) || 'Native BLE bridge unavailable'
+        });
+    }
 });
 
 RS.listen('clone_warning', function(data) {

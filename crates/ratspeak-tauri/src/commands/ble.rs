@@ -16,13 +16,134 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::State;
 
+use ratspeak_runtime::activity::producer::{
+    InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason, InterfaceTimeoutReason,
+    InterfaceTransition,
+};
+
+use crate::commands::interface_activity::record_interface_event as record_interface_activity;
 #[cfg(feature = "ble")]
 use crate::commands::shared::{active_rns_config_dir, emit_hub_interfaces, with_rns_config_lock};
-use crate::commands::shared::{disable_ble_peer_inner, emit_op_status_broadcast};
+use crate::commands::shared::{
+    disable_ble_peer_inner, disable_ble_peer_inner_if_expiry, emit_op_status_broadcast,
+};
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::sanitize_text;
-use crate::state::AppState;
+use crate::state::{ActivityRequestFence, AppState};
+
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+enum BlePeerActivityOutcome {
+    Starting,
+    Ready,
+    Stopped,
+    MissingIdentity,
+    RuntimeFailed,
+    TimedOut,
+    PeripheralUnavailable,
+}
+
+fn ble_peer_activity_transition(outcome: BlePeerActivityOutcome) -> InterfaceTransition {
+    match outcome {
+        BlePeerActivityOutcome::Starting => InterfaceTransition::Connecting,
+        BlePeerActivityOutcome::Ready => InterfaceTransition::Online,
+        BlePeerActivityOutcome::Stopped => InterfaceTransition::Removed,
+        BlePeerActivityOutcome::MissingIdentity => InterfaceTransition::Failed {
+            reason: InterfaceFailureReason::Configure,
+            rollback: None,
+        },
+        BlePeerActivityOutcome::RuntimeFailed => InterfaceTransition::Failed {
+            reason: InterfaceFailureReason::Runtime,
+            rollback: None,
+        },
+        BlePeerActivityOutcome::TimedOut => InterfaceTransition::TimedOut {
+            reason: InterfaceTimeoutReason::Setup,
+        },
+        BlePeerActivityOutcome::PeripheralUnavailable => InterfaceTransition::Degraded {
+            reason: InterfaceDegradationReason::PeripheralUnavailable,
+        },
+    }
+}
+
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+enum BleRnodeActivityOutcome {
+    Ready,
+    ConfigureFailed,
+    ConnectFailed,
+    SetupTimedOut,
+    PairingTimedOut,
+    StartupTimedOut,
+    Cancelled,
+    RuntimeFailed,
+    Removed,
+    RemoveFailed,
+}
+
+fn ble_rnode_activity_transition(outcome: BleRnodeActivityOutcome) -> InterfaceTransition {
+    match outcome {
+        BleRnodeActivityOutcome::Ready => InterfaceTransition::Online,
+        BleRnodeActivityOutcome::ConfigureFailed => InterfaceTransition::Failed {
+            reason: InterfaceFailureReason::Configure,
+            rollback: None,
+        },
+        BleRnodeActivityOutcome::ConnectFailed => InterfaceTransition::Failed {
+            reason: InterfaceFailureReason::Connect,
+            rollback: None,
+        },
+        BleRnodeActivityOutcome::SetupTimedOut => InterfaceTransition::TimedOut {
+            reason: InterfaceTimeoutReason::Setup,
+        },
+        BleRnodeActivityOutcome::PairingTimedOut => InterfaceTransition::TimedOut {
+            reason: InterfaceTimeoutReason::Pairing,
+        },
+        BleRnodeActivityOutcome::StartupTimedOut => InterfaceTransition::TimedOut {
+            reason: InterfaceTimeoutReason::Startup,
+        },
+        BleRnodeActivityOutcome::Cancelled => InterfaceTransition::Cancelled,
+        BleRnodeActivityOutcome::RuntimeFailed => InterfaceTransition::Failed {
+            reason: InterfaceFailureReason::Runtime,
+            rollback: None,
+        },
+        BleRnodeActivityOutcome::Removed => InterfaceTransition::Removed,
+        BleRnodeActivityOutcome::RemoveFailed => InterfaceTransition::Failed {
+            reason: InterfaceFailureReason::Remove,
+            rollback: None,
+        },
+    }
+}
+
+type BleRnodeRollbackContext = (std::path::PathBuf, String, u64);
+
+#[cfg_attr(not(feature = "ble"), allow(dead_code))]
+fn clear_ble_rnode_rollback_context(
+    state: &AppState,
+    rollback_context: Option<BleRnodeRollbackContext>,
+) {
+    if let Some((config_dir, name, marker)) = rollback_context {
+        crate::commands::shared::clear_fresh_lora_add_marker(state, &config_dir, &name, marker);
+    }
+}
+
+fn rollback_ble_rnode_context(state: &AppState, rollback_context: Option<BleRnodeRollbackContext>) {
+    if let Some((config_dir, name, marker)) = rollback_context {
+        let _ = crate::commands::shared::rollback_fresh_lora_add_marker(
+            state,
+            &config_dir,
+            &name,
+            marker,
+        );
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        crate::commands::shared::emit_hub_interfaces(state, ifaces);
+    }
+}
+
+#[cfg(target_os = "android")]
+fn disconnect_native_ble_rnode_operation(state: &AppState, activity_operation: &str) {
+    state.emit_to_all(
+        "ble_rnode_disconnect_native",
+        json!({ "activity_operation": activity_operation }),
+    );
+}
 
 /// Relay typed BLE pairing/product events. Call once per process.
 ///
@@ -337,7 +458,12 @@ async fn persist_ble_peer_requested_state(state: &Arc<AppState>, expires_at: u64
 }
 
 #[cfg_attr(not(feature = "ble"), allow(dead_code))]
-fn schedule_ble_peer_expiry(state: &Arc<AppState>, duration_secs: u64, expires_at: u64) {
+fn schedule_ble_peer_expiry(
+    state: &Arc<AppState>,
+    activity_fence: ActivityRequestFence,
+    duration_secs: u64,
+    expires_at: u64,
+) {
     if duration_secs == 0 || expires_at == 0 {
         return;
     }
@@ -345,19 +471,15 @@ fn schedule_ble_peer_expiry(state: &Arc<AppState>, duration_secs: u64, expires_a
     let state3: Arc<AppState> = Arc::clone(state);
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
-        let still_this_request = db::spawn_db(state3.db.clone(), move |p| {
-            let enabled = db::get_setting(&p, BLE_PEER_ENABLED_SETTING)
-                .map(|v| v == "1")
-                .unwrap_or(false);
-            let current_expires_at = db::get_setting(&p, BLE_PEER_EXPIRES_AT_SETTING)
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(0);
-            enabled && current_expires_at == expires_at
-        })
-        .await
-        .unwrap_or(false);
-        if still_this_request {
-            disable_ble_peer_inner(&state3).await;
+        let changed = disable_ble_peer_inner_if_expiry(&state3, expires_at).await;
+        if changed {
+            record_interface_activity(
+                &state3,
+                activity_fence,
+                InterfaceClass::BluetoothPeer,
+                ble_peer_activity_transition(BlePeerActivityOutcome::Stopped),
+                None,
+            );
         }
     });
 }
@@ -368,15 +490,21 @@ pub async fn enable_ble_peer_interface(
     args: EnableBlePeerArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let duration_secs = args.duration;
     let expires_at = ble_peer_expires_at_for_duration(duration_secs);
 
-    spawn_enable_ble_peer_task(state_arc, duration_secs, expires_at);
+    spawn_enable_ble_peer_task(state_arc, activity_fence, duration_secs, expires_at);
     Ok(json!({ "queued": true }))
 }
 
 #[cfg_attr(not(feature = "ble"), allow(unused_variables))]
-fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expires_at: u64) {
+fn spawn_enable_ble_peer_task(
+    state_arc: Arc<AppState>,
+    activity_fence: ActivityRequestFence,
+    duration_secs: u64,
+    expires_at: u64,
+) {
     // Mark `ble_peer_enabled=1` only after spawn success.
     tokio::spawn(async move {
         let _enable_guard = state_arc.ble_peer_enable_lock.lock().await;
@@ -390,7 +518,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
         if let Some(handle) = _rns_handle {
             if let Some(id) = live_ble_peer_interface_id(&handle).await {
                 persist_ble_peer_requested_state(&state_arc, expires_at).await;
-                schedule_ble_peer_expiry(&state_arc, duration_secs, expires_at);
+                schedule_ble_peer_expiry(&state_arc, activity_fence, duration_secs, expires_at);
                 tracing::info!(
                     interface_id = id,
                     duration_secs,
@@ -462,11 +590,26 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                         "No active identity is configured. Create or select one in Settings → Identity, then try again.",
                     ),
                 );
+                record_interface_activity(
+                    &state_arc,
+                    activity_fence,
+                    InterfaceClass::BluetoothPeer,
+                    ble_peer_activity_transition(BlePeerActivityOutcome::MissingIdentity),
+                    None,
+                );
                 return;
             }
 
             let (event_tx, mut event_rx) =
                 tokio::sync::mpsc::channel::<rns_interface::ble_peer::BlePeerEvent>(1024);
+
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::BluetoothPeer,
+                ble_peer_activity_transition(BlePeerActivityOutcome::Starting),
+                None,
+            );
 
             match tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -486,6 +629,13 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                         .ble_peer_count
                         .store(0, std::sync::atomic::Ordering::Relaxed);
                     persist_ble_peer_requested_state(&state_arc, expires_at).await;
+                    record_interface_activity(
+                        &state_arc,
+                        activity_fence,
+                        InterfaceClass::BluetoothPeer,
+                        ble_peer_activity_transition(BlePeerActivityOutcome::Ready),
+                        None,
+                    );
 
                     let state_relay: Arc<AppState> = Arc::clone(&state_arc);
                     tokio::spawn(async move {
@@ -493,6 +643,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                         // Disconnected events lack identity; track per-address.
                         let mut address_to_identity: std::collections::HashMap<String, String> =
                             std::collections::HashMap::new();
+                        let mut peripheral_degradation_recorded = false;
                         fn logical_ble_peer_count(
                             address_to_identity: &std::collections::HashMap<String, String>,
                         ) -> usize {
@@ -673,6 +824,18 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                                     );
                                 }
                                 BlePeerEvent::PeripheralUnavailable { reason } => {
+                                    if !peripheral_degradation_recorded {
+                                        peripheral_degradation_recorded = true;
+                                        record_interface_activity(
+                                            &state_relay,
+                                            activity_fence,
+                                            InterfaceClass::BluetoothPeer,
+                                            ble_peer_activity_transition(
+                                                BlePeerActivityOutcome::PeripheralUnavailable,
+                                            ),
+                                            None,
+                                        );
+                                    }
                                     state_relay.emit_to_all(
                                         "ble_peer_peripheral_unavailable",
                                         json!({ "reason": reason }),
@@ -750,8 +913,7 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                         true,
                         None,
                     );
-
-                    schedule_ble_peer_expiry(&state_arc, duration_secs, expires_at);
+                    schedule_ble_peer_expiry(&state_arc, activity_fence, duration_secs, expires_at);
                 }
                 Ok(Err(e)) => {
                     let _ = db::spawn_db(state_arc.db.clone(), |p| {
@@ -767,6 +929,13 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                         "Bluetooth Peer failed to start",
                         true,
                         Some(&e),
+                    );
+                    record_interface_activity(
+                        &state_arc,
+                        activity_fence,
+                        InterfaceClass::BluetoothPeer,
+                        ble_peer_activity_transition(BlePeerActivityOutcome::RuntimeFailed),
+                        None,
                     );
                 }
                 Err(_) => {
@@ -793,6 +962,13 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                         true,
                         Some("Bluetooth Peer spawn timed out; check Bluetooth permissions"),
                     );
+                    record_interface_activity(
+                        &state_arc,
+                        activity_fence,
+                        InterfaceClass::BluetoothPeer,
+                        ble_peer_activity_transition(BlePeerActivityOutcome::TimedOut),
+                        None,
+                    );
                 }
             }
         } else {
@@ -806,6 +982,13 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                 true,
                 Some("RNS is not initialized yet"),
             );
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::BluetoothPeer,
+                ble_peer_activity_transition(BlePeerActivityOutcome::RuntimeFailed),
+                None,
+            );
         }
         #[cfg(not(feature = "ble"))]
         {
@@ -818,6 +1001,13 @@ fn spawn_enable_ble_peer_task(state_arc: Arc<AppState>, duration_secs: u64, expi
                 "BLE not available (feature not compiled)",
                 true,
                 Some("BLE feature not compiled"),
+            );
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::BluetoothPeer,
+                ble_peer_activity_transition(BlePeerActivityOutcome::RuntimeFailed),
+                None,
             );
         }
     });
@@ -863,14 +1053,16 @@ pub(crate) async fn restore_ble_peer_if_requested(state: Arc<AppState>) {
         expires_at,
         "restoring persisted Bluetooth Peer interface request"
     );
-    spawn_enable_ble_peer_task(state, duration_secs, expires_at);
+    let activity_fence = state.activity_request_fence();
+    spawn_enable_ble_peer_task(state, activity_fence, duration_secs, expires_at);
 }
 
 #[tauri::command]
 pub async fn disable_ble_peer_interface(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     tokio::spawn(async move {
-        disable_ble_peer_inner(&state_arc).await;
+        let changed = disable_ble_peer_inner(&state_arc).await;
         emit_op_status_broadcast(
             &state_arc,
             "disable_ble_peer",
@@ -879,6 +1071,15 @@ pub async fn disable_ble_peer_interface(state: State<'_, Arc<AppState>>) -> AppR
             true,
             None,
         );
+        if changed {
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::BluetoothPeer,
+                ble_peer_activity_transition(BlePeerActivityOutcome::Stopped),
+                None,
+            );
+        }
     });
     Ok(json!({ "queued": true }))
 }
@@ -948,6 +1149,8 @@ pub async fn scan_ble_devices(_state: State<'_, Arc<AppState>>) -> AppResult<Val
 
 #[derive(Deserialize)]
 pub struct BleRnodeBridgeArgs {
+    #[serde(default)]
+    pub activity_operation: String,
     pub tcp_port: u16,
     #[serde(default = "default_name")]
     pub name: String,
@@ -997,6 +1200,10 @@ pub async fn ble_rnode_bridge_ready(
     args: BleRnodeBridgeArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_operation = args.activity_operation.clone();
+    let activity_fence = state_arc
+        .claim_ble_rnode_activity_operation(&activity_operation)
+        .ok_or_else(|| AppError::bad_request("Unknown or expired BLE bridge operation"))?;
     let tcp_port = args.tcp_port;
     let name = sanitize_text(&args.name, 64);
     let port = sanitize_text(&args.port, 256);
@@ -1005,8 +1212,23 @@ pub async fn ble_rnode_bridge_ready(
     let sf = args.spreading_factor;
     let cr = args.coding_rate;
     let tx = args.tx_power;
-    let mode = crate::rns_config::rnode_interface_mode_value(args.mode.as_deref())
-        .ok_or_else(|| AppError::bad_request("Invalid RNode interface mode"))?;
+    let Some(mode) = crate::rns_config::rnode_interface_mode_value(args.mode.as_deref()) else {
+        #[cfg(target_os = "android")]
+        disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+        if let Some((terminal_fence, rollback_context)) =
+            state_arc.take_initializing_ble_rnode_activity_operation(&activity_operation)
+        {
+            rollback_ble_rnode_context(&state_arc, rollback_context);
+            record_interface_activity(
+                &state_arc,
+                terminal_fence,
+                InterfaceClass::RNode,
+                ble_rnode_activity_transition(BleRnodeActivityOutcome::ConfigureFailed),
+                None,
+            );
+        }
+        return Err(AppError::bad_request("Invalid RNode interface mode"));
+    };
     // Range-validated at add_lora time; clamp here as belt-and-braces.
     let st_alock = args
         .airtime_limit_short
@@ -1018,14 +1240,28 @@ pub async fn ble_rnode_bridge_ready(
         .map(|v| v as f32);
 
     if tcp_port == 0 {
-        emit_op_status_broadcast(
-            &state_arc,
-            "add_lora",
-            "hub",
-            "Invalid TCP bridge port",
-            true,
-            Some("port=0"),
-        );
+        #[cfg(target_os = "android")]
+        disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+        if let Some((terminal_fence, rollback_context)) =
+            state_arc.take_initializing_ble_rnode_activity_operation(&activity_operation)
+        {
+            rollback_ble_rnode_context(&state_arc, rollback_context);
+            emit_op_status_broadcast(
+                &state_arc,
+                "add_lora",
+                "hub",
+                "Invalid TCP bridge port",
+                true,
+                Some("port=0"),
+            );
+            record_interface_activity(
+                &state_arc,
+                terminal_fence,
+                InterfaceClass::RNode,
+                ble_rnode_activity_transition(BleRnodeActivityOutcome::ConnectFailed),
+                None,
+            );
+        }
         return Err(AppError::bad_request("Invalid TCP bridge port"));
     }
 
@@ -1033,46 +1269,79 @@ pub async fn ble_rnode_bridge_ready(
     {
         let name_for_status = name.clone();
         tokio::spawn(async move {
-            emit_op_status_broadcast(
-                &state_arc,
-                "add_lora",
-                "hub",
-                "BLE connected, initializing RNode...",
-                false,
-                None,
-            );
-
-            let rns = state_arc
-                .rns
-                .read()
-                .ok()
-                .and_then(|guard| guard.as_ref().map(|mgr| mgr.handle.clone()));
-            if let Some(rns) = rns {
-                match rns_runtime::reticulum::spawn_ble_rnode_runtime_native(
-                    &rns,
-                    rns_runtime::reticulum::BleRnodeRuntimeArgs {
-                        name: &name,
-                        port: &port,
-                        frequency: frequency as u32,
-                        bandwidth: bandwidth as u32,
-                        spreading_factor: sf,
-                        coding_rate: cr,
-                        tx_power: tx,
-                        mode,
-                        st_alock,
-                        lt_alock,
-                        flow_control: true,
-                    },
-                    tcp_port,
-                )
-                .await
+            // The opaque operation token gates product work independently of
+            // Activity capture. Hold the identity transition lock only across
+            // the runtime spawn so a consumed token cannot race a teardown.
+            let spawn_result = {
+                let _identity_guard = state_arc.identity_switch_lock.lock().await;
+                if state_arc.current_identity_session_generation()
+                    != activity_fence.identity_session_generation()
                 {
-                    Ok((id, online)) => {
-                        // Wait for first RNode detect/init response.
-                        let start = std::time::Instant::now();
-                        let timeout = std::time::Duration::from_secs(120);
-                        loop {
-                            if online.load(std::sync::atomic::Ordering::SeqCst) {
+                    if let Some((_, rollback_context)) = state_arc
+                        .take_initializing_ble_rnode_activity_operation(&activity_operation)
+                    {
+                        rollback_ble_rnode_context(&state_arc, rollback_context);
+                    }
+                    #[cfg(target_os = "android")]
+                    disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+                    return;
+                }
+                emit_op_status_broadcast(
+                    &state_arc,
+                    "add_lora",
+                    "hub",
+                    "BLE connected, initializing RNode...",
+                    false,
+                    None,
+                );
+                let rns = state_arc
+                    .rns
+                    .read()
+                    .ok()
+                    .and_then(|guard| guard.as_ref().map(|mgr| mgr.handle.clone()));
+                match rns {
+                    Some(rns) => {
+                        let result = rns_runtime::reticulum::spawn_ble_rnode_runtime_native(
+                            &rns,
+                            rns_runtime::reticulum::BleRnodeRuntimeArgs {
+                                name: &name,
+                                port: &port,
+                                frequency: frequency as u32,
+                                bandwidth: bandwidth as u32,
+                                spreading_factor: sf,
+                                coding_rate: cr,
+                                tx_power: tx,
+                                mode,
+                                st_alock,
+                                lt_alock,
+                                flow_control: true,
+                            },
+                            tcp_port,
+                        )
+                        .await;
+                        Some((rns, result))
+                    }
+                    None => None,
+                }
+            };
+
+            match spawn_result {
+                Some((rns, Ok((id, online)))) => {
+                    // Wait for first RNode detect/init response.
+                    let start = std::time::Instant::now();
+                    let timeout = std::time::Duration::from_secs(120);
+                    loop {
+                        if !state_arc.is_current_ble_rnode_activity_operation(&activity_operation) {
+                            rns_runtime::reticulum::teardown_ble_rnode_interface(&rns, id).await;
+                            #[cfg(target_os = "android")]
+                            disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+                            break;
+                        }
+                        if online.load(std::sync::atomic::Ordering::SeqCst) {
+                            if let Some((terminal_fence, rollback_context)) = state_arc
+                                .take_initializing_ble_rnode_activity_operation(&activity_operation)
+                            {
+                                clear_ble_rnode_rollback_context(&state_arc, rollback_context);
                                 emit_op_status_broadcast(
                                     &state_arc,
                                     "add_lora",
@@ -1081,9 +1350,38 @@ pub async fn ble_rnode_bridge_ready(
                                     true,
                                     None,
                                 );
-                                break;
+                                record_interface_activity(
+                                    &state_arc,
+                                    terminal_fence,
+                                    InterfaceClass::RNode,
+                                    ble_rnode_activity_transition(BleRnodeActivityOutcome::Ready),
+                                    None,
+                                );
+                            } else {
+                                rns_runtime::reticulum::teardown_ble_rnode_interface(&rns, id)
+                                    .await;
+                                #[cfg(target_os = "android")]
+                                disconnect_native_ble_rnode_operation(
+                                    &state_arc,
+                                    &activity_operation,
+                                );
                             }
-                            if start.elapsed() > timeout {
+                            break;
+                        }
+                        if start.elapsed() > timeout {
+                            let completion_claimed = state_arc
+                                .claim_ble_rnode_activity_operation_completion(&activity_operation)
+                                .is_some();
+                            rns_runtime::reticulum::teardown_ble_rnode_interface(&rns, id).await;
+                            #[cfg(target_os = "android")]
+                            disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+                            if completion_claimed
+                                && let Some((terminal_fence, rollback_context)) = state_arc
+                                    .take_completing_ble_rnode_activity_operation(
+                                        &activity_operation,
+                                    )
+                            {
+                                rollback_ble_rnode_context(&state_arc, rollback_context);
                                 emit_op_status_broadcast(
                                     &state_arc,
                                     "add_lora",
@@ -1092,12 +1390,28 @@ pub async fn ble_rnode_bridge_ready(
                                     true,
                                     Some("init_timeout"),
                                 );
-                                break;
+                                record_interface_activity(
+                                    &state_arc,
+                                    terminal_fence,
+                                    InterfaceClass::RNode,
+                                    ble_rnode_activity_transition(
+                                        BleRnodeActivityOutcome::StartupTimedOut,
+                                    ),
+                                    None,
+                                );
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            break;
                         }
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
-                    Err(e) => {
+                }
+                Some((_rns, Err(e))) => {
+                    let terminal = state_arc
+                        .take_initializing_ble_rnode_activity_operation(&activity_operation);
+                    #[cfg(target_os = "android")]
+                    disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+                    if let Some((terminal_fence, rollback_context)) = terminal {
+                        rollback_ble_rnode_context(&state_arc, rollback_context);
                         emit_op_status_broadcast(
                             &state_arc,
                             "add_lora",
@@ -1106,17 +1420,39 @@ pub async fn ble_rnode_bridge_ready(
                             true,
                             Some(&e),
                         );
+                        record_interface_activity(
+                            &state_arc,
+                            terminal_fence,
+                            InterfaceClass::RNode,
+                            ble_rnode_activity_transition(BleRnodeActivityOutcome::ConnectFailed),
+                            None,
+                        );
                     }
                 }
-            } else {
-                emit_op_status_broadcast(
-                    &state_arc,
-                    "add_lora",
-                    "hub",
-                    "BLE bridge ready but RNS not running.",
-                    true,
-                    None,
-                );
+                None => {
+                    let terminal = state_arc
+                        .take_initializing_ble_rnode_activity_operation(&activity_operation);
+                    #[cfg(target_os = "android")]
+                    disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+                    if let Some((terminal_fence, rollback_context)) = terminal {
+                        rollback_ble_rnode_context(&state_arc, rollback_context);
+                        emit_op_status_broadcast(
+                            &state_arc,
+                            "add_lora",
+                            "hub",
+                            "BLE bridge ready but RNS not running.",
+                            true,
+                            None,
+                        );
+                        record_interface_activity(
+                            &state_arc,
+                            terminal_fence,
+                            InterfaceClass::RNode,
+                            ble_rnode_activity_transition(BleRnodeActivityOutcome::RuntimeFailed),
+                            None,
+                        );
+                    }
+                }
             }
 
             let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state_arc));
@@ -1125,8 +1461,23 @@ pub async fn ble_rnode_bridge_ready(
     }
     #[cfg(not(feature = "ble"))]
     {
+        let terminal =
+            state_arc.take_initializing_ble_rnode_activity_operation(&activity_operation);
+        #[cfg(target_os = "android")]
+        disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
         let _ = (
-            tcp_port, name, port, frequency, bandwidth, sf, cr, tx, mode, st_alock, lt_alock,
+            activity_fence,
+            tcp_port,
+            name,
+            port,
+            frequency,
+            bandwidth,
+            sf,
+            cr,
+            tx,
+            mode,
+            st_alock,
+            lt_alock,
         );
         emit_op_status_broadcast(
             &state_arc,
@@ -1136,11 +1487,63 @@ pub async fn ble_rnode_bridge_ready(
             true,
             Some("BLE feature not compiled"),
         );
+        if let Some((terminal_fence, rollback_context)) = terminal {
+            rollback_ble_rnode_context(&state_arc, rollback_context);
+            record_interface_activity(
+                &state_arc,
+                terminal_fence,
+                InterfaceClass::RNode,
+                ble_rnode_activity_transition(BleRnodeActivityOutcome::RuntimeFailed),
+                None,
+            );
+        }
     }
     Ok(json!({ "queued": true }))
 }
 
-/// Aborts in-flight iOS SMP exchange (the OS dialog may briefly linger).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum BleRnodeNativeFailureCode {
+    #[default]
+    ConnectFailed,
+    BondTimeout,
+    SetupTimeout,
+}
+
+#[derive(Deserialize)]
+pub struct BleRnodeBridgeFailureArgs {
+    pub activity_operation: String,
+    #[serde(default)]
+    failure_code: BleRnodeNativeFailureCode,
+}
+
+/// Records only the typed outcome of an Android native bridge failure. The
+/// native error remains product feedback in the WebView and never crosses the
+/// Activity privacy boundary.
+#[tauri::command]
+pub async fn ble_rnode_bridge_failed(
+    state: State<'_, Arc<AppState>>,
+    args: BleRnodeBridgeFailureArgs,
+) -> AppResult<Value> {
+    let (activity_fence, rollback_context) = state
+        .take_pending_ble_rnode_activity_operation(&args.activity_operation)
+        .ok_or_else(|| AppError::bad_request("Unknown or expired BLE bridge operation"))?;
+    rollback_ble_rnode_context(&state, rollback_context);
+    record_interface_activity(
+        &state,
+        activity_fence,
+        InterfaceClass::RNode,
+        ble_rnode_activity_transition(match args.failure_code {
+            BleRnodeNativeFailureCode::ConnectFailed => BleRnodeActivityOutcome::ConnectFailed,
+            BleRnodeNativeFailureCode::BondTimeout => BleRnodeActivityOutcome::PairingTimedOut,
+            BleRnodeNativeFailureCode::SetupTimeout => BleRnodeActivityOutcome::SetupTimedOut,
+        }),
+        None,
+    );
+    Ok(json!({ "ok": true }))
+}
+
+/// Aborts an in-flight BLE exchange (the OS dialog may briefly linger).
 /// Config rollback only applies to entries the in-flight add created;
 /// cancelling a reconnect of a pre-existing radio keeps its config.
 #[tauri::command]
@@ -1156,59 +1559,86 @@ pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -
 
     #[cfg(feature = "ble")]
     {
+        let cancelled_operation = state_arc.begin_ble_rnode_activity_cancellation();
+        let mut cancellation_token = None;
+        if let Some((activity_operation, activity_fence, rollback_context)) = cancelled_operation {
+            cancellation_token = Some(activity_operation.clone());
+            rollback_ble_rnode_context(&state_arc, rollback_context);
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::RNode,
+                ble_rnode_activity_transition(BleRnodeActivityOutcome::Cancelled),
+                None,
+            );
+            #[cfg(target_os = "android")]
+            disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+            #[cfg(not(target_os = "android"))]
+            let _ = activity_operation;
+        }
+
         // Abort in-flight Linux pair attempt; idempotent.
         #[cfg(target_os = "linux")]
         rns_interface::ble_rnode::linux_cancel_pairing();
 
-        let fresh_add = crate::commands::shared::take_fresh_lora_add(&name);
         let config_dir = active_rns_config_dir(&state_arc);
-        let name_clone = name.clone();
-        tokio::spawn(async move {
-            let rns_handle = state_arc
-                .rns
-                .read()
-                .ok()
-                .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
-            if let Some(handle) = rns_handle {
-                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                if handle
-                    .transport_tx
-                    .send(rns_transport::messages::TransportMessage::Rpc {
-                        query: rns_transport::messages::TransportQuery::GetInterfaceStats,
-                        response_tx: resp_tx,
-                    })
-                    .await
-                    .is_ok()
-                    && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(
-                        stats,
-                    )) = resp_rx.await
-                {
-                    for iface in stats {
-                        if iface.name == name_clone {
-                            rns_runtime::reticulum::teardown_ble_rnode_interface(&handle, iface.id)
-                                .await;
-                            break;
+        if let Some(cancellation_token) = cancellation_token {
+            let name_clone = name.clone();
+            tokio::spawn(async move {
+                let rns_handle = state_arc
+                    .rns
+                    .read()
+                    .ok()
+                    .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
+                let mut interface_id = None;
+                if let Some(handle) = rns_handle {
+                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                    if handle
+                        .transport_tx
+                        .send(rns_transport::messages::TransportMessage::Rpc {
+                            query: rns_transport::messages::TransportQuery::GetInterfaceStats,
+                            response_tx: resp_tx,
+                        })
+                        .await
+                        .is_ok()
+                        && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(
+                            stats,
+                        )) = resp_rx.await
+                    {
+                        for iface in stats {
+                            if iface.name == name_clone {
+                                interface_id = Some((handle.clone(), iface.id));
+                                break;
+                            }
                         }
                     }
                 }
-            }
 
-            if fresh_add {
-                let _ = with_rns_config_lock(&state_arc, || {
-                    crate::rns_config::remove_interface(&config_dir, &name_clone)
-                });
-            }
-            let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
-            emit_hub_interfaces(&state_arc, ifaces);
-            emit_op_status_broadcast(
-                &state_arc,
-                "add_lora",
-                "hub",
-                &format!("BLE connect for '{name_clone}' cancelled."),
-                true,
-                Some("cancelled"),
-            );
-        });
+                if !state_arc.claim_ble_rnode_activity_cancellation(&cancellation_token) {
+                    return;
+                }
+                if let Some((handle, interface_id)) = interface_id {
+                    rns_runtime::reticulum::teardown_ble_rnode_interface(&handle, interface_id)
+                        .await;
+                }
+                if state_arc
+                    .take_completing_ble_rnode_activity_cancellation(&cancellation_token)
+                    .is_none()
+                {
+                    return;
+                }
+                let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+                emit_hub_interfaces(&state_arc, ifaces);
+                emit_op_status_broadcast(
+                    &state_arc,
+                    "add_lora",
+                    "hub",
+                    &format!("BLE connect for '{name_clone}' cancelled."),
+                    true,
+                    Some("cancelled"),
+                );
+            });
+        }
     }
     #[cfg(not(feature = "ble"))]
     let _ = &name;
@@ -1222,12 +1652,15 @@ pub async fn disconnect_ble_rnode(
 ) -> AppResult<Value> {
     #[cfg(feature = "ble")]
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    #[cfg(feature = "ble")]
+    let activity_fence = state_arc.activity_request_fence();
     #[cfg(not(feature = "ble"))]
     let _ = state;
     let name = sanitize_text(&name, 64);
 
     #[cfg(feature = "ble")]
     {
+        let _ = state_arc.invalidate_ble_rnode_activity_operation();
         let config_dir = active_rns_config_dir(&state_arc);
         let name_clone = name.clone();
         tokio::spawn(async move {
@@ -1272,26 +1705,53 @@ pub async fn disconnect_ble_rnode(
             #[cfg(target_os = "android")]
             state_arc.emit_to_all("ble_rnode_disconnect_native", json!({}));
 
-            if with_rns_config_lock(&state_arc, || {
-                crate::rns_config::remove_interface(&config_dir, &name_clone)
+            match with_rns_config_lock(&state_arc, || {
+                crate::rns_config::remove_interface_checked(&config_dir, &name_clone)
             }) {
-                emit_op_status_broadcast(
-                    &state_arc,
-                    "disconnect_ble_rnode",
-                    "hub",
-                    "BLE LoRa disconnected",
-                    true,
-                    None,
-                );
-            } else {
-                emit_op_status_broadcast(
-                    &state_arc,
-                    "disconnect_ble_rnode",
-                    "hub",
-                    "Disconnect failed",
-                    true,
-                    Some("Config write error"),
-                );
+                crate::rns_config::RemoveInterfaceOutcome::Removed => {
+                    emit_op_status_broadcast(
+                        &state_arc,
+                        "disconnect_ble_rnode",
+                        "hub",
+                        "BLE LoRa disconnected",
+                        true,
+                        None,
+                    );
+                    record_interface_activity(
+                        &state_arc,
+                        activity_fence,
+                        InterfaceClass::RNode,
+                        ble_rnode_activity_transition(BleRnodeActivityOutcome::Removed),
+                        None,
+                    );
+                }
+                crate::rns_config::RemoveInterfaceOutcome::NotFound => {
+                    emit_op_status_broadcast(
+                        &state_arc,
+                        "disconnect_ble_rnode",
+                        "hub",
+                        "BLE LoRa already disconnected",
+                        true,
+                        None,
+                    );
+                }
+                crate::rns_config::RemoveInterfaceOutcome::WriteFailed => {
+                    emit_op_status_broadcast(
+                        &state_arc,
+                        "disconnect_ble_rnode",
+                        "hub",
+                        "Disconnect failed",
+                        true,
+                        Some("Config write error"),
+                    );
+                    record_interface_activity(
+                        &state_arc,
+                        activity_fence,
+                        InterfaceClass::RNode,
+                        ble_rnode_activity_transition(BleRnodeActivityOutcome::RemoveFailed),
+                        None,
+                    );
+                }
             }
 
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
@@ -1306,6 +1766,142 @@ pub async fn disconnect_ble_rnode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ble_peer_activity_outcomes_have_stable_semantics() {
+        assert!(matches!(
+            ble_peer_activity_transition(BlePeerActivityOutcome::Starting),
+            InterfaceTransition::Connecting
+        ));
+        assert!(matches!(
+            ble_peer_activity_transition(BlePeerActivityOutcome::Ready),
+            InterfaceTransition::Online
+        ));
+        assert!(matches!(
+            ble_peer_activity_transition(BlePeerActivityOutcome::Stopped),
+            InterfaceTransition::Removed
+        ));
+        assert!(matches!(
+            ble_peer_activity_transition(BlePeerActivityOutcome::MissingIdentity),
+            InterfaceTransition::Failed {
+                reason: InterfaceFailureReason::Configure,
+                rollback: None,
+            }
+        ));
+        assert!(matches!(
+            ble_peer_activity_transition(BlePeerActivityOutcome::RuntimeFailed),
+            InterfaceTransition::Failed {
+                reason: InterfaceFailureReason::Runtime,
+                rollback: None,
+            }
+        ));
+        assert!(matches!(
+            ble_peer_activity_transition(BlePeerActivityOutcome::TimedOut),
+            InterfaceTransition::TimedOut {
+                reason: InterfaceTimeoutReason::Setup,
+            }
+        ));
+        assert!(matches!(
+            ble_peer_activity_transition(BlePeerActivityOutcome::PeripheralUnavailable),
+            InterfaceTransition::Degraded {
+                reason: InterfaceDegradationReason::PeripheralUnavailable,
+            }
+        ));
+    }
+
+    #[test]
+    fn ble_rnode_activity_outcomes_have_stable_semantics() {
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::Ready),
+            InterfaceTransition::Online
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::ConfigureFailed),
+            InterfaceTransition::Failed {
+                reason: InterfaceFailureReason::Configure,
+                rollback: None,
+            }
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::ConnectFailed),
+            InterfaceTransition::Failed {
+                reason: InterfaceFailureReason::Connect,
+                rollback: None,
+            }
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::SetupTimedOut),
+            InterfaceTransition::TimedOut {
+                reason: InterfaceTimeoutReason::Setup,
+            }
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::PairingTimedOut),
+            InterfaceTransition::TimedOut {
+                reason: InterfaceTimeoutReason::Pairing,
+            }
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::StartupTimedOut),
+            InterfaceTransition::TimedOut {
+                reason: InterfaceTimeoutReason::Startup,
+            }
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::Cancelled),
+            InterfaceTransition::Cancelled
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::RuntimeFailed),
+            InterfaceTransition::Failed {
+                reason: InterfaceFailureReason::Runtime,
+                rollback: None,
+            }
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::Removed),
+            InterfaceTransition::Removed
+        ));
+        assert!(matches!(
+            ble_rnode_activity_transition(BleRnodeActivityOutcome::RemoveFailed),
+            InterfaceTransition::Failed {
+                reason: InterfaceFailureReason::Remove,
+                rollback: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn native_ble_failure_codes_are_small_typed_allowlist() {
+        for (failure_code, expected) in [
+            ("connect_failed", BleRnodeNativeFailureCode::ConnectFailed),
+            ("bond_timeout", BleRnodeNativeFailureCode::BondTimeout),
+            ("setup_timeout", BleRnodeNativeFailureCode::SetupTimeout),
+        ] {
+            let args: BleRnodeBridgeFailureArgs = serde_json::from_value(json!({
+                "activity_operation": "00112233445566778899aabbccddeeff",
+                "failure_code": failure_code,
+            }))
+            .unwrap();
+            assert_eq!(args.failure_code, expected);
+        }
+
+        let defaulted: BleRnodeBridgeFailureArgs = serde_json::from_value(json!({
+            "activity_operation": "00112233445566778899aabbccddeeff",
+        }))
+        .unwrap();
+        assert_eq!(
+            defaulted.failure_code,
+            BleRnodeNativeFailureCode::ConnectFailed
+        );
+        assert!(
+            serde_json::from_value::<BleRnodeBridgeFailureArgs>(json!({
+                "activity_operation": "00112233445566778899aabbccddeeff",
+                "failure_code": "raw_native_error",
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn ble_peer_remaining_secs_preserves_always_on() {

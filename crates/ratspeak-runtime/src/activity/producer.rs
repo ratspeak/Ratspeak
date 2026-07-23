@@ -12,9 +12,10 @@ use super::classified::{ActivityDraft, ActivityRejectReason};
 pub use super::catalog::{
     AnnounceFailureReason, AnnounceMethod, AnnounceSuppressionReason, AppRuntimeTransition,
     DeliveryFailureReason, DestinationHash, IdentityHash, InboundLxmfMethod, InterfaceClass,
-    InterfaceFailureReason, InterfaceRollback, InterfaceTransition, LinkId, LxmfDeliveryMethod,
-    LxmfDeliveryState, LxmfProgressStep, LxmfSubmissionFailureReason, LxstCallReason,
-    LxstTransition, MessageId, PathEvidence, PathRequestMethod, TcpEndpoint,
+    InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback, InterfaceTimeoutReason,
+    InterfaceTransition, LinkId, LxmfDeliveryMethod, LxmfDeliveryState, LxmfProgressStep,
+    LxmfSubmissionFailureReason, LxstCallReason, LxstTransition, MessageId, PathEvidence,
+    PathRequestMethod, TcpEndpoint,
 };
 
 /// Opaque timeless event accepted by [`super::ActivityRecorder::record_event`].

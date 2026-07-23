@@ -108,11 +108,14 @@ class MainActivity : TauriActivity() {
         // hand the string to BluetoothAdapter.getRemoteDevice, which throws
         // IllegalArgumentException on malformed input.
         private val BLE_MAC_RE = Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+        private val BLE_OPERATION_RE = Regex("^[0-9A-Fa-f]{32}$")
     }
     private var webViewRef: WebView? = null
     private var appBackCallback: OnBackPressedCallback? = null
     private val handler = Handler(Looper.getMainLooper())
+    private val bleGattLock = Object()
     private var bleGatt: RatspeakBleGatt? = null
+    @Volatile private var bleConnectOperation: String? = null
     private var pendingTop = 0
     private var pendingBottom = 0
     private var pendingNavigate: String? = null
@@ -361,8 +364,13 @@ class MainActivity : TauriActivity() {
         // GATT handle lives on this Activity. If the Activity is destroyed, close
         // the GATT link cleanly so we don't leak a stale BluetoothGatt into the
         // OS stack.
-        try { bleGatt?.disconnect() } catch (_: Exception) {}
-        bleGatt = null
+        val gattToClose = synchronized(bleGattLock) {
+            bleConnectOperation = null
+            val active = bleGatt
+            bleGatt = null
+            active
+        }
+        try { gattToClose?.disconnect() } catch (_: Exception) {}
         usbPermissionReceiver?.let {
             try { unregisterReceiver(it) } catch (_: Exception) {}
         }
@@ -1840,20 +1848,20 @@ class MainActivity : TauriActivity() {
 
         /**
          * Connect to a BLE device and start the TCP bridge.
-         * Result delivered via window._onBleConnectResult(json).
+         * Result delivered via window._onBleConnectResult(json). The opaque
+         * operation token is returned unchanged so the WebView can reject a
+         * late completion from a superseded request.
          * On success, json.port contains the local TCP port for Rust to connect to.
          */
         @JavascriptInterface
-        fun connectBleDevice(address: String, localPort: Int) {
-            if (!BLE_MAC_RE.matches(address)) {
-                // Bail before touching BluetoothAdapter.getRemoteDevice, which
-                // would throw IllegalArgumentException buried in Logcat. A
-                // structured early error makes the frontend able to show a
-                // meaningful toast.
+        fun connectBleDevice(address: String, localPort: Int, activityOperation: String) {
+            if (!BLE_OPERATION_RE.matches(activityOperation)) {
                 val errJson = JSONObject()
                     .put("success", false)
                     .put("port", localPort)
-                    .put("error", "Invalid BLE address format (expected XX:XX:XX:XX:XX:XX)")
+                    .put("activity_operation", activityOperation)
+                    .put("failure_code", "connect_failed")
+                    .put("error", "Invalid BLE operation token")
                 handler.post {
                     webViewRef?.evaluateJavascript(
                         "if(typeof window._onBleConnectResult==='function')window._onBleConnectResult($errJson);",
@@ -1862,36 +1870,126 @@ class MainActivity : TauriActivity() {
                 }
                 return
             }
-            Thread({
-                // Disconnect any existing connection
-                bleGatt?.disconnect()
-                val gatt = RatspeakBleGatt(this@MainActivity)
-                bleGatt = gatt
-                // Let the bridge push phase updates to JS during the multi-step connect.
-                gatt.attachWebView(webViewRef)
 
+            // Installing B invalidates A before either request can publish a
+            // result. The old GATT object is disconnected outside the lock.
+            val previousGatt = synchronized(bleGattLock) {
+                bleConnectOperation = activityOperation
+                val previous = bleGatt
+                bleGatt = null
+                previous
+            }
+            try { previousGatt?.disconnect() } catch (_: Exception) {}
+
+            if (!BLE_MAC_RE.matches(address)) {
+                // Bail before touching BluetoothAdapter.getRemoteDevice, which
+                // would throw IllegalArgumentException buried in Logcat. A
+                // structured early error makes the frontend able to show a
+                // meaningful toast.
+                val errJson = JSONObject()
+                    .put("success", false)
+                    .put("port", localPort)
+                    .put("activity_operation", activityOperation)
+                    .put("failure_code", "connect_failed")
+                    .put("error", "Invalid BLE address format (expected XX:XX:XX:XX:XX:XX)")
+                dispatchBleConnectResult(activityOperation, errJson, clearOperation = true)
+                return
+            }
+            Thread({
+                if (!isCurrentBleConnectOperation(activityOperation)) return@Thread
+                val gatt = RatspeakBleGatt(this@MainActivity)
+                val installed = synchronized(bleGattLock) {
+                    if (bleConnectOperation != activityOperation) {
+                        false
+                    } else {
+                        bleGatt = gatt
+                        true
+                    }
+                }
+                if (!installed) return@Thread
+
+                // Let the bridge push phase updates to JS during the multi-step connect.
+                gatt.attachWebView(webViewRef, activityOperation)
+
+                if (!isCurrentBleConnectOperation(activityOperation)) {
+                    gatt.disconnect()
+                    return@Thread
+                }
                 val error = gatt.connect(address, localPort)
+                if (!isCurrentBleConnectOperation(activityOperation)) {
+                    gatt.disconnect()
+                    return@Thread
+                }
                 if (error != null) {
                     gatt.disconnect()
-                    if (bleGatt === gatt) bleGatt = null
+                    synchronized(bleGattLock) {
+                        if (bleGatt === gatt) bleGatt = null
+                    }
                 }
                 val result = JSONObject().apply {
                     put("success", error == null)
                     put("port", localPort)
-                    if (error != null) put("error", error)
+                    put("activity_operation", activityOperation)
+                    if (error != null) {
+                        put(
+                            "failure_code",
+                            if (error.contains(RatspeakBleGatt.ERR_BOND_TIMEOUT)) {
+                                "bond_timeout"
+                            } else {
+                                "connect_failed"
+                            }
+                        )
+                        put("error", error)
+                    }
                 }
-                handler.post {
+                dispatchBleConnectResult(
+                    activityOperation,
+                    result,
+                    clearOperation = error != null
+                )
+
+                // If connection succeeded, start forwarding (blocks until disconnected)
+                if (error == null && isCurrentBleConnectOperation(activityOperation)) {
+                    gatt.startForwarding()
+                    synchronized(bleGattLock) {
+                        if (bleGatt === gatt) bleGatt = null
+                        if (bleConnectOperation == activityOperation) {
+                            bleConnectOperation = null
+                        }
+                    }
+                }
+            }, "ble-gatt-connect").start()
+        }
+
+        private fun isCurrentBleConnectOperation(activityOperation: String): Boolean =
+            synchronized(bleGattLock) { bleConnectOperation == activityOperation }
+
+        private fun dispatchBleConnectResult(
+            activityOperation: String,
+            result: JSONObject,
+            clearOperation: Boolean
+        ) {
+            handler.post {
+                val shouldDeliver = synchronized(bleGattLock) {
+                    if (bleConnectOperation != activityOperation) {
+                        false
+                    } else {
+                        if (clearOperation) bleConnectOperation = null
+                        true
+                    }
+                }
+                if (shouldDeliver) {
+                    val operationJson = JSONObject.quote(activityOperation)
                     webViewRef?.evaluateJavascript(
-                        "if(typeof window._onBleConnectResult==='function')window._onBleConnectResult($result);",
+                        "if(typeof window._onBleConnectResult==='function'){" +
+                            "window._onBleConnectResult($result);" +
+                        "}else if(typeof window.RatspeakAndroid!=='undefined'&&" +
+                            "typeof window.RatspeakAndroid.disconnectBleDeviceForOperation==='function'){" +
+                            "window.RatspeakAndroid.disconnectBleDeviceForOperation($operationJson);}",
                         null
                     )
                 }
-
-                // If connection succeeded, start forwarding (blocks until disconnected)
-                if (error == null) {
-                    gatt.startForwarding()
-                }
-            }, "ble-gatt-connect").start()
+            }
         }
 
         /**
@@ -1899,10 +1997,38 @@ class MainActivity : TauriActivity() {
          */
         @JavascriptInterface
         fun disconnectBleDevice() {
-            Thread({
-                bleGatt?.disconnect()
+            val activeGatt = synchronized(bleGattLock) {
+                bleConnectOperation = null
+                val active = bleGatt
                 bleGatt = null
+                active
+            }
+            Thread({
+                activeGatt?.disconnect()
             }, "ble-gatt-disconnect").start()
+        }
+
+        /**
+         * Disconnect only when the supplied operation still owns the native
+         * bridge. A stale Rust/JS completion must never tear down newer work.
+         */
+        @JavascriptInterface
+        fun disconnectBleDeviceForOperation(activityOperation: String) {
+            val activeGatt = synchronized(bleGattLock) {
+                if (bleConnectOperation != activityOperation) {
+                    null
+                } else {
+                    bleConnectOperation = null
+                    val active = bleGatt
+                    bleGatt = null
+                    active
+                }
+            }
+            if (activeGatt != null) {
+                Thread({
+                    activeGatt.disconnect()
+                }, "ble-gatt-disconnect-scoped").start()
+            }
         }
 
         private fun bytesToHex(b: ByteArray): String {

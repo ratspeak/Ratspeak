@@ -623,11 +623,14 @@ pub(super) mod kinds {
 
     kind!(INTERFACE_CONFIGURED, "interface.configured", Interfaces);
     kind!(INTERFACE_CONNECTING, "interface.connecting", Interfaces);
+    kind!(INTERFACE_CANCELLED, "interface.cancelled", Interfaces);
     kind!(INTERFACE_ONLINE, "interface.online", Interfaces);
     kind!(INTERFACE_OFFLINE, "interface.offline", Interfaces);
+    kind!(INTERFACE_DEGRADED, "interface.degraded", Interfaces);
     kind!(INTERFACE_PAUSED, "interface.paused", Interfaces);
     kind!(INTERFACE_REMOVED, "interface.removed", Interfaces);
     kind!(INTERFACE_FAILED, "interface.failed", Interfaces);
+    kind!(INTERFACE_TIMED_OUT, "interface.timed_out", Interfaces);
 
     kind!(RNS_LINK_REQUESTED, "rns.link.requested", Links);
     kind!(RNS_LINK_AUTHENTICATED, "rns.link.authenticated", Links);
@@ -867,5 +870,19 @@ mod tests {
         assert_eq!(kind.code(), "channels.room.joined");
         assert_eq!(kind.area(), ActivityArea::Channels);
         assert_eq!(kind.summary_code(), "channels.room.joined");
+    }
+
+    #[test]
+    fn interface_terminal_kinds_are_known_normal_profile_events() {
+        for (kind, code) in [
+            (kinds::INTERFACE_CANCELLED, "interface.cancelled"),
+            (kinds::INTERFACE_TIMED_OUT, "interface.timed_out"),
+        ] {
+            assert_eq!(kind.code(), code);
+            assert_eq!(kind.area(), ActivityArea::Interfaces);
+            assert_eq!(kind.summary_code(), code);
+            assert!(kind.capture_scope() == CaptureScope::Normal);
+            assert!(!kind.ambient());
+        }
     }
 }

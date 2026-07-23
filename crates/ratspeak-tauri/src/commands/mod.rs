@@ -11,6 +11,7 @@ pub mod games;
 #[cfg(feature = "hardware")]
 pub mod hardware;
 pub mod identity;
+pub(crate) mod interface_activity;
 pub mod interfaces;
 pub mod messaging;
 pub mod network;
