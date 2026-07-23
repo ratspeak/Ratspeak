@@ -34,6 +34,8 @@ var _channelsPresenceGroupSeq = 0;
 var _channelsSelectedMemberKey = null;
 var _channelsMemberReturnFocusKey = null;
 var CHANNEL_PRESENCE_GROUP_WINDOW_MS = 5 * 60 * 1000;
+// Brief leave/rejoin churn is one continuous presence when nothing happens between it.
+var CHANNEL_PRESENCE_REJOIN_WINDOW_MS = 15 * 1000;
 
 function _channelsEl(id) {
     return document.getElementById(id);
@@ -631,7 +633,7 @@ function _channelsRenderRoom() {
     if (room.phase !== 'joined') {
         transcript.appendChild(_channelsBuildRoomTransition(room));
     }
-    if (!items.length && room.phase === 'joined') {
+    if (!renderedItems.length && room.phase === 'joined') {
         var waiting = document.createElement('div');
         waiting.className = 'channel-welcome-state';
         var waitingTitle = document.createElement('h3');
@@ -824,6 +826,38 @@ function _channelsIsPresenceEvent(entry) {
     return entry.item.kind === 'join' || entry.item.kind === 'part';
 }
 
+function _channelsPresenceIdentityKey(item) {
+    var sourceHash = String(item && item.source_hash || '').trim().toLowerCase();
+    if (sourceHash) return 'source:' + sourceHash;
+    var nickname = String(item && item.nickname || '').trim().toLowerCase();
+    return nickname ? 'nickname:' + nickname : '';
+}
+
+function _channelsCollapseTransientRejoins(entries) {
+    var reconciled = [];
+    entries.forEach(function(entry) {
+        var previous = reconciled.length ? reconciled[reconciled.length - 1] : null;
+        if (_channelsIsPresenceEvent(previous) &&
+            _channelsIsPresenceEvent(entry) &&
+            previous.item.kind === 'part' &&
+            entry.item.kind === 'join') {
+            var previousIdentity = _channelsPresenceIdentityKey(previous.item);
+            var currentIdentity = _channelsPresenceIdentityKey(entry.item);
+            var elapsed = (Number(entry.item.timestamp_ms) || 0) -
+                (Number(previous.item.timestamp_ms) || 0);
+            if (previousIdentity &&
+                previousIdentity === currentIdentity &&
+                elapsed >= 0 &&
+                elapsed <= CHANNEL_PRESENCE_REJOIN_WINDOW_MS) {
+                reconciled.pop();
+                return;
+            }
+        }
+        reconciled.push(entry);
+    });
+    return reconciled;
+}
+
 function _channelsGroupPresenceEvents(entries, roomName) {
     var rendered = [];
     var run = [];
@@ -845,7 +879,7 @@ function _channelsGroupPresenceEvents(entries, roomName) {
         run = [];
     }
 
-    entries.forEach(function(entry) {
+    _channelsCollapseTransientRejoins(entries).forEach(function(entry) {
         if (!_channelsIsPresenceEvent(entry)) {
             flushRun();
             rendered.push(entry);
