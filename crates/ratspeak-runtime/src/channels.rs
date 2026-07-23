@@ -889,7 +889,23 @@ async fn run_manager(
             command = command_rx.recv() => {
                 let Some(command) = command else {
                     invalidate_connect_attempt(&mut attempt);
+                    if let Some(context) = pending_connect_activity.take() {
+                        record_session_spontaneous(
+                            &activity,
+                            context,
+                            activity::ChannelSessionTransition::Cancelled,
+                        );
+                    }
                     cancel_connection(&mut connect_cancel);
+                    if let Some(session) = active.as_ref() {
+                        record_session_spontaneous(
+                            &activity,
+                            session.activity,
+                            activity::ChannelSessionTransition::Closed {
+                                reason: activity::ChannelSessionCloseReason::Local,
+                            },
+                        );
+                    }
                     close_active(&mut active).await;
                     break;
                 };
@@ -1570,6 +1586,14 @@ async fn connect_to_hub(
                     }
                 }
                 LinkSessionEvent::Closed { reason } => {
+                    send_session_activity_update(
+                        &update_tx,
+                        attempt,
+                        activity::ChannelSessionTransition::Closed {
+                            reason: channel_close_reason(reason),
+                        },
+                    )
+                    .await;
                     return Err(ConnectAttemptError {
                         product: ChannelsError::Transport(format!(
                             "link closed before WELCOME ({})",
@@ -1581,6 +1605,12 @@ async fn connect_to_hub(
                     });
                 }
                 LinkSessionEvent::Stale => {
+                    send_session_activity_update(
+                        &update_tx,
+                        attempt,
+                        activity::ChannelSessionTransition::Stale,
+                    )
+                    .await;
                     return Err(ConnectAttemptError {
                         product: ChannelsError::Transport(
                             "channel link became stale before WELCOME".into(),
