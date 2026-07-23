@@ -439,6 +439,7 @@ pub enum AnnounceMethod {
     LxmfDelivery,
     LxstService,
     Manual,
+    Startup,
     Transport,
 }
 
@@ -449,6 +450,7 @@ impl AnnounceMethod {
             Self::LxmfDelivery => "lxmf_delivery",
             Self::LxstService => "lxst_service",
             Self::Manual => "manual",
+            Self::Startup => "startup",
             Self::Transport => "transport",
         }
     }

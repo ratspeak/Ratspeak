@@ -250,52 +250,6 @@ RS.listen('announces_cleared', function() {
     _reloadPeersAfterCacheClear();
 });
 
-var _eventRenderScheduled = false;
-function _scheduleEventRender() {
-    if (_eventRenderScheduled) return;
-    _eventRenderScheduled = true;
-    requestAnimationFrame(function() {
-        _eventRenderScheduled = false;
-        renderLog();
-        if (typeof renderCockpitEvents === 'function') renderCockpitEvents();
-    });
-}
-RS.listen('event', function(ev) {
-    if (!ev || typeof ev !== 'object') return;
-    if (typeof activityLegacyEventAllowed === 'function' && !activityLegacyEventAllowed(ev)) return;
-    // Throttle status entries to one every ~280s.
-    if (ev.type === 'status' || ev.category === 'status') {
-        var lastStatus = null;
-        for (var i = events.length - 1; i >= 0; i--) {
-            if (events[i].type === 'status' || events[i].category === 'status') {
-                lastStatus = events[i];
-                break;
-            }
-        }
-        var now = Date.now() / 1000;
-        if (!lastStatus || (now - lastStatus.timestamp) >= 280) {
-            events.push(ev);
-            if (events.length > MAX_EVENTS) events.shift();
-        }
-    } else {
-        events.push(ev);
-        if (events.length > MAX_EVENTS) events.shift();
-    }
-    // Coalesce paints — a busy hub floods 200+ announce_summaries per second.
-    _scheduleEventRender();
-});
-
-RS.listen('event_log', function(batch) {
-    if (!Array.isArray(batch)) return;
-    if (typeof activityLegacyEventAllowed === 'function') {
-        batch = batch.filter(activityLegacyEventAllowed);
-    }
-    events = events.concat(batch);
-    if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);
-    renderLog();
-    if (typeof renderCockpitEvents === 'function') renderCockpitEvents();
-});
-
 function _remapOpStatus(step) {
     return step || '';
 }

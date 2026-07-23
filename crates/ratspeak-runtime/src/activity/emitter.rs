@@ -593,6 +593,7 @@ fn friendly_code(value: &str) -> Option<&'static str> {
         "automatic" => "Automatic",
         "contact_refresh" => "Contact refresh",
         "manual" => "Manual",
+        "startup" => "Startup",
         "transport" => "Transport",
         "interface_online" => "Interface online",
         "lxmf_delivery" => "LXMF delivery",
@@ -1107,6 +1108,22 @@ mod tests {
                 Info,
                 Normal,
                 [Method, InterfaceClass],
+                "announce",
+                "Announce sent",
+                "standard"
+            ),
+            projection_case!(
+                producer::rns_announce_activity(producer::RnsAnnounceActivity {
+                    transition: producer::RnsAnnounceTransition::Sent {
+                        method: AnnounceMethod::Startup,
+                    },
+                    interface: None,
+                }),
+                "rns.announce.sent",
+                Network,
+                Info,
+                Normal,
+                [Method],
                 "announce",
                 "Announce sent",
                 "standard"

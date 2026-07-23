@@ -2344,15 +2344,16 @@ fn schedule_startup_auto_announce(state: Arc<AppState>) {
             if matches!(any_interface_online_cached(&state), Some(true)) {
                 let report = send_announce_from_origin(&state, activity_origin).await;
                 if report.queued > 0 {
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    state.add_event(json!({
-                        "timestamp": ts,
-                        "category": "system",
-                        "message": "Startup auto-announce queued",
-                    }));
+                    record_activity_if_current(&state, activity_origin, || {
+                        Ok(producer::rns_announce_activity(
+                            producer::RnsAnnounceActivity {
+                                transition: producer::RnsAnnounceTransition::Sent {
+                                    method: producer::AnnounceMethod::Startup,
+                                },
+                                interface: None,
+                            },
+                        ))
+                    });
                     tracing::info!(
                         packets = report.packets,
                         queued = report.queued,
@@ -3664,15 +3665,6 @@ async fn poll_stats_loop(
     }
     let mut interval = tokio::time::interval(Duration::from_millis(2500));
 
-    let now_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    state.add_event(json!({
-        "timestamp": now_ts,
-        "category": "system",
-        "message": "Ratspeak dashboard started",
-    }));
     record_activity_if_current(&state, runtime_activity_origin, || {
         Ok(producer::app_runtime(
             producer::AppRuntimeTransition::Started,
@@ -3782,10 +3774,6 @@ async fn poll_stats_loop(
             };
 
             if let Some(ifaces) = iface_stats.get("interfaces").and_then(|v| v.as_array()) {
-                let ev_ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
                 for iface in ifaces {
                     let name = iface["name"].as_str().unwrap_or("unknown");
                     let online = iface["online"].as_bool().unwrap_or(false);
@@ -3794,16 +3782,6 @@ async fn poll_stats_loop(
                     let key = name.to_string();
                     let prev = prev_online.get(&key).copied();
                     if prev != Some(online) {
-                        let msg = if online {
-                            format!("{} connected", name)
-                        } else {
-                            format!("{} disconnected", name)
-                        };
-                        state.add_event(json!({
-                            "timestamp": ev_ts,
-                            "category": "interface",
-                            "message": msg,
-                        }));
                         activity_observations
                             .push(PollActivityObservation::InterfaceState { online });
                         let reannounce_suppressed =
@@ -3811,11 +3789,6 @@ async fn poll_stats_loop(
                         if reannounce_suppressed {
                             last_interface_announce = Instant::now();
                             tracing::info!("interface re-announce suppressed after config restart");
-                            state.add_event(json!({
-                                "timestamp": ev_ts,
-                                "category": "system",
-                                "message": format!("Skipped re-announce after {name} restarted"),
-                            }));
                             activity_observations.push(PollActivityObservation::AnnounceSuppressed);
                         }
                         // Re-announce on interface up; gated by auto-announce + 30s cooldown.
@@ -3835,15 +3808,6 @@ async fn poll_stats_loop(
                                     announce_activity_origin,
                                 )
                                 .await;
-                                let ev_ts = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs();
-                                announce_state.add_event(serde_json::json!({
-                                    "timestamp": ev_ts,
-                                    "category": "system",
-                                    "message": "Re-announced after interface connected",
-                                }));
                                 if report.queued > 0 {
                                     record_activity_if_current(
                                         &announce_state,
@@ -4168,28 +4132,6 @@ async fn poll_stats_loop(
                                     "hops": a.hops,
                                 }),
                             );
-                            let announce_label = if display_name.is_empty() {
-                                if hash_hex.len() > 12 {
-                                    format!(
-                                        "{}::{}",
-                                        &hash_hex[..6],
-                                        &hash_hex[hash_hex.len() - 6..]
-                                    )
-                                } else {
-                                    hash_hex.clone()
-                                }
-                            } else if display_name.chars().count() > 20 {
-                                let truncated: String = display_name.chars().take(18).collect();
-                                format!("{}..", truncated)
-                            } else {
-                                display_name.clone()
-                            };
-                            state.add_event(json!({
-                                "timestamp": a.timestamp as u64,
-                                "category": "announce_summary",
-                                "message": format!("{} is {} hops away",
-                                    announce_label, a.hops),
-                            }));
                             activity_observations.push(PollActivityObservation::AnnounceObserved {
                                 destination: a.dest_hash,
                                 hops: a.hops,

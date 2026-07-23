@@ -591,59 +591,6 @@ impl AppState {
         self.emitter.emit(event, data);
     }
 
-    /// Temporary Stage 1C compatibility gate for legacy diagnostic streams.
-    /// The typed recorder is authoritative: if worker recovery or another
-    /// privacy boundary moved it out of Capturing, close the advisory legacy
-    /// flag before any legacy value can be retained or cross IPC.
-    pub fn legacy_activity_capture_enabled(&self) -> bool {
-        if !self.network_log_enabled.load(Ordering::Acquire) {
-            return false;
-        }
-        let (capture_state, capture_profile) = self.activity.capture_state_profile();
-        if capture_state == crate::activity::ActivityCaptureState::Capturing {
-            // The temporary selector is advisory. An automatic or explicit
-            // Trace→Normal boundary must cap it immediately even if the old UI
-            // has not processed the typed status notification yet.
-            if capture_profile != Some(crate::activity::CaptureProfile::Trace)
-                && let Ok(mut level) = self.network_log_level.write()
-                && level.as_str() == "detailed"
-            {
-                *level = "standard".to_string();
-            }
-            return true;
-        }
-        self.network_log_enabled.store(false, Ordering::Release);
-        if let Ok(mut level) = self.network_log_level.write()
-            && level.as_str() == "detailed"
-        {
-            *level = "standard".to_string();
-        }
-        false
-    }
-
-    pub fn add_event(&self, event: serde_json::Value) {
-        if !self.legacy_activity_capture_enabled() {
-            return;
-        }
-
-        let _ = self
-            .activity
-            .with_capture_admission(|generation, _profile| {
-                let mut event = event;
-                let Some(object) = event.as_object_mut() else {
-                    return;
-                };
-                object.insert(
-                    "capture_generation".to_string(),
-                    serde_json::Value::String(generation.to_string()),
-                );
-                // The old backend event ring had no production reader and
-                // retained raw prose across worker recovery. Keep only the
-                // generation-fenced compatibility broadcast until Stage 2.
-                self.emit_to_all("event", event);
-            });
-    }
-
     pub fn set_rns(&self, rns: RnsManager) {
         if let Ok(mut r) = self.rns.write() {
             *r = Some(rns);
@@ -975,43 +922,6 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn legacy_event_collection_is_privacy_gated_by_the_typed_capture_state() {
-        let emitter = Arc::new(RecordingEmitter::default());
-        let state = make_state_with_emitter(emitter.clone());
-
-        state.add_event(serde_json::json!({
-            "timestamp": 0,
-            "category": "system",
-            "message": "should not collect",
-        }));
-
-        assert!(emitter.events.lock().unwrap().is_empty());
-
-        state.activity.start().await.unwrap();
-        state.network_log_enabled.store(true, Ordering::Release);
-        state.add_event(serde_json::json!({
-            "timestamp": 1,
-            "category": "system",
-            "message": "collected after opt-in",
-        }));
-
-        {
-            let events = emitter.events.lock().unwrap();
-            let legacy: Vec<_> = events
-                .iter()
-                .filter_map(|(name, payload)| (name == "event").then_some((name.as_str(), payload)))
-                .collect();
-            assert_eq!(legacy.len(), 1);
-            assert!(
-                legacy
-                    .iter()
-                    .all(|(_, payload)| payload["capture_generation"].is_string())
-            );
-        }
-        state.activity.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

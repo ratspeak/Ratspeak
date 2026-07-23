@@ -270,32 +270,6 @@ impl ActivityRecorder {
         self.inner.shared.status()
     }
 
-    /// Temporary in-process bridge for legacy diagnostic emitters. The action
-    /// runs only while the same admission gate as typed producers is open, and
-    /// its lease makes Stop/hard reset wait until the synchronous retention or
-    /// IPC attempt has completed. No caller may await inside this closure.
-    pub(crate) fn with_capture_admission<T>(
-        &self,
-        action: impl FnOnce(u64, CaptureProfile) -> T,
-    ) -> Option<T> {
-        if !self.inner.shared.available.load(Ordering::Acquire) {
-            return None;
-        }
-        let lease = self.inner.shared.gate.try_admit()?;
-        if lease.profile() == CaptureProfile::Trace
-            && lease
-                .trace_deadline()
-                .is_some_and(|deadline| Instant::now() >= deadline)
-        {
-            self.inner.shared.gate.close();
-            drop(lease);
-            return None;
-        }
-        let output = action(lease.generation(), lease.profile());
-        drop(lease);
-        Some(output)
-    }
-
     /// Allocation-free compatibility snapshot. It is intentionally weaker
     /// than an admission lease and must never authorize an emission by itself.
     pub fn capture_state_profile(
@@ -1200,38 +1174,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn hard_reset_fences_the_temporary_legacy_capture_admission() {
-        let recorder = ActivityRecorder::new();
-        recorder.start().await.unwrap();
-
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let admitted_recorder = recorder.clone();
-        let admitted = tokio::task::spawn_blocking(move || {
-            admitted_recorder.with_capture_admission(|_, _| {
-                entered_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-            })
-        });
-        entered_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("legacy emission should enter before reset");
-
-        let reset_recorder = recorder.clone();
-        let reset = tokio::spawn(async move { reset_recorder.hard_reset().await });
-        wait_until(|| recorder.record(|| normal_draft(9)) == ActivityRecordOutcome::CaptureOff)
-            .await;
-        assert!(recorder.with_capture_admission(|_, _| ()).is_none());
-        assert!(!reset.is_finished());
-
-        release_tx.send(()).unwrap();
-        assert_eq!(admitted.await.unwrap(), Some(()));
-        let reset_status = reset.await.unwrap().unwrap();
-        assert_eq!(reset_status.state(), ActivityCaptureState::Off);
-        recorder.shutdown().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn detail_reveal_and_safe_copy_keep_raw_values_on_explicit_paths_only() {
         let recorder = ActivityRecorder::new();
         let session = recorder
@@ -1817,25 +1759,6 @@ mod tests {
         let status = reset.await.unwrap().unwrap();
         assert_eq!(status.state(), ActivityCaptureState::Off);
         assert!(status.capture_session().is_none());
-        recorder.shutdown().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn expired_trace_never_authorizes_the_temporary_legacy_bridge() {
-        let recorder = ActivityRecorder::new();
-        recorder.start().await.unwrap();
-        recorder
-            .set_profile(
-                CaptureProfile::Trace,
-                Some(TraceCaptureDuration::Limited(Duration::from_millis(1))),
-            )
-            .await
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        let admitted = recorder.with_capture_admission(|_, profile| profile);
-        assert_ne!(admitted, Some(CaptureProfile::Trace));
-        recorder.hard_reset().await.unwrap();
         recorder.shutdown().await.unwrap();
     }
 

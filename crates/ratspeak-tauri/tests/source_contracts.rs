@@ -273,7 +273,8 @@ fn rnode_config_edit_suppresses_next_interface_reannounce() {
 
     assert!(runtime_rs.contains("take_interface_reannounce_suppression(name)"));
     assert!(runtime_rs.contains("!reannounce_suppressed"));
-    assert!(runtime_rs.contains("Skipped re-announce after"));
+    assert!(runtime_rs.contains("PollActivityObservation::AnnounceSuppressed"));
+    assert!(runtime_rs.contains("AnnounceSuppressionReason::InterfaceRestart"));
 
     assert!(interfaces_rs.contains("operation == \"update_lora\""));
     assert!(interfaces_rs.contains("matches!(&new_runtime, EditableInterfaceConfig::RNode"));
@@ -3947,10 +3948,20 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
     let startup_send = startup_announce
         .find("send_announce_from_origin(&state, activity_origin).await")
         .unwrap();
+    let startup_success = startup_announce.find("if report.queued > 0").unwrap();
+    let startup_fenced = startup_announce
+        .find("record_activity_if_current(&state, activity_origin, ||")
+        .unwrap();
+    let startup_aggregate = startup_announce
+        .find("method: producer::AnnounceMethod::Startup")
+        .unwrap();
     assert!(
         startup_wait < startup_origin
             && startup_origin < startup_shutdown
             && startup_shutdown < startup_send
+            && startup_send < startup_success
+            && startup_success < startup_fenced
+            && startup_fenced < startup_aggregate
     );
 
     let periodic_announce = runtime
@@ -4008,7 +4019,78 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
             "legacy producer call remains in {}",
             path.display()
         );
+        assert!(
+            !source.contains(".add_event("),
+            "generic legacy event producer remains in {}",
+            path.display()
+        );
+        let compact = source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        for forbidden in [
+            "emit_to_all(\"event\",",
+            "emit_to_all(\"event_log\",",
+            ".emit(\"event\",",
+            ".emit(\"event_log\",",
+            ".try_emit(\"event\",",
+            ".try_emit(\"event_log\",",
+        ] {
+            assert!(
+                !compact.contains(forbidden),
+                "generic legacy event bus producer {forbidden} remains in {}",
+                path.display()
+            );
+        }
     }
+
+    let runtime_state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    assert!(!runtime_state.contains("pub fn add_event("));
+    assert!(!runtime_state.contains("legacy_activity_capture_enabled"));
+    let mut dashboard_sources = Vec::new();
+    collect_files(&root.join("dashboard/static/js"), &mut dashboard_sources);
+    for path in dashboard_sources
+        .into_iter()
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("js"))
+    {
+        let source = read_source(&path).expect("dashboard JavaScript");
+        let compact = source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        for forbidden in [
+            "RS.listen('event',",
+            "RS.listen('event_log',",
+            "RS.listen(\"event\",",
+            "RS.listen(\"event_log\",",
+        ] {
+            assert!(
+                !compact.contains(forbidden),
+                "generic legacy listener {forbidden} remains in {}",
+                path.display()
+            );
+        }
+    }
+    let activity_frontend =
+        read_source(root.join("dashboard/static/js/activity.js")).expect("activity frontend");
+    assert!(activity_frontend.contains("RS.listen('network_event',"));
+    assert!(!activity_frontend.contains("typeof events !== 'undefined'"));
+    assert!(emitter.contains("pub const LEGACY_ACTIVITY_EVENT: &str = \"network_event\";"));
+    assert!(emitter.contains("\"startup\" => \"Startup\""));
+    let runtime_compact = runtime
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    for product_stream in ["stats_update", "system_status", "announce_received"] {
+        assert!(
+            runtime_compact.contains(&format!("emit_to_all(\"{product_stream}\",")),
+            "product stream {product_stream} must remain independent of Activity"
+        );
+    }
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    assert!(health.contains("RS.listen('alert'"));
+    assert!(health.contains("renderAlert(data)"));
 }
 
 #[test]

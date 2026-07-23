@@ -97,9 +97,6 @@ function activityLegacyEventAllowed(entry) {
 function activityPruneLegacyBefore(generation) {
     if (!activityAdvanceLegacyGenerationFloor(generation)) return;
     activityLog = activityLog.filter(activityLegacyEventAllowed);
-    if (typeof events !== 'undefined' && Array.isArray(events)) {
-        events = events.filter(activityLegacyEventAllowed);
-    }
 }
 
 function activitySequenceSort(left, right) {
@@ -785,7 +782,6 @@ var activityBootstrap = createActivityBootstrap({
         activityCaptureState = 'off';
         activityEnabled = false;
         activityLevel = 'standard';
-        if (typeof events !== 'undefined') events = [];
         activityLog = [];
         activityStickToBottom = true;
         setActivityControlPending(false);
@@ -804,19 +800,14 @@ var activityBootstrap = createActivityBootstrap({
             : null;
         activityLegacyBlocked = reason === 'identity_hard_reset';
         activityLog = [];
-        if (typeof events !== 'undefined') events = [];
         setActivityControlPending(false);
         updateActivityUI();
         renderActivityFeed();
-        if (typeof renderLog === 'function') renderLog();
-        if (typeof renderCockpitEvents === 'function') renderCockpitEvents();
     },
     onLegacyClear: function(generation) {
         activityPruneLegacyBefore(generation);
         activityStickToBottom = true;
         renderActivityFeed();
-        if (typeof renderLog === 'function') renderLog();
-        if (typeof renderCockpitEvents === 'function') renderCockpitEvents();
     }
 });
 window.RS.activityBootstrap = activityBootstrap;
