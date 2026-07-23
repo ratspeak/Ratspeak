@@ -1294,6 +1294,7 @@ pub async fn api_set_display_name(
     state: State<'_, Arc<AppState>>,
     args: DisplayNameArgs,
 ) -> AppResult<Value> {
+    let activity_origin = state.activity_request_fence();
     let display_name = sanitize_announced_display_name(args.display_name.as_deref().unwrap_or(""))
         .map_err(AppError::bad_request)?;
     if display_name.is_empty() {
@@ -1336,7 +1337,7 @@ pub async fn api_set_display_name(
     })?;
 
     if updated_in_memory {
-        crate::send_announce_from_state(&state).await;
+        crate::send_announce_from_origin(&state, activity_origin).await;
     }
 
     Ok(json!({ "display_name": display_name }))
@@ -1347,6 +1348,7 @@ pub async fn set_identity_status(
     state: State<'_, Arc<AppState>>,
     status: Option<String>,
 ) -> AppResult<Value> {
+    let activity_origin = state.activity_request_fence();
     let status = sanitize_announced_status(status.as_deref().unwrap_or(""))
         .map_err(AppError::bad_request)?;
     let identity_id = active_identity_id(&state);
@@ -1389,7 +1391,7 @@ pub async fn set_identity_status(
 
     if let Some(payload) = identity_payload {
         state.emit_to_all("lxmf_identity", payload);
-        crate::send_announce_from_state(&state).await;
+        crate::send_announce_from_origin(&state, activity_origin).await;
     }
 
     Ok(json!({ "status": status }))

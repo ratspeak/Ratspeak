@@ -1,18 +1,19 @@
 //! Typed, privacy-sealed Activity recorder primitives.
 //!
-//! Stage 1B owns the only accepted path from sealed catalog drafts through a
-//! nonblocking admission gate and supervised single-consumer worker to masked,
-//! bounded replay/batch values. It is attached to `AppState` lifecycle resets;
-//! domain-producer migration and the public Tauri API arrive in later stages.
+//! The only accepted path runs from the public event-specific producer facade
+//! through a nonblocking admission gate and supervised single-consumer worker
+//! to masked, bounded replay/batch values. It is attached to `AppState`
+//! lifecycle resets and exposed through the typed Tauri Activity API.
 
 mod admission;
-pub(crate) mod catalog;
+mod catalog;
 mod classified;
 mod coalesce;
 pub(crate) mod emitter;
 mod gate;
 mod health;
 mod lifecycle;
+pub mod producer;
 mod pseudonym;
 mod query;
 mod replay;
@@ -20,7 +21,7 @@ mod ring;
 mod schema;
 mod worker;
 
-pub use classified::{ActivityDraft, ActivityRejectReason, CorrelationId};
+pub use classified::{ActivityRejectReason, CorrelationId};
 pub use emitter::{ACTIVITY_BATCH_EVENT, ACTIVITY_STATUS_EVENT};
 pub use health::ActivityHealthSnapshot;
 pub use lifecycle::{ActivityRecordOutcome, ActivityRecorder, TraceCaptureDuration};

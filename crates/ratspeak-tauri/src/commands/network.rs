@@ -10,6 +10,7 @@ use tauri::State;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
 use crate::state::AppState;
+use ratspeak_runtime::activity::producer;
 use ratspeak_runtime::activity::{
     ActivityCaptureState, ActivityRecorder, ActivityRecorderError, CaptureProfile,
 };
@@ -47,6 +48,7 @@ pub async fn set_propagation_hosting(
     state: State<'_, Arc<AppState>>,
     args: PropagationHostingArgs,
 ) -> AppResult<Value> {
+    let activity_origin = state.activity_request_fence();
     let cost = args.stamp_cost.unwrap_or_else(|| {
         state
             .propagation_node_stamp_cost
@@ -89,7 +91,7 @@ pub async fn set_propagation_hosting(
     }
 
     if args.enabled {
-        crate::send_announce_from_state(&state).await;
+        crate::send_announce_from_origin(&state, activity_origin).await;
     }
     crate::propagation::emit_propagation_update(&state);
     Ok(crate::propagation::get_status_payload(&state))
@@ -107,6 +109,7 @@ pub async fn set_stamp_settings(
     state: State<'_, Arc<AppState>>,
     args: StampSettingsArgs,
 ) -> AppResult<Value> {
+    let activity_origin = state.activity_request_fence();
     let cost = args
         .required_cost
         .unwrap_or(if args.enforce { 8 } else { 0 });
@@ -136,7 +139,7 @@ pub async fn set_stamp_settings(
         crate::apply_lxmf_settings_from_state(&state, mgr);
     }
 
-    crate::send_announce_from_state(&state).await;
+    crate::send_announce_from_origin(&state, activity_origin).await;
     let payload = crate::propagation::get_status_payload(&state);
     state.emit_to_all("propagation_update", payload.clone());
     Ok(payload)
@@ -496,29 +499,43 @@ async fn emit_ingress_diagnostics_snapshot(
         return;
     };
     // The transport query may complete after an identity switch. Serialize the
-    // actual legacy emission with the switch boundary and reject the stale
-    // snapshot rather than publishing old-identity interface data afterward.
+    // Activity records with the switch boundary and reject the stale snapshot
+    // rather than publishing old-identity interface data afterward.
     let _identity_lifecycle = state.identity_switch_lock.lock().await;
     let _activity_control = state.activity_control_lock.lock().await;
     if !state.is_current_activity_request_fence_after_identity_lock(expected_fence) {
         return;
     }
     for entry in entries {
-        if entry.burst_active {
-            let msg = format!(
-                "{} ingress burst active; passive announces may be held",
-                entry.name
+        let burst_active = entry.burst_active;
+        let held_announces = entry.held_announces;
+        if burst_active {
+            state.activity.record_event_fenced(
+                || state.is_current_activity_request_fence_after_identity_lock(expected_fence),
+                || {
+                    Ok(producer::rns_announce_activity(
+                        producer::RnsAnnounceActivity {
+                            transition: producer::RnsAnnounceTransition::IngressBurstStarted,
+                            interface: None,
+                        },
+                    ))
+                },
             );
-            state.emit_network_event("announce", &msg, &entry.name, "standard");
         }
-        if entry.held_announces > 0 {
-            let msg = format!(
-                "{} holding {} passive announce{} during ingress burst",
-                entry.name,
-                entry.held_announces,
-                if entry.held_announces == 1 { "" } else { "s" }
+        if held_announces > 0 {
+            state.activity.record_event_fenced(
+                || state.is_current_activity_request_fence_after_identity_lock(expected_fence),
+                || {
+                    Ok(producer::rns_announce_activity(
+                        producer::RnsAnnounceActivity {
+                            transition: producer::RnsAnnounceTransition::Held {
+                                count: held_announces,
+                            },
+                            interface: None,
+                        },
+                    ))
+                },
             );
-            state.emit_network_event("announce", &msg, &entry.name, "standard");
         }
     }
 }
@@ -1068,21 +1085,59 @@ async fn live_interface_summary(state: &Arc<AppState>) -> Option<(bool, u64)> {
     }
 }
 
+fn record_manual_announce_outcome(
+    state: &AppState,
+    fence: crate::state::ActivityRequestFence,
+    failure: Option<producer::AnnounceFailureReason>,
+) {
+    state.activity.record_event_fenced(
+        || state.is_current_activity_origin_fence(fence),
+        || {
+            let transition = match failure {
+                Some(reason) => producer::RnsAnnounceTransition::Failed {
+                    method: producer::AnnounceMethod::Manual,
+                    reason,
+                },
+                None => producer::RnsAnnounceTransition::Sent {
+                    method: producer::AnnounceMethod::Manual,
+                },
+            };
+            Ok(producer::rns_announce_activity(
+                producer::RnsAnnounceActivity {
+                    transition,
+                    interface: None,
+                },
+            ))
+        },
+    );
+}
+
 #[tauri::command]
 pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    let ready = state
+    let activity_fence = state.activity_request_fence();
+    let rns_ready = state
         .rns
         .read()
         .ok()
         .and_then(|r| r.as_ref().map(|_| ()))
-        .is_some()
+        .is_some();
+    let lxmf_ready = rns_ready
         && state
             .lxmf
             .lock()
             .ok()
             .and_then(|l| l.as_ref().map(|_| ()))
             .is_some();
-    if !ready {
+    if !rns_ready || !lxmf_ready {
+        record_manual_announce_outcome(
+            &state,
+            activity_fence,
+            Some(if rns_ready {
+                producer::AnnounceFailureReason::NotReady
+            } else {
+                producer::AnnounceFailureReason::TransportUnavailable
+            }),
+        );
         state.emit_to_all(
             "announce_triggered",
             json!({ "success": false, "error": "RNS or LXMF not initialized" }),
@@ -1096,21 +1151,20 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         .or_else(|| crate::any_interface_online_cached(&state));
     if matches!(online, Some(false)) {
         tracing::warn!("manual announce skipped: no interfaces online");
+        record_manual_announce_outcome(
+            &state,
+            activity_fence,
+            Some(producer::AnnounceFailureReason::NoInterfaceTransmission),
+        );
         state.emit_to_all(
             "announce_triggered",
             json!({ "success": false, "error": "no_interfaces" }),
         );
         return Ok(json!(null));
     }
-    if state
-        .network_log_enabled
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        state.emit_network_event("announce", "Manual announce triggered", "", "detailed");
-    }
 
     let before_tx = before_summary.map(|(_, tx)| tx);
-    let mut report = crate::send_manual_announce_from_state(&state).await;
+    let mut report = crate::send_manual_announce_from_origin(&state, activity_fence).await;
     let mut retried = false;
     let mut sent_bytes = None;
 
@@ -1123,7 +1177,7 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         if report.queued > 0 && sent_bytes == Some(0) {
             retried = true;
             tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-            report = crate::send_manual_announce_from_state(&state).await;
+            report = crate::send_manual_announce_from_origin(&state, activity_fence).await;
             tokio::time::sleep(std::time::Duration::from_millis(450)).await;
             sent_bytes = live_interface_summary(&state)
                 .await
@@ -1132,6 +1186,14 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
     }
 
     if report.queued == 0 {
+        let failure = if report.packets == 0 {
+            producer::AnnounceFailureReason::NotReady
+        } else if report.failed > 0 {
+            producer::AnnounceFailureReason::QueueFailed
+        } else {
+            producer::AnnounceFailureReason::TransportUnavailable
+        };
+        record_manual_announce_outcome(&state, activity_fence, Some(failure));
         state.emit_to_all(
             "announce_triggered",
             json!({ "success": false, "error": "not_ready" }),
@@ -1141,6 +1203,11 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
 
     if sent_bytes == Some(0) {
         tracing::warn!("manual announce queued but no interface transmitted bytes");
+        record_manual_announce_outcome(
+            &state,
+            activity_fence,
+            Some(producer::AnnounceFailureReason::NoInterfaceTransmission),
+        );
         state.emit_to_all(
             "announce_triggered",
             json!({ "success": false, "error": "not_sent", "retried": retried }),
@@ -1148,6 +1215,7 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         return Ok(json!({ "success": false, "error": "not_sent", "retried": retried }));
     }
 
+    record_manual_announce_outcome(&state, activity_fence, None);
     state.emit_to_all(
         "announce_triggered",
         json!({ "success": true, "retried": retried, "sent_bytes": sent_bytes }),
@@ -1169,6 +1237,7 @@ pub async fn request_path(state: State<'_, Arc<AppState>>, hash: String) -> AppR
     let mut dest = [0u8; 16];
     dest.copy_from_slice(&bytes);
 
+    let activity_fence = state.activity_request_fence();
     let success = if let Ok(rns) = state.rns.read() {
         if let Some(mgr) = rns.as_ref() {
             mgr.handle
@@ -1184,16 +1253,17 @@ pub async fn request_path(state: State<'_, Arc<AppState>>, hash: String) -> AppR
         false
     };
 
-    if success
-        && state
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        state.emit_network_event(
-            "path",
-            &format!("Path requested for {}", &dest_hex[..8.min(dest_hex.len())]),
-            &dest_hex,
-            "detailed",
+    if success {
+        state.activity.record_event_fenced(
+            || state.is_current_activity_origin_fence(activity_fence),
+            || {
+                let destination = producer::DestinationHash::from_hex(&dest_hex)?;
+                Ok(producer::rns_path_requested(producer::RnsPathRequested {
+                    destination: Some(destination),
+                    count: None,
+                    method: producer::PathRequestMethod::Manual,
+                }))
+            },
         );
     }
     Ok(json!({ "hash": dest_hex, "success": success }))
@@ -1201,6 +1271,7 @@ pub async fn request_path(state: State<'_, Arc<AppState>>, hash: String) -> AppR
 
 #[tauri::command]
 pub async fn request_all_paths(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let activity_fence = state.activity_request_fence();
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let id_c = identity_id.clone();
@@ -1215,16 +1286,15 @@ pub async fn request_all_paths(state: State<'_, Arc<AppState>>) -> AppResult<Val
     })
     .await
     .unwrap_or(0);
-    if state
-        .network_log_enabled
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        state.emit_network_event(
-            "path",
-            &format!("Requested paths for {} contacts", count),
-            "",
-            "detailed",
-        );
-    }
+    state.activity.record_event_fenced(
+        || state.is_current_activity_origin_fence(activity_fence),
+        || {
+            Ok(producer::rns_path_requested(producer::RnsPathRequested {
+                destination: None,
+                count: Some(count as u64),
+                method: producer::PathRequestMethod::ContactRefresh,
+            }))
+        },
+    );
     Ok(json!({ "count": count, "success": true }))
 }

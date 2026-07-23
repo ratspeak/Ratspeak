@@ -621,6 +621,22 @@ pub struct LxmfDeliveryProgressUpdate {
     pub reason: Option<String>,
 }
 
+/// Result of a locally accepted outbound LXMF submission. The method is read
+/// from the normalized message that was actually persisted and handed to the
+/// router, not from the pre-normalization preference decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LxmfQueuedMessage {
+    pub message_id: String,
+    pub method: DeliveryMethod,
+}
+
+/// Curated local failure surface. Detailed build/sign/pack failures remain in
+/// local diagnostics and never cross into Activity as arbitrary prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LxmfSubmissionFailure {
+    PreparationFailed,
+}
+
 /// Stable string identifier for the chosen `DeliveryMethod`. Persisted in the
 /// `messages.delivery_method` column and surfaced to the frontend so the UI can
 /// render proof-aware state icons.
@@ -1587,6 +1603,15 @@ impl LxmfManager {
         &mut self,
         request: MessageSendRequest<'_>,
     ) -> Option<String> {
+        self.send_message_with_preference_report(request)
+            .ok()
+            .map(|queued| queued.message_id)
+    }
+
+    pub fn send_message_with_preference_report(
+        &mut self,
+        request: MessageSendRequest<'_>,
+    ) -> Result<LxmfQueuedMessage, LxmfSubmissionFailure> {
         let preference = request.preference;
         let method = self.pick_delivery_method(
             request.db_pool,
@@ -1605,6 +1630,7 @@ impl LxmfManager {
             reply_to_id: None,
             reply_to_preview: None,
         })
+        .ok_or(LxmfSubmissionFailure::PreparationFailed)
     }
 
     pub fn send_reply_with_preference(
@@ -1629,6 +1655,7 @@ impl LxmfManager {
             reply_to_id: Some(request.reply_to_id),
             reply_to_preview: Some(request.reply_to_preview),
         })
+        .map(|queued| queued.message_id)
     }
 
     /// `DeliveryMethod::Propagated` requires `configured_propagation_node`.
@@ -1657,12 +1684,13 @@ impl LxmfManager {
             reply_to_id: None,
             reply_to_preview: None,
         })
+        .map(|queued| queued.message_id)
     }
 
     fn send_message_with_method_internal(
         &mut self,
         request: MessageWithMethodRequest<'_>,
-    ) -> Option<String> {
+    ) -> Option<LxmfQueuedMessage> {
         let MessageWithMethodRequest {
             dest_hash_hex,
             content,
@@ -1732,9 +1760,13 @@ impl LxmfManager {
 
         self.preempt_opportunistic_path(&mut msg);
         self.track_direct_retry_policy(&msg, preference);
+        let method = msg.method;
         self.router.send(msg);
 
-        Some(msg_id)
+        Some(LxmfQueuedMessage {
+            message_id: msg_id,
+            method,
+        })
     }
 
     pub fn send_ephemeral_opportunistic_message(
@@ -7962,6 +7994,52 @@ mod tests {
         normalize_protocol_delivery_method(&mut msg);
 
         assert_eq!(msg.method, DeliveryMethod::Direct);
+    }
+
+    #[test]
+    fn queued_report_uses_the_post_normalization_persisted_method() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let identity_id = mgr.identity_hash.clone();
+        let dest = "cd".repeat(16);
+        let content = "x".repeat(OPPORTUNISTIC_MAX_CONTENT_BYTES + 512);
+
+        let queued = mgr
+            .send_message_with_preference_report(MessageSendRequest {
+                dest_hash_hex: &dest,
+                content: &content,
+                title: "",
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Opportunistic,
+                profile: DeliveryProfile::Message,
+            })
+            .expect("oversized opportunistic message should queue as Direct");
+
+        assert_eq!(queued.method, DeliveryMethod::Direct);
+        assert_eq!(
+            db::get_message_delivery_method(&pool, &queued.message_id, &identity_id).as_deref(),
+            Some("direct")
+        );
+    }
+
+    #[test]
+    fn queued_report_uses_a_curated_failure_for_local_preparation_errors() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let identity_id = mgr.identity_hash.clone();
+
+        let result = mgr.send_message_with_preference_report(MessageSendRequest {
+            dest_hash_hex: "not-a-destination",
+            content: "hello",
+            title: "",
+            db_pool: &pool,
+            identity_id: &identity_id,
+            preference: DeliveryPreference::Direct,
+            profile: DeliveryProfile::Message,
+        });
+
+        assert_eq!(result, Err(LxmfSubmissionFailure::PreparationFailed));
     }
 
     #[tokio::test]

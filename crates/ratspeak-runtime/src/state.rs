@@ -460,6 +460,19 @@ impl AppState {
                 .is_some_and(|expected| self.identity_switch_lock.epoch() == expected)
     }
 
+    /// Lock-free completion fence for async diagnostic producers. Capture the
+    /// fence before starting an operation and pass this validation through
+    /// `ActivityRecorder::record_event_fenced`. The recorder invokes it only
+    /// after acquiring an admission lease, so a transition either makes the
+    /// origin stale first or waits for/purges the already-admitted draft.
+    pub fn is_current_activity_origin_fence(&self, fence: ActivityRequestFence) -> bool {
+        let current_epoch = self.identity_switch_lock.epoch();
+        fence.identity_lock_epoch.is_multiple_of(2)
+            && current_epoch == fence.identity_lock_epoch
+            && self.current_identity_session_generation() == fence.identity_session_generation
+            && self.current_activity_boundary_generation() == fence.activity_boundary_generation
+    }
+
     pub fn bump_activity_boundary_generation(&self) -> u64 {
         self.activity_boundary_generation
             .fetch_add(1, Ordering::SeqCst)
@@ -675,63 +688,6 @@ impl AppState {
         }
     }
 
-    /// Levels: essential < standard < detailed.
-    pub fn emit_network_event(
-        &self,
-        event_type: &str,
-        message: &str,
-        detail: &str,
-        event_level: &str,
-    ) {
-        if !self.legacy_activity_capture_enabled() {
-            return;
-        }
-
-        let _ = self.activity.with_capture_admission(|generation, profile| {
-            let level_rank = |level: &str| -> u8 {
-                match level {
-                    "essential" => 0,
-                    "standard" => 1,
-                    "detailed" => 2,
-                    _ => 1,
-                }
-            };
-
-            let configured = self
-                .network_log_level
-                .read()
-                .map(|level| level.clone())
-                .unwrap_or_else(|_| "standard".into());
-
-            let event_rank = level_rank(event_level);
-            let configured_rank = level_rank(&configured).min(match profile {
-                crate::activity::CaptureProfile::Normal => 1,
-                crate::activity::CaptureProfile::Trace => 2,
-            });
-
-            if event_rank > configured_rank {
-                return;
-            }
-
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
-            self.emit_to_all(
-                "network_event",
-                serde_json::json!({
-                    "type": event_type,
-                    "message": message,
-                    "detail": detail,
-                    "timestamp": now,
-                    "level": event_level,
-                    "capture_generation": generation.to_string(),
-                }),
-            );
-        });
-    }
-
     /// Re-anchor send times to "now" so post-suspend resumes don't fail every
     /// in-flight send on the first tick.
     pub fn reset_message_send_times_on_resume(&self) -> usize {
@@ -805,7 +761,7 @@ mod tests {
     use super::*;
     use crate::config::DashboardConfig;
     use r2d2_sqlite::SqliteConnectionManager;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     static TEMP_STATE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -912,6 +868,84 @@ mod tests {
     }
 
     #[test]
+    fn async_producer_origin_fence_rejects_completed_privacy_boundaries() {
+        let state = make_state();
+        let fence = state.activity_request_fence();
+        assert!(state.is_current_activity_origin_fence(fence));
+
+        state.bump_activity_boundary_generation();
+        assert!(!state.is_current_activity_origin_fence(fence));
+
+        let next = state.activity_request_fence();
+        assert!(state.is_current_activity_origin_fence(next));
+        state.bump_identity_session_generation();
+        assert!(!state.is_current_activity_origin_fence(next));
+    }
+
+    #[tokio::test]
+    async fn async_producer_fence_born_inside_transition_never_becomes_current() {
+        let state = make_state();
+        let transition = state.identity_switch_lock.lock().await;
+        let fence = state.activity_request_fence();
+        assert!(!state.is_current_activity_origin_fence(fence));
+        drop(transition);
+        assert!(!state.is_current_activity_origin_fence(fence));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fenced_record_closes_the_origin_check_to_new_capture_admission_race() {
+        let state = make_state();
+        state.activity.start().await.unwrap();
+        let stale_origin = state.activity_request_fence();
+
+        // This is the old unsafe precheck. Deterministically place a complete
+        // same-identity reset and new capture between it and recorder
+        // admission, modeling a producer descheduled at exactly that point.
+        assert!(state.is_current_activity_origin_fence(stale_origin));
+        state.bump_activity_boundary_generation();
+        state.activity.hard_reset().await.unwrap();
+        let new_session = state
+            .activity
+            .start()
+            .await
+            .unwrap()
+            .capture_session()
+            .unwrap()
+            .to_string();
+
+        let built = AtomicBool::new(false);
+        let outcome = state.activity.record_event_fenced(
+            || state.is_current_activity_origin_fence(stale_origin),
+            || {
+                built.store(true, Ordering::Relaxed);
+                Ok(crate::activity::producer::app_runtime(
+                    crate::activity::producer::AppRuntimeTransition::Ready,
+                ))
+            },
+        );
+        assert_eq!(
+            outcome,
+            crate::activity::ActivityRecordOutcome::StaleGeneration
+        );
+        assert!(!built.load(Ordering::Relaxed));
+
+        let crate::activity::ActivityReplayResultV1::Page { page } = state
+            .activity
+            .replay(new_session, None, 50, 64 * 1024)
+            .await
+            .unwrap()
+        else {
+            panic!("new capture should replay");
+        };
+        assert!(
+            page.events()
+                .iter()
+                .all(|event| event.kind() != "app.runtime.ready")
+        );
+        state.activity.shutdown().await.unwrap();
+    }
+
+    #[test]
     fn interface_reannounce_suppression_is_one_shot() {
         let state = make_state();
 
@@ -944,7 +978,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn legacy_broadcasts_are_privacy_gated_by_the_typed_capture_state() {
+    async fn legacy_event_collection_is_privacy_gated_by_the_typed_capture_state() {
         let emitter = Arc::new(RecordingEmitter::default());
         let state = make_state_with_emitter(emitter.clone());
 
@@ -953,7 +987,6 @@ mod tests {
             "category": "system",
             "message": "should not collect",
         }));
-        state.emit_network_event("message", "should not emit", "detail", "standard");
 
         assert!(emitter.events.lock().unwrap().is_empty());
 
@@ -964,81 +997,19 @@ mod tests {
             "category": "system",
             "message": "collected after opt-in",
         }));
-        state.emit_network_event("message", "emitted after opt-in", "detail", "standard");
 
         {
             let events = emitter.events.lock().unwrap();
             let legacy: Vec<_> = events
                 .iter()
-                .filter_map(|(name, payload)| {
-                    matches!(name.as_str(), "event" | "network_event")
-                        .then_some((name.as_str(), payload))
-                })
+                .filter_map(|(name, payload)| (name == "event").then_some((name.as_str(), payload)))
                 .collect();
-            assert_eq!(
-                legacy.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-                ["event", "network_event"]
-            );
+            assert_eq!(legacy.len(), 1);
             assert!(
                 legacy
                     .iter()
                     .all(|(_, payload)| payload["capture_generation"].is_string())
             );
-        }
-        state.activity.shutdown().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stale_legacy_opt_in_closes_when_the_typed_recorder_is_off() {
-        let emitter = Arc::new(RecordingEmitter::default());
-        let state = make_state_with_emitter(emitter.clone());
-        state.network_log_enabled.store(true, Ordering::Release);
-
-        state.add_event(serde_json::json!({
-            "timestamp": 1,
-            "category": "system",
-            "message": "must not cross the recovered-off boundary",
-        }));
-        state.emit_network_event(
-            "message",
-            "must not cross the recovered-off boundary",
-            "detail",
-            "standard",
-        );
-
-        assert!(!state.network_log_enabled.load(Ordering::Acquire));
-        assert!(emitter.events.lock().unwrap().is_empty());
-        state.activity.shutdown().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn normal_capture_caps_a_stale_detailed_legacy_selector() {
-        let emitter = Arc::new(RecordingEmitter::default());
-        let state = make_state_with_emitter(emitter.clone());
-        state.activity.start().await.unwrap();
-        state.network_log_enabled.store(true, Ordering::Release);
-        *state.network_log_level.write().unwrap() = "detailed".to_string();
-        emitter.events.lock().unwrap().clear();
-
-        state.emit_network_event("link", "trace-only", "secret detail", "detailed");
-        assert!(
-            emitter
-                .events
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(name, _)| name != "network_event")
-        );
-        assert_eq!(state.network_log_level.read().unwrap().as_str(), "standard");
-
-        state.emit_network_event("link", "normal", "safe detail", "standard");
-        {
-            let events = emitter.events.lock().unwrap();
-            let legacy = events
-                .iter()
-                .find(|(name, _)| name == "network_event")
-                .expect("Normal capture should still admit Standard compatibility events");
-            assert_eq!(legacy.1["message"], "normal");
         }
         state.activity.shutdown().await.unwrap();
     }

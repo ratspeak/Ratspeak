@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{SendTimeoutError, Sender, TrySendError};
 use tokio::sync::oneshot;
@@ -12,6 +12,7 @@ use super::admission::{INGRESS_CAPACITY, LowPermitPool, ProcessClock, RateAdmiss
 use super::classified::{ActivityDraft, ActivityRejectReason};
 use super::gate::{AdmissionGate, GateError};
 use super::health::ActivityHealth;
+use super::producer::ProducerEvent;
 use super::query::{
     ActivityDetailResultV1, ActivityIpcResponse, ActivityRevealResultV1, ActivitySafeCopyResultV1,
 };
@@ -83,12 +84,20 @@ impl ActivityRecorder {
     }
 
     pub fn with_batch_sink(sink: Arc<dyn ActivityBatchSink>) -> Self {
+        Self::with_batch_sink_and_clock(sink, Arc::new(super::catalog::SystemActivityClock::new()))
+    }
+
+    fn with_batch_sink_and_clock(
+        sink: Arc<dyn ActivityBatchSink>,
+        observation_clock: Arc<dyn super::catalog::ActivityClock>,
+    ) -> Self {
         let gate = Arc::new(AdmissionGate::new());
         let health = ActivityHealth::new();
         let mirror = Arc::new(StatusMirror::new());
         let shared = Arc::new(WorkerShared {
             gate,
             rate: Arc::new(RateAdmission::new(ProcessClock::new())),
+            observation_clock,
             low_permits: LowPermitPool::new(),
             health,
             mirror,
@@ -121,8 +130,22 @@ impl ActivityRecorder {
     /// Nonblocking lazy producer path. A closed gate returns before invoking
     /// `make`; producer code cannot select its own priority, capture scope, or
     /// rate domain because all three come from the sealed catalog draft.
-    pub fn record<F>(&self, make: F) -> ActivityRecordOutcome
+    #[cfg(test)]
+    pub(crate) fn record<F>(&self, make: F) -> ActivityRecordOutcome
     where
+        F: FnOnce() -> Result<ActivityDraft, ActivityRejectReason>,
+    {
+        self.record_draft(|| true, make, false)
+    }
+
+    fn record_draft<V, F>(
+        &self,
+        validate_origin: V,
+        make: F,
+        recorder_stamps: bool,
+    ) -> ActivityRecordOutcome
+    where
+        V: FnOnce() -> bool,
         F: FnOnce() -> Result<ActivityDraft, ActivityRejectReason>,
     {
         if !self.inner.shared.available.load(Ordering::Acquire) {
@@ -146,14 +169,24 @@ impl ActivityRecorder {
             drop(lease);
             return ActivityRecordOutcome::StaleGeneration;
         }
+        // The origin check must run after recorder admission while the gate
+        // lease is alive. If an old task wakes after a reset/new Start, it
+        // observes the stale application fence here. If a reset begins after
+        // this check, it must wait for this lease and then purge the admitted
+        // generation before acknowledging the boundary.
+        if !validate_origin() {
+            return ActivityRecordOutcome::StaleGeneration;
+        }
 
-        let draft = match make() {
+        let mut draft = match make() {
             Ok(draft) => draft,
             Err(error) => {
                 self.inner
                     .shared
                     .health
-                    .increment_oversized_invalid_rejected_at(loss_observation_unix_ms());
+                    .increment_oversized_invalid_rejected_at(
+                        self.inner.shared.observation_clock.observe().unix_ms(),
+                    );
                 return ActivityRecordOutcome::Rejected(error);
             }
         };
@@ -169,7 +202,7 @@ impl ActivityRecorder {
             self.inner
                 .shared
                 .health
-                .increment_rate_limited_at(loss_observation_unix_ms());
+                .increment_rate_limited_at(self.inner.shared.observation_clock.observe().unix_ms());
             return ActivityRecordOutcome::RateLimited;
         }
         if self.inner.shared.gate.generation() != generation {
@@ -180,16 +213,18 @@ impl ActivityRecorder {
             match self.inner.shared.low_permits.try_acquire() {
                 Some(permit) => Some(permit),
                 None => {
-                    self.inner
-                        .shared
-                        .health
-                        .increment_ingress_full_at(loss_observation_unix_ms());
+                    self.inner.shared.health.increment_ingress_full_at(
+                        self.inner.shared.observation_clock.observe().unix_ms(),
+                    );
                     return ActivityRecordOutcome::IngressFull;
                 }
             }
         } else {
             None
         };
+        if recorder_stamps {
+            draft.stamp(self.inner.shared.observation_clock.observe());
+        }
         let envelope = IngressItem::Draft(IngressDraft {
             generation,
             profile,
@@ -199,14 +234,36 @@ impl ActivityRecorder {
         match self.inner.ingress_tx.try_send(envelope) {
             Ok(()) => ActivityRecordOutcome::Accepted,
             Err(TrySendError::Full(_)) => {
-                self.inner
-                    .shared
-                    .health
-                    .increment_ingress_full_at(loss_observation_unix_ms());
+                self.inner.shared.health.increment_ingress_full_at(
+                    self.inner.shared.observation_clock.observe().unix_ms(),
+                );
                 ActivityRecordOutcome::IngressFull
             }
             Err(TrySendError::Disconnected(_)) => ActivityRecordOutcome::WorkerUnavailable,
         }
+    }
+
+    /// Public domain-producer path. The capture gate admits the closure before
+    /// it constructs an opaque timeless event; the recorder then stamps and
+    /// classifies it through the private catalog. This keeps disabled capture
+    /// lazy and makes timestamps part of recorder policy, never producer input.
+    pub fn record_event<F>(&self, make: F) -> ActivityRecordOutcome
+    where
+        F: FnOnce() -> Result<ProducerEvent, ActivityRejectReason>,
+    {
+        self.record_draft(|| true, || make()?.into_unstamped_draft(), true)
+    }
+
+    /// Origin-fenced producer path for async work. `validate_origin` executes
+    /// only after the recorder has admitted and pinned the current capture
+    /// generation, closing the check-to-admission race across identity and
+    /// same-identity privacy resets.
+    pub fn record_event_fenced<V, F>(&self, validate_origin: V, make: F) -> ActivityRecordOutcome
+    where
+        V: FnOnce() -> bool,
+        F: FnOnce() -> Result<ProducerEvent, ActivityRejectReason>,
+    {
+        self.record_draft(validate_origin, || make()?.into_unstamped_draft(), true)
     }
 
     pub fn status(&self) -> ActivityStatusV1 {
@@ -804,14 +861,6 @@ fn event_query_request(
     })
 }
 
-fn loss_observation_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64
-}
-
 async fn await_ack<T>(receiver: oneshot::Receiver<T>) -> Result<T, ActivityRecorderError> {
     tokio::time::timeout(LIFECYCLE_TIMEOUT, receiver)
         .await
@@ -869,10 +918,11 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use super::super::catalog::{
-        self, ChannelNavigationReference, ChannelRoomToken, DeliveryFailureReason, DestinationHash,
-        LxmfDeliveryFailed, MessageId, NavigationToken, ObservationTime,
+        self, ActivityClock, ChannelNavigationReference, ChannelRoomToken, DeliveryFailureReason,
+        DestinationHash, LxmfDeliveryFailed, MessageId, NavigationToken, ObservationTime,
     };
     use super::super::classified::{CoalescingPolicy, CorrelationId};
+    use super::super::producer;
     use super::super::replay::{
         ACTIVITY_BATCH_MAX_BYTES, ACTIVITY_BATCH_MAX_EVENTS, ActivityBatchV1, ActivityCaptureState,
         ActivityPublishError, ActivityReplayResultV1, ActivityTraceStateV1, ActivityWorkerState,
@@ -927,6 +977,31 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(status.clone());
             Ok(())
+        }
+    }
+
+    struct FixedClock {
+        calls: AtomicUsize,
+        time: ObservationTime,
+    }
+
+    impl FixedClock {
+        fn new(unix_ms: u64, elapsed_ms: u64) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                time: ObservationTime::new(unix_ms, elapsed_ms),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl ActivityClock for FixedClock {
+        fn observe(&self) -> ObservationTime {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.time
         }
     }
 
@@ -988,6 +1063,98 @@ mod tests {
             ActivityRecordOutcome::CaptureOff | ActivityRecordOutcome::WorkerUnavailable
         ));
         assert!(!evaluated.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recorder_clock_is_lazy_and_is_the_only_source_of_accepted_timestamps() {
+        let sink = Arc::new(RecordingSink::default());
+        let clock = Arc::new(FixedClock::new(424_242, 777));
+        let recorder = ActivityRecorder::with_batch_sink_and_clock(sink, clock.clone());
+        wait_until(|| recorder.status().worker_state() == ActivityWorkerState::Running).await;
+
+        let evaluated = AtomicBool::new(false);
+        let before_off = clock.calls();
+        assert_eq!(
+            recorder.record_event(|| {
+                evaluated.store(true, Ordering::Relaxed);
+                Ok(producer::app_runtime(producer::AppRuntimeTransition::Ready))
+            }),
+            ActivityRecordOutcome::CaptureOff
+        );
+        assert!(!evaluated.load(Ordering::Relaxed));
+        assert_eq!(clock.calls(), before_off);
+
+        let off_origin_evaluated = AtomicBool::new(false);
+        assert_eq!(
+            recorder.record_event_fenced(
+                || {
+                    off_origin_evaluated.store(true, Ordering::Relaxed);
+                    true
+                },
+                || Ok(producer::app_runtime(producer::AppRuntimeTransition::Ready)),
+            ),
+            ActivityRecordOutcome::CaptureOff
+        );
+        assert!(!off_origin_evaluated.load(Ordering::Relaxed));
+        assert_eq!(clock.calls(), before_off);
+
+        let session = recorder
+            .start()
+            .await
+            .unwrap()
+            .capture_session()
+            .unwrap()
+            .to_string();
+        let stale_event_built = AtomicBool::new(false);
+        let before_stale = clock.calls();
+        assert_eq!(
+            recorder.record_event_fenced(
+                || false,
+                || {
+                    stale_event_built.store(true, Ordering::Relaxed);
+                    Ok(producer::app_runtime(producer::AppRuntimeTransition::Ready))
+                },
+            ),
+            ActivityRecordOutcome::StaleGeneration
+        );
+        assert!(!stale_event_built.load(Ordering::Relaxed));
+        assert_eq!(clock.calls(), before_stale);
+
+        let before_filtered = clock.calls();
+        assert_eq!(
+            recorder.record_event(|| {
+                Ok(producer::rns_path_observed(producer::RnsPathDiscovered {
+                    destination: producer::DestinationHash::new([0x31; 16]),
+                    hops: 4,
+                    evidence: producer::PathEvidence::Transport,
+                    endpoint: None,
+                    correlation_id: None,
+                }))
+            }),
+            ActivityRecordOutcome::ProfileFiltered
+        );
+        assert_eq!(clock.calls(), before_filtered);
+
+        assert_eq!(
+            recorder.record_event(|| {
+                Ok(producer::app_runtime(producer::AppRuntimeTransition::Ready))
+            }),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| recorder.status().latest().is_some_and(|latest| latest >= 2)).await;
+        let ActivityReplayResultV1::Page { page } =
+            recorder.replay(session, None, 50, 64 * 1024).await.unwrap()
+        else {
+            panic!("active session should replay");
+        };
+        let accepted = page
+            .events()
+            .iter()
+            .find(|event| event.kind() == "app.runtime.ready")
+            .unwrap();
+        assert_eq!(accepted.timestamp_unix_ms, 424_242);
+        assert_eq!(accepted.elapsed_ms, 777);
+        recorder.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

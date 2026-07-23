@@ -22,8 +22,12 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::activity::producer::{
+    self, IdentityHash as ActivityIdentityHash, LinkId as ActivityLinkId, LxstCallReason,
+    LxstTransition,
+};
 use crate::db;
-use crate::state::AppState;
+use crate::state::{ActivityRequestFence, AppState};
 
 const AUDIO_FRAME_CHANNEL_DEPTH: usize = 8;
 const AUDIO_SPEAKER_CHANNEL_DEPTH: usize = 32;
@@ -136,6 +140,7 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
     if voice_control_tx(state).is_some() {
         return Ok(());
     }
+    let activity_origin = state.activity_request_fence();
 
     let (transport_tx, identity) = voice_runtime_inputs(state)?;
     let endpoint = TelephonyRnsEndpoint::register(transport_tx, &identity)
@@ -184,11 +189,12 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
             "running": true,
         }),
     );
-    emit_lxst_activity(state, "LXST voice service started", "", "standard");
+    record_lxst_activity(state, activity_origin, LxstTransition::ServiceStarted);
     Ok(())
 }
 
 pub async fn shutdown_voice_service(state: &Arc<AppState>) {
+    let activity_origin = state.activity_request_fence();
     let handle = state
         .lxst_voice
         .lock()
@@ -208,7 +214,7 @@ pub async fn shutdown_voice_service(state: &Arc<AppState>) {
             "running": false,
         }),
     );
-    emit_lxst_activity(state, "LXST voice service stopped", "", "standard");
+    record_lxst_activity(state, activity_origin, LxstTransition::ServiceStopped);
 }
 
 pub fn voice_status(state: &AppState) -> Value {
@@ -771,6 +777,10 @@ async fn drive_voice_events(
         let Some(event) = event else {
             break;
         };
+        // Voice service tasks are long-lived across Activity capture resets.
+        // Fence each received event, rather than pinning the task to the
+        // generation in which the service originally started.
+        let activity_origin = state.activity_request_fence();
         match event {
             TelephonyServiceEvent::IncomingCall {
                 link_id,
@@ -831,11 +841,13 @@ async fn drive_voice_events(
                 notify_incoming_call_if_background(&state, &remote_lxmf_destination, link_id);
                 state.emit_to_all("voice_incoming_call", payload.clone());
                 state.emit_to_all("voice_call_update", payload);
-                emit_lxst_activity(
+                record_lxst_activity(
                     &state,
-                    "Incoming LXST call",
-                    &voice_remote_detail(remote_identity, Some(link_id)),
-                    "standard",
+                    activity_origin,
+                    LxstTransition::IncomingRinging {
+                        peer: ActivityIdentityHash::new(remote_identity),
+                        link: ActivityLinkId::new(link_id),
+                    },
                 );
             }
             TelephonyServiceEvent::OutgoingCallPending { remote_identity } => {
@@ -847,11 +859,12 @@ async fn drive_voice_events(
                         "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
                     }),
                 );
-                emit_lxst_activity(
+                record_lxst_activity(
                     &state,
-                    "Resolving LXST call path",
-                    &voice_remote_detail(remote_identity, None),
-                    "standard",
+                    activity_origin,
+                    LxstTransition::PathPending {
+                        peer: ActivityIdentityHash::new(remote_identity),
+                    },
                 );
             }
             TelephonyServiceEvent::OutgoingCallStarted {
@@ -867,11 +880,13 @@ async fn drive_voice_events(
                         "remote_lxmf_destination": lxmf_destination_for_identity(remote_identity),
                     }),
                 );
-                emit_lxst_activity(
+                record_lxst_activity(
                     &state,
-                    "LXST call link requested",
-                    &voice_remote_detail(remote_identity, Some(link_id)),
-                    "standard",
+                    activity_origin,
+                    LxstTransition::LinkRequested {
+                        peer: ActivityIdentityHash::new(remote_identity),
+                        link: ActivityLinkId::new(link_id),
+                    },
                 );
             }
             TelephonyServiceEvent::OutgoingCallFailed {
@@ -887,11 +902,18 @@ async fn drive_voice_events(
                         "message": message.clone(),
                     }),
                 );
-                emit_lxst_activity(
+                record_lxst_activity(
                     &state,
-                    "LXST call failed",
-                    &format!("{} {}", voice_remote_detail(remote_identity, None), message),
-                    "standard",
+                    activity_origin,
+                    LxstTransition::Failed {
+                        peer: Some(ActivityIdentityHash::new(remote_identity)),
+                        link: None,
+                        // The upstream event deliberately carries only prose,
+                        // and can represent cancellation, discovery, or link
+                        // setup failures. Do not infer a specific cause from
+                        // that human-authored text.
+                        reason: LxstCallReason::ServiceError,
+                    },
                 );
             }
             TelephonyServiceEvent::CallTerminated { link_id, reason } => {
@@ -910,16 +932,8 @@ async fn drive_voice_events(
                         "reason": reason.map(status_key),
                     }),
                 );
-                emit_lxst_activity(
-                    &state,
-                    "LXST call ended",
-                    &format!(
-                        "link={} reason={}",
-                        hex::encode(link_id),
-                        reason.map(status_key).unwrap_or("none")
-                    ),
-                    "standard",
-                );
+                let transition = lxst_call_termination_transition(link_id, reason);
+                record_lxst_activity(&state, activity_origin, transition);
             }
             TelephonyServiceEvent::Snapshot(snapshot) => {
                 if snapshot
@@ -1015,7 +1029,13 @@ async fn drive_voice_events(
                         "message": message.clone(),
                     }),
                 );
-                emit_lxst_activity(&state, "LXST voice error", &message, "standard");
+                record_lxst_activity(
+                    &state,
+                    activity_origin,
+                    LxstTransition::ServiceFailed {
+                        reason: LxstCallReason::ServiceError,
+                    },
+                );
             }
             TelephonyServiceEvent::MediaSent { .. } => {
                 if let Some(snapshot) = latest_snapshot.as_ref() {
@@ -1344,21 +1364,43 @@ fn active_call_payload(active: &ActiveCallSnapshot) -> Value {
     })
 }
 
-fn emit_lxst_activity(state: &AppState, message: &str, detail: &str, level: &str) {
-    state.emit_network_event("lxst", message, detail, level);
+fn record_lxst_activity(
+    state: &AppState,
+    origin: ActivityRequestFence,
+    transition: LxstTransition,
+) {
+    let _ = state.activity.record_event_fenced(
+        || state.is_current_activity_origin_fence(origin),
+        || Ok(producer::lxst_activity(transition)),
+    );
 }
 
-fn voice_remote_detail(remote_identity: [u8; 16], link_id: Option<[u8; 16]>) -> String {
-    let mut detail = format!(
-        "identity={} lxmf={}",
-        hex::encode(remote_identity),
-        lxmf_destination_for_identity(remote_identity)
-    );
-    if let Some(link_id) = link_id {
-        detail.push_str(" link=");
-        detail.push_str(&hex::encode(link_id));
+fn activity_call_reason(status: SignallingStatus) -> LxstCallReason {
+    match status {
+        SignallingStatus::Busy => LxstCallReason::Busy,
+        SignallingStatus::Rejected => LxstCallReason::Rejected,
+        SignallingStatus::Calling => LxstCallReason::Calling,
+        SignallingStatus::Available => LxstCallReason::Available,
+        SignallingStatus::Ringing => LxstCallReason::Ringing,
+        SignallingStatus::Connecting => LxstCallReason::Connecting,
+        SignallingStatus::Established => LxstCallReason::Established,
     }
-    detail
+}
+
+fn lxst_call_termination_transition(
+    link_id: [u8; 16],
+    reason: Option<SignallingStatus>,
+) -> LxstTransition {
+    let link = ActivityLinkId::new(link_id);
+    match reason {
+        None => LxstTransition::Ended { link },
+        Some(SignallingStatus::Rejected) => LxstTransition::Rejected { link },
+        Some(status) => LxstTransition::Failed {
+            peer: None,
+            link: Some(link),
+            reason: activity_call_reason(status),
+        },
+    }
 }
 
 fn lxmf_destination_for_identity(identity_hash: [u8; 16]) -> String {
@@ -2965,6 +3007,34 @@ mod tests {
     use r2d2_sqlite::SqliteConnectionManager;
     use ratspeak_core::{NativeNotification, NativeNotificationKind, NativeNotifier};
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn lxst_termination_adapter_never_reports_non_success_as_clean_end() {
+        assert!(matches!(
+            lxst_call_termination_transition([1; 16], None),
+            LxstTransition::Ended { .. }
+        ));
+        assert!(matches!(
+            lxst_call_termination_transition([2; 16], Some(SignallingStatus::Rejected)),
+            LxstTransition::Rejected { .. }
+        ));
+        assert!(matches!(
+            lxst_call_termination_transition([3; 16], Some(SignallingStatus::Busy)),
+            LxstTransition::Failed {
+                peer: None,
+                link: Some(_),
+                reason: LxstCallReason::Busy,
+            }
+        ));
+        assert!(matches!(
+            lxst_call_termination_transition([4; 16], Some(SignallingStatus::Established)),
+            LxstTransition::Failed {
+                peer: None,
+                link: Some(_),
+                reason: LxstCallReason::Established,
+            }
+        ));
+    }
 
     #[derive(Default)]
     struct RecordingNotifier {

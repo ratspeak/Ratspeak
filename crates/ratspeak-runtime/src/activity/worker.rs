@@ -4,7 +4,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, TryRecvError};
 use tokio::sync::oneshot;
@@ -122,6 +122,7 @@ pub(super) enum QueryCommand {
 pub(super) struct WorkerShared {
     pub(super) gate: Arc<AdmissionGate>,
     pub(super) rate: Arc<RateAdmission>,
+    pub(super) observation_clock: Arc<dyn super::catalog::ActivityClock>,
     pub(super) low_permits: Arc<LowPermitPool>,
     pub(super) health: Arc<ActivityHealth>,
     pub(super) mirror: Arc<StatusMirror>,
@@ -341,7 +342,6 @@ struct WorkerCore {
     session: Option<SessionCore>,
     worker_epoch: u64,
     recovery_marker_pending: bool,
-    clock_origin: Instant,
 }
 
 impl WorkerCore {
@@ -365,7 +365,6 @@ impl WorkerCore {
             session: None,
             worker_epoch,
             recovery_marker_pending,
-            clock_origin: Instant::now(),
         }
     }
 
@@ -964,17 +963,7 @@ impl WorkerCore {
     }
 
     fn observation_time(&self) -> ObservationTime {
-        let unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
-        let elapsed_ms = self
-            .clock_origin
-            .elapsed()
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
-        ObservationTime::new(unix_ms, elapsed_ms)
+        self.shared.observation_clock.observe()
     }
 
     fn open_ack(
@@ -1347,6 +1336,7 @@ mod tests {
         WorkerShared {
             gate: Arc::new(AdmissionGate::new()),
             rate: Arc::new(RateAdmission::new(ProcessClock::new())),
+            observation_clock: Arc::new(super::catalog::SystemActivityClock::new()),
             low_permits: LowPermitPool::new(),
             health: ActivityHealth::new(),
             mirror: Arc::new(StatusMirror::new()),

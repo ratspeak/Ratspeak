@@ -5,7 +5,7 @@
 
 #![allow(
     dead_code,
-    reason = "reviewed draft variants intentionally precede Stage 2 producers"
+    reason = "reviewed draft variants include later semantic coverage"
 )]
 
 use std::fmt;
@@ -210,7 +210,7 @@ impl PartialEq for DraftAttribute {
 
 impl Eq for DraftAttribute {}
 
-pub struct ActivityDraft {
+pub(crate) struct ActivityDraft {
     kind: ActivityKindCode,
     severity: ActivitySeverity,
     direction: ActivityDirection,
@@ -267,6 +267,11 @@ impl ActivityDraft {
 
     pub(super) const fn capture_scope(&self) -> super::schema::CaptureScope {
         self.kind.capture_scope()
+    }
+
+    pub(super) fn stamp(&mut self, time: super::catalog::ObservationTime) {
+        self.timestamp_unix_ms = time.unix_ms();
+        self.elapsed_ms = time.elapsed_ms();
     }
 
     pub(super) const fn rate_domain(&self) -> super::schema::RateDomain {

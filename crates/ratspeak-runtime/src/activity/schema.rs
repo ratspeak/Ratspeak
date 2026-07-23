@@ -6,7 +6,7 @@
 
 #![allow(
     dead_code,
-    reason = "reviewed wire/catalog variants precede Stage 2 producer migration"
+    reason = "reviewed wire/catalog variants include later semantic coverage"
 )]
 
 use serde::Serialize;
@@ -601,10 +601,22 @@ pub(super) mod kinds {
     kind!(RNS_TRANSPORT_STOPPED, "rns.transport.stopped", Network);
     kind!(RNS_PATH_REQUESTED, "rns.path.requested", Network);
     kind!(RNS_PATH_DISCOVERED, "rns.path.discovered", Network);
+    trace_ambient_kind!(RNS_PATH_OBSERVED, "rns.path.observed", Network);
     kind!(RNS_PATH_TIMED_OUT, "rns.path.timed_out", Network);
     kind!(RNS_ANNOUNCE_SENT, "rns.announce.sent", Network);
     kind!(RNS_ANNOUNCE_FAILED, "rns.announce.failed", Network);
     kind!(RNS_ANNOUNCE_HELD, "rns.announce.held", Network);
+    kind!(
+        RNS_ANNOUNCE_INGRESS_BURST_STARTED,
+        "rns.announce.ingress_burst_started",
+        Network
+    );
+    kind!(
+        RNS_ANNOUNCE_INGRESS_BURST_CLEARED,
+        "rns.announce.ingress_burst_cleared",
+        Network
+    );
+    kind!(RNS_ANNOUNCE_SUPPRESSED, "rns.announce.suppressed", Network);
     trace_ambient_kind!(RNS_ANNOUNCE_OBSERVED, "rns.announce.observed", Network);
     kind!(RNS_SECURITY_DROPPED, "rns.security.dropped", Network);
     trace_ambient_kind!(RNS_PACKET_SAMPLED, "rns.packet.sampled", Network);
@@ -630,6 +642,11 @@ pub(super) mod kinds {
 
     kind!(LXMF_DELIVERY_QUEUED, "lxmf.delivery.queued", Messages);
     kind!(
+        LXMF_DELIVERY_SUBMISSION_FAILED,
+        "lxmf.delivery.submission_failed",
+        Messages
+    );
+    kind!(
         LXMF_DELIVERY_METHOD_SELECTED,
         "lxmf.delivery.method_selected",
         Messages
@@ -645,13 +662,18 @@ pub(super) mod kinds {
         Messages
     );
     kind!(
+        LXMF_DELIVERY_LINK_READY,
+        "lxmf.delivery.link_ready",
+        Messages
+    );
+    kind!(
         LXMF_DELIVERY_LINK_REUSED,
         "lxmf.delivery.link_reused",
         Messages
     );
     kind!(
-        LXMF_DELIVERY_PACKET_STARTED,
-        "lxmf.delivery.packet_started",
+        LXMF_DELIVERY_DIRECT_PENDING,
+        "lxmf.delivery.direct_pending",
         Messages
     );
     kind!(
@@ -659,7 +681,7 @@ pub(super) mod kinds {
         "lxmf.delivery.resource_started",
         Messages
     );
-    kind!(LXMF_DELIVERY_PROGRESS, "lxmf.delivery.progress", Messages);
+    trace_ambient_kind!(LXMF_DELIVERY_PROGRESS, "lxmf.delivery.progress", Messages);
     kind!(
         LXMF_DELIVERY_AWAITING_PROOF,
         "lxmf.delivery.awaiting_proof",
@@ -809,6 +831,9 @@ pub(super) mod kinds {
 
     kind!(LXST_SERVICE_STARTED, "lxst.service.started", Calls);
     kind!(LXST_SERVICE_STOPPED, "lxst.service.stopped", Calls);
+    kind!(LXST_SERVICE_FAILED, "lxst.service.failed", Calls);
+    kind!(LXST_CALL_PATH_PENDING, "lxst.call.path_pending", Calls);
+    kind!(LXST_CALL_LINK_REQUESTED, "lxst.call.link_requested", Calls);
     kind!(LXST_CALL_RINGING, "lxst.call.ringing", Calls);
     kind!(LXST_CALL_ANSWERED, "lxst.call.answered", Calls);
     kind!(LXST_CALL_ENDED, "lxst.call.ended", Calls);

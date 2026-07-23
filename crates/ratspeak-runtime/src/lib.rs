@@ -44,7 +44,8 @@ use rns_identity::destination::Destination;
 use serde_json::{Value, json};
 
 use activity::ActivityRecorderError;
-use state::AppState;
+use activity::producer::{self, ProducerEvent};
+use state::{ActivityRequestFence, AppState};
 
 const CHANNEL_BUFFER_SIZE: usize = 64;
 
@@ -53,28 +54,61 @@ const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
 
-fn lxmf_progress_activity_label(step: &str) -> Option<&'static str> {
+fn lxmf_progress_activity_step(step: &str) -> Option<producer::LxmfProgressStep> {
     match step {
-        "link_establishing" => Some("Direct link establishing"),
-        "resource_link_ready" => Some("Resource link ready"),
-        "resource_advertised" => Some("Resource transfer advertised"),
-        "resource_transferring" => Some("Resource transfer sending chunks"),
-        "resource_waiting_for_proof" => Some("Resource transfer waiting for proof"),
+        "link_establishing" => Some(producer::LxmfProgressStep::LinkEstablishing),
+        "resource_link_ready" => Some(producer::LxmfProgressStep::LinkReady),
+        "resource_advertised" => Some(producer::LxmfProgressStep::ResourceStarted),
+        "resource_transferring" => Some(producer::LxmfProgressStep::ResourceProgress),
         _ => None,
     }
 }
 
-fn lxmf_progress_activity_detail(update: &lxmf::LxmfDeliveryProgressUpdate) -> String {
-    let mut parts = Vec::new();
-    if let Some(progress) = update.progress {
-        let pct = (progress * 100.0).round().clamp(1.0, 99.0);
-        parts.push(format!("{pct:.0}%"));
-    }
-    parts.push(update.msg_id[..8.min(update.msg_id.len())].to_string());
-    if let Some(link_id) = update.link_id.as_deref() {
-        parts.push(format!("link {}", &link_id[..8.min(link_id.len())]));
-    }
-    parts.join(" - ")
+fn record_activity_if_current<F>(state: &AppState, origin: ActivityRequestFence, make: F)
+where
+    F: FnOnce() -> Result<ProducerEvent, activity::ActivityRejectReason>,
+{
+    let _ = state
+        .activity
+        .record_event_fenced(|| state.is_current_activity_origin_fence(origin), make);
+}
+
+fn record_lxmf_progress(
+    state: &AppState,
+    origin: ActivityRequestFence,
+    update: &lxmf::LxmfDeliveryProgressUpdate,
+) {
+    let Some(step) = lxmf_progress_activity_step(update.step) else {
+        return;
+    };
+    record_activity_if_current(state, origin, || {
+        let message = producer::MessageId::from_hex(&update.msg_id)?;
+        let destination = producer::DestinationHash::from_hex(&update.dest_hash)?;
+        let link = update
+            .link_id
+            .as_deref()
+            .map(producer::LinkId::from_hex)
+            .transpose()?;
+        let method = producer::LxmfDeliveryMethod::from_code(update.method)
+            .ok_or(activity::ActivityRejectReason::InvalidOperationalCode)?;
+        let percent = update.progress.map(|progress| {
+            (progress * 100.0)
+                .round()
+                .clamp(0.0, 100.0)
+                .min(f64::from(u8::MAX)) as u8
+        });
+        Ok(producer::lxmf_delivery_progress(
+            producer::LxmfDeliveryProgress {
+                message,
+                destination,
+                link,
+                method,
+                step,
+                percent,
+                attempts: update.attempts,
+            },
+        ))
+    });
 }
 
 pub fn telephony_hash_for_identity_hex(identity_hash_hex: &str) -> Option<String> {
@@ -1073,6 +1107,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 tokio::spawn(async move {
                     loop {
                         let event = tokio::select! {
+                            biased;
                             _ = dispatch_shutdown.wait() => break,
                             ev = delivery_rx.recv() => match ev {
                                 Some(e) => e,
@@ -1307,6 +1342,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .clone();
                     tokio::spawn(async move {
                         tokio::select! {
+                            biased;
                             _ = prop_shutdown.wait() => {}
                             _ = link_mgr.run() => {}
                         }
@@ -1323,6 +1359,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     tokio::spawn(async move {
                         loop {
                             let item = tokio::select! {
+                                biased;
                                 _ = store_shutdown.wait() => break,
                                 item = pkt_rx.recv() => item,
                                 item = res_rx.recv() => item,
@@ -1479,6 +1516,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .clone();
                     tokio::spawn(async move {
                         tokio::select! {
+                            biased;
                             _ = lxmf_link_shutdown.wait() => {}
                             _ = lxmf_link_mgr.run_with_commands(link_command_rx) => {}
                         }
@@ -1493,6 +1531,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     tokio::spawn(async move {
                         loop {
                             let (data, link_id) = tokio::select! {
+                                biased;
                                 _ = link_inbound_shutdown.wait() => break,
                                 item = link_pkt_rx.recv() => match item {
                                     Some((data, link_id)) => (data, link_id),
@@ -1503,16 +1542,26 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                     None => break,
                                 },
                             };
+                            // Sample after the receive so a newly spawned task
+                            // does not retain an odd transition fence while it
+                            // waits. The immediate shutdown check prevents an
+                            // old task selected before reset from borrowing the
+                            // replacement session's fence.
+                            let activity_origin = link_inbound_state.activity_request_fence();
+                            if link_inbound_shutdown.is_triggered() {
+                                break;
+                            }
 
                             // Link deliveries arrive already decrypted. Payload
                             // is the full LXMF wire format:
                             //   [dest:16][src:16][sig:64][msgpack].
-                            handle_decrypted_lxmf(
+                            handle_decrypted_lxmf_from_origin(
                                 &link_inbound_state,
                                 data,
                                 InboundLxmfSource::Link {
                                     link_id: Some(link_id),
                                 },
+                                activity_origin,
                             )
                             .await;
                         }
@@ -1575,9 +1624,14 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 let mut was_foreground = true;
                 loop {
                     tokio::select! {
+                        biased;
                         _ = tick_shutdown.wait() => break,
                         _ = interval.tick() => {},
                         _ = tick_state.lxmf_notify.notified() => {},
+                    }
+                    let tick_activity_origin = tick_state.activity_request_fence();
+                    if tick_shutdown.is_triggered() {
+                        break;
                     }
                     // Mobile: drop to 2s while backgrounded.
                     #[cfg(feature = "mobile-throttle")]
@@ -1830,25 +1884,44 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 "method": method,
                             }),
                         );
-                        if tick_state
-                            .network_log_enabled
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                        {
-                            let level = if *new_state == "failed" {
-                                "essential"
-                            } else {
-                                "standard"
-                            };
-                            tick_state.emit_network_event(
-                                if *new_state == "failed" {
-                                    "error"
-                                } else {
-                                    "message"
-                                },
-                                &format!("Message {}", new_state),
-                                msg_id,
-                                level,
-                            );
+                        let activity_state = match *new_state {
+                            "routing" => Some(producer::LxmfDeliveryState::Routing),
+                            "propagating" => Some(producer::LxmfDeliveryState::Propagating),
+                            "reusing_backchannel" => {
+                                Some(producer::LxmfDeliveryState::ReusingBackchannel)
+                            }
+                            "sending_via_link" => Some(producer::LxmfDeliveryState::SendingViaLink),
+                            "sent" => Some(producer::LxmfDeliveryState::Sent),
+                            "delivered" => Some(producer::LxmfDeliveryState::Delivered),
+                            "propagated" => Some(producer::LxmfDeliveryState::Propagated),
+                            "rejected" => Some(producer::LxmfDeliveryState::Rejected),
+                            "failed" => Some(producer::LxmfDeliveryState::Failed),
+                            _ => None,
+                        };
+                        if let Some(activity_state) = activity_state {
+                            record_activity_if_current(&tick_state, tick_activity_origin, || {
+                                let message = producer::MessageId::from_hex(msg_id)?;
+                                let method = method
+                                    .as_deref()
+                                    .and_then(producer::LxmfDeliveryMethod::from_code);
+                                Ok(producer::lxmf_delivery_state_changed(
+                                    producer::LxmfDeliveryStateChanged {
+                                        message,
+                                        state: activity_state,
+                                        method,
+                                        rtt_ms: None,
+                                        failure_reason: match activity_state {
+                                            producer::LxmfDeliveryState::Rejected => {
+                                                Some(producer::DeliveryFailureReason::Rejected)
+                                            }
+                                            producer::LxmfDeliveryState::Failed => Some(
+                                                producer::DeliveryFailureReason::TransportFailed,
+                                            ),
+                                            _ => None,
+                                        },
+                                    },
+                                ))
+                            });
                         }
                         if *new_state == "sent" {
                             let now = std::time::SystemTime::now()
@@ -1912,19 +1985,17 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 "reason": update.reason,
                             }),
                         );
-                        if tick_state
-                            .network_log_enabled
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                            && let Some(label) = lxmf_progress_activity_label(update.step)
-                        {
-                            let detail = lxmf_progress_activity_detail(&update);
-                            tick_state.emit_network_event("message", label, &detail, "detailed");
-                        }
+                        record_lxmf_progress(&tick_state, tick_activity_origin, &update);
                     }
 
                     for data in downloaded_propagation_messages {
-                        handle_decrypted_lxmf(&tick_state, data, InboundLxmfSource::Propagated)
-                            .await;
+                        handle_decrypted_lxmf_from_origin(
+                            &tick_state,
+                            data,
+                            InboundLxmfSource::Propagated,
+                            tick_activity_origin,
+                        )
+                        .await;
                     }
 
                     // Every ~30s: timeout sweep + evict >1h tracking entries.
@@ -1932,7 +2003,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     if timeout_check_counter.is_multiple_of(60) {
                         propagation::reconcile_active_auto_node(&tick_state).await;
                         propagation::probe_static_nodes_background(&tick_state).await;
-                        check_message_timeouts(&tick_state).await;
+                        check_message_timeouts(&tick_state, tick_activity_origin).await;
                         sweep_undelivered_game_sessions(&tick_state).await;
                         let cleanup_now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -1972,15 +2043,26 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     let interval_secs = *announce_rx.borrow();
                     if interval_secs == 0 {
                         tokio::select! {
+                            biased;
                             _ = periodic_shutdown.wait() => break,
                             _ = announce_rx.changed() => continue,
                         }
                     } else {
                         tokio::select! {
+                            biased;
                             _ = periodic_shutdown.wait() => break,
                             _ = announce_rx.changed() => continue,
                             _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {
-                                send_announce_from_state(&periodic_state).await;
+                                let activity_origin =
+                                    periodic_state.activity_request_fence();
+                                if periodic_shutdown.is_triggered() {
+                                    break;
+                                }
+                                send_announce_from_origin(
+                                    &periodic_state,
+                                    activity_origin,
+                                )
+                                .await;
                             }
                         }
                     }
@@ -1993,8 +2075,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
+            let poll_activity_origin = state.activity_request_fence();
             tokio::spawn(async move {
-                poll_stats_loop(poll_state, poll_shutdown).await;
+                poll_stats_loop(poll_state, poll_shutdown, poll_activity_origin).await;
             });
 
             // Eager stats push after a short delay; lets transport ingest first batch.
@@ -2101,16 +2184,42 @@ pub struct AnnounceSendReport {
 }
 
 pub async fn send_announce_from_state(state: &AppState) -> AnnounceSendReport {
-    send_announce_from_state_inner(state, true).await
+    let activity_origin = state.activity_request_fence();
+    send_announce_from_state_inner(state, true, activity_origin).await
 }
 
 pub async fn send_manual_announce_from_state(state: &AppState) -> AnnounceSendReport {
-    send_announce_from_state_inner(state, false).await
+    let activity_origin = state.activity_request_fence();
+    send_announce_from_state_inner(state, false, activity_origin).await
+}
+
+pub async fn send_manual_announce_from_origin(
+    state: &AppState,
+    activity_origin: ActivityRequestFence,
+) -> AnnounceSendReport {
+    send_announce_from_state_inner(state, false, activity_origin).await
+}
+
+pub async fn send_announce_from_origin(
+    state: &AppState,
+    activity_origin: ActivityRequestFence,
+) -> AnnounceSendReport {
+    send_announce_from_state_inner(state, true, activity_origin).await
 }
 
 pub async fn maybe_opportunistic_announce_before_user_send(
     state: &AppState,
     dest_hash: &str,
+) -> AnnounceSendReport {
+    let activity_origin = state.activity_request_fence();
+    maybe_opportunistic_announce_before_user_send_from_origin(state, dest_hash, activity_origin)
+        .await
+}
+
+pub async fn maybe_opportunistic_announce_before_user_send_from_origin(
+    state: &AppState,
+    dest_hash: &str,
+    activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
     let report = AnnounceSendReport::default();
 
@@ -2166,7 +2275,7 @@ pub async fn maybe_opportunistic_announce_before_user_send(
     if !claim_opportunistic_announce(state, dest_hash) {
         return report;
     }
-    let announce_report = send_announce_from_state(state).await;
+    let announce_report = send_announce_from_origin(state, activity_origin).await;
     release_opportunistic_announce(state, dest_hash);
     announce_report
 }
@@ -2216,8 +2325,16 @@ fn schedule_startup_auto_announce(state: Arc<AppState>) {
 
         loop {
             tokio::select! {
+                biased;
                 _ = shutdown.wait() => return,
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
+            // Startup is scheduled while the identity transition fence can be
+            // odd. Sample only after this wake, then reject an old task whose
+            // shutdown raced the selected timer before doing any work.
+            let activity_origin = state.activity_request_fence();
+            if shutdown.is_triggered() {
+                return;
             }
 
             if *state.announce_interval_rx.borrow() == 0 {
@@ -2225,7 +2342,7 @@ fn schedule_startup_auto_announce(state: Arc<AppState>) {
             }
 
             if matches!(any_interface_online_cached(&state), Some(true)) {
-                let report = send_announce_from_state(&state).await;
+                let report = send_announce_from_origin(&state, activity_origin).await;
                 if report.queued > 0 {
                     let ts = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -2259,6 +2376,7 @@ fn schedule_startup_auto_announce(state: Arc<AppState>) {
 async fn send_announce_from_state_inner(
     state: &AppState,
     require_cached_online: bool,
+    activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
     let mut report = AnnounceSendReport::default();
     if require_cached_online && matches!(any_interface_online_cached(state), Some(false)) {
@@ -2266,7 +2384,7 @@ async fn send_announce_from_state_inner(
         return report;
     }
     let (packets, transport_tx) = {
-        let mut packets: Vec<([u8; 16], Vec<u8>, &'static str, bool)> = Vec::new();
+        let mut packets: Vec<([u8; 16], Vec<u8>, bool)> = Vec::new();
         let lock_wait_started = std::time::Instant::now();
         if let Ok(mut lxmf) = state.lxmf.lock()
             && let Some(mgr) = lxmf.as_mut()
@@ -2279,24 +2397,14 @@ async fn send_announce_from_state_inner(
                 );
             }
             if let Ok(raw) = mgr.create_announce_packet() {
-                packets.push((
-                    mgr.lxmf_dest_hash,
-                    raw,
-                    "Identity announced on all interfaces",
-                    true,
-                ));
+                packets.push((mgr.lxmf_dest_hash, raw, true));
             }
             if state
                 .propagation_node_hosting_enabled
                 .load(std::sync::atomic::Ordering::Relaxed)
                 && let Ok(raw) = mgr.create_propagation_announce_packet()
             {
-                packets.push((
-                    mgr.propagation_dest_hash,
-                    raw,
-                    "Propagation node announced on all interfaces",
-                    false,
-                ));
+                packets.push((mgr.propagation_dest_hash, raw, false));
             }
         }
         let tx = state
@@ -2309,10 +2417,21 @@ async fn send_announce_from_state_inner(
     report.packets = packets.len();
 
     let Some(tx) = transport_tx else {
+        record_activity_if_current(state, activity_origin, || {
+            Ok(producer::rns_announce_activity(
+                producer::RnsAnnounceActivity {
+                    transition: producer::RnsAnnounceTransition::Failed {
+                        method: producer::AnnounceMethod::Transport,
+                        reason: producer::AnnounceFailureReason::TransportUnavailable,
+                    },
+                    interface: None,
+                },
+            ))
+        });
         return report;
     };
 
-    for (destination_hash, raw, log_message, is_lxmf_delivery) in packets {
+    for (destination_hash, raw, is_lxmf_delivery) in packets {
         match tx
             .send(rns_transport::messages::TransportMessage::Outbound(
                 rns_transport::messages::OutboundRequest {
@@ -2330,22 +2449,39 @@ async fn send_announce_from_state_inner(
                         .store(unix_now_ms(), Ordering::Relaxed);
                 }
                 tracing::info!(dest = %short_id(&hex::encode(destination_hash)), "announce sent");
-                if state
-                    .network_log_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    state.emit_network_event("announce", log_message, "", "detailed");
-                }
+                record_activity_if_current(state, activity_origin, || {
+                    Ok(producer::rns_announce_activity(
+                        producer::RnsAnnounceActivity {
+                            transition: producer::RnsAnnounceTransition::Sent {
+                                method: if is_lxmf_delivery {
+                                    producer::AnnounceMethod::LxmfDelivery
+                                } else {
+                                    producer::AnnounceMethod::Transport
+                                },
+                            },
+                            interface: None,
+                        },
+                    ))
+                });
             }
             Err(_) => {
                 report.failed += 1;
                 tracing::warn!(reason = "send_failed", "Failed to send announce");
-                if state
-                    .network_log_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    state.emit_network_event("error", "Announce failed", "", "essential");
-                }
+                record_activity_if_current(state, activity_origin, || {
+                    Ok(producer::rns_announce_activity(
+                        producer::RnsAnnounceActivity {
+                            transition: producer::RnsAnnounceTransition::Failed {
+                                method: if is_lxmf_delivery {
+                                    producer::AnnounceMethod::LxmfDelivery
+                                } else {
+                                    producer::AnnounceMethod::Transport
+                                },
+                                reason: producer::AnnounceFailureReason::QueueFailed,
+                            },
+                            interface: None,
+                        },
+                    ))
+                });
             }
         }
     }
@@ -2356,17 +2492,16 @@ async fn send_announce_from_state_inner(
             report.packets += 1;
             report.queued += 1;
             tracing::info!("LXST telephony announce queued");
-            if state
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state.emit_network_event(
-                    "announce",
-                    "LXST telephony announced on all interfaces",
-                    "",
-                    "detailed",
-                );
-            }
+            record_activity_if_current(state, activity_origin, || {
+                Ok(producer::rns_announce_activity(
+                    producer::RnsAnnounceActivity {
+                        transition: producer::RnsAnnounceTransition::Sent {
+                            method: producer::AnnounceMethod::LxstService,
+                        },
+                        interface: None,
+                    },
+                ))
+            });
         }
         Ok(false) => {
             tracing::debug!("LXST telephony announce skipped: voice service is not running");
@@ -2378,17 +2513,17 @@ async fn send_announce_from_state_inner(
                 reason = "queue_failed",
                 "Failed to queue LXST telephony announce"
             );
-            if state
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state.emit_network_event(
-                    "error",
-                    "LXST telephony announce failed",
-                    "",
-                    "essential",
-                );
-            }
+            record_activity_if_current(state, activity_origin, || {
+                Ok(producer::rns_announce_activity(
+                    producer::RnsAnnounceActivity {
+                        transition: producer::RnsAnnounceTransition::Failed {
+                            method: producer::AnnounceMethod::LxstService,
+                            reason: producer::AnnounceFailureReason::QueueFailed,
+                        },
+                        interface: None,
+                    },
+                ))
+            });
         }
     }
 
@@ -2670,12 +2805,21 @@ async fn handle_inbound_lxmf(
 
     loop {
         let event = tokio::select! {
+            biased;
             _ = shutdown.wait() => break,
             ev = rx.recv() => match ev {
                 Some(e) => e,
                 None => break,
             },
         };
+        // Sample after receive so a new task can cross an in-progress identity
+        // transition while idle. If an old task selected this payload before
+        // reset, its old shutdown signal is now triggered and the payload is
+        // discarded before any side effect can borrow the replacement fence.
+        let activity_origin = state.activity_request_fence();
+        if shutdown.is_triggered() {
+            break;
+        }
         if let DestinationEvent::DeliveryProof {
             ref msg_id,
             ref rtt,
@@ -2710,20 +2854,27 @@ async fn handle_inbound_lxmf(
                 }),
             );
             tracing::info!(msg_id = %short_id(msg_id), rtt_ms = ?rtt_ms, "message delivery confirmed");
-            if state
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                let rtt_label = rtt_ms
-                    .map(|r| format!(" ({:.0}ms RTT)", r))
-                    .unwrap_or_default();
-                state.emit_network_event(
-                    "message",
-                    &format!("Message delivered{}", rtt_label),
-                    msg_id,
-                    "standard",
-                );
-            }
+            record_activity_if_current(&state, activity_origin, || {
+                let message = producer::MessageId::from_hex(msg_id)?;
+                let method = method
+                    .as_deref()
+                    .and_then(producer::LxmfDeliveryMethod::from_code);
+                let rtt_ms = rtt_ms.map(|value| {
+                    value
+                        .round()
+                        .clamp(0.0, u64::MAX as f64)
+                        .min(u64::MAX as f64) as u64
+                });
+                Ok(producer::lxmf_delivery_state_changed(
+                    producer::LxmfDeliveryStateChanged {
+                        message,
+                        state: producer::LxmfDeliveryState::Delivered,
+                        method,
+                        rtt_ms,
+                        failure_reason: None,
+                    },
+                ))
+            });
             continue;
         }
 
@@ -2800,6 +2951,7 @@ async fn handle_inbound_lxmf(
             msg,
             &lxmf_data,
             InboundLxmfSource::Opportunistic { raw },
+            activity_origin,
         )
         .await;
     }
@@ -2832,6 +2984,14 @@ impl InboundLxmfSource {
     /// Propagated messages say nothing about the sender being reachable now.
     fn marks_sender_seen(&self) -> bool {
         !matches!(self, InboundLxmfSource::Propagated)
+    }
+
+    fn activity_method(&self) -> producer::InboundLxmfMethod {
+        match self {
+            InboundLxmfSource::Opportunistic { .. } => producer::InboundLxmfMethod::Opportunistic,
+            InboundLxmfSource::Link { .. } => producer::InboundLxmfMethod::Direct,
+            InboundLxmfSource::Propagated => producer::InboundLxmfMethod::Propagated,
+        }
     }
 }
 
@@ -2912,7 +3072,12 @@ async fn inbound_source_blackholed(
 }
 
 /// Pre-decrypted inbound entry: `data` = [dest:16][src:16][sig:64][msgpack].
-async fn handle_decrypted_lxmf(state: &Arc<AppState>, data: Vec<u8>, source: InboundLxmfSource) {
+async fn handle_decrypted_lxmf_from_origin(
+    state: &Arc<AppState>,
+    data: Vec<u8>,
+    source: InboundLxmfSource,
+    activity_origin: ActivityRequestFence,
+) {
     let msg = match lxmf_core::message::LxMessage::unpack(&data) {
         Ok(m) => m,
         Err(_) => {
@@ -2925,7 +3090,12 @@ async fn handle_decrypted_lxmf(state: &Arc<AppState>, data: Vec<u8>, source: Inb
             return;
         }
     };
-    process_inbound_lxmf(state, msg, &data, source).await;
+    process_inbound_lxmf(state, msg, &data, source, activity_origin).await;
+}
+
+#[cfg(test)]
+async fn handle_decrypted_lxmf(state: &Arc<AppState>, data: Vec<u8>, source: InboundLxmfSource) {
+    handle_decrypted_lxmf_from_origin(state, data, source, state.activity_request_fence()).await;
 }
 
 /// The one inbound LXMF pipeline. `fallback_id_material` is the unpacked
@@ -2938,9 +3108,11 @@ async fn process_inbound_lxmf(
     mut msg: lxmf_core::message::LxMessage,
     fallback_id_material: &[u8],
     source: InboundLxmfSource,
+    activity_origin: ActivityRequestFence,
 ) {
     let source_hash = hex::encode(msg.source_hash);
     let dest_hash = hex::encode(msg.destination_hash);
+    let inbound_method = source.activity_method();
 
     tracing::info!(
         from = %short_id(&source_hash),
@@ -2948,22 +3120,6 @@ async fn process_inbound_lxmf(
         source = source.label(),
         "inbound LXMF message received"
     );
-    if state
-        .network_log_enabled
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        state.emit_network_event(
-            "message",
-            &format!(
-                "Message received from {} ({})",
-                &source_hash[..8.min(source_hash.len())],
-                source.label()
-            ),
-            &source_hash,
-            "standard",
-        );
-    }
-
     let (source_identity, blackhole_tx) = state
         .lxmf
         .lock()
@@ -3196,6 +3352,19 @@ async fn process_inbound_lxmf(
         .await
         .expect("db task panicked");
     }
+    // "Accepted" is intentionally recorded only after every authentication,
+    // policy, duplicate, extension-routing, and persistence gate succeeds.
+    // The typed producer receives no message content, display name, or raw
+    // wire material.
+    record_activity_if_current(state, activity_origin, || {
+        Ok(producer::lxmf_inbound_accepted(
+            producer::LxmfInboundAccepted {
+                source: producer::DestinationHash::new(msg.source_hash),
+                method: inbound_method,
+                encoded_bytes: fallback_id_material.len().min(u32::MAX as usize) as u32,
+            },
+        ))
+    });
     notify_inbound_message_if_background(
         state,
         &source_hash,
@@ -3406,8 +3575,93 @@ fn cache_lxmf_route_hops_from_path_table(
 // Debounce for eager `poll_now` wakes.
 const POLL_NOW_COOLDOWN: Duration = Duration::from_millis(750);
 
+/// Minimal, content-free observations retained until the poll's identity and
+/// Activity generation fences have been revalidated. Keeping domain facts
+/// here avoids constructing classified drafts (or sampling the Activity
+/// clock) for stale poll work.
+enum PollActivityObservation {
+    InterfaceState { online: bool },
+    AnnounceSuppressed,
+    AnnounceIngressBurst { active: bool },
+    AnnouncesHeld { count: u64 },
+    PathObserved { destination: [u8; 16], hops: u8 },
+    AnnounceObserved { destination: [u8; 16], hops: u8 },
+}
+
+fn record_poll_activity(
+    state: &AppState,
+    origin: ActivityRequestFence,
+    observation: PollActivityObservation,
+) {
+    record_activity_if_current(state, origin, || match observation {
+        PollActivityObservation::InterfaceState { online } => {
+            Ok(producer::interface_activity(producer::InterfaceActivity {
+                class: producer::InterfaceClass::Unknown,
+                transition: if online {
+                    producer::InterfaceTransition::Online
+                } else {
+                    producer::InterfaceTransition::Offline
+                },
+                endpoint: None,
+            }))
+        }
+        PollActivityObservation::AnnounceSuppressed => Ok(producer::rns_announce_activity(
+            producer::RnsAnnounceActivity {
+                transition: producer::RnsAnnounceTransition::Suppressed {
+                    reason: producer::AnnounceSuppressionReason::InterfaceRestart,
+                },
+                interface: None,
+            },
+        )),
+        PollActivityObservation::AnnounceIngressBurst { active } => Ok(
+            producer::rns_announce_activity(producer::RnsAnnounceActivity {
+                transition: if active {
+                    producer::RnsAnnounceTransition::IngressBurstStarted
+                } else {
+                    producer::RnsAnnounceTransition::IngressBurstCleared
+                },
+                interface: None,
+            }),
+        ),
+        PollActivityObservation::AnnouncesHeld { count } => Ok(producer::rns_announce_activity(
+            producer::RnsAnnounceActivity {
+                transition: producer::RnsAnnounceTransition::Held { count },
+                interface: None,
+            },
+        )),
+        PollActivityObservation::PathObserved { destination, hops } => {
+            Ok(producer::rns_path_observed(producer::RnsPathDiscovered {
+                destination: producer::DestinationHash::new(destination),
+                hops,
+                evidence: producer::PathEvidence::Transport,
+                endpoint: None,
+                correlation_id: None,
+            }))
+        }
+        PollActivityObservation::AnnounceObserved { destination, hops } => Ok(
+            producer::rns_announce_activity(producer::RnsAnnounceActivity {
+                transition: producer::RnsAnnounceTransition::Observed {
+                    destination: producer::DestinationHash::new(destination),
+                    hops,
+                },
+                interface: None,
+            }),
+        ),
+    });
+}
+
 // Always emits, including backgrounded — first paint on resume.
-async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle::ShutdownSignal) {
+async fn poll_stats_loop(
+    state: Arc<AppState>,
+    shutdown: rns_runtime::lifecycle::ShutdownSignal,
+    runtime_activity_origin: ActivityRequestFence,
+) {
+    // A runtime task may not be scheduled until after its owning session has
+    // already shut down. Reject that late start before emitting compatibility
+    // or typed facts, and retain the origin captured by the spawning session.
+    if shutdown.is_triggered() {
+        return;
+    }
     let mut interval = tokio::time::interval(Duration::from_millis(2500));
 
     let now_ts = std::time::SystemTime::now()
@@ -3419,7 +3673,11 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
         "category": "system",
         "message": "Ratspeak dashboard started",
     }));
-    state.emit_network_event("interface", "Ratspeak dashboard started", "", "essential");
+    record_activity_if_current(&state, runtime_activity_origin, || {
+        Ok(producer::app_runtime(
+            producer::AppRuntimeTransition::Started,
+        ))
+    });
 
     let mut prev_online: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     let mut prev_ingress_burst: std::collections::HashMap<String, bool> =
@@ -3436,6 +3694,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
 
     loop {
         tokio::select! {
+            biased;
             _ = shutdown.wait() => break,
             _ = interval.tick() => {}
             _ = state.poll_now.notified() => {
@@ -3444,6 +3703,10 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                 }
                 interval.reset();
             }
+        }
+        let poll_activity_origin = state.activity_request_fence();
+        if shutdown.is_triggered() {
+            break;
         }
 
         // Mobile: drop to 15s while backgrounded.
@@ -3465,6 +3728,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
         let poll_generation = state
             .identity_session_generation
             .load(std::sync::atomic::Ordering::SeqCst);
+        let mut activity_observations = Vec::new();
         let handle = {
             let rns = state.rns.read().ok();
             rns.as_ref()
@@ -3540,13 +3804,8 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             "category": "interface",
                             "message": msg,
                         }));
-                        if state
-                            .network_log_enabled
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                        {
-                            let net_level = if online { "standard" } else { "essential" };
-                            state.emit_network_event("interface", &msg, name, net_level);
-                        }
+                        activity_observations
+                            .push(PollActivityObservation::InterfaceState { online });
                         let reannounce_suppressed =
                             online && state.take_interface_reannounce_suppression(name);
                         if reannounce_suppressed {
@@ -3557,17 +3816,7 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 "category": "system",
                                 "message": format!("Skipped re-announce after {name} restarted"),
                             }));
-                            if state
-                                .network_log_enabled
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                            {
-                                state.emit_network_event(
-                                    "announce",
-                                    "Skipped re-announce after interface restarted",
-                                    name,
-                                    "detailed",
-                                );
-                            }
+                            activity_observations.push(PollActivityObservation::AnnounceSuppressed);
                         }
                         // Re-announce on interface up; gated by auto-announce + 30s cooldown.
                         let auto_announce_on = *state.announce_interval_rx.borrow() > 0;
@@ -3578,9 +3827,14 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                         {
                             last_interface_announce = std::time::Instant::now();
                             let announce_state = state.clone();
+                            let announce_activity_origin = poll_activity_origin;
                             tokio::spawn(async move {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
-                                send_announce_from_state(&announce_state).await;
+                                let report = send_announce_from_origin(
+                                    &announce_state,
+                                    announce_activity_origin,
+                                )
+                                .await;
                                 let ev_ts = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
@@ -3590,15 +3844,20 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                     "category": "system",
                                     "message": "Re-announced after interface connected",
                                 }));
-                                if announce_state
-                                    .network_log_enabled
-                                    .load(std::sync::atomic::Ordering::Relaxed)
-                                {
-                                    announce_state.emit_network_event(
-                                        "announce",
-                                        "Re-announced after interface connected",
-                                        "",
-                                        "detailed",
+                                if report.queued > 0 {
+                                    record_activity_if_current(
+                                        &announce_state,
+                                        announce_activity_origin,
+                                        || {
+                                            Ok(producer::rns_announce_activity(
+                                                producer::RnsAnnounceActivity {
+                                                    transition: producer::RnsAnnounceTransition::Sent {
+                                                        method: producer::AnnounceMethod::InterfaceOnline,
+                                                    },
+                                                    interface: None,
+                                                },
+                                            ))
+                                        },
                                     );
                                 }
                             });
@@ -3607,34 +3866,16 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                     let prev_burst = prev_ingress_burst.get(&key).copied();
                     if let Some(was_bursting) = prev_burst
                         && was_bursting != burst_active
-                        && state
-                            .network_log_enabled
-                            .load(std::sync::atomic::Ordering::Relaxed)
                     {
-                        let msg = if burst_active {
-                            format!(
-                                "{} ingress burst active; passive announces may be held",
-                                name
-                            )
-                        } else {
-                            format!("{} ingress burst cleared", name)
-                        };
-                        state.emit_network_event("announce", &msg, name, "standard");
+                        activity_observations.push(PollActivityObservation::AnnounceIngressBurst {
+                            active: burst_active,
+                        });
                     }
                     let prev_held = prev_held_announces.get(&key).copied().unwrap_or(0);
-                    if held_announces > 0
-                        && prev_held == 0
-                        && state
-                            .network_log_enabled
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        let msg = format!(
-                            "{} holding {} passive announce{} during ingress burst",
-                            name,
-                            held_announces,
-                            if held_announces == 1 { "" } else { "s" }
-                        );
-                        state.emit_network_event("announce", &msg, name, "standard");
+                    if held_announces > 0 && prev_held == 0 {
+                        activity_observations.push(PollActivityObservation::AnnouncesHeld {
+                            count: held_announces,
+                        });
                     }
                     prev_online.insert(key, online);
                     prev_ingress_burst.insert(name.to_string(), burst_active);
@@ -3652,12 +3893,12 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                     let hashes: std::collections::HashSet<String> =
                         entries.iter().map(|e| hex::encode(e.hash)).collect();
 
-                    let newly_reachable: Vec<String> = if path_activity_ready {
+                    let newly_reachable: Vec<([u8; 16], u8)> = if path_activity_ready {
                         if let Ok(cached) = state.known_path_hashes.lock() {
-                            hashes
+                            entries
                                 .iter()
-                                .filter(|h| !cached.contains(*h))
-                                .cloned()
+                                .filter(|entry| !cached.contains(&hex::encode(entry.hash)))
+                                .map(|entry| (entry.hash, entry.hops))
                                 .collect()
                         } else {
                             Vec::new()
@@ -3675,23 +3916,10 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                             .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
 
-                    if !newly_reachable.is_empty()
-                        && state
-                            .network_log_enabled
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        for dest in &newly_reachable {
-                            state.emit_network_event(
-                                "path",
-                                &format!("Path discovered to {}...", &dest[..8.min(dest.len())]),
-                                dest,
-                                "standard",
-                            );
-                        }
+                    for (destination, hops) in newly_reachable {
+                        activity_observations
+                            .push(PollActivityObservation::PathObserved { destination, hops });
                     }
-
-                    // Auto-resend disabled: would flood on reconnect. Manual only.
-                    let _ = &newly_reachable;
 
                     crate::rns::path_table_stats_snapshot(entries)
                 }
@@ -3756,21 +3984,6 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                     has_ratchet = a.ratchet.is_some(),
                                     "new remote identity cached from announce"
                                 );
-                                if announce_activity_ready
-                                    && state
-                                        .network_log_enabled
-                                        .load(std::sync::atomic::Ordering::Relaxed)
-                                {
-                                    state.emit_network_event(
-                                        "announce",
-                                        &format!(
-                                            "New identity discovered: {}...",
-                                            &dest_hex[..8.min(dest_hex.len())]
-                                        ),
-                                        &dest_hex,
-                                        "standard",
-                                    );
-                                }
                             }
                         }
                         router_changed |= mgr.update_lxmf_announce_app_data(
@@ -3977,17 +4190,10 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
                                 "message": format!("{} is {} hops away",
                                     announce_label, a.hops),
                             }));
-                            if state
-                                .network_log_enabled
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                            {
-                                state.emit_network_event(
-                                    "announce",
-                                    &format!("{} is {} hops away", announce_label, a.hops),
-                                    &hash_hex,
-                                    "detailed",
-                                );
-                            }
+                            activity_observations.push(PollActivityObservation::AnnounceObserved {
+                                destination: a.dest_hash,
+                                hops: a.hops,
+                            });
                         }
                     }
                     if !announce_activity_ready && !announces.is_empty() {
@@ -4132,6 +4338,13 @@ async fn poll_stats_loop(state: Arc<AppState>, shutdown: rns_runtime::lifecycle:
             continue;
         }
 
+        // Activity is emitted only after the same final identity barrier used
+        // for the stats snapshot. Each record also rechecks the independent
+        // Activity reset fence immediately before recorder admission.
+        for observation in activity_observations {
+            record_poll_activity(&state, poll_activity_origin, observation);
+        }
+
         state.set_last_stats(stats.clone());
         // Emit even when suspended; freshest snapshot is queued for resume.
         state.emit_to_all("stats_update", stats);
@@ -4147,7 +4360,7 @@ const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 // propagated challenges can sit on a relay for the normal LXMF expiry window.
 const LRGP_UNDELIVERED_TIMEOUT_SECS: f64 = lxmf_core::constants::MESSAGE_EXPIRY as f64;
 
-async fn check_message_timeouts(state: &AppState) {
+async fn check_message_timeouts(state: &AppState, activity_origin: ActivityRequestFence) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -4202,17 +4415,21 @@ async fn check_message_timeouts(state: &AppState) {
             }),
         );
         tracing::debug!(msg_id = %short_id(msg_id), timeout_secs = MESSAGE_TIMEOUT_SECS, "Message timed out");
-        if state
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            state.emit_network_event(
-                "error",
-                &format!("Message delivery timed out after {}s", MESSAGE_TIMEOUT_SECS),
-                msg_id,
-                "essential",
-            );
-        }
+        record_activity_if_current(state, activity_origin, || {
+            let message = producer::MessageId::from_hex(msg_id)?;
+            let method = method
+                .as_deref()
+                .and_then(producer::LxmfDeliveryMethod::from_code);
+            Ok(producer::lxmf_delivery_state_changed(
+                producer::LxmfDeliveryStateChanged {
+                    message,
+                    state: producer::LxmfDeliveryState::Failed,
+                    method,
+                    rtt_ms: None,
+                    failure_reason: Some(producer::DeliveryFailureReason::ProofTimedOut),
+                },
+            ))
+        });
     }
 }
 
@@ -5126,6 +5343,7 @@ mod inbound_pipeline_tests {
             msg,
             &opp_data,
             InboundLxmfSource::Opportunistic { raw: Bytes::new() },
+            state.activity_request_fence(),
         )
         .await;
 

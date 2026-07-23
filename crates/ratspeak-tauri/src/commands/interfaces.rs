@@ -4,6 +4,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use ratspeak_runtime::activity::producer::{
+    InterfaceActivity, InterfaceClass, InterfaceFailureReason, InterfaceRollback,
+    InterfaceTransition, TcpEndpoint, interface_activity,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tauri::State;
@@ -15,7 +19,7 @@ use crate::commands::shared::{
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::sanitize_text;
-use crate::state::AppState;
+use crate::state::{ActivityRequestFence, AppState};
 
 const DEFAULT_PEERS_SORT: &str = "last_seen";
 
@@ -1877,6 +1881,88 @@ impl ResumableInterfaceConfig {
     }
 }
 
+fn editable_interface_class(config: &EditableInterfaceConfig) -> InterfaceClass {
+    match config {
+        EditableInterfaceConfig::RNode { .. } => InterfaceClass::RNode,
+        EditableInterfaceConfig::TcpClient { .. } => InterfaceClass::TcpClient,
+        EditableInterfaceConfig::TcpServer { .. } => InterfaceClass::TcpServer,
+        EditableInterfaceConfig::BackboneClient { .. } => InterfaceClass::BackboneClient,
+        EditableInterfaceConfig::BackboneServer { .. } => InterfaceClass::BackboneServer,
+    }
+}
+
+fn resumable_interface_class(config: &ResumableInterfaceConfig) -> InterfaceClass {
+    match config {
+        ResumableInterfaceConfig::Editable(config) => editable_interface_class(config),
+        ResumableInterfaceConfig::Auto(_) => InterfaceClass::Auto,
+    }
+}
+
+fn resumable_spawn_transition(class: InterfaceClass, runtime_started: bool) -> InterfaceTransition {
+    match (runtime_started, class) {
+        (false, _) => InterfaceTransition::Configured,
+        (true, InterfaceClass::TcpClient | InterfaceClass::BackboneClient) => {
+            InterfaceTransition::Connecting
+        }
+        _ => InterfaceTransition::Configured,
+    }
+}
+
+fn editable_interface_tcp_endpoint(config: &EditableInterfaceConfig) -> Option<(&str, u16)> {
+    match config {
+        EditableInterfaceConfig::TcpClient { host, port, .. }
+        | EditableInterfaceConfig::BackboneClient { host, port, .. } => Some((host, *port)),
+        EditableInterfaceConfig::TcpServer {
+            listen_ip,
+            listen_port,
+            ..
+        }
+        | EditableInterfaceConfig::BackboneServer {
+            listen_ip,
+            listen_port,
+            ..
+        } => Some((listen_ip, *listen_port)),
+        EditableInterfaceConfig::RNode { .. } => None,
+    }
+}
+
+fn resumable_interface_tcp_endpoint(config: &ResumableInterfaceConfig) -> Option<(&str, u16)> {
+    match config {
+        ResumableInterfaceConfig::Editable(config) => editable_interface_tcp_endpoint(config),
+        ResumableInterfaceConfig::Auto(_) => None,
+    }
+}
+
+fn validated_tcp_endpoint(host: &str, port: u16) -> Option<TcpEndpoint> {
+    let endpoint = if host.starts_with('[') && host.ends_with(']') {
+        format!("{host}:{port}")
+    } else if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    TcpEndpoint::new(endpoint).ok()
+}
+
+fn record_interface_activity(
+    state: &AppState,
+    fence: ActivityRequestFence,
+    class: InterfaceClass,
+    transition: InterfaceTransition,
+    endpoint: Option<(&str, u16)>,
+) {
+    let _ = state.activity.record_event_fenced(
+        || state.is_current_activity_origin_fence(fence),
+        move || {
+            Ok(interface_activity(InterfaceActivity {
+                class,
+                transition,
+                endpoint: endpoint.and_then(|(host, port)| validated_tcp_endpoint(host, port)),
+            }))
+        },
+    );
+}
+
 fn resumable_config_from_entry(group: &str, entry: &Value) -> Option<ResumableInterfaceConfig> {
     match group {
         "rnode" => rnode_config_from_entry(entry).map(ResumableInterfaceConfig::Editable),
@@ -2001,12 +2087,35 @@ async fn teardown_live_interface_by_name(
     }
 }
 
+struct InterfaceSpawnOutcome {
+    status: String,
+    runtime_started: bool,
+}
+
+impl InterfaceSpawnOutcome {
+    fn configured_only(status: impl Into<String>) -> Self {
+        Self {
+            status: status.into(),
+            runtime_started: false,
+        }
+    }
+
+    fn started(status: impl Into<String>) -> Self {
+        Self {
+            status: status.into(),
+            runtime_started: true,
+        }
+    }
+}
+
 async fn spawn_editable_interface(
     state: &Arc<AppState>,
     config: &EditableInterfaceConfig,
-) -> Result<String, String> {
+) -> Result<InterfaceSpawnOutcome, String> {
     let Some(handle) = runtime_handle(state) else {
-        return Ok("Config saved (RNS not running)".to_string());
+        return Ok(InterfaceSpawnOutcome::configured_only(
+            "Config saved (RNS not running)",
+        ));
     };
 
     match config {
@@ -2065,7 +2174,7 @@ async fn spawn_editable_interface(
                             "rollback_on_error": false,
                         }),
                     );
-                    return Ok("Connecting via BLE".to_string());
+                    return Ok(InterfaceSpawnOutcome::started("Connecting via BLE"));
                 }
                 #[cfg(all(feature = "ble", not(target_os = "android")))]
                 {
@@ -2086,7 +2195,9 @@ async fn spawn_editable_interface(
                         },
                     )
                     .await?;
-                    return Ok(format!("BLE LoRa interface active (#{id})"));
+                    return Ok(InterfaceSpawnOutcome::started(format!(
+                        "BLE LoRa interface active (#{id})"
+                    )));
                 }
                 #[cfg(not(feature = "ble"))]
                 {
@@ -2121,7 +2232,9 @@ async fn spawn_editable_interface(
                         false,
                     )
                     .await?;
-                    return Ok(format!("USB LoRa interface active (#{id})"));
+                    return Ok(InterfaceSpawnOutcome::started(format!(
+                        "USB LoRa interface active (#{id})"
+                    )));
                 }
                 #[cfg(not(target_os = "android"))]
                 {
@@ -2154,9 +2267,13 @@ async fn spawn_editable_interface(
                 )
                 .await?;
                 if is_rnode_tcp_port(port) {
-                    Ok(format!("RNode TCP interface active (#{id})"))
+                    Ok(InterfaceSpawnOutcome::started(format!(
+                        "RNode TCP interface active (#{id})"
+                    )))
                 } else {
-                    Ok(format!("RNode interface active (#{id})"))
+                    Ok(InterfaceSpawnOutcome::started(format!(
+                        "RNode interface active (#{id})"
+                    )))
                 }
             }
             #[cfg(not(any(feature = "serial", feature = "rnode-tcp")))]
@@ -2182,7 +2299,9 @@ async fn spawn_editable_interface(
                 ifac.runtime_config(),
             )
             .await?;
-            Ok(format!("TCP interface active (#{id})"))
+            Ok(InterfaceSpawnOutcome::started(format!(
+                "TCP client connecting (#{id})"
+            )))
         }
         EditableInterfaceConfig::TcpServer {
             name,
@@ -2198,7 +2317,9 @@ async fn spawn_editable_interface(
                 ifac.runtime_config(),
             )
             .await?;
-            Ok(format!("TCP server listening (#{id})"))
+            Ok(InterfaceSpawnOutcome::started(format!(
+                "TCP server listening (#{id})"
+            )))
         }
         EditableInterfaceConfig::BackboneClient {
             name,
@@ -2224,7 +2345,9 @@ async fn spawn_editable_interface(
                 },
             )
             .await?;
-            Ok(format!("Backbone interface active (#{id})"))
+            Ok(InterfaceSpawnOutcome::started(format!(
+                "Backbone client connecting (#{id})"
+            )))
         }
         EditableInterfaceConfig::BackboneServer {
             name,
@@ -2244,33 +2367,40 @@ async fn spawn_editable_interface(
                 ifac.runtime_config(),
             )
             .await?;
-            Ok(format!("Backbone server listening (#{id})"))
+            Ok(InterfaceSpawnOutcome::started(format!(
+                "Backbone server listening (#{id})"
+            )))
         }
     }
 }
 
 async fn spawn_resumable_interface(
     state: &Arc<AppState>,
-    config: ResumableInterfaceConfig,
-) -> Result<String, String> {
+    config: &ResumableInterfaceConfig,
+) -> Result<InterfaceSpawnOutcome, String> {
     match config {
-        ResumableInterfaceConfig::Editable(config) => {
-            spawn_editable_interface(state, &config).await
-        }
+        ResumableInterfaceConfig::Editable(config) => spawn_editable_interface(state, config).await,
         ResumableInterfaceConfig::Auto(config) => {
             let Some(handle) = runtime_handle(state) else {
-                return Ok("Config saved (RNS not running)".to_string());
+                return Ok(InterfaceSpawnOutcome::configured_only(
+                    "Config saved (RNS not running)",
+                ));
             };
-            let id =
-                rns_runtime::reticulum::spawn_auto_interface_runtime_with_config(&handle, config)
-                    .await?;
-            Ok(format!("Local Network interface active (#{id})"))
+            let id = rns_runtime::reticulum::spawn_auto_interface_runtime_with_config(
+                &handle,
+                config.clone(),
+            )
+            .await?;
+            Ok(InterfaceSpawnOutcome::started(format!(
+                "Local Network interface active (#{id})"
+            )))
         }
     }
 }
 
 async fn finish_interface_replace(
     state: Arc<AppState>,
+    activity_fence: ActivityRequestFence,
     config_dir: PathBuf,
     operation: &'static str,
     old_config_content: String,
@@ -2293,31 +2423,36 @@ async fn finish_interface_replace(
     }
 
     match spawn_editable_interface(&state, &new_runtime).await {
-        Ok(step) => {
-            emit_op_status_broadcast(&state, operation, "hub", &step, true, None);
-            if state
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state.emit_network_event(
-                    "interface",
-                    &format!("Interface updated: {}", new_runtime.name()),
-                    new_runtime.name(),
-                    "standard",
-                );
-            }
+        Ok(outcome) => {
+            emit_op_status_broadcast(&state, operation, "hub", &outcome.status, true, None);
+            record_interface_activity(
+                &state,
+                activity_fence,
+                editable_interface_class(&new_runtime),
+                InterfaceTransition::Configured,
+                editable_interface_tcp_endpoint(&new_runtime),
+            );
         }
         Err(e) => {
             let restored = with_rns_config_lock(&state, || {
                 crate::rns_config::write_config(&config_dir, &old_config_content)
             });
-            let rollback = if restored {
+            let (rollback, activity_rollback) = if restored {
                 match spawn_editable_interface(&state, &old_runtime).await {
-                    Ok(step) => format!(" Rolled back: {step}."),
-                    Err(re) => format!(" Config restored, but old interface restart failed: {re}."),
+                    Ok(outcome) => (
+                        format!(" Rolled back: {}.", outcome.status),
+                        InterfaceRollback::ConfigRestored,
+                    ),
+                    Err(re) => (
+                        format!(" Config restored, but old interface restart failed: {re}."),
+                        InterfaceRollback::RestartFailed,
+                    ),
                 }
             } else {
-                " Rollback config write failed.".to_string()
+                (
+                    " Rollback config write failed.".to_string(),
+                    InterfaceRollback::WriteFailed,
+                )
             };
             emit_op_status_broadcast(
                 &state,
@@ -2327,17 +2462,16 @@ async fn finish_interface_replace(
                 true,
                 Some(&format!("{e}.{rollback}")),
             );
-            if state
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state.emit_network_event(
-                    "error",
-                    &format!("Interface update failed: {}", new_runtime.name()),
-                    &format!("{e}.{rollback}"),
-                    "essential",
-                );
-            }
+            record_interface_activity(
+                &state,
+                activity_fence,
+                editable_interface_class(&new_runtime),
+                InterfaceTransition::Failed {
+                    reason: InterfaceFailureReason::Update,
+                    rollback: Some(activity_rollback),
+                },
+                editable_interface_tcp_endpoint(&new_runtime),
+            );
         }
     }
 
@@ -2358,6 +2492,7 @@ pub async fn pause_interface(
     args: InterfaceLifecycleArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
     let iface_type = args
         .iface_type
@@ -2369,10 +2504,14 @@ pub async fn pause_interface(
     }
 
     let config_dir = active_rns_config_dir(&state_arc);
-    let rnode_port = with_rns_config_lock(&state_arc, || {
+    let (rnode_port, activity_class) = with_rns_config_lock(&state_arc, || {
         let (group, entry) =
             find_config_interface_with_group(&config_dir, iface_type.as_deref(), &name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+        let activity_class = resumable_config_from_entry(&group, &entry)
+            .as_ref()
+            .map(resumable_interface_class)
+            .unwrap_or(InterfaceClass::Unknown);
         let rnode_port = (group == "rnode")
             .then(|| cfg_str(&entry, "port"))
             .flatten();
@@ -2380,7 +2519,7 @@ pub async fn pause_interface(
         if !config_written {
             return Err(AppError::internal("Config write error"));
         }
-        Ok::<_, AppError>(rnode_port)
+        Ok::<_, AppError>((rnode_port, activity_class))
     })?;
 
     emit_hub_interfaces(
@@ -2409,17 +2548,13 @@ pub async fn pause_interface(
             true,
             None,
         );
-        if st
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            st.emit_network_event(
-                "interface",
-                &format!("Interface paused: {iface_name}"),
-                &iface_name,
-                "standard",
-            );
-        }
+        record_interface_activity(
+            &st,
+            activity_fence,
+            activity_class,
+            InterfaceTransition::Paused,
+            None,
+        );
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
@@ -2433,6 +2568,7 @@ pub async fn resume_interface(
     args: InterfaceLifecycleArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
     let iface_type = args
         .iface_type
@@ -2476,6 +2612,7 @@ pub async fn resume_interface(
     tokio::spawn(async move {
         let iface_name = runtime.name().to_string();
         let rnode_port = runtime.rnode_port().map(str::to_string);
+        let activity_class = resumable_interface_class(&runtime);
         emit_op_status_broadcast(
             &st,
             "resume_interface",
@@ -2485,20 +2622,23 @@ pub async fn resume_interface(
             None,
         );
         teardown_live_interface_by_name(&st, &iface_name, rnode_port.as_deref()).await;
-        match spawn_resumable_interface(&st, runtime).await {
-            Ok(step) => {
-                emit_op_status_broadcast(&st, "resume_interface", "hub", &step, true, None);
-                if st
-                    .network_log_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    st.emit_network_event(
-                        "interface",
-                        &format!("Interface resumed: {iface_name}"),
-                        &iface_name,
-                        "standard",
-                    );
-                }
+        match spawn_resumable_interface(&st, &runtime).await {
+            Ok(outcome) => {
+                emit_op_status_broadcast(
+                    &st,
+                    "resume_interface",
+                    "hub",
+                    &outcome.status,
+                    true,
+                    None,
+                );
+                record_interface_activity(
+                    &st,
+                    activity_fence,
+                    activity_class,
+                    resumable_spawn_transition(activity_class, outcome.runtime_started),
+                    resumable_interface_tcp_endpoint(&runtime),
+                );
             }
             Err(e) => {
                 // Failed resume returns to paused; the config entry is kept
@@ -2514,17 +2654,16 @@ pub async fn resume_interface(
                     true,
                     Some(&e),
                 );
-                if st
-                    .network_log_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    st.emit_network_event(
-                        "error",
-                        &format!("Interface resume failed: {iface_name}"),
-                        &e,
-                        "essential",
-                    );
-                }
+                record_interface_activity(
+                    &st,
+                    activity_fence,
+                    activity_class,
+                    InterfaceTransition::Failed {
+                        reason: InterfaceFailureReason::Resume,
+                        rollback: None,
+                    },
+                    resumable_interface_tcp_endpoint(&runtime),
+                );
             }
         }
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
@@ -2540,6 +2679,8 @@ pub async fn add_lora_interface(
     args: AddLoraArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    #[cfg(target_os = "android")]
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
     let port = normalise_rnode_port(&sanitize_text(&args.port, 256))?;
     let radio = resolve_lora_radio_args(LoraRadioArgs {
@@ -2556,6 +2697,13 @@ pub async fn add_lora_interface(
     })?;
     let mode = normalize_lora_interface_mode(args.mode.as_deref())?;
     let runtime_mode = rnode_runtime_mode(mode);
+    #[cfg(not(any(
+        target_os = "android",
+        feature = "ble",
+        feature = "serial",
+        feature = "rnode-tcp"
+    )))]
+    let _ = runtime_mode;
 
     let config_dir = active_rns_config_dir(&state_arc);
     emit_op_status_broadcast(
@@ -2630,7 +2778,7 @@ pub async fn add_lora_interface(
         let config_dir = config_dir.clone();
         let existing_rnode_port = existing_rnode_port.clone();
         tokio::spawn(async move {
-            teardown_rnode_handoff_broadcast(&st, "ble://", "BLE").await;
+            teardown_rnode_handoff_broadcast(&st, activity_fence, "ble://", "BLE").await;
             teardown_live_interface_by_name(&st, &iface_name, existing_rnode_port.as_deref()).await;
 
             emit_op_status_broadcast(
@@ -2765,7 +2913,8 @@ pub async fn add_lora_interface(
             let name_a = name.clone();
             let existing_rnode_port = existing_rnode_port.clone();
             tokio::spawn(async move {
-                teardown_rnode_handoff_broadcast(&st_a, "androidusb://", "USB").await;
+                teardown_rnode_handoff_broadcast(&st_a, activity_fence, "androidusb://", "USB")
+                    .await;
                 teardown_live_interface_by_name(&st_a, &name_a, existing_rnode_port.as_deref())
                     .await;
                 st_a.emit_to_all(
@@ -3145,6 +3294,7 @@ pub async fn update_lora_interface(
     args: UpdateLoraArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
     let name = sanitize_text(&args.name, 64);
     let port = normalise_rnode_port(&sanitize_text(&args.port, 256))?;
@@ -3260,6 +3410,7 @@ pub async fn update_lora_interface(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        activity_fence,
         config_dir.clone(),
         "update_lora",
         old_config_content,
@@ -3273,6 +3424,7 @@ pub async fn update_lora_interface(
 #[cfg(target_os = "android")]
 async fn teardown_rnode_handoff_broadcast(
     state: &Arc<AppState>,
+    activity_fence: ActivityRequestFence,
     other_prefix: &str,
     friendly: &str,
 ) {
@@ -3321,17 +3473,13 @@ async fn teardown_rnode_handoff_broadcast(
         let _ = with_rns_config_lock(state, || {
             crate::rns_config::remove_interface(&config_dir, name)
         });
-        if state
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            state.emit_network_event(
-                "interface",
-                &format!("{friendly} RNode '{name}' disconnected (switching transport)"),
-                name,
-                "standard",
-            );
-        }
+        record_interface_activity(
+            state,
+            activity_fence,
+            InterfaceClass::RNode,
+            InterfaceTransition::Removed,
+            None,
+        );
     }
 
     let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
@@ -3344,6 +3492,7 @@ pub async fn remove_lora_interface(
     name: String,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&name, 64);
     tokio::spawn(async move {
         let config_dir = active_rns_config_dir(&state_arc);
@@ -3415,17 +3564,13 @@ pub async fn remove_lora_interface(
                 true,
                 None,
             );
-            if state_arc
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state_arc.emit_network_event(
-                    "interface",
-                    &format!("LoRa interface removed: {}", name),
-                    &name,
-                    "standard",
-                );
-            }
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::RNode,
+                InterfaceTransition::Removed,
+                None,
+            );
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             emit_hub_interfaces(&state_arc, ifaces);
         } else {
@@ -3437,17 +3582,16 @@ pub async fn remove_lora_interface(
                 true,
                 Some("Config write error"),
             );
-            if state_arc
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state_arc.emit_network_event(
-                    "error",
-                    &format!("Failed to remove LoRa interface: {}", name),
-                    &name,
-                    "essential",
-                );
-            }
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::RNode,
+                InterfaceTransition::Failed {
+                    reason: InterfaceFailureReason::Remove,
+                    rollback: None,
+                },
+                None,
+            );
         }
     });
     Ok(json!({ "queued": true }))
@@ -3462,6 +3606,7 @@ pub async fn enable_auto_interface(
     use std::str::FromStr;
 
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(name.as_deref().unwrap_or("Local Network"), 64);
     let config_dir = active_rns_config_dir(&state_arc);
     let opts = options.unwrap_or_default();
@@ -3578,17 +3723,13 @@ pub async fn enable_auto_interface(
                         true,
                         None,
                     );
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "interface",
-                            "Local Network interface enabled",
-                            &iface_name,
-                            "standard",
-                        );
-                    }
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::Auto,
+                        InterfaceTransition::Online,
+                        None,
+                    );
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(reason = "spawn_failed", "AutoInterface spawn failed");
@@ -3642,6 +3783,7 @@ pub async fn disable_auto_interface(
     name: Option<String>,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let config_dir = active_rns_config_dir(&state_arc);
     let names = name
         .as_deref()
@@ -3705,17 +3847,13 @@ pub async fn disable_auto_interface(
             true,
             None,
         );
-        if st
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            st.emit_network_event(
-                "interface",
-                "Local Network interface disabled",
-                &names.join(", "),
-                "standard",
-            );
-        }
+        record_interface_activity(
+            &st,
+            activity_fence,
+            InterfaceClass::Auto,
+            InterfaceTransition::Removed,
+            None,
+        );
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
@@ -3796,6 +3934,7 @@ pub async fn add_tcp_connection(
     args: TcpConnectionArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let host = sanitize_text(&args.host, 256);
     let port = args.port;
     let name = sanitize_text(&args.name, 64);
@@ -3885,39 +4024,34 @@ pub async fn add_tcp_connection(
             .await
             {
                 Ok(_id) => {
-                    emit_op_status_broadcast(&st, "add_tcp", "hub", "Connected", true, None);
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "interface",
-                            &format!("TCP connected to {}:{}", host_clone, port),
-                            &iface_name_clone,
-                            "standard",
-                        );
-                    }
+                    emit_op_status_broadcast(&st, "add_tcp", "hub", "Connecting", true, None);
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::TcpClient,
+                        InterfaceTransition::Connecting,
+                        Some((&host_clone, port as u16)),
+                    );
                 }
                 Err(e) => {
                     emit_op_status_broadcast(
                         &st,
                         "add_tcp",
                         "hub",
-                        "Config saved, connect failed",
+                        "Config saved, start failed",
                         true,
                         Some(&e),
                     );
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "error",
-                            &format!("TCP connect failed: {}:{}", host_clone, port),
-                            &e,
-                            "essential",
-                        );
-                    }
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::TcpClient,
+                        InterfaceTransition::Failed {
+                            reason: InterfaceFailureReason::Runtime,
+                            rollback: None,
+                        },
+                        Some((&host_clone, port as u16)),
+                    );
                 }
             }
         } else {
@@ -3953,6 +4087,7 @@ pub async fn update_tcp_connection(
     args: UpdateTcpConnectionArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
     let host = sanitize_text(&args.host, 256);
     let port = args.port;
@@ -4036,6 +4171,7 @@ pub async fn update_tcp_connection(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        activity_fence,
         config_dir.clone(),
         "update_tcp",
         old_config_content,
@@ -4051,6 +4187,7 @@ pub async fn remove_tcp_connection(
     name: String,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&name, 64);
     let config_dir = active_rns_config_dir(&state_arc);
 
@@ -4102,17 +4239,13 @@ pub async fn remove_tcp_connection(
             }
         }
         emit_op_status_broadcast(&st, "remove_tcp", "hub", "Connection removed.", true, None);
-        if st
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            st.emit_network_event(
-                "interface",
-                &format!("TCP interface removed: {}", name2),
-                &name2,
-                "standard",
-            );
-        }
+        record_interface_activity(
+            &st,
+            activity_fence,
+            InterfaceClass::TcpClient,
+            InterfaceTransition::Removed,
+            None,
+        );
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
@@ -4147,6 +4280,7 @@ pub async fn add_tcp_server(
     args: TcpServerArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
     let listen_ip = sanitize_text(&args.listen_ip, 64);
     let listen_port = args.listen_port;
@@ -4200,20 +4334,13 @@ pub async fn add_tcp_server(
             {
                 Ok(_id) => {
                     emit_op_status_broadcast(&st, "add_server", "hub", "Started", true, None);
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "interface",
-                            &format!(
-                                "TCP server listening on {}:{}",
-                                listen_ip_clone, listen_port
-                            ),
-                            &name_clone,
-                            "standard",
-                        );
-                    }
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::TcpServer,
+                        InterfaceTransition::Online,
+                        Some((&listen_ip_clone, listen_port)),
+                    );
                 }
                 Err(e) => {
                     let _ = with_rns_config_lock(&st, || {
@@ -4227,17 +4354,16 @@ pub async fn add_tcp_server(
                         true,
                         Some(&e),
                     );
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "error",
-                            &format!("TCP server failed on {}:{}", listen_ip_clone, listen_port),
-                            &e,
-                            "essential",
-                        );
-                    }
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::TcpServer,
+                        InterfaceTransition::Failed {
+                            reason: InterfaceFailureReason::Listen,
+                            rollback: None,
+                        },
+                        Some((&listen_ip_clone, listen_port)),
+                    );
                 }
             }
         } else {
@@ -4275,6 +4401,7 @@ pub async fn update_tcp_server(
     args: UpdateTcpServerArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
     let name = sanitize_text(&args.name, 64);
     let listen_ip = sanitize_text(&args.listen_ip, 64);
@@ -4336,6 +4463,7 @@ pub async fn update_tcp_server(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        activity_fence,
         config_dir.clone(),
         "update_server",
         old_config_content,
@@ -4451,6 +4579,7 @@ pub async fn add_backbone_connection(
     args: BackboneConnectionArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let host = sanitize_text(&args.host, 256);
     let port = args.port;
     let raw_name = sanitize_text(&args.name, 64);
@@ -4535,39 +4664,34 @@ pub async fn add_backbone_connection(
             .await
             {
                 Ok(_id) => {
-                    emit_op_status_broadcast(&st, "add_backbone", "hub", "Connected", true, None);
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "interface",
-                            &format!("Backbone connected to {}:{}", host_clone, port),
-                            &iface_name_clone,
-                            "standard",
-                        );
-                    }
+                    emit_op_status_broadcast(&st, "add_backbone", "hub", "Connecting", true, None);
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::BackboneClient,
+                        InterfaceTransition::Connecting,
+                        Some((&host_clone, port as u16)),
+                    );
                 }
                 Err(e) => {
                     emit_op_status_broadcast(
                         &st,
                         "add_backbone",
                         "hub",
-                        "Config saved, connect failed",
+                        "Config saved, start failed",
                         true,
                         Some(&e),
                     );
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "error",
-                            &format!("Backbone connect failed: {}:{}", host_clone, port),
-                            &e,
-                            "essential",
-                        );
-                    }
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::BackboneClient,
+                        InterfaceTransition::Failed {
+                            reason: InterfaceFailureReason::Runtime,
+                            rollback: None,
+                        },
+                        Some((&host_clone, port as u16)),
+                    );
                 }
             }
         } else {
@@ -4611,6 +4735,7 @@ pub async fn update_backbone_connection(
     args: UpdateBackboneConnectionArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
     let host = sanitize_text(&args.host, 256);
     let port = args.port;
@@ -4688,6 +4813,7 @@ pub async fn update_backbone_connection(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        activity_fence,
         config_dir.clone(),
         "update_backbone",
         old_config_content,
@@ -4703,6 +4829,7 @@ pub async fn remove_backbone_connection(
     name: String,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&name, 64);
     let config_dir = active_rns_config_dir(&state_arc);
 
@@ -4761,17 +4888,13 @@ pub async fn remove_backbone_connection(
             true,
             None,
         );
-        if st
-            .network_log_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            st.emit_network_event(
-                "interface",
-                &format!("Backbone interface removed: {}", name2),
-                &name2,
-                "standard",
-            );
-        }
+        record_interface_activity(
+            &st,
+            activity_fence,
+            InterfaceClass::BackboneClient,
+            InterfaceTransition::Removed,
+            None,
+        );
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
@@ -4800,6 +4923,7 @@ pub async fn add_backbone_server(
     args: BackboneServerArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
     let listen_ip = sanitize_text(&args.listen_ip, 64);
     let listen_port = args.listen_port;
@@ -4871,20 +4995,13 @@ pub async fn add_backbone_server(
                         true,
                         None,
                     );
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "interface",
-                            &format!(
-                                "Backbone server listening on {}:{}",
-                                listen_ip_clone, listen_port
-                            ),
-                            &name_clone,
-                            "standard",
-                        );
-                    }
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::BackboneServer,
+                        InterfaceTransition::Online,
+                        Some((&listen_ip_clone, listen_port)),
+                    );
                 }
                 Err(e) => {
                     let _ = with_rns_config_lock(&st, || {
@@ -4898,20 +5015,16 @@ pub async fn add_backbone_server(
                         true,
                         Some(&e),
                     );
-                    if st
-                        .network_log_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        st.emit_network_event(
-                            "error",
-                            &format!(
-                                "Backbone server failed on {}:{}",
-                                listen_ip_clone, listen_port
-                            ),
-                            &e,
-                            "essential",
-                        );
-                    }
+                    record_interface_activity(
+                        &st,
+                        activity_fence,
+                        InterfaceClass::BackboneServer,
+                        InterfaceTransition::Failed {
+                            reason: InterfaceFailureReason::Listen,
+                            rollback: None,
+                        },
+                        Some((&listen_ip_clone, listen_port)),
+                    );
                 }
             }
         } else {
@@ -4952,6 +5065,7 @@ pub async fn update_backbone_server(
     args: UpdateBackboneServerArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
     let name = sanitize_text(&args.name, 64);
     let listen_ip = sanitize_text(&args.listen_ip, 64);
@@ -5022,6 +5136,7 @@ pub async fn update_backbone_server(
     );
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
+        activity_fence,
         config_dir.clone(),
         "update_backbone_server",
         old_config_content,

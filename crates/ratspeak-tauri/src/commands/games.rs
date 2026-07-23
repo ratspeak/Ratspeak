@@ -162,6 +162,7 @@ pub async fn send_game_action(
     args: SendGameActionArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_origin = state_arc.activity_request_fence();
     let mut dest_hash = sanitize_text(&args.dest_hash, 128);
     let app_id = sanitize_text(&args.app_id, 64);
     let command = sanitize_text(&args.command, 64);
@@ -189,7 +190,12 @@ pub async fn send_game_action(
         None,
     )
     .await?;
-    let _ = crate::maybe_opportunistic_announce_before_user_send(&state_arc, &dest_hash).await;
+    let _ = crate::maybe_opportunistic_announce_before_user_send_from_origin(
+        &state_arc,
+        &dest_hash,
+        activity_origin,
+    )
+    .await;
 
     // LRGP turn/winner fields keyed by LXMF hash.
     let identity_id = active_lxmf_hash(&state_arc);
@@ -606,6 +612,7 @@ pub async fn resend_last_game_action(
     args: ResendLastGameActionArgs,
 ) -> AppResult<Value> {
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_origin = state_arc.activity_request_fence();
     let session_id = sanitize_text(&args.session_id, 128);
     let delivery_pref =
         crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref());
@@ -662,7 +669,12 @@ pub async fn resend_last_game_action(
         None,
     )
     .await?;
-    let _ = crate::maybe_opportunistic_announce_before_user_send(&state_arc, &dest_hash).await;
+    let _ = crate::maybe_opportunistic_announce_before_user_send_from_origin(
+        &state_arc,
+        &dest_hash,
+        activity_origin,
+    )
+    .await;
 
     let st: Arc<AppState> = Arc::clone(&state_arc);
     let dh = dest_hash.clone();

@@ -18,8 +18,67 @@ use crate::lxmf::{
     ReactionSendRequest, ReplyMessageSendRequest,
 };
 use crate::state::AppState;
+use ratspeak_runtime::activity::producer;
 
 const MAX_LXMF_MESSAGE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
+
+fn activity_lxmf_delivery_method(
+    method: lxmf_core::constants::DeliveryMethod,
+) -> producer::LxmfDeliveryMethod {
+    match method {
+        lxmf_core::constants::DeliveryMethod::Direct => producer::LxmfDeliveryMethod::Direct,
+        lxmf_core::constants::DeliveryMethod::Opportunistic => {
+            producer::LxmfDeliveryMethod::Opportunistic
+        }
+        lxmf_core::constants::DeliveryMethod::Paper => producer::LxmfDeliveryMethod::Paper,
+        lxmf_core::constants::DeliveryMethod::Propagated => {
+            producer::LxmfDeliveryMethod::Propagated
+        }
+    }
+}
+
+fn record_lxmf_delivery_queued(
+    state: &AppState,
+    fence: crate::state::ActivityRequestFence,
+    message_id: &str,
+    destination_hash: &str,
+    method: lxmf_core::constants::DeliveryMethod,
+) {
+    state.activity.record_event_fenced(
+        || state.is_current_activity_origin_fence(fence),
+        || {
+            let message = producer::MessageId::from_hex(message_id)?;
+            let destination = producer::DestinationHash::from_hex(destination_hash)?;
+            Ok(producer::lxmf_delivery_queued(
+                producer::LxmfDeliveryQueued {
+                    message,
+                    destination,
+                    method: activity_lxmf_delivery_method(method),
+                },
+            ))
+        },
+    );
+}
+
+fn record_lxmf_submission_failed(
+    state: &AppState,
+    fence: crate::state::ActivityRequestFence,
+    destination_hash: &str,
+    reason: producer::LxmfSubmissionFailureReason,
+) {
+    state.activity.record_event_fenced(
+        || state.is_current_activity_origin_fence(fence),
+        || {
+            let destination = producer::DestinationHash::from_hex(destination_hash)?;
+            Ok(producer::lxmf_submission_failed(
+                producer::LxmfSubmissionFailed {
+                    destination,
+                    reason,
+                },
+            ))
+        },
+    );
+}
 
 fn base64_decoded_len_upper_bound(encoded_len: usize) -> Option<usize> {
     encoded_len.checked_add(3)?.checked_div(4)?.checked_mul(3)
@@ -218,8 +277,17 @@ fn destination_identity_known(state: &AppState, dest_hash: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn maybe_announce_before_user_send(state: &Arc<AppState>, dest_hash: &str) {
-    let _ = crate::maybe_opportunistic_announce_before_user_send(state, dest_hash).await;
+async fn maybe_announce_before_user_send(
+    state: &Arc<AppState>,
+    dest_hash: &str,
+    activity_fence: crate::state::ActivityRequestFence,
+) {
+    let _ = crate::maybe_opportunistic_announce_before_user_send_from_origin(
+        state,
+        dest_hash,
+        activity_fence,
+    )
+    .await;
 }
 
 pub(crate) async fn ensure_propagation_ready_for_send(
@@ -324,6 +392,7 @@ pub async fn send_lxmf_message(
     }
     validate_delivery_preference(&state, delivery_pref)?;
 
+    let activity_fence = state.activity_request_fence();
     resolve_before_send(&state, &dest_hash).await;
     ensure_propagation_ready_for_send(
         &state,
@@ -333,7 +402,7 @@ pub async fn send_lxmf_message(
         client_msg_id.as_deref(),
     )
     .await?;
-    maybe_announce_before_user_send(&state, &dest_hash).await;
+    maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
 
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
@@ -341,9 +410,13 @@ pub async fn send_lxmf_message(
     let ct = content.clone();
     let tt = title.clone();
     let id_c = identity_id.clone();
-    let msg_id = tokio::task::spawn_blocking(move || {
-        let send_lock_started = std::time::Instant::now();
-        if let Ok(mut lxmf) = st.lxmf.lock() {
+    let send_result = tokio::task::spawn_blocking(
+        move || -> Result<_, producer::LxmfSubmissionFailureReason> {
+            let send_lock_started = std::time::Instant::now();
+            let mut lxmf = st
+                .lxmf
+                .lock()
+                .map_err(|_| producer::LxmfSubmissionFailureReason::RouterUnavailable)?;
             let waited = send_lock_started.elapsed();
             if waited > std::time::Duration::from_secs(1) {
                 tracing::warn!(
@@ -351,26 +424,28 @@ pub async fn send_lxmf_message(
                     "send waited on lxmf manager lock"
                 );
             }
-            lxmf.as_mut().and_then(|mgr| {
-                mgr.send_message_with_preference(MessageSendRequest {
-                    dest_hash_hex: &dh,
-                    content: &ct,
-                    title: &tt,
-                    db_pool: &st.db,
-                    identity_id: &id_c,
-                    preference: delivery_pref,
-                    profile: DeliveryProfile::Message,
-                })
+            let mgr = lxmf
+                .as_mut()
+                .ok_or(producer::LxmfSubmissionFailureReason::RouterUnavailable)?;
+            mgr.send_message_with_preference_report(MessageSendRequest {
+                dest_hash_hex: &dh,
+                content: &ct,
+                title: &tt,
+                db_pool: &st.db,
+                identity_id: &id_c,
+                preference: delivery_pref,
+                profile: DeliveryProfile::Message,
             })
-        } else {
-            None
-        }
-    })
+            .map_err(|_| producer::LxmfSubmissionFailureReason::PreparationFailed)
+        },
+    )
     .await
     .map_err(|_| AppError::internal("send_message task panicked"))?;
 
-    match msg_id {
-        Some(id) => {
+    match send_result {
+        Ok(queued) => {
+            let id = queued.message_id;
+            record_lxmf_delivery_queued(&state, activity_fence, &id, &dest_hash, queued.method);
             state.lxmf_notify.notify_one();
             if let Some(ref cid) = client_msg_id
                 && let Ok(mut map) = state.msg_id_map.lock()
@@ -386,40 +461,23 @@ pub async fn send_lxmf_message(
                     "client_msg_id": client_msg_id,
                 }),
             );
-            if state
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state.emit_network_event(
-                    "message",
-                    &format!(
-                        "Message queued for {}...",
-                        &dest_hash[..8.min(dest_hash.len())]
-                    ),
-                    &dest_hash,
-                    "standard",
-                );
-            }
             broadcast_conversations(Arc::clone(&state));
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
         }
-        None => {
-            state.emit_to_all(
-                "lxmf_step",
-                json!({ "step": "error", "message": "LXMF not initialized" }),
-            );
-            if state
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state.emit_network_event(
-                    "error",
-                    "Message send failed: LXMF not initialized",
-                    "",
-                    "essential",
-                );
-            }
-            Err(AppError::lxmf_not_initialized("LXMF not initialized"))
+        Err(reason) => {
+            record_lxmf_submission_failed(&state, activity_fence, &dest_hash, reason);
+            let (message, error) = match reason {
+                producer::LxmfSubmissionFailureReason::RouterUnavailable => (
+                    "LXMF not initialized",
+                    AppError::lxmf_not_initialized("LXMF not initialized"),
+                ),
+                producer::LxmfSubmissionFailureReason::PreparationFailed => (
+                    "Message could not be queued",
+                    AppError::internal("Message could not be queued"),
+                ),
+            };
+            state.emit_to_all("lxmf_step", json!({ "step": "error", "message": message }));
+            Err(error)
         }
     }
 }
@@ -468,6 +526,7 @@ pub async fn send_reaction(
         return Err(AppError::bad_request("Missing message_id or emoji"));
     }
     validate_delivery_preference(&state, delivery_pref)?;
+    let activity_fence = state.activity_request_fence();
 
     if validate_hex(&dest_hash, 16, 64) {
         resolve_before_send(&state, &dest_hash).await;
@@ -479,7 +538,7 @@ pub async fn send_reaction(
             None,
         )
         .await?;
-        maybe_announce_before_user_send(&state, &dest_hash).await;
+        maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
     }
 
     let identity_id = active_identity_id(&state);
@@ -585,6 +644,7 @@ pub async fn send_lxmf_reply(
         return Err(AppError::bad_request("Invalid reply"));
     }
     validate_delivery_preference(&state, delivery_pref)?;
+    let activity_fence = state.activity_request_fence();
 
     resolve_before_send(&state, &dest_hash).await;
     ensure_propagation_ready_for_send(
@@ -595,7 +655,7 @@ pub async fn send_lxmf_reply(
         client_msg_id.as_deref(),
     )
     .await?;
-    maybe_announce_before_user_send(&state, &dest_hash).await;
+    maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
 
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
@@ -702,6 +762,7 @@ pub async fn send_lxmf_propagated(
 
     validate_delivery_preference(&state, DeliveryPreference::Propagated)?;
 
+    let activity_fence = state.activity_request_fence();
     // Propagation still needs the recipient identity for encryption.
     resolve_before_send(&state, &dest_hash).await;
     ensure_propagation_ready_for_send(
@@ -712,7 +773,7 @@ pub async fn send_lxmf_propagated(
         client_msg_id.as_deref(),
     )
     .await?;
-    maybe_announce_before_user_send(&state, &dest_hash).await;
+    maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
 
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
@@ -749,6 +810,13 @@ pub async fn send_lxmf_propagated(
 
     match msg_id {
         Some(id) => {
+            record_lxmf_delivery_queued(
+                &state,
+                activity_fence,
+                &id,
+                &dest_hash,
+                DeliveryMethod::Propagated,
+            );
             state.lxmf_notify.notify_one();
             if let Some(ref cid) = client_msg_id
                 && let Ok(mut map) = state.msg_id_map.lock()
@@ -764,20 +832,6 @@ pub async fn send_lxmf_propagated(
                     "client_msg_id": client_msg_id,
                 }),
             );
-            if state
-                .network_log_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                state.emit_network_event(
-                    "message",
-                    &format!(
-                        "Message queued via propagation for {}...",
-                        &dest_hash[..8.min(dest_hash.len())]
-                    ),
-                    &dest_hash,
-                    "standard",
-                );
-            }
             broadcast_conversations(Arc::clone(&state));
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
         }
@@ -893,6 +947,7 @@ pub async fn send_lxmf_with_attachment(
         ));
     }
 
+    let activity_fence = state.activity_request_fence();
     resolve_before_send(&state, &dest_hash).await;
     ensure_propagation_ready_for_send(
         &state,
@@ -902,7 +957,7 @@ pub async fn send_lxmf_with_attachment(
         client_msg_id.as_deref(),
     )
     .await?;
-    maybe_announce_before_user_send(&state, &dest_hash).await;
+    maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
 
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);

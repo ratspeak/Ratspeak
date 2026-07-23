@@ -1080,34 +1080,34 @@ pub fn run() {
     }
 
     app.run(|app_handle, event| {
-            #[cfg(any(target_os = "ios", target_os = "android"))]
-            let _ = (&app_handle, &event);
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        let _ = (&app_handle, &event);
 
-            #[cfg(not(any(target_os = "ios", target_os = "android")))]
-            match event {
-                tauri::RunEvent::WindowEvent {
-                    label,
-                    event: tauri::WindowEvent::CloseRequested { api, .. },
-                    ..
-                } if label == "main" => {
-                    api.prevent_close();
-                    set_desktop_foreground(app_handle, false);
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.hide();
-                    }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        match event {
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == "main" => {
+                api.prevent_close();
+                set_desktop_foreground(app_handle, false);
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.hide();
                 }
-                tauri::RunEvent::ExitRequested { .. } => {
-                    shutdown_desktop_core_for_exit(app_handle);
-                }
-                #[cfg(target_os = "macos")]
-                tauri::RunEvent::Reopen {
-                    has_visible_windows,
-                    ..
-                } if !has_visible_windows => {
-                    show_main_window(app_handle);
-                }
-                _ => {}
             }
+            tauri::RunEvent::ExitRequested { .. } => {
+                shutdown_desktop_core_for_exit(app_handle);
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } if !has_visible_windows => {
+                show_main_window(app_handle);
+            }
+            _ => {}
+        }
     });
     tracing_guard.shutdown();
 }
@@ -1177,9 +1177,7 @@ fn set_desktop_foreground(app: &tauri::AppHandle, foreground: bool) {
                 };
                 if expiry.is_ok() {
                     let _ = ratspeak_tauri::commands::system::set_foreground_state_if_current(
-                        &state,
-                        true,
-                        transition,
+                        &state, true, transition,
                     );
                 } else {
                     tracing::error!(
@@ -1190,9 +1188,7 @@ fn set_desktop_foreground(app: &tauri::AppHandle, foreground: bool) {
             });
         } else {
             let _ = ratspeak_tauri::commands::system::set_foreground_state_if_current(
-                &state,
-                false,
-                transition,
+                &state, false, transition,
             );
         }
     }

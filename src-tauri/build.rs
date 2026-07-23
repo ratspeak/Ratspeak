@@ -40,7 +40,10 @@ fn build_dashboard_css() {
         bundle.push_str(&css);
         bundle.push('\n');
     }
-    println!("cargo:rerun-if-changed={}", dashboard_dir.join("index.html").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        dashboard_dir.join("index.html").display()
+    );
     if fs::read_to_string(&out)
         .map(|existing| existing != bundle)
         .unwrap_or(true)

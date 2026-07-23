@@ -1377,7 +1377,7 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
 
     let network_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
         .expect("network command source");
-    assert!(network_rs.contains("send_manual_announce_from_state"));
+    assert!(network_rs.contains("send_manual_announce_from_origin"));
     assert!(network_rs.contains("\"not_sent\""));
 }
 
@@ -2209,12 +2209,13 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_rs.contains("TelephonyControl::Announce"));
     assert!(voice_rs.contains("TelephonyServiceEvent::OutgoingCallPending"));
     assert!(voice_rs.contains("TelephonyServiceEvent::OutgoingCallFailed"));
-    assert!(voice_rs.contains("state.emit_network_event(\"lxst\""));
+    assert!(voice_rs.contains("fn record_lxst_activity("));
+    assert!(voice_rs.contains("producer::lxst_activity(transition)"));
 
     let runtime_rs =
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
     assert!(runtime_rs.contains("voice::announce_if_running(state).await"));
-    assert!(runtime_rs.contains("LXST telephony announced on all interfaces"));
+    assert!(runtime_rs.contains("producer::AnnounceMethod::LxstService"));
 
     let notification_rs =
         read_source(root.join("crates/ratspeak-core/src/notification.rs")).expect("notification");
@@ -3808,6 +3809,209 @@ fn identity_switch_refreshes_interface_state_without_stale_public_servers() {
 }
 
 #[test]
+fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
+    let root = repo_root();
+    let activity_mod = read_source(root.join("crates/ratspeak-runtime/src/activity/mod.rs"))
+        .expect("activity mod");
+    let producer = read_source(root.join("crates/ratspeak-runtime/src/activity/producer.rs"))
+        .expect("activity producer facade");
+    let emitter = read_source(root.join("crates/ratspeak-runtime/src/activity/emitter.rs"))
+        .expect("activity emitter");
+
+    assert!(activity_mod.contains("mod catalog;"));
+    assert!(!activity_mod.contains("pub mod catalog;"));
+    assert!(activity_mod.contains("pub mod producer;"));
+    assert!(!activity_mod.contains("pub use classified::{ActivityDraft"));
+    assert!(producer.contains("pub struct ProducerEvent(Payload);"));
+    assert!(!producer.contains("pub struct ActivityDraft"));
+    assert!(!producer.contains("pub time:"));
+    assert!(!producer.contains("pub kind:"));
+    assert!(!producer.contains("pub summary:"));
+    assert!(!producer.contains("pub classification:"));
+    assert!(emitter.contains("fn from_masked(event: &ActivityEventV1)"));
+    assert!(!emitter.contains("fn from_masked(event: &ActivityDraft)"));
+
+    let lifecycle = read_source(root.join("crates/ratspeak-runtime/src/activity/lifecycle.rs"))
+        .expect("activity lifecycle");
+    let admission = lifecycle
+        .find("let Some(lease) = self.inner.shared.gate.try_admit()")
+        .expect("recorder admission gate");
+    let origin_validation = lifecycle
+        .find("if !validate_origin()")
+        .expect("origin validation under admission");
+    let producer_build = lifecycle
+        .find("let mut draft = match make()")
+        .expect("lazy producer construction");
+    assert!(admission < origin_validation);
+    assert!(origin_validation < producer_build);
+
+    for relative in [
+        "crates/ratspeak-runtime/src/lib.rs",
+        "crates/ratspeak-runtime/src/voice.rs",
+        "crates/ratspeak-tauri/src/commands/interfaces.rs",
+        "crates/ratspeak-tauri/src/commands/messaging.rs",
+        "crates/ratspeak-tauri/src/commands/network.rs",
+    ] {
+        let source = read_source(root.join(relative)).expect(relative);
+        assert!(
+            !source.contains(".record_event("),
+            "async-capable migrated adapter bypasses its origin fence in {relative}"
+        );
+        assert!(
+            source.contains("record_event_fenced("),
+            "migrated adapter has no fenced Activity producer in {relative}"
+        );
+    }
+
+    let runtime =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    assert!(runtime.contains("pub async fn send_announce_from_origin("));
+    assert!(runtime.contains("send_announce_from_origin(&state, activity_origin).await"));
+    assert!(runtime.contains("biased;\n                        _ = tick_shutdown.wait()"));
+    assert!(runtime.contains("biased;\n            _ = shutdown.wait() => break"));
+    assert!(runtime.contains("let poll_activity_origin = state.activity_request_fence();"));
+    assert!(
+        runtime.contains("poll_stats_loop(poll_state, poll_shutdown, poll_activity_origin).await")
+    );
+    let poll_loop = runtime
+        .split("async fn poll_stats_loop(")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn ").next())
+        .expect("poll stats loop body");
+    assert!(poll_loop.contains("if shutdown.is_triggered()"));
+    let poll_startup = poll_loop
+        .split("let mut prev_online")
+        .next()
+        .expect("poll startup marker segment");
+    assert!(!poll_startup.contains("activity_request_fence()"));
+    assert!(poll_startup.contains("runtime_activity_origin"));
+    let poll_unit = poll_loop.split("loop {").nth(1).expect("poll receive unit");
+    let poll_select = poll_unit.find("tokio::select!").unwrap();
+    let poll_origin = poll_unit
+        .find("let poll_activity_origin = state.activity_request_fence();")
+        .unwrap();
+    let poll_shutdown = poll_unit.find("if shutdown.is_triggered()").unwrap();
+    assert!(poll_select < poll_origin && poll_origin < poll_shutdown);
+
+    let direct_inbound = runtime
+        .split("async fn handle_inbound_lxmf(")
+        .nth(1)
+        .and_then(|tail| tail.split("enum InboundLxmfSource").next())
+        .expect("direct inbound loop");
+    let direct_select = direct_inbound.find("let event = tokio::select!").unwrap();
+    let direct_origin = direct_inbound
+        .find("let activity_origin = state.activity_request_fence();")
+        .unwrap();
+    let direct_shutdown = direct_inbound.find("if shutdown.is_triggered()").unwrap();
+    assert!(direct_select < direct_origin && direct_origin < direct_shutdown);
+
+    let link_inbound = runtime
+        .split("let link_inbound_state = state.clone();")
+        .nth(1)
+        .and_then(|tail| tail.split("tracing::info!(").next())
+        .expect("link inbound loop");
+    let link_select = link_inbound
+        .find("let (data, link_id) = tokio::select!")
+        .unwrap();
+    let link_origin = link_inbound
+        .find("link_inbound_state.activity_request_fence()")
+        .unwrap();
+    let link_shutdown = link_inbound
+        .find("if link_inbound_shutdown.is_triggered()")
+        .unwrap();
+    assert!(link_select < link_origin && link_origin < link_shutdown);
+
+    let decrypt_from_origin = runtime
+        .split("async fn handle_decrypted_lxmf_from_origin(")
+        .nth(1)
+        .and_then(|tail| tail.split("#[cfg(test)]").next())
+        .expect("origin-bound decrypted inbound handler");
+    assert!(!decrypt_from_origin.contains("activity_request_fence()"));
+    assert!(decrypt_from_origin.contains("activity_origin: ActivityRequestFence"));
+
+    let startup_announce = runtime
+        .split("fn schedule_startup_auto_announce(")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn send_announce_from_state_inner(")
+                .next()
+        })
+        .expect("startup auto-announce task");
+    let startup_wait = startup_announce
+        .find("_ = tokio::time::sleep(Duration::from_secs(2))")
+        .unwrap();
+    let startup_origin = startup_announce
+        .find("let activity_origin = state.activity_request_fence();")
+        .unwrap();
+    let startup_shutdown = startup_announce.find("if shutdown.is_triggered()").unwrap();
+    let startup_send = startup_announce
+        .find("send_announce_from_origin(&state, activity_origin).await")
+        .unwrap();
+    assert!(
+        startup_wait < startup_origin
+            && startup_origin < startup_shutdown
+            && startup_shutdown < startup_send
+    );
+
+    let periodic_announce = runtime
+        .split("// Auto-announce loop; wakes on timer or interval change.")
+        .nth(1)
+        .and_then(|tail| tail.split("let poll_state = state.clone();").next())
+        .expect("periodic auto-announce loop");
+    let periodic_wait = periodic_announce
+        .find("tokio::time::sleep(Duration::from_secs(interval_secs))")
+        .unwrap();
+    let periodic_origin = periodic_announce
+        .find("periodic_state.activity_request_fence()")
+        .unwrap();
+    let periodic_shutdown = periodic_announce
+        .find("if periodic_shutdown.is_triggered()")
+        .unwrap();
+    let periodic_send = periodic_announce
+        .find("send_announce_from_origin(")
+        .unwrap();
+    assert!(
+        periodic_wait < periodic_origin
+            && periodic_origin < periodic_shutdown
+            && periodic_shutdown < periodic_send
+    );
+
+    for relative in [
+        "crates/ratspeak-tauri/src/commands/games.rs",
+        "crates/ratspeak-tauri/src/commands/identity.rs",
+        "crates/ratspeak-tauri/src/commands/network.rs",
+    ] {
+        let source = read_source(root.join(relative)).expect(relative);
+        assert!(source.contains("activity_request_fence()"));
+        assert!(
+            source.contains("_from_origin(") || source.contains("send_announce_from_origin("),
+            "delayed announce path recaptures its Activity origin in {relative}"
+        );
+    }
+
+    let mut production_sources = Vec::new();
+    collect_files(
+        &root.join("crates/ratspeak-runtime/src"),
+        &mut production_sources,
+    );
+    collect_files(
+        &root.join("crates/ratspeak-tauri/src"),
+        &mut production_sources,
+    );
+    for path in production_sources
+        .into_iter()
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("rs"))
+    {
+        let source = read_source(&path).expect("production Rust source");
+        assert!(
+            !source.contains("emit_network_event("),
+            "legacy producer call remains in {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn activity_bootstrap_is_listener_first_and_session_local() {
     let root = repo_root();
     let activity = read_source(root.join("dashboard/static/js/activity.js")).expect("activity js");
@@ -4074,7 +4278,10 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
     assert!(runtime.contains("\"held_announces\": e.held_announces"));
     assert!(runtime.contains("\"burst_active\": e.burst_active"));
-    assert!(runtime.contains("ingress burst active; passive announces may be held"));
+    assert!(runtime.contains("PollActivityObservation::AnnounceIngressBurst"));
+    assert!(runtime.contains("PollActivityObservation::AnnouncesHeld"));
+    assert!(runtime.contains("for observation in activity_observations"));
+    assert!(runtime.contains("record_poll_activity(&state, poll_activity_origin, observation)"));
 
     let rns = read_source(root.join("crates/ratspeak-runtime/src/rns.rs")).expect("rns");
     assert!(rns.contains("\"held_announces\": s.held_announces"));
