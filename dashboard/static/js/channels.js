@@ -870,8 +870,7 @@ function _channelsGroupPresenceEvents(entries, roomName) {
             var first = run[0].item;
             rendered.push({
                 presenceGroup: {
-                    key: roomName + '|' + first.kind + '|' + (first.id || first.timestamp_ms || run[0].order),
-                    kind: first.kind,
+                    key: roomName + '|presence|' + (first.id || first.timestamp_ms || run[0].order),
                     entries: run.slice()
                 }
             });
@@ -888,13 +887,36 @@ function _channelsGroupPresenceEvents(entries, roomName) {
         var previous = run.length ? run[run.length - 1].item : null;
         var timestamp = Number(entry.item.timestamp_ms) || 0;
         var previousTimestamp = previous ? (Number(previous.timestamp_ms) || 0) : timestamp;
-        var sameRun = previous && previous.kind === entry.item.kind &&
-            timestamp - previousTimestamp <= CHANNEL_PRESENCE_GROUP_WINDOW_MS;
+        var elapsed = timestamp - previousTimestamp;
+        var sameRun = previous &&
+            elapsed >= 0 &&
+            elapsed <= CHANNEL_PRESENCE_GROUP_WINDOW_MS;
         if (previous && !sameRun) flushRun();
         run.push(entry);
     });
     flushRun();
     return rendered;
+}
+
+function _channelsPresenceGroupSummary(group) {
+    var joined = [];
+    var left = [];
+    group.entries.forEach(function(entry) {
+        if (entry.item.kind === 'part') left.push(entry);
+        else joined.push(entry);
+    });
+
+    var joinedNoun = joined.length === 1 ? 'person' : 'people';
+    var leftNoun = left.length === 1 ? 'person' : 'people';
+    var text;
+    if (joined.length && left.length) {
+        text = joined.length + ' ' + joinedNoun + ' joined and ' + left.length + ' left';
+    } else if (left.length) {
+        text = left.length + ' ' + leftNoun + ' left';
+    } else {
+        text = joined.length + ' ' + joinedNoun + ' joined';
+    }
+    return { joined: joined, left: left, text: text };
 }
 
 function _channelsPresenceName(item) {
@@ -905,8 +927,36 @@ function _channelsPresenceName(item) {
     return text.slice(-suffix.length) === suffix ? text.slice(0, -suffix.length) : 'A member';
 }
 
+function _channelsPresenceTooltip(entries) {
+    var names = entries.map(function(entry) {
+        var item = entry.item;
+        return item.nickname || item.source_hash || _channelsPresenceName(item);
+    });
+    var visible = names.slice(0, 8);
+    var tooltip = visible.join(', ');
+    if (names.length > visible.length) {
+        tooltip += ' and ' + (names.length - visible.length) + ' more';
+    }
+    return tooltip;
+}
+
+function _channelsAppendPresenceCount(label, entries, kind, includeNoun) {
+    var count = entries.length;
+    var noun = count === 1 ? 'person' : 'people';
+    var action = kind === 'part' ? 'left' : 'joined';
+    var countLabel = count + ' ' + noun + ' ' + action;
+    var countElement = document.createElement('span');
+    countElement.className = 'channel-presence-count';
+    countElement.textContent = String(count);
+    countElement.title = _channelsPresenceTooltip(entries);
+    countElement.setAttribute('aria-label', countLabel + ': ' + countElement.title);
+    label.appendChild(countElement);
+    label.appendChild(document.createTextNode(includeNoun ? ' ' + noun + ' ' + action : ' ' + action));
+}
+
 function _channelsBuildPresenceGroup(group) {
     var expanded = !!_channelsExpandedPresenceGroups[group.key];
+    var summary = _channelsPresenceGroupSummary(group);
     var wrapper = document.createElement('div');
     wrapper.className = 'channel-presence-group' + (expanded ? ' expanded' : '');
 
@@ -916,10 +966,19 @@ function _channelsBuildPresenceGroup(group) {
     toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     var listId = 'channel-presence-group-' + (++_channelsPresenceGroupSeq);
     toggle.setAttribute('aria-controls', listId);
+    toggle.setAttribute('aria-label', summary.text + '. Show names');
 
     var label = document.createElement('span');
-    var count = group.entries.length;
-    label.textContent = count + (group.kind === 'part' ? ' people left' : ' people joined');
+    label.className = 'channel-presence-label';
+    if (summary.joined.length && summary.left.length) {
+        _channelsAppendPresenceCount(label, summary.joined, 'join', true);
+        label.appendChild(document.createTextNode(' and '));
+        _channelsAppendPresenceCount(label, summary.left, 'part', false);
+    } else if (summary.left.length) {
+        _channelsAppendPresenceCount(label, summary.left, 'part', true);
+    } else {
+        _channelsAppendPresenceCount(label, summary.joined, 'join', true);
+    }
     var chevron = document.createElement('span');
     chevron.className = 'channel-presence-chevron';
     chevron.setAttribute('aria-hidden', 'true');
@@ -944,7 +1003,7 @@ function _channelsBuildPresenceGroup(group) {
         marker.setAttribute('aria-hidden', 'true');
         var copy = document.createElement('span');
         copy.className = 'channel-presence-item-copy';
-        copy.textContent = nameText + (group.kind === 'part' ? ' left' : ' joined');
+        copy.textContent = nameText + (item.kind === 'part' ? ' left' : ' joined');
         var time = document.createElement('time');
         time.className = 'channel-event-time';
         time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
@@ -959,6 +1018,7 @@ function _channelsBuildPresenceGroup(group) {
         expanded = !expanded;
         _channelsExpandedPresenceGroups[group.key] = expanded;
         toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        toggle.setAttribute('aria-label', summary.text + (expanded ? '. Hide names' : '. Show names'));
         wrapper.classList.toggle('expanded', expanded);
         list.hidden = !expanded;
     });

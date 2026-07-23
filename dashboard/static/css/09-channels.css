@@ -828,6 +828,18 @@
     border-radius: var(--radius-sm);
 }
 
+.channel-presence-label {
+    min-width: 0;
+}
+
+.channel-presence-count {
+    color: var(--text-secondary);
+    cursor: help;
+    font-weight: var(--type-weight-semibold);
+    text-decoration: underline dotted var(--border-surface-strong);
+    text-underline-offset: 3px;
+}
+
 .channel-presence-chevron {
     display: inline-flex;
     transition: transform var(--transition-fast);

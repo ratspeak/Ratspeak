@@ -13,7 +13,7 @@ var channelsSource = fs.readFileSync(channelsPath, 'utf8');
 var constantsStart = channelsSource.indexOf('var CHANNEL_PRESENCE_GROUP_WINDOW_MS');
 var constantsEnd = channelsSource.indexOf('\n\nfunction _channelsEl', constantsStart);
 var functionsStart = channelsSource.indexOf('function _channelsIsPresenceEvent');
-var functionsEnd = channelsSource.indexOf('\nfunction _channelsPresenceName', functionsStart);
+var functionsEnd = channelsSource.indexOf('\nfunction _channelsAppendPresenceCount', functionsStart);
 
 assert(constantsStart !== -1 && constantsEnd !== -1, 'presence constants must exist');
 assert(functionsStart !== -1 && functionsEnd !== -1, 'presence helpers must exist');
@@ -21,7 +21,9 @@ assert(functionsStart !== -1 && functionsEnd !== -1, 'presence helpers must exis
 var context = { window: {}, Number: Number, String: String, Array: Array };
 var exportsSource = '\nwindow.ChannelsPresence = {' +
     'collapse: _channelsCollapseTransientRejoins,' +
-    'group: _channelsGroupPresenceEvents' +
+    'group: _channelsGroupPresenceEvents,' +
+    'summary: _channelsPresenceGroupSummary,' +
+    'tooltip: _channelsPresenceTooltip' +
     '};';
 vm.runInNewContext(
     channelsSource.slice(constantsStart, constantsEnd) +
@@ -124,6 +126,55 @@ test('existing consecutive presence grouping still applies after cleanup', funct
     var result = presence.group(entries, 'general');
     assert.strictEqual(result.length, 1);
     assert.strictEqual(result[0].item.source_hash, 'aabbcc');
+});
+
+test('mixed uninterrupted presence activity becomes one truthful summary', function() {
+    var entries = [
+        event('part', 1000, 'part-1', 'Ada'),
+        event('part', 2000, 'part-2', 'Grace'),
+        event('join', 3000, 'join-1', 'Linus'),
+        event('join', 4000, 'join-2', 'Margaret'),
+        event('join', 5000, 'join-3', 'Edsger'),
+        event('part', 6000, 'part-3', 'Ken'),
+        event('join', 7000, 'join-4', 'Barbara'),
+        event('join', 8000, 'join-5', 'Donald'),
+        event('join', 9000, 'join-6', 'Radia')
+    ];
+    var result = presence.group(entries, 'general');
+    assert.strictEqual(result.length, 1);
+    assert.ok(result[0].presenceGroup);
+    assert.strictEqual(result[0].presenceGroup.entries.length, 9);
+
+    var summary = presence.summary(result[0].presenceGroup);
+    assert.strictEqual(summary.joined.length, 6);
+    assert.strictEqual(summary.left.length, 3);
+    assert.strictEqual(summary.text, '6 people joined and 3 left');
+});
+
+test('a message ends a mixed presence group', function() {
+    var entries = [
+        event('join', 1000, 'join-1', 'Ada'),
+        event('part', 2000, 'part-1', 'Grace'),
+        event('message', 3000, 'speaker', 'Linus'),
+        event('join', 4000, 'join-2', 'Margaret'),
+        event('part', 5000, 'part-2', 'Edsger')
+    ];
+    var result = presence.group(entries, 'general');
+    assert.strictEqual(result.length, 3);
+    assert.ok(result[0].presenceGroup);
+    assert.strictEqual(result[1].item.kind, 'message');
+    assert.ok(result[2].presenceGroup);
+});
+
+test('count hover text prefers names and retains a full hash fallback', function() {
+    var entries = [
+        event('join', 1000, 'aabbcc', 'Ada'),
+        event('join', 2000, '0123456789abcdef0123456789abcdef', null)
+    ];
+    assert.strictEqual(
+        presence.tooltip(entries),
+        'Ada, 0123456789abcdef0123456789abcdef'
+    );
 });
 
 tests.forEach(function(entry) {
