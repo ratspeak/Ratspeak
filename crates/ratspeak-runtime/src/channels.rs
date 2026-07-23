@@ -2195,21 +2195,14 @@ async fn handle_link_event(
     match event {
         LinkSessionEvent::Packet { data, .. } => match rrc::decode(&data) {
             Ok(envelope) => {
-                if handle_envelope(
+                handle_envelope(
                     active,
                     activity_recorder,
                     envelope,
                     bounded_encoded_len(data.len()),
                 )
-                .await
-                {
-                    LinkEventOutcome::Keep
-                } else {
-                    LinkEventOutcome::Closed {
-                        product_reason: "Channel link send failed".into(),
-                        activity_reason: activity::ChannelSessionCloseReason::SendFailed,
-                    }
-                }
+                .await;
+                LinkEventOutcome::Keep
             }
             Err(error) => {
                 let context = active.activity;
@@ -2258,7 +2251,7 @@ async fn handle_envelope(
     activity_recorder: &ChannelsActivity,
     envelope: Envelope,
     encoded_bytes: u32,
-) -> bool {
+) {
     let message = active.message_token(envelope.message_id);
     let room = active.room_token(envelope.room.as_deref());
     let envelope_kind = channel_envelope_kind(envelope.message_type);
@@ -2289,7 +2282,7 @@ async fn handle_envelope(
             reason = "unauthenticated_control_source",
             "ignoring channel control envelope not authored by the authenticated hub"
         );
-        return true;
+        return;
     }
     if !active.remember(envelope.message_id) {
         activity_recorder.record_spontaneous(move || {
@@ -2303,7 +2296,7 @@ async fn handle_envelope(
                 correlation_id,
             })
         });
-        return true;
+        return;
     }
     if matches!(
         envelope.message_type,
@@ -2320,7 +2313,7 @@ async fn handle_envelope(
                 correlation_id,
             })
         });
-        return true;
+        return;
     }
     activity_recorder.record_spontaneous(move || {
         activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
@@ -2335,11 +2328,17 @@ async fn handle_envelope(
     });
     if envelope.message_type == MessageType::Ping {
         let pong = Envelope::pong(active.source, &envelope);
-        if send_active_envelope_spontaneous(active, activity_recorder, &pong)
-            .await
-            .is_err()
+        // A single application-heartbeat send error is not authoritative
+        // evidence that the Reticulum Link has ended. The Link actor owns
+        // recovery and closure; it will emit Recovered, Closed, or end its
+        // event stream. Closing here used to turn a recoverable stale window
+        // into an immediate product-level "Channel link send failed".
+        if let Err(error) = send_active_envelope_spontaneous(active, activity_recorder, &pong).await
         {
-            return false;
+            tracing::warn!(
+                reason = %error,
+                "failed to answer an authenticated channel heartbeat"
+            );
         }
     }
 
@@ -2393,7 +2392,6 @@ async fn handle_envelope(
         MessageType::Error => append_error(active, activity_recorder, &envelope),
         MessageType::ResourceEnvelope | MessageType::Unknown(_) => {}
     }
-    true
 }
 
 #[derive(Clone)]
@@ -3411,6 +3409,123 @@ mod tests {
             50_000 + PART_CONFIRM_TIMEOUT.as_millis() as u64
         ));
         assert!(rooms.is_empty());
+    }
+
+    #[tokio::test]
+    async fn heartbeat_send_failure_defers_session_end_to_link_actor() {
+        let client_identity = Identity::new();
+        let hub_identity = Identity::new();
+        let hub_signing = hub_identity.get_signing_key().unwrap();
+        let hub_public = hub_identity.get_public_key();
+        let hub_destination =
+            Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
+
+        // Capacity one makes the failure deterministic: the proof for the
+        // inbound PING fills the transport queue before the automatic PONG is
+        // submitted. Dropping the receiver then rejects the PONG inside the
+        // Link actor.
+        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(1);
+        let manager = ChannelsManagerHandle::start(
+            transport_tx,
+            client_identity.clone(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            ShutdownSignal::new(),
+            Weak::new(),
+        );
+
+        manager
+            .connect(&hex::encode(hub_destination), "Field Rat")
+            .await
+            .unwrap();
+
+        let response_tx = match timeout_transport(&mut transport_rx).await {
+            TransportMessage::Rpc {
+                query: TransportQuery::GetRecentAnnounces,
+                response_tx,
+            } => response_tx,
+            other => panic!("expected announce query, got {other:?}"),
+        };
+        response_tx
+            .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
+                dest_hash: hub_destination,
+                hops: 1,
+                app_data: Some(reference_announce_data("Test relay")),
+                timestamp: 1_700_000_000.0,
+                public_key: Some(hub_public),
+                ratchet: None,
+                name_hash: rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT),
+                is_path_response: false,
+                retained: false,
+            }]))
+            .unwrap();
+
+        let delivery_tx = match timeout_transport(&mut transport_rx).await {
+            TransportMessage::RegisterDestination {
+                delivery_tx: Some(delivery_tx),
+                ..
+            } => delivery_tx,
+            other => panic!("expected Link destination registration, got {other:?}"),
+        };
+        let request = next_outbound(&mut transport_rx).await;
+        let (_, request_offset) =
+            rns_wire::header::PacketHeader::unpack(&request.raw).unwrap();
+        let (mut responder, link_proof) = Link::new_responder(
+            &request.raw[request_offset..],
+            &hub_signing,
+            hub_destination,
+            1,
+        )
+        .unwrap();
+        send_link_packet(
+            &delivery_tx,
+            responder.link_id,
+            rns_wire::flags::PacketType::Proof,
+            rns_wire::context::PacketContext::None,
+            &link_proof,
+        )
+        .await;
+
+        let lrrtt = next_attached_outbound(&mut transport_rx).await;
+        let (_, lrrtt_offset) = rns_wire::header::PacketHeader::unpack(&lrrtt.raw).unwrap();
+        responder
+            .receive_rtt_packet(&lrrtt.raw[lrrtt_offset..])
+            .unwrap();
+        let identify = next_attached_outbound(&mut transport_rx).await;
+        let (_, identify_offset) = rns_wire::header::PacketHeader::unpack(&identify.raw).unwrap();
+        responder
+            .handle_identification(&identify.raw[identify_offset..])
+            .unwrap();
+
+        let hello = receive_client_envelope(
+            &mut transport_rx,
+            &delivery_tx,
+            &mut responder,
+            &hub_signing,
+        )
+        .await;
+        assert_eq!(hello.message_type, MessageType::Hello);
+
+        let welcome = Envelope::new(MessageType::Welcome, hub_identity.hash);
+        send_server_envelope(&delivery_tx, &mut responder, &welcome).await;
+        wait_snapshot(&manager, |snapshot| snapshot.phase == ChannelsPhase::Active).await;
+
+        let mut ping = Envelope::new(MessageType::Ping, hub_identity.hash);
+        ping.body = Some(Value::Float(42.5));
+        send_server_envelope(&delivery_tx, &mut responder, &ping).await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(transport_rx);
+
+        let closed =
+            wait_snapshot(&manager, |snapshot| snapshot.phase == ChannelsPhase::Error).await;
+        let reason = closed.last_error.expect("closed session reason");
+        assert!(
+            reason.contains("transport unavailable"),
+            "the Link actor must own the authoritative close reason: {reason}"
+        );
+        assert_ne!(reason, "Channel link send failed");
+
+        manager.shutdown().await;
     }
 
     #[tokio::test]
