@@ -1028,12 +1028,15 @@ test('canonical channel events render as readable, filterable rows with privacy-
     ctx.activityExpandedSequence = '7';
     ctx.renderActivityFeed();
     assert(ui.ids['activity-feed'].innerHTML.indexOf('channels.room.join_requested') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('Reveal and copy') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('<code>Reveal</code>') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-action="reveal"') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-icon="reveal"') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-icon="copy"') === -1);
     assert(ui.ids['activity-feed'].innerHTML.indexOf('data-field="hub"') !== -1);
     assert(ui.ids['activity-feed'].innerHTML.indexOf('masked-hub-token-123456') === -1);
 });
 
-test('expanded announces resolve a known name and copy the full LXMF address', async function() {
+test('identifier controls reveal first and copy only after disclosure', async function() {
     var ui = loadUiHarness();
     var ctx = ui.context;
     var rawAddress = '00112233445566778899aabbccddeeff';
@@ -1080,7 +1083,21 @@ test('expanded announces resolve a known name and copy the full LXMF address', a
         });
     });
 
-    await ctx.activityRevealField(announceEvent, 'destination');
+    ctx.renderActivityFeed();
+    var hiddenHtml = ui.ids['activity-feed'].innerHTML;
+    assert(hiddenHtml.indexOf('<code>Reveal</code>') !== -1);
+    assert(hiddenHtml.indexOf('data-action="reveal"') !== -1);
+    assert(hiddenHtml.indexOf('data-icon="reveal"') !== -1);
+
+    var copied = null;
+    ctx.RS.copyText = function(value) {
+        copied = value;
+        return Promise.resolve(true);
+    };
+    assert.strictEqual(await ctx.copyActivityIdentifier('9', 'destination'), false);
+    assert.strictEqual(await ctx.activateActivityIdentifier('9', 'destination'), true);
+    assert.strictEqual(copied, null, 'the reveal action must not copy');
+
     ctx.renderActivityFeed();
     var html = ui.ids['activity-feed'].innerHTML;
     assert(html.indexOf('Alice announced') !== -1);
@@ -1088,15 +1105,13 @@ test('expanded announces resolve a known name and copy the full LXMF address', a
     assert(html.indexOf('LXMF address') !== -1);
     assert(html.indexOf('001122334…eeff') !== -1);
     assert(html.indexOf(rawAddress) === -1, 'full address must not be painted into the Activity DOM');
+    assert(html.indexOf('data-action="copy"') !== -1);
+    assert(html.indexOf('data-icon="copy"') !== -1);
+    assert(html.indexOf('data-icon="reveal"') === -1);
 
-    var copied = null;
-    ctx.RS.copyText = function(value) {
-        copied = value;
-        return Promise.resolve(true);
-    };
-    assert.strictEqual(await ctx.copyActivityIdentifier('9', 'destination'), true);
+    assert.strictEqual(await ctx.activateActivityIdentifier('9', 'destination'), true);
     assert.strictEqual(copied, rawAddress);
-    assert.strictEqual(revealCalls, 1, 'copy should reuse the explicit reveal');
+    assert.strictEqual(revealCalls, 1, 'copy should reuse the prior explicit reveal');
 });
 
 test('identity UI reset clears canonical visible state without issuing a Stop command', async function() {

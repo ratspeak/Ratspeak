@@ -1583,7 +1583,7 @@
     cursor: wait;
     opacity: var(--opacity-disabled);
 }
-.activity-copy-icon {
+.activity-identifier-icon {
     flex: 0 0 auto;
     fill: none;
     stroke: currentColor;

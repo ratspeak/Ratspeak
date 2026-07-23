@@ -954,7 +954,7 @@ function initActivity() {
             var copyControl = activityClosestEventTarget(event.target, 'activity-copy-value', feed);
             if (copyControl) {
                 event.stopPropagation();
-                copyActivityIdentifier(
+                activateActivityIdentifier(
                     copyControl.getAttribute('data-sequence'),
                     copyControl.getAttribute('data-field')
                 );
@@ -1395,9 +1395,16 @@ function activityIdentifierLabel(event, field) {
 }
 
 function activityCopyIcon() {
-    return '<svg class="activity-copy-icon" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
+    return '<svg class="activity-identifier-icon" data-icon="copy" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
         '<rect x="8" y="8" width="10" height="10" rx="1.5"></rect>' +
         '<path d="M6 15H5.5A1.5 1.5 0 0 1 4 13.5v-8A1.5 1.5 0 0 1 5.5 4h8A1.5 1.5 0 0 1 15 5.5V6"></path>' +
+    '</svg>';
+}
+
+function activityRevealIcon() {
+    return '<svg class="activity-identifier-icon" data-icon="reveal" viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
+        '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path>' +
+        '<circle cx="12" cy="12" r="2.5"></circle>' +
     '</svg>';
 }
 
@@ -1406,22 +1413,39 @@ function activityIdentifierControl(event, attribute) {
     var raw = activityRevealedField(event, field);
     var pending = !!activityRevealPending[activityRevealKey(event, field)];
     var label = activityIdentifierLabel(event, field);
-    var text = raw ? activityShortToken(raw) : (pending ? 'Revealing…' : 'Reveal and copy');
-    var title = raw ? 'Copy full ' + label.toLowerCase() : 'Reveal and copy ' + label.toLowerCase();
-    return '<button type="button" class="activity-copy-value" data-sequence="' +
+    var action = raw ? 'copy' : 'reveal';
+    var text = raw ? activityShortToken(raw) : (pending ? 'Revealing…' : 'Reveal');
+    var title = raw ? 'Copy full ' + label.toLowerCase() : 'Reveal ' + label.toLowerCase();
+    var icon = raw ? activityCopyIcon() : activityRevealIcon();
+    return '<button type="button" class="activity-copy-value" data-action="' + action +
+        '" data-sequence="' +
         escapeHtml(event.sequence) + '" data-field="' + escapeHtml(field) + '" aria-label="' +
         escapeHtml(title) + '" title="' + escapeHtml(title) + '"' + (pending ? ' disabled' : '') + '>' +
-        '<code>' + escapeHtml(text) + '</code>' + activityCopyIcon() + '</button>';
+        '<code>' + escapeHtml(text) + '</code>' + icon + '</button>';
+}
+
+function activateActivityIdentifier(sequence, field) {
+    var event = activityEventBySequence(sequence);
+    if (!event || !field) return Promise.resolve(false);
+    if (activityRevealedField(event, field)) {
+        return copyActivityIdentifier(sequence, field);
+    }
+    var label = activityIdentifierLabel(event, field);
+    return activityRevealField(event, field).then(function(value) {
+        if (!value && typeof showToast === 'function') {
+            showToast('Could not reveal ' + label.toLowerCase(), 'toast-red', 3000);
+        }
+        return !!value;
+    });
 }
 
 function copyActivityIdentifier(sequence, field) {
     var event = activityEventBySequence(sequence);
     if (!event || !field) return Promise.resolve(false);
     var label = activityIdentifierLabel(event, field);
-    return activityRevealField(event, field).then(function(value) {
-        if (!value || !RS.copyText) return false;
-        return RS.copyText(value);
-    }).then(function(copied) {
+    var value = activityRevealedField(event, field);
+    if (!value || !RS.copyText) return Promise.resolve(false);
+    return Promise.resolve(RS.copyText(value)).then(function(copied) {
         if (typeof showToast === 'function') {
             if (copied) showToast(label + ' copied', 'toast-green', 1800);
             else showToast('Could not copy ' + label.toLowerCase(), 'toast-red', 3000);
