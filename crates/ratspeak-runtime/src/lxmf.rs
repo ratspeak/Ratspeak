@@ -4511,6 +4511,7 @@ impl LxmfManager {
                 "outbound: identity lookup for destination"
             );
 
+            let destination_public_key = self.known_identities.get(&dest_hex).copied();
             let mut missing_identity = false;
             let payload = match message.pack_opportunistic_encrypted(|plaintext| {
                 self.encrypt_for_destination(&dest_hex, plaintext)
@@ -4560,6 +4561,14 @@ impl LxmfManager {
                     );
                     continue;
                 }
+            };
+            let Some(destination_public_key) = destination_public_key else {
+                tracing::error!(
+                    dest = %crate::short_id(&dest_hex),
+                    reason = "identity_invariant",
+                    "outbound LXMF encryption succeeded without a retained destination identity"
+                );
+                continue;
             };
 
             let flags = rns_wire::flags::PacketFlags {
@@ -4723,6 +4732,8 @@ impl LxmfManager {
                             .try_send(TransportMessage::RegisterReceipt {
                                 truncated_hash: pkt_trunc_hash,
                                 full_hash: pkt_full_hash,
+                                destination_hash: dest_hash,
+                                destination_public_key,
                                 msg_id: msg_id_hex.clone(),
                                 timeout: receipt_timeout,
                             })
