@@ -4871,6 +4871,7 @@ fn transport_response_kind(response: &TransportQueryResponse) -> &'static str {
         TransportQueryResponse::InterfaceStats(_) => "interface_stats",
         TransportQueryResponse::RateTable(_) => "rate_table",
         TransportQueryResponse::Announces(_) => "announces",
+        TransportQueryResponse::RecalledDestination(_) => "recalled_destination",
         TransportQueryResponse::IntResult(_) => "int_result",
         TransportQueryResponse::FloatResult(_) => "float_result",
         TransportQueryResponse::StringResult(_) => "string_result",
@@ -4992,6 +4993,14 @@ pub fn sanitize_stored_file_name(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_response_kind_names_recalled_destinations() {
+        assert_eq!(
+            transport_response_kind(&TransportQueryResponse::RecalledDestination(None)),
+            "recalled_destination"
+        );
+    }
     use lxmf_core::constants::DELIVERY_RETRY_WAIT;
     use r2d2_sqlite::SqliteConnectionManager;
     use std::sync::atomic::{AtomicU64, Ordering};
