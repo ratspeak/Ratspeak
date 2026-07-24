@@ -1630,7 +1630,10 @@ async fn connect_to_hub(
                 }
                 LinkSessionEvent::Recovered
                 | LinkSessionEvent::PacketDelivered { .. }
-                | LinkSessionEvent::RequestConcluded { .. } => {}
+                | LinkSessionEvent::RequestConcluded { .. }
+                | LinkSessionEvent::ResourceStarted { .. }
+                | LinkSessionEvent::ResourceProgress { .. }
+                | LinkSessionEvent::ResourceConcluded { .. } => {}
             }
         }
         Err(ConnectAttemptError {
@@ -2243,9 +2246,11 @@ async fn handle_link_event(
                 LinkEventOutcome::Keep
             }
         },
-        LinkSessionEvent::PacketDelivered { .. } | LinkSessionEvent::RequestConcluded { .. } => {
-            LinkEventOutcome::Keep
-        }
+        LinkSessionEvent::PacketDelivered { .. }
+        | LinkSessionEvent::RequestConcluded { .. }
+        | LinkSessionEvent::ResourceStarted { .. }
+        | LinkSessionEvent::ResourceProgress { .. }
+        | LinkSessionEvent::ResourceConcluded { .. } => LinkEventOutcome::Keep,
         LinkSessionEvent::Stale => LinkEventOutcome::Stale,
         LinkSessionEvent::Recovered => LinkEventOutcome::Recovered,
         LinkSessionEvent::Closed { reason } => {
