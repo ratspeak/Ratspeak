@@ -175,8 +175,8 @@ impl RnsManager {
         })
     }
 
-    pub fn shutdown(&self) {
-        self.shutdown.trigger();
+    pub async fn shutdown(&self) {
+        self.handle.shutdown_and_wait().await;
     }
 }
 

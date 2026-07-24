@@ -724,7 +724,7 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
     let rns_mgr = state.rns.write().ok().and_then(|mut rns| rns.take());
     if let Some(mgr) = rns_mgr {
         teardown_rns_runtime_interfaces(&mgr.handle).await;
-        mgr.shutdown();
+        mgr.shutdown().await;
     }
     // Persist ratchet + peer-key state before dropping the manager.
     if let Ok(lxmf) = state.lxmf.lock()
