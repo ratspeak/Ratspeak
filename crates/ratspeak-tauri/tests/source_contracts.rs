@@ -2760,8 +2760,9 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let activity_js =
         read_source(root.join("dashboard/static/js/activity.js")).expect("activity js");
-    assert!(activity_js.contains("lxst: true"));
-    assert!(activity_js.contains("lxst: 'LXST'"));
+    assert!(activity_js.contains("calls: 'Calls'"));
+    assert!(activity_js.contains("'lxst.call': 'Call'"));
+    assert!(activity_js.contains("'lxst.media': 'Call media'"));
 
     let service =
         read_source(root.join(
@@ -3135,7 +3136,7 @@ fn mobile_primary_lists_share_readable_row_scale() {
         responsive_css
             .contains(".conn-card-label {\n        font-size: var(--mobile-list-title-size);")
     );
-    assert!(responsive_css.contains(".activity-level-btn,\n    .activity-filter-chip"));
+    assert!(responsive_css.contains(".activity-profile-btn,\n    .activity-filter-chip"));
     assert!(responsive_css.contains("font-size: var(--mobile-list-meta-size);"));
     assert!(
         responsive_css.contains(
