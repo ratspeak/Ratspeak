@@ -1736,6 +1736,7 @@ fn link_connect_error(error: LinkSessionError) -> ConnectAttemptError {
         | LinkSessionError::LinkNotActive
         | LinkSessionError::PayloadTooLarge { .. }
         | LinkSessionError::RequestRequiresResource { .. }
+        | LinkSessionError::RequestResourceFailed(_)
         | LinkSessionError::TooManyPendingRequests => {
             activity::ChannelSessionFailureReason::SendFailed
         }
