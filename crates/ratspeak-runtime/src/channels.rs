@@ -1628,7 +1628,9 @@ async fn connect_to_hub(
                         ),
                     });
                 }
-                LinkSessionEvent::Recovered | LinkSessionEvent::PacketDelivered { .. } => {}
+                LinkSessionEvent::Recovered
+                | LinkSessionEvent::PacketDelivered { .. }
+                | LinkSessionEvent::RequestConcluded { .. } => {}
             }
         }
         Err(ConnectAttemptError {
@@ -1729,7 +1731,9 @@ fn link_connect_error(error: LinkSessionError) -> ConnectAttemptError {
         }
         LinkSessionError::LinkCrypto
         | LinkSessionError::LinkNotActive
-        | LinkSessionError::PayloadTooLarge { .. } => {
+        | LinkSessionError::PayloadTooLarge { .. }
+        | LinkSessionError::RequestRequiresResource { .. }
+        | LinkSessionError::TooManyPendingRequests => {
             activity::ChannelSessionFailureReason::SendFailed
         }
     };
@@ -2239,7 +2243,9 @@ async fn handle_link_event(
                 LinkEventOutcome::Keep
             }
         },
-        LinkSessionEvent::PacketDelivered { .. } => LinkEventOutcome::Keep,
+        LinkSessionEvent::PacketDelivered { .. } | LinkSessionEvent::RequestConcluded { .. } => {
+            LinkEventOutcome::Keep
+        }
         LinkSessionEvent::Stale => LinkEventOutcome::Stale,
         LinkSessionEvent::Recovered => LinkEventOutcome::Recovered,
         LinkSessionEvent::Closed { reason } => {
