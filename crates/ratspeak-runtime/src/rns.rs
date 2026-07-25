@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value, json};
 
 use rns_runtime::lifecycle::ShutdownSignal;
-use rns_runtime::reticulum::{self, InstanceMode, ReticulumHandle};
+use rns_runtime::reticulum::{self, InstanceMode, ReticulumHandle, StartupRNodeRuntime};
 use rns_transport::messages::{TransportMessage, TransportQuery, TransportQueryResponse};
 
 pub const UI_PATH_TABLE_LIMIT: usize = 500;
@@ -15,6 +15,10 @@ pub const UI_PATH_TABLE_LIMIT: usize = 500;
 pub struct RnsManager {
     pub handle: ReticulumHandle,
     pub shutdown: ShutdownSignal,
+    /// Exact, observation-only records for RNodes registered while this
+    /// runtime initialized. This is a startup snapshot, not current inventory
+    /// or teardown authority.
+    startup_rnode_runtimes: Vec<StartupRNodeRuntime>,
 }
 
 impl RnsManager {
@@ -34,6 +38,7 @@ impl RnsManager {
         )
         .await
         .map_err(|e| format!("RNS init failed: {e:?}"))?;
+        let startup_rnode_runtimes = handle.startup_rnode_runtimes();
 
         tracing::info!(
             "RNS initialized: mode={:?}, interfaces={}",
@@ -46,7 +51,19 @@ impl RnsManager {
             ))
             .await;
 
-        Ok(Self { handle, shutdown })
+        Ok(Self {
+            handle,
+            shutdown,
+            startup_rnode_runtimes,
+        })
+    }
+
+    /// Exact startup registrations retained for this runtime session.
+    ///
+    /// Absence does not prove that no RNode is configured, and these records
+    /// must not be used as current inventory or lifecycle authority.
+    pub fn startup_rnode_runtimes(&self) -> &[StartupRNodeRuntime] {
+        &self.startup_rnode_runtimes
     }
 
     async fn query(&self, q: TransportQuery) -> Option<TransportQueryResponse> {
