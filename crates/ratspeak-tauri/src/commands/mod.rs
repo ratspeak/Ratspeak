@@ -16,6 +16,14 @@ pub mod interfaces;
 pub mod messaging;
 pub mod network;
 pub mod peers;
+#[cfg(any(
+    test,
+    feature = "ble",
+    feature = "serial",
+    feature = "rnode-tcp",
+    target_os = "android"
+))]
+pub(crate) mod rnode_readiness;
 pub mod shared;
 pub mod system;
 #[cfg(feature = "lxst-voice")]

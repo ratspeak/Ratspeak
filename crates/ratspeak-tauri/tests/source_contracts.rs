@@ -1031,6 +1031,10 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
     assert!(state.contains("take_initializing_ble_rnode_activity_operation"));
     assert!(state.contains("take_completing_ble_rnode_activity_operation"));
     assert!(state.contains("rollback_context: Option<BleRnodeRollbackContext>"));
+    assert!(state.contains("lifecycle_lease: Option<RNodeLifecycleOperationLease>"));
+    assert!(state.contains("begin_ble_rnode_activity_operation_owned"));
+    assert!(state.contains("begin_ble_rnode_activity_operation_with_completion_owned"));
+    assert!(state.contains("invalidate_ble_rnode_activity_operation_if_token"));
     assert!(state.contains("ble_completion_ownership_is_lost_when_new_operation_replaces_it"));
     assert!(state.contains("stale_ble_failure_cannot_take_newer_rollback_context"));
 
@@ -1040,7 +1044,10 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
     assert!(ble.contains("take_completing_ble_rnode_activity_operation"));
     assert!(ble.contains("disconnect_native_ble_rnode_operation"));
     assert!(ble.contains("json!({ \"activity_operation\": activity_operation })"));
-    assert!(ble.contains("teardown_ble_rnode_interface(&rns, id)"));
+    assert!(ble.contains("spawn_ble_rnode_runtime_native_observed"));
+    assert!(ble.contains("await_spawned_rnode_ready(&spawned)"));
+    assert!(ble.contains("teardown_spawned_rnode_exact(&rns, &spawned)"));
+    assert!(!ble.contains("online.load(std::sync::atomic::Ordering::SeqCst)"));
 
     let mut native_emissions = 0usize;
     let mut remainder = interfaces.as_str();
@@ -1059,6 +1066,9 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
         "add and reconnect/resume paths must both emit native BLE work"
     );
     assert!(interfaces.contains("schedule_android_ble_rnode_operation_watchdog"));
+    assert!(interfaces.contains("couple_android_ble_operation_to_rnode_lease"));
+    assert!(interfaces.contains("begin_ble_rnode_activity_operation_owned"));
+    assert!(interfaces.contains("begin_ble_rnode_activity_operation_with_completion_owned"));
     assert!(interfaces.contains("Duration::from_secs(180)"));
     assert!(interfaces.contains("take_pending_ble_rnode_activity_operation"));
     assert!(interfaces.contains("rollback_fresh_lora_add_marker"));
@@ -1079,18 +1089,18 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
         .nth(1)
         .and_then(|tail| tail.split("pub struct BleRnodeBridgeFailureArgs").next())
         .expect("Android BLE bridge-ready command");
-    let timeout_completion = bridge_ready
-        .split("if start.elapsed() > timeout {")
+    let readiness_failure = bridge_ready
+        .split("Some(Err(failure)) => {")
         .nth(1)
-        .and_then(|tail| tail.split("tokio::time::sleep").next())
-        .expect("RNode initialization timeout completion");
-    let completion_claim = timeout_completion
+        .and_then(|tail| tail.split("None => {").next())
+        .expect("RNode readiness failure completion");
+    let completion_claim = readiness_failure
         .find("claim_ble_rnode_activity_operation_completion")
         .expect("initialization completion claim");
-    let teardown = timeout_completion
-        .find("teardown_ble_rnode_interface")
-        .expect("initialization timeout teardown");
-    let completion_take = timeout_completion
+    let teardown = readiness_failure
+        .find("teardown_spawned_rnode_exact")
+        .expect("exact readiness-failure teardown");
+    let completion_take = readiness_failure
         .find("take_completing_ble_rnode_activity_operation")
         .expect("exact completion take");
     assert!(completion_claim < teardown && teardown < completion_take);
@@ -1182,9 +1192,10 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
     let terminal_take = cancel_ble
         .find("take_completing_ble_rnode_activity_cancellation")
         .expect("post-await cancellation terminal take");
-    let terminal_status = cancel_ble
-        .find("BLE connect for")
-        .expect("cancellation terminal status");
+    let terminal_status = terminal_take
+        + cancel_ble[terminal_take..]
+            .find("BLE connect for")
+            .expect("post-teardown cancellation terminal status");
     assert!(
         cancellation_lease < exact_rollback
             && exact_rollback < teardown_spawn
@@ -1217,7 +1228,12 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
         .nth(1)
         .and_then(|tail| tail.split("#[cfg(test)]").next())
         .expect("BLE RNode disconnect command");
-    assert!(disconnect_ble.contains("remove_interface_checked"));
+    assert!(disconnect_ble.contains("with_rns_config_lock"));
+    assert!(disconnect_ble.contains("begin_rnode_lifecycle_operation"));
+    assert!(disconnect_ble.contains("snapshot_interface_block"));
+    assert!(disconnect_ble.contains("remove_interface_block_if_revision"));
+    assert!(disconnect_ble.contains("captured_interface_id"));
+    assert!(disconnect_ble.contains("is_current_rnode_lifecycle_operation"));
     assert!(disconnect_ble.contains("RemoveInterfaceOutcome::Removed"));
     assert!(disconnect_ble.contains("RemoveInterfaceOutcome::NotFound"));
     assert!(disconnect_ble.contains("RemoveInterfaceOutcome::WriteFailed"));
@@ -1242,14 +1258,21 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
             "add_lora transport matrix is missing {outcome}"
         );
     }
-    assert!(add_lora.contains("teardown_ble_rnode_interface(&rns, id)"));
-    assert!(add_lora.contains("teardown_rnode_interface(&rns, id)"));
+    assert!(add_lora.contains("spawn_ble_rnode_runtime_observed"));
+    assert!(add_lora.contains("spawn_rnode_runtime_observed"));
+    assert!(add_lora.contains("spawn_android_usb_rnode_runtime_observed"));
+    assert!(add_lora.contains("await_owned_rnode_ready"));
+    assert!(!add_lora.contains("online.load(std::sync::atomic::Ordering::SeqCst)"));
+    assert!(interfaces.contains("teardown_spawned_rnode_exact(handle, spawned)"));
     let freshness_transaction = add_lora
-        .split("let (fresh_marker, existing_rnode_port, config_written)")
+        .split(
+            "let (operation_lease, fresh_marker, existing_rnode_port, handoff_targets, config_written)",
+        )
         .nth(1)
         .and_then(|tail| tail.split("let fresh_add = fresh_marker.is_some()").next())
         .expect("fresh BLE add config transaction");
     assert!(freshness_transaction.contains("with_rns_config_lock"));
+    assert!(freshness_transaction.contains("begin_rnode_lifecycle_operation"));
     let stale_clear = freshness_transaction
         .find("mark_lora_add_freshness(&config_dir, &name, false)")
         .expect("stale marker clear");
@@ -1280,9 +1303,11 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
         .nth(1)
         .and_then(|tail| tail.split("pub async fn remove_lora_interface").next())
         .expect("Android RNode handoff");
-    assert!(handoff.contains("remove_interface_checked"));
-    assert!(handoff.contains("RemoveInterfaceOutcome::NotFound => {}"));
-    assert!(handoff.contains("RemoveInterfaceOutcome::WriteFailed"));
+    assert!(handoff.contains("teardown_live_interface_by_name"));
+    assert!(handoff.contains("is_current_rnode_lifecycle_operation"));
+    assert!(handoff.contains("remove_interface_block_if_revision"));
+    assert!(handoff.contains("InterfaceBlockCasOutcome::NotFound => {}"));
+    assert!(handoff.contains("InterfaceBlockCasOutcome::WriteFailed"));
     assert!(handoff.contains("return false;"));
 
     let remove_lora = interfaces
@@ -1290,10 +1315,14 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
         .nth(1)
         .and_then(|tail| tail.split("pub async fn enable_auto_interface").next())
         .expect("RNode removal command");
-    assert!(remove_lora.contains("remove_interface_checked"));
-    assert!(remove_lora.contains("RemoveInterfaceOutcome::Removed"));
-    assert!(remove_lora.contains("RemoveInterfaceOutcome::NotFound"));
-    assert!(remove_lora.contains("RemoveInterfaceOutcome::WriteFailed"));
+    assert!(remove_lora.contains("with_rns_config_lock"));
+    assert!(remove_lora.contains("begin_rnode_lifecycle_operation"));
+    assert!(remove_lora.contains("snapshot_interface_block"));
+    assert!(remove_lora.contains("remove_interface_block_if_revision"));
+    assert!(remove_lora.contains("teardown_live_interface_by_name"));
+    assert!(remove_lora.contains("InterfaceBlockCasOutcome::Applied"));
+    assert!(remove_lora.contains("InterfaceBlockCasOutcome::NotFound"));
+    assert!(remove_lora.contains("InterfaceBlockCasOutcome::WriteFailed"));
 
     let enable_auto = interfaces
         .split("pub async fn enable_auto_interface")
@@ -2137,10 +2166,9 @@ fn failed_lora_reconnects_keep_persisted_interface_config() {
     assert!(interfaces_rs.contains("clear_fresh_lora_add_marker"));
     // Failed resume flips the entry back to paused instead of deleting it or
     // leaving a dead enabled config.
-    assert!(
-        interfaces_rs
-            .contains("crate::rns_config::set_interface_enabled(&config_dir, &iface_name, false)")
-    );
+    assert!(interfaces_rs.contains("set_interface_enabled_if_revision"));
+    assert!(interfaces_rs.contains("InterfaceBlockCasOutcome::Applied"));
+    assert!(interfaces_rs.contains("newer settings were left untouched"));
 
     let shared_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
         .expect("shared commands");

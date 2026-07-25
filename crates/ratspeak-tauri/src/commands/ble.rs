@@ -22,6 +22,10 @@ use ratspeak_runtime::activity::producer::{
 };
 
 use crate::commands::interface_activity::record_interface_event as record_interface_activity;
+#[cfg(any(feature = "ble", test))]
+use crate::commands::rnode_readiness::RnodeReadinessFailure;
+#[cfg(feature = "ble")]
+use crate::commands::rnode_readiness::{await_spawned_rnode_ready, teardown_spawned_rnode_exact};
 #[cfg(feature = "ble")]
 use crate::commands::shared::{active_rns_config_dir, emit_hub_interfaces, with_rns_config_lock};
 use crate::commands::shared::{
@@ -112,6 +116,27 @@ fn ble_rnode_activity_transition(outcome: BleRnodeActivityOutcome) -> InterfaceT
     }
 }
 
+#[cfg(any(feature = "ble", test))]
+fn ble_rnode_readiness_failure_feedback(
+    failure: RnodeReadinessFailure,
+) -> (&'static str, &'static str, BleRnodeActivityOutcome) {
+    match failure {
+        RnodeReadinessFailure::Timeout => (
+            "RNode startup timed out. Check the radio and try again.",
+            "startup_timeout",
+            BleRnodeActivityOutcome::StartupTimedOut,
+        ),
+        RnodeReadinessFailure::ShuttingDown
+        | RnodeReadinessFailure::Stopped
+        | RnodeReadinessFailure::ObservationClosed
+        | RnodeReadinessFailure::Unclassified => (
+            "RNode did not become ready. Try connecting again.",
+            "readiness_failed",
+            BleRnodeActivityOutcome::RuntimeFailed,
+        ),
+    }
+}
+
 type BleRnodeRollbackContext = (std::path::PathBuf, String, u64);
 
 #[cfg_attr(not(feature = "ble"), allow(dead_code))]
@@ -135,6 +160,17 @@ fn rollback_ble_rnode_context(state: &AppState, rollback_context: Option<BleRnod
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         crate::commands::shared::emit_hub_interfaces(state, ifaces);
     }
+}
+
+fn complete_waiting_ble_rnode_operation(
+    completion: Option<crate::state::BleRnodeOperationCompletionSender>,
+    result: crate::state::BleRnodeOperationResult,
+) -> bool {
+    let Some(completion) = completion else {
+        return false;
+    };
+    let _ = completion.send(result);
+    true
 }
 
 #[cfg(target_os = "android")]
@@ -1215,8 +1251,14 @@ pub async fn ble_rnode_bridge_ready(
     let Some(mode) = crate::rns_config::rnode_interface_mode_value(args.mode.as_deref()) else {
         #[cfg(target_os = "android")]
         disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
-        if let Some((terminal_fence, rollback_context)) =
-            state_arc.take_initializing_ble_rnode_activity_operation(&activity_operation)
+        if let Some((terminal_fence, rollback_context, completion)) = state_arc
+            .take_initializing_ble_rnode_activity_operation_with_completion(&activity_operation)
+            && !complete_waiting_ble_rnode_operation(
+                completion,
+                crate::state::BleRnodeOperationResult::Failed(
+                    crate::state::BleRnodeOperationFailure::Setup,
+                ),
+            )
         {
             rollback_ble_rnode_context(&state_arc, rollback_context);
             record_interface_activity(
@@ -1242,8 +1284,14 @@ pub async fn ble_rnode_bridge_ready(
     if tcp_port == 0 {
         #[cfg(target_os = "android")]
         disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
-        if let Some((terminal_fence, rollback_context)) =
-            state_arc.take_initializing_ble_rnode_activity_operation(&activity_operation)
+        if let Some((terminal_fence, rollback_context, completion)) = state_arc
+            .take_initializing_ble_rnode_activity_operation_with_completion(&activity_operation)
+            && !complete_waiting_ble_rnode_operation(
+                completion,
+                crate::state::BleRnodeOperationResult::Failed(
+                    crate::state::BleRnodeOperationFailure::Setup,
+                ),
+            )
         {
             rollback_ble_rnode_context(&state_arc, rollback_context);
             emit_op_status_broadcast(
@@ -1267,7 +1315,6 @@ pub async fn ble_rnode_bridge_ready(
 
     #[cfg(feature = "ble")]
     {
-        let name_for_status = name.clone();
         tokio::spawn(async move {
             // The opaque operation token gates product work independently of
             // Activity capture. Hold the identity transition lock only across
@@ -1277,8 +1324,16 @@ pub async fn ble_rnode_bridge_ready(
                 if state_arc.current_identity_session_generation()
                     != activity_fence.identity_session_generation()
                 {
-                    if let Some((_, rollback_context)) = state_arc
-                        .take_initializing_ble_rnode_activity_operation(&activity_operation)
+                    if let Some((_, rollback_context, completion)) = state_arc
+                        .take_initializing_ble_rnode_activity_operation_with_completion(
+                            &activity_operation,
+                        )
+                        && !complete_waiting_ble_rnode_operation(
+                            completion,
+                            crate::state::BleRnodeOperationResult::Failed(
+                                crate::state::BleRnodeOperationFailure::Cancelled,
+                            ),
+                        )
                     {
                         rollback_ble_rnode_context(&state_arc, rollback_context);
                     }
@@ -1301,24 +1356,25 @@ pub async fn ble_rnode_bridge_ready(
                     .and_then(|guard| guard.as_ref().map(|mgr| mgr.handle.clone()));
                 match rns {
                     Some(rns) => {
-                        let result = rns_runtime::reticulum::spawn_ble_rnode_runtime_native(
-                            &rns,
-                            rns_runtime::reticulum::BleRnodeRuntimeArgs {
-                                name: &name,
-                                port: &port,
-                                frequency: frequency as u32,
-                                bandwidth: bandwidth as u32,
-                                spreading_factor: sf,
-                                coding_rate: cr,
-                                tx_power: tx,
-                                mode,
-                                st_alock,
-                                lt_alock,
-                                flow_control: true,
-                            },
-                            tcp_port,
-                        )
-                        .await;
+                        let result =
+                            rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed(
+                                &rns,
+                                rns_runtime::reticulum::BleRnodeRuntimeArgs {
+                                    name: &name,
+                                    port: &port,
+                                    frequency: frequency as u32,
+                                    bandwidth: bandwidth as u32,
+                                    spreading_factor: sf,
+                                    coding_rate: cr,
+                                    tx_power: tx,
+                                    mode,
+                                    st_alock,
+                                    lt_alock,
+                                    flow_control: true,
+                                },
+                                tcp_port,
+                            )
+                            .await;
                         Some((rns, result))
                     }
                     None => None,
@@ -1326,99 +1382,155 @@ pub async fn ble_rnode_bridge_ready(
             };
 
             match spawn_result {
-                Some((rns, Ok((id, online)))) => {
-                    // Wait for first RNode detect/init response.
-                    let start = std::time::Instant::now();
-                    let timeout = std::time::Duration::from_secs(120);
-                    loop {
-                        if !state_arc.is_current_ble_rnode_activity_operation(&activity_operation) {
-                            rns_runtime::reticulum::teardown_ble_rnode_interface(&rns, id).await;
-                            #[cfg(target_os = "android")]
-                            disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
-                            break;
-                        }
-                        if online.load(std::sync::atomic::Ordering::SeqCst) {
-                            if let Some((terminal_fence, rollback_context)) = state_arc
-                                .take_initializing_ble_rnode_activity_operation(&activity_operation)
+                Some((rns, Ok(spawned))) => {
+                    // Keep cancellation/replacement responsive while the exact
+                    // observer performs its bounded, reconnect-aware wait.
+                    let readiness_result = {
+                        let readiness = await_spawned_rnode_ready(&spawned);
+                        tokio::pin!(readiness);
+                        loop {
+                            if !state_arc
+                                .is_current_ble_rnode_activity_operation(&activity_operation)
                             {
-                                clear_ble_rnode_rollback_context(&state_arc, rollback_context);
-                                emit_op_status_broadcast(
-                                    &state_arc,
-                                    "add_lora",
-                                    "hub",
-                                    &format!("BLE LoRa interface active (#{id})"),
-                                    true,
-                                    None,
-                                );
-                                record_interface_activity(
-                                    &state_arc,
-                                    terminal_fence,
-                                    InterfaceClass::RNode,
-                                    ble_rnode_activity_transition(BleRnodeActivityOutcome::Ready),
-                                    None,
-                                );
+                                break None;
+                            }
+                            tokio::select! {
+                                result = &mut readiness => break Some(result),
+                                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                            }
+                        }
+                    };
+
+                    match readiness_result {
+                        Some(Ok(())) => {
+                            if let Some((terminal_fence, rollback_context, completion)) = state_arc
+                                .take_initializing_ble_rnode_activity_operation_with_completion(
+                                    &activity_operation,
+                                )
+                            {
+                                if !complete_waiting_ble_rnode_operation(
+                                    completion,
+                                    crate::state::BleRnodeOperationResult::Ready {
+                                        interface_id: spawned.interface_id,
+                                    },
+                                ) {
+                                    clear_ble_rnode_rollback_context(&state_arc, rollback_context);
+                                    emit_op_status_broadcast(
+                                        &state_arc,
+                                        "add_lora",
+                                        "hub",
+                                        &format!(
+                                            "BLE LoRa interface active (#{})",
+                                            spawned.interface_id
+                                        ),
+                                        true,
+                                        None,
+                                    );
+                                    record_interface_activity(
+                                        &state_arc,
+                                        terminal_fence,
+                                        InterfaceClass::RNode,
+                                        ble_rnode_activity_transition(
+                                            BleRnodeActivityOutcome::Ready,
+                                        ),
+                                        None,
+                                    );
+                                }
                             } else {
-                                rns_runtime::reticulum::teardown_ble_rnode_interface(&rns, id)
-                                    .await;
+                                teardown_spawned_rnode_exact(&rns, &spawned).await;
                                 #[cfg(target_os = "android")]
                                 disconnect_native_ble_rnode_operation(
                                     &state_arc,
                                     &activity_operation,
                                 );
                             }
-                            break;
                         }
-                        if start.elapsed() > timeout {
+                        Some(Err(failure)) => {
+                            // Claim terminal ownership before any awaited
+                            // cleanup. A newer operation can still replace the
+                            // claim, in which case this path remains silent.
                             let completion_claimed = state_arc
                                 .claim_ble_rnode_activity_operation_completion(&activity_operation)
                                 .is_some();
-                            rns_runtime::reticulum::teardown_ble_rnode_interface(&rns, id).await;
+                            teardown_spawned_rnode_exact(&rns, &spawned).await;
                             #[cfg(target_os = "android")]
                             disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
                             if completion_claimed
-                                && let Some((terminal_fence, rollback_context)) = state_arc
-                                    .take_completing_ble_rnode_activity_operation(
+                                && let Some((
+                                    terminal_fence,
+                                    rollback_context,
+                                    completion,
+                                )) = state_arc
+                                    .take_completing_ble_rnode_activity_operation_with_completion(
                                         &activity_operation,
                                     )
                             {
-                                rollback_ble_rnode_context(&state_arc, rollback_context);
-                                emit_op_status_broadcast(
-                                    &state_arc,
-                                    "add_lora",
-                                    "hub",
-                                    &format!("RNode init timed out for '{name_for_status}'."),
-                                    true,
-                                    Some("init_timeout"),
-                                );
-                                record_interface_activity(
-                                    &state_arc,
-                                    terminal_fence,
-                                    InterfaceClass::RNode,
-                                    ble_rnode_activity_transition(
-                                        BleRnodeActivityOutcome::StartupTimedOut,
+                                let operation_failure =
+                                    if failure == RnodeReadinessFailure::Timeout {
+                                        crate::state::BleRnodeOperationFailure::StartupTimeout
+                                    } else {
+                                        crate::state::BleRnodeOperationFailure::Readiness
+                                    };
+                                if !complete_waiting_ble_rnode_operation(
+                                    completion,
+                                    crate::state::BleRnodeOperationResult::Failed(
+                                        operation_failure,
                                     ),
-                                    None,
-                                );
+                                ) {
+                                    let (status, failure_code, activity_outcome) =
+                                        ble_rnode_readiness_failure_feedback(failure);
+                                    rollback_ble_rnode_context(&state_arc, rollback_context);
+                                    emit_op_status_broadcast(
+                                        &state_arc,
+                                        "add_lora",
+                                        "hub",
+                                        status,
+                                        true,
+                                        Some(failure_code),
+                                    );
+                                    record_interface_activity(
+                                        &state_arc,
+                                        terminal_fence,
+                                        InterfaceClass::RNode,
+                                        ble_rnode_activity_transition(activity_outcome),
+                                        None,
+                                    );
+                                }
                             }
-                            break;
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        None => {
+                            // Cancellation, replacement, and identity teardown
+                            // revoke product authority but not ownership of the
+                            // exact runtime this task spawned.
+                            teardown_spawned_rnode_exact(&rns, &spawned).await;
+                            #[cfg(target_os = "android")]
+                            disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+                        }
                     }
                 }
-                Some((_rns, Err(e))) => {
+                Some((_rns, Err(_error))) => {
                     let terminal = state_arc
-                        .take_initializing_ble_rnode_activity_operation(&activity_operation);
+                        .take_initializing_ble_rnode_activity_operation_with_completion(
+                            &activity_operation,
+                        );
                     #[cfg(target_os = "android")]
                     disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
-                    if let Some((terminal_fence, rollback_context)) = terminal {
+                    if let Some((terminal_fence, rollback_context, completion)) = terminal
+                        && !complete_waiting_ble_rnode_operation(
+                            completion,
+                            crate::state::BleRnodeOperationResult::Failed(
+                                crate::state::BleRnodeOperationFailure::Connect,
+                            ),
+                        )
+                    {
                         rollback_ble_rnode_context(&state_arc, rollback_context);
                         emit_op_status_broadcast(
                             &state_arc,
                             "add_lora",
                             "hub",
-                            &format!("BLE bridge ready but RNode init failed: {e}"),
+                            "BLE connected, but the RNode could not start.",
                             true,
-                            Some(&e),
+                            Some("rnode_start_failed"),
                         );
                         record_interface_activity(
                             &state_arc,
@@ -1431,10 +1543,19 @@ pub async fn ble_rnode_bridge_ready(
                 }
                 None => {
                     let terminal = state_arc
-                        .take_initializing_ble_rnode_activity_operation(&activity_operation);
+                        .take_initializing_ble_rnode_activity_operation_with_completion(
+                            &activity_operation,
+                        );
                     #[cfg(target_os = "android")]
                     disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
-                    if let Some((terminal_fence, rollback_context)) = terminal {
+                    if let Some((terminal_fence, rollback_context, completion)) = terminal
+                        && !complete_waiting_ble_rnode_operation(
+                            completion,
+                            crate::state::BleRnodeOperationResult::Failed(
+                                crate::state::BleRnodeOperationFailure::Runtime,
+                            ),
+                        )
+                    {
                         rollback_ble_rnode_context(&state_arc, rollback_context);
                         emit_op_status_broadcast(
                             &state_arc,
@@ -1461,8 +1582,8 @@ pub async fn ble_rnode_bridge_ready(
     }
     #[cfg(not(feature = "ble"))]
     {
-        let terminal =
-            state_arc.take_initializing_ble_rnode_activity_operation(&activity_operation);
+        let terminal = state_arc
+            .take_initializing_ble_rnode_activity_operation_with_completion(&activity_operation);
         #[cfg(target_os = "android")]
         disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
         let _ = (
@@ -1479,15 +1600,22 @@ pub async fn ble_rnode_bridge_ready(
             st_alock,
             lt_alock,
         );
-        emit_op_status_broadcast(
-            &state_arc,
-            "add_lora",
-            "hub",
-            "BLE not available (feature not compiled)",
-            true,
-            Some("BLE feature not compiled"),
-        );
-        if let Some((terminal_fence, rollback_context)) = terminal {
+        if let Some((terminal_fence, rollback_context, completion)) = terminal
+            && !complete_waiting_ble_rnode_operation(
+                completion,
+                crate::state::BleRnodeOperationResult::Failed(
+                    crate::state::BleRnodeOperationFailure::Runtime,
+                ),
+            )
+        {
+            emit_op_status_broadcast(
+                &state_arc,
+                "add_lora",
+                "hub",
+                "BLE not available (feature not compiled)",
+                true,
+                Some("BLE feature not compiled"),
+            );
             rollback_ble_rnode_context(&state_arc, rollback_context);
             record_interface_activity(
                 &state_arc,
@@ -1525,9 +1653,22 @@ pub async fn ble_rnode_bridge_failed(
     state: State<'_, Arc<AppState>>,
     args: BleRnodeBridgeFailureArgs,
 ) -> AppResult<Value> {
-    let (activity_fence, rollback_context) = state
-        .take_pending_ble_rnode_activity_operation(&args.activity_operation)
+    let (activity_fence, rollback_context, completion) = state
+        .take_pending_ble_rnode_activity_operation_with_completion(&args.activity_operation)
         .ok_or_else(|| AppError::bad_request("Unknown or expired BLE bridge operation"))?;
+    let operation_failure = match args.failure_code {
+        BleRnodeNativeFailureCode::ConnectFailed => crate::state::BleRnodeOperationFailure::Connect,
+        BleRnodeNativeFailureCode::BondTimeout => {
+            crate::state::BleRnodeOperationFailure::StartupTimeout
+        }
+        BleRnodeNativeFailureCode::SetupTimeout => crate::state::BleRnodeOperationFailure::Setup,
+    };
+    if complete_waiting_ble_rnode_operation(
+        completion,
+        crate::state::BleRnodeOperationResult::Failed(operation_failure),
+    ) {
+        return Ok(json!({ "ok": true }));
+    }
     rollback_ble_rnode_context(&state, rollback_context);
     record_interface_activity(
         &state,
@@ -1559,6 +1700,8 @@ pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -
 
     #[cfg(feature = "ble")]
     {
+        let generic_cancelled =
+            state_arc.invalidate_rnode_lifecycle_operations_for_names([&name]) > 0;
         let cancelled_operation = state_arc.begin_ble_rnode_activity_cancellation();
         let mut cancellation_token = None;
         if let Some((activity_operation, activity_fence, rollback_context)) = cancelled_operation {
@@ -1575,6 +1718,23 @@ pub async fn cancel_ble_connect(state: State<'_, Arc<AppState>>, name: String) -
             disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
             #[cfg(not(target_os = "android"))]
             let _ = activity_operation;
+        } else if generic_cancelled {
+            let activity_fence = state_arc.activity_request_fence();
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::RNode,
+                ble_rnode_activity_transition(BleRnodeActivityOutcome::Cancelled),
+                None,
+            );
+            emit_op_status_broadcast(
+                &state_arc,
+                "add_lora",
+                "hub",
+                &format!("BLE connect for '{name}' cancelled."),
+                true,
+                Some("cancelled"),
+            );
         }
 
         // Abort in-flight Linux pair attempt; idempotent.
@@ -1657,28 +1817,121 @@ pub async fn disconnect_ble_rnode(
     #[cfg(not(feature = "ble"))]
     let _ = state;
     let name = sanitize_text(&name, 64);
+    if name.is_empty() {
+        return Err(AppError::bad_request("name required"));
+    }
 
     #[cfg(feature = "ble")]
     {
-        let _ = state_arc.invalidate_ble_rnode_activity_operation();
         let config_dir = active_rns_config_dir(&state_arc);
-        let name_clone = name.clone();
-        tokio::spawn(async move {
-            emit_op_status_broadcast(
-                &state_arc,
-                "disconnect_ble_rnode",
-                "hub",
-                "Disconnecting BLE LoRa...",
-                false,
-                None,
-            );
+        let (operation_lease, native_ble_disconnect, removal_outcome) =
+            with_rns_config_lock(&state_arc, || {
+                let operation_lease = state_arc
+                    .begin_rnode_lifecycle_operation([&name])
+                    .ok_or_else(|| AppError::internal("Failed to begin radio disconnect"))?;
+                let native_ble_disconnect = crate::rns_config::get_all_interfaces(&config_dir)
+                    .get("rnode")
+                    .and_then(Value::as_array)
+                    .and_then(|interfaces| {
+                        interfaces.iter().find(|interface| {
+                            interface.get("name").and_then(Value::as_str) == Some(name.as_str())
+                        })
+                    })
+                    .and_then(|interface| interface.get("port"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|port| port.starts_with("ble://"));
+                let removal_outcome =
+                    match crate::rns_config::snapshot_interface_block(&config_dir, &name) {
+                        Ok(expected) => {
+                            match crate::rns_config::remove_interface_block_if_revision(
+                                &config_dir,
+                                &expected,
+                            ) {
+                                crate::rns_config::InterfaceBlockCasOutcome::Applied => {
+                                    crate::rns_config::RemoveInterfaceOutcome::Removed
+                                }
+                                crate::rns_config::InterfaceBlockCasOutcome::NotFound => {
+                                    crate::rns_config::RemoveInterfaceOutcome::NotFound
+                                }
+                                crate::rns_config::InterfaceBlockCasOutcome::Stale
+                                | crate::rns_config::InterfaceBlockCasOutcome::WriteFailed => {
+                                    crate::rns_config::RemoveInterfaceOutcome::WriteFailed
+                                }
+                            }
+                        }
+                        Err(crate::rns_config::InterfaceBlockSnapshotError::NotFound) => {
+                            crate::rns_config::RemoveInterfaceOutcome::NotFound
+                        }
+                        Err(
+                            crate::rns_config::InterfaceBlockSnapshotError::Ambiguous
+                            | crate::rns_config::InterfaceBlockSnapshotError::ReadFailed,
+                        ) => crate::rns_config::RemoveInterfaceOutcome::WriteFailed,
+                    };
+                Ok::<_, AppError>((operation_lease, native_ble_disconnect, removal_outcome))
+            })?;
 
+        if removal_outcome != crate::rns_config::RemoveInterfaceOutcome::Removed {
+            if state_arc.is_current_rnode_lifecycle_operation(&operation_lease) {
+                match removal_outcome {
+                    crate::rns_config::RemoveInterfaceOutcome::NotFound => {
+                        emit_op_status_broadcast(
+                            &state_arc,
+                            "disconnect_ble_rnode",
+                            "hub",
+                            "BLE LoRa already disconnected",
+                            true,
+                            None,
+                        );
+                    }
+                    crate::rns_config::RemoveInterfaceOutcome::WriteFailed => {
+                        emit_op_status_broadcast(
+                            &state_arc,
+                            "disconnect_ble_rnode",
+                            "hub",
+                            "Disconnect failed",
+                            true,
+                            Some("Config write error"),
+                        );
+                        record_interface_activity(
+                            &state_arc,
+                            activity_fence,
+                            InterfaceClass::RNode,
+                            ble_rnode_activity_transition(BleRnodeActivityOutcome::RemoveFailed),
+                            None,
+                        );
+                    }
+                    crate::rns_config::RemoveInterfaceOutcome::Removed => unreachable!(),
+                }
+                let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+                emit_hub_interfaces(&state_arc, ifaces);
+            }
+            let _ = state_arc.finish_rnode_lifecycle_operation(&operation_lease);
+            return Ok(json!({ "queued": true }));
+        }
+
+        if !state_arc.is_current_rnode_lifecycle_operation(&operation_lease) {
+            let _ = state_arc.finish_rnode_lifecycle_operation(&operation_lease);
+            return Ok(json!({ "queued": true }));
+        }
+        emit_op_status_broadcast(
+            &state_arc,
+            "disconnect_ble_rnode",
+            "hub",
+            "Disconnecting BLE LoRa...",
+            false,
+            None,
+        );
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        emit_hub_interfaces(&state_arc, ifaces);
+
+        tokio::spawn(async move {
             let rns_handle = state_arc
                 .rns
                 .read()
                 .ok()
                 .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
-            if let Some(handle) = rns_handle {
+            let mut captured_interface_id = None;
+            if let Some(handle) = rns_handle.as_ref() {
                 let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                 if handle
                     .transport_tx
@@ -1692,70 +1945,64 @@ pub async fn disconnect_ble_rnode(
                         stats,
                     )) = resp_rx.await
                 {
-                    for iface in stats {
-                        if iface.name == name_clone {
-                            rns_runtime::reticulum::teardown_ble_rnode_interface(&handle, iface.id)
-                                .await;
-                            break;
-                        }
-                    }
+                    captured_interface_id = stats
+                        .into_iter()
+                        .find(|interface| interface.name == name)
+                        .map(|interface| interface.id);
                 }
             }
 
-            #[cfg(target_os = "android")]
-            state_arc.emit_to_all("ble_rnode_disconnect_native", json!({}));
-
-            match with_rns_config_lock(&state_arc, || {
-                crate::rns_config::remove_interface_checked(&config_dir, &name_clone)
-            }) {
-                crate::rns_config::RemoveInterfaceOutcome::Removed => {
-                    emit_op_status_broadcast(
-                        &state_arc,
-                        "disconnect_ble_rnode",
-                        "hub",
-                        "BLE LoRa disconnected",
-                        true,
-                        None,
-                    );
-                    record_interface_activity(
-                        &state_arc,
-                        activity_fence,
-                        InterfaceClass::RNode,
-                        ble_rnode_activity_transition(BleRnodeActivityOutcome::Removed),
-                        None,
-                    );
-                }
-                crate::rns_config::RemoveInterfaceOutcome::NotFound => {
-                    emit_op_status_broadcast(
-                        &state_arc,
-                        "disconnect_ble_rnode",
-                        "hub",
-                        "BLE LoRa already disconnected",
-                        true,
-                        None,
-                    );
-                }
-                crate::rns_config::RemoveInterfaceOutcome::WriteFailed => {
-                    emit_op_status_broadcast(
-                        &state_arc,
-                        "disconnect_ble_rnode",
-                        "hub",
-                        "Disconnect failed",
-                        true,
-                        Some("Config write error"),
-                    );
-                    record_interface_activity(
-                        &state_arc,
-                        activity_fence,
-                        InterfaceClass::RNode,
-                        ble_rnode_activity_transition(BleRnodeActivityOutcome::RemoveFailed),
-                        None,
-                    );
-                }
+            if !state_arc.is_current_rnode_lifecycle_operation(&operation_lease) {
+                let _ = state_arc.finish_rnode_lifecycle_operation(&operation_lease);
+                return;
+            }
+            if let (Some(handle), Some(interface_id)) = (rns_handle.as_ref(), captured_interface_id)
+            {
+                rns_runtime::reticulum::teardown_ble_rnode_interface(handle, interface_id).await;
             }
 
+            let still_owned = with_rns_config_lock(&state_arc, || {
+                if !state_arc.is_current_rnode_lifecycle_operation(&operation_lease) {
+                    return false;
+                }
+                #[cfg(target_os = "android")]
+                if native_ble_disconnect {
+                    // New RNode mutations also begin while this lock is held,
+                    // so an older disconnect event is ordered before any
+                    // replacement native connect.
+                    state_arc.emit_to_all("ble_rnode_disconnect_native", json!({}));
+                }
+                #[cfg(not(target_os = "android"))]
+                let _ = native_ble_disconnect;
+                true
+            });
+            if !still_owned {
+                let _ = state_arc.finish_rnode_lifecycle_operation(&operation_lease);
+                return;
+            }
+
+            if !state_arc.is_current_rnode_lifecycle_operation(&operation_lease) {
+                let _ = state_arc.finish_rnode_lifecycle_operation(&operation_lease);
+                return;
+            }
+            emit_op_status_broadcast(
+                &state_arc,
+                "disconnect_ble_rnode",
+                "hub",
+                "BLE LoRa disconnected",
+                true,
+                None,
+            );
+            record_interface_activity(
+                &state_arc,
+                activity_fence,
+                InterfaceClass::RNode,
+                ble_rnode_activity_transition(BleRnodeActivityOutcome::Removed),
+                None,
+            );
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             emit_hub_interfaces(&state_arc, ifaces);
+            let _ = state_arc.finish_rnode_lifecycle_operation(&operation_lease);
         });
     }
     #[cfg(not(feature = "ble"))]
@@ -1869,6 +2116,30 @@ mod tests {
                 rollback: None,
             }
         ));
+    }
+
+    #[test]
+    fn native_ble_readiness_failures_use_closed_static_feedback() {
+        let (status, code, outcome) =
+            ble_rnode_readiness_failure_feedback(RnodeReadinessFailure::Timeout);
+        assert_eq!(
+            status,
+            "RNode startup timed out. Check the radio and try again."
+        );
+        assert_eq!(code, "startup_timeout");
+        assert!(matches!(outcome, BleRnodeActivityOutcome::StartupTimedOut));
+
+        for failure in [
+            RnodeReadinessFailure::ShuttingDown,
+            RnodeReadinessFailure::Stopped,
+            RnodeReadinessFailure::ObservationClosed,
+            RnodeReadinessFailure::Unclassified,
+        ] {
+            let (status, code, outcome) = ble_rnode_readiness_failure_feedback(failure);
+            assert_eq!(status, "RNode did not become ready. Try connecting again.");
+            assert_eq!(code, "readiness_failed");
+            assert!(matches!(outcome, BleRnodeActivityOutcome::RuntimeFailed));
+        }
     }
 
     #[test]
