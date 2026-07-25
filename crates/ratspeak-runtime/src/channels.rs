@@ -1309,6 +1309,7 @@ async fn connect_to_hub(
             establishment_timeout: CONNECT_PATH_TIMEOUT,
             client_label: "ratspeak.channels".into(),
             identify: true,
+            track_phy_stats: false,
         },
     )
     .await
@@ -4125,6 +4126,7 @@ mod tests {
             .send(DestinationEvent::InboundPacket {
                 raw: Bytes::from(raw),
                 interface_id: 1,
+                metrics: Default::default(),
             })
             .await
             .unwrap();
