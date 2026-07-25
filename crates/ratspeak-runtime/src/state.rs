@@ -28,6 +28,11 @@ const INTERFACE_REANNOUNCE_SUPPRESSION_TTL: Duration = Duration::from_secs(120);
 // The WebView abandons native connects at 180s. Keep a cleanup margin so its
 // typed timeout callback can still consume the token under scheduler delay.
 const BLE_RNODE_ACTIVITY_OPERATION_TTL: Duration = Duration::from_secs(240);
+// One replacement can spend up to 180s in Android native setup plus 120s in
+// protocol readiness on both the proposed and restored runtime. Fifteen minutes
+// covers that ten-minute worst case with a five-minute scheduler/cleanup margin
+// while still reclaiming abandoned session-local leases.
+const RNODE_LIFECYCLE_OPERATION_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Snapshot used to reject an Activity command that was queued before either
 /// an identity transition or a same-identity runtime privacy reset. Callers
@@ -43,9 +48,11 @@ pub struct ActivityRequestFence {
 struct BleRnodeActivityOperation {
     token: [u8; 16],
     activity_fence: ActivityRequestFence,
+    lifecycle_lease: Option<RNodeLifecycleOperationLease>,
     started_at: Instant,
     phase: BleRnodeActivityOperationPhase,
     rollback_context: Option<BleRnodeRollbackContext>,
+    completion: Option<BleRnodeOperationCompletionSender>,
 }
 
 struct BleRnodeRollbackContext {
@@ -54,10 +61,58 @@ struct BleRnodeRollbackContext {
     marker: u64,
 }
 
+/// Closed, snapshot-free failure vocabulary for a native BLE-RNode operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BleRnodeOperationFailure {
+    Setup,
+    Connect,
+    StartupTimeout,
+    Readiness,
+    Runtime,
+    Cancelled,
+}
+
+/// Terminal result delivered only to an internal native BLE-RNode waiter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BleRnodeOperationResult {
+    Ready { interface_id: u64 },
+    Failed(BleRnodeOperationFailure),
+}
+
+#[derive(Clone)]
+pub struct RNodeLifecycleOperationLease {
+    generation: u64,
+}
+
+impl std::fmt::Debug for RNodeLifecycleOperationLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RNodeLifecycleOperationLease")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RNodeLifecycleOperationEntry {
+    generation: u64,
+    started_at: Instant,
+}
+
 #[doc(hidden)]
 pub type BleRnodeRollback = (PathBuf, String, u64);
 #[doc(hidden)]
 pub type BleRnodeActivityTake = (ActivityRequestFence, Option<BleRnodeRollback>);
+#[doc(hidden)]
+pub type BleRnodeOperationCompletionSender = tokio::sync::oneshot::Sender<BleRnodeOperationResult>;
+#[doc(hidden)]
+pub type BleRnodeOperationCompletionReceiver =
+    tokio::sync::oneshot::Receiver<BleRnodeOperationResult>;
+#[doc(hidden)]
+pub type BleRnodeActivityTakeWithCompletion = (
+    ActivityRequestFence,
+    Option<BleRnodeRollback>,
+    Option<BleRnodeOperationCompletionSender>,
+);
 #[doc(hidden)]
 pub type BleRnodeActivityCancellation = (String, ActivityRequestFence, Option<BleRnodeRollback>);
 
@@ -121,6 +176,28 @@ pub struct IdentitySwitchGuard<'a> {
 impl Drop for IdentitySwitchGuard<'_> {
     fn drop(&mut self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn prune_rnode_lifecycle_operations(
+    operations: &mut HashMap<String, RNodeLifecycleOperationEntry>,
+    now: Instant,
+) {
+    operations.retain(|_, operation| {
+        now.saturating_duration_since(operation.started_at) <= RNODE_LIFECYCLE_OPERATION_TTL
+    });
+}
+
+fn next_rnode_lifecycle_operation_generation(counter: &AtomicU64) -> u64 {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current
+            .checked_add(1)
+            .expect("RNode lifecycle generation exhausted");
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(observed) => current = observed,
+        }
     }
 }
 
@@ -221,6 +298,16 @@ pub struct AppState {
     /// admission uses only this opaque token and the identity generation;
     /// Activity capture state never gates the legitimate connect operation.
     ble_rnode_activity_operation: Mutex<Option<BleRnodeActivityOperation>>,
+    /// Exact session-local ownership for asynchronous RNode add/update/resume
+    /// work. Every name participating in one operation points at the same
+    /// opaque generation, so a rename transaction owns both old and new names.
+    /// This is deliberately independent from Activity and native BLE bridge
+    /// admission; neither subsystem can grant lifecycle authority to another.
+    rnode_lifecycle_operations: Mutex<HashMap<String, RNodeLifecycleOperationEntry>>,
+    /// Process-monotonic source for opaque RNode lifecycle generations. Identity
+    /// teardown clears active ownership but deliberately never resets this value,
+    /// so a stale lease cannot become current again within this process.
+    rnode_lifecycle_generation: AtomicU64,
     /// Coalesces conversation-list broadcasts; spawned task debounces 100ms.
     pub conversations_broadcast_pending: AtomicBool,
     /// 10s session-local throttle on Refresh button. `None` = never throttled.
@@ -358,6 +445,8 @@ impl AppState {
             opportunistic_announce_inflight: Mutex::new(HashSet::new()),
             interface_reannounce_suppression: Mutex::new(HashMap::new()),
             ble_rnode_activity_operation: Mutex::new(None),
+            rnode_lifecycle_operations: Mutex::new(HashMap::new()),
+            rnode_lifecycle_generation: AtomicU64::new(0),
             conversations_broadcast_pending: AtomicBool::new(false),
             last_refresh_request_at: Mutex::new(None),
             last_static_probe_at: Mutex::new(None),
@@ -542,12 +631,196 @@ impl AppState {
         suppressions.remove(name).is_some()
     }
 
+    /// Begin one exact session-local RNode lifecycle operation.
+    ///
+    /// A rename should pass both its old and proposed names. Starting work for
+    /// any name atomically invalidates every name owned by each overlapping
+    /// older operation. The returned lease keeps its process-monotonic
+    /// generation private and grants authority only through the methods below.
+    pub fn begin_rnode_lifecycle_operation<I, S>(
+        &self,
+        names: I,
+    ) -> Option<RNodeLifecycleOperationLease>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut owned_names = HashSet::new();
+        for name in names {
+            let name = name.as_ref();
+            if name.is_empty() {
+                return None;
+            }
+            owned_names.insert(name.to_string());
+        }
+        if owned_names.is_empty() {
+            return None;
+        }
+
+        let now = Instant::now();
+        let mut operations = self
+            .rnode_lifecycle_operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_rnode_lifecycle_operations(&mut operations, now);
+
+        let displaced = owned_names
+            .iter()
+            .filter_map(|name| operations.get(name).map(|operation| operation.generation))
+            .collect::<HashSet<_>>();
+        if !displaced.is_empty() {
+            operations.retain(|_, operation| !displaced.contains(&operation.generation));
+        }
+
+        let generation =
+            next_rnode_lifecycle_operation_generation(&self.rnode_lifecycle_generation);
+        let operation = RNodeLifecycleOperationEntry {
+            generation,
+            started_at: now,
+        };
+        for name in owned_names {
+            operations.insert(name, operation);
+        }
+        Some(RNodeLifecycleOperationLease { generation })
+    }
+
+    /// Return whether this exact operation still owns all of its names.
+    pub fn is_current_rnode_lifecycle_operation(
+        &self,
+        lease: &RNodeLifecycleOperationLease,
+    ) -> bool {
+        let now = Instant::now();
+        let mut operations = self
+            .rnode_lifecycle_operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_rnode_lifecycle_operations(&mut operations, now);
+        operations
+            .values()
+            .any(|operation| operation.generation == lease.generation)
+    }
+
+    /// Finish only the operation represented by `lease`.
+    ///
+    /// A stale completion cannot remove a replacement operation even when it
+    /// owns one or more of the same names.
+    pub fn finish_rnode_lifecycle_operation(&self, lease: &RNodeLifecycleOperationLease) -> bool {
+        let now = Instant::now();
+        let mut operations = self
+            .rnode_lifecycle_operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_rnode_lifecycle_operations(&mut operations, now);
+        let before = operations.len();
+        operations.retain(|_, operation| operation.generation != lease.generation);
+        operations.len() != before
+    }
+
+    /// Invalidate every active lifecycle operation owning any supplied name.
+    ///
+    /// Pause and remove flows use this before tearing down a runtime. The
+    /// return value is the number of distinct operations invalidated.
+    pub fn invalidate_rnode_lifecycle_operations_for_names<I, S>(&self, names: I) -> usize
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let now = Instant::now();
+        let mut operations = self
+            .rnode_lifecycle_operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_rnode_lifecycle_operations(&mut operations, now);
+
+        let invalidated = names
+            .into_iter()
+            .filter_map(|name| {
+                operations
+                    .get(name.as_ref())
+                    .map(|operation| operation.generation)
+            })
+            .collect::<HashSet<_>>();
+        if !invalidated.is_empty() {
+            operations.retain(|_, operation| !invalidated.contains(&operation.generation));
+        }
+        invalidated.len()
+    }
+
     pub fn begin_ble_rnode_activity_operation(
         &self,
         fence: ActivityRequestFence,
         rollback_context: Option<BleRnodeRollback>,
     ) -> String {
+        self.begin_ble_rnode_activity_operation_inner(fence, rollback_context, None, None)
+    }
+
+    /// Begin a native BLE operation coupled to one exact RNode lifecycle
+    /// generation. Superseding the lifecycle operation also revokes bridge
+    /// phase transitions before they can publish a stale ready result.
+    pub fn begin_ble_rnode_activity_operation_owned(
+        &self,
+        fence: ActivityRequestFence,
+        rollback_context: Option<BleRnodeRollback>,
+        lifecycle_lease: &RNodeLifecycleOperationLease,
+    ) -> String {
+        self.begin_ble_rnode_activity_operation_inner(
+            fence,
+            rollback_context,
+            None,
+            Some(lifecycle_lease.clone()),
+        )
+    }
+
+    /// Begin a native BLE-RNode operation whose terminal protocol result can
+    /// be awaited by an internal update or resume transaction.
+    pub fn begin_ble_rnode_activity_operation_with_completion(
+        &self,
+        fence: ActivityRequestFence,
+        rollback_context: Option<BleRnodeRollback>,
+    ) -> (String, BleRnodeOperationCompletionReceiver) {
+        self.begin_ble_rnode_activity_operation_with_completion_inner(fence, rollback_context, None)
+    }
+
+    pub fn begin_ble_rnode_activity_operation_with_completion_owned(
+        &self,
+        fence: ActivityRequestFence,
+        rollback_context: Option<BleRnodeRollback>,
+        lifecycle_lease: &RNodeLifecycleOperationLease,
+    ) -> (String, BleRnodeOperationCompletionReceiver) {
+        self.begin_ble_rnode_activity_operation_with_completion_inner(
+            fence,
+            rollback_context,
+            Some(lifecycle_lease.clone()),
+        )
+    }
+
+    fn begin_ble_rnode_activity_operation_with_completion_inner(
+        &self,
+        fence: ActivityRequestFence,
+        rollback_context: Option<BleRnodeRollback>,
+        lifecycle_lease: Option<RNodeLifecycleOperationLease>,
+    ) -> (String, BleRnodeOperationCompletionReceiver) {
+        let (completion, receiver) = tokio::sync::oneshot::channel();
+        (
+            self.begin_ble_rnode_activity_operation_inner(
+                fence,
+                rollback_context,
+                Some(completion),
+                lifecycle_lease,
+            ),
+            receiver,
+        )
+    }
+
+    fn begin_ble_rnode_activity_operation_inner(
+        &self,
+        fence: ActivityRequestFence,
+        rollback_context: Option<BleRnodeRollback>,
+        completion: Option<BleRnodeOperationCompletionSender>,
+        lifecycle_lease: Option<RNodeLifecycleOperationLease>,
+    ) -> String {
         let mut token = rns_crypto::random::random_16();
+        let lifecycle_generation = lifecycle_lease.as_ref().map(|lease| lease.generation);
         let mut pending = self
             .ble_rnode_activity_operation
             .lock()
@@ -558,9 +831,10 @@ impl AppState {
         {
             token[0] ^= 1;
         }
-        *pending = Some(BleRnodeActivityOperation {
+        let displaced = pending.replace(BleRnodeActivityOperation {
             token,
             activity_fence: fence,
+            lifecycle_lease,
             started_at: Instant::now(),
             phase: BleRnodeActivityOperationPhase::PendingNative,
             rollback_context: rollback_context.map(|(config_dir, name, marker)| {
@@ -570,8 +844,31 @@ impl AppState {
                     marker,
                 }
             }),
+            completion,
         });
+        drop(pending);
+
+        let displaced_lease = displaced
+            .as_ref()
+            .and_then(|operation| operation.lifecycle_lease.clone());
+        if let Some(displaced_lease) = displaced_lease
+            && Some(displaced_lease.generation) != lifecycle_generation
+        {
+            // Native BLE setup is process-global. Replacing its token also
+            // revokes a distinct product transaction before dropping its
+            // completion sender. The displaced caller therefore cannot wake,
+            // still observe ownership, and roll back over the new operation.
+            let _ = self.finish_rnode_lifecycle_operation(&displaced_lease);
+        }
+        drop(displaced);
         hex::encode(token)
+    }
+
+    fn ble_rnode_lifecycle_is_current(&self, operation: &BleRnodeActivityOperation) -> bool {
+        operation
+            .lifecycle_lease
+            .as_ref()
+            .is_none_or(|lease| self.is_current_rnode_lifecycle_operation(lease))
     }
 
     pub fn is_current_ble_rnode_activity_operation(&self, token_hex: &str) -> bool {
@@ -592,10 +889,12 @@ impl AppState {
         }
         pending.as_ref().is_some_and(|operation| {
             operation.token == token
+                && self.ble_rnode_lifecycle_is_current(operation)
                 && matches!(
                     operation.phase,
                     BleRnodeActivityOperationPhase::PendingNative
                         | BleRnodeActivityOperationPhase::Initializing
+                        | BleRnodeActivityOperationPhase::Completing
                 )
         })
     }
@@ -671,11 +970,11 @@ impl AppState {
         &self,
         token_hex: &str,
     ) -> Option<ActivityRequestFence> {
-        self.take_ble_rnode_activity_operation_in_phase(
+        self.take_ble_rnode_activity_operation_in_phase_with_completion(
             token_hex,
             BleRnodeActivityOperationPhase::CancellationCompleting,
         )
-        .map(|(fence, _)| fence)
+        .map(|(fence, _, _)| fence)
     }
 
     pub fn claim_ble_rnode_activity_operation(
@@ -696,6 +995,7 @@ impl AppState {
         let operation = pending.as_mut()?;
         if operation.token != token
             || operation.phase != BleRnodeActivityOperationPhase::PendingNative
+            || !self.ble_rnode_lifecycle_is_current(operation)
         {
             return None;
         }
@@ -708,7 +1008,15 @@ impl AppState {
         &self,
         token_hex: &str,
     ) -> Option<BleRnodeActivityTake> {
-        self.take_ble_rnode_activity_operation_in_phase(
+        self.take_pending_ble_rnode_activity_operation_with_completion(token_hex)
+            .map(|(fence, rollback_context, _completion)| (fence, rollback_context))
+    }
+
+    pub fn take_pending_ble_rnode_activity_operation_with_completion(
+        &self,
+        token_hex: &str,
+    ) -> Option<BleRnodeActivityTakeWithCompletion> {
+        self.take_ble_rnode_activity_operation_in_phase_with_completion(
             token_hex,
             BleRnodeActivityOperationPhase::PendingNative,
         )
@@ -718,7 +1026,15 @@ impl AppState {
         &self,
         token_hex: &str,
     ) -> Option<BleRnodeActivityTake> {
-        self.take_ble_rnode_activity_operation_in_phase(
+        self.take_initializing_ble_rnode_activity_operation_with_completion(token_hex)
+            .map(|(fence, rollback_context, _completion)| (fence, rollback_context))
+    }
+
+    pub fn take_initializing_ble_rnode_activity_operation_with_completion(
+        &self,
+        token_hex: &str,
+    ) -> Option<BleRnodeActivityTakeWithCompletion> {
+        self.take_ble_rnode_activity_operation_in_phase_with_completion(
             token_hex,
             BleRnodeActivityOperationPhase::Initializing,
         )
@@ -742,6 +1058,7 @@ impl AppState {
         let operation = pending.as_mut()?;
         if operation.token != token
             || operation.phase != BleRnodeActivityOperationPhase::Initializing
+            || !self.ble_rnode_lifecycle_is_current(operation)
         {
             return None;
         }
@@ -754,17 +1071,25 @@ impl AppState {
         &self,
         token_hex: &str,
     ) -> Option<BleRnodeActivityTake> {
-        self.take_ble_rnode_activity_operation_in_phase(
+        self.take_completing_ble_rnode_activity_operation_with_completion(token_hex)
+            .map(|(fence, rollback_context, _completion)| (fence, rollback_context))
+    }
+
+    pub fn take_completing_ble_rnode_activity_operation_with_completion(
+        &self,
+        token_hex: &str,
+    ) -> Option<BleRnodeActivityTakeWithCompletion> {
+        self.take_ble_rnode_activity_operation_in_phase_with_completion(
             token_hex,
             BleRnodeActivityOperationPhase::Completing,
         )
     }
 
-    fn take_ble_rnode_activity_operation_in_phase(
+    fn take_ble_rnode_activity_operation_in_phase_with_completion(
         &self,
         token_hex: &str,
         expected_phase: BleRnodeActivityOperationPhase,
-    ) -> Option<BleRnodeActivityTake> {
+    ) -> Option<BleRnodeActivityTakeWithCompletion> {
         let token: [u8; 16] = hex::decode(token_hex).ok()?.try_into().ok()?;
         let mut pending = self
             .ble_rnode_activity_operation
@@ -776,15 +1101,25 @@ impl AppState {
             *pending = None;
             return None;
         }
-        if pending
-            .as_ref()
-            .is_some_and(|operation| operation.token == token && operation.phase == expected_phase)
-        {
+        let cancellation_phase = matches!(
+            expected_phase,
+            BleRnodeActivityOperationPhase::Cancelling
+                | BleRnodeActivityOperationPhase::CancellationCompleting
+        );
+        if pending.as_ref().is_some_and(|operation| {
+            operation.token == token
+                && operation.phase == expected_phase
+                && (cancellation_phase || self.ble_rnode_lifecycle_is_current(operation))
+        }) {
             pending.take().map(|operation| {
                 let rollback_context = operation
                     .rollback_context
                     .map(|context| (context.config_dir, context.name, context.marker));
-                (operation.activity_fence, rollback_context)
+                (
+                    operation.activity_fence,
+                    rollback_context,
+                    operation.completion,
+                )
             })
         } else {
             None
@@ -804,6 +1139,43 @@ impl AppState {
             )
         }) {
             *pending = None;
+            return None;
+        }
+        let operation = pending.take()?;
+        (operation.started_at.elapsed() <= BLE_RNODE_ACTIVITY_OPERATION_TTL).then(|| {
+            let rollback_context = operation
+                .rollback_context
+                .map(|context| (context.config_dir, context.name, context.marker));
+            (
+                hex::encode(operation.token),
+                operation.activity_fence,
+                rollback_context,
+            )
+        })
+    }
+
+    /// Invalidate only the native BLE operation identified by `token_hex`.
+    ///
+    /// Lifecycle watchers use this to revoke their own bridge operation after
+    /// a same-name replacement. A delayed watcher can never cancel the newer
+    /// global BLE operation that replaced its token.
+    pub fn invalidate_ble_rnode_activity_operation_if_token(
+        &self,
+        token_hex: &str,
+    ) -> Option<BleRnodeActivityCancellation> {
+        let token: [u8; 16] = hex::decode(token_hex).ok()?.try_into().ok()?;
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let operation = pending.as_ref()?;
+        if operation.token != token
+            || matches!(
+                operation.phase,
+                BleRnodeActivityOperationPhase::Cancelling
+                    | BleRnodeActivityOperationPhase::CancellationCompleting
+            )
+        {
             return None;
         }
         let operation = pending.take()?;
@@ -878,6 +1250,9 @@ impl AppState {
         }
         if let Ok(mut pending) = self.ble_rnode_activity_operation.lock() {
             *pending = None;
+        }
+        if let Ok(mut operations) = self.rnode_lifecycle_operations.lock() {
+            operations.clear();
         }
         if let Ok(mut last) = self.last_refresh_request_at.lock() {
             *last = None;
@@ -1245,6 +1620,140 @@ mod tests {
     }
 
     #[test]
+    fn rnode_lifecycle_operation_replaces_same_name_owner() {
+        let state = make_state();
+        let first = state
+            .begin_rnode_lifecycle_operation(["LoRa"])
+            .expect("first operation");
+        let second = state
+            .begin_rnode_lifecycle_operation(["LoRa"])
+            .expect("replacement operation");
+
+        assert!(!state.is_current_rnode_lifecycle_operation(&first));
+        assert!(state.is_current_rnode_lifecycle_operation(&second));
+    }
+
+    #[test]
+    fn rnode_lifecycle_multi_name_overlap_invalidates_entire_older_lease() {
+        let state = make_state();
+        let rename = state
+            .begin_rnode_lifecycle_operation(["Old Radio", "New Radio"])
+            .expect("rename operation");
+        let unrelated = state
+            .begin_rnode_lifecycle_operation(["Other Radio"])
+            .expect("unrelated operation");
+        let overlapping = state
+            .begin_rnode_lifecycle_operation(["New Radio", "Third Radio"])
+            .expect("overlapping operation");
+
+        assert!(!state.is_current_rnode_lifecycle_operation(&rename));
+        assert!(state.is_current_rnode_lifecycle_operation(&unrelated));
+        assert!(state.is_current_rnode_lifecycle_operation(&overlapping));
+        let operations = state.rnode_lifecycle_operations.lock().unwrap();
+        assert!(!operations.contains_key("Old Radio"));
+        assert_eq!(
+            operations.get("New Radio").unwrap().generation,
+            overlapping.generation
+        );
+        assert_eq!(
+            operations.get("Third Radio").unwrap().generation,
+            overlapping.generation
+        );
+    }
+
+    #[test]
+    fn rnode_lifecycle_generations_are_monotonic_across_runtime_clear() {
+        let state = make_state();
+        let first = state
+            .begin_rnode_lifecycle_operation(["First Radio"])
+            .expect("first operation");
+
+        state.clear_identity_scoped_runtime_state();
+
+        let second = state
+            .begin_rnode_lifecycle_operation(["Second Radio"])
+            .expect("second operation");
+        assert!(second.generation > first.generation);
+        assert!(!state.is_current_rnode_lifecycle_operation(&first));
+        assert!(state.is_current_rnode_lifecycle_operation(&second));
+    }
+
+    #[test]
+    fn rnode_lifecycle_ttl_covers_native_setup_readiness_and_rollback() {
+        let one_native_attempt = Duration::from_secs(180 + 120);
+        assert_eq!(RNODE_LIFECYCLE_OPERATION_TTL, Duration::from_secs(15 * 60));
+        assert!(RNODE_LIFECYCLE_OPERATION_TTL > one_native_attempt * 2);
+    }
+
+    #[test]
+    fn stale_rnode_lifecycle_finish_does_not_delete_replacement() {
+        let state = make_state();
+        let first = state
+            .begin_rnode_lifecycle_operation(["LoRa"])
+            .expect("first operation");
+        let replacement = state
+            .begin_rnode_lifecycle_operation(["LoRa"])
+            .expect("replacement operation");
+
+        assert!(!state.finish_rnode_lifecycle_operation(&first));
+        assert!(state.is_current_rnode_lifecycle_operation(&replacement));
+        assert!(state.finish_rnode_lifecycle_operation(&replacement));
+        assert!(!state.is_current_rnode_lifecycle_operation(&replacement));
+    }
+
+    #[test]
+    fn rnode_lifecycle_invalidation_removes_all_names_for_matching_operations() {
+        let state = make_state();
+        let rename = state
+            .begin_rnode_lifecycle_operation(["Old Radio", "New Radio"])
+            .expect("rename operation");
+        let unrelated = state
+            .begin_rnode_lifecycle_operation(["Other Radio"])
+            .expect("unrelated operation");
+
+        assert_eq!(
+            state.invalidate_rnode_lifecycle_operations_for_names(["New Radio", "Missing"]),
+            1
+        );
+        assert!(!state.is_current_rnode_lifecycle_operation(&rename));
+        assert!(state.is_current_rnode_lifecycle_operation(&unrelated));
+        assert_eq!(
+            state.invalidate_rnode_lifecycle_operations_for_names(["Other Radio"]),
+            1
+        );
+        assert!(!state.is_current_rnode_lifecycle_operation(&unrelated));
+    }
+
+    #[test]
+    fn rnode_lifecycle_operation_expires_and_is_pruned() {
+        let state = make_state();
+        let lease = state
+            .begin_rnode_lifecycle_operation(["LoRa"])
+            .expect("operation");
+        {
+            let mut operations = state.rnode_lifecycle_operations.lock().unwrap();
+            operations.get_mut("LoRa").unwrap().started_at =
+                Instant::now() - RNODE_LIFECYCLE_OPERATION_TTL - Duration::from_secs(1);
+        }
+
+        assert!(!state.is_current_rnode_lifecycle_operation(&lease));
+        assert!(state.rnode_lifecycle_operations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn identity_runtime_clear_invalidates_rnode_lifecycle_operations() {
+        let state = make_state();
+        let lease = state
+            .begin_rnode_lifecycle_operation(["Old Radio", "New Radio"])
+            .expect("rename operation");
+
+        state.clear_identity_scoped_runtime_state();
+
+        assert!(!state.is_current_rnode_lifecycle_operation(&lease));
+        assert!(state.rnode_lifecycle_operations.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn ble_rnode_activity_operation_is_one_shot_and_replacement_safe() {
         let state = make_state();
         let first_fence = state.activity_request_fence();
@@ -1273,6 +1782,192 @@ mod tests {
             state.take_initializing_ble_rnode_activity_operation(&second),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn ble_rnode_completion_reports_ready_with_exact_interface_id() {
+        let state = make_state();
+        let fence = state.activity_request_fence();
+        let (token, receiver) =
+            state.begin_ble_rnode_activity_operation_with_completion(fence, None);
+        assert_eq!(
+            state.claim_ble_rnode_activity_operation(&token),
+            Some(fence)
+        );
+
+        let (terminal_fence, rollback_context, completion) = state
+            .take_initializing_ble_rnode_activity_operation_with_completion(&token)
+            .expect("exact initializing operation");
+        assert_eq!(terminal_fence, fence);
+        assert_eq!(rollback_context, None);
+        completion
+            .expect("completion sender")
+            .send(BleRnodeOperationResult::Ready { interface_id: 73 })
+            .expect("waiting receiver");
+
+        assert_eq!(
+            receiver.await.expect("typed completion"),
+            BleRnodeOperationResult::Ready { interface_id: 73 }
+        );
+    }
+
+    #[tokio::test]
+    async fn ble_rnode_completion_reports_closed_failure_type() {
+        let state = make_state();
+        let fence = state.activity_request_fence();
+        let (token, receiver) =
+            state.begin_ble_rnode_activity_operation_with_completion(fence, None);
+        assert_eq!(
+            state.claim_ble_rnode_activity_operation(&token),
+            Some(fence)
+        );
+        assert_eq!(
+            state.claim_ble_rnode_activity_operation_completion(&token),
+            Some(fence)
+        );
+
+        let (_, _, completion) = state
+            .take_completing_ble_rnode_activity_operation_with_completion(&token)
+            .expect("exact completing operation");
+        completion
+            .expect("completion sender")
+            .send(BleRnodeOperationResult::Failed(
+                BleRnodeOperationFailure::Readiness,
+            ))
+            .expect("waiting receiver");
+
+        assert_eq!(
+            receiver.await.expect("typed completion"),
+            BleRnodeOperationResult::Failed(BleRnodeOperationFailure::Readiness)
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_and_identity_clear_close_ble_rnode_completion_receivers() {
+        let state = make_state();
+        let (first, first_receiver) = state.begin_ble_rnode_activity_operation_with_completion(
+            state.activity_request_fence(),
+            None,
+        );
+        let (second, second_receiver) = state.begin_ble_rnode_activity_operation_with_completion(
+            state.activity_request_fence(),
+            None,
+        );
+        assert_ne!(first, second);
+        assert!(first_receiver.await.is_err());
+
+        state.clear_identity_scoped_runtime_state();
+
+        assert!(second_receiver.await.is_err());
+    }
+
+    #[test]
+    fn exact_ble_rnode_invalidation_cannot_cancel_replacement_token() {
+        let state = make_state();
+        let first = state.begin_ble_rnode_activity_operation(state.activity_request_fence(), None);
+        assert!(
+            state
+                .invalidate_ble_rnode_activity_operation_if_token(&first)
+                .is_some()
+        );
+
+        let replacement =
+            state.begin_ble_rnode_activity_operation(state.activity_request_fence(), None);
+        assert!(
+            state
+                .invalidate_ble_rnode_activity_operation_if_token(&first)
+                .is_none()
+        );
+        assert!(state.is_current_ble_rnode_activity_operation(&replacement));
+        assert!(
+            state
+                .invalidate_ble_rnode_activity_operation_if_token(&replacement)
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn owned_ble_rnode_operation_is_revoked_with_lifecycle_generation() {
+        let state = make_state();
+        let lifecycle = state
+            .begin_rnode_lifecycle_operation(["Radio"])
+            .expect("lifecycle lease");
+        let fence = state.activity_request_fence();
+        let (token, receiver) =
+            state.begin_ble_rnode_activity_operation_with_completion_owned(fence, None, &lifecycle);
+        assert!(state.is_current_ble_rnode_activity_operation(&token));
+
+        let replacement = state
+            .begin_rnode_lifecycle_operation(["Radio"])
+            .expect("replacement lifecycle lease");
+        assert!(!state.is_current_ble_rnode_activity_operation(&token));
+        assert_eq!(state.claim_ble_rnode_activity_operation(&token), None);
+        assert!(
+            state
+                .invalidate_ble_rnode_activity_operation_if_token(&token)
+                .is_some()
+        );
+        assert!(receiver.await.is_err());
+        assert!(state.is_current_rnode_lifecycle_operation(&replacement));
+    }
+
+    #[tokio::test]
+    async fn global_ble_replacement_revokes_only_displaced_lifecycle() {
+        let state = Arc::new(make_state());
+        let first_lease = state
+            .begin_rnode_lifecycle_operation(["Radio A"])
+            .expect("first lifecycle");
+        let (_, first_receiver) = state.begin_ble_rnode_activity_operation_with_completion_owned(
+            state.activity_request_fence(),
+            None,
+            &first_lease,
+        );
+        let displaced_state = Arc::clone(&state);
+        let displaced_lease = first_lease.clone();
+        let displaced_observer = tokio::spawn(async move {
+            assert!(first_receiver.await.is_err());
+            displaced_state.is_current_rnode_lifecycle_operation(&displaced_lease)
+        });
+
+        let second_lease = state
+            .begin_rnode_lifecycle_operation(["Radio B"])
+            .expect("second lifecycle");
+        let (second_token, _) = state.begin_ble_rnode_activity_operation_with_completion_owned(
+            state.activity_request_fence(),
+            None,
+            &second_lease,
+        );
+
+        assert!(
+            !displaced_observer
+                .await
+                .expect("displaced receiver observer")
+        );
+        assert!(!state.is_current_rnode_lifecycle_operation(&first_lease));
+        assert!(state.is_current_rnode_lifecycle_operation(&second_lease));
+        assert!(state.is_current_ble_rnode_activity_operation(&second_token));
+
+        let replacement_same_lease = state.begin_ble_rnode_activity_operation_owned(
+            state.activity_request_fence(),
+            None,
+            &second_lease,
+        );
+        assert!(state.is_current_rnode_lifecycle_operation(&second_lease));
+        assert!(state.is_current_ble_rnode_activity_operation(&replacement_same_lease));
+    }
+
+    #[tokio::test]
+    async fn legacy_ble_rnode_take_deliberately_closes_completion_receiver() {
+        let state = make_state();
+        let fence = state.activity_request_fence();
+        let (token, receiver) =
+            state.begin_ble_rnode_activity_operation_with_completion(fence, None);
+
+        assert_eq!(
+            state.take_pending_ble_rnode_activity_operation(&token),
+            Some((fence, None))
+        );
+        assert!(receiver.await.is_err());
     }
 
     #[test]
@@ -1388,6 +2083,7 @@ mod tests {
             state.claim_ble_rnode_activity_operation_completion(&first),
             Some(first_fence)
         );
+        assert!(state.is_current_ble_rnode_activity_operation(&first));
 
         let second = state.begin_ble_rnode_activity_operation(state.activity_request_fence(), None);
 

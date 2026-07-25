@@ -767,6 +767,349 @@ pub fn remove_interfaces(config_dir: &Path, names: &[String]) -> bool {
     write_config(config_dir, &result)
 }
 
+/// Opaque, exact snapshot of one interface block in one config file.
+///
+/// The raw block is deliberately private: callers may retain a revision for
+/// compare-and-swap rollback, but cannot synthesize or mutate one. Revisions
+/// are bound to the config path they were read from so identity/config
+/// switches cannot accidentally restore a block into another config.
+#[derive(Clone, PartialEq, Eq)]
+pub struct InterfaceBlockRevision {
+    config_path: PathBuf,
+    name: String,
+    block: String,
+}
+
+impl std::fmt::Debug for InterfaceBlockRevision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InterfaceBlockRevision")
+            .field("name", &self.name)
+            .field("block_bytes", &self.block.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceBlockSnapshotError {
+    NotFound,
+    Ambiguous,
+    ReadFailed,
+}
+
+/// Result of a conditional interface-block mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceBlockCasOutcome {
+    Applied,
+    Stale,
+    NotFound,
+    WriteFailed,
+}
+
+/// Snapshot exactly one named interface block without rewriting the config.
+///
+/// Duplicate same-name blocks are rejected as ambiguous rather than choosing
+/// one implicitly. The snapshot includes the block's comments and formatting
+/// through the next config header.
+pub fn snapshot_interface_block(
+    config_dir: &Path,
+    name: &str,
+) -> Result<InterfaceBlockRevision, InterfaceBlockSnapshotError> {
+    if !safe_interface_name(name) {
+        return Err(InterfaceBlockSnapshotError::NotFound);
+    }
+
+    let config_path = config_dir.join("config");
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(InterfaceBlockSnapshotError::NotFound);
+        }
+        Err(_) => return Err(InterfaceBlockSnapshotError::ReadFailed),
+    };
+    let range = match unique_interface_block_range(&content, name) {
+        Ok(Some(range)) => range,
+        Ok(None) => return Err(InterfaceBlockSnapshotError::NotFound),
+        Err(()) => return Err(InterfaceBlockSnapshotError::Ambiguous),
+    };
+
+    Ok(InterfaceBlockRevision {
+        config_path,
+        name: name.to_string(),
+        block: content[range.start..range.end].to_string(),
+    })
+}
+
+/// Restore `previous` only while the named current block is byte-for-byte the
+/// supplied `expected_current` revision.
+///
+/// Edits outside the target block are preserved. For a rename rollback, an
+/// independently-created block using the old name is a collision and makes
+/// the operation stale instead of overwriting that newer block.
+pub fn restore_interface_block_if_revision(
+    config_dir: &Path,
+    expected_current: &InterfaceBlockRevision,
+    previous: &InterfaceBlockRevision,
+) -> InterfaceBlockCasOutcome {
+    let config_path = config_dir.join("config");
+    if expected_current.config_path != config_path || previous.config_path != config_path {
+        return InterfaceBlockCasOutcome::Stale;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return InterfaceBlockCasOutcome::NotFound;
+        }
+        Err(_) => return InterfaceBlockCasOutcome::WriteFailed,
+    };
+    let current = match unique_interface_block_range(&content, &expected_current.name) {
+        Ok(Some(range)) => range,
+        Ok(None) => return InterfaceBlockCasOutcome::NotFound,
+        Err(()) => return InterfaceBlockCasOutcome::Stale,
+    };
+    if content[current.start..current.end] != expected_current.block {
+        return InterfaceBlockCasOutcome::Stale;
+    }
+
+    if previous.name != expected_current.name {
+        match unique_interface_block_range(&content, &previous.name) {
+            Ok(None) => {}
+            Ok(Some(_)) | Err(()) => return InterfaceBlockCasOutcome::Stale,
+        }
+    }
+
+    let restored = replace_interface_block_range(&content, &current, &previous.block);
+    match write_config_result(config_dir, &restored) {
+        Ok(()) => InterfaceBlockCasOutcome::Applied,
+        Err(_) => InterfaceBlockCasOutcome::WriteFailed,
+    }
+}
+
+/// Remove one interface only while its exact block still matches
+/// `expected_current`.
+///
+/// Edits outside the target block are preserved. A missing block reports
+/// `NotFound`; a duplicate or changed same-name block reports `Stale`.
+pub fn remove_interface_block_if_revision(
+    config_dir: &Path,
+    expected_current: &InterfaceBlockRevision,
+) -> InterfaceBlockCasOutcome {
+    let config_path = config_dir.join("config");
+    if expected_current.config_path != config_path {
+        return InterfaceBlockCasOutcome::Stale;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return InterfaceBlockCasOutcome::NotFound;
+        }
+        Err(_) => return InterfaceBlockCasOutcome::WriteFailed,
+    };
+    let current = match unique_interface_block_range(&content, &expected_current.name) {
+        Ok(Some(range)) => range,
+        Ok(None) => return InterfaceBlockCasOutcome::NotFound,
+        Err(()) => return InterfaceBlockCasOutcome::Stale,
+    };
+    if content[current.start..current.end] != expected_current.block {
+        return InterfaceBlockCasOutcome::Stale;
+    }
+
+    let updated = replace_interface_block_range(&content, &current, "");
+    match write_config_result(config_dir, &updated) {
+        Ok(()) => InterfaceBlockCasOutcome::Applied,
+        Err(_) => InterfaceBlockCasOutcome::WriteFailed,
+    }
+}
+
+/// Change an interface's enabled flag only while its exact block still
+/// matches `expected_current`.
+pub fn set_interface_enabled_if_revision(
+    config_dir: &Path,
+    expected_current: &InterfaceBlockRevision,
+    enabled: bool,
+) -> InterfaceBlockCasOutcome {
+    let config_path = config_dir.join("config");
+    if expected_current.config_path != config_path {
+        return InterfaceBlockCasOutcome::Stale;
+    }
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return InterfaceBlockCasOutcome::NotFound;
+        }
+        Err(_) => return InterfaceBlockCasOutcome::WriteFailed,
+    };
+    let current = match unique_interface_block_range(&content, &expected_current.name) {
+        Ok(Some(range)) => range,
+        Ok(None) => return InterfaceBlockCasOutcome::NotFound,
+        Err(()) => return InterfaceBlockCasOutcome::Stale,
+    };
+    if content[current.start..current.end] != expected_current.block {
+        return InterfaceBlockCasOutcome::Stale;
+    }
+
+    let updated_block = interface_block_with_enabled(&expected_current.block, enabled);
+    if updated_block == expected_current.block {
+        return InterfaceBlockCasOutcome::Applied;
+    }
+    let updated = replace_interface_block_range(&content, &current, &updated_block);
+    match write_config_result(config_dir, &updated) {
+        Ok(()) => InterfaceBlockCasOutcome::Applied,
+        Err(_) => InterfaceBlockCasOutcome::WriteFailed,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InterfaceBlockRange {
+    start: usize,
+    end: usize,
+}
+
+fn unique_interface_block_range(
+    content: &str,
+    name: &str,
+) -> Result<Option<InterfaceBlockRange>, ()> {
+    let mut matching = interface_block_ranges(content)
+        .into_iter()
+        .filter(|(block_name, _)| block_name == name)
+        .map(|(_, range)| range);
+    let first = matching.next();
+    if matching.next().is_some() {
+        Err(())
+    } else {
+        Ok(first)
+    }
+}
+
+fn interface_block_ranges(content: &str) -> Vec<(String, InterfaceBlockRange)> {
+    let mut ranges = Vec::new();
+    let mut in_interfaces = false;
+    let mut current: Option<(String, usize)> = None;
+    let mut offset = 0usize;
+
+    for segment in content.split_inclusive('\n') {
+        let line = segment
+            .strip_suffix('\n')
+            .unwrap_or(segment)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| segment.strip_suffix('\n').unwrap_or(segment));
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if let Some((name, start)) = current.take() {
+                ranges.push((name, InterfaceBlockRange { start, end: offset }));
+            }
+
+            if trimmed.starts_with("[[") {
+                if in_interfaces && let Some(name) = interface_block_name(line) {
+                    current = Some((name.to_string(), offset));
+                }
+            } else {
+                in_interfaces = named_top_level_section(line, "interfaces");
+            }
+        }
+        offset += segment.len();
+    }
+
+    if let Some((name, start)) = current {
+        ranges.push((
+            name,
+            InterfaceBlockRange {
+                start,
+                end: content.len(),
+            },
+        ));
+    }
+    ranges
+}
+
+fn replace_interface_block_range(
+    content: &str,
+    current: &InterfaceBlockRange,
+    replacement: &str,
+) -> String {
+    let mut updated =
+        String::with_capacity(content.len() - (current.end - current.start) + replacement.len());
+    updated.push_str(&content[..current.start]);
+    updated.push_str(replacement);
+    updated.push_str(&content[current.end..]);
+    updated
+}
+
+fn interface_block_with_enabled(block: &str, enabled: bool) -> String {
+    let enabled_value = if enabled { "true" } else { "false" };
+    let had_trailing_newline = block.ends_with('\n');
+    let mut lines = block.lines().map(str::to_string).collect::<Vec<_>>();
+    let mut saw_enabled_key = false;
+    let mut insert_idx = 1usize.min(lines.len());
+    let mut insert_indent = "    ".to_string();
+
+    for (idx, line) in lines.iter_mut().enumerate().skip(1) {
+        let Some((key, _)) = parse_ini_key_value(line) else {
+            continue;
+        };
+        if key == "type" || key == "interface_type" {
+            insert_idx = idx + 1;
+            insert_indent = line.chars().take_while(|ch| ch.is_whitespace()).collect();
+        }
+        if key == "enabled" || key == "interface_enabled" {
+            *line = replace_ini_value_preserving_comment(line, enabled_value);
+            saw_enabled_key = true;
+        }
+    }
+
+    if !saw_enabled_key {
+        lines.insert(
+            insert_idx,
+            format!("{insert_indent}enabled = {enabled_value}"),
+        );
+    }
+
+    let mut updated = lines.join("\n");
+    if had_trailing_newline {
+        updated.push('\n');
+    }
+    updated
+}
+
+fn replace_ini_value_preserving_comment(line: &str, replacement: &str) -> String {
+    let Some(equals) = line.find('=') else {
+        return line.to_string();
+    };
+    let value = &line[equals + 1..];
+    let comment_start = inline_comment_start(value).unwrap_or(value.len());
+    let value_area = &value[..comment_start];
+    let leading_len = value_area.len() - value_area.trim_start().len();
+    let remaining = &value_area[leading_len..];
+    let scalar_len = remaining.trim_end().len();
+    let trailing_start = leading_len + scalar_len;
+
+    let mut updated = String::with_capacity(line.len() + replacement.len());
+    updated.push_str(&line[..equals + 1]);
+    updated.push_str(&value_area[..leading_len]);
+    updated.push_str(replacement);
+    updated.push_str(&value_area[trailing_start..]);
+    updated.push_str(&value[comment_start..]);
+    updated
+}
+
+fn inline_comment_start(value: &str) -> Option<usize> {
+    let mut quote = None;
+    for (idx, ch) in value.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+        } else if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+        } else if ch == '#' {
+            return Some(idx);
+        }
+    }
+    None
+}
+
 pub fn set_interface_enabled(config_dir: &Path, name: &str, enabled: bool) -> bool {
     if !safe_interface_name(name) {
         return false;
@@ -986,6 +1329,7 @@ fn replace_interface_block(
     new_name: &str,
     block: &str,
     owned_keys: &[&[&str]],
+    reject_destination_collision: bool,
 ) -> bool {
     if !safe_interface_name(old_name) || !safe_interface_name(new_name) {
         return false;
@@ -994,6 +1338,12 @@ fn replace_interface_block(
         Some(c) => c,
         None => return false,
     };
+    if reject_destination_collision
+        && old_name != new_name
+        && !matches!(unique_interface_block_range(&content, new_name), Ok(None))
+    {
+        return false;
+    }
     let mut block = block.to_string();
     for line in unowned_block_lines(&content, old_name, owned_keys) {
         block.push_str(&line);
@@ -1324,6 +1674,7 @@ pub fn update_rnode_interface(
         args.name,
         &block,
         &[COMMON_OWNED_KEYS, RNODE_OWNED_KEYS],
+        true,
     )
 }
 
@@ -1365,6 +1716,7 @@ pub fn update_tcp_client_with_ifac(
         name,
         &block,
         &[COMMON_OWNED_KEYS, IFAC_OWNED_KEYS, TCP_CLIENT_OWNED_KEYS],
+        false,
     )
 }
 
@@ -1407,6 +1759,7 @@ pub fn update_tcp_server_with_ifac(
         name,
         &block,
         &[COMMON_OWNED_KEYS, IFAC_OWNED_KEYS, TCP_SERVER_OWNED_KEYS],
+        false,
     )
 }
 
@@ -1429,6 +1782,7 @@ pub fn update_backbone_client(
             IFAC_OWNED_KEYS,
             BACKBONE_CLIENT_OWNED_KEYS,
         ],
+        false,
     )
 }
 
@@ -1483,6 +1837,7 @@ pub fn update_backbone_server_with_ifac(
             IFAC_OWNED_KEYS,
             BACKBONE_SERVER_OWNED_KEYS,
         ],
+        false,
     )
 }
 
@@ -2105,6 +2460,235 @@ mod tests {
         assert!(content.contains("spreadingfactor = 9"));
         assert!(content.contains("ratspeak_region = americas"));
         assert!(!content.contains("ratspeak_preset = short_fast"));
+    }
+
+    fn test_rnode_args<'a>(name: &'a str, port: &'a str, frequency: u64) -> RnodeInterfaceArgs<'a> {
+        RnodeInterfaceArgs {
+            name,
+            port,
+            mode: Some("full"),
+            frequency,
+            bandwidth: 125_000,
+            spreading_factor: 7,
+            coding_rate: 5,
+            tx_power: 17,
+            region_key: Some("americas"),
+            preset_key: None,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
+            public_map: RnodePublicMapArgs::default(),
+        }
+    }
+
+    #[test]
+    fn update_rnode_rejects_rename_collision_without_changing_config() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB0", 915_000_000),
+        ));
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Existing Radio", "/dev/ttyUSB1", 917_000_000),
+        ));
+        std::fs::remove_file(dir.join("config.backup")).unwrap();
+        let before = read_config(&dir).unwrap();
+
+        assert!(!update_rnode_interface(
+            &dir,
+            "Radio",
+            test_rnode_args("Existing Radio", "/dev/ttyUSB2", 919_000_000),
+        ));
+
+        let after = read_config(&dir).unwrap();
+        assert_eq!(after, before);
+        assert!(!dir.join("config.backup").exists());
+        assert_eq!(count_header(&after, "Radio"), 1);
+        assert_eq!(count_header(&after, "Existing Radio"), 1);
+        assert!(after.contains("port = /dev/ttyUSB0"));
+        assert!(after.contains("port = /dev/ttyUSB1"));
+        assert!(!after.contains("port = /dev/ttyUSB2"));
+    }
+
+    #[test]
+    fn update_rnode_same_name_still_replaces_its_own_block() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB0", 915_000_000),
+        ));
+
+        assert!(update_rnode_interface(
+            &dir,
+            "Radio",
+            test_rnode_args("Radio", "/dev/ttyUSB1", 917_000_000),
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert_eq!(count_header(&content, "Radio"), 1);
+        assert!(content.contains("port = /dev/ttyUSB1"));
+        assert!(content.contains("frequency = 917000000"));
+        assert!(!content.contains("port = /dev/ttyUSB0"));
+    }
+
+    #[test]
+    fn interface_block_cas_restores_only_the_expected_rnode_block() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB0", 915_000_000),
+        ));
+        let previous = snapshot_interface_block(&dir, "Radio").unwrap();
+
+        assert!(update_rnode_interface(
+            &dir,
+            "Radio",
+            test_rnode_args("Field Radio", "/dev/ttyUSB1", 917_000_000),
+        ));
+        let expected_current = snapshot_interface_block(&dir, "Field Radio").unwrap();
+
+        let with_unrelated_edit = read_config(&dir)
+            .unwrap()
+            .replace("loglevel = 3", "loglevel = 5");
+        assert!(write_config(&dir, &with_unrelated_edit));
+        assert_eq!(
+            restore_interface_block_if_revision(&dir, &expected_current, &previous),
+            InterfaceBlockCasOutcome::Applied
+        );
+
+        let content = read_config(&dir).unwrap();
+        assert_eq!(count_header(&content, "Radio"), 1);
+        assert_eq!(count_header(&content, "Field Radio"), 0);
+        assert!(content.contains("port = /dev/ttyUSB0"));
+        assert!(content.contains("loglevel = 5"));
+    }
+
+    #[test]
+    fn interface_block_cas_rejects_a_stale_same_name_edit() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB0", 915_000_000),
+        ));
+        let previous = snapshot_interface_block(&dir, "Radio").unwrap();
+        assert!(update_rnode_interface(
+            &dir,
+            "Radio",
+            test_rnode_args("Field Radio", "/dev/ttyUSB1", 917_000_000),
+        ));
+        let expected_current = snapshot_interface_block(&dir, "Field Radio").unwrap();
+
+        assert!(set_interface_enabled(&dir, "Field Radio", false));
+        assert_eq!(
+            restore_interface_block_if_revision(&dir, &expected_current, &previous),
+            InterfaceBlockCasOutcome::Stale
+        );
+        let content = read_config(&dir).unwrap();
+        assert_eq!(count_header(&content, "Radio"), 0);
+        assert_eq!(count_header(&content, "Field Radio"), 1);
+        assert!(content.contains("enabled = false"));
+    }
+
+    #[test]
+    fn interface_block_cas_rejects_a_rename_collision() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB0", 915_000_000),
+        ));
+        let previous = snapshot_interface_block(&dir, "Radio").unwrap();
+        assert!(update_rnode_interface(
+            &dir,
+            "Radio",
+            test_rnode_args("Field Radio", "/dev/ttyUSB1", 917_000_000),
+        ));
+        let expected_current = snapshot_interface_block(&dir, "Field Radio").unwrap();
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB2", 919_000_000),
+        ));
+
+        assert_eq!(
+            restore_interface_block_if_revision(&dir, &expected_current, &previous),
+            InterfaceBlockCasOutcome::Stale
+        );
+        let content = read_config(&dir).unwrap();
+        assert_eq!(count_header(&content, "Radio"), 1);
+        assert_eq!(count_header(&content, "Field Radio"), 1);
+        assert!(content.contains("port = /dev/ttyUSB2"));
+    }
+
+    #[test]
+    fn interface_block_cas_remove_preserves_unrelated_edits() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB0", 915_000_000),
+        ));
+        let expected = snapshot_interface_block(&dir, "Radio").unwrap();
+
+        let with_unrelated_edit = read_config(&dir)
+            .unwrap()
+            .replace("loglevel = 3", "loglevel = 5");
+        assert!(write_config(&dir, &with_unrelated_edit));
+        assert_eq!(
+            remove_interface_block_if_revision(&dir, &expected),
+            InterfaceBlockCasOutcome::Applied
+        );
+
+        let content = read_config(&dir).unwrap();
+        assert_eq!(count_header(&content, "Radio"), 0);
+        assert_eq!(count_header(&content, "Keep"), 1);
+        assert!(content.contains("loglevel = 5"));
+    }
+
+    #[test]
+    fn interface_block_cas_remove_rejects_stale_same_name_edit() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB0", 915_000_000),
+        ));
+        let expected = snapshot_interface_block(&dir, "Radio").unwrap();
+        assert!(set_interface_enabled(&dir, "Radio", false));
+        let before_remove = read_config(&dir).unwrap();
+
+        assert_eq!(
+            remove_interface_block_if_revision(&dir, &expected),
+            InterfaceBlockCasOutcome::Stale
+        );
+        assert_eq!(read_config(&dir).unwrap(), before_remove);
+        assert_eq!(count_header(&before_remove, "Radio"), 1);
+        assert!(before_remove.contains("enabled = false"));
+    }
+
+    #[test]
+    fn interface_block_cas_conditionally_disables_the_expected_revision() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Radio", "/dev/ttyUSB0", 915_000_000),
+        ));
+        let enabled = snapshot_interface_block(&dir, "Radio").unwrap();
+
+        assert_eq!(
+            set_interface_enabled_if_revision(&dir, &enabled, false),
+            InterfaceBlockCasOutcome::Applied
+        );
+        assert!(read_config(&dir).unwrap().contains("enabled = false"));
+        assert_eq!(
+            set_interface_enabled_if_revision(&dir, &enabled, true),
+            InterfaceBlockCasOutcome::Stale
+        );
+        assert!(read_config(&dir).unwrap().contains("enabled = false"));
     }
 
     #[test]
