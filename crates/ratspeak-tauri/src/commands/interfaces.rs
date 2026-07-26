@@ -4,6 +4,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use ratspeak_runtime::PendingRNodeActivityMonitor;
+#[cfg(any(
+    feature = "ble",
+    feature = "serial",
+    feature = "rnode-tcp",
+    target_os = "android"
+))]
+use ratspeak_runtime::RNodeActivityOrigin;
 use ratspeak_runtime::activity::producer::{
     InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback,
     InterfaceTimeoutReason, InterfaceTransition, TcpEndpoint,
@@ -2300,8 +2308,9 @@ async fn await_owned_rnode_ready(
     lease: &RNodeLifecycleOperationLease,
     handle: &rns_runtime::reticulum::ReticulumHandle,
     spawned: &rns_runtime::reticulum::SpawnedRNodeRuntime,
-) -> Result<u64, OwnedRnodeReadinessError> {
-    let readiness = await_spawned_rnode_ready(spawned);
+    origin: RNodeActivityOrigin,
+) -> Result<Option<PendingRNodeActivityMonitor>, OwnedRnodeReadinessError> {
+    let readiness = await_spawned_rnode_ready(state, spawned, origin);
     tokio::pin!(readiness);
 
     loop {
@@ -2312,7 +2321,7 @@ async fn await_owned_rnode_ready(
                     return Err(OwnedRnodeReadinessError::Superseded);
                 }
                 return match result {
-                    Ok(()) => Ok(spawned.interface_id),
+                    Ok(pending_monitor) => Ok(pending_monitor),
                     Err(failure) => {
                         teardown_spawned_rnode_exact(handle, spawned).await;
                         Err(OwnedRnodeReadinessError::Readiness(failure))
@@ -2466,6 +2475,7 @@ async fn teardown_live_interface_by_name(
 struct InterfaceSpawnOutcome {
     status: String,
     runtime_started: bool,
+    rnode_activity_monitor: Option<PendingRNodeActivityMonitor>,
 }
 
 struct RnodeHandoffTarget {
@@ -2493,6 +2503,7 @@ impl InterfaceSpawnOutcome {
         Self {
             status: status.into(),
             runtime_started: false,
+            rnode_activity_monitor: None,
         }
     }
 
@@ -2500,7 +2511,29 @@ impl InterfaceSpawnOutcome {
         Self {
             status: status.into(),
             runtime_started: true,
+            rnode_activity_monitor: None,
         }
+    }
+
+    #[cfg(any(
+        feature = "ble",
+        feature = "serial",
+        feature = "rnode-tcp",
+        target_os = "android"
+    ))]
+    fn started_rnode(
+        status: impl Into<String>,
+        rnode_activity_monitor: Option<PendingRNodeActivityMonitor>,
+    ) -> Self {
+        Self {
+            status: status.into(),
+            runtime_started: true,
+            rnode_activity_monitor,
+        }
+    }
+
+    fn take_rnode_activity_monitor(&mut self) -> Option<PendingRNodeActivityMonitor> {
+        self.rnode_activity_monitor.take()
     }
 }
 
@@ -2510,7 +2543,12 @@ async fn spawn_editable_interface(
     config: &EditableInterfaceConfig,
     rnode_lease: Option<&RNodeLifecycleOperationLease>,
 ) -> Result<InterfaceSpawnOutcome, String> {
-    #[cfg(not(all(feature = "ble", target_os = "android")))]
+    #[cfg(not(any(
+        feature = "ble",
+        feature = "serial",
+        feature = "rnode-tcp",
+        target_os = "android"
+    )))]
     let _ = activity_fence;
     let Some(handle) = runtime_handle(state) else {
         return Ok(InterfaceSpawnOutcome::configured_only(
@@ -2547,6 +2585,20 @@ async fn spawn_editable_interface(
                 target_os = "android"
             )))]
             let _ = rnode_lease;
+            #[cfg(any(
+                feature = "ble",
+                feature = "serial",
+                feature = "rnode-tcp",
+                target_os = "android"
+            ))]
+            let (handle, rnode_activity_origin) = {
+                let context = state
+                    .rnode_activity_runtime_context_for_identity(
+                        activity_fence.identity_session_generation(),
+                    )
+                    .ok_or_else(|| "RNode operation was superseded".to_string())?;
+                (context.handle().clone(), context.origin())
+            };
             #[cfg(all(
                 not(feature = "serial"),
                 not(feature = "rnode-tcp"),
@@ -2605,7 +2657,10 @@ async fn spawn_editable_interface(
                         }),
                     );
                     return match completion.await {
-                        Ok(crate::state::BleRnodeOperationResult::Ready { interface_id }) => {
+                        Ok(crate::state::BleRnodeOperationResult::Ready {
+                            interface_id,
+                            monitor,
+                        }) => {
                             if !state.is_current_rnode_lifecycle_operation(rnode_lease) {
                                 rns_runtime::reticulum::teardown_ble_rnode_interface(
                                     &handle,
@@ -2618,9 +2673,10 @@ async fn spawn_editable_interface(
                                 );
                                 return Err("RNode operation was superseded".to_string());
                             }
-                            Ok(InterfaceSpawnOutcome::started(format!(
-                                "BLE LoRa interface active (#{interface_id})"
-                            )))
+                            Ok(InterfaceSpawnOutcome::started_rnode(
+                                format!("BLE LoRa interface active (#{interface_id})"),
+                                monitor,
+                            ))
                         }
                         Ok(crate::state::BleRnodeOperationResult::Failed(failure)) => {
                             let message = match failure {
@@ -2670,12 +2726,20 @@ async fn spawn_editable_interface(
                         )
                         .await
                         .map_err(|error| error.to_string())?;
-                    let id = await_owned_rnode_ready(state, rnode_lease, &handle, &spawned)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    return Ok(InterfaceSpawnOutcome::started(format!(
-                        "BLE LoRa interface active (#{id})"
-                    )));
+                    let pending_monitor = await_owned_rnode_ready(
+                        state,
+                        rnode_lease,
+                        &handle,
+                        &spawned,
+                        rnode_activity_origin,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    let id = spawned.interface_id;
+                    return Ok(InterfaceSpawnOutcome::started_rnode(
+                        format!("BLE LoRa interface active (#{id})"),
+                        pending_monitor,
+                    ));
                 }
                 #[cfg(not(feature = "ble"))]
                 {
@@ -2713,12 +2777,20 @@ async fn spawn_editable_interface(
                         )
                         .await
                         .map_err(|error| error.to_string())?;
-                    let id = await_owned_rnode_ready(state, rnode_lease, &handle, &spawned)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    return Ok(InterfaceSpawnOutcome::started(format!(
-                        "USB LoRa interface active (#{id})"
-                    )));
+                    let pending_monitor = await_owned_rnode_ready(
+                        state,
+                        rnode_lease,
+                        &handle,
+                        &spawned,
+                        rnode_activity_origin,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                    let id = spawned.interface_id;
+                    return Ok(InterfaceSpawnOutcome::started_rnode(
+                        format!("USB LoRa interface active (#{id})"),
+                        pending_monitor,
+                    ));
                 }
                 #[cfg(not(target_os = "android"))]
                 {
@@ -2752,17 +2824,26 @@ async fn spawn_editable_interface(
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-                let id = await_owned_rnode_ready(state, rnode_lease, &handle, &spawned)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                let pending_monitor = await_owned_rnode_ready(
+                    state,
+                    rnode_lease,
+                    &handle,
+                    &spawned,
+                    rnode_activity_origin,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                let id = spawned.interface_id;
                 if is_rnode_tcp_port(port) {
-                    Ok(InterfaceSpawnOutcome::started(format!(
-                        "RNode TCP interface active (#{id})"
-                    )))
+                    Ok(InterfaceSpawnOutcome::started_rnode(
+                        format!("RNode TCP interface active (#{id})"),
+                        pending_monitor,
+                    ))
                 } else {
-                    Ok(InterfaceSpawnOutcome::started(format!(
-                        "RNode interface active (#{id})"
-                    )))
+                    Ok(InterfaceSpawnOutcome::started_rnode(
+                        format!("RNode interface active (#{id})"),
+                        pending_monitor,
+                    ))
                 }
             }
             #[cfg(not(any(feature = "serial", feature = "rnode-tcp")))]
@@ -3028,7 +3109,7 @@ async fn finish_rnode_interface_replace(
     match spawn_editable_interface(&state, activity_fence, &new_runtime, Some(&operation_lease))
         .await
     {
-        Ok(outcome) => {
+        Ok(mut outcome) => {
             if !state.is_current_rnode_lifecycle_operation(&operation_lease) {
                 return;
             }
@@ -3040,7 +3121,12 @@ async fn finish_rnode_interface_replace(
                 InterfaceTransition::Configured,
                 None,
             );
-            let _ = state.finish_rnode_lifecycle_operation(&operation_lease);
+            let pending_monitor = outcome.take_rnode_activity_monitor();
+            if state.finish_rnode_lifecycle_operation(&operation_lease)
+                && let Some(pending_monitor) = pending_monitor
+            {
+                let _ = pending_monitor.activate(Arc::clone(&state));
+            }
         }
         Err(error) => {
             if !state.is_current_rnode_lifecycle_operation(&operation_lease) {
@@ -3054,7 +3140,7 @@ async fn finish_rnode_interface_replace(
                 )
             });
 
-            let (rollback_detail, activity_rollback) = match restored {
+            let (rollback_detail, activity_rollback, rollback_monitor) = match restored {
                 crate::rns_config::InterfaceBlockCasOutcome::Applied => {
                     match spawn_editable_interface(
                         &state,
@@ -3064,22 +3150,31 @@ async fn finish_rnode_interface_replace(
                     )
                     .await
                     {
-                        Ok(outcome) if outcome.runtime_started => (
-                            " Previous configuration restored and ready.".to_string(),
-                            Some(InterfaceRollback::ConfigRestored),
-                        ),
-                        Ok(outcome) => (
-                            format!(
-                                " Configuration restored, but the previous radio is not running: {}.",
-                                outcome.status
-                            ),
-                            Some(InterfaceRollback::RestartFailed),
-                        ),
+                        Ok(mut outcome) => {
+                            let rollback_monitor = outcome.take_rnode_activity_monitor();
+                            if outcome.runtime_started {
+                                (
+                                    " Previous configuration restored and ready.".to_string(),
+                                    Some(InterfaceRollback::ConfigRestored),
+                                    rollback_monitor,
+                                )
+                            } else {
+                                (
+                                    format!(
+                                        " Configuration restored, but the previous radio is not running: {}.",
+                                        outcome.status
+                                    ),
+                                    Some(InterfaceRollback::RestartFailed),
+                                    None,
+                                )
+                            }
+                        }
                         Err(restart_error) => (
                             format!(
                                 " Configuration restored, but the previous radio did not become ready: {restart_error}."
                             ),
                             Some(InterfaceRollback::RestartFailed),
+                            None,
                         ),
                     }
                 }
@@ -3087,14 +3182,17 @@ async fn finish_rnode_interface_replace(
                     " Settings changed again, so the newer configuration was left untouched."
                         .to_string(),
                     None,
+                    None,
                 ),
                 crate::rns_config::InterfaceBlockCasOutcome::NotFound => (
                     " The interface changed or was removed before rollback.".to_string(),
+                    None,
                     None,
                 ),
                 crate::rns_config::InterfaceBlockCasOutcome::WriteFailed => (
                     " Rollback config write failed.".to_string(),
                     Some(InterfaceRollback::WriteFailed),
+                    None,
                 ),
             };
 
@@ -3119,7 +3217,11 @@ async fn finish_rnode_interface_replace(
                 },
                 None,
             );
-            let _ = state.finish_rnode_lifecycle_operation(&operation_lease);
+            if state.finish_rnode_lifecycle_operation(&operation_lease)
+                && let Some(rollback_monitor) = rollback_monitor
+            {
+                let _ = rollback_monitor.activate(Arc::clone(&state));
+            }
         }
     }
 
@@ -3344,7 +3446,7 @@ pub async fn resume_interface(
         match spawn_resumable_interface(&st, activity_fence, &runtime, operation_lease.as_ref())
             .await
         {
-            Ok(outcome) => {
+            Ok(mut outcome) => {
                 if operation_lease
                     .as_ref()
                     .is_some_and(|lease| !st.is_current_rnode_lifecycle_operation(lease))
@@ -3366,8 +3468,12 @@ pub async fn resume_interface(
                     resumable_spawn_transition(activity_class, outcome.runtime_started),
                     resumable_interface_tcp_endpoint(&runtime),
                 );
-                if let Some(lease) = operation_lease.as_ref() {
-                    let _ = st.finish_rnode_lifecycle_operation(lease);
+                let pending_monitor = outcome.take_rnode_activity_monitor();
+                if let Some(lease) = operation_lease.as_ref()
+                    && st.finish_rnode_lifecycle_operation(lease)
+                    && let Some(pending_monitor) = pending_monitor
+                {
+                    let _ = pending_monitor.activate(Arc::clone(&st));
                 }
             }
             Err(e) => {
@@ -3688,7 +3794,11 @@ pub async fn add_lora_interface(
                 }
             }
 
-            if let Some(rns) = runtime_handle(&st) {
+            if let Some(rnode_context) = st.rnode_activity_runtime_context_for_identity(
+                activity_fence.identity_session_generation(),
+            ) {
+                let rns = rnode_context.handle().clone();
+                let rnode_activity_origin = rnode_context.origin();
                 emit_op_status_broadcast(
                     &st,
                     "add_lora",
@@ -3716,8 +3826,17 @@ pub async fn add_lora_interface(
                 .map_err(|error| error.to_string())
                 {
                     Ok(spawned) => {
-                        match await_owned_rnode_ready(&st, &operation_lease, &rns, &spawned).await {
-                            Ok(id) => {
+                        match await_owned_rnode_ready(
+                            &st,
+                            &operation_lease,
+                            &rns,
+                            &spawned,
+                            rnode_activity_origin,
+                        )
+                        .await
+                        {
+                            Ok(pending_monitor) => {
+                                let id = spawned.interface_id;
                                 emit_op_status_broadcast(
                                     &st,
                                     "add_lora",
@@ -3733,7 +3852,11 @@ pub async fn add_lora_interface(
                                     rnode_activity_transition(RnodeActivityOutcome::Online),
                                     None,
                                 );
-                                let _ = st.finish_rnode_lifecycle_operation(&operation_lease);
+                                if st.finish_rnode_lifecycle_operation(&operation_lease)
+                                    && let Some(pending_monitor) = pending_monitor
+                                {
+                                    let _ = pending_monitor.activate(Arc::clone(&st));
+                                }
                             }
                             Err(OwnedRnodeReadinessError::Superseded) => return,
                             Err(error) => {
@@ -4003,7 +4126,11 @@ pub async fn add_lora_interface(
                     None,
                 );
 
-                if let Some(rns) = runtime_handle(&st) {
+                if let Some(rnode_context) = st.rnode_activity_runtime_context_for_identity(
+                    activity_fence.identity_session_generation(),
+                ) {
+                    let rns = rnode_context.handle().clone();
+                    let rnode_activity_origin = rnode_context.origin();
                     record_interface_activity(
                         &st,
                         activity_fence,
@@ -4050,10 +4177,17 @@ pub async fn add_lora_interface(
                                 false,
                                 None,
                             );
-                            match await_owned_rnode_ready(&st, &operation_lease, &rns, &spawned)
-                                .await
+                            match await_owned_rnode_ready(
+                                &st,
+                                &operation_lease,
+                                &rns,
+                                &spawned,
+                                rnode_activity_origin,
+                            )
+                            .await
                             {
-                                Ok(id) => {
+                                Ok(pending_monitor) => {
+                                    let id = spawned.interface_id;
                                     if let Some(marker) = fresh_marker {
                                         crate::commands::shared::clear_fresh_lora_add_marker(
                                             &st,
@@ -4077,7 +4211,11 @@ pub async fn add_lora_interface(
                                         rnode_activity_transition(RnodeActivityOutcome::Online),
                                         None,
                                     );
-                                    let _ = st.finish_rnode_lifecycle_operation(&operation_lease);
+                                    if st.finish_rnode_lifecycle_operation(&operation_lease)
+                                        && let Some(pending_monitor) = pending_monitor
+                                    {
+                                        let _ = pending_monitor.activate(Arc::clone(&st));
+                                    }
                                 }
                                 Err(OwnedRnodeReadinessError::Superseded) => return,
                                 Err(error) => {
@@ -4271,7 +4409,11 @@ pub async fn add_lora_interface(
                 None,
             );
 
-            if let Some(rns) = runtime_handle(&st) {
+            if let Some(rnode_context) = st.rnode_activity_runtime_context_for_identity(
+                activity_fence.identity_session_generation(),
+            ) {
+                let rns = rnode_context.handle().clone();
+                let rnode_activity_origin = rnode_context.origin();
                 record_interface_activity(
                     &st,
                     activity_fence,
@@ -4324,8 +4466,17 @@ pub async fn add_lora_interface(
                             false,
                             None,
                         );
-                        match await_owned_rnode_ready(&st, &operation_lease, &rns, &spawned).await {
-                            Ok(id) => {
+                        match await_owned_rnode_ready(
+                            &st,
+                            &operation_lease,
+                            &rns,
+                            &spawned,
+                            rnode_activity_origin,
+                        )
+                        .await
+                        {
+                            Ok(pending_monitor) => {
+                                let id = spawned.interface_id;
                                 let ready_step = if is_tcp {
                                     format!("RNode TCP interface active (#{id})")
                                 } else {
@@ -4346,7 +4497,11 @@ pub async fn add_lora_interface(
                                     rnode_activity_transition(RnodeActivityOutcome::Online),
                                     None,
                                 );
-                                let _ = st.finish_rnode_lifecycle_operation(&operation_lease);
+                                if st.finish_rnode_lifecycle_operation(&operation_lease)
+                                    && let Some(pending_monitor) = pending_monitor
+                                {
+                                    let _ = pending_monitor.activate(Arc::clone(&st));
+                                }
                             }
                             Err(OwnedRnodeReadinessError::Superseded) => return,
                             Err(error) => {

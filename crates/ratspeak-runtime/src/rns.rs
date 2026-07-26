@@ -1,5 +1,6 @@
 //! RNS runtime integration: init + stats queries.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,6 +14,9 @@ use rns_runtime::reticulum::{
 };
 use rns_transport::messages::{TransportMessage, TransportQuery, TransportQueryResponse};
 
+use crate::rnode_activity::RNodeActivityRuntimeContext;
+use crate::state::RNodeActivityOrigin;
+
 pub const UI_PATH_TABLE_LIMIT: usize = 500;
 
 pub struct RnsManager {
@@ -22,6 +26,11 @@ pub struct RnsManager {
     /// runtime initialized. This is a startup snapshot, not current inventory
     /// or teardown authority.
     startup_rnode_runtimes: Vec<StartupRNodeRuntime>,
+    /// Exact RNode registrations whose lifecycle is supplied by the driver
+    /// observer instead of inferred from generic transport statistics.
+    /// Entries are session tombstones and live until this manager is dropped.
+    activity_covered_rnodes: HashSet<rns_interface::traits::InterfaceId>,
+    activity_session: Option<RNodeActivityOrigin>,
 }
 
 impl RnsManager {
@@ -56,10 +65,17 @@ impl RnsManager {
             ))
             .await;
 
+        let activity_covered_rnodes = startup_rnode_runtimes
+            .iter()
+            .map(|runtime| runtime.interface_id)
+            .collect();
+
         Ok(Self {
             handle,
             shutdown,
             startup_rnode_runtimes,
+            activity_covered_rnodes,
+            activity_session: None,
         })
     }
 
@@ -69,6 +85,50 @@ impl RnsManager {
     /// must not be used as current inventory or lifecycle authority.
     pub fn startup_rnode_runtimes(&self) -> &[StartupRNodeRuntime] {
         &self.startup_rnode_runtimes
+    }
+
+    pub(crate) fn bind_rnode_activity_session(&mut self, session: RNodeActivityOrigin) {
+        self.activity_session = Some(session);
+    }
+
+    pub(crate) fn rnode_activity_runtime_context(
+        &self,
+        identity_generation: u64,
+    ) -> Option<RNodeActivityRuntimeContext> {
+        let origin = self.activity_session?;
+        if origin.identity_generation() != identity_generation {
+            return None;
+        }
+        Some(RNodeActivityRuntimeContext::new(
+            self.handle.clone(),
+            origin,
+        ))
+    }
+
+    pub(crate) fn cover_rnode_activity_interface(
+        &mut self,
+        interface_id: rns_interface::traits::InterfaceId,
+        origin: RNodeActivityOrigin,
+    ) -> bool {
+        if self.activity_session != Some(origin) {
+            return false;
+        }
+        self.activity_covered_rnodes.insert(interface_id);
+        true
+    }
+
+    pub(crate) fn is_rnode_activity_interface_covered(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+        identity_generation: u64,
+    ) -> bool {
+        self.activity_session
+            .is_some_and(|session| session.identity_generation() == identity_generation)
+            && self.activity_covered_rnodes.contains(&interface_id)
+    }
+
+    pub(crate) fn owns_rnode_activity_session(&self, session: RNodeActivityOrigin) -> bool {
+        self.activity_session == Some(session)
     }
 
     async fn query(&self, q: TransportQuery) -> Option<TransportQueryResponse> {

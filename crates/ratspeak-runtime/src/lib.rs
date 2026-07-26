@@ -17,6 +17,7 @@ pub mod identity_prune;
 pub mod lxmf;
 pub mod messaging;
 pub mod propagation;
+mod rnode_activity;
 pub mod rns;
 pub mod rns_config;
 pub mod rrc;
@@ -46,6 +47,9 @@ use serde_json::{Value, json};
 use activity::ActivityRecorderError;
 use activity::producer::{self, ProducerEvent};
 use state::{ActivityRequestFence, AppState};
+
+pub use rnode_activity::{PendingRNodeActivityMonitor, RNodeActivityRuntimeContext};
+pub use state::RNodeActivityOrigin;
 
 const CHANNEL_BUFFER_SIZE: usize = 64;
 
@@ -1719,7 +1723,17 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
             let channels_transport = rns_mgr.handle.transport_tx.clone();
-            state.set_rns(rns_mgr);
+            let startup_rnode_activity = rns_mgr.startup_rnode_runtimes().to_vec();
+            let rnode_activity_origin = state.set_rns(rns_mgr);
+            if let Some(origin) = rnode_activity_origin {
+                for runtime in startup_rnode_activity {
+                    rnode_activity::spawn_startup_rnode_activity_monitor(
+                        state.clone(),
+                        runtime.observer,
+                        origin,
+                    );
+                }
+            }
             if let Some(identity) = channels_identity {
                 state.set_channels(channels::ChannelsManagerHandle::start(
                     channels_transport,
@@ -3727,6 +3741,51 @@ enum PollActivityObservation {
     AnnounceObserved { destination: [u8; 16], hops: u8 },
 }
 
+fn observe_polled_interface_state(
+    previous: &mut std::collections::HashMap<u64, bool>,
+    interface_id: u64,
+    online: bool,
+    covered_by_exact_rnode_observer: bool,
+) -> (bool, bool) {
+    let changed = previous.insert(interface_id, online) != Some(online);
+    (changed, changed && !covered_by_exact_rnode_observer)
+}
+
+#[cfg(test)]
+mod rnode_poll_activity_tests {
+    use super::observe_polled_interface_state;
+    use std::collections::HashMap;
+
+    #[test]
+    fn exact_covered_id_is_suppressed_without_hiding_another_same_name_interface() {
+        let mut previous = HashMap::new();
+
+        // Names deliberately do not participate in this state machine. Two
+        // stats rows may share a display name while their exact IDs remain
+        // independently observed.
+        assert_eq!(
+            observe_polled_interface_state(&mut previous, 41, true, true),
+            (true, false)
+        );
+        assert_eq!(
+            observe_polled_interface_state(&mut previous, 42, true, false),
+            (true, true)
+        );
+        assert_eq!(
+            observe_polled_interface_state(&mut previous, 41, false, true),
+            (true, false)
+        );
+        assert_eq!(
+            observe_polled_interface_state(&mut previous, 42, false, false),
+            (true, true)
+        );
+        assert_eq!(
+            observe_polled_interface_state(&mut previous, 42, false, false),
+            (false, false)
+        );
+    }
+}
+
 fn record_poll_activity(
     state: &AppState,
     origin: ActivityRequestFence,
@@ -3809,10 +3868,10 @@ async fn poll_stats_loop(
         ))
     });
 
-    let mut prev_online: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
-    let mut prev_ingress_burst: std::collections::HashMap<String, bool> =
+    let mut prev_online: std::collections::HashMap<u64, bool> = std::collections::HashMap::new();
+    let mut prev_ingress_burst: std::collections::HashMap<u64, bool> =
         std::collections::HashMap::new();
-    let mut prev_held_announces: std::collections::HashMap<String, u64> =
+    let mut prev_held_announces: std::collections::HashMap<u64, u64> =
         std::collections::HashMap::new();
     let mut last_interface_announce = std::time::Instant::now();
 
@@ -3883,6 +3942,89 @@ async fn poll_stats_loop(
 
             let iface_stats = match iface_result {
                 Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(s)) => {
+                    for iface in &s {
+                        let name = iface.name.as_str();
+                        let online = iface.online;
+                        let burst_active = iface.burst_active;
+                        let held_announces = iface.held_announces;
+                        let key = iface.id;
+                        let (state_changed, emit_generic_state) = observe_polled_interface_state(
+                            &mut prev_online,
+                            key,
+                            online,
+                            state.is_rnode_activity_interface_covered(iface.id),
+                        );
+                        if state_changed {
+                            if emit_generic_state {
+                                activity_observations
+                                    .push(PollActivityObservation::InterfaceState { online });
+                            }
+                            let reannounce_suppressed =
+                                online && state.take_interface_reannounce_suppression(name);
+                            if reannounce_suppressed {
+                                last_interface_announce = Instant::now();
+                                tracing::info!(
+                                    "interface re-announce suppressed after config restart"
+                                );
+                                activity_observations
+                                    .push(PollActivityObservation::AnnounceSuppressed);
+                            }
+                            // Re-announce on interface up; gated by auto-announce + 30s cooldown.
+                            let auto_announce_on = *state.announce_interval_rx.borrow() > 0;
+                            if online
+                                && !reannounce_suppressed
+                                && auto_announce_on
+                                && last_interface_announce.elapsed() >= Duration::from_secs(30)
+                            {
+                                last_interface_announce = std::time::Instant::now();
+                                let announce_state = state.clone();
+                                let announce_activity_origin = poll_activity_origin;
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                    let report = send_announce_from_origin(
+                                        &announce_state,
+                                        announce_activity_origin,
+                                    )
+                                    .await;
+                                    if report.queued > 0 {
+                                        record_activity_if_current(
+                                            &announce_state,
+                                            announce_activity_origin,
+                                            || {
+                                                Ok(producer::rns_announce_activity(
+                                                    producer::RnsAnnounceActivity {
+                                                        transition: producer::RnsAnnounceTransition::Sent {
+                                                            method: producer::AnnounceMethod::InterfaceOnline,
+                                                        },
+                                                        interface: None,
+                                                    },
+                                                ))
+                                            },
+                                        );
+                                    }
+                                });
+                            }
+                        }
+                        let prev_burst = prev_ingress_burst.get(&key).copied();
+                        if let Some(was_bursting) = prev_burst
+                            && was_bursting != burst_active
+                        {
+                            activity_observations.push(
+                                PollActivityObservation::AnnounceIngressBurst {
+                                    active: burst_active,
+                                },
+                            );
+                        }
+                        let prev_held = prev_held_announces.get(&key).copied().unwrap_or(0);
+                        if held_announces > 0 && prev_held == 0 {
+                            activity_observations.push(PollActivityObservation::AnnouncesHeld {
+                                count: held_announces,
+                            });
+                        }
+                        prev_ingress_burst.insert(key, burst_active);
+                        prev_held_announces.insert(key, held_announces);
+                    }
+
                     let interfaces: Vec<serde_json::Value> = s.iter().map(|e| {
                         json!({
                             "name": e.name, "rxb": e.rx_bytes, "txb": e.tx_bytes,
@@ -3910,80 +4052,6 @@ async fn poll_stats_loop(
                 }
                 _ => json!({ "interfaces": [] }),
             };
-
-            if let Some(ifaces) = iface_stats.get("interfaces").and_then(|v| v.as_array()) {
-                for iface in ifaces {
-                    let name = iface["name"].as_str().unwrap_or("unknown");
-                    let online = iface["online"].as_bool().unwrap_or(false);
-                    let burst_active = iface["burst_active"].as_bool().unwrap_or(false);
-                    let held_announces = iface["held_announces"].as_u64().unwrap_or(0);
-                    let key = name.to_string();
-                    let prev = prev_online.get(&key).copied();
-                    if prev != Some(online) {
-                        activity_observations
-                            .push(PollActivityObservation::InterfaceState { online });
-                        let reannounce_suppressed =
-                            online && state.take_interface_reannounce_suppression(name);
-                        if reannounce_suppressed {
-                            last_interface_announce = Instant::now();
-                            tracing::info!("interface re-announce suppressed after config restart");
-                            activity_observations.push(PollActivityObservation::AnnounceSuppressed);
-                        }
-                        // Re-announce on interface up; gated by auto-announce + 30s cooldown.
-                        let auto_announce_on = *state.announce_interval_rx.borrow() > 0;
-                        if online
-                            && !reannounce_suppressed
-                            && auto_announce_on
-                            && last_interface_announce.elapsed() >= Duration::from_secs(30)
-                        {
-                            last_interface_announce = std::time::Instant::now();
-                            let announce_state = state.clone();
-                            let announce_activity_origin = poll_activity_origin;
-                            tokio::spawn(async move {
-                                tokio::time::sleep(Duration::from_secs(2)).await;
-                                let report = send_announce_from_origin(
-                                    &announce_state,
-                                    announce_activity_origin,
-                                )
-                                .await;
-                                if report.queued > 0 {
-                                    record_activity_if_current(
-                                        &announce_state,
-                                        announce_activity_origin,
-                                        || {
-                                            Ok(producer::rns_announce_activity(
-                                                producer::RnsAnnounceActivity {
-                                                    transition: producer::RnsAnnounceTransition::Sent {
-                                                        method: producer::AnnounceMethod::InterfaceOnline,
-                                                    },
-                                                    interface: None,
-                                                },
-                                            ))
-                                        },
-                                    );
-                                }
-                            });
-                        }
-                    }
-                    let prev_burst = prev_ingress_burst.get(&key).copied();
-                    if let Some(was_bursting) = prev_burst
-                        && was_bursting != burst_active
-                    {
-                        activity_observations.push(PollActivityObservation::AnnounceIngressBurst {
-                            active: burst_active,
-                        });
-                    }
-                    let prev_held = prev_held_announces.get(&key).copied().unwrap_or(0);
-                    if held_announces > 0 && prev_held == 0 {
-                        activity_observations.push(PollActivityObservation::AnnouncesHeld {
-                            count: held_announces,
-                        });
-                    }
-                    prev_online.insert(key, online);
-                    prev_ingress_burst.insert(name.to_string(), burst_active);
-                    prev_held_announces.insert(name.to_string(), held_announces);
-                }
-            }
 
             let (path_table, path_index, path_table_total, path_table_truncated) = match path_result
             {

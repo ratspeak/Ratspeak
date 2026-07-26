@@ -319,6 +319,7 @@ fn interface_cancelled_legacy_message(class: Option<&str>) -> &'static str {
 #[cfg(test)]
 fn interface_degraded_legacy_message(class: Option<&str>, reason: Option<&str>) -> &'static str {
     match (class, reason) {
+        (Some("rnode"), Some("capability_unverified")) => "LoRa radio compatibility is unverified",
         (Some("auto"), Some("multicast_unavailable")) => "Local Network discovery is limited",
         (Some("auto"), _) => "Local Network access is limited",
         (Some("ble_peer"), _) => "Bluetooth Peer visibility is limited",
@@ -346,6 +347,9 @@ fn interface_failure_legacy_message(class: Option<&str>, reason: Option<&str>) -
         (Some("ble_peer"), Some("runtime_failed")) => "Bluetooth Peer encountered an error",
         (Some("ble_peer"), Some("update_failed")) => "Bluetooth Peer could not be updated",
         (Some("ble_peer"), _) => "Bluetooth Peer operation failed",
+        (Some("rnode"), Some("capability_rejected")) => {
+            "LoRa radio is not compatible with these settings"
+        }
         (Some("rnode"), Some("configure_failed")) => "LoRa radio could not be configured",
         (Some("rnode"), Some("connect_failed")) => "LoRa radio could not connect",
         (Some("rnode"), Some("listen_failed")) => "LoRa radio could not accept connections",
@@ -394,6 +398,7 @@ fn interface_failure_legacy_message(class: Option<&str>, reason: Option<&str>) -
         (Some("backbone_server"), Some("runtime_failed")) => "Backbone server encountered an error",
         (Some("backbone_server"), Some("update_failed")) => "Backbone server could not be updated",
         (Some("backbone_server"), _) => "Backbone server operation failed",
+        (_, Some("capability_rejected")) => "Interface capability check failed",
         (_, Some("configure_failed")) => "Interface configuration failed",
         (_, Some("connect_failed")) => "Interface connection failed",
         (_, Some("listen_failed")) => "Interface could not start listening",
@@ -777,6 +782,8 @@ fn friendly_code(value: &str) -> Option<&'static str> {
         "update_failed" => "Update failed",
         "multicast_unavailable" => "Peer discovery unavailable",
         "peripheral_unavailable" => "Incoming connections unavailable",
+        "capability_unverified" => "Hardware compatibility unverified",
+        "capability_rejected" => "Hardware capability check failed",
         "setup_timed_out" => "Setup timed out",
         "pairing_timed_out" => "Pairing timed out",
         "startup_timed_out" => "Startup timed out",
@@ -1206,6 +1213,30 @@ mod tests {
             friendly_code("peripheral_unavailable"),
             Some("Incoming connections unavailable")
         );
+        assert_eq!(
+            interface_legacy_message(
+                "interface.degraded",
+                Some("rnode"),
+                Some("capability_unverified"),
+            ),
+            Some("LoRa radio compatibility is unverified")
+        );
+        assert_eq!(
+            interface_legacy_message(
+                "interface.failed",
+                Some("rnode"),
+                Some("capability_rejected"),
+            ),
+            Some("LoRa radio is not compatible with these settings")
+        );
+        assert_eq!(
+            friendly_code("capability_unverified"),
+            Some("Hardware compatibility unverified")
+        );
+        assert_eq!(
+            friendly_code("capability_rejected"),
+            Some("Hardware capability check failed")
+        );
     }
 
     #[test]
@@ -1378,6 +1409,23 @@ mod tests {
             ),
             projection_case!(
                 producer::interface_activity(producer::InterfaceActivity {
+                    class: InterfaceClass::RNode,
+                    transition: InterfaceTransition::Degraded {
+                        reason: producer::InterfaceDegradationReason::CapabilityUnverified,
+                    },
+                    endpoint: None,
+                }),
+                "interface.degraded",
+                Interfaces,
+                Warning,
+                Normal,
+                [InterfaceClass, Reason],
+                "interface",
+                "LoRa radio compatibility is unverified",
+                "essential"
+            ),
+            projection_case!(
+                producer::interface_activity(producer::InterfaceActivity {
                     class: InterfaceClass::BackboneClient,
                     transition: InterfaceTransition::Paused,
                     endpoint: None,
@@ -1422,6 +1470,24 @@ mod tests {
                 [InterfaceClass, Reason, State],
                 "error",
                 "TCP server could not start listening",
+                "essential"
+            ),
+            projection_case!(
+                producer::interface_activity(producer::InterfaceActivity {
+                    class: InterfaceClass::RNode,
+                    transition: InterfaceTransition::Failed {
+                        reason: InterfaceFailureReason::CapabilityRejected,
+                        rollback: None,
+                    },
+                    endpoint: None,
+                }),
+                "interface.failed",
+                Interfaces,
+                Error,
+                Normal,
+                [InterfaceClass, Reason],
+                "error",
+                "LoRa radio is not compatible with these settings",
                 "essential"
             ),
             projection_case!(

@@ -1351,13 +1351,13 @@ pub async fn ble_rnode_bridge_ready(
                     false,
                     None,
                 );
-                let rns = state_arc
-                    .rns
-                    .read()
-                    .ok()
-                    .and_then(|guard| guard.as_ref().map(|mgr| mgr.handle.clone()));
-                match rns {
-                    Some(rns) => {
+                let rnode_context = state_arc.rnode_activity_runtime_context_for_identity(
+                    activity_fence.identity_session_generation(),
+                );
+                match rnode_context {
+                    Some(rnode_context) => {
+                        let rns = rnode_context.handle().clone();
+                        let rnode_activity_origin = rnode_context.origin();
                         let result = rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options(
                                 &rns,
                                 rns_runtime::reticulum::BleRnodeRuntimeArgs {
@@ -1378,18 +1378,19 @@ pub async fn ble_rnode_bridge_ready(
                             )
                             .await
                             .map_err(|error| error.to_string());
-                        Some((rns, result))
+                        Some((rns, rnode_activity_origin, result))
                     }
                     None => None,
                 }
             };
 
             match spawn_result {
-                Some((rns, Ok(spawned))) => {
+                Some((rns, rnode_activity_origin, Ok(spawned))) => {
                     // Keep cancellation/replacement responsive while the exact
                     // observer performs its bounded, reconnect-aware wait.
                     let readiness_result = {
-                        let readiness = await_spawned_rnode_ready(&spawned);
+                        let readiness =
+                            await_spawned_rnode_ready(&state_arc, &spawned, rnode_activity_origin);
                         tokio::pin!(readiness);
                         loop {
                             if !state_arc
@@ -1405,18 +1406,31 @@ pub async fn ble_rnode_bridge_ready(
                     };
 
                     match readiness_result {
-                        Some(Ok(())) => {
+                        Some(Ok(pending_monitor)) => {
                             if let Some((terminal_fence, rollback_context, completion)) = state_arc
                                 .take_initializing_ble_rnode_activity_operation_with_completion(
                                     &activity_operation,
                                 )
                             {
-                                if !complete_waiting_ble_rnode_operation(
-                                    completion,
-                                    crate::state::BleRnodeOperationResult::Ready {
-                                        interface_id: spawned.interface_id,
-                                    },
-                                ) {
+                                if let Some(completion) = completion {
+                                    if completion
+                                        .send(crate::state::BleRnodeOperationResult::Ready {
+                                            interface_id: spawned.interface_id,
+                                            monitor: pending_monitor,
+                                        })
+                                        .is_err()
+                                    {
+                                        // The lifecycle owner disappeared before accepting the
+                                        // single-use seed. Stop the exact runtime; never activate
+                                        // an orphaned monitor in this callback.
+                                        teardown_spawned_rnode_exact(&rns, &spawned).await;
+                                        #[cfg(target_os = "android")]
+                                        disconnect_native_ble_rnode_operation(
+                                            &state_arc,
+                                            &activity_operation,
+                                        );
+                                    }
+                                } else {
                                     clear_ble_rnode_rollback_context(&state_arc, rollback_context);
                                     emit_op_status_broadcast(
                                         &state_arc,
@@ -1438,6 +1452,9 @@ pub async fn ble_rnode_bridge_ready(
                                         ),
                                         None,
                                     );
+                                    if let Some(pending_monitor) = pending_monitor {
+                                        let _ = pending_monitor.activate(Arc::clone(&state_arc));
+                                    }
                                 }
                             } else {
                                 teardown_spawned_rnode_exact(&rns, &spawned).await;
@@ -1511,7 +1528,7 @@ pub async fn ble_rnode_bridge_ready(
                         }
                     }
                 }
-                Some((_rns, Err(_error))) => {
+                Some((_rns, _rnode_activity_origin, Err(_error))) => {
                     let terminal = state_arc
                         .take_initializing_ble_rnode_activity_operation_with_completion(
                             &activity_operation,

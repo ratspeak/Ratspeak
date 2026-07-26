@@ -270,6 +270,7 @@ impl InterfaceClass {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceDegradationReason {
+    CapabilityUnverified,
     MulticastUnavailable,
     PeripheralUnavailable,
 }
@@ -277,6 +278,7 @@ pub enum InterfaceDegradationReason {
 impl InterfaceDegradationReason {
     const fn code(self) -> &'static str {
         match self {
+            Self::CapabilityUnverified => "capability_unverified",
             Self::MulticastUnavailable => "multicast_unavailable",
             Self::PeripheralUnavailable => "peripheral_unavailable",
         }
@@ -302,6 +304,7 @@ impl InterfaceTimeoutReason {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceFailureReason {
+    CapabilityRejected,
     Configure,
     Connect,
     Listen,
@@ -314,6 +317,7 @@ pub enum InterfaceFailureReason {
 impl InterfaceFailureReason {
     const fn code(self) -> &'static str {
         match self {
+            Self::CapabilityRejected => "capability_rejected",
             Self::Configure => "configure_failed",
             Self::Connect => "connect_failed",
             Self::Listen => "listen_failed",
@@ -2403,6 +2407,14 @@ mod tests {
         for (transition, expected_kind, expected_outcome, expected_reason) in [
             (
                 InterfaceTransition::Degraded {
+                    reason: InterfaceDegradationReason::CapabilityUnverified,
+                },
+                "interface.degraded",
+                ActivityOutcome::Degraded,
+                Some("capability_unverified"),
+            ),
+            (
+                InterfaceTransition::Degraded {
                     reason: InterfaceDegradationReason::MulticastUnavailable,
                 },
                 "interface.degraded",
@@ -2447,6 +2459,15 @@ mod tests {
                 ActivityOutcome::Success,
                 None,
             ),
+            (
+                InterfaceTransition::Failed {
+                    reason: InterfaceFailureReason::CapabilityRejected,
+                    rollback: None,
+                },
+                "interface.failed",
+                ActivityOutcome::Failed,
+                Some("capability_rejected"),
+            ),
         ] {
             let validated = interface_activity(InterfaceActivity {
                 time: ObservationTime::new(1, 1),
@@ -2466,6 +2487,10 @@ mod tests {
             assert_eq!(validated.outcome, expected_outcome);
             assert_eq!(validated.direction, ActivityDirection::Local);
             assert!(matches!(validated.coalescing, CoalescingPolicy::Never));
+            assert!(validated.attributes.iter().all(|attribute| matches!(
+                attribute.key,
+                ActivityAttributeKey::InterfaceClass | ActivityAttributeKey::Reason
+            )));
             let reason = validated
                 .attributes
                 .iter()

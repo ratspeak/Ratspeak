@@ -76,6 +76,29 @@ fn rust_call_blocks<'a>(source: &'a str, call_path: &str) -> Vec<&'a str> {
         .collect()
 }
 
+fn rust_function_block<'a>(source: &'a str, function_name: &str) -> &'a str {
+    let marker = format!("fn {function_name}(");
+    let index = source
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing function {function_name}"));
+    let tail = &source[index..];
+    let start = tail.find('{').expect("function body start");
+    let mut depth = 0usize;
+    for (offset, ch) in tail[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return &tail[..start + offset + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unterminated function {function_name}");
+}
+
 #[test]
 fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     let root = repo_root();
@@ -373,6 +396,175 @@ fn all_rnode_creation_paths_require_strict_capability_admission() {
         .is_empty(),
         "legacy native BLE RNode spawn call remains"
     );
+}
+
+#[test]
+fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
+    let root = repo_root();
+    let readiness = read_source(root.join("crates/ratspeak-tauri/src/commands/rnode_readiness.rs"))
+        .expect("RNode readiness adapter");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let ble =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("BLE commands");
+    let runtime_monitor = read_source(root.join("crates/ratspeak-runtime/src/rnode_activity.rs"))
+        .expect("RNode Activity monitor");
+    let runtime_state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+
+    let pending_declaration = runtime_monitor
+        .find("pub struct PendingRNodeActivityMonitor")
+        .expect("single-use pending monitor seed");
+    let pending_attributes = runtime_monitor[..pending_declaration]
+        .rsplit("\n\n")
+        .next()
+        .expect("pending monitor attributes");
+    assert!(!pending_attributes.contains("#[derive"));
+    assert!(runtime_monitor.contains("origin: RNodeActivityOrigin"));
+    let runtime_activation = rust_function_block(&runtime_monitor, "activate");
+    assert!(runtime_activation.contains("self.origin"));
+    assert!(
+        runtime_state
+            .contains("monitor: Option<crate::rnode_activity::PendingRNodeActivityMonitor>")
+    );
+    assert!(!runtime_state.contains(
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub enum BleRnodeOperationResult"
+    ));
+
+    let shared_wait = rust_function_block(&readiness, "await_spawned_rnode_ready");
+    let cover = shared_wait
+        .find("state.cover_rnode_activity_interface(spawned.interface_id, origin)")
+        .expect("exact RNode poll coverage");
+    let readiness_wait = shared_wait
+        .find(".await_ready(RNODE_READINESS_TIMEOUT)")
+        .expect("exact observer readiness wait");
+    assert!(cover < readiness_wait, "coverage must precede readiness");
+    assert!(shared_wait.contains("covered.then(||"));
+    assert!(shared_wait.contains(
+        "PendingRNodeActivityMonitor::new(spawned.observer.clone(), ready_snapshot, origin)"
+    ));
+
+    let owned_wait = rust_function_block(&interfaces, "await_owned_rnode_ready");
+    assert!(owned_wait.contains("origin: RNodeActivityOrigin"));
+    assert!(owned_wait.contains("await_spawned_rnode_ready(state, spawned, origin)"));
+
+    let editable = rust_function_block(&interfaces, "spawn_editable_interface");
+    let add = rust_function_block(&interfaces, "add_lora_interface");
+    let editable_contexts =
+        rust_call_blocks(editable, "rnode_activity_runtime_context_for_identity");
+    assert_eq!(editable_contexts.len(), 1);
+    assert!(editable_contexts[0].contains("activity_fence.identity_session_generation()"));
+    assert!(editable.contains("(context.handle().clone(), context.origin())"));
+    let add_contexts = rust_call_blocks(add, "rnode_activity_runtime_context_for_identity");
+    assert_eq!(add_contexts.len(), 3);
+    for context in add_contexts {
+        assert!(context.contains("activity_fence.identity_session_generation()"));
+    }
+    for (source, expected_waits) in [(editable, 3usize), (add, 3usize)] {
+        assert_eq!(
+            source.matches("await_owned_rnode_ready(").count(),
+            expected_waits
+        );
+        for call in rust_call_blocks(source, "await_owned_rnode_ready") {
+            assert!(call.contains("rnode_activity_origin"));
+        }
+        for call_path in [
+            "rns_runtime::reticulum::spawn_ble_rnode_runtime_observed_with_options",
+            "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options",
+            "rns_runtime::reticulum::spawn_rnode_runtime_observed_with_options",
+        ] {
+            assert_eq!(
+                rust_call_blocks(source, call_path).len(),
+                1,
+                "{call_path} must occur exactly once in each dynamic creation matrix"
+            );
+        }
+    }
+    assert_eq!(
+        editable
+            .matches("InterfaceSpawnOutcome::started_rnode(")
+            .count(),
+        5
+    );
+    assert!(interfaces.contains("rnode_activity_monitor: Option<PendingRNodeActivityMonitor>"));
+    assert!(editable.contains("BleRnodeOperationResult::Ready {"));
+    assert!(editable.contains("interface_id,\n                            monitor,"));
+    assert!(editable.contains("InterfaceSpawnOutcome::started_rnode("));
+
+    let replace = rust_function_block(&interfaces, "finish_rnode_interface_replace");
+    assert_eq!(replace.matches(".activate(Arc::clone(&state))").count(), 2);
+    assert!(replace.matches("finish_rnode_lifecycle_operation").count() >= 2);
+    let resume = rust_function_block(&interfaces, "resume_interface");
+    assert_eq!(resume.matches(".activate(Arc::clone(&st))").count(), 1);
+    assert_eq!(add.matches(".activate(Arc::clone(&st))").count(), 3);
+    for (source, activation_marker, finish_marker) in [
+        (
+            replace,
+            ".activate(Arc::clone(&state))",
+            "finish_rnode_lifecycle_operation(&operation_lease)",
+        ),
+        (
+            resume,
+            ".activate(Arc::clone(&st))",
+            "finish_rnode_lifecycle_operation(lease)",
+        ),
+        (
+            add,
+            ".activate(Arc::clone(&st))",
+            "finish_rnode_lifecycle_operation(&operation_lease)",
+        ),
+    ] {
+        for (activation, _) in source.match_indices(activation_marker) {
+            let nearby = &source[activation.saturating_sub(240)..activation];
+            assert!(
+                nearby.contains(finish_marker),
+                "monitor activation must immediately follow lifecycle ownership"
+            );
+        }
+    }
+
+    let bridge = rust_function_block(&ble, "ble_rnode_bridge_ready");
+    assert_eq!(
+        rust_call_blocks(
+            bridge,
+            "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options"
+        )
+        .len(),
+        1
+    );
+    let native_contexts = rust_call_blocks(bridge, "rnode_activity_runtime_context_for_identity");
+    assert_eq!(native_contexts.len(), 1);
+    assert!(native_contexts[0].contains("activity_fence.identity_session_generation()"));
+    assert!(bridge.contains("let rnode_activity_origin = rnode_context.origin()"));
+    let native_wait = rust_call_blocks(bridge, "await_spawned_rnode_ready");
+    assert_eq!(native_wait.len(), 1);
+    assert!(native_wait[0].contains("rnode_activity_origin"));
+    let ready_branch = bridge
+        .split("Some(Ok(pending_monitor)) => {")
+        .nth(1)
+        .and_then(|tail| tail.split("Some(Err(failure)) => {").next())
+        .expect("native BLE ready branch");
+    let completion_take = ready_branch
+        .find("take_initializing_ble_rnode_activity_operation_with_completion")
+        .expect("native BLE terminal ownership take");
+    let completion_branch = ready_branch
+        .split("if let Some(completion) = completion {")
+        .nth(1)
+        .and_then(|tail| tail.split("} else {").next())
+        .expect("completion-bearing native BLE path");
+    assert!(completion_branch.contains("BleRnodeOperationResult::Ready {"));
+    assert!(completion_branch.contains("monitor: pending_monitor"));
+    assert!(completion_branch.contains(".is_err()"));
+    assert!(completion_branch.contains("teardown_spawned_rnode_exact"));
+    assert!(!completion_branch.contains(".activate("));
+    let direct_branch = ready_branch
+        .split("} else {")
+        .nth(1)
+        .expect("direct native BLE terminal path");
+    let direct_activation = direct_branch
+        .find("pending_monitor.activate(Arc::clone(&state_arc))")
+        .expect("owned direct native BLE monitor activation");
+    assert!(completion_take < direct_activation);
 }
 
 #[test]
@@ -1164,7 +1356,9 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
         .len(),
         1
     );
-    assert!(ble.contains("await_spawned_rnode_ready(&spawned)"));
+    let readiness_calls = rust_call_blocks(&ble, "await_spawned_rnode_ready");
+    assert_eq!(readiness_calls.len(), 1);
+    assert!(readiness_calls[0].contains("rnode_activity_origin"));
     assert!(ble.contains("teardown_spawned_rnode_exact(&rns, &spawned)"));
     assert!(!ble.contains("online.load(std::sync::atomic::Ordering::SeqCst)"));
 

@@ -7,8 +7,11 @@
 use std::fmt;
 use std::time::Duration;
 
+use ratspeak_runtime::{PendingRNodeActivityMonitor, RNodeActivityOrigin};
 use rns_interface::rnode::RNodeTransportClass;
 use rns_runtime::reticulum::{RNodeReadinessError, ReticulumHandle, SpawnedRNodeRuntime};
+
+use crate::state::AppState;
 
 /// Maximum time a product operation waits for complete RNode protocol
 /// readiness. The observer uses one absolute deadline across reconnects.
@@ -61,15 +64,23 @@ pub(crate) fn classify_rnode_readiness_error(error: &RNodeReadinessError) -> Rno
 /// This intentionally never reads `SpawnedRNodeRuntime::online`, which is a
 /// legacy enabled/connect flag rather than authoritative readiness.
 pub(crate) async fn await_spawned_rnode_ready(
+    state: &AppState,
     spawned: &SpawnedRNodeRuntime,
-) -> Result<(), RnodeReadinessFailure> {
+    origin: RNodeActivityOrigin,
+) -> Result<Option<PendingRNodeActivityMonitor>, RnodeReadinessFailure> {
     debug_assert_eq!(spawned.interface_id, spawned.observer.interface_id());
-    spawned
+    // Cover the exact ID before waiting. A failed cover means the originating
+    // RNS session was replaced; readiness remains a product concern, but no
+    // Activity monitor may be rebased onto the replacement session.
+    let covered = state.cover_rnode_activity_interface(spawned.interface_id, origin);
+    let ready_snapshot = spawned
         .observer
         .await_ready(RNODE_READINESS_TIMEOUT)
         .await
-        .map(|_| ())
-        .map_err(|error| classify_rnode_readiness_error(&error))
+        .map_err(|error| classify_rnode_readiness_error(&error))?;
+    Ok(covered.then(|| {
+        PendingRNodeActivityMonitor::new(spawned.observer.clone(), ready_snapshot, origin)
+    }))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

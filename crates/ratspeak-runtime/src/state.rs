@@ -45,6 +45,30 @@ pub struct ActivityRequestFence {
     identity_lock_epoch: u64,
 }
 
+/// Opaque ownership token for one installed RNS runtime session.
+///
+/// The token binds exact RNode observations to both an identity session and a
+/// particular RNS manager installation, preventing interface-ID reuse across
+/// a soft runtime restart from adopting an older observer.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct RNodeActivityOrigin {
+    identity_generation: u64,
+    rns_generation: u64,
+}
+
+impl RNodeActivityOrigin {
+    pub(crate) fn new(identity_generation: u64, rns_generation: u64) -> Self {
+        Self {
+            identity_generation,
+            rns_generation,
+        }
+    }
+
+    pub(crate) fn identity_generation(self) -> u64 {
+        self.identity_generation
+    }
+}
+
 struct BleRnodeActivityOperation {
     token: [u8; 16],
     activity_fence: ActivityRequestFence,
@@ -73,9 +97,12 @@ pub enum BleRnodeOperationFailure {
 }
 
 /// Terminal result delivered only to an internal native BLE-RNode waiter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum BleRnodeOperationResult {
-    Ready { interface_id: u64 },
+    Ready {
+        interface_id: u64,
+        monitor: Option<crate::rnode_activity::PendingRNodeActivityMonitor>,
+    },
     Failed(BleRnodeOperationFailure),
 }
 
@@ -157,7 +184,7 @@ impl IdentitySwitchLock {
         }
     }
 
-    fn epoch(&self) -> u64 {
+    pub(crate) fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::SeqCst)
     }
 }
@@ -201,6 +228,19 @@ fn next_rnode_lifecycle_operation_generation(counter: &AtomicU64) -> u64 {
     }
 }
 
+fn next_rnode_activity_session_generation(counter: &AtomicU64) -> u64 {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current
+            .checked_add(1)
+            .expect("RNode Activity session generation exhausted");
+        match counter.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 /// Uses `std::sync::{Mutex, RwLock}`, not tokio variants. Critical sections
 /// must finish before `.await` or run in `spawn_blocking`
 /// (`clippy::await_holding_lock` enforces this).
@@ -227,6 +267,9 @@ pub struct AppState {
     pub announce_history: RwLock<IndexMap<String, serde_json::Value>>,
     pub alerts: Mutex<Vec<serde_json::Value>>,
     pub rns: RwLock<Option<RnsManager>>,
+    /// Process-monotonic source for opaque installed-RNS ownership tokens.
+    /// Identity-scoped resets deliberately do not rewind it.
+    rnode_activity_session_generation: AtomicU64,
     /// Session-scoped live Channels runtime. It is torn down before RNS so an
     /// active hub Link can send its closing packet cleanly.
     pub channels: RwLock<Option<ChannelsManagerHandle>>,
@@ -405,6 +448,7 @@ impl AppState {
             announce_history: RwLock::new(IndexMap::new()),
             alerts: Mutex::new(Vec::new()),
             rns: RwLock::new(None),
+            rnode_activity_session_generation: AtomicU64::new(0),
             channels: RwLock::new(None),
             lxmf: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
@@ -1286,10 +1330,97 @@ impl AppState {
         self.emitter.emit(event, data);
     }
 
-    pub fn set_rns(&self, rns: RnsManager) {
+    pub fn set_rns(&self, mut rns: RnsManager) -> Option<RNodeActivityOrigin> {
+        let origin = RNodeActivityOrigin::new(
+            self.current_identity_session_generation(),
+            next_rnode_activity_session_generation(&self.rnode_activity_session_generation),
+        );
+        rns.bind_rnode_activity_session(origin);
         if let Ok(mut r) = self.rns.write() {
             *r = Some(rns);
+            Some(origin)
+        } else {
+            None
         }
+    }
+
+    /// Capture the current RNS handle and opaque ownership origin under one
+    /// manager read lock. RNode commands must spawn through this context so a
+    /// soft RNS restart cannot rebase later coverage onto a replacement.
+    pub fn rnode_activity_runtime_context_for_identity(
+        &self,
+        origin_identity_generation: u64,
+    ) -> Option<crate::rnode_activity::RNodeActivityRuntimeContext> {
+        if self.current_identity_session_generation() != origin_identity_generation {
+            return None;
+        }
+        let Ok(rns) = self.rns.read() else {
+            return None;
+        };
+        if self.current_identity_session_generation() != origin_identity_generation {
+            return None;
+        }
+        rns.as_ref()?
+            .rnode_activity_runtime_context(origin_identity_generation)
+    }
+
+    /// Cover one exact registration only if `origin` still owns the installed
+    /// RNS manager. Coverage is a tombstone until that manager is torn down.
+    pub fn cover_rnode_activity_interface(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+        origin: RNodeActivityOrigin,
+    ) -> bool {
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return false;
+        }
+        let Ok(mut rns) = self.rns.write() else {
+            return false;
+        };
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return false;
+        }
+        rns.as_mut()
+            .is_some_and(|rns| rns.cover_rnode_activity_interface(interface_id, origin))
+    }
+
+    pub(crate) fn owns_rnode_activity_observation(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+        origin: RNodeActivityOrigin,
+    ) -> bool {
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return false;
+        }
+        self.rns
+            .read()
+            .ok()
+            .and_then(|rns| {
+                rns.as_ref().map(|rns| {
+                    rns.owns_rnode_activity_session(origin)
+                        && rns.is_rnode_activity_interface_covered(
+                            interface_id,
+                            origin.identity_generation(),
+                        )
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn is_rnode_activity_interface_covered(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+    ) -> bool {
+        let identity_generation = self.current_identity_session_generation();
+        self.rns
+            .read()
+            .ok()
+            .and_then(|rns| {
+                rns.as_ref().map(|rns| {
+                    rns.is_rnode_activity_interface_covered(interface_id, identity_generation)
+                })
+            })
+            .unwrap_or(false)
     }
 
     pub fn set_channels(&self, channels: ChannelsManagerHandle) {
@@ -1802,13 +1933,19 @@ mod tests {
         assert_eq!(rollback_context, None);
         completion
             .expect("completion sender")
-            .send(BleRnodeOperationResult::Ready { interface_id: 73 })
+            .send(BleRnodeOperationResult::Ready {
+                interface_id: 73,
+                monitor: None,
+            })
             .expect("waiting receiver");
 
-        assert_eq!(
+        assert!(matches!(
             receiver.await.expect("typed completion"),
-            BleRnodeOperationResult::Ready { interface_id: 73 }
-        );
+            BleRnodeOperationResult::Ready {
+                interface_id: 73,
+                monitor: None,
+            }
+        ));
     }
 
     #[tokio::test]
@@ -1836,10 +1973,10 @@ mod tests {
             ))
             .expect("waiting receiver");
 
-        assert_eq!(
+        assert!(matches!(
             receiver.await.expect("typed completion"),
             BleRnodeOperationResult::Failed(BleRnodeOperationFailure::Readiness)
-        );
+        ));
     }
 
     #[tokio::test]
