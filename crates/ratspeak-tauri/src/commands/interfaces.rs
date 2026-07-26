@@ -18,6 +18,14 @@ use tauri::State;
     feature = "rnode-tcp",
     target_os = "android"
 ))]
+use rns_interface::rnode::RNodeStartupOptions;
+
+#[cfg(any(
+    feature = "ble",
+    feature = "serial",
+    feature = "rnode-tcp",
+    target_os = "android"
+))]
 use crate::commands::rnode_readiness::{
     RnodeReadinessFailure, await_spawned_rnode_ready, teardown_spawned_rnode_exact,
 };
@@ -2642,23 +2650,26 @@ async fn spawn_editable_interface(
                 }
                 #[cfg(all(feature = "ble", not(target_os = "android")))]
                 {
-                    let spawned = rns_runtime::reticulum::spawn_ble_rnode_runtime_observed(
-                        &handle,
-                        rns_runtime::reticulum::BleRnodeRuntimeArgs {
-                            name,
-                            port,
-                            frequency: *frequency as u32,
-                            bandwidth: *bandwidth as u32,
-                            spreading_factor: *spreading_factor,
-                            coding_rate: *coding_rate,
-                            tx_power: *tx_power,
-                            mode: rnode_runtime_mode(mode),
-                            st_alock: airtime_limit_short.map(|v| v as f32),
-                            lt_alock: airtime_limit_long.map(|v| v as f32),
-                            flow_control: true,
-                        },
-                    )
-                    .await?;
+                    let spawned =
+                        rns_runtime::reticulum::spawn_ble_rnode_runtime_observed_with_options(
+                            &handle,
+                            rns_runtime::reticulum::BleRnodeRuntimeArgs {
+                                name,
+                                port,
+                                frequency: *frequency as u32,
+                                bandwidth: *bandwidth as u32,
+                                spreading_factor: *spreading_factor,
+                                coding_rate: *coding_rate,
+                                tx_power: *tx_power,
+                                mode: rnode_runtime_mode(mode),
+                                st_alock: airtime_limit_short.map(|v| v as f32),
+                                lt_alock: airtime_limit_long.map(|v| v as f32),
+                                flow_control: true,
+                            },
+                            RNodeStartupOptions::require_capability_admission(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
                     let id = await_owned_rnode_ready(state, rnode_lease, &handle, &spawned)
                         .await
                         .map_err(|error| error.to_string())?;
@@ -2684,21 +2695,24 @@ async fn spawn_editable_interface(
                         Ok(false) => return Err("USB permission denied".to_string()),
                         Err(e) => return Err(format!("USB permission probe failed: {e}")),
                     }
-                    let spawned = rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed(
-                        &handle,
-                        name,
-                        device_name,
-                        *frequency as u32,
-                        *bandwidth as u32,
-                        *spreading_factor,
-                        *coding_rate,
-                        *tx_power,
-                        rnode_runtime_mode(mode),
-                        airtime_limit_short.map(|v| v as f32),
-                        airtime_limit_long.map(|v| v as f32),
-                        false,
-                    )
-                    .await?;
+                    let spawned =
+                        rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options(
+                            &handle,
+                            name,
+                            device_name,
+                            *frequency as u32,
+                            *bandwidth as u32,
+                            *spreading_factor,
+                            *coding_rate,
+                            *tx_power,
+                            rnode_runtime_mode(mode),
+                            airtime_limit_short.map(|v| v as f32),
+                            airtime_limit_long.map(|v| v as f32),
+                            false,
+                            RNodeStartupOptions::require_capability_admission(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
                     let id = await_owned_rnode_ready(state, rnode_lease, &handle, &spawned)
                         .await
                         .map_err(|error| error.to_string())?;
@@ -2719,7 +2733,7 @@ async fn spawn_editable_interface(
                     return Err("Serial RNode unsupported on this build".to_string());
                 }
 
-                let spawned = rns_runtime::reticulum::spawn_rnode_runtime_observed(
+                let spawned = rns_runtime::reticulum::spawn_rnode_runtime_observed_with_options(
                     &handle,
                     rns_runtime::reticulum::RnodeRuntimeArgs {
                         name,
@@ -2734,8 +2748,10 @@ async fn spawn_editable_interface(
                         lt_alock: airtime_limit_long.map(|v| v as f32),
                         flow_control: false,
                     },
+                    RNodeStartupOptions::require_capability_admission(),
                 )
-                .await?;
+                .await
+                .map_err(|error| error.to_string())?;
                 let id = await_owned_rnode_ready(state, rnode_lease, &handle, &spawned)
                     .await
                     .map_err(|error| error.to_string())?;
@@ -3681,7 +3697,7 @@ pub async fn add_lora_interface(
                     false,
                     None,
                 );
-                match rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed(
+                match rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options(
                     &rns,
                     &iface_name,
                     &device_name,
@@ -3694,8 +3710,10 @@ pub async fn add_lora_interface(
                     radio.airtime_limit_short.map(|v| v as f32),
                     radio.airtime_limit_long.map(|v| v as f32),
                     false,
+                    RNodeStartupOptions::require_capability_admission(),
                 )
                 .await
+                .map_err(|error| error.to_string())
                 {
                     Ok(spawned) => {
                         match await_owned_rnode_ready(&st, &operation_lease, &rns, &spawned).await {
@@ -4003,7 +4021,7 @@ pub async fn add_lora_interface(
                     if !st.is_current_rnode_lifecycle_operation(&operation_lease) {
                         return;
                     }
-                    match rns_runtime::reticulum::spawn_ble_rnode_runtime_observed(
+                    match rns_runtime::reticulum::spawn_ble_rnode_runtime_observed_with_options(
                         &rns,
                         rns_runtime::reticulum::BleRnodeRuntimeArgs {
                             name: &name,
@@ -4018,8 +4036,10 @@ pub async fn add_lora_interface(
                             lt_alock: radio.airtime_limit_long.map(|v| v as f32),
                             flow_control: true,
                         },
+                        RNodeStartupOptions::require_capability_admission(),
                     )
                     .await
+                    .map_err(|error| error.to_string())
                     {
                         Ok(spawned) => {
                             emit_op_status_broadcast(
@@ -4269,7 +4289,7 @@ pub async fn add_lora_interface(
                 if !st.is_current_rnode_lifecycle_operation(&operation_lease) {
                     return;
                 }
-                match rns_runtime::reticulum::spawn_rnode_runtime_observed(
+                match rns_runtime::reticulum::spawn_rnode_runtime_observed_with_options(
                     &rns,
                     rns_runtime::reticulum::RnodeRuntimeArgs {
                         name: &name_owned,
@@ -4284,8 +4304,10 @@ pub async fn add_lora_interface(
                         lt_alock: radio.airtime_limit_long.map(|v| v as f32),
                         flow_control: false,
                     },
+                    RNodeStartupOptions::require_capability_admission(),
                 )
                 .await
+                .map_err(|error| error.to_string())
                 {
                     Ok(spawned) => {
                         let id = spawned.interface_id;

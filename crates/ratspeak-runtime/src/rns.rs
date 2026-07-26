@@ -6,8 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
+use rns_interface::rnode::RNodeStartupOptions;
 use rns_runtime::lifecycle::ShutdownSignal;
-use rns_runtime::reticulum::{self, InstanceMode, ReticulumHandle, StartupRNodeRuntime};
+use rns_runtime::reticulum::{
+    self, InitOptions, InstanceMode, ReticulumHandle, StartupRNodeRuntime,
+};
 use rns_transport::messages::{TransportMessage, TransportQuery, TransportQueryResponse};
 
 pub const UI_PATH_TABLE_LIMIT: usize = 500;
@@ -30,11 +33,13 @@ impl RnsManager {
         is_foreground: Arc<AtomicBool>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let shutdown = ShutdownSignal::new();
-        let handle = reticulum::init(
+        let handle = reticulum::init_with_options_and_rnode_startup_options(
             Some(config_dir),
             socket_dir,
             shutdown.clone(),
             is_foreground,
+            InitOptions::default(),
+            RNodeStartupOptions::require_capability_admission(),
         )
         .await
         .map_err(|e| format!("RNS init failed: {e:?}"))?;

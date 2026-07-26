@@ -51,6 +51,31 @@ fn rust_struct_literal_blocks<'a>(source: &'a str, marker: &str) -> Vec<&'a str>
         .collect()
 }
 
+fn rust_call_blocks<'a>(source: &'a str, call_path: &str) -> Vec<&'a str> {
+    let marker = format!("{call_path}(");
+    source
+        .match_indices(&marker)
+        .map(|(idx, _)| {
+            let tail = &source[idx..];
+            let start = call_path.len();
+            let mut depth = 0usize;
+            for (offset, ch) in tail[start..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            return &tail[..start + offset + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unterminated function call for {call_path}");
+        })
+        .collect()
+}
+
 #[test]
 fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     let root = repo_root();
@@ -261,6 +286,93 @@ fn ble_rnode_runtime_spawns_enable_flow_control() {
             "BLE RNode runtime args must opt into RNode CMD_READY flow control:\n{block}"
         );
     }
+}
+
+#[test]
+fn all_rnode_creation_paths_require_strict_capability_admission() {
+    let root = repo_root();
+    let runtime_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/rns.rs")).expect("RNS runtime");
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let ble_rs =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("BLE commands");
+    let strict_option = "RNodeStartupOptions::require_capability_admission()";
+
+    let assert_strict_calls = |source: &str, call_path: &str, expected: usize| {
+        let calls = rust_call_blocks(source, call_path);
+        assert_eq!(
+            calls.len(),
+            expected,
+            "unexpected exact call count for {call_path}"
+        );
+        for call in calls {
+            assert!(
+                call.contains(strict_option),
+                "{call_path} must require capability admission:\n{call}"
+            );
+        }
+    };
+
+    assert_strict_calls(
+        &runtime_rs,
+        "reticulum::init_with_options_and_rnode_startup_options",
+        1,
+    );
+    let configured_startup = rust_call_blocks(
+        &runtime_rs,
+        "reticulum::init_with_options_and_rnode_startup_options",
+    );
+    assert!(configured_startup[0].contains("InitOptions::default()"));
+    assert_strict_calls(
+        &interfaces_rs,
+        "rns_runtime::reticulum::spawn_ble_rnode_runtime_observed_with_options",
+        2,
+    );
+    assert_strict_calls(
+        &interfaces_rs,
+        "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options",
+        2,
+    );
+    assert_strict_calls(
+        &interfaces_rs,
+        "rns_runtime::reticulum::spawn_rnode_runtime_observed_with_options",
+        2,
+    );
+    assert_strict_calls(
+        &ble_rs,
+        "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options",
+        1,
+    );
+
+    assert_eq!(runtime_rs.matches(strict_option).count(), 1);
+    assert_eq!(interfaces_rs.matches(strict_option).count(), 6);
+    assert_eq!(ble_rs.matches(strict_option).count(), 1);
+
+    for legacy_call in ["reticulum::init", "reticulum::init_with_options"] {
+        assert!(
+            rust_call_blocks(&runtime_rs, legacy_call).is_empty(),
+            "legacy RNode startup call remains: {legacy_call}"
+        );
+    }
+    for legacy_call in [
+        "rns_runtime::reticulum::spawn_ble_rnode_runtime_observed",
+        "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed",
+        "rns_runtime::reticulum::spawn_rnode_runtime_observed",
+    ] {
+        assert!(
+            rust_call_blocks(&interfaces_rs, legacy_call).is_empty(),
+            "legacy RNode spawn call remains: {legacy_call}"
+        );
+    }
+    assert!(
+        rust_call_blocks(
+            &ble_rs,
+            "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed",
+        )
+        .is_empty(),
+        "legacy native BLE RNode spawn call remains"
+    );
 }
 
 #[test]
@@ -1044,7 +1156,14 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
     assert!(ble.contains("take_completing_ble_rnode_activity_operation"));
     assert!(ble.contains("disconnect_native_ble_rnode_operation"));
     assert!(ble.contains("json!({ \"activity_operation\": activity_operation })"));
-    assert!(ble.contains("spawn_ble_rnode_runtime_native_observed"));
+    assert_eq!(
+        rust_call_blocks(
+            &ble,
+            "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options",
+        )
+        .len(),
+        1
+    );
     assert!(ble.contains("await_spawned_rnode_ready(&spawned)"));
     assert!(ble.contains("teardown_spawned_rnode_exact(&rns, &spawned)"));
     assert!(!ble.contains("online.load(std::sync::atomic::Ordering::SeqCst)"));
@@ -1258,9 +1377,30 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
             "add_lora transport matrix is missing {outcome}"
         );
     }
-    assert!(add_lora.contains("spawn_ble_rnode_runtime_observed"));
-    assert!(add_lora.contains("spawn_rnode_runtime_observed"));
-    assert!(add_lora.contains("spawn_android_usb_rnode_runtime_observed"));
+    assert_eq!(
+        rust_call_blocks(
+            add_lora,
+            "rns_runtime::reticulum::spawn_ble_rnode_runtime_observed_with_options",
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        rust_call_blocks(
+            add_lora,
+            "rns_runtime::reticulum::spawn_rnode_runtime_observed_with_options",
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        rust_call_blocks(
+            add_lora,
+            "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options",
+        )
+        .len(),
+        1
+    );
     assert!(add_lora.contains("await_owned_rnode_ready"));
     assert!(!add_lora.contains("online.load(std::sync::atomic::Ordering::SeqCst)"));
     assert!(interfaces.contains("teardown_spawned_rnode_exact(handle, spawned)"));

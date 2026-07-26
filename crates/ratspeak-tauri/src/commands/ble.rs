@@ -20,6 +20,8 @@ use ratspeak_runtime::activity::producer::{
     InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason, InterfaceTimeoutReason,
     InterfaceTransition,
 };
+#[cfg(feature = "ble")]
+use rns_interface::rnode::RNodeStartupOptions;
 
 use crate::commands::interface_activity::record_interface_event as record_interface_activity;
 #[cfg(any(feature = "ble", test))]
@@ -1356,8 +1358,7 @@ pub async fn ble_rnode_bridge_ready(
                     .and_then(|guard| guard.as_ref().map(|mgr| mgr.handle.clone()));
                 match rns {
                     Some(rns) => {
-                        let result =
-                            rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed(
+                        let result = rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options(
                                 &rns,
                                 rns_runtime::reticulum::BleRnodeRuntimeArgs {
                                     name: &name,
@@ -1373,8 +1374,10 @@ pub async fn ble_rnode_bridge_ready(
                                     flow_control: true,
                                 },
                                 tcp_port,
+                                RNodeStartupOptions::require_capability_admission(),
                             )
-                            .await;
+                            .await
+                            .map_err(|error| error.to_string());
                         Some((rns, result))
                     }
                     None => None,
