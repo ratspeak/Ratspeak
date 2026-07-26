@@ -988,7 +988,7 @@ pub async fn sync_propagation(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         && let Some(mgr) = lxmf.as_ref()
         && let Some(ref client) = mgr.propagation_client
     {
-        client.state == PropagationClientState::Failed
+        client.state() == PropagationClientState::Failed
     } else {
         false
     };
@@ -1004,7 +1004,7 @@ pub async fn sync_propagation(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         if let Some(mgr) = lxmf.as_mut() {
             if let Some(ref mut client) = mgr.propagation_client {
                 if matches!(
-                    client.state,
+                    client.state(),
                     PropagationClientState::Idle
                         | PropagationClientState::Complete
                         | PropagationClientState::Failed
@@ -1025,7 +1025,10 @@ pub async fn sync_propagation(state: State<'_, Arc<AppState>>) -> AppResult<Valu
                         "success": true,
                         "started": false,
                         "downloaded": 0,
-                        "message": format!("Offline Inbox check already in progress: {:?}", client.state),
+                        "message": format!(
+                            "Offline Inbox check already in progress: {:?}",
+                            client.state()
+                        ),
                     })
                 }
             } else {

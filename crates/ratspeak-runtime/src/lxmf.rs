@@ -2110,20 +2110,23 @@ impl LxmfManager {
         } else {
             "disabled".to_string()
         };
-        let client_state = self
+        let transfer_status = self
             .propagation_client
             .as_ref()
-            .map(|c| format!("{:?}", c.state))
+            .map(|client| client.transfer_status());
+        let client_state = transfer_status
+            .map(|status| format!("{:?}", status.state))
             .unwrap_or_else(|| "none".to_string());
         let connected = self
             .propagation_client
             .as_ref()
             .map(|c| {
                 matches!(
-                    c.state,
+                    c.state(),
                     lxmf_core::propagation_client::PropagationClientState::LinkEstablished
                         | lxmf_core::propagation_client::PropagationClientState::ListRequested
                         | lxmf_core::propagation_client::PropagationClientState::GetRequested
+                        | lxmf_core::propagation_client::PropagationClientState::Receiving
                         | lxmf_core::propagation_client::PropagationClientState::PurgeRequested
                         | lxmf_core::propagation_client::PropagationClientState::Complete
                 )
@@ -2136,6 +2139,9 @@ impl LxmfManager {
             "sync_state": sync_state,
             "client_state": client_state,
             "connected": connected,
+            "transfer_progress": transfer_status.map(|status| status.progress),
+            "transfer_size": transfer_status.and_then(|status| status.data_size),
+            "transfer_result": transfer_status.and_then(|status| status.result),
             "message_count": self.router.propagation_store.len(),
         })
     }
@@ -3492,7 +3498,7 @@ impl LxmfManager {
             .unwrap_or_default()
             .as_secs_f64();
         now - self.last_propagation_check > AUTO_PROPAGATION_CHECK_INTERVAL_SECS
-            && client.state == lxmf_core::propagation_client::PropagationClientState::Idle
+            && client.state() == lxmf_core::propagation_client::PropagationClientState::Idle
     }
 
     pub fn propagated_deposit_pending(&self) -> bool {
@@ -3611,14 +3617,14 @@ impl LxmfManager {
         let mut downloaded = Vec::new();
         if let Some(ref mut client) = self.propagation_client {
             client.drain_events(&self.known_identities);
-            let before_state = client.state;
             client.tick();
+            let transfer_status = client.transfer_status();
             let terminal_state = if matches!(
-                before_state,
+                transfer_status.state,
                 lxmf_core::propagation_client::PropagationClientState::Complete
                     | lxmf_core::propagation_client::PropagationClientState::Failed
             ) {
-                Some(before_state)
+                Some(transfer_status.state)
             } else {
                 None
             };
@@ -3635,6 +3641,9 @@ impl LxmfManager {
                 }
             }
             downloaded = client.take_received_messages();
+            if terminal_state.is_some() {
+                client.acknowledge_transfer();
+            }
 
             // Auto-poll every 5 minutes when idle. Missing relay readiness is
             // not an inbox check, so it must not consume the pickup interval.
@@ -3644,7 +3653,7 @@ impl LxmfManager {
                 .as_secs_f64();
             if self.client_propagation_enabled
                 && now - self.last_propagation_check > AUTO_PROPAGATION_CHECK_INTERVAL_SECS
-                && client.state == lxmf_core::propagation_client::PropagationClientState::Idle
+                && client.state() == lxmf_core::propagation_client::PropagationClientState::Idle
                 && auto_download_ready
             {
                 self.last_propagation_check = now;
@@ -8045,14 +8054,14 @@ mod tests {
 
         mgr.tick_with_auto_propagation_download_ready(false);
         assert_eq!(
-            mgr.propagation_client.as_ref().map(|client| client.state),
+            mgr.propagation_client.as_ref().map(|client| client.state()),
             Some(lxmf_core::propagation_client::PropagationClientState::Idle)
         );
         assert!(mgr.auto_propagation_check_due(true));
 
         mgr.tick_with_auto_propagation_download_ready(true);
         assert_eq!(
-            mgr.propagation_client.as_ref().map(|client| client.state),
+            mgr.propagation_client.as_ref().map(|client| client.state()),
             Some(lxmf_core::propagation_client::PropagationClientState::LinkEstablishing)
         );
     }

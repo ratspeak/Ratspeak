@@ -2895,6 +2895,7 @@ dependencies = [
  "bytes",
  "hex",
  "rand 0.8.5",
+ "rmp",
  "rmp-serde",
  "rmpv",
  "rns-crypto",
@@ -2908,6 +2909,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]
