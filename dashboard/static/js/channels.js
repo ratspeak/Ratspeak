@@ -400,7 +400,6 @@ function renderChannels() {
 function _channelsRenderHubStrip() {
     var strip = _channelsEl('channel-hub-strip');
     var menu = _channelsEl('channel-hub-menu-btn');
-    var subtitle = _channelsEl('channels-sidebar-subtitle');
     if (!strip) return;
 
     strip.dataset.phase = channelsSnapshot.phase || 'unavailable';
@@ -425,7 +424,6 @@ function _channelsRenderHubStrip() {
     }
     _channelsSetText('channel-hub-strip-title', title);
     _channelsSetText('channel-hub-strip-meta', meta);
-    if (subtitle) subtitle.textContent = 'Group conversations';
 }
 
 function _channelsRenderList() {
@@ -1389,6 +1387,39 @@ function _channelsUpdateComposer() {
     input.disabled = !room || room.phase !== 'joined' || channelsSnapshot.phase !== 'active';
 }
 
+function _channelsUsesNativeMobileTyping() {
+    if (typeof isTauriMobile === 'function' && isTauriMobile()) return true;
+    if (typeof isIOS === 'function' && isIOS()) return true;
+    return typeof isAndroid === 'function' && isAndroid();
+}
+
+function _channelsApplyComposerTypingPolicy(input, useMobileDefaults) {
+    if (!input) return;
+    var assistanceAttributes = [
+        'autocomplete',
+        'autocorrect',
+        'autocapitalize',
+        'spellcheck',
+        'writingsuggestions'
+    ];
+    if (useMobileDefaults) {
+        assistanceAttributes.forEach(function(attribute) {
+            input.removeAttribute(attribute);
+        });
+        return;
+    }
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('autocorrect', 'off');
+    input.setAttribute('autocapitalize', 'off');
+    input.setAttribute('spellcheck', 'false');
+    input.setAttribute('writingsuggestions', 'false');
+}
+
+function _channelsHandleComposerBeforeInput(event, useMobileDefaults) {
+    if (useMobileDefaults || !event || event.inputType !== 'insertReplacementText') return;
+    event.preventDefault();
+}
+
 function channelsSelectRoom(roomName) {
     var room = _channelsRoomByName(roomName);
     if (!room) return;
@@ -1935,9 +1966,11 @@ function _channelsBindUI() {
     });
     var input = _channelsEl('channel-message-input');
     if (input) {
-        input.autocomplete = 'off';
-        input.setAttribute('writingsuggestions', 'false');
-        if (typeof disableAutoCorrect === 'function') disableAutoCorrect(input);
+        var useMobileTypingDefaults = _channelsUsesNativeMobileTyping();
+        _channelsApplyComposerTypingPolicy(input, useMobileTypingDefaults);
+        input.addEventListener('beforeinput', function(event) {
+            _channelsHandleComposerBeforeInput(event, useMobileTypingDefaults);
+        });
         input.addEventListener('input', function() {
             input.style.height = 'auto';
             input.style.height = Math.min(input.scrollHeight, 132) + 'px';

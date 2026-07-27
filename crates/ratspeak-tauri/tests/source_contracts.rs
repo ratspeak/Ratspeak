@@ -123,7 +123,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(index.contains("id=\"view-channels\""));
     assert!(index.contains("/static/js/channels.js"));
     assert!(index.contains("id=\"channel-message-input\""));
-    assert!(index.contains("autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\""));
+    assert!(!index.contains("Group conversations"));
+    assert!(!index.contains("channels-sidebar-subtitle"));
     assert!(index.contains("id=\"channel-members-back\""));
     assert!(!index.contains("Messages are not saved and disappear when this session ends."));
     assert!(!index.contains("id=\"channel-session-banner\""));
@@ -143,6 +144,12 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_js.contains("function _channelsGroupPresenceEvents"));
     assert!(channels_js.contains("function _channelsBuildPresenceGroup"));
     assert!(channels_js.contains("function _channelsRenderMemberDetail"));
+    assert!(channels_js.contains("function _channelsApplyComposerTypingPolicy"));
+    assert!(channels_js.contains("function _channelsHandleComposerBeforeInput"));
+    assert!(channels_js.contains("event.inputType !== 'insertReplacementText'"));
+    assert!(
+        channels_js.contains("_channelsApplyComposerTypingPolicy(input, useMobileTypingDefaults)")
+    );
     assert!(channels_js.contains("PeersCache.enriched()"));
     assert!(channels_js.contains("services.indexOf('lxmf.delivery')"));
     assert!(channels_js.contains("disableAutoCorrect(roomInput)"));

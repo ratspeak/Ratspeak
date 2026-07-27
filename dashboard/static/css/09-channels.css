@@ -47,12 +47,6 @@
     line-height: var(--type-leading-tight);
 }
 
-.channels-sidebar-subtitle {
-    margin-top: var(--space-2);
-    color: var(--text-muted);
-    font-size: var(--text-xs);
-}
-
 .channels-icon-btn,
 .channels-text-btn,
 .channel-send-btn {
