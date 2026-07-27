@@ -1,4 +1,4 @@
-//! Reticulum Relay Chat protocol 0.1.3 wire codec.
+//! Reticulum Relay Chat wire codec (envelope version 1), client and hub side.
 //!
 //! This module deliberately contains no persistence or UI concerns. RRC
 //! envelopes are compact CBOR maps with unsigned integer keys; unknown keys
@@ -41,6 +41,12 @@ pub const LIMIT_RATE_MESSAGES_PER_MINUTE: u64 = 4;
 pub const CAP_RESOURCE_ENVELOPE: u64 = 0;
 pub const CAP_ACTION: u64 = 1;
 pub const CAP_DIRECT_NOTICE: u64 = 2;
+
+pub const RESOURCE_ID: u64 = 0;
+pub const RESOURCE_KIND: u64 = 1;
+pub const RESOURCE_SIZE: u64 = 2;
+pub const RESOURCE_SHA256: u64 = 3;
+pub const RESOURCE_ENCODING: u64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
@@ -299,6 +305,133 @@ pub fn decode(data: &[u8]) -> Result<Envelope, ProtocolError> {
     })
 }
 
+/// Hub-side WELCOME body. Absent optional fields are omitted, never null;
+/// the capabilities map is always present (reference-hub behavior).
+pub fn welcome_body(info: &WelcomeInfo) -> Value {
+    let mut fields = Vec::new();
+    if let Some(name) = info.hub_name.as_ref() {
+        fields.push((WELCOME_HUB_NAME, Value::Text(name.clone())));
+    }
+    if let Some(version) = info.hub_version.as_ref() {
+        fields.push((WELCOME_HUB_VERSION, Value::Text(version.clone())));
+    }
+    fields.push((
+        WELCOME_CAPABILITIES,
+        integer_map(
+            info.capabilities
+                .iter()
+                .map(|(capability, enabled)| (*capability, Value::Bool(*enabled)))
+                .collect(),
+        ),
+    ));
+    let limits = [
+        (LIMIT_MAX_NICK_BYTES, info.limits.max_nick_bytes),
+        (LIMIT_MAX_ROOM_NAME_BYTES, info.limits.max_room_name_bytes),
+        (
+            LIMIT_MAX_MESSAGE_BODY_BYTES,
+            info.limits.max_message_body_bytes,
+        ),
+        (
+            LIMIT_MAX_ROOMS_PER_SESSION,
+            info.limits.max_rooms_per_session,
+        ),
+        (
+            LIMIT_RATE_MESSAGES_PER_MINUTE,
+            info.limits.rate_messages_per_minute,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, limit)| limit.map(|value| (key, unsigned(value as u64))))
+    .collect::<Vec<_>>();
+    if !limits.is_empty() {
+        fields.push((WELCOME_LIMITS, integer_map(limits)));
+    }
+    integer_map(fields)
+}
+
+/// JOINED/PARTED roster body: a bare CBOR array of 16-byte identity hashes.
+/// Fan-out to existing members must be single-element (legacy clients treat
+/// the first element positionally); the joiner gets the full roster.
+pub fn member_list(members: &[[u8; 16]]) -> Value {
+    Value::Array(
+        members
+            .iter()
+            .map(|member| Value::Bytes(member.to_vec()))
+            .collect(),
+    )
+}
+
+/// Capabilities from a HELLO body. Tolerates legacy clients: a non-map body
+/// or a non-map capabilities slot (archived rrc-gui sends a version string
+/// there) parses as no capabilities rather than an error.
+pub fn hello_capabilities(envelope: &Envelope) -> BTreeMap<u64, bool> {
+    let Some(Value::Map(body)) = envelope.body.as_ref() else {
+        return BTreeMap::new();
+    };
+    map_get(body, HELLO_CAPABILITIES)
+        .and_then(as_integer_bool_map)
+        .unwrap_or_default()
+}
+
+/// RESOURCE_ENVELOPE body (reference `B_RES_*` layout).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceEnvelopeBody {
+    pub id: [u8; 8],
+    pub kind: String,
+    pub size: u64,
+    pub sha256: Option<[u8; 32]>,
+    pub encoding: Option<String>,
+}
+
+pub fn resource_envelope_body(body: &ResourceEnvelopeBody) -> Value {
+    let mut fields = vec![
+        (RESOURCE_ID, Value::Bytes(body.id.to_vec())),
+        (RESOURCE_KIND, Value::Text(body.kind.clone())),
+        (RESOURCE_SIZE, unsigned(body.size)),
+    ];
+    if let Some(sha256) = body.sha256.as_ref() {
+        fields.push((RESOURCE_SHA256, Value::Bytes(sha256.to_vec())));
+    }
+    if let Some(encoding) = body.encoding.as_ref() {
+        fields.push((RESOURCE_ENCODING, Value::Text(encoding.clone())));
+    }
+    integer_map(fields)
+}
+
+/// Mirrors the reference hub's inbound validation: id, kind, and a positive
+/// size are required; a malformed sha256 rejects; a non-text encoding is
+/// silently dropped rather than rejected.
+pub fn parse_resource_envelope(envelope: &Envelope) -> Result<ResourceEnvelopeBody, ProtocolError> {
+    let Some(Value::Map(body)) = envelope.body.as_ref() else {
+        return Err(ProtocolError::InvalidField(K_BODY));
+    };
+    let id = fixed_bytes::<8>(body, RESOURCE_ID)?;
+    let kind = match map_get(body, RESOURCE_KIND) {
+        Some(Value::Text(kind)) => kind.clone(),
+        Some(_) => return Err(ProtocolError::InvalidField(RESOURCE_KIND)),
+        None => return Err(ProtocolError::MissingField(RESOURCE_KIND)),
+    };
+    let size = required_unsigned(body, RESOURCE_SIZE)?;
+    if size == 0 {
+        return Err(ProtocolError::InvalidField(RESOURCE_SIZE));
+    }
+    let sha256 = match map_get(body, RESOURCE_SHA256) {
+        Some(_) => Some(fixed_bytes::<32>(body, RESOURCE_SHA256)?),
+        None => None,
+    };
+    let encoding = match map_get(body, RESOURCE_ENCODING) {
+        Some(Value::Text(encoding)) => Some(encoding.clone()),
+        _ => None,
+    };
+    Ok(ResourceEnvelopeBody {
+        id,
+        kind,
+        size,
+        sha256,
+        encoding,
+    })
+}
+
 pub fn parse_welcome(envelope: &Envelope) -> WelcomeInfo {
     let Some(Value::Map(body)) = envelope.body.as_ref() else {
         return WelcomeInfo::default();
@@ -381,7 +514,7 @@ fn now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn integer_map(entries: Vec<(u64, Value)>) -> Value {
+pub(crate) fn integer_map(entries: Vec<(u64, Value)>) -> Value {
     Value::Map(
         entries
             .into_iter()
@@ -390,25 +523,25 @@ fn integer_map(entries: Vec<(u64, Value)>) -> Value {
     )
 }
 
-fn unsigned(value: u64) -> Value {
+pub(crate) fn unsigned(value: u64) -> Value {
     Value::Integer(value.into())
 }
 
-fn as_unsigned(value: &Value) -> Option<u64> {
+pub(crate) fn as_unsigned(value: &Value) -> Option<u64> {
     match value {
         Value::Integer(integer) => u64::try_from(*integer).ok(),
         _ => None,
     }
 }
 
-fn as_text(value: &Value) -> Option<&str> {
+pub(crate) fn as_text(value: &Value) -> Option<&str> {
     match value {
         Value::Text(text) => Some(text),
         _ => None,
     }
 }
 
-fn map_get(fields: &[(Value, Value)], key: u64) -> Option<&Value> {
+pub(crate) fn map_get(fields: &[(Value, Value)], key: u64) -> Option<&Value> {
     fields
         .iter()
         .find_map(|(candidate, value)| (as_unsigned(candidate) == Some(key)).then_some(value))
@@ -541,5 +674,164 @@ mod tests {
         ));
         assert_eq!(normalize_room("General", 64).unwrap(), "general");
         assert_eq!(normalize_room(" Two Rooms ", 64).unwrap(), "two rooms");
+    }
+
+    // Pinned wire fixtures generated by the reference implementation
+    // (kc1awv/rrcd @ f6d7e9d: envelope.make_envelope + codec.encode with fixed
+    // mid/ts). Regenerate only from rrcd itself, never by hand.
+    const RRCD_WELCOME: &str = "a6000101020248e0e1e2e3e4e5e6e7031b000001984ab480000450101112131415161718191a1b1c1d1e1f06a4006854657374204875620165302e332e3202a301f502f500f503a50018200118400219015e0318200418f0";
+    const RRCD_JOINED_ROSTER: &str = "a70001010b0248e0e1e2e3e4e5e6e7031b000001984ab480000450101112131415161718191a1b1c1d1e1f05656c6f626279068250a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a150b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+    const RRCD_JOINED_FANOUT: &str = "a80001010b0248e0e1e2e3e4e5e6e7031b000001984ab480000450101112131415161718191a1b1c1d1e1f05656c6f626279068150a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10765726174746f";
+    const RRCD_DIRECT_NOTICE: &str = "a8000101150248e0e1e2e3e4e5e6e7031b000001984ab480000450a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10850b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20664707373740765726174746f";
+    const RRCD_RESOURCE_ENVELOPE: &str = "a700010118320248e0e1e2e3e4e5e6e7031b000001984ab480000450a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a105656c6f62627906a50048e0e1e2e3e4e5e6e701666e6f74696365021904d20358205a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a04657574662d38";
+    const RRCD_KEYLESS_JOIN: &str = "a70001010a0248e0e1e2e3e4e5e6e7031b000001984ab480000450a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a105656c6f6262790765726174746f";
+    const RRCD_LEGACY_GUI_HELLO: &str = "a7000101010248e0e1e2e3e4e5e6e7031b000001984ab480000450a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a106a301677272632d6775690265302e312e3003a100f5076767756920726174";
+
+    fn fixture(hex: &str) -> Envelope {
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
+            .collect();
+        decode(&bytes).unwrap()
+    }
+
+    #[test]
+    fn rrcd_welcome_fixture_parses_and_our_builder_is_equivalent() {
+        let envelope = fixture(RRCD_WELCOME);
+        assert_eq!(envelope.message_type, MessageType::Welcome);
+        assert_eq!(envelope.source[0], 0x10);
+
+        let parsed = parse_welcome(&envelope);
+        assert_eq!(parsed.hub_name.as_deref(), Some("Test Hub"));
+        assert_eq!(parsed.hub_version.as_deref(), Some("0.3.2"));
+        for capability in [CAP_RESOURCE_ENVELOPE, CAP_ACTION, CAP_DIRECT_NOTICE] {
+            assert_eq!(parsed.capabilities.get(&capability), Some(&true));
+        }
+        assert_eq!(parsed.limits.max_nick_bytes, Some(32));
+        assert_eq!(parsed.limits.max_room_name_bytes, Some(64));
+        assert_eq!(parsed.limits.max_message_body_bytes, Some(350));
+        assert_eq!(parsed.limits.max_rooms_per_session, Some(32));
+        assert_eq!(parsed.limits.rate_messages_per_minute, Some(240));
+
+        // Our hub-side builder must round-trip to the same parsed view the
+        // reference hub's bytes produce.
+        let mut ours = Envelope::new(MessageType::Welcome, envelope.source);
+        ours.body = Some(welcome_body(&parsed));
+        assert_eq!(
+            parse_welcome(&decode(&encode(&ours).unwrap()).unwrap()),
+            parsed
+        );
+    }
+
+    #[test]
+    fn rrcd_joined_fixtures_parse_roster_and_fanout_shapes() {
+        let roster = fixture(RRCD_JOINED_ROSTER);
+        assert_eq!(roster.message_type, MessageType::Joined);
+        assert_eq!(roster.room.as_deref(), Some("lobby"));
+        assert_eq!(roster.nickname, None);
+        let members = member_identities(&roster);
+        assert_eq!(members, vec![[0xA1; 16], [0xB2; 16]]);
+        assert_eq!(roster.body, Some(member_list(&members)));
+
+        let fanout = fixture(RRCD_JOINED_FANOUT);
+        assert_eq!(member_identities(&fanout), vec![[0xA1; 16]]);
+        assert_eq!(fanout.nickname.as_deref(), Some("ratto"));
+    }
+
+    #[test]
+    fn rrcd_direct_notice_fixture_tolerates_unsorted_keys() {
+        // rrcd inserts K_DESTINATION (8) before body (6) and nickname (7).
+        let envelope = fixture(RRCD_DIRECT_NOTICE);
+        assert_eq!(envelope.message_type, MessageType::Notice);
+        assert_eq!(envelope.room, None);
+        assert_eq!(envelope.destination, Some([0xB2; 16]));
+        assert_eq!(text_body(&envelope), Some("psst"));
+        assert_eq!(envelope.nickname.as_deref(), Some("ratto"));
+    }
+
+    #[test]
+    fn rrcd_resource_envelope_fixture_round_trips() {
+        let envelope = fixture(RRCD_RESOURCE_ENVELOPE);
+        assert_eq!(envelope.message_type, MessageType::ResourceEnvelope);
+        let parsed = parse_resource_envelope(&envelope).unwrap();
+        assert_eq!(
+            parsed,
+            ResourceEnvelopeBody {
+                id: [0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7],
+                kind: "notice".into(),
+                size: 1234,
+                sha256: Some([0x5A; 32]),
+                encoding: Some("utf-8".into()),
+            }
+        );
+
+        let mut ours = Envelope::new(MessageType::ResourceEnvelope, envelope.source);
+        ours.room = envelope.room.clone();
+        ours.body = Some(resource_envelope_body(&parsed));
+        assert_eq!(
+            parse_resource_envelope(&decode(&encode(&ours).unwrap()).unwrap()).unwrap(),
+            parsed
+        );
+    }
+
+    #[test]
+    fn resource_envelope_validation_matches_reference_rules() {
+        let mut envelope = Envelope::new(MessageType::ResourceEnvelope, [0x33; 16]);
+        // Non-map body rejects.
+        envelope.body = Some(Value::Text("nope".into()));
+        assert!(parse_resource_envelope(&envelope).is_err());
+        // Zero size rejects.
+        envelope.body = Some(integer_map(vec![
+            (RESOURCE_ID, Value::Bytes(vec![0x01; 8])),
+            (RESOURCE_KIND, Value::Text("notice".into())),
+            (RESOURCE_SIZE, unsigned(0)),
+        ]));
+        assert!(matches!(
+            parse_resource_envelope(&envelope),
+            Err(ProtocolError::InvalidField(RESOURCE_SIZE))
+        ));
+        // Non-text encoding is dropped, not rejected.
+        envelope.body = Some(integer_map(vec![
+            (RESOURCE_ID, Value::Bytes(vec![0x01; 8])),
+            (RESOURCE_KIND, Value::Text("blob".into())),
+            (RESOURCE_SIZE, unsigned(9)),
+            (RESOURCE_ENCODING, unsigned(7)),
+        ]));
+        assert_eq!(parse_resource_envelope(&envelope).unwrap().encoding, None);
+    }
+
+    #[test]
+    fn rrcd_keyless_join_omits_the_body_key_entirely() {
+        let envelope = fixture(RRCD_KEYLESS_JOIN);
+        assert_eq!(envelope.message_type, MessageType::Join);
+        assert_eq!(envelope.body, None);
+        assert_eq!(envelope.room.as_deref(), Some("lobby"));
+    }
+
+    #[test]
+    fn legacy_gui_hello_degrades_to_no_capabilities() {
+        // Archived rrc-gui puts its version string where the spec puts the
+        // capabilities map; a hub must read that as "no capabilities".
+        let envelope = fixture(RRCD_LEGACY_GUI_HELLO);
+        assert_eq!(envelope.message_type, MessageType::Hello);
+        assert!(hello_capabilities(&envelope).is_empty());
+        assert_eq!(envelope.nickname.as_deref(), Some("gui rat"));
+        // A spec-compliant HELLO still parses its map.
+        let ratspeak = Envelope::hello([0x44; 16], "rat", "1.0.0");
+        assert_eq!(hello_capabilities(&ratspeak).get(&CAP_ACTION), Some(&true));
+    }
+
+    #[test]
+    fn welcome_body_omits_empty_limits_and_member_list_handles_empty() {
+        let info = WelcomeInfo {
+            hub_name: Some("Hub".into()),
+            ..WelcomeInfo::default()
+        };
+        let Value::Map(fields) = welcome_body(&info) else {
+            panic!("welcome body must be a map");
+        };
+        assert!(map_get(&fields, WELCOME_LIMITS).is_none());
+        assert!(map_get(&fields, WELCOME_CAPABILITIES).is_some());
+        assert_eq!(member_list(&[]), Value::Array(Vec::new()));
     }
 }
