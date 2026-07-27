@@ -369,6 +369,10 @@ enum ChannelsCommand {
         activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
+    /// The local identity was renamed. RRC carries nicknames inline rather
+    /// than as a rename verb, so adopting the new name here is enough for the
+    /// hub and every room member to see it on the next envelope.
+    IdentityRenamed { previous: String, current: String },
     Join {
         room: String,
         key: Option<String>,
@@ -518,6 +522,18 @@ impl ChannelsManagerHandle {
             .await
             .map_err(|_| ChannelsError::Stopped)?;
         result_rx.await.map_err(|_| ChannelsError::Stopped)?
+    }
+
+    /// Adopt a renamed identity for the live session, if it is still using the
+    /// superseded name. Best-effort: a stopped manager has nothing to leak.
+    pub async fn identity_renamed(&self, previous: &str, current: &str) {
+        let _ = self
+            .command_tx
+            .send(ChannelsCommand::IdentityRenamed {
+                previous: previous.to_string(),
+                current: current.to_string(),
+            })
+            .await;
     }
 
     pub async fn shutdown(&self) {
@@ -1057,6 +1073,25 @@ async fn run_manager(
                                 .await;
                         let _ = result_tx.send(result);
                     }
+                    ChannelsCommand::IdentityRenamed { previous, current } => {
+                        if let Some(session) = active.as_mut()
+                            && let Some(adopted) = adopt_renamed_nickname(
+                                &session.nickname,
+                                &previous,
+                                &current,
+                                session
+                                    .limits
+                                    .max_nick_bytes
+                                    .unwrap_or(DEFAULT_NICK_MAX_BYTES),
+                            )
+                        {
+                            session.nickname = adopted.clone();
+                            mutate_snapshot(&snapshot, |snapshot| {
+                                snapshot.nickname = Some(adopted);
+                            });
+                            emit_snapshot(&emitter, &snapshot);
+                        }
+                    }
                     ChannelsCommand::Shutdown {
                         activity_fence,
                         result_tx,
@@ -1176,6 +1211,10 @@ async fn run_manager(
                                 active = None;
                                 mutate_snapshot(&snapshot, |state| {
                                     state.phase = ChannelsPhase::Error;
+                                    // The nickname belongs to the dead session;
+                                    // keeping it would re-offer a name the
+                                    // identity may since have retired.
+                                    state.nickname = None;
                                     state.rooms.clear();
                                     state.hub_greeting = None;
                                     state.notices.clear();
@@ -1199,6 +1238,7 @@ async fn run_manager(
                         active = None;
                         mutate_snapshot(&snapshot, |state| {
                             state.phase = ChannelsPhase::Error;
+                            state.nickname = None;
                             state.rooms.clear();
                             state.hub_greeting = None;
                             state.notices.clear();
@@ -1893,6 +1933,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
             }
             mutate_snapshot(snapshot, |state| {
                 state.phase = ChannelsPhase::Error;
+                state.nickname = None;
                 state.rooms.clear();
                 state.hub_greeting = None;
                 state.notices.clear();
@@ -3193,6 +3234,25 @@ fn sync_session_snapshot(active: &ActiveSession, snapshot: &Arc<RwLock<ChannelsS
     });
 }
 
+/// Decide whether a live session should adopt a renamed identity's name.
+///
+/// A session still carrying the superseded name adopts the new one, so the
+/// hub and every room member see it on the next envelope. A nickname the user
+/// deliberately chose for this session differs from the old identity name and
+/// is left alone.
+fn adopt_renamed_nickname(
+    session_nickname: &str,
+    previous: &str,
+    current: &str,
+    max_bytes: usize,
+) -> Option<String> {
+    if previous.is_empty() || session_nickname != previous {
+        return None;
+    }
+    let adopted = rrc::normalize_nickname(current, max_bytes).ok()?;
+    (adopted != session_nickname).then_some(adopted)
+}
+
 fn mutate_snapshot(
     snapshot: &Arc<RwLock<ChannelsSnapshot>>,
     mutate: impl FnOnce(&mut ChannelsSnapshot),
@@ -3341,6 +3401,36 @@ mod tests {
                 "room another-room: registered; mode=+nrt; topic=(none)"
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn a_renamed_identity_is_adopted_only_when_the_session_still_uses_the_old_name() {
+        // The reported leak: a session connected under the old identity name
+        // keeps stamping it on every envelope until it adopts the new one.
+        assert_eq!(
+            adopt_renamed_nickname("Old Name", "Old Name", "New Name", 32).as_deref(),
+            Some("New Name")
+        );
+
+        // A deliberate per-session alias is not the identity name and must
+        // survive a rename untouched.
+        assert_eq!(
+            adopt_renamed_nickname("Radio Rat", "Old Name", "New Name", 32),
+            None
+        );
+
+        // Nothing to retire, no change, and hub limits still apply.
+        assert_eq!(adopt_renamed_nickname("Old Name", "", "New Name", 32), None);
+        assert_eq!(
+            adopt_renamed_nickname("Same", "Same", "Same", 32),
+            None,
+            "an unchanged name is not a rename"
+        );
+        assert_eq!(
+            adopt_renamed_nickname("Old Name", "Old Name", "A Very Long Replacement", 8),
+            None,
+            "a name the hub would reject is never adopted"
         );
     }
 

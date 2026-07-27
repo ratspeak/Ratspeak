@@ -707,6 +707,12 @@ function renderActiveIdentityCard() {
             saveBtn.disabled = true;
             saveBtn.textContent = 'Saving...';
             RS.invoke('api_set_display_name', { args: { display_name: newName } }).then(function() {
+                // Refresh the cached name so no consumer keeps offering the
+                // superseded one (channel nicknames, header, modals).
+                try { localStorage.setItem('ratspeak_identity_name', newName); } catch (_) {}
+                // The backend retired the old name from saved hub bookmarks;
+                // reload them so an open session sees it without a restart.
+                if (typeof channelsRefreshSavedHubs === 'function') channelsRefreshSavedHubs();
                 showToast('Display name saved and announced', 'toast-green', 3000);
                 saveBtn.textContent = 'Saved!';
                 saveBtn.className = 'nr-btn nr-btn-success';

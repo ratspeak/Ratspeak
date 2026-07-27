@@ -1323,18 +1323,29 @@ pub async fn api_set_display_name(
 
     let id = identity_id.clone();
     let dn = display_name.clone();
-    db::spawn_db(state.db.clone(), move |p| {
-        db::update_identity(&p, &id, None, Some(&dn))
+    // The rename and the saved-hub sweep commit together, so a failure leaves
+    // the old name intact everywhere and the retry re-runs the sweep.
+    let rename = db::spawn_db(state.db.clone(), move |p| {
+        db::rename_identity_and_retire_alias(&p, &id, &dn)
     })
     .await
     .map_err(|_| AppError::internal("failed to save display name"))?
     .map_err(|_| {
-        tracing::error!(
-            reason = "update_failed",
-            "display_name: update_identity failed"
-        );
+        tracing::error!(reason = "update_failed", "display_name: rename failed");
         AppError::internal("failed to save display name")
     })?;
+
+    // A live channels session snapshots its nickname at connect, so without
+    // this it would keep stamping the superseded name on every outbound
+    // envelope for the rest of the session.
+    if !rename.previous_name.is_empty()
+        && rename.previous_name != display_name
+        && let Some(channels) = state.channels_handle()
+    {
+        channels
+            .identity_renamed(&rename.previous_name, &display_name)
+            .await;
+    }
 
     if updated_in_memory {
         crate::send_announce_from_origin(&state, activity_origin).await;

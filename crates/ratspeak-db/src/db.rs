@@ -2589,6 +2589,61 @@ pub fn save_channel_hub(
     Ok(())
 }
 
+/// Rename an identity and retire the superseded name from its saved hub
+/// bookmarks in one transaction.
+///
+/// Bookmarks record whatever nickname the session connected as, so a rename
+/// would otherwise keep offering — and broadcasting — the previous name. Only
+/// bookmarks still holding the exact previous name are rewritten; a deliberate
+/// per-hub alias differs from it and is left alone.
+///
+/// The two writes must commit together: if the sweep were to fail after the
+/// rename committed, a retry would read the already-updated name as the
+/// "previous" one, skip the sweep on the equality guard, and strand the old
+/// name in the bookmark permanently.
+pub struct IdentityRenameOutcome {
+    /// The name this identity carried before the rename ("" if unset).
+    pub previous_name: String,
+    pub retired_bookmarks: usize,
+}
+
+pub fn rename_identity_and_retire_alias(
+    pool: &DbPool,
+    identity_id: &str,
+    new_name: &str,
+) -> Result<IdentityRenameOutcome, String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let previous_name: String = transaction
+        .query_row(
+            "SELECT COALESCE(display_name, '') FROM identities WHERE hash = ?1",
+            params![identity_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    transaction
+        .execute(
+            "UPDATE identities SET display_name = ?1 WHERE hash = ?2",
+            params![new_name, identity_id],
+        )
+        .map_err(|error| format!("display_name: {error}"))?;
+    let retired = if previous_name.is_empty() || previous_name == new_name {
+        0
+    } else {
+        transaction
+            .execute(
+                "UPDATE channel_hubs SET nickname = ?1 WHERE identity_id = ?2 AND nickname = ?3",
+                params![new_name, identity_id, previous_name],
+            )
+            .map_err(|error| format!("hub_nickname: {error}"))?
+    };
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(IdentityRenameOutcome {
+        previous_name,
+        retired_bookmarks: retired,
+    })
+}
+
 pub fn remove_channel_hub(
     pool: &DbPool,
     identity_id: &str,
@@ -2736,6 +2791,100 @@ mod channel_bookmark_tests {
             list_saved_channel_rooms(&pool, "identity-a", "00112233445566778899aabbccddeeff")
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn renaming_retires_the_old_name_but_keeps_deliberate_hub_aliases() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "Old Name");
+        save_identity(&pool, "identity-b", "lxmf-b", "B", "B");
+
+        // Bookmark carrying a copy of the identity name (auto-prefilled).
+        save_channel_hub(&pool, "identity-a", "aa", "Relay", "Old Name", true).unwrap();
+        // Bookmark with a deliberate per-hub alias.
+        save_channel_hub(&pool, "identity-a", "bb", "Alias relay", "Radio Rat", true).unwrap();
+        // Another identity that happens to use the same name.
+        save_channel_hub(&pool, "identity-b", "cc", "Other", "Old Name", true).unwrap();
+
+        let updated = rename_identity_and_retire_alias(&pool, "identity-a", "New Name").unwrap();
+        assert_eq!(
+            updated.retired_bookmarks, 1,
+            "only the stale copy is rewritten"
+        );
+        assert_eq!(updated.previous_name, "Old Name");
+        assert_eq!(
+            get_identity(&pool, "identity-a")
+                .and_then(|identity| identity
+                    .get("display_name")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string))
+                .unwrap_or_default(),
+            "New Name",
+            "the rename commits with the sweep"
+        );
+
+        let hubs = list_saved_channel_hubs(&pool, "identity-a").unwrap();
+        let stale = hubs
+            .iter()
+            .find(|hub| hub.destination_hash == "aa")
+            .unwrap();
+        let alias = hubs
+            .iter()
+            .find(|hub| hub.destination_hash == "bb")
+            .unwrap();
+        assert_eq!(
+            stale.nickname, "New Name",
+            "superseded name must not survive"
+        );
+        assert_eq!(
+            alias.nickname, "Radio Rat",
+            "a deliberate per-hub alias must keep working"
+        );
+
+        let other = list_saved_channel_hubs(&pool, "identity-b").unwrap();
+        assert_eq!(
+            other[0].nickname, "Old Name",
+            "another identity's bookmarks are untouched"
+        );
+
+        // Renaming to the same name is a no-op sweep.
+        assert_eq!(
+            rename_identity_and_retire_alias(&pool, "identity-a", "New Name")
+                .unwrap()
+                .retired_bookmarks,
+            0
+        );
+    }
+
+    #[test]
+    fn a_rename_that_fails_leaves_the_old_name_recoverable() {
+        // The sweep must not commit ahead of the rename: if it did, a retry
+        // would read the new name as the "previous" one, skip the sweep on the
+        // equality guard, and strand the superseded name in the bookmark.
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "Old Name");
+        save_channel_hub(&pool, "identity-a", "aa", "Relay", "Old Name", true).unwrap();
+
+        // Force the transaction to fail after the identities write by holding a
+        // schema-incompatible state: drop the table the sweep targets.
+        pool.get()
+            .unwrap()
+            .execute("DROP TABLE channel_hubs", [])
+            .unwrap();
+        assert!(rename_identity_and_retire_alias(&pool, "identity-a", "New Name").is_err());
+
+        // The rename rolled back with it, so the retry still sees the old name
+        // as "previous" and can still retire it.
+        assert_eq!(
+            get_identity(&pool, "identity-a")
+                .and_then(|identity| identity
+                    .get("display_name")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string))
+                .unwrap_or_default(),
+            "Old Name",
+            "a failed rename must not leave the new name committed"
         );
     }
 }

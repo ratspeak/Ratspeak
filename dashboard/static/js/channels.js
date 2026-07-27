@@ -93,11 +93,15 @@ function _channelsFormatTime(timestampMs) {
 }
 
 function _channelsDefaultNickname() {
+    // The live identity wins: the cached copy is a pre-load bootstrap hint and
+    // goes stale on rename, which would broadcast a superseded name to the hub.
     var name = '';
-    try { name = localStorage.getItem('ratspeak_identity_name') || ''; } catch (_) {}
-    if (!name && typeof activeIdentity === 'function') {
+    if (typeof activeIdentity === 'function') {
         var active = activeIdentity();
         if (active) name = active.display_name || active.nickname || '';
+    }
+    if (!name) {
+        try { name = localStorage.getItem('ratspeak_identity_name') || ''; } catch (_) {}
     }
     name = String(name || 'rat').trim();
     return name.slice(0, 32) || 'rat';
@@ -338,6 +342,15 @@ function channelsLoadSavedRooms(destinationHash) {
         if (_channelsSavedRoomsHub === destination) channelsSavedRooms = [];
         return [];
     });
+}
+
+// Re-read the saved hubs after the backend retires a superseded identity name
+// from them, so an already-loaded sheet stops offering the old nickname.
+function channelsRefreshSavedHubs() {
+    return RS.invoke('api_saved_channel_hubs').then(function(hubs) {
+        channelsSavedHubs = Array.isArray(hubs) ? hubs : [];
+        return channelsSavedHubs;
+    }).catch(function() { return channelsSavedHubs; });
 }
 
 function _channelsPersistConveniences() {

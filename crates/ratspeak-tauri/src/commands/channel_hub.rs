@@ -37,11 +37,9 @@ async fn persist_setting(
     value: String,
 ) -> AppResult<()> {
     let pool = state.db.clone();
-    crate::db::spawn_db(pool, move |pool| {
-        crate::db::set_setting(&pool, key, &value)
-    })
-    .await
-    .map_err(|_| AppError::internal("channel hub settings task panicked"))?;
+    crate::db::spawn_db(pool, move |pool| crate::db::set_setting(&pool, key, &value))
+        .await
+        .map_err(|_| AppError::internal("channel hub settings task panicked"))?;
     Ok(())
 }
 
