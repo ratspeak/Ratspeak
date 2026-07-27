@@ -2910,7 +2910,7 @@ dependencies = [
 
 [[package]]
 name = "lxmf-core"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2935,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "lxst-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "half",
  "opus-rs",
@@ -2945,7 +2945,7 @@ dependencies = [
 
 [[package]]
 name = "lxst-rns"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "lxst-core",
@@ -2958,7 +2958,7 @@ dependencies = [
 
 [[package]]
 name = "lxst-telephony"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "lxst-core",
@@ -4642,7 +4642,7 @@ dependencies = [
 
 [[package]]
 name = "rns-crypto"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "aes",
  "cbc",
@@ -4660,7 +4660,7 @@ dependencies = [
 
 [[package]]
 name = "rns-identity"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "hex",
  "rand 0.8.5",
@@ -4678,7 +4678,7 @@ dependencies = [
 
 [[package]]
 name = "rns-interface"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "bluer",
  "btleplug",
@@ -4710,7 +4710,7 @@ dependencies = [
 
 [[package]]
 name = "rns-link"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "hex",
  "rand 0.8.5",
@@ -4725,7 +4725,7 @@ dependencies = [
 
 [[package]]
 name = "rns-protocol"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "bzip2",
  "hex",
@@ -4741,7 +4741,7 @@ dependencies = [
 
 [[package]]
 name = "rns-ratkey"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "aes",
  "bip39",
@@ -4765,7 +4765,7 @@ dependencies = [
 
 [[package]]
 name = "rns-runtime"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "hex",
@@ -4791,7 +4791,7 @@ dependencies = [
 
 [[package]]
 name = "rns-transport"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "hex",
@@ -4810,7 +4810,7 @@ dependencies = [
 
 [[package]]
 name = "rns-wire"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "rns-crypto",
  "sha2",
