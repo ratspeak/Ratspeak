@@ -9,6 +9,7 @@
 pub mod activity;
 pub mod announce_handlers;
 pub mod blackhole;
+pub mod channel_hub;
 pub mod channels;
 #[cfg(feature = "hardware")]
 pub mod hardware;
@@ -714,6 +715,9 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
     if let Some(channels) = state.take_channels() {
         channels.shutdown().await;
     }
+    if let Some(channel_hub) = state.take_channel_hub() {
+        channel_hub.shutdown().await;
+    }
     if let Ok(sig) = state.session_shutdown.read() {
         sig.trigger();
     }
@@ -885,6 +889,99 @@ fn has_plain_identity_material(ratspeak_dir: &std::path::Path) -> bool {
                     .any(|entry| entry.path().join("identity").exists())
             })
             .unwrap_or(false)
+}
+
+/// Hub configuration from operator settings; unset keys keep defaults.
+fn channel_hub_config_from_settings(db: &db::DbPool) -> channel_hub::ChannelHubConfig {
+    let mut config = channel_hub::ChannelHubConfig::default();
+    if let Some(name) = db::get_setting(db, "channel_hub_name") {
+        let name = name.trim();
+        if !name.is_empty() {
+            config.hub_name = name.to_string();
+        }
+    }
+    if let Some(greeting) = db::get_setting(db, "channel_hub_greeting") {
+        let greeting = greeting.trim();
+        if !greeting.is_empty() {
+            config.greeting = Some(greeting.to_string());
+        }
+    }
+    if let Some(interval) = db::get_setting(db, "channel_hub_announce_interval")
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.announce_interval_secs = interval;
+    }
+    config
+}
+
+/// Start the RRC hub service for the active identity. The hub identity is a
+/// dedicated per-identity keypair stored beside the identity's runtime state,
+/// never the operator's chat identity. Requires a running RNS session.
+pub async fn start_channel_hub_service(state: &Arc<AppState>, data_dir: &std::path::Path) -> bool {
+    if state.channel_hub_handle().is_some() {
+        return true;
+    }
+    let transport_tx = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone()));
+    let Some(transport_tx) = transport_tx else {
+        tracing::warn!(reason = "rns_unavailable", "channel hub not started");
+        return false;
+    };
+    let shutdown = state
+        .session_shutdown
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let active_identity = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
+        .await
+        .expect("db task panicked")
+        .and_then(|identity| {
+            identity
+                .get("hash")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    let Some(identity_hash) =
+        active_identity.filter(|hash| helpers::is_protocol_hash_16(hash.as_str()))
+    else {
+        tracing::warn!(reason = "no_active_identity", "channel hub not started");
+        return false;
+    };
+    let identity_path = data_dir
+        .join(".ratspeak")
+        .join("channel_hub")
+        .join(format!("hub_identity_{identity_hash}"));
+    let hub_identity = match channel_hub::load_or_create_hub_identity(&identity_path) {
+        Ok(identity) => identity,
+        Err(_) => {
+            tracing::warn!(reason = "identity_unavailable", "channel hub not started");
+            return false;
+        }
+    };
+    let config = channel_hub_config_from_settings(&state.db);
+    match channel_hub::ChannelHubHandle::start(
+        transport_tx,
+        hub_identity,
+        config,
+        state.emitter.clone(),
+        shutdown,
+        Arc::downgrade(state),
+    )
+    .await
+    {
+        Ok(handle) => {
+            state.set_channel_hub(handle);
+            tracing::info!("Channel hub service initialized");
+            true
+        }
+        Err(_) => {
+            tracing::warn!(reason = "start_failed", "channel hub did not start");
+            false
+        }
+    }
 }
 
 pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
@@ -1743,6 +1840,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     Arc::downgrade(&state),
                 ));
                 tracing::info!("Channels runtime initialized");
+            }
+            if db::get_setting(&state.db, "channel_hub_enabled").as_deref() == Some("1") {
+                start_channel_hub_service(&state, &data_dir).await;
             }
             tracing::info!("RNS runtime initialized");
             #[cfg(feature = "lxst-voice")]

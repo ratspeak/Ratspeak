@@ -273,6 +273,9 @@ pub struct AppState {
     /// Session-scoped live Channels runtime. It is torn down before RNS so an
     /// active hub Link can send its closing packet cleanly.
     pub channels: RwLock<Option<ChannelsManagerHandle>>,
+    /// Session-scoped RRC hub service. Same teardown ordering as `channels`:
+    /// before RNS, so client links receive their teardown packets.
+    pub channel_hub: RwLock<Option<crate::channel_hub::ChannelHubHandle>>,
     pub lxmf: Mutex<Option<LxmfManager>>,
     #[cfg(feature = "lxst-voice")]
     pub lxst_voice: Mutex<Option<crate::voice::LxstVoiceServiceHandle>>,
@@ -450,6 +453,7 @@ impl AppState {
             rns: RwLock::new(None),
             rnode_activity_session_generation: AtomicU64::new(0),
             channels: RwLock::new(None),
+            channel_hub: RwLock::new(None),
             lxmf: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
             lxst_voice: Mutex::new(None),
@@ -1239,6 +1243,9 @@ impl AppState {
         if let Ok(mut channels) = self.channels.write() {
             *channels = None;
         }
+        if let Ok(mut channel_hub) = self.channel_hub.write() {
+            *channel_hub = None;
+        }
         if let Ok(mut known) = self.known_path_hashes.lock() {
             known.clear();
         }
@@ -1441,6 +1448,20 @@ impl AppState {
             .write()
             .ok()
             .and_then(|mut channels| channels.take())
+    }
+
+    pub fn set_channel_hub(&self, hub: crate::channel_hub::ChannelHubHandle) {
+        if let Ok(mut current) = self.channel_hub.write() {
+            *current = Some(hub);
+        }
+    }
+
+    pub fn channel_hub_handle(&self) -> Option<crate::channel_hub::ChannelHubHandle> {
+        self.channel_hub.read().ok().and_then(|hub| hub.clone())
+    }
+
+    pub fn take_channel_hub(&self) -> Option<crate::channel_hub::ChannelHubHandle> {
+        self.channel_hub.write().ok().and_then(|mut hub| hub.take())
     }
 
     pub fn set_last_stats(&self, stats: serde_json::Value) {
