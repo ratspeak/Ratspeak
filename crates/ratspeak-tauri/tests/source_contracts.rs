@@ -3145,6 +3145,20 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 }
 
 #[test]
+fn apple_bluetooth_permission_copy_is_current_and_aligned() {
+    let root = repo_root();
+    let expected = "Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.";
+    for relative in [
+        "src-tauri/Info.plist",
+        "src-tauri/gen/apple/ratspeak_iOS/Info.plist",
+    ] {
+        let plist = read_source(root.join(relative)).expect("Apple Info.plist");
+        assert_eq!(plist.matches(expected).count(), 2, "{relative}");
+        assert!(!plist.contains("Ratlow mesh devices"), "{relative}");
+    }
+}
+
+#[test]
 fn active_call_surface_is_passive_and_shows_elapsed_duration() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");

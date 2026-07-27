@@ -41,9 +41,9 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Ratspeak uses Bluetooth to connect to RNode LoRa radios and Ratlow mesh devices for off-grid communication.</string>
+	<string>Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>Ratspeak uses Bluetooth to connect to RNode LoRa radios and Ratlow mesh devices for off-grid communication.</string>
+	<string>Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Required when you enable a TCP, Local, or Bluetooth Peer interface in Network settings so Ratspeak can reach other nodes on your local network.</string>
 	<key>NSCameraUsageDescription</key>
