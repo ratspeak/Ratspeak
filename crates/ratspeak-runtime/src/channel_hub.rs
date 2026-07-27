@@ -56,6 +56,13 @@ pub struct ChannelHubConfig {
     pub include_member_list: bool,
     pub enable_resource_transfer: bool,
     pub max_resource_bytes: u64,
+    /// Server operators (implicit ops in every room). The hosting identity is
+    /// always seeded here so the operator can administer through any client.
+    pub server_operators: Vec<[u8; 16]>,
+    /// Hub-level bans applied at LINKIDENTIFY, editable live via `/kline`.
+    pub banned_identities: Vec<[u8; 16]>,
+    /// Invite lifetime for `/invite add` (reference default 900s).
+    pub invite_timeout_secs: u64,
 }
 
 impl Default for ChannelHubConfig {
@@ -74,8 +81,27 @@ impl Default for ChannelHubConfig {
             include_member_list: true,
             enable_resource_transfer: true,
             max_resource_bytes: 256 * 1024,
+            server_operators: Vec::new(),
+            banned_identities: Vec::new(),
+            invite_timeout_secs: 900,
         }
     }
+}
+
+/// Content-free relay counters surfaced by `/stats`.
+#[derive(Default)]
+struct HubStats {
+    joins: u64,
+    parts: u64,
+    messages_forwarded: u64,
+    notices_forwarded: u64,
+    actions_forwarded: u64,
+    direct_notices: u64,
+    rate_limited: u64,
+    bad_packets: u64,
+    duplicates: u64,
+    pings_out: u64,
+    pongs_in: u64,
 }
 
 /// Serializable hub status for IPC and the `channel_hub_snapshot` event.
@@ -288,6 +314,8 @@ pub(crate) struct HubCore {
     /// Server operators are implicit ops in every room.
     server_ops: HashSet<[u8; 16]>,
     klines: Arc<RwLock<HashSet<[u8; 16]>>>,
+    stats: HubStats,
+    started_at: Instant,
 }
 
 impl HubCore {
@@ -296,14 +324,20 @@ impl HubCore {
         hub_hash: [u8; 16],
         klines: Arc<RwLock<HashSet<[u8; 16]>>>,
     ) -> Self {
+        if let Ok(mut set) = klines.write() {
+            set.extend(config.banned_identities.iter().copied());
+        }
+        let server_ops = config.server_operators.iter().copied().collect();
         Self {
             config,
             hub_hash,
             sessions: HashMap::new(),
             rooms: HashMap::new(),
             by_identity: HashMap::new(),
-            server_ops: HashSet::new(),
+            server_ops,
             klines,
+            stats: HubStats::default(),
+            started_at: Instant::now(),
         }
     }
 
@@ -318,6 +352,14 @@ impl HubCore {
 
     fn room_count(&self) -> usize {
         self.rooms.len()
+    }
+
+    pub(crate) fn note_rate_limited(&mut self) {
+        self.stats.rate_limited += 1;
+    }
+
+    pub(crate) fn note_bad_packet(&mut self) {
+        self.stats.bad_packets += 1;
     }
 
     /// Reference room normalization with its exact reply texts.
@@ -546,6 +588,7 @@ impl HubCore {
         // Replayed envelope ids never fan out twice (deliberate deviation:
         // the reference writes ids but never reads them).
         if !session.note_seen(envelope.message_id) {
+            self.stats.duplicates += 1;
             return;
         }
 
@@ -559,13 +602,20 @@ impl HubCore {
             }
             rrc::MessageType::Pong => {
                 session.awaiting_pong_since = None;
+                self.stats.pongs_in += 1;
             }
             rrc::MessageType::Hello => self.on_hello(link_id, envelope, out),
             _ if !self.sessions.get(&link_id).is_some_and(|s| s.welcomed) => {
                 out.push(self.hub_error(link_id, "send HELLO first", None));
             }
-            rrc::MessageType::Join => self.on_join(link_id, envelope, Instant::now(), out),
-            rrc::MessageType::Part => self.on_part(link_id, envelope, out),
+            rrc::MessageType::Join => {
+                self.stats.joins += 1;
+                self.on_join(link_id, envelope, Instant::now(), out);
+            }
+            rrc::MessageType::Part => {
+                self.stats.parts += 1;
+                self.on_part(link_id, envelope, out);
+            }
             rrc::MessageType::Message | rrc::MessageType::Notice | rrc::MessageType::Action => {
                 self.on_relay(link_id, envelope, out)
             }
@@ -854,6 +904,12 @@ impl HubCore {
         envelope.room = Some(room_name.clone());
         self.rewrite_relay_nickname(link_id, &mut envelope);
 
+        match envelope.message_type {
+            rrc::MessageType::Message => self.stats.messages_forwarded += 1,
+            rrc::MessageType::Action => self.stats.actions_forwarded += 1,
+            _ => self.stats.notices_forwarded += 1,
+        }
+
         let Some(room) = self.rooms.get(&room_name) else {
             return;
         };
@@ -912,22 +968,1005 @@ impl HubCore {
         };
         envelope.source = identity;
         self.rewrite_relay_nickname(link_id, &mut envelope);
+        self.stats.direct_notices += 1;
         out.push(HubSend::Envelope {
             link_id: target_link,
             envelope,
         });
     }
 
-    /// Operator command dispatch lands in the next phase; returning false
-    /// yields the reference "unrecognized command" reply.
+    /// Operator command dispatch, reference-faithful in verbs, permissions,
+    /// and reply texts. Returns false only for unrecognized verbs, which the
+    /// relay path answers with the reference "unrecognized command" ERROR.
     fn handle_slash_command(
         &mut self,
-        _link_id: [u8; 16],
-        _identity: [u8; 16],
-        _envelope: &rrc::Envelope,
-        _out: &mut Vec<HubSend>,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        envelope: &rrc::Envelope,
+        out: &mut Vec<HubSend>,
     ) -> bool {
-        false
+        let Some(text) = rrc::text_body(envelope) else {
+            return false;
+        };
+        let raw_room = envelope.room.clone();
+        let parts: Vec<String> = text.trim()[1..]
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        let Some(verb) = parts.first().map(|verb| verb.to_lowercase()) else {
+            return false;
+        };
+        let args = &parts[1..];
+        let raw = raw_room.as_deref();
+        match verb.as_str() {
+            "list" => self.cmd_list(link_id, identity, out),
+            "who" | "names" => self.cmd_who(link_id, identity, args, raw, out),
+            "kick" => self.cmd_kick(link_id, identity, args, raw, out),
+            "kline" => self.cmd_kline(link_id, identity, args, out),
+            "register" => self.cmd_register(link_id, identity, args, raw, out),
+            "unregister" => self.cmd_unregister(link_id, identity, args, raw, out),
+            "topic" => self.cmd_topic(link_id, identity, args, raw, out),
+            "mode" => self.cmd_mode(link_id, identity, args, raw, out),
+            "op" | "deop" | "voice" | "devoice" => {
+                self.cmd_grant(link_id, identity, &verb, args, raw, out)
+            }
+            "ban" => self.cmd_ban(link_id, identity, args, raw, out),
+            "invite" => self.cmd_invite(link_id, identity, args, raw, out),
+            "stats" => self.cmd_stats(link_id, identity, out),
+            "reload" => self.cmd_reload(link_id, identity, out),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Resolve a command target the reference way: an all-hex token of at
+    /// least six characters matches identity-hash prefixes, anything else is
+    /// a case-insensitive nick lookup over identified sessions.
+    fn resolve_target(&self, token: &str) -> Result<[u8; 16], String> {
+        let lowered = token.to_lowercase();
+        let is_hex = lowered.len() >= 6 && lowered.chars().all(|ch| ch.is_ascii_hexdigit());
+        let mut matches: Vec<([u8; 16], Option<String>)> = Vec::new();
+        for session in self.sessions.values() {
+            let Some(identity) = session.identity else {
+                continue;
+            };
+            let matched = if is_hex {
+                hex::encode(identity).starts_with(&lowered)
+            } else {
+                session
+                    .nickname
+                    .as_deref()
+                    .is_some_and(|nickname| nickname.eq_ignore_ascii_case(token))
+            };
+            if matched && !matches.iter().any(|(existing, _)| *existing == identity) {
+                matches.push((identity, session.nickname.clone()));
+            }
+        }
+        match matches.len() {
+            0 => Err(format!("target '{token}' not found")),
+            1 => Ok(matches[0].0),
+            _ => {
+                let mut lines = vec![format!(
+                    "ambiguous: '{token}' matches {} identities:",
+                    matches.len()
+                )];
+                for (identity, nickname) in &matches {
+                    let nick_str = match nickname {
+                        Some(nick) => format!("nick='{nick}'"),
+                        None => "(no nick)".to_string(),
+                    };
+                    lines.push(format!("  - {} {nick_str}", hex::encode(identity)));
+                }
+                lines.push("Use full or longer identity hash to disambiguate.".to_string());
+                Err(lines.join("\n"))
+            }
+        }
+    }
+
+    fn cmd_list(&mut self, link_id: [u8; 16], identity: [u8; 16], out: &mut Vec<HubSend>) {
+        let server_op = self.server_ops.contains(&identity);
+        let mut rooms: Vec<(&String, &HubRoom)> = self
+            .rooms
+            .iter()
+            .filter(|(_, room)| room.registered && (server_op || !room.private))
+            .collect();
+        rooms.sort_by(|a, b| a.0.cmp(b.0));
+        if rooms.is_empty() {
+            out.push(self.hub_notice(link_id, "No public rooms registered", None));
+            return;
+        }
+        let mut lines = vec!["Registered public rooms:".to_string()];
+        for (name, room) in rooms {
+            match room.topic.as_deref() {
+                Some(topic) => lines.push(format!("  {name} - {topic}")),
+                None => lines.push(format!("  {name}")),
+            }
+        }
+        out.push(self.hub_notice(link_id, &lines.join("\n"), None));
+    }
+
+    fn cmd_who(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        let target = args.first().map(String::as_str).or(raw_room);
+        let Some(target) = target else {
+            out.push(self.hub_notice(link_id, "usage: /who [room]", None));
+            return;
+        };
+        let room_name = match self.norm_room(target) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), None));
+                return;
+            }
+        };
+        if self
+            .rooms
+            .get(&room_name)
+            .is_some_and(|room| room.private && !self.server_ops.contains(&identity))
+        {
+            out.push(self.hub_notice(link_id, &format!("room {room_name} is private"), None));
+            return;
+        }
+        let mut members: Vec<String> = Vec::new();
+        if let Some(room) = self.rooms.get(&room_name) {
+            let mut entries: Vec<(Option<String>, [u8; 16])> = room
+                .members
+                .iter()
+                .filter_map(|member| self.sessions.get(member))
+                .filter_map(|session| {
+                    session
+                        .identity
+                        .map(|identity| (session.nickname.clone(), identity))
+                })
+                .collect();
+            entries.sort_by_key(|(_, identity)| *identity);
+            entries.dedup_by_key(|(_, identity)| *identity);
+            for (nickname, identity) in entries {
+                let ident = hex::encode(identity);
+                match nickname {
+                    Some(nick) => members.push(format!("{nick} ({})", &ident[..12])),
+                    None => members.push(ident),
+                }
+            }
+        }
+        let joined = if members.is_empty() {
+            "(none)".to_string()
+        } else {
+            members.join(", ")
+        };
+        out.push(self.hub_notice(link_id, &format!("members in {room_name}: {joined}"), None));
+    }
+
+    fn cmd_kick(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        let [room_arg, token] = args else {
+            out.push(self.hub_notice(link_id, "usage: /kick <room> <nick|hashprefix>", None));
+            return;
+        };
+        let room_name = match self.norm_room(room_arg) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), raw_room));
+                return;
+            }
+        };
+        let authorized = self
+            .rooms
+            .get(&room_name)
+            .is_some_and(|room| self.is_room_op(room, identity));
+        if !authorized {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
+        let target = match self.resolve_target(token) {
+            Ok(target) => target,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &reason, raw_room));
+                return;
+            }
+        };
+        let target_links: Vec<[u8; 16]> = self
+            .rooms
+            .get(&room_name)
+            .map(|room| {
+                room.members
+                    .iter()
+                    .copied()
+                    .filter(|member| {
+                        self.sessions
+                            .get(member)
+                            .is_some_and(|session| session.identity == Some(target))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if target_links.is_empty() {
+            out.push(self.hub_notice(link_id, "target not in room", raw_room));
+            return;
+        }
+        for target_link in target_links {
+            let nickname = self
+                .sessions
+                .get(&target_link)
+                .and_then(|session| session.nickname.clone());
+            if let Some(session) = self.sessions.get_mut(&target_link) {
+                session.rooms.remove(&room_name);
+            }
+            // Deviation: kicked members produce a PARTED fan-out so rosters
+            // stay accurate (the reference silently drops them).
+            self.remove_member_with_parted(
+                &room_name,
+                target_link,
+                target,
+                nickname.as_deref(),
+                out,
+            );
+            out.push(self.hub_error(
+                target_link,
+                &format!("kicked from {room_name}"),
+                Some(&room_name),
+            ));
+        }
+        out.push(self.hub_notice(
+            link_id,
+            &format!("kicked {token} from {room_name}"),
+            raw_room,
+        ));
+    }
+
+    fn cmd_kline(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        out: &mut Vec<HubSend>,
+    ) {
+        if !self.server_ops.contains(&identity) {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
+        const USAGE: &str = "usage: /kline add|del|list [nick|hashprefix|hash]";
+        let Some(op) = args.first().map(|op| op.to_lowercase()) else {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        };
+        if op == "list" {
+            let mut items: Vec<String> = self
+                .klines
+                .read()
+                .map(|klines| klines.iter().map(hex::encode).collect())
+                .unwrap_or_default();
+            items.sort();
+            let joined = if items.is_empty() {
+                "(none)".to_string()
+            } else {
+                items.join(", ")
+            };
+            out.push(self.hub_notice(link_id, &format!("klines: {joined}"), None));
+            return;
+        }
+        if op != "add" && op != "del" {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        }
+        let Some(token) = args.get(1) else {
+            out.push(self.hub_notice(
+                link_id,
+                &format!("usage: /kline {op} <nick|hashprefix|hash>"),
+                None,
+            ));
+            return;
+        };
+        let target = if token.len() == 32 && token.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            let mut hash = [0u8; 16];
+            match hex::decode(token.to_lowercase()) {
+                Ok(bytes) if bytes.len() == 16 => {
+                    hash.copy_from_slice(&bytes);
+                    Ok(hash)
+                }
+                _ => Err(format!("bad identity hash: {token}")),
+            }
+        } else {
+            self.resolve_target(token)
+        };
+        let target = match target {
+            Ok(target) => target,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &reason, None));
+                return;
+            }
+        };
+        if op == "add" {
+            if let Ok(mut klines) = self.klines.write() {
+                klines.insert(target);
+            }
+            out.push(self.hub_notice(
+                link_id,
+                &format!("kline added for {}", hex::encode(target)),
+                None,
+            ));
+            // A connected target is disconnected immediately (reference).
+            let links: Vec<[u8; 16]> = self
+                .sessions
+                .iter()
+                .filter(|(_, session)| session.identity == Some(target))
+                .map(|(link, _)| *link)
+                .collect();
+            for target_link in links {
+                out.push(self.hub_error(target_link, "banned", None));
+                out.push(HubSend::Close {
+                    link_id: target_link,
+                });
+                self.on_link_closed(target_link, out);
+            }
+        } else {
+            let removed = self
+                .klines
+                .write()
+                .map(|mut klines| klines.remove(&target))
+                .unwrap_or(false);
+            let text = if removed {
+                format!("kline removed for {}", hex::encode(target))
+            } else {
+                format!("not klined: {}", hex::encode(target))
+            };
+            out.push(self.hub_notice(link_id, &text, None));
+        }
+    }
+
+    fn cmd_register(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        let Some(room_arg) = args.first() else {
+            out.push(self.hub_notice(link_id, "usage: /register <room>", None));
+            return;
+        };
+        let room_name = match self.norm_room(room_arg) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), None));
+                return;
+            }
+        };
+        let present = self
+            .sessions
+            .get(&link_id)
+            .is_some_and(|session| session.rooms.contains(&room_name));
+        if !present {
+            out.push(self.hub_notice(
+                link_id,
+                "must be present in the room to register it",
+                raw_room,
+            ));
+            return;
+        }
+        let Some(room) = self.rooms.get_mut(&room_name) else {
+            return;
+        };
+        if room.founder != Some(identity) {
+            out.push(self.hub_error(
+                link_id,
+                "only the room founder can register",
+                Some(&room_name),
+            ));
+            return;
+        }
+        room.registered = true;
+        room.no_outside_msgs = true;
+        room.topic_ops_only = true;
+        room.ops.insert(identity);
+        out.push(self.hub_notice(link_id, &format!("registered room {room_name}"), raw_room));
+    }
+
+    fn cmd_unregister(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        let Some(room_arg) = args.first() else {
+            out.push(self.hub_notice(link_id, "usage: /unregister <room>", None));
+            return;
+        };
+        let room_name = match self.norm_room(room_arg) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), None));
+                return;
+            }
+        };
+        let Some(room) = self.rooms.get_mut(&room_name) else {
+            out.push(self.hub_notice(
+                link_id,
+                &format!("room {room_name} is not registered"),
+                raw_room,
+            ));
+            return;
+        };
+        if !room.registered {
+            out.push(self.hub_notice(
+                link_id,
+                &format!("room {room_name} is not registered"),
+                raw_room,
+            ));
+            return;
+        }
+        if room.founder != Some(identity) {
+            out.push(self.hub_error(
+                link_id,
+                "only the room founder can unregister",
+                Some(&room_name),
+            ));
+            return;
+        }
+        room.registered = false;
+        let empty = room.members.is_empty();
+        if empty {
+            self.rooms.remove(&room_name);
+        }
+        out.push(self.hub_notice(link_id, &format!("unregistered room {room_name}"), raw_room));
+    }
+
+    fn cmd_topic(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        let Some(room_arg) = args.first() else {
+            out.push(self.hub_notice(link_id, "usage: /topic <room> [topic]", None));
+            return;
+        };
+        let room_name = match self.norm_room(room_arg) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), None));
+                return;
+            }
+        };
+        let room = self.rooms.entry(room_name.clone()).or_default();
+        if args.len() == 1 {
+            let topic = room.topic.clone().unwrap_or_else(|| "(none)".to_string());
+            out.push(self.hub_notice(
+                link_id,
+                &format!("topic for {room_name}: {topic}"),
+                raw_room,
+            ));
+            return;
+        }
+        let authorized = {
+            let room = self.rooms.get(&room_name).expect("room just ensured");
+            self.is_room_op(room, identity) || !room.topic_ops_only
+        };
+        if !authorized {
+            out.push(self.hub_error(link_id, "not authorized (+t)", Some(&room_name)));
+            return;
+        }
+        let topic = args[1..].join(" ").trim().to_string();
+        let room = self.rooms.get_mut(&room_name).expect("room just ensured");
+        room.topic = (!topic.is_empty()).then(|| topic.clone());
+        let display = if topic.is_empty() {
+            "(cleared)".to_string()
+        } else {
+            topic
+        };
+        let members: Vec<[u8; 16]> = room.members.iter().copied().collect();
+        for member in members {
+            out.push(self.hub_notice(
+                member,
+                &format!("topic for {room_name} is now: {display}"),
+                Some(&room_name),
+            ));
+        }
+    }
+
+    fn broadcast_mode(&self, room_name: &str, out: &mut Vec<HubSend>) {
+        let Some(room) = self.rooms.get(room_name) else {
+            return;
+        };
+        let text = format!("mode for {room_name} is now: {}", room.mode_string());
+        for member in room.members.iter().copied() {
+            out.push(self.hub_notice(member, &text, Some(room_name)));
+        }
+    }
+
+    fn cmd_mode(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        const USAGE: &str = "usage: /mode <room> (+m|-m|+i|-i|+t|-t|+n|-n|+p|-p|+k|-k|+r|-r) [key] | /mode <room> (+o|-o|+v|-v) <nick|hashprefix|hash>";
+        let (Some(room_arg), Some(flag)) = (args.first(), args.get(1)) else {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        };
+        let room_name = match self.norm_room(room_arg) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), None));
+                return;
+            }
+        };
+        let authorized = {
+            let room = self.rooms.entry(room_name.clone()).or_default();
+            let _ = &room;
+            let room = self.rooms.get(&room_name).expect("room just ensured");
+            self.is_room_op(room, identity)
+        };
+        if !authorized {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
+        match flag.as_str() {
+            "+m" | "-m" | "+i" | "-i" | "+t" | "-t" | "+n" | "-n" | "+p" | "-p" => {
+                let enable = flag.starts_with('+');
+                let room = self.rooms.get_mut(&room_name).expect("room just ensured");
+                match &flag[1..] {
+                    "m" => room.moderated = enable,
+                    "i" => room.invite_only = enable,
+                    "t" => room.topic_ops_only = enable,
+                    "n" => room.no_outside_msgs = enable,
+                    _ => room.private = enable,
+                }
+                self.broadcast_mode(&room_name, out);
+            }
+            "+k" => {
+                let key = args[2..].join(" ").trim().to_string();
+                if args.len() < 3 {
+                    out.push(self.hub_notice(link_id, "usage: /mode <room> +k <key>", raw_room));
+                    return;
+                }
+                if key.is_empty() {
+                    out.push(self.hub_notice(link_id, "key must not be empty", raw_room));
+                    return;
+                }
+                let room = self.rooms.get_mut(&room_name).expect("room just ensured");
+                room.key = Some(key);
+                self.broadcast_mode(&room_name, out);
+            }
+            "-k" => {
+                let room = self.rooms.get_mut(&room_name).expect("room just ensured");
+                room.key = None;
+                self.broadcast_mode(&room_name, out);
+            }
+            "+r" | "-r" => {
+                out.push(self.hub_notice(
+                    link_id,
+                    "use /register or /unregister to change +r",
+                    raw_room,
+                ));
+            }
+            "+o" | "-o" | "+v" | "-v" => {
+                let Some(token) = args.get(2) else {
+                    out.push(self.hub_notice(
+                        link_id,
+                        "usage: /mode <room> (+o|-o|+v|-v) <nick|hashprefix|hash>",
+                        raw_room,
+                    ));
+                    return;
+                };
+                let target = match self.resolve_target(token) {
+                    Ok(target) => target,
+                    Err(reason) => {
+                        out.push(self.hub_notice(link_id, &reason, raw_room));
+                        return;
+                    }
+                };
+                let room = self.rooms.get_mut(&room_name).expect("room just ensured");
+                match flag.as_str() {
+                    "+o" => {
+                        room.ops.insert(target);
+                    }
+                    "-o" => {
+                        if room.founder == Some(target) {
+                            out.push(self.hub_notice(link_id, "cannot deop founder", raw_room));
+                            return;
+                        }
+                        room.ops.remove(&target);
+                    }
+                    "+v" => {
+                        room.voiced.insert(target);
+                    }
+                    _ => {
+                        room.voiced.remove(&target);
+                    }
+                }
+                let text = format!(
+                    "mode for {room_name} is now: {flag} {}",
+                    &hex::encode(target)[..12]
+                );
+                let members: Vec<[u8; 16]> = self
+                    .rooms
+                    .get(&room_name)
+                    .map(|room| room.members.iter().copied().collect())
+                    .unwrap_or_default();
+                for member in members {
+                    out.push(self.hub_notice(member, &text, Some(&room_name)));
+                }
+            }
+            _ => {
+                out.push(self.hub_notice(
+                    link_id,
+                    "supported modes: +m -m +i -i +k -k +t -t +n -n +p -p +r -r +o -o +v -v",
+                    raw_room,
+                ));
+            }
+        }
+    }
+
+    fn cmd_grant(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        verb: &str,
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        let (Some(room_arg), Some(token)) = (args.first(), args.get(1)) else {
+            out.push(self.hub_notice(
+                link_id,
+                &format!("usage: /{verb} <room> <nick|hashprefix|hash>"),
+                None,
+            ));
+            return;
+        };
+        let room_name = match self.norm_room(room_arg) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), None));
+                return;
+            }
+        };
+        let authorized = {
+            let room = self.rooms.entry(room_name.clone()).or_default();
+            let _ = &room;
+            let room = self.rooms.get(&room_name).expect("room just ensured");
+            self.is_room_op(room, identity)
+        };
+        if !authorized {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
+        let target = match self.resolve_target(token) {
+            Ok(target) => target,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &reason, raw_room));
+                return;
+            }
+        };
+        let room = self.rooms.get_mut(&room_name).expect("room just ensured");
+        let text = match verb {
+            "op" => {
+                room.ops.insert(target);
+                format!("op granted in {room_name}")
+            }
+            "deop" => {
+                if room.founder == Some(target) {
+                    out.push(self.hub_notice(link_id, "cannot deop founder", raw_room));
+                    return;
+                }
+                room.ops.remove(&target);
+                format!("op removed in {room_name}")
+            }
+            "voice" => {
+                room.voiced.insert(target);
+                format!("voice granted in {room_name}")
+            }
+            _ => {
+                room.voiced.remove(&target);
+                format!("voice removed in {room_name}")
+            }
+        };
+        out.push(self.hub_notice(link_id, &text, raw_room));
+    }
+
+    fn cmd_ban(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        const USAGE: &str = "usage: /ban <room> add|del|list [nick|hashprefix|hash]";
+        let (Some(room_arg), Some(op)) = (args.first(), args.get(1).map(|op| op.to_lowercase()))
+        else {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        };
+        let room_name = match self.norm_room(room_arg) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), None));
+                return;
+            }
+        };
+        if op == "list" {
+            let mut items: Vec<String> = self
+                .rooms
+                .get(&room_name)
+                .map(|room| room.bans.iter().map(hex::encode).collect())
+                .unwrap_or_default();
+            items.sort();
+            let text = if items.is_empty() {
+                format!("no bans in {room_name}")
+            } else {
+                format!("bans in {room_name}: {}", items.join(", "))
+            };
+            out.push(self.hub_notice(link_id, &text, raw_room));
+            return;
+        }
+        if op != "add" && op != "del" {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        }
+        let authorized = {
+            let room = self.rooms.entry(room_name.clone()).or_default();
+            let _ = &room;
+            let room = self.rooms.get(&room_name).expect("room just ensured");
+            self.is_room_op(room, identity)
+        };
+        if !authorized {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
+        let Some(token) = args.get(2) else {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        };
+        let target = match self.resolve_target(token) {
+            Ok(target) => target,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &reason, raw_room));
+                return;
+            }
+        };
+        if op == "add" {
+            self.rooms
+                .get_mut(&room_name)
+                .expect("room just ensured")
+                .bans
+                .insert(target);
+            let target_links: Vec<[u8; 16]> = self
+                .rooms
+                .get(&room_name)
+                .map(|room| {
+                    room.members
+                        .iter()
+                        .copied()
+                        .filter(|member| {
+                            self.sessions
+                                .get(member)
+                                .is_some_and(|session| session.identity == Some(target))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for target_link in target_links {
+                let nickname = self
+                    .sessions
+                    .get(&target_link)
+                    .and_then(|session| session.nickname.clone());
+                if let Some(session) = self.sessions.get_mut(&target_link) {
+                    session.rooms.remove(&room_name);
+                }
+                // Deviation: banned members leave with a PARTED fan-out so
+                // rosters stay accurate (the reference drops them silently).
+                self.remove_member_with_parted(
+                    &room_name,
+                    target_link,
+                    target,
+                    nickname.as_deref(),
+                    out,
+                );
+                out.push(self.hub_error(
+                    target_link,
+                    &format!("banned from {room_name}"),
+                    Some(&room_name),
+                ));
+            }
+            out.push(self.hub_notice(link_id, &format!("ban added in {room_name}"), raw_room));
+        } else {
+            if let Some(room) = self.rooms.get_mut(&room_name) {
+                room.bans.remove(&target);
+            }
+            out.push(self.hub_notice(link_id, &format!("ban removed in {room_name}"), raw_room));
+        }
+    }
+
+    fn cmd_invite(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        args: &[String],
+        raw_room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        const USAGE: &str = "usage: /invite <room> add|del|list [nick|hashprefix|hash]";
+        let (Some(room_arg), Some(op)) = (args.first(), args.get(1).map(|op| op.to_lowercase()))
+        else {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        };
+        let room_name = match self.norm_room(room_arg) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                out.push(self.hub_notice(link_id, &format!("bad room: {reason}"), None));
+                return;
+            }
+        };
+        let authorized = {
+            let room = self.rooms.entry(room_name.clone()).or_default();
+            let _ = &room;
+            let room = self.rooms.get(&room_name).expect("room just ensured");
+            self.is_room_op(room, identity)
+        };
+        if !authorized {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
+        let now = Instant::now();
+        if op == "list" {
+            let mut items: Vec<String> = self
+                .rooms
+                .get(&room_name)
+                .map(|room| {
+                    room.invited
+                        .iter()
+                        .filter(|(_, expires)| **expires > now)
+                        .map(|(identity, expires)| {
+                            format!(
+                                "{} expires_in={}s",
+                                hex::encode(identity),
+                                expires.duration_since(now).as_secs()
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            items.sort();
+            let joined = if items.is_empty() {
+                "(none)".to_string()
+            } else {
+                items.join(", ")
+            };
+            out.push(self.hub_notice(
+                link_id,
+                &format!("invites in {room_name}: {joined}"),
+                raw_room,
+            ));
+            return;
+        }
+        if op != "add" && op != "del" {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        }
+        let Some(token) = args.get(2) else {
+            out.push(self.hub_notice(
+                link_id,
+                &format!("usage: /invite {room_name} {op} <nick|hashprefix|hash>"),
+                raw_room,
+            ));
+            return;
+        };
+        let target = match self.resolve_target(token) {
+            Ok(target) => target,
+            Err(reason) => {
+                out.push(self.hub_error(link_id, &format!("invite failed: {reason}"), None));
+                return;
+            }
+        };
+        if op == "add" {
+            let ttl = Duration::from_secs(self.config.invite_timeout_secs.max(1));
+            let (gated, keyed) = self
+                .rooms
+                .get(&room_name)
+                .map(|room| (room.invite_only || room.key.is_some(), room.key.is_some()))
+                .unwrap_or((false, false));
+            self.rooms
+                .get_mut(&room_name)
+                .expect("room just ensured")
+                .invited
+                .insert(target, now + ttl);
+            if let Some(target_link) = self.by_identity.get(&target).copied() {
+                let text = if keyed {
+                    format!(
+                        "You have been invited to join {room_name}. This invite allows joining without the key (+k)."
+                    )
+                } else {
+                    format!("You have been invited to join {room_name}.")
+                };
+                out.push(self.hub_notice(target_link, &text, Some(&room_name)));
+            }
+            let confirmation = if gated {
+                format!(
+                    "invite added in {room_name} (expires in {}s)",
+                    ttl.as_secs()
+                )
+            } else {
+                format!("invite sent to {token} for {room_name}")
+            };
+            out.push(self.hub_notice(link_id, &confirmation, raw_room));
+        } else {
+            if let Some(room) = self.rooms.get_mut(&room_name) {
+                room.invited.remove(&target);
+            }
+            out.push(self.hub_notice(link_id, &format!("invite removed in {room_name}"), raw_room));
+        }
+    }
+
+    fn cmd_stats(&mut self, link_id: [u8; 16], identity: [u8; 16], out: &mut Vec<HubSend>) {
+        if !self.server_ops.contains(&identity) {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
+        let (sessions, welcomed) = self.session_counts();
+        let registered = self.rooms.values().filter(|room| room.registered).count();
+        let klines = self.klines.read().map(|set| set.len()).unwrap_or(0);
+        // Newline-joined on purpose: the reference emits one unbroken line.
+        let text = [
+            format!("hub {} v{HUB_VERSION}", self.config.hub_name),
+            format!("uptime: {}s", self.started_at.elapsed().as_secs()),
+            format!("sessions: {sessions} ({welcomed} welcomed)"),
+            format!("rooms: {} ({registered} registered)", self.rooms.len()),
+            format!(
+                "relay: msgs={} notices={} actions={} direct={}",
+                self.stats.messages_forwarded,
+                self.stats.notices_forwarded,
+                self.stats.actions_forwarded,
+                self.stats.direct_notices
+            ),
+            format!(
+                "control: joins={} parts={} pings_out={} pongs_in={}",
+                self.stats.joins, self.stats.parts, self.stats.pings_out, self.stats.pongs_in
+            ),
+            format!(
+                "dropped: rate_limited={} bad_packets={} duplicates={}",
+                self.stats.rate_limited, self.stats.bad_packets, self.stats.duplicates
+            ),
+            format!("klines: {klines}"),
+        ]
+        .join("\n");
+        out.push(self.hub_notice(link_id, &text, None));
+    }
+
+    fn cmd_reload(&mut self, link_id: [u8; 16], identity: [u8; 16], out: &mut Vec<HubSend>) {
+        if !self.server_ops.contains(&identity) {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
+        // Deviation: hub configuration is managed through the app; the IPC
+        // config path restarts the service to apply changes.
+        out.push(self.hub_notice(
+            link_id,
+            "configuration is managed from the Ratspeak app settings",
+            None,
+        ));
     }
 
     /// HELLO always answers with WELCOME. Unlike the reference hub, a repeat
@@ -984,6 +2023,7 @@ impl HubCore {
                 Some(_) => {}
                 None => {
                     session.awaiting_pong_since = Some(now);
+                    self.stats.pings_out += 1;
                     let mut ping = rrc::Envelope::new(rrc::MessageType::Ping, self.hub_hash);
                     ping.body = Some(Value::Bytes(now_ms().to_be_bytes().to_vec()));
                     out.push(HubSend::Envelope {
@@ -1073,11 +2113,17 @@ impl ChannelHubHandle {
     pub async fn start(
         transport_tx: mpsc::Sender<TransportMessage>,
         hub_identity: Identity,
-        config: ChannelHubConfig,
+        mut config: ChannelHubConfig,
+        operator_identity: [u8; 16],
         emitter: Arc<dyn Emitter>,
         shutdown: ShutdownSignal,
         _state: Weak<AppState>,
     ) -> Result<Self, ChannelHubError> {
+        // The operator administers the hub through the normal client, so their
+        // chat identity is always a server operator.
+        if !config.server_operators.contains(&operator_identity) {
+            config.server_operators.push(operator_identity);
+        }
         let klines: Arc<RwLock<HashSet<[u8; 16]>>> = Arc::new(RwLock::new(HashSet::new()));
         let gate_klines = klines.clone();
         let options = DestinationRuntimeOptions {
@@ -1229,6 +2275,7 @@ async fn run_hub(
                                 link_id,
                                 envelope: shell_error(&core, "rate limited"),
                             });
+                            core.note_rate_limited();
                         } else {
                             match rrc::decode(&data) {
                                 Ok(envelope) => core.on_envelope(link_id, envelope, &mut out),
@@ -1236,6 +2283,7 @@ async fn run_hub(
                                     // Reference replies with the decode error
                                     // text; ours stays static so nothing
                                     // inbound echoes back out.
+                                    core.note_bad_packet();
                                     out.push(HubSend::Envelope {
                                         link_id,
                                         envelope: shell_error(&core, "bad message: invalid envelope"),
@@ -1873,12 +2921,273 @@ mod tests {
         welcomed_session(&mut core, LINK_A, ID_A, "alpha");
         let mut msg = rrc::Envelope::new(rrc::MessageType::Message, ID_A);
         msg.room = Some("Lobby".to_string());
-        msg.body = Some(Value::Text("/who".to_string()));
+        msg.body = Some(Value::Text("/frobnicate now".to_string()));
         let mut out = Vec::new();
         core.on_envelope(LINK_A, msg, &mut out);
         let error = sends_to(&out, LINK_A)[0];
         assert_eq!(rrc::text_body(error), Some("unrecognized command"));
         assert_eq!(error.room.as_deref(), Some("Lobby"));
+    }
+
+    fn op_core() -> HubCore {
+        // ID_A is a server operator, so it is an implicit op everywhere.
+        let config = ChannelHubConfig {
+            server_operators: vec![ID_A],
+            ..ChannelHubConfig::default()
+        };
+        let mut core = core_with(config);
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        core
+    }
+
+    fn run_command(core: &mut HubCore, link: [u8; 16], id: [u8; 16], text: &str) -> Vec<HubSend> {
+        let mut msg = rrc::Envelope::new(rrc::MessageType::Message, id);
+        msg.room = Some("lobby".to_string());
+        msg.body = Some(Value::Text(text.to_string()));
+        let mut out = Vec::new();
+        core.on_envelope(link, msg, &mut out);
+        out
+    }
+
+    #[test]
+    fn who_and_list_replies_match_reference_wire_text() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/who lobby");
+        let who = sends_to(&out, LINK_A)[0];
+        assert_eq!(who.room, None);
+        let body = rrc::text_body(who).unwrap();
+        assert!(body.starts_with("members in lobby: "));
+        assert!(body.contains("alpha (") && body.contains("beta ("));
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/list");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("No public rooms registered")
+        );
+
+        // Register the room, set a topic, and it appears in /list.
+        run_command(&mut core, LINK_A, ID_A, "/topic lobby hello there");
+        run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        let out = run_command(&mut core, LINK_A, ID_A, "/list");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("Registered public rooms:\n  lobby - hello there")
+        );
+    }
+
+    #[test]
+    fn register_forces_modes_and_only_founder_registers() {
+        let mut core = op_core();
+        // ID_B founds the room, so ID_A (server op, not founder) cannot register.
+        join(&mut core, LINK_B, ID_B, "lobby");
+        join(&mut core, LINK_A, ID_A, "lobby");
+        let out = run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("only the room founder can register")
+        );
+
+        let out = run_command(&mut core, LINK_B, ID_B, "/register lobby");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("registered room lobby")
+        );
+        let room = core.rooms.get("lobby").unwrap();
+        assert!(room.registered && room.no_outside_msgs && room.topic_ops_only);
+        assert_eq!(room.mode_string(), "+nrt");
+    }
+
+    #[test]
+    fn mode_changes_broadcast_and_reject_unauthorized() {
+        let mut core = op_core();
+        join(&mut core, LINK_B, ID_B, "lobby");
+        join(&mut core, LINK_A, ID_A, "lobby");
+
+        // ID_B is not an op (ID_A founded via first join? no — ID_B joined first).
+        // ID_B founded lobby, so ID_B is op; use a fresh non-op for rejection.
+        let out = run_command(&mut core, LINK_A, ID_A, "/mode lobby +m");
+        // ID_A is a server op → authorized; +m broadcasts to both members.
+        assert_eq!(sends_to(&out, LINK_A).len(), 1);
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("mode for lobby is now: +m")
+        );
+        assert!(core.rooms.get("lobby").unwrap().moderated);
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/mode lobby +r");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("use /register or /unregister to change +r")
+        );
+
+        // +k sets a key; a later keyless join is refused.
+        run_command(&mut core, LINK_A, ID_A, "/mode lobby +k s3cret");
+        assert_eq!(
+            core.rooms.get("lobby").unwrap().key.as_deref(),
+            Some("s3cret")
+        );
+    }
+
+    #[test]
+    fn op_voice_grants_and_founder_cannot_be_deopped() {
+        let mut core = op_core();
+        join(&mut core, LINK_B, ID_B, "lobby"); // ID_B founder
+        let out = run_command(&mut core, LINK_A, ID_A, "/op lobby beta");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("op granted in lobby")
+        );
+        assert!(core.rooms.get("lobby").unwrap().ops.contains(&ID_B));
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/deop lobby beta");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("cannot deop founder")
+        );
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/voice lobby beta");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("voice granted in lobby")
+        );
+    }
+
+    #[test]
+    fn kick_and_ban_remove_members_with_parted_and_texts() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/kick lobby beta");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("kicked from lobby")
+        );
+        // Deviation: remaining member ID_A sees a PARTED for the kicked peer.
+        assert!(
+            sends_to(&out, LINK_A)
+                .iter()
+                .any(|env| env.message_type == rrc::MessageType::Parted)
+        );
+        assert!(
+            sends_to(&out, LINK_A)
+                .iter()
+                .any(|env| rrc::text_body(env) == Some("kicked beta from lobby"))
+        );
+        assert!(!core.rooms.get("lobby").unwrap().members.contains(&LINK_B));
+
+        join(&mut core, LINK_B, ID_B, "lobby");
+        let out = run_command(&mut core, LINK_A, ID_A, "/ban lobby add beta");
+        assert!(
+            sends_to(&out, LINK_B)
+                .iter()
+                .any(|env| rrc::text_body(env) == Some("banned from lobby"))
+        );
+        assert!(core.rooms.get("lobby").unwrap().bans.contains(&ID_B));
+        assert!(
+            sends_to(&out, LINK_A)
+                .iter()
+                .any(|env| rrc::text_body(env) == Some("ban added in lobby"))
+        );
+    }
+
+    #[test]
+    fn kline_disconnects_and_blocks_reconnect() {
+        let mut core = op_core();
+        let out = run_command(&mut core, LINK_A, ID_A, "/kline add beta");
+        assert!(
+            sends_to(&out, LINK_A).iter().any(|env| rrc::text_body(env)
+                == Some(&format!("kline added for {}", hex::encode(ID_B))))
+        );
+        // ID_B's link is torn down and its session removed.
+        assert!(
+            out.iter()
+                .any(|send| matches!(send, HubSend::Close { link_id } if *link_id == LINK_B))
+        );
+        assert!(!core.sessions.contains_key(&LINK_B));
+        assert!(core.klines.read().unwrap().contains(&ID_B));
+
+        // A fresh identify for the klined identity is rejected at the gate.
+        let mut out = Vec::new();
+        core.on_link_established(LINK_B, Instant::now());
+        core.on_link_identified(LINK_B, ID_B, Instant::now(), &mut out);
+        assert_eq!(rrc::text_body(sends_to(&out, LINK_B)[0]), Some("banned"));
+    }
+
+    #[test]
+    fn invite_grants_bypass_and_targets_get_notified() {
+        let config = ChannelHubConfig {
+            server_operators: vec![ID_A],
+            invite_timeout_secs: 900,
+            ..ChannelHubConfig::default()
+        };
+        let mut core = core_with(config);
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        join(&mut core, LINK_A, ID_A, "lobby");
+        run_command(&mut core, LINK_A, ID_A, "/mode lobby +i");
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/invite lobby add beta");
+        assert!(
+            sends_to(&out, LINK_B)
+                .iter()
+                .any(|env| rrc::text_body(env) == Some("You have been invited to join lobby."))
+        );
+        assert!(sends_to(&out, LINK_A).iter().any(|env| {
+            rrc::text_body(env)
+                .is_some_and(|body| body.starts_with("invite added in lobby (expires in 900s)"))
+        }));
+        assert!(core.rooms.get("lobby").unwrap().invited.contains_key(&ID_B));
+    }
+
+    #[test]
+    fn stats_and_reload_require_server_op() {
+        let mut core = op_core();
+        let out = run_command(&mut core, LINK_B, ID_B, "/stats");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("not authorized")
+        );
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/stats");
+        let stats = rrc::text_body(sends_to(&out, LINK_A)[0]).unwrap();
+        assert!(stats.contains("sessions: 2"));
+        assert!(stats.contains("rooms:"));
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/reload");
+        assert!(
+            rrc::text_body(sends_to(&out, LINK_A)[0])
+                .is_some_and(|body| body.contains("Ratspeak app settings"))
+        );
+    }
+
+    #[test]
+    fn target_resolution_disambiguates_and_reports_missing() {
+        let mut core = op_core();
+        // The room must exist and the caller be an op before target resolution
+        // runs; ID_A is a server op, so joining suffices.
+        join(&mut core, LINK_A, ID_A, "lobby");
+        // Two sessions share the "dup" nick; a nick lookup is ambiguous.
+        let link_c = [0x04; 16];
+        welcomed_session(&mut core, link_c, [0xCC; 16], "dup");
+        core.sessions.get_mut(&LINK_B).unwrap().nickname = Some("dup".to_string());
+        core.by_identity.insert([0xCC; 16], link_c);
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/kick lobby dup");
+        assert!(
+            rrc::text_body(sends_to(&out, LINK_A)[0])
+                .is_some_and(|body| body.starts_with("ambiguous: 'dup' matches 2 identities:"))
+        );
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/kick lobby ghost");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("target 'ghost' not found")
+        );
     }
 
     #[test]

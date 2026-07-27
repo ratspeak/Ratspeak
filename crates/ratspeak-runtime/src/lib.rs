@@ -961,11 +961,22 @@ pub async fn start_channel_hub_service(state: &Arc<AppState>, data_dir: &std::pa
             return false;
         }
     };
+    let operator_identity = match hex::decode(&identity_hash)
+        .ok()
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+    {
+        Some(hash) => hash,
+        None => {
+            tracing::warn!(reason = "invalid_operator_hash", "channel hub not started");
+            return false;
+        }
+    };
     let config = channel_hub_config_from_settings(&state.db);
     match channel_hub::ChannelHubHandle::start(
         transport_tx,
         hub_identity,
         config,
+        operator_identity,
         state.emitter.clone(),
         shutdown,
         Arc::downgrade(state),
