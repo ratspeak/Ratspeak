@@ -941,6 +941,26 @@ test('pending controls are tokened, disabled/aria-busy, roll back with status re
     assert(ui.resyncs.indexOf('control_status_reconciled') !== -1);
 });
 
+test('Activity title shows status only for live and paused sessions', function() {
+    var ui = loadUiHarness();
+    var ctx = ui.context;
+    var statusElement = ui.ids['activity-status'];
+    var statusLabel = ui.ids['activity-status-label'];
+
+    ctx.activityCaptureState = 'off';
+    ctx.updateActivityUI();
+    assert.strictEqual(statusElement.hidden, true);
+    assert.strictEqual(statusLabel.textContent, '');
+
+    ctx.applyActivityStatus(status(SESSION_A, 'capturing', '1', '1'));
+    assert.strictEqual(statusElement.hidden, false);
+    assert.strictEqual(statusLabel.textContent, 'Live');
+
+    ctx.applyActivityStatus(status(SESSION_A, 'stopped', '1', '1'));
+    assert.strictEqual(statusElement.hidden, false);
+    assert.strictEqual(statusLabel.textContent, 'Paused');
+});
+
 test('Clear waits for acknowledgement, clears only on success, and failure retains rows', async function() {
     var ui = loadUiHarness();
     var ctx = ui.context;
@@ -1219,6 +1239,8 @@ test('Activity state stays session-only and the transformed controls are explici
     assert(indexSource.indexOf('autocapitalize="off"') !== -1);
     assert(indexSource.indexOf('role="log" aria-live="polite"') !== -1);
     assert.strictEqual(indexSource.indexOf('activity-status-dot'), -1);
+    assert(indexSource.indexOf('id="activity-status" data-state="off" hidden') !== -1);
+    assert.strictEqual(indexSource.indexOf('id="activity-status-label">Off'), -1);
     assert(activitySource.indexOf("? 'Live'") !== -1);
     assert.strictEqual(activitySource.indexOf("? 'Recording'"), -1);
 });

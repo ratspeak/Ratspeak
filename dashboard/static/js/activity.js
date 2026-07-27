@@ -1095,11 +1095,14 @@ function updateActivityUI() {
         if (clearBtn) clearBtn.style.display = 'none';
         if (captureBtn) captureBtn.style.display = 'none';
     }
-    if (status) status.setAttribute('data-state', activityCaptureState);
+    if (status) {
+        status.setAttribute('data-state', activityCaptureState);
+        status.hidden = !hasSession;
+    }
     if (statusLabel) {
         statusLabel.textContent = activityCaptureState === 'capturing'
             ? 'Live'
-            : (activityCaptureState === 'stopped' ? 'Paused' : 'Off');
+            : (activityCaptureState === 'stopped' ? 'Paused' : '');
     }
     if (captureBtn) captureBtn.disabled = _activityControlPending;
     if (clearBtn) clearBtn.disabled = _activityControlPending || activityEvents.length === 0;

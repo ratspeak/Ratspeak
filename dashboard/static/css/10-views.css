@@ -1163,6 +1163,9 @@
     font-size: var(--type-badge-size);
     font-weight: var(--type-weight-semibold);
 }
+.activity-status[hidden] {
+    display: none;
+}
 .activity-status[data-state="capturing"] {
     color: var(--status-online);
 }
