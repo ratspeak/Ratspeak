@@ -919,7 +919,7 @@ pub struct LxmfManager {
         Option<tokio::sync::mpsc::Sender<rns_transport::link_messages::DestinationEvent>>,
     pub link_delivery: Option<lxmf_core::link_delivery::LinkDeliveryManager>,
     lxmf_link_command_tx: Option<mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>>,
-    lxmf_direct_link_packet_tx: Option<mpsc::Sender<(Vec<u8>, [u8; 16])>>,
+    lxmf_direct_link_packet_tx: Option<mpsc::UnboundedSender<(Vec<u8>, [u8; 16])>>,
     pending_direct_link_identifications: HashMap<[u8; 16], PendingDirectLinkIdentification>,
     lxmf_backchannel_command_rx: Option<mpsc::Receiver<BackchannelSendCommand>>,
     lxmf_link_identified_rx: Option<mpsc::Receiver<([u8; 16], [u8; 16])>>,
@@ -1256,7 +1256,7 @@ impl LxmfManager {
     pub fn set_lxmf_link_control(
         &mut self,
         command_tx: mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>,
-        direct_link_packet_tx: mpsc::Sender<(Vec<u8>, [u8; 16])>,
+        direct_link_packet_tx: mpsc::UnboundedSender<(Vec<u8>, [u8; 16])>,
         identified_rx: mpsc::Receiver<([u8; 16], [u8; 16])>,
         closed_rx: mpsc::Receiver<[u8; 16]>,
         packet_proof_rx: mpsc::Receiver<rns_runtime::link_manager::LinkPacketProof>,
@@ -6131,7 +6131,7 @@ mod tests {
         let (command_tx, _command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
-        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
@@ -6173,7 +6173,7 @@ mod tests {
         let (command_tx, mut command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
-        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
@@ -6253,7 +6253,7 @@ mod tests {
         let (command_tx, mut command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
-        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
@@ -6361,7 +6361,7 @@ mod tests {
         let (command_tx, mut command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
-        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
@@ -6433,7 +6433,7 @@ mod tests {
         let (command_tx, _command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
-        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
         let (closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
@@ -6485,7 +6485,7 @@ mod tests {
         let (command_tx, mut command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
-        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (_packet_tx, packet_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
@@ -6572,7 +6572,7 @@ mod tests {
         let (command_tx, mut command_rx) =
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
-        let (direct_tx, _direct_rx) = mpsc::channel::<(Vec<u8>, [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
         let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
         let (packet_tx, packet_rx) = mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
         let (_resource_tx, resource_rx) =

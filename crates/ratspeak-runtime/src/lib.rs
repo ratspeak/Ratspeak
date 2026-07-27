@@ -1464,7 +1464,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     });
 
                     let (pkt_tx, mut pkt_rx) =
-                        tokio::sync::mpsc::channel::<(Vec<u8>, [u8; 16])>(CHANNEL_BUFFER_SIZE);
+                        tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
                     link_mgr.set_link_packet_channel(pkt_tx);
                     let (res_tx, mut res_rx) =
                         tokio::sync::mpsc::channel::<(Vec<u8>, [u8; 16])>(CHANNEL_BUFFER_SIZE);
@@ -1604,7 +1604,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         );
 
                     let (link_pkt_tx, mut link_pkt_rx) =
-                        tokio::sync::mpsc::channel::<(Vec<u8>, [u8; 16])>(CHANNEL_BUFFER_SIZE);
+                        tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
                     let (link_res_tx, mut link_res_rx) =
                         tokio::sync::mpsc::channel::<(Vec<u8>, [u8; 16])>(CHANNEL_BUFFER_SIZE);
                     let (link_command_tx, link_command_rx) = tokio::sync::mpsc::channel::<
