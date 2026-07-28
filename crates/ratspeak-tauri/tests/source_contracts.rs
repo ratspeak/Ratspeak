@@ -216,6 +216,92 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(!channel_schema.contains("member_hash"));
 }
 
+/// The hub persists operator policy and nothing else, creates rooms only for
+/// the operator, and never stores a join key. Each assertion below stands for
+/// a deliberate divergence from rrcd recorded in the fix registry; losing one
+/// silently would be a privacy or availability regression, not a style change.
+#[test]
+fn channel_hub_persists_policy_only_and_gates_room_creation() {
+    let root = repo_root();
+    let hub = read_source(root.join("crates/ratspeak-runtime/src/channel_hub.rs"))
+        .expect("channel hub runtime");
+    let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+
+    // The module doc is the human-readable half of the same contract.
+    assert!(hub.contains("Relay traffic is live-only"));
+    assert!(hub.contains("never reach the Ratspeak database"));
+
+    // Durable hub state is policy. No traffic, no rosters, no nicknames.
+    let hub_schema = db
+        .split("CREATE TABLE IF NOT EXISTS channel_hub_rooms")
+        .nth(1)
+        .and_then(|tail| tail.split("CREATE INDEX IF NOT EXISTS idx_contacts_identity").next())
+        .expect("hub registry schema");
+    for forbidden in [
+        "message_body",
+        "transcript",
+        "member_hash",
+        "nickname",
+        "members",
+        "body",
+    ] {
+        assert!(
+            !hub_schema.contains(forbidden),
+            "hub registry must not store `{forbidden}`"
+        );
+    }
+    // The join key is only ever a verifiable digest.
+    assert!(hub_schema.contains("key_mac"));
+    assert!(!hub_schema.contains("key_plain"));
+    assert!(hub.contains("fn room_key_matches"));
+    assert!(hub.contains("hmac_verify"), "key checks stay constant time");
+    assert!(
+        !hub.contains("room.key = Some(key)"),
+        "a plaintext join key must never be stored"
+    );
+
+    // Room creation is operator-only; commands look rooms up, never create.
+    assert!(hub.contains("if !self.server_ops.contains(&identity) {"));
+    assert!(
+        hub.matches("entry(room_name.clone()).or_default()").count() == 1,
+        "only the operator-gated JOIN path may create a room"
+    );
+    assert!(!hub.contains("room.founder"), "founder authority is not durable");
+
+    // Registry tables are wiped with the identity that owns them.
+    for table in [
+        "channel_hub_rooms",
+        "channel_hub_grants",
+        "channel_hub_klines",
+    ] {
+        assert!(
+            db.contains(&format!("DELETE FROM {table} WHERE identity_id = ?1")),
+            "{table} must cascade with its identity"
+        );
+        assert!(db.contains(&format!("\"{table}\",")), "{table} must reset");
+    }
+
+    // Every reply is measured against the packet budget rather than guessed.
+    assert!(hub.contains("fn text_body_budget"));
+    assert!(hub.contains("fn roster_chunk_len"));
+    assert!(hub.contains("fn push_notice_entries"));
+    assert!(
+        hub.contains("NoticeHeader::Every(&format!(\"members in {room_name}: \"))"),
+        "/who repeats its prefix; NomadNet parses each packet independently"
+    );
+
+    // The IPC surface stays registered unconditionally.
+    for command in [
+        "channel_hub::api_channel_hub",
+        "channel_hub::channel_hub_start",
+        "channel_hub::channel_hub_stop",
+        "channel_hub::channel_hub_set_config",
+    ] {
+        assert!(tauri_lib.contains(command), "{command} must stay registered");
+    }
+}
+
 #[test]
 fn activity_lxmf_progress_is_typed_and_content_free() {
     let root = repo_root();
