@@ -57,7 +57,9 @@ async fn restart_running_hub(state: &State<'_, Arc<AppState>>) -> bool {
     let Some(hub) = state.take_channel_hub() else {
         return true;
     };
-    hub.shutdown().await;
+    if !hub.shutdown().await {
+        return false;
+    }
     let app_state: Arc<AppState> = state.inner().clone();
     ratspeak_runtime::start_channel_hub_service(&app_state).await
 }
@@ -83,7 +85,11 @@ pub async fn channel_hub_start(state: State<'_, Arc<AppState>>) -> AppResult<Cha
 pub async fn channel_hub_stop(state: State<'_, Arc<AppState>>) -> AppResult<ChannelHubSnapshot> {
     persist_setting(&state, "channel_hub_enabled", "0".to_string()).await?;
     if let Some(hub) = state.take_channel_hub() {
-        hub.shutdown().await;
+        if !hub.shutdown().await {
+            return Err(AppError::service_unavailable(
+                "Channel hub is still shutting down",
+            ));
+        }
     }
     Ok(ChannelHubSnapshot::stopped())
 }

@@ -4301,18 +4301,27 @@ impl ChannelHubHandle {
         result_rx.await.map_err(|_| ChannelHubError::Stopped)
     }
 
-    pub async fn shutdown(&self) {
+    /// Stop the service and wait until its registry tail is flushed and the
+    /// Reticulum destination has been deregistered. A false result means the
+    /// actor did not acknowledge the complete teardown inside the budget; a
+    /// caller must not immediately register a replacement over it.
+    pub async fn shutdown(&self) -> bool {
         let (result_tx, result_rx) = oneshot::channel();
         if self
             .command_tx
             .send(HubCommand::Shutdown { result_tx })
             .await
-            .is_ok()
+            .is_err()
         {
-            // The task flushes outstanding registry writes before it acks, so
-            // this budget covers a slow disk, not just a channel round trip.
-            let _ = tokio::time::timeout(Duration::from_secs(10), result_rx).await;
+            return false;
         }
+        // The task flushes outstanding registry writes and closes the
+        // destination before it acks, so this budget covers slow disk and
+        // transport teardown, not just a channel round trip.
+        matches!(
+            tokio::time::timeout(Duration::from_secs(10), result_rx).await,
+            Ok(Ok(()))
+        )
     }
 }
 
@@ -4328,6 +4337,7 @@ async fn run_hub(
     snapshot: Arc<RwLock<ChannelHubSnapshot>>,
     recorder: ChannelsActivity,
 ) {
+    let mut shutdown_ack = None;
     let destination_hash = registration.handle.destination_hash();
     let activity_hub = activity::DestinationHash::new(destination_hash);
     core.note_service_started();
@@ -4388,7 +4398,7 @@ async fn run_hub(
                         continue;
                     }
                     Some(HubCommand::Shutdown { result_tx }) => {
-                        let _ = result_tx.send(());
+                        shutdown_ack = Some(result_tx);
                         break;
                     }
                     None => break,
@@ -4514,6 +4524,9 @@ async fn run_hub(
     );
     if registration.close().await.is_err() {
         tracing::warn!(reason = "close_failed", "channel hub deregistration failed");
+    }
+    if let Some(result_tx) = shutdown_ack {
+        let _ = result_tx.send(());
     }
     tracing::info!("channel hub stopped");
 }

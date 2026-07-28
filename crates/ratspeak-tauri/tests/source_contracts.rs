@@ -330,6 +330,35 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
 }
 
 #[test]
+fn channel_hub_shutdown_acknowledges_complete_teardown() {
+    let root = repo_root();
+    let hub = read_source(root.join("crates/ratspeak-runtime/src/channel_hub.rs"))
+        .expect("channel hub runtime");
+    let run_hub = hub
+        .split("async fn run_hub(")
+        .nth(1)
+        .and_then(|tail| tail.split("/// Every hub event").next())
+        .expect("hub service loop");
+
+    let captures_ack = run_hub
+        .find("shutdown_ack = Some(result_tx)")
+        .expect("shutdown request captures its acknowledgement");
+    let final_flush = run_hub
+        .find("core.flush_dirty_last_used(&mut final_out)")
+        .expect("final registry flush");
+    let closes_destination = run_hub
+        .find("registration.close().await")
+        .expect("destination teardown");
+    let sends_ack = run_hub
+        .find("if let Some(result_tx) = shutdown_ack")
+        .expect("completed teardown acknowledgement");
+
+    assert!(captures_ack < final_flush);
+    assert!(final_flush < closes_destination);
+    assert!(closes_destination < sends_ack);
+}
+
+#[test]
 fn activity_lxmf_progress_is_typed_and_content_free() {
     let root = repo_root();
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs"))

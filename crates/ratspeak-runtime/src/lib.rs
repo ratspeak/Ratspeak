@@ -716,7 +716,12 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
         channels.shutdown().await;
     }
     if let Some(channel_hub) = state.take_channel_hub() {
-        channel_hub.shutdown().await;
+        if !channel_hub.shutdown().await {
+            tracing::warn!(
+                reason = "shutdown_unacknowledged",
+                "channel hub teardown did not complete before runtime shutdown"
+            );
+        }
     }
     if let Ok(sig) = state.session_shutdown.read() {
         sig.trigger();
