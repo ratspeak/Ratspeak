@@ -38,7 +38,12 @@ use ratspeak_core::Emitter;
 
 const COMMAND_BUFFER: usize = 16;
 /// Client HELLO retries fire at 3s; WELCOME must beat the first retry.
-const GREETING_CHUNK_BYTES: usize = 300;
+/// CBOR text headers grow with length; two bytes covers every body we emit.
+const CBOR_TEXT_HEADER_SLACK: usize = 2;
+/// Floor so a pathological room name cannot reduce a notice to nothing.
+const MIN_NOTICE_BODY_BYTES: usize = 32;
+/// Per-line topic budget in `/list`, which must stay one packet.
+const LIST_TOPIC_BYTES: usize = 48;
 /// Encoded envelopes ride single link packets; the negotiated floor is 431.
 const LINK_PACKET_BUDGET: usize = rns_wire::constants::LINK_MDU;
 const HUB_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -118,6 +123,9 @@ struct HubStats {
     duplicates: u64,
     pings_out: u64,
     pongs_in: u64,
+    /// Envelopes the shell could not send. Should stay zero; a nonzero value
+    /// means a producer escaped the budget helpers.
+    oversize: u64,
 }
 
 /// Serializable hub status for IPC and the `channel_hub_snapshot` event.
@@ -400,6 +408,15 @@ impl HubRoom {
             format!("+{flags}")
         }
     }
+}
+
+/// Where the lead text of a multi-packet notice goes. Repeating it matters
+/// for replies whose clients parse each packet independently.
+#[derive(Clone, Copy)]
+enum NoticeHeader<'a> {
+    None,
+    First(&'a str),
+    Every(&'a str),
 }
 
 /// Hub-side sends the pure core asks the shell to perform.
@@ -808,6 +825,10 @@ impl HubCore {
         self.stats.bad_packets += 1;
     }
 
+    pub(crate) fn note_oversize(&mut self, count: usize) {
+        self.stats.oversize += count as u64;
+    }
+
     /// Reference room normalization with its exact reply texts.
     fn norm_room(&self, room: &str) -> Result<String, String> {
         let normalized = room.trim().to_lowercase();
@@ -884,6 +905,111 @@ impl HubCore {
                 rate_messages_per_minute: Some(self.config.rate_messages_per_minute),
             },
         }
+    }
+
+    /// Encoded size of an envelope of this shape carrying an empty text body.
+    /// Measured rather than computed: CBOR header widths shift with room and
+    /// nickname length, and a stale constant silently drops packets.
+    fn envelope_overhead(&self, message_type: rrc::MessageType, room: Option<&str>) -> usize {
+        let mut probe = rrc::Envelope::new(message_type, self.hub_hash);
+        probe.room = room.map(str::to_string);
+        // An empty *body* rather than no body: without the key the K_BODY byte
+        // is unaccounted and a 432-byte packet slips through.
+        probe.body = Some(Value::Text(String::new()));
+        rrc::encode(&probe).map(|bytes| bytes.len()).unwrap_or(0)
+    }
+
+    /// Text bytes that fit in one packet of this shape.
+    fn text_body_budget(&self, message_type: rrc::MessageType, room: Option<&str>) -> usize {
+        LINK_PACKET_BUDGET
+            .saturating_sub(self.envelope_overhead(message_type, room))
+            .saturating_sub(CBOR_TEXT_HEADER_SLACK)
+    }
+
+    /// Identity hashes that fit in one JOINED roster packet for this room.
+    fn roster_chunk_len(&self, room_name: &str) -> usize {
+        let overhead = self.envelope_overhead(rrc::MessageType::Joined, Some(room_name));
+        // 16 bytes plus a one-byte CBOR header each, minus a byte for the
+        // array header widening past 23 entries.
+        LINK_PACKET_BUDGET
+            .saturating_sub(overhead)
+            .saturating_sub(1)
+            .checked_div(17)
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    /// Emit a notice that may not fit in one packet. Never drops: it packs on
+    /// entry boundaries so a client's per-entry parser cannot see a mangled
+    /// half-entry, and falls back to UTF-8 splitting only for a single entry
+    /// too long to stand alone.
+    fn push_notice_entries(
+        &self,
+        link_id: [u8; 16],
+        header: NoticeHeader<'_>,
+        entries: &[String],
+        separator: &str,
+        room: Option<&str>,
+        out: &mut Vec<HubSend>,
+    ) {
+        let lead = match header {
+            NoticeHeader::None => "",
+            NoticeHeader::First(lead) | NoticeHeader::Every(lead) => lead,
+        };
+        let budget = self
+            .text_body_budget(rrc::MessageType::Notice, room)
+            .max(MIN_NOTICE_BODY_BYTES);
+        let whole = format!("{lead}{}", entries.join(separator));
+        if whole.len() <= budget {
+            out.push(self.hub_notice(link_id, &whole, room));
+            return;
+        }
+
+        let repeat_lead = matches!(header, NoticeHeader::Every(_));
+        let mut current = lead.to_string();
+        let mut current_has_entry = false;
+        let mut flush = |text: &mut String, has_entry: &mut bool, out: &mut Vec<HubSend>| {
+            if *has_entry {
+                out.push(self.hub_notice(link_id, text, room));
+            }
+            text.clear();
+            *has_entry = false;
+        };
+        for entry in entries {
+            let addition = if current_has_entry {
+                format!("{separator}{entry}")
+            } else {
+                entry.clone()
+            };
+            if current.len() + addition.len() <= budget {
+                current.push_str(&addition);
+                current_has_entry = true;
+                continue;
+            }
+            flush(&mut current, &mut current_has_entry, out);
+            current = if repeat_lead {
+                lead.to_string()
+            } else {
+                String::new()
+            };
+            if current.len() + entry.len() <= budget {
+                current.push_str(entry);
+                current_has_entry = true;
+            } else {
+                // A single entry too large to stand alone: split it rather
+                // than drop it, on UTF-8 boundaries.
+                for piece in chunk_text(entry, budget.saturating_sub(current.len()).max(1)) {
+                    out.push(self.hub_notice(link_id, &format!("{current}{piece}"), room));
+                    current = if repeat_lead {
+                        lead.to_string()
+                    } else {
+                        String::new()
+                    };
+                }
+                current_has_entry = false;
+            }
+        }
+        flush(&mut current, &mut current_has_entry, out);
     }
 
     fn hub_notice(&self, link_id: [u8; 16], text: &str, room: Option<&str>) -> HubSend {
@@ -1189,19 +1315,63 @@ impl HubCore {
             });
         }
 
-        let roster_body = self.config.include_member_list.then(|| {
-            let room = self.rooms.get(&room_name).expect("room just ensured");
-            rrc::member_list(&self.roster_identities(room))
-        });
-        let mut joined = rrc::Envelope::new(rrc::MessageType::Joined, self.hub_hash);
-        joined.room = Some(room_name.clone());
-        joined.body = roster_body;
-        out.push(HubSend::Envelope {
-            link_id,
-            envelope: joined,
-        });
+        if self.config.include_member_list {
+            let roster = {
+                let room = self.rooms.get(&room_name).expect("room exists");
+                self.roster_identities(room)
+            };
+            self.push_roster_joined(link_id, &room_name, identity, &roster, out);
+        } else {
+            let mut joined = rrc::Envelope::new(rrc::MessageType::Joined, self.hub_hash);
+            joined.room = Some(room_name.clone());
+            out.push(HubSend::Envelope {
+                link_id,
+                envelope: joined,
+            });
+        }
 
         out.push(self.room_status_notice(link_id, &room_name));
+    }
+
+    /// Send the joiner its roster, split across packets when a large room
+    /// would not fit. Truncating instead would report a partial roster as
+    /// complete; splitting ends with a complete roster and only the
+    /// already-documented "not authoritative" state on the way there.
+    fn push_roster_joined(
+        &self,
+        link_id: [u8; 16],
+        room_name: &str,
+        joiner: [u8; 16],
+        roster: &[[u8; 16]],
+        out: &mut Vec<HubSend>,
+    ) {
+        let per_chunk = self.roster_chunk_len(room_name);
+        // The joiner leads chunk 0 so the client can recognise its own join
+        // before any continuation arrives.
+        let mut ordered: Vec<[u8; 16]> = Vec::with_capacity(roster.len());
+        ordered.push(joiner);
+        ordered.extend(roster.iter().copied().filter(|member| *member != joiner));
+
+        let mut chunks: Vec<Vec<[u8; 16]>> = ordered
+            .chunks(per_chunk)
+            .map(<[[u8; 16]]>::to_vec)
+            .collect();
+        // A lone trailing member reads as a join event, not a roster fragment.
+        if chunks.len() > 1 && chunks.last().is_some_and(|last| last.len() == 1) {
+            let previous = chunks.len() - 2;
+            if let Some(borrowed) = chunks[previous].pop() {
+                chunks[previous + 1].insert(0, borrowed);
+            }
+        }
+        for chunk in chunks {
+            let mut joined = rrc::Envelope::new(rrc::MessageType::Joined, self.hub_hash);
+            joined.room = Some(room_name.to_string());
+            joined.body = Some(rrc::member_list(&chunk));
+            out.push(HubSend::Envelope {
+                link_id,
+                envelope: joined,
+            });
+        }
     }
 
     /// The join-confirmation NOTICE both NomadNet and our client parse by
@@ -1360,6 +1530,26 @@ impl HubCore {
         envelope.room = Some(room_name.clone());
         self.rewrite_relay_nickname(link_id, &mut envelope);
 
+        // The rewritten envelope carries the room and the advisory nickname,
+        // so a message inside the advertised body limit can still overflow a
+        // link packet. Drop the nickname first: both reference clients cache
+        // nicks by source, so the message survives and only the hint is lost.
+        let mut encoded = rrc::encode(&envelope).map(|bytes| bytes.len()).unwrap_or(0);
+        if encoded > LINK_PACKET_BUDGET && envelope.nickname.is_some() {
+            envelope.nickname = None;
+            encoded = rrc::encode(&envelope).map(|bytes| bytes.len()).unwrap_or(0);
+        }
+        if encoded > LINK_PACKET_BUDGET {
+            out.push(self.hub_error(
+                link_id,
+                &format!(
+                    "message too large for {room_name}: {encoded} bytes > {LINK_PACKET_BUDGET} bytes"
+                ),
+                Some(&room_name),
+            ));
+            return;
+        }
+
         match envelope.message_type {
             rrc::MessageType::Message => self.stats.messages_forwarded += 1,
             rrc::MessageType::Action => self.stats.actions_forwarded += 1,
@@ -1424,6 +1614,19 @@ impl HubCore {
         };
         envelope.source = identity;
         self.rewrite_relay_nickname(link_id, &mut envelope);
+        let mut encoded = rrc::encode(&envelope).map(|bytes| bytes.len()).unwrap_or(0);
+        if encoded > LINK_PACKET_BUDGET && envelope.nickname.is_some() {
+            envelope.nickname = None;
+            encoded = rrc::encode(&envelope).map(|bytes| bytes.len()).unwrap_or(0);
+        }
+        if encoded > LINK_PACKET_BUDGET {
+            out.push(self.hub_error(
+                link_id,
+                &format!("message too large: {encoded} bytes > {LINK_PACKET_BUDGET} bytes"),
+                None,
+            ));
+            return;
+        }
         self.stats.direct_notices += 1;
         out.push(HubSend::Envelope {
             link_id: target_link,
@@ -1544,14 +1747,39 @@ impl HubCore {
             out.push(self.hub_notice(link_id, "No public rooms registered", None));
             return;
         }
-        let mut lines = vec!["Registered public rooms:".to_string()];
+        // Deliberately one packet, never chunked: NomadNet REPLACES its room
+        // list per parsed notice, so a continuation chunk would leave only the
+        // last one, and a headerless chunk is read as an MOTD instead.
+        // Truncating with a visible count is the honest failure.
+        let budget = self
+            .text_body_budget(rrc::MessageType::Notice, None)
+            .max(MIN_NOTICE_BODY_BYTES);
+        let mut text = "Registered public rooms:".to_string();
+        let total = rooms.len();
+        let mut shown = 0usize;
         for (name, room) in rooms {
-            match room.topic.as_deref() {
-                Some(topic) => lines.push(format!("  {name} - {topic}")),
-                None => lines.push(format!("  {name}")),
+            let topic = room.topic.as_deref().map(clip_topic);
+            let line = match topic {
+                Some(topic) => format!("\n  {name} - {topic}"),
+                None => format!("\n  {name}"),
+            };
+            // Leave room for the trailing count if more remain.
+            let remaining = total - shown - 1;
+            let tail = if remaining > 0 {
+                format!("\n  (+{remaining} more)").len()
+            } else {
+                0
+            };
+            if text.len() + line.len() + tail > budget {
+                break;
             }
+            text.push_str(&line);
+            shown += 1;
         }
-        out.push(self.hub_notice(link_id, &lines.join("\n"), None));
+        if shown < total {
+            text.push_str(&format!("\n  (+{} more)", total - shown));
+        }
+        out.push(self.hub_notice(link_id, &text, None));
     }
 
     fn cmd_who(
@@ -1604,12 +1832,17 @@ impl HubCore {
                 }
             }
         }
-        let joined = if members.is_empty() {
-            "(none)".to_string()
-        } else {
-            members.join(", ")
-        };
-        out.push(self.hub_notice(link_id, &format!("members in {room_name}: {joined}"), None));
+        if members.is_empty() {
+            members.push("(none)".to_string());
+        }
+        self.push_notice_entries(
+            link_id,
+            NoticeHeader::Every(&format!("members in {room_name}: ")),
+            &members,
+            ", ",
+            None,
+            out,
+        );
     }
 
     fn cmd_kick(
@@ -1718,12 +1951,17 @@ impl HubCore {
                 .map(|klines| klines.iter().map(hex::encode).collect())
                 .unwrap_or_default();
             items.sort();
-            let joined = if items.is_empty() {
-                "(none)".to_string()
-            } else {
-                items.join(", ")
-            };
-            out.push(self.hub_notice(link_id, &format!("klines: {joined}"), None));
+            if items.is_empty() {
+                items.push("(none)".to_string());
+            }
+            self.push_notice_entries(
+                link_id,
+                NoticeHeader::First("klines: "),
+                &items,
+                ", ",
+                None,
+                out,
+            );
             return;
         }
         if op != "add" && op != "del" {
@@ -2213,12 +2451,18 @@ impl HubCore {
                 .map(|room| room.bans.iter().map(hex::encode).collect())
                 .unwrap_or_default();
             items.sort();
-            let text = if items.is_empty() {
-                format!("no bans in {room_name}")
-            } else {
-                format!("bans in {room_name}: {}", items.join(", "))
-            };
-            out.push(self.hub_notice(link_id, &text, raw_room));
+            if items.is_empty() {
+                out.push(self.hub_notice(link_id, &format!("no bans in {room_name}"), raw_room));
+                return;
+            }
+            self.push_notice_entries(
+                link_id,
+                NoticeHeader::First(&format!("bans in {room_name}: ")),
+                &items,
+                ", ",
+                raw_room,
+                out,
+            );
             return;
         }
         if op != "add" && op != "del" {
@@ -2348,16 +2592,17 @@ impl HubCore {
                 })
                 .unwrap_or_default();
             items.sort();
-            let joined = if items.is_empty() {
-                "(none)".to_string()
-            } else {
-                items.join(", ")
-            };
-            out.push(self.hub_notice(
+            if items.is_empty() {
+                items.push("(none)".to_string());
+            }
+            self.push_notice_entries(
                 link_id,
-                &format!("invites in {room_name}: {joined}"),
+                NoticeHeader::First(&format!("invites in {room_name}: ")),
+                &items,
+                ", ",
                 raw_room,
-            ));
+                out,
+            );
             return;
         }
         if op != "add" && op != "del" {
@@ -2460,13 +2705,16 @@ impl HubCore {
                 self.stats.joins, self.stats.parts, self.stats.pings_out, self.stats.pongs_in
             ),
             format!(
-                "dropped: rate_limited={} bad_packets={} duplicates={}",
-                self.stats.rate_limited, self.stats.bad_packets, self.stats.duplicates
+                "dropped: rate_limited={} bad_packets={} duplicates={} oversize={}",
+                self.stats.rate_limited,
+                self.stats.bad_packets,
+                self.stats.duplicates,
+                self.stats.oversize
             ),
             format!("klines: {klines}"),
         ]
-        .join("\n");
-        out.push(self.hub_notice(link_id, &text, None));
+        .to_vec();
+        self.push_notice_entries(link_id, NoticeHeader::None, &text, "\n", None, out);
     }
 
     fn cmd_reload(&mut self, link_id: [u8; 16], identity: [u8; 16], out: &mut Vec<HubSend>) {
@@ -2499,20 +2747,35 @@ impl HubCore {
         if nickname.is_some() {
             session.nickname = nickname;
         }
-        let first_welcome = !session.welcomed;
-        session.welcomed = true;
-
         let mut welcome = rrc::Envelope::new(rrc::MessageType::Welcome, self.hub_hash);
         welcome.body = Some(welcome_body);
+        // The reference marks the session welcomed and then silently drops an
+        // oversized WELCOME, leaving the client waiting forever. Only claim
+        // the session is welcomed if the packet can actually go out.
+        let sendable = rrc::encode(&welcome).is_ok_and(|bytes| bytes.len() <= LINK_PACKET_BUDGET);
+        if !sendable {
+            tracing::error!(reason = "welcome_over_mdu", "hub WELCOME does not fit");
+            out.push(self.hub_error(link_id, "hub configuration error", None));
+            return;
+        }
+        let first_welcome = !session.welcomed;
+        if let Some(session) = self.sessions.get_mut(&link_id) {
+            session.welcomed = true;
+        }
         out.push(HubSend::Envelope {
             link_id,
             envelope: welcome,
         });
 
         if first_welcome && let Some(greeting) = self.config.greeting.clone() {
-            for chunk in chunk_text(&greeting, GREETING_CHUNK_BYTES) {
-                out.push(self.hub_notice(link_id, &chunk, None));
-            }
+            self.push_notice_entries(
+                link_id,
+                NoticeHeader::None,
+                std::slice::from_ref(&greeting),
+                "",
+                None,
+                out,
+            );
         }
     }
 
@@ -2552,6 +2815,18 @@ impl HubCore {
             out.push(HubSend::Close { link_id });
         }
     }
+}
+
+/// Clip a topic for the single-packet `/list` reply, on a char boundary.
+fn clip_topic(topic: &str) -> String {
+    if topic.len() <= LIST_TOPIC_BYTES {
+        return topic.to_string();
+    }
+    let cut = (0..=LIST_TOPIC_BYTES)
+        .rev()
+        .find(|index| topic.is_char_boundary(*index))
+        .unwrap_or(0);
+    format!("{}…", &topic[..cut])
 }
 
 /// Split human text into UTF-8-boundary chunks of at most `max_bytes`.
@@ -2989,6 +3264,7 @@ async fn flush_sends(
         }
     }
 
+    let mut oversize = 0usize;
     for send in envelopes {
         match send {
             HubSend::Persist(_) => unreachable!("persist ops are partitioned out"),
@@ -3004,6 +3280,9 @@ async fn flush_sends(
                     }
                 }
                 Ok(encoded) => {
+                    // Every producer sizes itself; reaching here is a bug, so
+                    // surface it on /stats rather than only in a log.
+                    oversize += 1;
                     tracing::warn!(
                         len = encoded.len(),
                         reason = "over_mdu",
@@ -3011,6 +3290,7 @@ async fn flush_sends(
                     );
                 }
                 Err(_) => {
+                    oversize += 1;
                     tracing::warn!(reason = "encode_failed", "hub envelope dropped");
                 }
             },
@@ -3025,6 +3305,9 @@ async fn flush_sends(
                 }
             }
         }
+    }
+    if oversize > 0 {
+        core.note_oversize(oversize);
     }
 }
 
@@ -3672,6 +3955,234 @@ mod tests {
             db::HubRoomOp::Upsert(row) if row.room_name == room => Some(&**row),
             _ => None,
         })
+    }
+
+    /// Every envelope a batch would put on the wire must fit a link packet.
+    fn assert_all_sendable(out: &[HubSend]) {
+        for send in out {
+            if let HubSend::Envelope { envelope, .. } = send {
+                let encoded = rrc::encode(envelope).expect("hub envelopes must encode");
+                assert!(
+                    encoded.len() <= LINK_PACKET_BUDGET,
+                    "{:?} encoded to {} bytes, over the {LINK_PACKET_BUDGET} budget",
+                    envelope.message_type,
+                    encoded.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_max_size_message_relays_and_sheds_the_nickname_to_fit() {
+        // A 350-byte body plus a 32-byte nickname overflows a link packet; the
+        // nickname is advisory and both reference clients cache nicks by
+        // source, so shedding it saves the message.
+        let mut core = op_core();
+        let room = "lobby";
+        welcomed_session(&mut core, LINK_B, ID_B, &"n".repeat(32));
+        join(&mut core, LINK_A, ID_A, room);
+        join(&mut core, LINK_B, ID_B, room);
+
+        let mut message = rrc::Envelope::new(rrc::MessageType::Message, ID_B);
+        message.room = Some(room.to_string());
+        message.nickname = Some("n".repeat(32));
+        message.body = Some(Value::Text("m".repeat(350)));
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, message, &mut out);
+
+        let relayed = sends_to(&out, LINK_A);
+        assert_eq!(relayed.len(), 1, "the message must be relayed, not dropped");
+        assert_all_sendable(&out);
+        assert_eq!(rrc::text_body(relayed[0]).map(str::len), Some(350));
+    }
+
+    #[test]
+    fn a_message_that_cannot_fit_is_refused_with_a_reason() {
+        // In a 64-byte room a 350-byte body cannot fit a 431-byte packet at
+        // all. The reference silently dropped it; we say so instead. The
+        // advertised limit stays 350 for rrcd parity.
+        let mut core = op_core();
+        let room = "r".repeat(64);
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        join(&mut core, LINK_A, ID_A, &room);
+        join(&mut core, LINK_B, ID_B, &room);
+
+        let mut message = rrc::Envelope::new(rrc::MessageType::Message, ID_B);
+        message.room = Some(room.clone());
+        message.body = Some(Value::Text("m".repeat(350)));
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, message, &mut out);
+
+        assert!(sends_to(&out, LINK_A).is_empty(), "nothing is fanned out");
+        let error = sends_to(&out, LINK_B)[0];
+        assert_eq!(error.message_type, rrc::MessageType::Error);
+        assert!(
+            rrc::text_body(error)
+                .is_some_and(|text| text.starts_with(&format!("message too large for {room}"))),
+            "the sender must learn why"
+        );
+        assert_eq!(error.room.as_deref(), Some(room.as_str()));
+        assert_all_sendable(&out);
+    }
+
+    #[test]
+    fn a_large_roster_is_split_rather_than_dropped_or_truncated() {
+        let mut core = op_core();
+        let room = "r".repeat(64);
+        join(&mut core, LINK_A, ID_A, &room);
+        // Fill the room past what one packet can carry.
+        let mut expected = vec![ID_A];
+        for index in 0..40u8 {
+            let link = [
+                0xF0 | (index >> 4),
+                index,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                index,
+            ];
+            let identity = [index; 16];
+            welcomed_session(&mut core, link, identity, "m");
+            join(&mut core, link, identity, &room);
+            expected.push(identity);
+        }
+
+        let out = join(&mut core, LINK_A, ID_A, &room);
+        assert_all_sendable(&out);
+        let joined: Vec<&rrc::Envelope> = sends_to(&out, LINK_A)
+            .into_iter()
+            .filter(|env| env.message_type == rrc::MessageType::Joined)
+            .collect();
+        assert!(joined.len() > 1, "a 41-member roster needs several packets");
+        // No chunk may be a single identity: clients read that as a join.
+        for chunk in &joined {
+            assert!(rrc::member_identities(chunk).len() > 1);
+        }
+        let mut seen: Vec<[u8; 16]> = joined
+            .iter()
+            .flat_map(|env| rrc::member_identities(env))
+            .collect();
+        seen.sort();
+        seen.dedup();
+        expected.sort();
+        expected.dedup();
+        assert_eq!(seen, expected, "the roster must be complete across chunks");
+        assert_eq!(
+            rrc::member_identities(joined[0]).first(),
+            Some(&ID_A),
+            "the joiner leads chunk 0 so it can recognise its own join"
+        );
+    }
+
+    #[test]
+    fn who_repeats_its_prefix_on_every_packet() {
+        let mut core = op_core();
+        let room = "lobby";
+        join(&mut core, LINK_A, ID_A, room);
+        for index in 0..30u8 {
+            let link = [0xA0, index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, index];
+            welcomed_session(&mut core, link, [index; 16], &format!("member{index:02}"));
+            join(&mut core, link, [index; 16], room);
+        }
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/who lobby");
+        assert_all_sendable(&out);
+        let notices: Vec<&rrc::Envelope> = sends_to(&out, LINK_A);
+        assert!(notices.len() > 1, "30 members exceed one packet");
+        for notice in &notices {
+            // NomadNet parses each packet independently and requires the
+            // prefix; a continuation without it is discarded.
+            assert!(
+                rrc::text_body(notice).is_some_and(|text| text.starts_with("members in lobby: ")),
+                "every /who packet must carry the prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn list_stays_one_packet_and_says_what_it_dropped() {
+        let mut core = op_core();
+        for index in 0..40u8 {
+            let room = format!("room-{index:02}-{}", "x".repeat(20));
+            join(&mut core, LINK_A, ID_A, &room);
+            run_command(&mut core, LINK_A, ID_A, &format!("/register {room}"));
+            run_command(
+                &mut core,
+                LINK_A,
+                ID_A,
+                &format!("/topic {room} {}", "t".repeat(120)),
+            );
+        }
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/list");
+        assert_all_sendable(&out);
+        let notices = sends_to(&out, LINK_A);
+        // A continuation chunk would clobber NomadNet's room list and MOTD.
+        assert_eq!(notices.len(), 1, "/list must never be chunked");
+        let text = rrc::text_body(notices[0]).unwrap();
+        assert!(text.starts_with("Registered public rooms:"));
+        assert!(text.contains("more)"), "truncation must be visible: {text}");
+    }
+
+    #[test]
+    fn oversized_replies_are_split_not_dropped() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        // Ban a large number of identities so the list cannot fit one packet.
+        for index in 0..30u8 {
+            core.rooms
+                .get_mut("lobby")
+                .unwrap()
+                .bans
+                .insert([index; 16]);
+        }
+        let out = run_command(&mut core, LINK_A, ID_A, "/ban lobby list");
+        assert_all_sendable(&out);
+        let text: String = sends_to(&out, LINK_A)
+            .iter()
+            .filter_map(|env| rrc::text_body(env))
+            .collect::<Vec<_>>()
+            .join("");
+        for index in 0..30u8 {
+            assert!(
+                text.contains(&hex::encode([index; 16])),
+                "every ban must survive the split"
+            );
+        }
+    }
+
+    #[test]
+    fn a_welcome_that_cannot_be_sent_never_marks_the_session_welcomed() {
+        let config = ChannelHubConfig {
+            // Far past anything the IPC layer allows, but the hub must not
+            // hang a client if it ever happens.
+            hub_name: "h".repeat(4096),
+            ..ChannelHubConfig::default()
+        };
+        let (mut core, link_id) = identified_core(config);
+        let mut out = Vec::new();
+        core.on_envelope(link_id, rrc::Envelope::hello(ID_A, "rat", "1"), &mut out);
+
+        assert_all_sendable(&out);
+        assert!(
+            !core.sessions[&link_id].welcomed,
+            "a session is only welcomed when the WELCOME can actually go out"
+        );
+        assert_eq!(
+            rrc::text_body(first_envelope(&out)),
+            Some("hub configuration error")
+        );
     }
 
     #[test]

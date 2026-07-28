@@ -2588,6 +2588,7 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
         return;
     }
     let identities = rrc::member_identities(envelope);
+    let identity_count = identities.len();
     let includes_self = identities.contains(&active.source);
     let joining_self = room.phase == ChannelRoomPhase::Joining || includes_self;
     if room.phase == ChannelRoomPhase::Error && !joining_self {
@@ -2639,7 +2640,11 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
             .transcript
             .iter()
             .any(|item| item.kind == ChannelItemKind::Join && item.ours);
-    if !join_already_visible {
+    // A multi-identity JOINED that does not include us is a roster fragment,
+    // never a join event: hubs split large rosters across packets, and
+    // treating a continuation as an arrival invents "A member joined" lines.
+    let is_join_event = joining_self || identity_count == 1;
+    if !join_already_visible && is_join_event {
         append_room_item(
             room,
             transcript_item(
