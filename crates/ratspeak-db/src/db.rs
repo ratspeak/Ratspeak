@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
@@ -2600,6 +2600,33 @@ pub fn get_setting(pool: &DbPool, key: &str) -> Option<String> {
     .ok()
 }
 
+/// Read a related set of settings from one SQLite snapshot. Missing keys are
+/// omitted; database failures are surfaced instead of being confused with an
+/// unset preference.
+pub fn get_settings(
+    pool: &DbPool,
+    keys: &[&str],
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let mut values = std::collections::HashMap::with_capacity(keys.len());
+    for key in keys {
+        let value = transaction
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if let Some(value) = value {
+            values.insert((*key).to_string(), value);
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(values)
+}
+
 pub fn set_setting(pool: &DbPool, key: &str, value: &str) {
     let _ = try_set_setting(pool, key, value);
 }
@@ -2612,6 +2639,81 @@ pub fn try_set_setting(pool: &DbPool, key: &str, value: &str) -> Result<(), Stri
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Persist a coherent group of settings in one transaction. This is the
+/// boundary for controls whose fields are edited and applied as one unit.
+pub fn try_set_settings(pool: &DbPool, values: &[(String, String)]) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    for (key, value) in values {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn test_pool() -> DbPool {
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    #[test]
+    fn related_settings_round_trip_as_one_snapshot() {
+        let pool = test_pool();
+        try_set_settings(
+            &pool,
+            &[
+                ("hub_name".to_string(), "Mountain relay".to_string()),
+                ("hub_enabled".to_string(), "1".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let values = get_settings(&pool, &["hub_name", "hub_enabled", "missing"]).unwrap();
+        assert_eq!(
+            values.get("hub_name").map(String::as_str),
+            Some("Mountain relay")
+        );
+        assert_eq!(values.get("hub_enabled").map(String::as_str), Some("1"));
+        assert!(!values.contains_key("missing"));
+    }
+
+    #[test]
+    fn a_failed_settings_batch_rolls_back_every_field() {
+        let pool = test_pool();
+        pool.get()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_test_setting
+                 BEFORE INSERT ON settings
+                 WHEN NEW.key = 'reject'
+                 BEGIN SELECT RAISE(ABORT, 'rejected'); END;",
+            )
+            .unwrap();
+
+        let result = try_set_settings(
+            &pool,
+            &[
+                ("first".to_string(), "saved-too-early".to_string()),
+                ("reject".to_string(), "no".to_string()),
+            ],
+        );
+        assert!(result.is_err());
+        assert_eq!(get_setting(&pool, "first"), None);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
