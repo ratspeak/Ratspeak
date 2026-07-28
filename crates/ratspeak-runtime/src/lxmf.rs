@@ -1336,6 +1336,19 @@ impl LxmfManager {
         hash_hex: &str,
         cascade: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // The hub keyfile lives outside the identity directory, so it must be
+        // removed explicitly and before the early return. Leaving it behind
+        // lets a delete-and-reimport resurrect the hub on the same destination
+        // hash with an empty registry: every closed room open again, every ban
+        // and kline gone, and bookmarked clients reconnecting straight into it.
+        let hub_key = data_root
+            .join(".ratspeak")
+            .join("channel_hub")
+            .join(format!("hub_identity_{hash_hex}"));
+        if hub_key.exists() {
+            std::fs::remove_file(&hub_key)?;
+        }
+
         let id_dir = data_root
             .join(".ratspeak")
             .join("identities")
@@ -7728,12 +7741,25 @@ mod tests {
         std::fs::create_dir_all(id_dir.join("reticulum")).unwrap();
         std::fs::write(id_dir.join("files").join("message.bin"), b"body").unwrap();
         std::fs::write(id_dir.join("reticulum").join("config"), b"config").unwrap();
+        let hub_dir = tmp.join(".ratspeak").join("channel_hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let hub_key = hub_dir.join(format!("hub_identity_{}", mgr.identity_hash));
+        std::fs::write(&hub_key, b"hubkey").unwrap();
+        let other_hub_key = hub_dir.join("hub_identity_ffffffffffffffffffffffffffffffff");
+        std::fs::write(&other_hub_key, b"other").unwrap();
 
         LxmfManager::purge_identity_profile(&tmp, &mgr.identity_hash, false).unwrap();
 
         assert!(!id_dir.join("identity").exists());
         assert!(!id_dir.join("reticulum").exists());
         assert!(id_dir.join("files").join("message.bin").exists());
+        // A surviving hub key would resurrect the hub on its old destination
+        // hash after the registry has been cascaded away.
+        assert!(!hub_key.exists(), "the hub key is identity-scoped material");
+        assert!(
+            other_hub_key.exists(),
+            "another identity's hub key must survive"
+        );
     }
 
     #[test]

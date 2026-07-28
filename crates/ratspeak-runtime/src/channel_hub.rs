@@ -2098,12 +2098,9 @@ pub fn load_or_create_hub_identity(path: &std::path::Path) -> Result<Identity, S
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let identity = Identity::new();
+    // to_file goes through atomic_write, which already creates 0600 and
+    // fsyncs with a read-back verify.
     identity.to_file(path).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
     Ok(identity)
 }
 

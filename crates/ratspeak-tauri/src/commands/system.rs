@@ -620,6 +620,9 @@ pub async fn api_identity_reset(state: State<'_, Arc<AppState>>) -> AppResult<Va
             std::fs::remove_dir_all(data_dir.join("identities")).ok();
             std::fs::remove_dir_all(data_dir.join("ratchets")).ok();
             std::fs::remove_file(data_dir.join("identity")).ok();
+            // Hub keys are identity-scoped key material; a surviving keyfile
+            // would resurrect the hub on its old destination hash.
+            std::fs::remove_dir_all(data_dir.join("channel_hub")).ok();
         })
         .await;
     }
@@ -704,6 +707,13 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
             tracing::warn!(
                 reason = "remove_files_failed",
                 "Factory reset: failed to remove files dir"
+            );
+        }
+        let hub_dir = data_dir.join("channel_hub");
+        if hub_dir.exists() && std::fs::remove_dir_all(&hub_dir).is_err() {
+            tracing::warn!(
+                reason = "remove_channel_hub_failed",
+                "Factory reset: failed to remove channel hub keys"
             );
         }
         if let Some(rns_dir) = app_private_rns_config_dir
