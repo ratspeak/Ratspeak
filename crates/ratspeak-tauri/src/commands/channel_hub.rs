@@ -42,11 +42,17 @@ pub struct ChannelHubOverview {
     pub status: ChannelHubSnapshot,
 }
 
-fn current_snapshot(state: &State<'_, Arc<AppState>>) -> ChannelHubSnapshot {
-    state
-        .channel_hub_handle()
-        .map(|hub| hub.snapshot())
-        .unwrap_or_else(ChannelHubSnapshot::stopped)
+async fn current_snapshot(state: &State<'_, Arc<AppState>>) -> ChannelHubSnapshot {
+    let Some(hub) = state.channel_hub_handle() else {
+        return ChannelHubSnapshot::stopped();
+    };
+    // `ChannelHubHandle::start` returns after registration and task spawn. A
+    // direct lock snapshot can still be the pre-task `stopped()` seed, racing
+    // the first emitted event and making a successful Start response look
+    // offline. The command round-trip is ordered behind initial publication.
+    hub.status()
+        .await
+        .unwrap_or_else(|_| ChannelHubSnapshot::stopped())
 }
 
 fn ensure_supported() -> AppResult<()> {
@@ -82,11 +88,14 @@ async fn persist_settings(
     .map_err(AppError::database_unavailable)
 }
 
-fn overview(state: &State<'_, Arc<AppState>>, settings: ChannelHubSettings) -> ChannelHubOverview {
+async fn overview(
+    state: &State<'_, Arc<AppState>>,
+    settings: ChannelHubSettings,
+) -> ChannelHubOverview {
     ChannelHubOverview {
         supported: channel_hub_hosting_supported(),
         settings,
-        status: current_snapshot(state),
+        status: current_snapshot(state).await,
     }
 }
 
@@ -125,7 +134,7 @@ fn apply_config_args(
 pub async fn api_channel_hub(state: State<'_, Arc<AppState>>) -> AppResult<ChannelHubOverview> {
     let _control = state.channel_hub_control_lock.lock().await;
     let settings = load_settings(&state).await?;
-    Ok(overview(&state, settings))
+    Ok(overview(&state, settings).await)
 }
 
 #[tauri::command]
@@ -141,7 +150,7 @@ pub async fn channel_hub_start(state: State<'_, Arc<AppState>>) -> AppResult<Cha
             "Channel hub requires an active network session",
         ));
     }
-    Ok(overview(&state, settings))
+    Ok(overview(&state, settings).await)
 }
 
 #[tauri::command]
@@ -159,7 +168,7 @@ pub async fn channel_hub_stop(state: State<'_, Arc<AppState>>) -> AppResult<Chan
         }
         state.take_channel_hub();
     }
-    Ok(overview(&state, settings))
+    Ok(overview(&state, settings).await)
 }
 
 #[tauri::command]
@@ -186,7 +195,7 @@ pub async fn channel_hub_set_config(
             ));
         }
     }
-    Ok(overview(&state, settings))
+    Ok(overview(&state, settings).await)
 }
 
 #[cfg(test)]
