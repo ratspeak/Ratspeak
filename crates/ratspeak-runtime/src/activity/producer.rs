@@ -14,11 +14,12 @@ pub use super::catalog::{
     ChannelEnvelopeKind, ChannelJoinEvidence, ChannelMessageToken, ChannelNegotiatedCapabilities,
     ChannelNegotiatedLimits, ChannelRoomFailureReason, ChannelRoomToken, ChannelRoomTransition,
     ChannelSessionCloseReason, ChannelSessionFailureReason, ChannelSessionTransition,
-    DeliveryFailureReason, DestinationHash, IdentityHash, InboundLxmfMethod, InterfaceClass,
-    InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback, InterfaceTimeoutReason,
-    InterfaceTransition, LinkId, LxmfDeliveryMethod, LxmfDeliveryState, LxmfProgressStep,
-    LxmfSubmissionFailureReason, LxstCallReason, LxstTransition, MessageId, PathEvidence,
-    PathRequestMethod, SourceValidation, TcpEndpoint,
+    DeliveryFailureReason, DestinationHash, HubModerationAction, HubServiceDegradation,
+    HubSessionCloseReason, HubSessionRejection, HubTransition, HubTrustChange, IdentityHash,
+    InboundLxmfMethod, InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason,
+    InterfaceRollback, InterfaceTimeoutReason, InterfaceTransition, LinkId, LxmfDeliveryMethod,
+    LxmfDeliveryState, LxmfProgressStep, LxmfSubmissionFailureReason, LxstCallReason,
+    LxstTransition, MessageId, PathEvidence, PathRequestMethod, SourceValidation, TcpEndpoint,
 };
 
 /// Opaque timeless event accepted by [`super::ActivityRecorder::record_event`].
@@ -39,6 +40,7 @@ enum Payload {
     ChannelsRoom(ChannelsRoomActivity),
     ChannelsEnvelopeSent(ChannelsEnvelopeActivity),
     ChannelsEnvelopeReceived(ChannelsEnvelopeActivity),
+    ChannelsHub(ChannelsHubActivity),
     LxmfDeliveryQueued(LxmfDeliveryQueued),
     LxmfSubmissionFailed(LxmfSubmissionFailed),
     LxmfDeliveryStateChanged(LxmfDeliveryStateChanged),
@@ -134,6 +136,14 @@ impl ProducerEvent {
                     encoded_bytes: input.encoded_bytes,
                     validation: input.validation,
                     correlation_id: input.correlation_id,
+                })
+            }
+            Payload::ChannelsHub(input) => {
+                catalog::channels_hub_activity(catalog::ChannelsHubActivity {
+                    time,
+                    hub: input.hub,
+                    correlation_id: input.correlation_id,
+                    transition: input.transition,
                 })
             }
             Payload::LxmfDeliveryQueued(input) => {
@@ -328,6 +338,16 @@ pub fn channels_envelope_sent(input: ChannelsEnvelopeActivity) -> ProducerEvent 
 
 pub fn channels_envelope_received(input: ChannelsEnvelopeActivity) -> ProducerEvent {
     ProducerEvent(Payload::ChannelsEnvelopeReceived(input))
+}
+
+pub struct ChannelsHubActivity {
+    pub hub: DestinationHash,
+    pub correlation_id: super::CorrelationId,
+    pub transition: HubTransition,
+}
+
+pub fn channels_hub_activity(input: ChannelsHubActivity) -> ProducerEvent {
+    ProducerEvent(Payload::ChannelsHub(input))
 }
 
 pub struct LxmfDeliveryQueued {

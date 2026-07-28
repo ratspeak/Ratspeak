@@ -42,13 +42,15 @@ const TRANSCRIPT_LIMIT: usize = 300;
 const NOTICE_LIMIT: usize = 100;
 const SEEN_MESSAGE_LIMIT: usize = 2_048;
 
+/// Fenced Activity recorder shared with the hub service: both sides of
+/// Channels record through the same origin-fence logic rather than two copies.
 #[derive(Clone)]
-struct ChannelsActivity {
+pub(crate) struct ChannelsActivity {
     state: Weak<AppState>,
 }
 
 impl ChannelsActivity {
-    fn new(state: Weak<AppState>) -> Self {
+    pub(crate) fn new(state: Weak<AppState>) -> Self {
         Self { state }
     }
 
@@ -72,7 +74,7 @@ impl ChannelsActivity {
         );
     }
 
-    fn record_spontaneous<F>(&self, make: F)
+    pub(crate) fn record_spontaneous<F>(&self, make: F)
     where
         F: FnOnce() -> activity::ProducerEvent,
     {

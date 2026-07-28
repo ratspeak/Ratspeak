@@ -1477,6 +1477,401 @@ pub fn channels_room_activity(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HubServiceDegradation {
+    Announce,
+    EnvelopeOversize,
+    SendFailed,
+}
+
+impl HubServiceDegradation {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Announce => "announce_failed",
+            Self::EnvelopeOversize => "envelope_oversize",
+            Self::SendFailed => "send_failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HubSessionRejection {
+    WelcomeUnsendable,
+}
+
+impl HubSessionRejection {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::WelcomeUnsendable => "welcome_unsendable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HubSessionCloseReason {
+    Remote,
+    PingTimeout,
+    HandshakeTimeout,
+    Kicked,
+    ServiceStopped,
+}
+
+impl HubSessionCloseReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::PingTimeout => "ping_timed_out",
+            Self::HandshakeTimeout => "handshake_timed_out",
+            Self::Kicked => "kicked",
+            Self::ServiceStopped => "service_stopped",
+        }
+    }
+}
+
+/// Operator actions the hub took on a room. The verb is representable; the
+/// room label, topic, key and kick reason are not, by construction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HubModerationAction {
+    Register,
+    Unregister,
+    Topic,
+    Mode,
+    Op,
+    Deop,
+    Voice,
+    Devoice,
+    Ban,
+    Unban,
+    Kick,
+    Invite,
+    Uninvite,
+}
+
+impl HubModerationAction {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Register => "register",
+            Self::Unregister => "unregister",
+            Self::Topic => "topic",
+            Self::Mode => "mode",
+            Self::Op => "op",
+            Self::Deop => "deop",
+            Self::Voice => "voice",
+            Self::Devoice => "devoice",
+            Self::Ban => "ban",
+            Self::Unban => "unban",
+            Self::Kick => "kick",
+            Self::Invite => "invite",
+            Self::Uninvite => "uninvite",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HubTrustChange {
+    KlineAdded,
+    KlineRemoved,
+}
+
+impl HubTrustChange {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::KlineAdded => "kline_added",
+            Self::KlineRemoved => "kline_removed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HubTransition {
+    ServiceStarted,
+    ServiceStopped,
+    ServiceDegraded {
+        reason: HubServiceDegradation,
+        count: u64,
+    },
+    SessionOpened {
+        link: LinkId,
+        peer: IdentityHash,
+    },
+    SessionRejected {
+        link: LinkId,
+        reason: HubSessionRejection,
+    },
+    SessionClosed {
+        link: LinkId,
+        reason: HubSessionCloseReason,
+        duration_ms: u64,
+    },
+    RoomJoined {
+        link: LinkId,
+        room: ChannelRoomToken,
+        members: u64,
+    },
+    RoomParted {
+        link: LinkId,
+        room: ChannelRoomToken,
+        members: u64,
+    },
+    RoomModerated {
+        link: LinkId,
+        room: ChannelRoomToken,
+        action: HubModerationAction,
+    },
+    TrustChanged {
+        link: LinkId,
+        change: HubTrustChange,
+    },
+    RelayForwarded {
+        room: ChannelRoomToken,
+        method: ChannelEnvelopeKind,
+        encoded_bytes: u64,
+        recipients: u64,
+    },
+    RelayThrottled {
+        rejected: u64,
+        dropped: u64,
+        span_ms: u64,
+    },
+}
+
+pub struct ChannelsHubActivity {
+    pub time: ObservationTime,
+    pub hub: DestinationHash,
+    pub correlation_id: CorrelationId,
+    pub transition: HubTransition,
+}
+
+/// Hub-side counterpart of the client Channels catalog. Every remote party is
+/// an opaque identifier and every room is a random token, so nothing a peer
+/// authored — nickname, room label, topic, body — has a representation here.
+pub fn channels_hub_activity(
+    input: ChannelsHubActivity,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    let (kind, severity, direction, outcome, coalescing, reason) = match input.transition {
+        HubTransition::ServiceStarted => (
+            kinds::CHANNELS_HUB_SERVICE_STARTED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Started,
+            CoalescingPolicy::Never,
+            None,
+        ),
+        HubTransition::ServiceStopped => (
+            kinds::CHANNELS_HUB_SERVICE_STOPPED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Success,
+            CoalescingPolicy::Never,
+            None,
+        ),
+        HubTransition::ServiceDegraded { reason, .. } => (
+            kinds::CHANNELS_HUB_SERVICE_DEGRADED,
+            ActivitySeverity::Warning,
+            ActivityDirection::Local,
+            ActivityOutcome::Degraded,
+            CoalescingPolicy::Never,
+            Some(reason.code()),
+        ),
+        HubTransition::SessionOpened { .. } => (
+            kinds::CHANNELS_HUB_SESSION_OPENED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            CoalescingPolicy::Never,
+            None,
+        ),
+        HubTransition::SessionRejected { reason, .. } => (
+            kinds::CHANNELS_HUB_SESSION_REJECTED,
+            ActivitySeverity::Warning,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Rejected,
+            CoalescingPolicy::Never,
+            Some(reason.code()),
+        ),
+        HubTransition::SessionClosed { reason, .. } => {
+            let (severity, direction, outcome) = match reason {
+                HubSessionCloseReason::PingTimeout | HubSessionCloseReason::HandshakeTimeout => (
+                    ActivitySeverity::Warning,
+                    ActivityDirection::Local,
+                    ActivityOutcome::TimedOut,
+                ),
+                HubSessionCloseReason::Remote => (
+                    ActivitySeverity::Info,
+                    ActivityDirection::Inbound,
+                    ActivityOutcome::Success,
+                ),
+                HubSessionCloseReason::Kicked | HubSessionCloseReason::ServiceStopped => (
+                    ActivitySeverity::Info,
+                    ActivityDirection::Local,
+                    ActivityOutcome::Success,
+                ),
+            };
+            (
+                kinds::CHANNELS_HUB_SESSION_CLOSED,
+                severity,
+                direction,
+                outcome,
+                CoalescingPolicy::Never,
+                Some(reason.code()),
+            )
+        }
+        HubTransition::RoomJoined { .. } => (
+            kinds::CHANNELS_HUB_ROOM_JOINED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            CoalescingPolicy::Never,
+            None,
+        ),
+        HubTransition::RoomParted { .. } => (
+            kinds::CHANNELS_HUB_ROOM_PARTED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            CoalescingPolicy::Never,
+            None,
+        ),
+        HubTransition::RoomModerated { action, .. } => (
+            kinds::CHANNELS_HUB_ROOM_MODERATED,
+            ActivitySeverity::Info,
+            ActivityDirection::Local,
+            ActivityOutcome::Success,
+            CoalescingPolicy::Never,
+            Some(action.code()),
+        ),
+        HubTransition::TrustChanged { change, .. } => (
+            kinds::CHANNELS_HUB_TRUST_CHANGED,
+            ActivitySeverity::Warning,
+            ActivityDirection::Local,
+            ActivityOutcome::Success,
+            CoalescingPolicy::Never,
+            Some(change.code()),
+        ),
+        // The only ambient hub kind: one per relayed envelope, so it is
+        // Trace-only and coalesces.
+        HubTransition::RelayForwarded { .. } => (
+            kinds::CHANNELS_HUB_RELAY_FORWARDED,
+            ActivitySeverity::Info,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Success,
+            CoalescingPolicy::AdjacentEquivalent,
+            None,
+        ),
+        HubTransition::RelayThrottled { .. } => (
+            kinds::CHANNELS_HUB_RELAY_THROTTLED,
+            ActivitySeverity::Warning,
+            ActivityDirection::Inbound,
+            ActivityOutcome::Dropped,
+            CoalescingPolicy::Never,
+            None,
+        ),
+    };
+    let mut draft = ActivityDraft::new(
+        kind,
+        severity,
+        direction,
+        outcome,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        coalescing,
+    )
+    .protocol_identifier(ActivityAttributeKey::Hub, IdentifierKind::Hub, &input.hub.0)?;
+    if let Some(reason) = reason {
+        draft = draft.operational_code(ActivityAttributeKey::Reason, reason)?;
+    }
+    match input.transition {
+        HubTransition::ServiceStarted | HubTransition::ServiceStopped => {}
+        HubTransition::ServiceDegraded { count, .. } => {
+            draft = draft.exact(ActivityAttributeKey::Count, ExactValue::Unsigned(count));
+        }
+        HubTransition::SessionOpened { link, peer } => {
+            draft = draft
+                .protocol_identifier(ActivityAttributeKey::Link, IdentifierKind::Link, &link.0)?
+                .protocol_identifier(
+                    ActivityAttributeKey::Identity,
+                    IdentifierKind::Peer,
+                    &peer.0,
+                )?;
+        }
+        HubTransition::SessionRejected { link, .. } | HubTransition::TrustChanged { link, .. } => {
+            draft = draft.protocol_identifier(
+                ActivityAttributeKey::Link,
+                IdentifierKind::Link,
+                &link.0,
+            )?;
+        }
+        HubTransition::SessionClosed {
+            link, duration_ms, ..
+        } => {
+            draft = draft
+                .protocol_identifier(ActivityAttributeKey::Link, IdentifierKind::Link, &link.0)?
+                .exact(
+                    ActivityAttributeKey::DurationMs,
+                    ExactValue::Unsigned(duration_ms),
+                );
+        }
+        HubTransition::RoomJoined {
+            link,
+            room,
+            members,
+        }
+        | HubTransition::RoomParted {
+            link,
+            room,
+            members,
+        } => {
+            draft = draft
+                .protocol_identifier(ActivityAttributeKey::Link, IdentifierKind::Link, &link.0)?
+                .protocol_identifier(ActivityAttributeKey::Room, IdentifierKind::Room, &room.0)?
+                .exact(ActivityAttributeKey::Count, ExactValue::Unsigned(members));
+        }
+        HubTransition::RoomModerated { link, room, .. } => {
+            draft = draft
+                .protocol_identifier(ActivityAttributeKey::Link, IdentifierKind::Link, &link.0)?
+                .protocol_identifier(ActivityAttributeKey::Room, IdentifierKind::Room, &room.0)?;
+        }
+        HubTransition::RelayForwarded {
+            room,
+            method,
+            encoded_bytes,
+            recipients,
+        } => {
+            draft = draft
+                .protocol_identifier(ActivityAttributeKey::Room, IdentifierKind::Room, &room.0)?
+                .operational_code(ActivityAttributeKey::Method, method.code())?
+                .exact(
+                    ActivityAttributeKey::ByteLength,
+                    ExactValue::Unsigned(encoded_bytes),
+                )
+                .exact(
+                    ActivityAttributeKey::Count,
+                    ExactValue::Unsigned(recipients),
+                );
+        }
+        HubTransition::RelayThrottled {
+            rejected,
+            dropped,
+            span_ms,
+        } => {
+            draft = draft
+                .exact(
+                    ActivityAttributeKey::RejectedCount,
+                    ExactValue::Unsigned(rejected),
+                )
+                .exact(
+                    ActivityAttributeKey::DroppedCount,
+                    ExactValue::Unsigned(dropped),
+                )
+                .exact(
+                    ActivityAttributeKey::TimeSpanMs,
+                    ExactValue::Unsigned(span_ms),
+                );
+        }
+    }
+    Ok(draft.with_correlation(input.correlation_id))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LxmfDeliveryMethod {
     Direct,
     Opportunistic,
@@ -2636,6 +3031,301 @@ mod tests {
             })
             .unwrap();
             assert_eq!(event.kind.code(), expected_kind);
+        }
+    }
+
+    fn hub_draft(transition: HubTransition) -> ActivityDraft {
+        channels_hub_activity(ChannelsHubActivity {
+            time: ObservationTime::new(9, 9),
+            hub: DestinationHash::new([0x77; 16]),
+            correlation_id: CorrelationId::from_bytes([0x21; 16]),
+            transition,
+        })
+        .expect("hub transitions are always representable")
+    }
+
+    fn every_hub_transition() -> Vec<HubTransition> {
+        let link = LinkId::new([0x01; 16]);
+        let room = ChannelRoomToken::from_bytes([0x02; 16]);
+        vec![
+            HubTransition::ServiceStarted,
+            HubTransition::ServiceStopped,
+            HubTransition::ServiceDegraded {
+                reason: HubServiceDegradation::Announce,
+                count: 1,
+            },
+            HubTransition::SessionOpened {
+                link,
+                peer: IdentityHash::new([0x03; 16]),
+            },
+            HubTransition::SessionRejected {
+                link,
+                reason: HubSessionRejection::WelcomeUnsendable,
+            },
+            HubTransition::SessionClosed {
+                link,
+                reason: HubSessionCloseReason::Remote,
+                duration_ms: 5,
+            },
+            HubTransition::RoomJoined {
+                link,
+                room,
+                members: 2,
+            },
+            HubTransition::RoomParted {
+                link,
+                room,
+                members: 1,
+            },
+            HubTransition::RoomModerated {
+                link,
+                room,
+                action: HubModerationAction::Kick,
+            },
+            HubTransition::TrustChanged {
+                link,
+                change: HubTrustChange::KlineAdded,
+            },
+            HubTransition::RelayForwarded {
+                room,
+                method: ChannelEnvelopeKind::Message,
+                encoded_bytes: 120,
+                recipients: 3,
+            },
+            HubTransition::RelayThrottled {
+                rejected: 4,
+                dropped: 5,
+                span_ms: 60_000,
+            },
+        ]
+    }
+
+    #[test]
+    fn hub_transitions_map_to_stable_codes_and_typed_reasons() {
+        let link = LinkId::new([0x01; 16]);
+        let room = ChannelRoomToken::from_bytes([0x02; 16]);
+        for (transition, expected_kind, expected_outcome, expected_reason) in [
+            (
+                HubTransition::ServiceStarted,
+                "channels.hub.service.started",
+                ActivityOutcome::Started,
+                None,
+            ),
+            (
+                HubTransition::ServiceStopped,
+                "channels.hub.service.stopped",
+                ActivityOutcome::Success,
+                None,
+            ),
+            (
+                HubTransition::ServiceDegraded {
+                    reason: HubServiceDegradation::EnvelopeOversize,
+                    count: 2,
+                },
+                "channels.hub.service.degraded",
+                ActivityOutcome::Degraded,
+                Some("envelope_oversize"),
+            ),
+            (
+                HubTransition::SessionOpened {
+                    link,
+                    peer: IdentityHash::new([0x03; 16]),
+                },
+                "channels.hub.session.opened",
+                ActivityOutcome::Success,
+                None,
+            ),
+            (
+                HubTransition::SessionRejected {
+                    link,
+                    reason: HubSessionRejection::WelcomeUnsendable,
+                },
+                "channels.hub.session.rejected",
+                ActivityOutcome::Rejected,
+                Some("welcome_unsendable"),
+            ),
+            (
+                HubTransition::SessionClosed {
+                    link,
+                    reason: HubSessionCloseReason::HandshakeTimeout,
+                    duration_ms: 1,
+                },
+                "channels.hub.session.closed",
+                ActivityOutcome::TimedOut,
+                Some("handshake_timed_out"),
+            ),
+            (
+                HubTransition::SessionClosed {
+                    link,
+                    reason: HubSessionCloseReason::Kicked,
+                    duration_ms: 1,
+                },
+                "channels.hub.session.closed",
+                ActivityOutcome::Success,
+                Some("kicked"),
+            ),
+            (
+                HubTransition::RoomJoined {
+                    link,
+                    room,
+                    members: 2,
+                },
+                "channels.hub.room.joined",
+                ActivityOutcome::Success,
+                None,
+            ),
+            (
+                HubTransition::RoomParted {
+                    link,
+                    room,
+                    members: 0,
+                },
+                "channels.hub.room.parted",
+                ActivityOutcome::Success,
+                None,
+            ),
+            (
+                HubTransition::RoomModerated {
+                    link,
+                    room,
+                    action: HubModerationAction::Unregister,
+                },
+                "channels.hub.room.moderated",
+                ActivityOutcome::Success,
+                Some("unregister"),
+            ),
+            (
+                HubTransition::TrustChanged {
+                    link,
+                    change: HubTrustChange::KlineRemoved,
+                },
+                "channels.hub.trust.changed",
+                ActivityOutcome::Success,
+                Some("kline_removed"),
+            ),
+            (
+                HubTransition::RelayForwarded {
+                    room,
+                    method: ChannelEnvelopeKind::Notice,
+                    encoded_bytes: 12,
+                    recipients: 1,
+                },
+                "channels.hub.relay.forwarded",
+                ActivityOutcome::Success,
+                None,
+            ),
+            (
+                HubTransition::RelayThrottled {
+                    rejected: 1,
+                    dropped: 2,
+                    span_ms: 60_000,
+                },
+                "channels.hub.relay.throttled",
+                ActivityOutcome::Dropped,
+                None,
+            ),
+        ] {
+            let validated = hub_draft(transition)
+                .validate(super::super::classified::DraftContext {
+                    capture_session: "11".repeat(16),
+                    capture_generation: 1,
+                    capture_profile: super::super::schema::CaptureProfile::Trace,
+                })
+                .unwrap();
+            assert_eq!(validated.kind.code(), expected_kind);
+            assert_eq!(
+                validated.kind.area(),
+                super::super::schema::ActivityArea::Channels
+            );
+            assert_eq!(validated.outcome, expected_outcome);
+            let reason = validated
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key == ActivityAttributeKey::Reason)
+                .map(|attribute| match attribute.value {
+                    super::super::classified::DraftValue::OperationalCode(code) => code,
+                    _ => panic!("a hub reason must stay an operational code"),
+                });
+            assert_eq!(reason, expected_reason);
+        }
+    }
+
+    #[test]
+    fn only_hub_relay_forwarding_is_ambient_and_coalescing() {
+        for transition in every_hub_transition() {
+            let ambient = matches!(transition, HubTransition::RelayForwarded { .. });
+            let draft = hub_draft(transition);
+            assert_eq!(draft.is_ambient(), ambient);
+            assert_eq!(
+                draft.capture_scope() == super::super::schema::CaptureScope::TraceOnly,
+                ambient,
+                "only the per-relay kind is Trace-only"
+            );
+            assert_eq!(
+                matches!(
+                    draft.coalescing_policy(),
+                    CoalescingPolicy::AdjacentEquivalent
+                ),
+                ambient
+            );
+            assert!(
+                draft.rate_domain() == super::super::schema::RateDomain::Channels,
+                "the hub shares the client's Channels rate domain"
+            );
+        }
+    }
+
+    #[test]
+    fn hub_activity_has_no_free_text_or_unmasked_field() {
+        for transition in every_hub_transition() {
+            let validated = hub_draft(transition)
+                .validate(super::super::classified::DraftContext {
+                    capture_session: "11".repeat(16),
+                    capture_generation: 1,
+                    capture_profile: super::super::schema::CaptureProfile::Trace,
+                })
+                .unwrap();
+            assert!(
+                validated
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute.key == ActivityAttributeKey::Hub),
+                "every hub event names its hub"
+            );
+            for attribute in &validated.attributes {
+                assert!(
+                    matches!(
+                        attribute.key,
+                        ActivityAttributeKey::Hub
+                            | ActivityAttributeKey::Link
+                            | ActivityAttributeKey::Identity
+                            | ActivityAttributeKey::Room
+                            | ActivityAttributeKey::Reason
+                            | ActivityAttributeKey::Method
+                            | ActivityAttributeKey::Count
+                            | ActivityAttributeKey::ByteLength
+                            | ActivityAttributeKey::DurationMs
+                            | ActivityAttributeKey::RejectedCount
+                            | ActivityAttributeKey::DroppedCount
+                            | ActivityAttributeKey::TimeSpanMs
+                    ),
+                    "unexpected hub attribute key"
+                );
+                match &attribute.value {
+                    super::super::classified::DraftValue::Exact(_)
+                    | super::super::classified::DraftValue::OperationalCode(_) => {}
+                    super::super::classified::DraftValue::ProtocolIdentifier { kind, .. } => {
+                        assert!(matches!(
+                            kind,
+                            IdentifierKind::Hub
+                                | IdentifierKind::Link
+                                | IdentifierKind::Peer
+                                | IdentifierKind::Room
+                        ));
+                    }
+                    _ => panic!("hub events carry no endpoint or opaque reference"),
+                }
+            }
         }
     }
 

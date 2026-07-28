@@ -876,6 +876,70 @@ pub(super) mod kinds {
         Channels
     );
 
+    // Hosting side of the same area. Only the per-relay event is ambient, so a
+    // busy hub cannot starve the client's Channels events through the shared
+    // `RateDomain::Channels` bucket.
+    kind!(
+        CHANNELS_HUB_SERVICE_STARTED,
+        "channels.hub.service.started",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_SERVICE_STOPPED,
+        "channels.hub.service.stopped",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_SERVICE_DEGRADED,
+        "channels.hub.service.degraded",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_SESSION_OPENED,
+        "channels.hub.session.opened",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_SESSION_REJECTED,
+        "channels.hub.session.rejected",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_SESSION_CLOSED,
+        "channels.hub.session.closed",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_ROOM_JOINED,
+        "channels.hub.room.joined",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_ROOM_PARTED,
+        "channels.hub.room.parted",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_ROOM_MODERATED,
+        "channels.hub.room.moderated",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_TRUST_CHANGED,
+        "channels.hub.trust.changed",
+        Channels
+    );
+    kind!(
+        CHANNELS_HUB_RELAY_THROTTLED,
+        "channels.hub.relay.throttled",
+        Channels
+    );
+    trace_ambient_kind!(
+        CHANNELS_HUB_RELAY_FORWARDED,
+        "channels.hub.relay.forwarded",
+        Channels
+    );
+
     kind!(LXST_SERVICE_STARTED, "lxst.service.started", Calls);
     kind!(LXST_SERVICE_STOPPED, "lxst.service.stopped", Calls);
     kind!(LXST_SERVICE_FAILED, "lxst.service.failed", Calls);

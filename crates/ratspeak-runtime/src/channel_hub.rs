@@ -46,6 +46,8 @@ use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
+use crate::activity::{CorrelationId, producer as activity};
+use crate::channels::ChannelsActivity;
 use crate::db;
 use crate::rrc;
 use crate::state::AppState;
@@ -78,6 +80,9 @@ const INBOUND_RESOURCE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The only inbound resource kind we accept. The reference also takes `motd`
 /// and `blob`, then discards both: amplification with no interop value.
 const RES_KIND_NOTICE: &str = "notice";
+/// Throttle/drop counters are reported as one aggregate at this cadence, never
+/// per rejected packet: a flooding peer must not be able to drive the event bus.
+const THROTTLE_REPORT_INTERVAL: Duration = Duration::from_secs(60);
 const HUB_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const DEFAULT_HUB_NAME: &str = "Ratspeak hub";
@@ -618,6 +623,8 @@ struct HubSession {
     /// arriving resource to a pending advertisement by size alone, so two
     /// concurrent same-size transfers cross-match and mislabel each other.
     outbound_resource: Option<OutboundResource>,
+    /// Ties every Activity event about this link to one session.
+    correlation: CorrelationId,
 }
 
 struct OutboundResource {
@@ -640,6 +647,7 @@ impl HubSession {
             seen_ids: std::collections::VecDeque::new(),
             seen_set: HashSet::new(),
             outbound_resource: None,
+            correlation: CorrelationId::random(),
         }
     }
 
@@ -778,6 +786,211 @@ pub(crate) struct HubPersist {
     pub room: Option<String>,
 }
 
+/// Activity intents the shell drains and records. Deliberately no `Debug` and
+/// deliberately no `String`: rooms are opaque tokens, peers are hashes bound
+/// for the pseudonym boundary, and nicknames, topics, keys and message bodies
+/// have no representation here at all.
+pub(crate) enum HubEvent {
+    ServiceStarted {
+        correlation: CorrelationId,
+    },
+    ServiceStopped {
+        correlation: CorrelationId,
+    },
+    ServiceDegraded {
+        correlation: CorrelationId,
+        reason: activity::HubServiceDegradation,
+        count: u64,
+    },
+    SessionOpened {
+        correlation: CorrelationId,
+        link: [u8; 16],
+        peer: [u8; 16],
+    },
+    SessionRejected {
+        correlation: CorrelationId,
+        link: [u8; 16],
+        reason: activity::HubSessionRejection,
+    },
+    SessionClosed {
+        correlation: CorrelationId,
+        link: [u8; 16],
+        reason: activity::HubSessionCloseReason,
+        duration_ms: u64,
+    },
+    RoomJoined {
+        correlation: CorrelationId,
+        link: [u8; 16],
+        room: activity::ChannelRoomToken,
+        members: u64,
+    },
+    RoomParted {
+        correlation: CorrelationId,
+        link: [u8; 16],
+        room: activity::ChannelRoomToken,
+        members: u64,
+    },
+    RoomModerated {
+        correlation: CorrelationId,
+        link: [u8; 16],
+        room: activity::ChannelRoomToken,
+        action: activity::HubModerationAction,
+    },
+    TrustChanged {
+        correlation: CorrelationId,
+        link: [u8; 16],
+        change: activity::HubTrustChange,
+    },
+    RelayForwarded {
+        correlation: CorrelationId,
+        room: activity::ChannelRoomToken,
+        method: activity::ChannelEnvelopeKind,
+        encoded_bytes: u64,
+        recipients: u64,
+    },
+    RelayThrottled {
+        correlation: CorrelationId,
+        rejected: u64,
+        dropped: u64,
+        span_ms: u64,
+    },
+}
+
+/// Lower a hub event onto the sealed Activity catalog. The correlation rides
+/// with the event because the session that owns it may already be gone by the
+/// time the shell drains.
+fn hub_activity_transition(event: HubEvent) -> (CorrelationId, activity::HubTransition) {
+    match event {
+        HubEvent::ServiceStarted { correlation } => {
+            (correlation, activity::HubTransition::ServiceStarted)
+        }
+        HubEvent::ServiceStopped { correlation } => {
+            (correlation, activity::HubTransition::ServiceStopped)
+        }
+        HubEvent::ServiceDegraded {
+            correlation,
+            reason,
+            count,
+        } => (
+            correlation,
+            activity::HubTransition::ServiceDegraded { reason, count },
+        ),
+        HubEvent::SessionOpened {
+            correlation,
+            link,
+            peer,
+        } => (
+            correlation,
+            activity::HubTransition::SessionOpened {
+                link: activity::LinkId::new(link),
+                peer: activity::IdentityHash::new(peer),
+            },
+        ),
+        HubEvent::SessionRejected {
+            correlation,
+            link,
+            reason,
+        } => (
+            correlation,
+            activity::HubTransition::SessionRejected {
+                link: activity::LinkId::new(link),
+                reason,
+            },
+        ),
+        HubEvent::SessionClosed {
+            correlation,
+            link,
+            reason,
+            duration_ms,
+        } => (
+            correlation,
+            activity::HubTransition::SessionClosed {
+                link: activity::LinkId::new(link),
+                reason,
+                duration_ms,
+            },
+        ),
+        HubEvent::RoomJoined {
+            correlation,
+            link,
+            room,
+            members,
+        } => (
+            correlation,
+            activity::HubTransition::RoomJoined {
+                link: activity::LinkId::new(link),
+                room,
+                members,
+            },
+        ),
+        HubEvent::RoomParted {
+            correlation,
+            link,
+            room,
+            members,
+        } => (
+            correlation,
+            activity::HubTransition::RoomParted {
+                link: activity::LinkId::new(link),
+                room,
+                members,
+            },
+        ),
+        HubEvent::RoomModerated {
+            correlation,
+            link,
+            room,
+            action,
+        } => (
+            correlation,
+            activity::HubTransition::RoomModerated {
+                link: activity::LinkId::new(link),
+                room,
+                action,
+            },
+        ),
+        HubEvent::TrustChanged {
+            correlation,
+            link,
+            change,
+        } => (
+            correlation,
+            activity::HubTransition::TrustChanged {
+                link: activity::LinkId::new(link),
+                change,
+            },
+        ),
+        HubEvent::RelayForwarded {
+            correlation,
+            room,
+            method,
+            encoded_bytes,
+            recipients,
+        } => (
+            correlation,
+            activity::HubTransition::RelayForwarded {
+                room,
+                method,
+                encoded_bytes,
+                recipients,
+            },
+        ),
+        HubEvent::RelayThrottled {
+            correlation,
+            rejected,
+            dropped,
+            span_ms,
+        } => (
+            correlation,
+            activity::HubTransition::RelayThrottled {
+                rejected,
+                dropped,
+                span_ms,
+            },
+        ),
+    }
+}
+
 /// Transport-free hub protocol core: every inbound event mutates state and
 /// appends outbound work, so behavior is unit-testable exactly like the
 /// reference router.
@@ -802,6 +1015,14 @@ pub(crate) struct HubCore {
     pepper_rotation_notice: Option<String>,
     stats: HubStats,
     started_at: Instant,
+    /// Opaque per-room Activity tokens, minted on demand and dropped with the
+    /// room. Never derived from the room label.
+    room_tokens: HashMap<String, activity::ChannelRoomToken>,
+    /// Correlation for events that belong to the hub run rather than a session.
+    hub_correlation: CorrelationId,
+    events: Vec<HubEvent>,
+    throttle_reported_at: Instant,
+    throttle_baseline: (u64, u64),
 }
 
 impl HubCore {
@@ -819,6 +1040,7 @@ impl HubCore {
         let server_ops = config.server_operators.iter().copied().collect();
         let mut pepper_id = [0u8; 8];
         pepper_id.copy_from_slice(&hub_hash[..8]);
+        let started_at = Instant::now();
         let mut core = Self {
             config,
             hub_hash,
@@ -835,10 +1057,127 @@ impl HubCore {
             pending_removals: HashSet::new(),
             pepper_rotation_notice: None,
             stats: HubStats::default(),
-            started_at: Instant::now(),
+            started_at,
+            room_tokens: HashMap::new(),
+            hub_correlation: CorrelationId::random(),
+            events: Vec::new(),
+            throttle_reported_at: started_at,
+            throttle_baseline: (0, 0),
         };
         core.restore(restored);
         core
+    }
+
+    /// Drain Activity intents for the shell to record. Kept off the `HubSend`
+    /// path so `HubSend` can keep its derived `Debug` and the eight
+    /// `out: &mut Vec<HubSend>` signatures stay untouched.
+    pub(crate) fn drain_events(&mut self) -> Vec<HubEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Opaque token for a room, stable while the room exists.
+    fn room_token(&mut self, room_name: &str) -> activity::ChannelRoomToken {
+        if let Some(token) = self.room_tokens.get(room_name) {
+            return *token;
+        }
+        let token = activity::ChannelRoomToken::random();
+        self.room_tokens.insert(room_name.to_string(), token);
+        token
+    }
+
+    /// Correlation for anything scoped to one link, falling back to the hub
+    /// run so an event is never lost because its session already went away.
+    fn link_correlation(&self, link_id: [u8; 16]) -> CorrelationId {
+        self.sessions
+            .get(&link_id)
+            .map(|session| session.correlation)
+            .unwrap_or(self.hub_correlation)
+    }
+
+    fn note_moderated(
+        &mut self,
+        link_id: [u8; 16],
+        room_name: &str,
+        action: activity::HubModerationAction,
+    ) {
+        let correlation = self.link_correlation(link_id);
+        let room = self.room_token(room_name);
+        self.events.push(HubEvent::RoomModerated {
+            correlation,
+            link: link_id,
+            room,
+            action,
+        });
+    }
+
+    fn note_relayed(
+        &mut self,
+        link_id: [u8; 16],
+        room_name: &str,
+        method: activity::ChannelEnvelopeKind,
+        encoded_bytes: usize,
+        recipients: usize,
+    ) {
+        let correlation = self.link_correlation(link_id);
+        let room = self.room_token(room_name);
+        self.events.push(HubEvent::RelayForwarded {
+            correlation,
+            room,
+            method,
+            encoded_bytes: encoded_bytes as u64,
+            recipients: recipients as u64,
+        });
+    }
+
+    pub(crate) fn note_service_started(&mut self) {
+        let correlation = self.hub_correlation;
+        self.events.push(HubEvent::ServiceStarted { correlation });
+    }
+
+    /// Teardown: every live session ends with the service, then the service
+    /// itself. Bounded by the connected link count.
+    pub(crate) fn note_service_stopped(&mut self) {
+        let closing: Vec<(CorrelationId, [u8; 16], u64)> = self
+            .sessions
+            .iter()
+            .map(|(link_id, session)| {
+                (
+                    session.correlation,
+                    *link_id,
+                    session
+                        .established_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u128::from(u64::MAX)) as u64,
+                )
+            })
+            .collect();
+        for (correlation, link, duration_ms) in closing {
+            self.events.push(HubEvent::SessionClosed {
+                correlation,
+                link,
+                reason: activity::HubSessionCloseReason::ServiceStopped,
+                duration_ms,
+            });
+        }
+        let correlation = self.hub_correlation;
+        self.events.push(HubEvent::ServiceStopped { correlation });
+    }
+
+    pub(crate) fn note_service_degraded(
+        &mut self,
+        reason: activity::HubServiceDegradation,
+        count: usize,
+    ) {
+        if count == 0 {
+            return;
+        }
+        let correlation = self.hub_correlation;
+        self.events.push(HubEvent::ServiceDegraded {
+            correlation,
+            reason,
+            count: count as u64,
+        });
     }
 
     /// Rebuild live rooms from the registry. Rows are re-validated rather than
@@ -1095,6 +1434,7 @@ impl HubCore {
         }
         for room_name in stale {
             self.rooms.remove(&room_name);
+            self.room_tokens.remove(&room_name);
             out.push(HubSend::Persist(HubPersist {
                 op: db::HubRoomOp::Removed {
                     room_name: room_name.clone(),
@@ -1166,6 +1506,11 @@ impl HubCore {
 
     pub(crate) fn note_oversize(&mut self, count: usize) {
         self.stats.oversize += count as u64;
+        self.note_service_degraded(activity::HubServiceDegradation::EnvelopeOversize, count);
+    }
+
+    pub(crate) fn note_send_failed(&mut self, count: usize) {
+        self.note_service_degraded(activity::HubServiceDegradation::SendFailed, count);
     }
 
     /// Reference room normalization with its exact reply texts.
@@ -1696,11 +2041,13 @@ impl HubCore {
         self.stats.notices_forwarded += 1;
         self.stats.resources_received += 1;
         self.stats.resource_bytes_received += text.len() as u64;
+        let mut relayed_bytes = 0usize;
         for chunk in chunks {
             let mut notice = rrc::Envelope::new(rrc::MessageType::Notice, identity);
             notice.room = Some(room_name.to_string());
             notice.nickname = nickname.clone();
             notice.body = Some(Value::Text(chunk));
+            relayed_bytes += rrc::encode(&notice).map(|bytes| bytes.len()).unwrap_or(0);
             for member in &members {
                 out.push(HubSend::Envelope {
                     link_id: *member,
@@ -1708,6 +2055,15 @@ impl HubCore {
                 });
             }
         }
+        // One event for the whole payload rather than one per chunk: the
+        // chunking is our MDU concern, not something the operator relays.
+        self.note_relayed(
+            link_id,
+            room_name,
+            activity::ChannelEnvelopeKind::Notice,
+            relayed_bytes,
+            members.len(),
+        );
     }
 
     fn hub_notice(&self, link_id: [u8; 16], text: &str, room: Option<&str>) -> HubSend {
@@ -1764,6 +2120,9 @@ impl HubCore {
             .map(|klines| klines.contains(&identity))
             .unwrap_or(false);
         if banned {
+            // Defense in depth only: `identity_gate` closes a klined link
+            // inside the LinkManager before identification ever reaches here,
+            // so this branch records nothing.
             out.push(self.hub_error(link_id, "banned", None));
             out.push(HubSend::Close { link_id });
             self.sessions.remove(&link_id);
@@ -1775,8 +2134,17 @@ impl HubCore {
             .sessions
             .entry(link_id)
             .or_insert_with(|| HubSession::new(now, per_minute));
+        let first = session.identity.is_none();
         session.identity = Some(identity);
+        let correlation = session.correlation;
         self.by_identity.insert(identity, link_id);
+        if first {
+            self.events.push(HubEvent::SessionOpened {
+                correlation,
+                link: link_id,
+                peer: identity,
+            });
+        }
     }
 
     /// Reference-exact rate accounting: one token per inbound packet of any
@@ -1795,27 +2163,53 @@ impl HubCore {
     }
 
     pub(crate) fn on_link_closed(&mut self, link_id: [u8; 16], out: &mut Vec<HubSend>) {
+        self.close_session(link_id, activity::HubSessionCloseReason::Remote, out);
+    }
+
+    /// Tear down one session and its room memberships. The reason is Activity
+    /// only; the wire behavior is identical however the link went away.
+    fn close_session(
+        &mut self,
+        link_id: [u8; 16],
+        reason: activity::HubSessionCloseReason,
+        out: &mut Vec<HubSend>,
+    ) {
         // Expectations and live slots die with the link, whether or not it ever
         // carried a session: nothing about them survives a reconnect.
         self.admission.forget_link(link_id);
-        let Some(session) = self.sessions.remove(&link_id) else {
+        let Some(session) = self.sessions.get(&link_id) else {
             return;
         };
-        if let Some(identity) = session.identity {
+        let identity = session.identity;
+        let nickname = session.nickname.clone();
+        let rooms: Vec<String> = session.rooms.iter().cloned().collect();
+        self.events.push(HubEvent::SessionClosed {
+            correlation: session.correlation,
+            link: link_id,
+            reason,
+            duration_ms: session
+                .established_at
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64,
+        });
+        if let Some(identity) = identity {
             if self.by_identity.get(&identity) == Some(&link_id) {
                 self.by_identity.remove(&identity);
             }
-            let rooms: Vec<String> = session.rooms.iter().cloned().collect();
             for room_name in rooms {
                 self.remove_member_with_parted(
                     &room_name,
                     link_id,
                     identity,
-                    session.nickname.as_deref(),
+                    nickname.as_deref(),
                     out,
                 );
             }
         }
+        // Dropped last so the departure events it produces still resolve the
+        // session's correlation rather than falling back to the hub run.
+        self.sessions.remove(&link_id);
     }
 
     /// Remove one link from a room, fanning PARTED to the remaining members
@@ -1828,14 +2222,29 @@ impl HubCore {
         nickname: Option<&str>,
         out: &mut Vec<HubSend>,
     ) {
+        if !self.rooms.contains_key(room_name) {
+            return;
+        }
+        // Minted before the `rooms` borrow: `room_token` needs `&mut self`.
+        let correlation = self.link_correlation(link_id);
+        let token = self.room_token(room_name);
         let Some(room) = self.rooms.get_mut(room_name) else {
             return;
         };
-        room.members.remove(&link_id);
+        let was_member = room.members.remove(&link_id);
         let remaining: Vec<[u8; 16]> = room.members.iter().copied().collect();
         let registered = room.registered;
         if remaining.is_empty() && !registered {
             self.rooms.remove(room_name);
+            self.room_tokens.remove(room_name);
+        }
+        if was_member {
+            self.events.push(HubEvent::RoomParted {
+                correlation,
+                link: link_id,
+                room: token,
+                members: remaining.len() as u64,
+            });
         }
         let still_present = self
             .rooms
@@ -2054,6 +2463,20 @@ impl HubCore {
         }
 
         out.push(self.room_status_notice(link_id, &room_name));
+
+        let correlation = self.link_correlation(link_id);
+        let token = self.room_token(&room_name);
+        let members = self
+            .rooms
+            .get(&room_name)
+            .map(|room| room.members.len())
+            .unwrap_or(0) as u64;
+        self.events.push(HubEvent::RoomJoined {
+            correlation,
+            link: link_id,
+            room: token,
+            members,
+        });
     }
 
     /// Send the joiner its roster, split across packets when a large room
@@ -2293,21 +2716,32 @@ impl HubCore {
             return;
         }
 
-        match envelope.message_type {
-            rrc::MessageType::Message => self.stats.messages_forwarded += 1,
-            rrc::MessageType::Action => self.stats.actions_forwarded += 1,
-            _ => self.stats.notices_forwarded += 1,
-        }
+        let method = match envelope.message_type {
+            rrc::MessageType::Message => {
+                self.stats.messages_forwarded += 1;
+                activity::ChannelEnvelopeKind::Message
+            }
+            rrc::MessageType::Action => {
+                self.stats.actions_forwarded += 1;
+                activity::ChannelEnvelopeKind::Action
+            }
+            _ => {
+                self.stats.notices_forwarded += 1;
+                activity::ChannelEnvelopeKind::Notice
+            }
+        };
 
         let Some(room) = self.rooms.get(&room_name) else {
             return;
         };
-        for member in room.members.iter().copied() {
+        let members: Vec<[u8; 16]> = room.members.iter().copied().collect();
+        for member in members.iter().copied() {
             out.push(HubSend::Envelope {
                 link_id: member,
                 envelope: envelope.clone(),
             });
         }
+        self.note_relayed(link_id, &room_name, method, encoded, members.len());
     }
 
     /// Inbound nick updates the session when valid, is stripped when invalid,
@@ -2664,6 +3098,7 @@ impl HubCore {
                 Some(&room_name),
             ));
         }
+        self.note_moderated(link_id, &room_name, activity::HubModerationAction::Kick);
         out.push(self.hub_notice(
             link_id,
             &format!("kicked {token} from {room_name}"),
@@ -2731,6 +3166,12 @@ impl HubCore {
                 klines.insert(target);
             }
             self.persist_klines(Some(link_id), out);
+            let correlation = self.link_correlation(link_id);
+            self.events.push(HubEvent::TrustChanged {
+                correlation,
+                link: link_id,
+                change: activity::HubTrustChange::KlineAdded,
+            });
             out.push(self.hub_notice(
                 link_id,
                 &format!("kline added for {}", hex::encode(target)),
@@ -2748,7 +3189,7 @@ impl HubCore {
                 out.push(HubSend::Close {
                     link_id: target_link,
                 });
-                self.on_link_closed(target_link, out);
+                self.close_session(target_link, activity::HubSessionCloseReason::Kicked, out);
             }
         } else {
             let removed = self
@@ -2758,6 +3199,12 @@ impl HubCore {
                 .unwrap_or(false);
             if removed {
                 self.persist_klines(Some(link_id), out);
+                let correlation = self.link_correlation(link_id);
+                self.events.push(HubEvent::TrustChanged {
+                    correlation,
+                    link: link_id,
+                    change: activity::HubTrustChange::KlineRemoved,
+                });
             }
             let text = if removed {
                 format!("kline removed for {}", hex::encode(target))
@@ -2821,6 +3268,7 @@ impl HubCore {
         room.ops.insert(identity);
         room.last_used = now_unix();
         self.persist_room(&room_name, Some(link_id), out);
+        self.note_moderated(link_id, &room_name, activity::HubModerationAction::Register);
         out.push(self.hub_notice(link_id, &format!("registered room {room_name}"), raw_room));
     }
 
@@ -2869,8 +3317,15 @@ impl HubCore {
         }
         room.registered = false;
         let empty = room.members.is_empty();
+        // Recorded before the room can disappear: the token dies with it.
+        self.note_moderated(
+            link_id,
+            &room_name,
+            activity::HubModerationAction::Unregister,
+        );
         if empty {
             self.rooms.remove(&room_name);
+            self.room_tokens.remove(&room_name);
         }
         out.push(HubSend::Persist(HubPersist {
             op: db::HubRoomOp::Removed {
@@ -2939,6 +3394,7 @@ impl HubCore {
             ));
         }
         self.persist_room(&room_name, Some(link_id), out);
+        self.note_moderated(link_id, &room_name, activity::HubModerationAction::Topic);
     }
 
     fn broadcast_mode(&self, room_name: &str, out: &mut Vec<HubSend>) {
@@ -2992,6 +3448,7 @@ impl HubCore {
                 }
                 self.broadcast_mode(&room_name, out);
                 self.persist_room(&room_name, Some(link_id), out);
+                self.note_moderated(link_id, &room_name, activity::HubModerationAction::Mode);
             }
             "+k" => {
                 if args.len() < 3 {
@@ -3024,11 +3481,13 @@ impl HubCore {
                 room.key = Some(digest);
                 self.broadcast_mode(&room_name, out);
                 self.persist_room(&room_name, Some(link_id), out);
+                self.note_moderated(link_id, &room_name, activity::HubModerationAction::Mode);
             }
             "-k" => {
                 let room = self.rooms.get_mut(&room_name).expect("room just ensured");
                 room.key = None;
                 self.broadcast_mode(&room_name, out);
+                self.note_moderated(link_id, &room_name, activity::HubModerationAction::Mode);
             }
             "+r" | "-r" => {
                 out.push(self.hub_notice(
@@ -3052,6 +3511,12 @@ impl HubCore {
                         out.push(self.hub_notice(link_id, &reason, raw_room));
                         return;
                     }
+                };
+                let action = match flag.as_str() {
+                    "+o" => activity::HubModerationAction::Op,
+                    "-o" => activity::HubModerationAction::Deop,
+                    "+v" => activity::HubModerationAction::Voice,
+                    _ => activity::HubModerationAction::Devoice,
                 };
                 let room = self.rooms.get_mut(&room_name).expect("room just ensured");
                 match flag.as_str() {
@@ -3089,6 +3554,7 @@ impl HubCore {
                     out.push(self.hub_notice(member, &text, Some(&room_name)));
                 }
                 self.persist_room(&room_name, Some(link_id), out);
+                self.note_moderated(link_id, &room_name, action);
             }
             _ => {
                 out.push(self.hub_notice(
@@ -3140,10 +3606,13 @@ impl HubCore {
             }
         };
         let room = self.rooms.get_mut(&room_name).expect("room just ensured");
-        let text = match verb {
+        let (text, action) = match verb {
             "op" => {
                 room.ops.insert(target);
-                format!("op granted in {room_name}")
+                (
+                    format!("op granted in {room_name}"),
+                    activity::HubModerationAction::Op,
+                )
             }
             "deop" => {
                 if self.server_ops.contains(&target) {
@@ -3151,18 +3620,28 @@ impl HubCore {
                     return;
                 }
                 room.ops.remove(&target);
-                format!("op removed in {room_name}")
+                (
+                    format!("op removed in {room_name}"),
+                    activity::HubModerationAction::Deop,
+                )
             }
             "voice" => {
                 room.voiced.insert(target);
-                format!("voice granted in {room_name}")
+                (
+                    format!("voice granted in {room_name}"),
+                    activity::HubModerationAction::Voice,
+                )
             }
             _ => {
                 room.voiced.remove(&target);
-                format!("voice removed in {room_name}")
+                (
+                    format!("voice removed in {room_name}"),
+                    activity::HubModerationAction::Devoice,
+                )
             }
         };
         self.persist_room(&room_name, Some(link_id), out);
+        self.note_moderated(link_id, &room_name, action);
         out.push(self.hub_notice(link_id, &text, raw_room));
     }
 
@@ -3276,12 +3755,14 @@ impl HubCore {
                 ));
             }
             self.persist_room(&room_name, Some(link_id), out);
+            self.note_moderated(link_id, &room_name, activity::HubModerationAction::Ban);
             out.push(self.hub_notice(link_id, &format!("ban added in {room_name}"), raw_room));
         } else {
             if let Some(room) = self.rooms.get_mut(&room_name) {
                 room.bans.remove(&target);
             }
             self.persist_room(&room_name, Some(link_id), out);
+            self.note_moderated(link_id, &room_name, activity::HubModerationAction::Unban);
             out.push(self.hub_notice(link_id, &format!("ban removed in {room_name}"), raw_room));
         }
     }
@@ -3404,12 +3885,14 @@ impl HubCore {
             if gated {
                 self.persist_room(&room_name, Some(link_id), out);
             }
+            self.note_moderated(link_id, &room_name, activity::HubModerationAction::Invite);
             out.push(self.hub_notice(link_id, &confirmation, raw_room));
         } else {
             if let Some(room) = self.rooms.get_mut(&room_name) {
                 room.invited.remove(&target);
             }
             self.persist_room(&room_name, Some(link_id), out);
+            self.note_moderated(link_id, &room_name, activity::HubModerationAction::Uninvite);
             out.push(self.hub_notice(link_id, &format!("invite removed in {room_name}"), raw_room));
         }
     }
@@ -3505,6 +3988,12 @@ impl HubCore {
         if !sendable {
             tracing::error!(reason = "welcome_over_mdu", "hub WELCOME does not fit");
             out.push(self.hub_error(link_id, "hub configuration error", None));
+            let correlation = self.link_correlation(link_id);
+            self.events.push(HubEvent::SessionRejected {
+                correlation,
+                link: link_id,
+                reason: activity::HubSessionRejection::WelcomeUnsendable,
+            });
             return;
         }
         let first_welcome = !session.welcomed;
@@ -3525,20 +4014,27 @@ impl HubCore {
     /// links whose PONG never arrived, and reap links that never completed a
     /// handshake within the timeout window.
     pub(crate) fn ping_cycle(&mut self, now: Instant, out: &mut Vec<HubSend>) {
-        if self.config.ping_interval_secs == 0 {
-            return;
-        }
+        // Reaping and the throttle report run whether or not hub-driven
+        // keepalive is configured: turning PINGs off must not leave half-open
+        // links alive forever or silence the drop counters.
+        self.report_throttle(now);
         let timeout = Duration::from_secs(self.config.ping_timeout_secs.max(1));
-        let mut dead = Vec::new();
+        let keepalive = self.config.ping_interval_secs > 0;
+        let mut dead: Vec<([u8; 16], activity::HubSessionCloseReason)> = Vec::new();
         for (link_id, session) in self.sessions.iter_mut() {
             if !session.welcomed {
                 if now.duration_since(session.established_at) > timeout {
-                    dead.push(*link_id);
+                    dead.push((*link_id, activity::HubSessionCloseReason::HandshakeTimeout));
                 }
                 continue;
             }
+            if !keepalive {
+                continue;
+            }
             match session.awaiting_pong_since {
-                Some(since) if now.duration_since(since) > timeout => dead.push(*link_id),
+                Some(since) if now.duration_since(since) > timeout => {
+                    dead.push((*link_id, activity::HubSessionCloseReason::PingTimeout))
+                }
                 Some(_) => {}
                 None => {
                     session.awaiting_pong_since = Some(now);
@@ -3552,10 +4048,55 @@ impl HubCore {
                 }
             }
         }
-        for link_id in dead {
-            self.sessions.remove(&link_id);
+        for (link_id, reason) in dead {
+            // Membership teardown stays with the transport's close event, as
+            // before; only the session record and the Activity trail move here.
+            if let Some(session) = self.sessions.remove(&link_id) {
+                self.events.push(HubEvent::SessionClosed {
+                    correlation: session.correlation,
+                    link: link_id,
+                    reason,
+                    duration_ms: session
+                        .established_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u128::from(u64::MAX)) as u64,
+                });
+            }
             out.push(HubSend::Close { link_id });
         }
+    }
+
+    /// One aggregate per window, and only when something was actually shed.
+    fn report_throttle(&mut self, now: Instant) {
+        let span = now.duration_since(self.throttle_reported_at);
+        if span < THROTTLE_REPORT_INTERVAL {
+            return;
+        }
+        let rejected = self
+            .stats
+            .rate_limited
+            .saturating_sub(self.throttle_baseline.0);
+        let dropped = self
+            .stats
+            .bad_packets
+            .saturating_add(self.stats.duplicates)
+            .saturating_sub(self.throttle_baseline.1);
+        self.throttle_reported_at = now;
+        self.throttle_baseline = (
+            self.stats.rate_limited,
+            self.stats.bad_packets + self.stats.duplicates,
+        );
+        if rejected == 0 && dropped == 0 {
+            return;
+        }
+        let correlation = self.hub_correlation;
+        self.events.push(HubEvent::RelayThrottled {
+            correlation,
+            rejected,
+            dropped,
+            span_ms: span.as_millis().min(u128::from(u64::MAX)) as u64,
+        });
     }
 }
 
@@ -3657,7 +4198,7 @@ impl ChannelHubHandle {
         store: HubStore,
         emitter: Arc<dyn Emitter>,
         shutdown: ShutdownSignal,
-        _state: Weak<AppState>,
+        state: Weak<AppState>,
     ) -> Result<Self, ChannelHubError> {
         // The operator administers the hub through the normal client, so their
         // chat identity is always a server operator.
@@ -3739,6 +4280,7 @@ impl ChannelHubHandle {
             shutdown,
             command_rx,
             snapshot.clone(),
+            ChannelsActivity::new(state),
         ));
         Ok(Self {
             command_tx,
@@ -3787,8 +4329,11 @@ async fn run_hub(
     shutdown: ShutdownSignal,
     mut command_rx: mpsc::Receiver<HubCommand>,
     snapshot: Arc<RwLock<ChannelHubSnapshot>>,
+    recorder: ChannelsActivity,
 ) {
     let destination_hash = registration.handle.destination_hash();
+    let activity_hub = activity::DestinationHash::new(destination_hash);
+    core.note_service_started();
     let announce_options = || DestinationAnnounceOptions {
         app_data: Some(hub_announce_app_data(&config.hub_name)),
         ..DestinationAnnounceOptions::default()
@@ -3800,6 +4345,7 @@ async fn run_hub(
         .is_err()
     {
         tracing::warn!(reason = "announce_failed", "channel hub announce failed");
+        core.note_service_degraded(activity::HubServiceDegradation::Announce, 1);
     }
 
     let announce_period = if config.announce_interval_secs > 0 {
@@ -3827,6 +4373,7 @@ async fn run_hub(
     resource_tick.reset();
 
     publish_snapshot(&snapshot, &emitter, &core, &config, Some(destination_hash));
+    record_hub_events(&recorder, activity_hub, core.drain_events());
     tracing::info!(
         dest = %crate::short_id(&hex::encode(destination_hash)),
         "channel hub started"
@@ -3943,10 +4490,12 @@ async fn run_hub(
                     && registration.handle.announce(announce_options()).await.is_err()
                 {
                     tracing::warn!(reason = "announce_failed", "periodic hub announce failed");
+                    core.note_service_degraded(activity::HubServiceDegradation::Announce, 1);
                 }
             }
         }
         flush_sends(&registration, &store, &mut core, out).await;
+        record_hub_events(&recorder, activity_hub, core.drain_events());
         publish_snapshot(&snapshot, &emitter, &core, &config, Some(destination_hash));
     }
 
@@ -3956,6 +4505,8 @@ async fn run_hub(
     core.flush_dirty_last_used(&mut final_out);
     core.retry_failed_persists(&mut final_out);
     flush_sends(&registration, &store, &mut core, final_out).await;
+    core.note_service_stopped();
+    record_hub_events(&recorder, activity_hub, core.drain_events());
 
     if let Ok(mut current) = snapshot.write() {
         *current = ChannelHubSnapshot::stopped();
@@ -3968,6 +4519,25 @@ async fn run_hub(
         tracing::warn!(reason = "close_failed", "channel hub deregistration failed");
     }
     tracing::info!("channel hub stopped");
+}
+
+/// Every hub event is network-originated, so each one takes a fresh capture
+/// fence at record time rather than inheriting a request's.
+fn record_hub_events(
+    recorder: &ChannelsActivity,
+    hub: activity::DestinationHash,
+    events: Vec<HubEvent>,
+) {
+    for event in events {
+        let (correlation_id, transition) = hub_activity_transition(event);
+        recorder.record_spontaneous(move || {
+            activity::channels_hub_activity(activity::ChannelsHubActivity {
+                hub,
+                correlation_id,
+                transition,
+            })
+        });
+    }
 }
 
 fn shell_error(core: &HubCore, text: &str) -> rrc::Envelope {
@@ -4072,6 +4642,7 @@ async fn flush_sends(
     }
 
     let mut oversize = 0usize;
+    let mut send_failed = 0usize;
     for send in envelopes {
         match send {
             HubSend::Persist(_) => unreachable!("persist ops are partitioned out"),
@@ -4083,6 +4654,7 @@ async fn flush_sends(
                         .await
                         .is_err()
                     {
+                        send_failed += 1;
                         tracing::debug!(reason = "send_failed", "hub envelope send failed");
                     }
                 }
@@ -4117,6 +4689,7 @@ async fn flush_sends(
                             .await
                             .is_err()
                         {
+                            send_failed += 1;
                             tracing::debug!(reason = "send_failed", "hub resource envelope failed");
                             None
                         } else {
@@ -4129,6 +4702,7 @@ async fn flush_sends(
                             {
                                 Ok(receipt) => Some(receipt.resource_hash),
                                 Err(_) => {
+                                    send_failed += 1;
                                     tracing::warn!(
                                         reason = "resource_start_failed",
                                         "hub resource transfer did not start"
@@ -4163,6 +4737,9 @@ async fn flush_sends(
     }
     if oversize > 0 {
         core.note_oversize(oversize);
+    }
+    if send_failed > 0 {
+        core.note_send_failed(send_failed);
     }
 }
 
@@ -6737,5 +7314,589 @@ mod tests {
                 .admit(LINK_B, &advertisement(999, [0x02; 32]))
         );
         assert_eq!(stats_line(&mut core), "resources: in=1 bytes=12 rejected=1");
+    }
+
+    /// Lower drained events exactly as the shell does, so these tests assert on
+    /// what Activity receives rather than on the intermediate enum.
+    fn lowered(core: &mut HubCore) -> Vec<(CorrelationId, activity::HubTransition)> {
+        core.drain_events()
+            .into_iter()
+            .map(hub_activity_transition)
+            .collect()
+    }
+
+    /// `kind:reason[:count]`. Restating the codes here is the point: it pins
+    /// the vocabulary the dashboard renders against a silent rename.
+    fn describe(transition: &activity::HubTransition) -> String {
+        match transition {
+            activity::HubTransition::ServiceStarted => "service.started".to_string(),
+            activity::HubTransition::ServiceStopped => "service.stopped".to_string(),
+            activity::HubTransition::ServiceDegraded { reason, count } => format!(
+                "service.degraded:{}:{count}",
+                match reason {
+                    activity::HubServiceDegradation::Announce => "announce",
+                    activity::HubServiceDegradation::EnvelopeOversize => "envelope_oversize",
+                    activity::HubServiceDegradation::SendFailed => "send_failed",
+                }
+            ),
+            activity::HubTransition::SessionOpened { .. } => "session.opened".to_string(),
+            activity::HubTransition::SessionRejected { reason, .. } => format!(
+                "session.rejected:{}",
+                match reason {
+                    activity::HubSessionRejection::WelcomeUnsendable => "welcome_unsendable",
+                }
+            ),
+            activity::HubTransition::SessionClosed { reason, .. } => format!(
+                "session.closed:{}",
+                match reason {
+                    activity::HubSessionCloseReason::Remote => "remote",
+                    activity::HubSessionCloseReason::PingTimeout => "ping_timed_out",
+                    activity::HubSessionCloseReason::HandshakeTimeout => "handshake_timed_out",
+                    activity::HubSessionCloseReason::Kicked => "kicked",
+                    activity::HubSessionCloseReason::ServiceStopped => "service_stopped",
+                }
+            ),
+            activity::HubTransition::RoomJoined { members, .. } => {
+                format!("room.joined:{members}")
+            }
+            activity::HubTransition::RoomParted { members, .. } => {
+                format!("room.parted:{members}")
+            }
+            activity::HubTransition::RoomModerated { action, .. } => format!(
+                "room.moderated:{}",
+                match action {
+                    activity::HubModerationAction::Register => "register",
+                    activity::HubModerationAction::Unregister => "unregister",
+                    activity::HubModerationAction::Topic => "topic",
+                    activity::HubModerationAction::Mode => "mode",
+                    activity::HubModerationAction::Op => "op",
+                    activity::HubModerationAction::Deop => "deop",
+                    activity::HubModerationAction::Voice => "voice",
+                    activity::HubModerationAction::Devoice => "devoice",
+                    activity::HubModerationAction::Ban => "ban",
+                    activity::HubModerationAction::Unban => "unban",
+                    activity::HubModerationAction::Kick => "kick",
+                    activity::HubModerationAction::Invite => "invite",
+                    activity::HubModerationAction::Uninvite => "uninvite",
+                }
+            ),
+            activity::HubTransition::TrustChanged { change, .. } => format!(
+                "trust.changed:{}",
+                match change {
+                    activity::HubTrustChange::KlineAdded => "kline_added",
+                    activity::HubTrustChange::KlineRemoved => "kline_removed",
+                }
+            ),
+            activity::HubTransition::RelayForwarded {
+                method, recipients, ..
+            } => format!(
+                "relay.forwarded:{}:{recipients}",
+                match method {
+                    activity::ChannelEnvelopeKind::Message => "message",
+                    activity::ChannelEnvelopeKind::Notice => "notice",
+                    activity::ChannelEnvelopeKind::Action => "action",
+                    _ => "other",
+                }
+            ),
+            activity::HubTransition::RelayThrottled {
+                rejected, dropped, ..
+            } => format!("relay.throttled:{rejected}:{dropped}"),
+        }
+    }
+
+    fn described(core: &mut HubCore) -> Vec<String> {
+        lowered(core)
+            .iter()
+            .map(|(_, transition)| describe(transition))
+            .collect()
+    }
+
+    fn room_tokens_of(core: &mut HubCore) -> Vec<activity::ChannelRoomToken> {
+        lowered(core)
+            .into_iter()
+            .filter_map(|(_, transition)| match transition {
+                activity::HubTransition::RoomJoined { room, .. }
+                | activity::HubTransition::RoomParted { room, .. }
+                | activity::HubTransition::RoomModerated { room, .. }
+                | activity::HubTransition::RelayForwarded { room, .. } => Some(room),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hub_activity_events_are_tokenized_and_stable() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_A, ID_A, "annex");
+        let first = room_tokens_of(&mut core);
+        assert_eq!(first.len(), 2);
+        let lobby = first[0];
+        let annex = first[1];
+        assert!(lobby != annex, "two rooms never share a token");
+
+        join(&mut core, LINK_B, ID_B, "lobby");
+        let again = room_tokens_of(&mut core);
+        assert!(again == vec![lobby], "a live room keeps its token");
+
+        // Random, never derived from the label: a second hub disagrees about
+        // the same room name.
+        let mut elsewhere = op_core();
+        join(&mut elsewhere, LINK_A, ID_A, "lobby");
+        assert!(
+            room_tokens_of(&mut elsewhere)[0] != lobby,
+            "a token derived from the room name would collide across hubs"
+        );
+
+        // Removal site 1: the last member leaves an unregistered room.
+        assert_eq!(core.room_tokens.len(), 2);
+        for link in [LINK_A, LINK_B] {
+            let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_A);
+            part.room = Some("lobby".to_string());
+            core.on_envelope(link, part, &mut Vec::new());
+        }
+        assert!(!core.rooms.contains_key("lobby"));
+        assert!(!core.room_tokens.contains_key("lobby"));
+
+        // Removal site 2: /unregister drops an empty registered room.
+        run_command(&mut core, LINK_A, ID_A, "/register annex");
+        let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_A);
+        part.room = Some("annex".to_string());
+        core.on_envelope(LINK_A, part, &mut Vec::new());
+        assert!(
+            core.room_tokens.contains_key("annex"),
+            "registered rooms live on"
+        );
+        run_command(&mut core, LINK_A, ID_A, "/unregister annex");
+        assert!(!core.rooms.contains_key("annex"));
+        assert!(!core.room_tokens.contains_key("annex"));
+
+        // Removal site 3: the registry prune.
+        let mut pruned = core_with(ChannelHubConfig {
+            room_registry_prune_after_secs: 10,
+            room_registry_prune_interval_secs: 0,
+            ..ChannelHubConfig::default()
+        });
+        welcomed_session(&mut pruned, LINK_A, ID_A, "alpha");
+        join(&mut pruned, LINK_A, ID_A, "idle");
+        run_command(&mut pruned, LINK_A, ID_A, "/register idle");
+        let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_A);
+        part.room = Some("idle".to_string());
+        pruned.on_envelope(LINK_A, part, &mut Vec::new());
+        pruned.rooms.get_mut("idle").unwrap().last_used = 1_800_000_000.0;
+        assert!(pruned.room_tokens.contains_key("idle"));
+        pruned.prune_registry(1_800_000_100.0, &mut Vec::new());
+        assert!(!pruned.rooms.contains_key("idle"));
+        assert!(
+            !pruned.room_tokens.contains_key("idle"),
+            "a pruned room must not leave its token behind"
+        );
+    }
+
+    #[test]
+    fn session_events_share_one_correlation_per_link() {
+        let mut core = op_core();
+        let opened = lowered(&mut core);
+        assert_eq!(
+            opened
+                .iter()
+                .filter(|(_, transition)| matches!(
+                    transition,
+                    activity::HubTransition::SessionOpened { .. }
+                ))
+                .count(),
+            2,
+            "one open per identified link"
+        );
+        let correlation_a = opened[0].0;
+        assert!(correlation_a != opened[1].0, "sessions never share a token");
+        match opened[0].1 {
+            activity::HubTransition::SessionOpened { link, peer } => {
+                assert!(link == activity::LinkId::new(LINK_A));
+                assert!(peer == activity::IdentityHash::new(ID_A));
+            }
+            _ => panic!("expected session.opened"),
+        }
+
+        // Re-identification of a live link is not a second session.
+        core.on_link_identified(LINK_A, ID_A, Instant::now(), &mut Vec::new());
+        assert!(described(&mut core).is_empty());
+
+        join(&mut core, LINK_A, ID_A, "lobby");
+        let joined = lowered(&mut core);
+        assert_eq!(joined.len(), 1);
+        assert!(
+            joined[0].0 == correlation_a,
+            "room events ride the session correlation"
+        );
+
+        let mut out = Vec::new();
+        core.on_link_closed(LINK_A, &mut out);
+        let closed = lowered(&mut core);
+        assert_eq!(
+            closed.iter().map(|(_, t)| describe(t)).collect::<Vec<_>>(),
+            vec!["session.closed:remote", "room.parted:0"]
+        );
+        assert!(closed.iter().all(|(id, _)| *id == correlation_a));
+
+        // A reconnect on the same link id is a new session.
+        core.on_link_established(LINK_A, Instant::now());
+        core.on_link_identified(LINK_A, ID_A, Instant::now(), &mut Vec::new());
+        let reopened = lowered(&mut core);
+        assert_eq!(reopened.len(), 1);
+        assert!(reopened[0].0 != correlation_a);
+    }
+
+    #[test]
+    fn a_rejected_welcome_is_recorded_and_never_opens_a_session() {
+        let (mut core, link_id) = identified_core(ChannelHubConfig {
+            hub_name: "h".repeat(4096),
+            ..ChannelHubConfig::default()
+        });
+        assert_eq!(described(&mut core), vec!["session.opened"]);
+        core.on_envelope(
+            link_id,
+            rrc::Envelope::hello(ID_A, "rat", "1"),
+            &mut Vec::new(),
+        );
+        assert_eq!(
+            described(&mut core),
+            vec!["session.rejected:welcome_unsendable"]
+        );
+
+        // A WELCOME that fits records nothing: the open already said it.
+        let (mut core, link_id) = identified_core(ChannelHubConfig::default());
+        lowered(&mut core);
+        core.on_envelope(
+            link_id,
+            rrc::Envelope::hello(ID_A, "rat", "1"),
+            &mut Vec::new(),
+        );
+        assert!(described(&mut core).is_empty());
+    }
+
+    #[test]
+    fn handshake_reaping_survives_disabled_keepalive() {
+        let config = ChannelHubConfig {
+            ping_interval_secs: 0,
+            ping_timeout_secs: 10,
+            ..ChannelHubConfig::default()
+        };
+        let mut core = core_with(config);
+        let now = Instant::now();
+        core.on_link_established(LINK_A, now);
+        core.on_link_identified(LINK_A, ID_A, now, &mut Vec::new());
+        lowered(&mut core);
+
+        let mut out = Vec::new();
+        core.ping_cycle(now + Duration::from_secs(5), &mut out);
+        assert!(out.is_empty(), "a fresh handshake is not reaped");
+        assert!(core.sessions.contains_key(&LINK_A));
+
+        let mut out = Vec::new();
+        core.ping_cycle(now + Duration::from_secs(11), &mut out);
+        assert!(
+            matches!(out.as_slice(), [HubSend::Close { link_id }] if *link_id == LINK_A),
+            "keepalive off must still reap a half-open link"
+        );
+        assert!(!core.sessions.contains_key(&LINK_A));
+        assert_eq!(
+            described(&mut core),
+            vec!["session.closed:handshake_timed_out"]
+        );
+
+        // With keepalive on, an unanswered PING is the other reason.
+        let mut core = core_with(ChannelHubConfig {
+            ping_interval_secs: 1,
+            ping_timeout_secs: 10,
+            ..ChannelHubConfig::default()
+        });
+        let now = Instant::now();
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        lowered(&mut core);
+        let mut out = Vec::new();
+        core.ping_cycle(now, &mut out);
+        assert_eq!(sends_to(&out, LINK_A).len(), 1, "a PING goes out");
+        let mut out = Vec::new();
+        core.ping_cycle(now + Duration::from_secs(11), &mut out);
+        assert_eq!(described(&mut core), vec!["session.closed:ping_timed_out"]);
+    }
+
+    #[test]
+    fn throttle_reports_are_bounded_and_survive_disabled_keepalive() {
+        let mut core = core_with(ChannelHubConfig {
+            ping_interval_secs: 0,
+            ..ChannelHubConfig::default()
+        });
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        lowered(&mut core);
+        let start = Instant::now();
+        core.note_rate_limited();
+        core.note_bad_packet();
+
+        let mut out = Vec::new();
+        core.ping_cycle(start + Duration::from_secs(30), &mut out);
+        assert!(
+            described(&mut core).is_empty(),
+            "at most one report per minute"
+        );
+        assert!(out.is_empty(), "keepalive off sends no PING");
+
+        core.ping_cycle(start + Duration::from_secs(61), &mut out);
+        let reported = lowered(&mut core);
+        assert_eq!(
+            reported
+                .iter()
+                .map(|(_, t)| describe(t))
+                .collect::<Vec<_>>(),
+            vec!["relay.throttled:1:1"]
+        );
+        match reported[0].1 {
+            activity::HubTransition::RelayThrottled { span_ms, .. } => {
+                assert!(span_ms >= 60_000, "the window is reported, not guessed");
+            }
+            _ => panic!("expected relay.throttled"),
+        }
+
+        // A quiet window reports nothing at all.
+        core.ping_cycle(start + Duration::from_secs(130), &mut out);
+        assert!(described(&mut core).is_empty());
+
+        // Counters are deltas, not totals.
+        core.note_rate_limited();
+        core.ping_cycle(start + Duration::from_secs(200), &mut out);
+        assert_eq!(described(&mut core), vec!["relay.throttled:1:0"]);
+        assert!(out.is_empty(), "keepalive off still sends no PING");
+    }
+
+    #[test]
+    fn every_operator_command_names_its_verb_and_nothing_else() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+        lowered(&mut core);
+
+        // A refused command changes nothing, so it records nothing.
+        run_command(&mut core, LINK_B, ID_B, "/register lobby");
+        assert!(described(&mut core).is_empty());
+        run_command(&mut core, LINK_A, ID_A, "/topic lobby");
+        assert!(
+            described(&mut core).is_empty(),
+            "reading a topic is not moderation"
+        );
+
+        for (command, expected) in [
+            ("/register lobby", "room.moderated:register"),
+            ("/topic lobby hello", "room.moderated:topic"),
+            ("/mode lobby +m", "room.moderated:mode"),
+            ("/mode lobby +k hunter2secret", "room.moderated:mode"),
+            ("/mode lobby -k", "room.moderated:mode"),
+            ("/mode lobby +o beta", "room.moderated:op"),
+            ("/mode lobby -o beta", "room.moderated:deop"),
+            ("/mode lobby +v beta", "room.moderated:voice"),
+            ("/mode lobby -v beta", "room.moderated:devoice"),
+            ("/op lobby beta", "room.moderated:op"),
+            ("/deop lobby beta", "room.moderated:deop"),
+            ("/voice lobby beta", "room.moderated:voice"),
+            ("/devoice lobby beta", "room.moderated:devoice"),
+            ("/invite lobby add beta", "room.moderated:invite"),
+            ("/invite lobby del beta", "room.moderated:uninvite"),
+            ("/kick lobby beta", "room.moderated:kick"),
+        ] {
+            run_command(&mut core, LINK_A, ID_A, command);
+            let events = described(&mut core);
+            assert!(
+                events.contains(&expected.to_string()),
+                "`{command}` recorded {events:?}"
+            );
+        }
+
+        join(&mut core, LINK_B, ID_B, "lobby");
+        lowered(&mut core);
+        for (command, expected) in [
+            ("/ban lobby add beta", "room.moderated:ban"),
+            (
+                "/ban lobby del bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "room.moderated:unban",
+            ),
+            ("/unregister lobby", "room.moderated:unregister"),
+        ] {
+            run_command(&mut core, LINK_A, ID_A, command);
+            let events = described(&mut core);
+            assert!(
+                events.contains(&expected.to_string()),
+                "`{command}` recorded {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kline_changes_are_recorded_and_close_the_session_as_kicked() {
+        let mut core = op_core();
+        lowered(&mut core);
+
+        run_command(&mut core, LINK_A, ID_A, "/kline add beta");
+        assert_eq!(
+            described(&mut core),
+            vec!["trust.changed:kline_added", "session.closed:kicked"]
+        );
+
+        let subject = hex::encode(ID_B);
+        run_command(&mut core, LINK_A, ID_A, &format!("/kline del {subject}"));
+        assert_eq!(described(&mut core), vec!["trust.changed:kline_removed"]);
+
+        // Removing a kline that was never there is not a trust change.
+        run_command(&mut core, LINK_A, ID_A, &format!("/kline del {subject}"));
+        assert!(described(&mut core).is_empty());
+    }
+
+    #[test]
+    fn relay_events_count_recipients_and_bytes() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+        lowered(&mut core);
+
+        let mut message = rrc::Envelope::new(rrc::MessageType::Message, ID_B);
+        message.room = Some("lobby".to_string());
+        message.body = Some(Value::Text("hello".to_string()));
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, message, &mut out);
+        let relayed = sends_to(&out, LINK_A);
+        assert_eq!(relayed.len(), 1);
+        let wire = rrc::encode(relayed[0]).expect("relayed envelope encodes");
+        let events = lowered(&mut core);
+        assert_eq!(
+            events.iter().map(|(_, t)| describe(t)).collect::<Vec<_>>(),
+            vec!["relay.forwarded:message:2"],
+            "the sender is echoed, so both members count"
+        );
+        match events[0].1 {
+            activity::HubTransition::RelayForwarded { encoded_bytes, .. } => {
+                assert_eq!(encoded_bytes, wire.len() as u64);
+            }
+            _ => panic!("expected relay.forwarded"),
+        }
+
+        // A refused relay forwards nothing and records nothing.
+        run_command(&mut core, LINK_A, ID_A, "/ban lobby add beta");
+        lowered(&mut core);
+        let mut message = rrc::Envelope::new(rrc::MessageType::Message, ID_B);
+        message.room = Some("lobby".to_string());
+        message.body = Some(Value::Text("blocked".to_string()));
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, message, &mut out);
+        assert_eq!(error_texts(&out, LINK_B), vec!["banned from room"]);
+        assert!(described(&mut core).is_empty());
+    }
+
+    #[test]
+    fn a_resource_notice_records_one_relay_for_the_whole_payload() {
+        let mut core = resource_room(accepting_config());
+        lowered(&mut core);
+        let payload = vec![b'r'; 1_200];
+        announce(&mut core, LINK_B, [0x31; 8], &payload, "lobby");
+        assert!(
+            described(&mut core).is_empty(),
+            "an announcement is not a relay"
+        );
+
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x31; 32], payload, false, &mut out);
+        let chunks = relayed_texts(&out, LINK_A);
+        assert!(chunks.len() > 1, "1200 bytes needs more than one packet");
+        let bytes: usize = sends_to(&out, LINK_A)
+            .into_iter()
+            .map(|envelope| rrc::encode(envelope).expect("encodes").len())
+            .sum();
+        let events = lowered(&mut core);
+        assert_eq!(
+            events.iter().map(|(_, t)| describe(t)).collect::<Vec<_>>(),
+            vec!["relay.forwarded:notice:2"],
+            "chunking is our MDU concern, not a second relay"
+        );
+        match events[0].1 {
+            activity::HubTransition::RelayForwarded { encoded_bytes, .. } => {
+                assert_eq!(encoded_bytes, bytes as u64);
+            }
+            _ => panic!("expected relay.forwarded"),
+        }
+    }
+
+    #[test]
+    fn room_events_follow_membership_not_traffic() {
+        let mut core = op_core();
+        lowered(&mut core);
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+        assert_eq!(described(&mut core), vec!["room.joined:1", "room.joined:2"]);
+
+        // A PART naming a room that does not exist touches no membership.
+        let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_B);
+        part.room = Some("nowhere".to_string());
+        core.on_envelope(LINK_B, part, &mut Vec::new());
+        assert!(described(&mut core).is_empty());
+
+        let part_lobby = |core: &mut HubCore| {
+            let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_B);
+            part.room = Some("lobby".to_string());
+            core.on_envelope(LINK_B, part, &mut Vec::new());
+        };
+        part_lobby(&mut core);
+        assert_eq!(described(&mut core), vec!["room.parted:1"]);
+
+        // A repeat PART is not a second departure.
+        part_lobby(&mut core);
+        assert!(described(&mut core).is_empty());
+    }
+
+    #[test]
+    fn service_events_bracket_the_run_and_report_degradation() {
+        let mut core = op_core();
+        let sessions = lowered(&mut core);
+        let session_correlations: Vec<CorrelationId> =
+            sessions.into_iter().map(|(id, _)| id).collect();
+
+        core.note_service_started();
+        core.note_service_degraded(activity::HubServiceDegradation::Announce, 1);
+        core.note_oversize(2);
+        core.note_send_failed(3);
+        // A zero count is not a degradation.
+        core.note_service_degraded(activity::HubServiceDegradation::SendFailed, 0);
+        core.note_service_stopped();
+
+        let events = lowered(&mut core);
+        let mut described: Vec<String> = events.iter().map(|(_, t)| describe(t)).collect();
+        described.sort();
+        assert_eq!(
+            described,
+            vec![
+                "service.degraded:announce:1",
+                "service.degraded:envelope_oversize:2",
+                "service.degraded:send_failed:3",
+                "service.started",
+                "service.stopped",
+                "session.closed:service_stopped",
+                "session.closed:service_stopped",
+            ]
+        );
+
+        let run_correlations: Vec<CorrelationId> = events
+            .iter()
+            .filter(|(_, transition)| {
+                !matches!(transition, activity::HubTransition::SessionClosed { .. })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(
+            run_correlations.iter().all(|id| *id == run_correlations[0]),
+            "service events share one correlation per hub run"
+        );
+        assert!(
+            session_correlations
+                .iter()
+                .all(|id| *id != run_correlations[0]),
+            "the hub run is not one of its sessions"
+        );
     }
 }

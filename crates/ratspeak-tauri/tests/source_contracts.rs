@@ -297,6 +297,24 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         "/who repeats its prefix; NomadNet parses each packet independently"
     );
 
+    // Activity carries hub policy, never hub content. Asserted on the event
+    // declaration itself: the mapping function only ever sees minted values.
+    let hub_events = hub
+        .split("pub(crate) enum HubEvent {")
+        .nth(1)
+        .and_then(|tail| tail.split("\n}\n").next())
+        .expect("hub activity event enum");
+    for forbidden in ["String", "room_name", "topic", "nickname", "body", "text"] {
+        assert!(
+            !hub_events.contains(forbidden),
+            "hub Activity events must not be able to carry `{forbidden}`"
+        );
+    }
+    assert!(
+        hub.contains("ChannelRoomToken::random()"),
+        "room tokens are random, never derived from the room label"
+    );
+
     // The IPC surface stays registered unconditionally.
     for command in [
         "channel_hub::api_channel_hub",

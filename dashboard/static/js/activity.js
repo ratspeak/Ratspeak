@@ -60,6 +60,7 @@ var ACTIVITY_SUBJECT_LABELS = {
     'lxst.service': 'Voice service',
     'lxst.call': 'Call',
     'lxst.media': 'Call media',
+    'channels.hub': 'Channel hub',
     'channels.session': 'Channel session',
     'channels.room': 'Channel',
     'channels.envelope': 'Channel message',
