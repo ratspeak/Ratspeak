@@ -917,7 +917,7 @@ fn channel_hub_config_from_settings(db: &db::DbPool) -> channel_hub::ChannelHubC
 /// Start the RRC hub service for the active identity. The hub identity is a
 /// dedicated per-identity keypair stored beside the identity's runtime state,
 /// never the operator's chat identity. Requires a running RNS session.
-pub async fn start_channel_hub_service(state: &Arc<AppState>, data_dir: &std::path::Path) -> bool {
+pub async fn start_channel_hub_service(state: &Arc<AppState>) -> bool {
     if state.channel_hub_handle().is_some() {
         return true;
     }
@@ -950,8 +950,12 @@ pub async fn start_channel_hub_service(state: &Arc<AppState>, data_dir: &std::pa
         tracing::warn!(reason = "no_active_identity", "channel hub not started");
         return false;
     };
-    let identity_path = data_dir
-        .join(".ratspeak")
+    // Always resolve from the configured data dir: taking a caller-supplied
+    // root gave boot and the Start button different keyfiles, and so different
+    // hub destination hashes for the same hub.
+    let identity_path = state
+        .config
+        .data_dir
         .join("channel_hub")
         .join(format!("hub_identity_{identity_hash}"));
     let hub_identity = match channel_hub::load_or_create_hub_identity(&identity_path) {
@@ -1853,7 +1857,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 tracing::info!("Channels runtime initialized");
             }
             if db::get_setting(&state.db, "channel_hub_enabled").as_deref() == Some("1") {
-                start_channel_hub_service(&state, &data_dir).await;
+                start_channel_hub_service(&state).await;
             }
             tracing::info!("RNS runtime initialized");
             #[cfg(feature = "lxst-voice")]

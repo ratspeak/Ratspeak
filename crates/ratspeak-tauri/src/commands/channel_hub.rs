@@ -47,8 +47,7 @@ async fn restart_running_hub(state: &State<'_, Arc<AppState>>) {
     if let Some(hub) = state.take_channel_hub() {
         hub.shutdown().await;
         let app_state: Arc<AppState> = state.inner().clone();
-        let data_dir = state.config.data_dir.clone();
-        ratspeak_runtime::start_channel_hub_service(&app_state, &data_dir).await;
+        ratspeak_runtime::start_channel_hub_service(&app_state).await;
     }
 }
 
@@ -61,8 +60,7 @@ pub async fn api_channel_hub(state: State<'_, Arc<AppState>>) -> AppResult<Chann
 pub async fn channel_hub_start(state: State<'_, Arc<AppState>>) -> AppResult<ChannelHubSnapshot> {
     persist_setting(&state, "channel_hub_enabled", "1".to_string()).await?;
     let app_state: Arc<AppState> = state.inner().clone();
-    let data_dir = state.config.data_dir.clone();
-    if !ratspeak_runtime::start_channel_hub_service(&app_state, &data_dir).await {
+    if !ratspeak_runtime::start_channel_hub_service(&app_state).await {
         return Err(AppError::service_unavailable(
             "Channel hub requires an active network session",
         ));
