@@ -520,9 +520,12 @@ impl ResourceAdmission {
 
     /// Release a live slot. Idempotent: both conclusion channels call it.
     fn retire(&self, link_id: [u8; 16], resource_hash: [u8; 32]) {
-        let Ok(mut state) = self.state.write() else {
-            return;
-        };
+        // Recover a poisoned lock here: admission stays fail-closed, but
+        // refusing to clean up would strand slots for the hub's lifetime.
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let emptied = match state.live.get_mut(&link_id) {
             Some(live) => {
                 live.remove(&resource_hash);
@@ -536,16 +539,19 @@ impl ResourceAdmission {
     }
 
     fn forget_link(&self, link_id: [u8; 16]) {
-        if let Ok(mut state) = self.state.write() {
-            state.expectations.remove(&link_id);
-            state.live.remove(&link_id);
-        }
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.expectations.remove(&link_id);
+        state.live.remove(&link_id);
     }
 
     fn sweep(&self, now: Instant) {
-        if let Ok(mut state) = self.state.write() {
-            state.prune(now);
-        }
+        self.state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .prune(now);
     }
 
     fn note_rejected(&self) {
@@ -4049,20 +4055,11 @@ impl HubCore {
             }
         }
         for (link_id, reason) in dead {
-            // Membership teardown stays with the transport's close event, as
-            // before; only the session record and the Activity trail move here.
-            if let Some(session) = self.sessions.remove(&link_id) {
-                self.events.push(HubEvent::SessionClosed {
-                    correlation: session.correlation,
-                    link: link_id,
-                    reason,
-                    duration_ms: session
-                        .established_at
-                        .elapsed()
-                        .as_millis()
-                        .min(u128::from(u64::MAX)) as u64,
-                });
-            }
+            // Full teardown here, not just the session record: we tore the link
+            // down ourselves, so waiting for a transport close event would
+            // leave the peer in every room it joined — rosters would list a
+            // dead link forever and the room could never empty.
+            self.close_session(link_id, reason, out);
             out.push(HubSend::Close { link_id });
         }
     }
@@ -7573,6 +7570,64 @@ mod tests {
             &mut Vec::new(),
         );
         assert!(described(&mut core).is_empty());
+    }
+
+    #[test]
+    fn a_reaped_link_leaves_no_ghost_membership() {
+        // We tear the link down ourselves, so nothing else will do the
+        // membership teardown. Leaving it to the transport's close event meant
+        // rosters listed a dead link forever and the room never emptied.
+        let config = ChannelHubConfig {
+            ping_interval_secs: 1,
+            ping_timeout_secs: 1,
+            ..ChannelHubConfig::default()
+        };
+        let mut core = core_with(config);
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+        assert_eq!(core.rooms.get("lobby").unwrap().members.len(), 2);
+
+        let start = Instant::now();
+        let mut out = Vec::new();
+        core.ping_cycle(start, &mut out);
+        out.clear();
+        // A answers; B stays silent, so only B is reaped.
+        let mut pong = rrc::Envelope::new(rrc::MessageType::Pong, ID_A);
+        pong.body = Some(Value::Bytes(vec![0x01]));
+        core.on_envelope(LINK_A, pong, &mut out);
+        out.clear();
+        core.ping_cycle(start + Duration::from_secs(30), &mut out);
+
+        assert!(!core.sessions.contains_key(&LINK_B));
+        assert!(
+            !core.rooms.get("lobby").unwrap().members.contains(&LINK_B),
+            "a reaped link must leave the rooms it joined"
+        );
+        assert!(
+            !core.by_identity.contains_key(&ID_B),
+            "a reaped link must not keep resolving as a command target"
+        );
+        // The survivor is told, exactly as for any other departure.
+        let parted = sends_to(&out, LINK_A);
+        assert!(
+            parted
+                .iter()
+                .any(|env| env.message_type == rrc::MessageType::Parted
+                    && rrc::member_identities(env) == vec![ID_B]),
+            "remaining members must see the departure"
+        );
+
+        // And the room can now empty and be reclaimed.
+        let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_A);
+        part.room = Some("lobby".to_string());
+        let mut out = Vec::new();
+        core.on_envelope(LINK_A, part, &mut out);
+        assert!(
+            !core.rooms.contains_key("lobby"),
+            "an unregistered room with no live members is reclaimed"
+        );
     }
 
     #[test]
