@@ -216,6 +216,12 @@ function _channelsMergedHubs() {
     });
     return Object.keys(byHash).map(function(key) { return byHash[key]; }).sort(function(a, b) {
         if (a.nearby !== b.nearby) return a.nearby ? -1 : 1;
+        // Closer hubs first: fewer hops is a cheaper, more reliable path. A
+        // saved hub we have not heard has no hop count and sorts after ones
+        // we have, then by recency.
+        var aHops = typeof a.hops === 'number' ? a.hops : Infinity;
+        var bHops = typeof b.hops === 'number' ? b.hops : Infinity;
+        if (aHops !== bHops) return aHops - bHops;
         return (b.last_seen || 0) - (a.last_seen || 0);
     });
 }
