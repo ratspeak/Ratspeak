@@ -1519,6 +1519,19 @@ impl HubCore {
         }
     }
 
+    /// Resolve a command target, accepting a full identity hash for someone
+    /// who is not connected. Grants outlive sessions now, so an operator must
+    /// be able to lift a ban on an identity that is not currently online.
+    fn resolve_target_or_hash(&self, token: &str) -> Result<[u8; 16], String> {
+        if token.len() == 32 && token.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return hex::decode(token.to_lowercase())
+                .ok()
+                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                .ok_or_else(|| format!("bad identity hash: {token}"));
+        }
+        self.resolve_target(token)
+    }
+
     fn cmd_list(&mut self, link_id: [u8; 16], identity: [u8; 16], out: &mut Vec<HubSend>) {
         let server_op = self.server_ops.contains(&identity);
         let mut rooms: Vec<(&String, &HubRoom)> = self
@@ -1725,19 +1738,7 @@ impl HubCore {
             ));
             return;
         };
-        let target = if token.len() == 32 && token.chars().all(|ch| ch.is_ascii_hexdigit()) {
-            let mut hash = [0u8; 16];
-            match hex::decode(token.to_lowercase()) {
-                Ok(bytes) if bytes.len() == 16 => {
-                    hash.copy_from_slice(&bytes);
-                    Ok(hash)
-                }
-                _ => Err(format!("bad identity hash: {token}")),
-            }
-        } else {
-            self.resolve_target(token)
-        };
-        let target = match target {
+        let target = match self.resolve_target_or_hash(token) {
             Ok(target) => target,
             Err(reason) => {
                 out.push(self.hub_notice(link_id, &reason, None));
@@ -2064,7 +2065,7 @@ impl HubCore {
                     ));
                     return;
                 };
-                let target = match self.resolve_target(token) {
+                let target = match self.resolve_target_or_hash(token) {
                     Ok(target) => target,
                     Err(reason) => {
                         out.push(self.hub_notice(link_id, &reason, raw_room));
@@ -2150,7 +2151,7 @@ impl HubCore {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
         }
-        let target = match self.resolve_target(token) {
+        let target = match self.resolve_target_or_hash(token) {
             Ok(target) => target,
             Err(reason) => {
                 out.push(self.hub_notice(link_id, &reason, raw_room));
@@ -2236,7 +2237,7 @@ impl HubCore {
             out.push(self.hub_notice(link_id, USAGE, None));
             return;
         };
-        let target = match self.resolve_target(token) {
+        let target = match self.resolve_target_or_hash(token) {
             Ok(target) => target,
             Err(reason) => {
                 out.push(self.hub_notice(link_id, &reason, raw_room));
@@ -2371,7 +2372,7 @@ impl HubCore {
             ));
             return;
         };
-        let target = match self.resolve_target(token) {
+        let target = match self.resolve_target_or_hash(token) {
             Ok(target) => target,
             Err(reason) => {
                 out.push(self.hub_error(link_id, &format!("invite failed: {reason}"), None));
@@ -3671,6 +3672,46 @@ mod tests {
             db::HubRoomOp::Upsert(row) if row.room_name == room => Some(&**row),
             _ => None,
         })
+    }
+
+    #[test]
+    fn durable_grants_accept_a_full_hash_for_an_offline_identity() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        // Nobody is connected under this identity, so a nickname lookup could
+        // never find it — but a ban outlives the session that earned it.
+        let offline = [0xEE; 16];
+        let token = hex::encode(offline);
+
+        let out = run_command(&mut core, LINK_A, ID_A, &format!("/ban lobby add {token}"));
+        assert!(
+            sends_to(&out, LINK_A)
+                .iter()
+                .any(|env| rrc::text_body(env) == Some("ban added in lobby"))
+        );
+        assert!(core.rooms.get("lobby").unwrap().bans.contains(&offline));
+
+        // And it can be lifted again without the identity coming back online.
+        let out = run_command(&mut core, LINK_A, ID_A, &format!("/ban lobby del {token}"));
+        assert!(
+            sends_to(&out, LINK_A)
+                .iter()
+                .any(|env| rrc::text_body(env) == Some("ban removed in lobby"))
+        );
+        assert!(!core.rooms.get("lobby").unwrap().bans.contains(&offline));
+
+        // An op grant works the same way.
+        run_command(&mut core, LINK_A, ID_A, &format!("/op lobby {token}"));
+        assert!(core.rooms.get("lobby").unwrap().ops.contains(&offline));
+
+        // A malformed hash is still rejected.
+        let out = run_command(&mut core, LINK_A, ID_A, "/ban lobby add zz00");
+        assert!(
+            sends_to(&out, LINK_A)
+                .iter()
+                .any(|env| rrc::text_body(env) == Some("target 'zz00' not found"))
+        );
     }
 
     #[test]
