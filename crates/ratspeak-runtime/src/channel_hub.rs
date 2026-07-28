@@ -23,6 +23,7 @@ use rns_runtime::link_manager::DestinationAnnounceOptions;
 use rns_transport::messages::TransportMessage;
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
+use zeroize::Zeroizing;
 
 use crate::rrc;
 use crate::state::AppState;
@@ -155,6 +156,78 @@ enum HubCommand {
 /// ids; we drop replays so fan-out cost cannot be amplified by repetition.
 const SEEN_ID_LIMIT: usize = 512;
 
+const ROOM_KEY_TAG: &[u8] = b"ratspeak-rrc-roomkey-v1";
+const ROOM_KEY_PEPPER_INFO: &[u8] = b"ratspeak-rrc-roomkey-pepper-v1";
+/// Short keys are trivially brute-forced if the database ever leaks without
+/// the keyfile, and nothing here stretches them.
+const MIN_ROOM_KEY_BYTES: usize = 8;
+
+/// A room join key as it is held and stored: salted, peppered, verify-only.
+/// The reference keeps plaintext in memory and on disk; we never do.
+#[derive(Clone, PartialEq)]
+pub(crate) struct RoomKeyDigest {
+    pub salt: [u8; 16],
+    pub mac: [u8; 32],
+    pub pepper_id: [u8; 8],
+}
+
+/// Hand-written: `HubSend` derives `Debug`, and a derived one here would put
+/// the MAC into any log or panic that renders a send.
+impl std::fmt::Debug for RoomKeyDigest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RoomKeyDigest(redacted)")
+    }
+}
+
+/// Hub-local pepper derived from the hub identity, so a stolen database alone
+/// cannot brute-force low-entropy room keys.
+fn room_key_pepper(identity: &Identity) -> Option<Zeroizing<[u8; 32]>> {
+    let private = identity.get_private_key()?;
+    let derived = Zeroizing::new(
+        rns_crypto::hkdf::hkdf_sha256(32, &*private, None, Some(ROOM_KEY_PEPPER_INFO)).ok()?,
+    );
+    let mut pepper = Zeroizing::new([0u8; 32]);
+    pepper.copy_from_slice(&derived[..32]);
+    Some(pepper)
+}
+
+/// `pepper_id` is part of the preimage, so a digest written under a different
+/// hub identity cannot verify by construction.
+fn room_key_preimage(pepper_id: [u8; 8], room: &str, key: &str, salt: &[u8; 16]) -> Vec<u8> {
+    let mut preimage = Vec::with_capacity(ROOM_KEY_TAG.len() + 28 + room.len() + key.len());
+    preimage.extend_from_slice(ROOM_KEY_TAG);
+    preimage.extend_from_slice(salt);
+    preimage.extend_from_slice(&pepper_id);
+    preimage.extend_from_slice(&(room.len() as u32).to_be_bytes());
+    preimage.extend_from_slice(room.as_bytes());
+    preimage.extend_from_slice(key.as_bytes());
+    preimage
+}
+
+fn room_key_digest(
+    pepper: &[u8; 32],
+    pepper_id: [u8; 8],
+    room: &str,
+    key: &str,
+    salt: [u8; 16],
+) -> RoomKeyDigest {
+    let mac =
+        rns_crypto::hmac::hmac_sha256(pepper, &room_key_preimage(pepper_id, room, key, &salt));
+    RoomKeyDigest {
+        salt,
+        mac,
+        pepper_id,
+    }
+}
+
+fn room_key_matches(pepper: &[u8; 32], room: &str, provided: &str, digest: &RoomKeyDigest) -> bool {
+    rns_crypto::hmac::hmac_verify(
+        pepper,
+        &room_key_preimage(digest.pepper_id, room, provided, &digest.salt),
+        &digest.mac,
+    )
+}
+
 /// Per-link token bucket, reference shape: capacity = messages/minute,
 /// refill capacity/60 per second, one token per inbound packet of any type.
 struct RateBucket {
@@ -239,7 +312,7 @@ impl HubSession {
 #[derive(Default)]
 struct HubRoom {
     topic: Option<String>,
-    key: Option<String>,
+    key: Option<RoomKeyDigest>,
     ops: HashSet<[u8; 16]>,
     voiced: HashSet<[u8; 16]>,
     bans: HashSet<[u8; 16]>,
@@ -313,6 +386,9 @@ pub(crate) struct HubCore {
     /// Server operators are implicit ops in every room.
     server_ops: HashSet<[u8; 16]>,
     klines: Arc<RwLock<HashSet<[u8; 16]>>>,
+    /// Verify-only material for room join keys; never persisted.
+    pepper: Zeroizing<[u8; 32]>,
+    pepper_id: [u8; 8],
     stats: HubStats,
     started_at: Instant,
 }
@@ -322,11 +398,14 @@ impl HubCore {
         config: ChannelHubConfig,
         hub_hash: [u8; 16],
         klines: Arc<RwLock<HashSet<[u8; 16]>>>,
+        pepper: Zeroizing<[u8; 32]>,
     ) -> Self {
         if let Ok(mut set) = klines.write() {
             set.extend(config.banned_identities.iter().copied());
         }
         let server_ops = config.server_operators.iter().copied().collect();
+        let mut pepper_id = [0u8; 8];
+        pepper_id.copy_from_slice(&hub_hash[..8]);
         Self {
             config,
             hub_hash,
@@ -335,6 +414,8 @@ impl HubCore {
             by_identity: HashMap::new(),
             server_ops,
             klines,
+            pepper,
+            pepper_id,
             stats: HubStats::default(),
             started_at: Instant::now(),
         }
@@ -681,7 +762,7 @@ impl HubCore {
                 return;
             }
         }
-        if let Some(key) = self.rooms.get(&room_name).and_then(|room| room.key.clone()) {
+        if let Some(digest) = self.rooms.get(&room_name).and_then(|room| room.key.clone()) {
             let room = self.rooms.get(&room_name).expect("room exists");
             let bypass = self.server_ops.contains(&identity)
                 || room.ops.contains(&identity)
@@ -690,7 +771,10 @@ impl HubCore {
                 Value::Text(text) => Some(text.as_str()),
                 _ => None,
             });
-            if !bypass && provided != Some(key.as_str()) {
+            let matches = provided.is_some_and(|provided| {
+                room_key_matches(&self.pepper, &room_name, provided, &digest)
+            });
+            if !bypass && !matches {
                 out.push(self.hub_error(link_id, "bad key (+k)", Some(&room_name)));
                 return;
             }
@@ -1539,17 +1623,34 @@ impl HubCore {
                 self.broadcast_mode(&room_name, out);
             }
             "+k" => {
-                let key = args[2..].join(" ").trim().to_string();
                 if args.len() < 3 {
                     out.push(self.hub_notice(link_id, "usage: /mode <room> +k <key>", raw_room));
                     return;
                 }
+                let key = Zeroizing::new(args[2..].join(" ").trim().to_string());
                 if key.is_empty() {
                     out.push(self.hub_notice(link_id, "key must not be empty", raw_room));
                     return;
                 }
-                let room = self.rooms.get_mut(&room_name).expect("room just ensured");
-                room.key = Some(key);
+                // The setter collapses whitespace while the JOIN gate reads the
+                // body verbatim, so a spaced key could never be matched.
+                if args[2..].len() > 1 || key.chars().any(char::is_whitespace) {
+                    out.push(self.hub_notice(link_id, "key must not contain spaces", raw_room));
+                    return;
+                }
+                if key.len() < MIN_ROOM_KEY_BYTES {
+                    out.push(self.hub_notice(link_id, "key must be at least 8 bytes", raw_room));
+                    return;
+                }
+                let digest = room_key_digest(
+                    &self.pepper,
+                    self.pepper_id,
+                    &room_name,
+                    &key,
+                    rns_crypto::random::random_16(),
+                );
+                let room = self.rooms.get_mut(&room_name).expect("room exists");
+                room.key = Some(digest);
                 self.broadcast_mode(&room_name, out);
             }
             "-k" => {
@@ -2151,7 +2252,10 @@ impl ChannelHubHandle {
 
         let (command_tx, command_rx) = mpsc::channel(COMMAND_BUFFER);
         let snapshot = Arc::new(RwLock::new(ChannelHubSnapshot::stopped()));
-        let core = HubCore::new(config.clone(), hub_identity.hash, klines);
+        let pepper = room_key_pepper(&hub_identity).ok_or_else(|| {
+            ChannelHubError::Identity("hub identity has no private key".to_string())
+        })?;
+        let core = HubCore::new(config.clone(), hub_identity.hash, klines, pepper);
         tokio::spawn(run_hub(
             registration,
             core,
@@ -2431,7 +2535,12 @@ mod tests {
         if !config.server_operators.contains(&ID_A) {
             config.server_operators.push(ID_A);
         }
-        HubCore::new(config, [0x77; 16], Arc::new(RwLock::new(HashSet::new())))
+        HubCore::new(
+            config,
+            [0x77; 16],
+            Arc::new(RwLock::new(HashSet::new())),
+            Zeroizing::new([0x5A; 32]),
+        )
     }
 
     fn identified_core(config: ChannelHubConfig) -> (HubCore, [u8; 16]) {
@@ -2692,7 +2801,13 @@ mod tests {
         {
             let room = core.rooms.get_mut("vault").unwrap();
             room.invite_only = true;
-            room.key = Some("sesame".to_string());
+            room.key = Some(room_key_digest(
+                &[0x5A; 32],
+                [0x77; 8],
+                "vault",
+                "sesame99",
+                [0x11; 16],
+            ));
         }
 
         let out = join(&mut core, LINK_B, ID_B, "vault");
@@ -2722,7 +2837,7 @@ mod tests {
         core.rooms.get_mut("vault").unwrap().bans.insert(ID_B);
         let mut envelope = rrc::Envelope::new(rrc::MessageType::Join, ID_B);
         envelope.room = Some("vault".to_string());
-        envelope.body = Some(Value::Text("sesame".to_string()));
+        envelope.body = Some(Value::Text("sesame99".to_string()));
         let mut out = Vec::new();
         core.on_envelope(LINK_B, envelope, &mut out);
         assert_eq!(
@@ -2989,6 +3104,142 @@ mod tests {
     }
 
     #[test]
+    fn join_key_verifies_against_the_digest_and_is_never_stored() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "vault");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +k open-sesame");
+
+        let digest = core.rooms.get("vault").unwrap().key.clone().unwrap();
+        // The plaintext is not recoverable from anything we keep.
+        let stored = format!("{digest:?}");
+        assert!(!stored.contains("open-sesame"));
+        assert_eq!(stored, "RoomKeyDigest(redacted)");
+
+        assert!(room_key_matches(
+            &[0x5A; 32],
+            "vault",
+            "open-sesame",
+            &digest
+        ));
+        assert!(!room_key_matches(
+            &[0x5A; 32],
+            "vault",
+            "open-sesamf",
+            &digest
+        ));
+        // The room name is bound into the preimage, so a digest cannot be
+        // lifted from one room to another.
+        assert!(!room_key_matches(
+            &[0x5A; 32],
+            "lobby",
+            "open-sesame",
+            &digest
+        ));
+        // A different hub identity cannot verify it either.
+        assert!(!room_key_matches(
+            &[0x11; 32],
+            "vault",
+            "open-sesame",
+            &digest
+        ));
+
+        // And the gate accepts the real key while refusing a wrong one.
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        let mut envelope = rrc::Envelope::new(rrc::MessageType::Join, ID_B);
+        envelope.room = Some("vault".to_string());
+        envelope.body = Some(Value::Text("nope".to_string()));
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, envelope, &mut out);
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("bad key (+k)")
+        );
+
+        let mut envelope = rrc::Envelope::new(rrc::MessageType::Join, ID_B);
+        envelope.room = Some("vault".to_string());
+        envelope.body = Some(Value::Text("open-sesame".to_string()));
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, envelope, &mut out);
+        assert_eq!(
+            sends_to(&out, LINK_B)[0].message_type,
+            rrc::MessageType::Joined
+        );
+    }
+
+    #[test]
+    fn weak_or_unmatchable_keys_are_refused_at_the_setter() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "vault");
+
+        // The JOIN gate reads the body verbatim while the setter collapses
+        // whitespace, so a spaced key could never be matched.
+        let out = run_command(&mut core, LINK_A, ID_A, "/mode vault +k two words");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("key must not contain spaces")
+        );
+        assert!(core.rooms.get("vault").unwrap().key.is_none());
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/mode vault +k short");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("key must be at least 8 bytes")
+        );
+        assert!(core.rooms.get("vault").unwrap().key.is_none());
+
+        // -k clears it again.
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +k longenough");
+        assert!(core.rooms.get("vault").unwrap().key.is_some());
+        run_command(&mut core, LINK_A, ID_A, "/mode vault -k");
+        assert!(core.rooms.get("vault").unwrap().key.is_none());
+    }
+
+    #[test]
+    fn the_key_never_appears_in_any_reply_or_mode_string() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "vault");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +k open-sesame");
+
+        assert_eq!(core.rooms.get("vault").unwrap().mode_string(), "+k");
+
+        // Every reply that mentions the room must expose the flag only.
+        let mut rendered = String::new();
+        for command in [
+            "/mode vault +i",
+            "/topic vault",
+            "/who vault",
+            "/list",
+            "/stats",
+            "/invite vault add beta",
+            "/ban vault list",
+        ] {
+            for send in run_command(&mut core, LINK_A, ID_A, command) {
+                if let HubSend::Envelope { envelope, .. } = send
+                    && let Some(text) = rrc::text_body(&envelope)
+                {
+                    rendered.push_str(text);
+                    rendered.push('\n');
+                }
+            }
+        }
+        // The room-status notice on join is the other room-describing reply.
+        for send in join(&mut core, LINK_B, ID_B, "vault") {
+            if let HubSend::Envelope { envelope, .. } = send
+                && let Some(text) = rrc::text_body(&envelope)
+            {
+                rendered.push_str(text);
+                rendered.push('\n');
+            }
+        }
+        assert!(
+            !rendered.contains("open-sesame"),
+            "a room key leaked into a reply: {rendered}"
+        );
+        assert!(rendered.contains("mode=+ik") || rendered.contains("+ik"));
+    }
+
+    #[test]
     fn join_of_an_unknown_room_is_refused_for_non_operators() {
         let mut core = op_core();
         let out = join(&mut core, LINK_B, ID_B, "ghost");
@@ -3121,11 +3372,15 @@ mod tests {
         );
 
         // +k sets a key; a later keyless join is refused.
-        run_command(&mut core, LINK_A, ID_A, "/mode lobby +k s3cret");
-        assert_eq!(
-            core.rooms.get("lobby").unwrap().key.as_deref(),
-            Some("s3cret")
-        );
+        run_command(&mut core, LINK_A, ID_A, "/mode lobby +k s3cret99");
+        let digest = core.rooms.get("lobby").unwrap().key.clone().unwrap();
+        assert!(room_key_matches(&[0x5A; 32], "lobby", "s3cret99", &digest));
+        assert!(!room_key_matches(
+            &[0x5A; 32],
+            "lobby",
+            "wrong-key",
+            &digest
+        ));
     }
 
     #[test]
