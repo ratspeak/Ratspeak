@@ -236,7 +236,10 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     let hub_schema = db
         .split("CREATE TABLE IF NOT EXISTS channel_hub_rooms")
         .nth(1)
-        .and_then(|tail| tail.split("CREATE INDEX IF NOT EXISTS idx_contacts_identity").next())
+        .and_then(|tail| {
+            tail.split("CREATE INDEX IF NOT EXISTS idx_contacts_identity")
+                .next()
+        })
         .expect("hub registry schema");
     for forbidden in [
         "message_body",
@@ -267,7 +270,10 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         hub.matches("entry(room_name.clone()).or_default()").count() == 1,
         "only the operator-gated JOIN path may create a room"
     );
-    assert!(!hub.contains("room.founder"), "founder authority is not durable");
+    assert!(
+        !hub.contains("room.founder"),
+        "founder authority is not durable"
+    );
 
     // Registry tables are wiped with the identity that owns them.
     for table in [
@@ -298,7 +304,10 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         "channel_hub::channel_hub_stop",
         "channel_hub::channel_hub_set_config",
     ] {
-        assert!(tauri_lib.contains(command), "{command} must stay registered");
+        assert!(
+            tauri_lib.contains(command),
+            "{command} must stay registered"
+        );
     }
 }
 

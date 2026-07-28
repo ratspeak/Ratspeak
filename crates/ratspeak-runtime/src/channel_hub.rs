@@ -10,6 +10,11 @@
 //! unknown room is refused rather than founding one, so no remote peer can
 //! write to the operator's registry.
 //!
+//! Every reply is sized to one link packet. The greeting alone may exceed
+//! that as a resource, and only to a peer that advertised the capability:
+//! command replies are parsed per packet by the reference clients, so a
+//! resource-delivered one is silently ignored.
+//!
 //! Protocol behavior follows the reference daemon (kc1awv/rrcd 0.3.2) except
 //! where the fix registry records a deliberate deviation (idempotent re-HELLO
 //! is one: a duplicate HELLO re-welcomes without wiping room membership).
@@ -25,7 +30,9 @@ use rns_runtime::destination_runtime::{
     DestinationRuntimeOptions, IdentityGatePolicy, RegisteredDestination,
 };
 use rns_runtime::lifecycle::ShutdownSignal;
-use rns_runtime::link_manager::DestinationAnnounceOptions;
+use rns_runtime::link_manager::{
+    DestinationAnnounceOptions, LinkResourceDirection, LinkResourceEvent,
+};
 use rns_transport::messages::TransportMessage;
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
@@ -46,6 +53,11 @@ const MIN_NOTICE_BODY_BYTES: usize = 32;
 const LIST_TOPIC_BYTES: usize = 48;
 /// Encoded envelopes ride single link packets; the negotiated floor is 431.
 const LINK_PACKET_BUDGET: usize = rns_wire::constants::LINK_MDU;
+/// Free a link's outbound resource slot when a transfer never concludes.
+/// Longer than the 30s expectation TTL both reference clients apply, so a
+/// transfer the peer has already given up on cannot hold the slot.
+const OUTBOUND_RESOURCE_TIMEOUT: Duration = Duration::from_secs(40);
+const RESOURCE_CYCLE_INTERVAL_SECS: u64 = 10;
 const HUB_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const DEFAULT_HUB_NAME: &str = "Ratspeak hub";
@@ -67,7 +79,16 @@ pub struct ChannelHubConfig {
     pub max_rooms_per_session: usize,
     pub rate_messages_per_minute: usize,
     pub include_member_list: bool,
-    pub enable_resource_transfer: bool,
+    /// Advertise `CAP_RESOURCE_ENVELOPE` and send an oversized greeting as a
+    /// resource. Accepting inbound resources is a separate switch: the two
+    /// directions carry very different risk, so they are not one flag.
+    pub resource_send_enabled: bool,
+    pub resource_accept_enabled: bool,
+    /// Trigger ceiling for the outbound resource path. Both reference clients
+    /// expire the expectation 30s after the advertisement, so a payload that
+    /// cannot conclude inside that window is better chunked than advertised.
+    pub max_outbound_resource_bytes: usize,
+    /// Absolute protocol ceiling for a resource in either direction.
     pub max_resource_bytes: u64,
     /// Server operators (implicit ops in every room). The hosting identity is
     /// always seeded here so the operator can administer through any client.
@@ -97,7 +118,9 @@ impl Default for ChannelHubConfig {
             max_rooms_per_session: 32,
             rate_messages_per_minute: 240,
             include_member_list: true,
-            enable_resource_transfer: true,
+            resource_send_enabled: true,
+            resource_accept_enabled: false,
+            max_outbound_resource_bytes: 16 * 1024,
             max_resource_bytes: 256 * 1024,
             server_operators: Vec::new(),
             banned_identities: Vec::new(),
@@ -318,6 +341,16 @@ struct HubSession {
     rate: RateBucket,
     seen_ids: std::collections::VecDeque<[u8; 8]>,
     seen_set: HashSet<[u8; 8]>,
+    /// At most one outbound transfer per link: both reference clients bind an
+    /// arriving resource to a pending advertisement by size alone, so two
+    /// concurrent same-size transfers cross-match and mislabel each other.
+    outbound_resource: Option<OutboundResource>,
+}
+
+struct OutboundResource {
+    /// None until the transport reports one; the slot is held either way.
+    resource_hash: Option<[u8; 32]>,
+    started_at: Instant,
 }
 
 impl HubSession {
@@ -333,7 +366,18 @@ impl HubSession {
             rate: RateBucket::new(now, per_minute),
             seen_ids: std::collections::VecDeque::new(),
             seen_set: HashSet::new(),
+            outbound_resource: None,
         }
+    }
+
+    /// Whether the peer advertised resource support in its HELLO. No client
+    /// name sniffing: our own client does not advertise it and drops type 50,
+    /// so a resource sent there stalls until the transport cancels it.
+    fn supports_resources(&self) -> bool {
+        self.capabilities
+            .get(&rrc::CAP_RESOURCE_ENVELOPE)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn note_seen(&mut self, id: [u8; 8]) -> bool {
@@ -419,12 +463,30 @@ enum NoticeHeader<'a> {
     Every(&'a str),
 }
 
+/// Resource payload bytes. Hand-written `Debug`: `HubSend` derives one, and a
+/// derived field would spill the whole body into any log that renders a send.
+pub(crate) struct ResourcePayload(pub Vec<u8>);
+
+impl std::fmt::Debug for ResourcePayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ResourcePayload({} bytes)", self.0.len())
+    }
+}
+
 /// Hub-side sends the pure core asks the shell to perform.
 #[derive(Debug)]
 pub(crate) enum HubSend {
     Envelope {
         link_id: [u8; 16],
         envelope: rrc::Envelope,
+    },
+    /// An advertisement packet plus the bytes it announces. The shell sends
+    /// the envelope first and the resource second, never `send_link_payload`:
+    /// its implicit size switch is not the envelope/resource pairing.
+    Resource {
+        link_id: [u8; 16],
+        envelope: rrc::Envelope,
+        payload: ResourcePayload,
     },
     Close {
         link_id: [u8; 16],
@@ -890,7 +952,10 @@ impl HubCore {
         let mut capabilities = BTreeMap::new();
         capabilities.insert(rrc::CAP_ACTION, true);
         capabilities.insert(rrc::CAP_DIRECT_NOTICE, true);
-        if self.config.enable_resource_transfer {
+        // The advertisement follows the send flag: no reference client checks
+        // the hub's capability before sending, so tying it to accept would
+        // advertise nothing useful and hide what we can actually do.
+        if self.config.resource_send_enabled {
             capabilities.insert(rrc::CAP_RESOURCE_ENVELOPE, true);
         }
         rrc::WelcomeInfo {
@@ -1010,6 +1075,128 @@ impl HubCore {
             }
         }
         flush(&mut current, &mut current_has_entry, out);
+    }
+
+    /// The greeting is the only hub reply that may travel as a resource.
+    /// Command replies must not: NomadNet parses `/list` and `/who` in its
+    /// NOTICE handler alone, so a resource-delivered reply never updates its
+    /// room list or member set and silently suppresses the next genuine one.
+    /// A resource-delivered notice is display-only text, which is exactly what
+    /// a greeting is.
+    fn push_greeting(&mut self, link_id: [u8; 16], greeting: &str, out: &mut Vec<HubSend>) {
+        let budget = self
+            .text_body_budget(rrc::MessageType::Notice, None)
+            .max(MIN_NOTICE_BODY_BYTES);
+        // The threshold is "does not fit one link packet". The reference's
+        // 512 bytes sits above its own MDU and carries no interop meaning.
+        if greeting.len() > budget && self.push_greeting_resource(link_id, greeting, out) {
+            return;
+        }
+        let entries = [greeting.to_string()];
+        self.push_notice_entries(link_id, NoticeHeader::None, &entries, "", None, out);
+    }
+
+    /// Advertise then transfer, at most one at a time per link. Returns false
+    /// when the caller must fall back to chunking; nothing is dropped here.
+    fn push_greeting_resource(
+        &mut self,
+        link_id: [u8; 16],
+        greeting: &str,
+        out: &mut Vec<HubSend>,
+    ) -> bool {
+        if !self.config.resource_send_enabled {
+            return false;
+        }
+        let payload = greeting.as_bytes().to_vec();
+        // Above the trigger ceiling the client's 30s expectation TTL is the
+        // binding constraint, and chunking always lands where a slow transfer
+        // would be discarded.
+        if payload.len() > self.config.max_outbound_resource_bytes
+            || payload.len() as u64 > self.config.max_resource_bytes
+        {
+            return false;
+        }
+        let hub_hash = self.hub_hash;
+        let Some(session) = self.sessions.get_mut(&link_id) else {
+            return false;
+        };
+        if !session.supports_resources() || session.outbound_resource.is_some() {
+            return false;
+        }
+        session.outbound_resource = Some(OutboundResource {
+            resource_hash: None,
+            started_at: Instant::now(),
+        });
+        let mut envelope = rrc::Envelope::new(rrc::MessageType::ResourceEnvelope, hub_hash);
+        envelope.body = Some(rrc::resource_envelope_body(&rrc::ResourceEnvelopeBody {
+            id: envelope.message_id,
+            kind: "motd".to_string(),
+            size: payload.len() as u64,
+            sha256: Some(rns_crypto::sha::sha256(&payload)),
+            encoding: Some("utf-8".to_string()),
+        }));
+        out.push(HubSend::Resource {
+            link_id,
+            envelope,
+            payload: ResourcePayload(payload),
+        });
+        true
+    }
+
+    /// Shell feedback after a start attempt. `None` means the advertisement or
+    /// the transfer start failed, so the slot is released on the same pass
+    /// rather than waiting for the timeout sweep.
+    pub(crate) fn on_resource_started(
+        &mut self,
+        link_id: [u8; 16],
+        resource_hash: Option<[u8; 32]>,
+    ) {
+        let Some(session) = self.sessions.get_mut(&link_id) else {
+            return;
+        };
+        match resource_hash {
+            Some(hash) => {
+                if let Some(outbound) = session.outbound_resource.as_mut() {
+                    outbound.resource_hash = Some(hash);
+                }
+            }
+            None => session.outbound_resource = None,
+        }
+    }
+
+    /// Release the slot when the transport concludes an outbound transfer.
+    /// Cancelled and failed conclusions free the link exactly like a complete
+    /// one — the peer is not going to receive it either way.
+    pub(crate) fn on_outbound_resource_concluded(
+        &mut self,
+        link_id: [u8; 16],
+        resource_hash: [u8; 32],
+    ) {
+        let Some(session) = self.sessions.get_mut(&link_id) else {
+            return;
+        };
+        let ours = session.outbound_resource.as_ref().is_some_and(|outbound| {
+            outbound
+                .resource_hash
+                .is_none_or(|hash| hash == resource_hash)
+        });
+        if ours {
+            session.outbound_resource = None;
+        }
+    }
+
+    /// Free a slot whose transfer never concluded. `DestinationHandle` has no
+    /// per-resource cancel, so the transport keeps retrying independently;
+    /// this only stops one wedged transfer from blocking the link forever.
+    pub(crate) fn resource_cycle(&mut self, now: Instant) {
+        for session in self.sessions.values_mut() {
+            let expired = session.outbound_resource.as_ref().is_some_and(|outbound| {
+                now.duration_since(outbound.started_at) > OUTBOUND_RESOURCE_TIMEOUT
+            });
+            if expired {
+                session.outbound_resource = None;
+            }
+        }
     }
 
     fn hub_notice(&self, link_id: [u8; 16], text: &str, room: Option<&str>) -> HubSend {
@@ -2768,14 +2955,7 @@ impl HubCore {
         });
 
         if first_welcome && let Some(greeting) = self.config.greeting.clone() {
-            self.push_notice_entries(
-                link_id,
-                NoticeHeader::None,
-                std::slice::from_ref(&greeting),
-                "",
-                None,
-                out,
-            );
+            self.push_greeting(link_id, &greeting, out);
         }
     }
 
@@ -3054,6 +3234,12 @@ async fn run_hub(
     ));
     prune_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     prune_tick.reset();
+    // Deliberately not folded into `ping_cycle`, which early-returns when
+    // hub-driven keepalive is disabled.
+    let mut resource_tick =
+        tokio::time::interval(Duration::from_secs(RESOURCE_CYCLE_INTERVAL_SECS));
+    resource_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    resource_tick.reset();
 
     publish_snapshot(&snapshot, &emitter, &core, &config, Some(destination_hash));
     tracing::info!(
@@ -3125,6 +3311,21 @@ async fn run_hub(
                     core.on_link_closed(link_id, &mut out);
                 }
             }
+            // Outbound completion arrives here as `Concluded`; the separate
+            // `resource_proofs` stream carries the same fact and stays
+            // undrained rather than gaining a dead arm.
+            event = registration.events.resource_events.recv() => {
+                if let Some(LinkResourceEvent::Concluded {
+                    link_id,
+                    resource_id,
+                    direction: LinkResourceDirection::Outbound,
+                    ..
+                }) = event
+                {
+                    core.on_outbound_resource_concluded(link_id, resource_id);
+                }
+            }
+            _ = resource_tick.tick() => core.resource_cycle(Instant::now()),
             _ = ping_tick.tick() => core.ping_cycle(Instant::now(), &mut out),
             _ = prune_tick.tick() => {
                 core.prune_registry(now_unix(), &mut out);
@@ -3294,6 +3495,54 @@ async fn flush_sends(
                     tracing::warn!(reason = "encode_failed", "hub envelope dropped");
                 }
             },
+            HubSend::Resource {
+                link_id,
+                envelope,
+                payload,
+            } => {
+                let started = match rrc::encode(&envelope) {
+                    Ok(encoded) if encoded.len() <= LINK_PACKET_BUDGET => {
+                        // Advertise first: both reference clients bind an
+                        // arriving resource to a pending expectation, and the
+                        // TTL on that expectation starts at the envelope.
+                        if registration
+                            .handle
+                            .send_link_packet(link_id, encoded)
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(reason = "send_failed", "hub resource envelope failed");
+                            None
+                        } else {
+                            // No auto-compression: the advertisement announces
+                            // the exact byte count the client matches on.
+                            match registration
+                                .handle
+                                .send_link_resource(link_id, payload.0, false)
+                                .await
+                            {
+                                Ok(receipt) => Some(receipt.resource_hash),
+                                Err(_) => {
+                                    tracing::warn!(
+                                        reason = "resource_start_failed",
+                                        "hub resource transfer did not start"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        oversize += 1;
+                        tracing::warn!(
+                            reason = "resource_envelope_unsendable",
+                            "hub resource advertisement dropped"
+                        );
+                        None
+                    }
+                };
+                core.on_resource_started(link_id, started);
+            }
             HubSend::Close { link_id } => {
                 if registration
                     .handle
@@ -3958,17 +4207,21 @@ mod tests {
     }
 
     /// Every envelope a batch would put on the wire must fit a link packet.
+    /// A resource advertisement is an ordinary packet and is held to the same
+    /// budget; only the payload behind it escapes the MDU.
     fn assert_all_sendable(out: &[HubSend]) {
         for send in out {
-            if let HubSend::Envelope { envelope, .. } = send {
-                let encoded = rrc::encode(envelope).expect("hub envelopes must encode");
-                assert!(
-                    encoded.len() <= LINK_PACKET_BUDGET,
-                    "{:?} encoded to {} bytes, over the {LINK_PACKET_BUDGET} budget",
-                    envelope.message_type,
-                    encoded.len()
-                );
-            }
+            let envelope = match send {
+                HubSend::Envelope { envelope, .. } | HubSend::Resource { envelope, .. } => envelope,
+                _ => continue,
+            };
+            let encoded = rrc::encode(envelope).expect("hub envelopes must encode");
+            assert!(
+                encoded.len() <= LINK_PACKET_BUDGET,
+                "{:?} encoded to {} bytes, over the {LINK_PACKET_BUDGET} budget",
+                envelope.message_type,
+                encoded.len()
+            );
         }
     }
 
@@ -4892,5 +5145,282 @@ mod tests {
         let mut out = Vec::new();
         core.on_envelope(LINK_A, msg, &mut out);
         assert!(out.is_empty(), "replayed envelope ids never fan out twice");
+    }
+
+    /// A HELLO from a peer that advertises resource support. NomadNet and
+    /// rrc-gui both do; our own client deliberately does not.
+    fn capable_hello(identity: [u8; 16], nick: &str) -> rrc::Envelope {
+        let mut hello = rrc::Envelope::hello(identity, nick, "1");
+        hello.body = Some(rrc::integer_map(vec![
+            (rrc::HELLO_CLIENT_NAME, Value::Text("nomadnet".into())),
+            (rrc::HELLO_CLIENT_VERSION, Value::Text("1.2.3".into())),
+            (
+                rrc::HELLO_CAPABILITIES,
+                rrc::integer_map(vec![(rrc::CAP_RESOURCE_ENVELOPE, Value::Bool(true))]),
+            ),
+        ]));
+        hello
+    }
+
+    /// Returns the WELCOME pass so a caller can inspect the greeting sends.
+    fn welcomed_capable_session(
+        core: &mut HubCore,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        nick: &str,
+    ) -> Vec<HubSend> {
+        let now = Instant::now();
+        core.on_link_established(link_id, now);
+        let mut out = Vec::new();
+        core.on_link_identified(link_id, identity, now, &mut out);
+        out.clear();
+        core.on_envelope(link_id, capable_hello(identity, nick), &mut out);
+        out
+    }
+
+    fn resource_sends(out: &[HubSend]) -> Vec<(&rrc::Envelope, &ResourcePayload)> {
+        out.iter()
+            .filter_map(|send| match send {
+                HubSend::Resource {
+                    envelope, payload, ..
+                } => Some((envelope, payload)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn notice_texts(out: &[HubSend]) -> Vec<String> {
+        out.iter()
+            .filter_map(|send| match send {
+                HubSend::Envelope { envelope, .. }
+                    if envelope.message_type == rrc::MessageType::Notice =>
+                {
+                    rrc::text_body(envelope).map(str::to_string)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn greeting_core(greeting: &str, config: ChannelHubConfig) -> HubCore {
+        core_with(ChannelHubConfig {
+            greeting: Some(greeting.to_string()),
+            ..config
+        })
+    }
+
+    #[test]
+    fn greeting_uses_a_resource_only_for_capable_peers() {
+        let greeting = "m".repeat(900);
+        let mut core = greeting_core(&greeting, ChannelHubConfig::default());
+        let out = welcomed_capable_session(&mut core, LINK_A, ID_A, "nomad");
+
+        let resources = resource_sends(&out);
+        assert_eq!(resources.len(), 1, "one advertisement, one transfer");
+        let (envelope, payload) = resources[0];
+        assert_eq!(envelope.message_type, rrc::MessageType::ResourceEnvelope);
+        assert_eq!(envelope.room, None, "the greeting is roomless");
+        let body = rrc::parse_resource_envelope(envelope).expect("advertisement parses");
+        assert_eq!(body.kind, "motd");
+        assert_eq!(body.encoding.as_deref(), Some("utf-8"));
+        assert_eq!(body.size, greeting.len() as u64);
+        assert_eq!(body.size as usize, payload.0.len());
+        assert_eq!(body.sha256, Some(rns_crypto::sha::sha256(&payload.0)));
+        assert_eq!(payload.0, greeting.as_bytes());
+        // The advertisement rides an ordinary link packet.
+        assert_all_sendable(&out);
+        // The greeting travels once: no notice carries it as well.
+        assert!(notice_texts(&out).is_empty());
+        // A derived Debug on the payload would put the body in every log.
+        assert!(!format!("{:?}", out).contains("mmmm"));
+        assert_eq!(
+            format!("{:?}", ResourcePayload(vec![0u8; 3])),
+            "ResourcePayload(3 bytes)"
+        );
+
+        // The same greeting to a peer that never advertised the capability
+        // chunks into notices instead, losing nothing.
+        let mut core = greeting_core(&greeting, ChannelHubConfig::default());
+        let mut out = Vec::new();
+        let now = Instant::now();
+        core.on_link_established(LINK_B, now);
+        core.on_link_identified(LINK_B, ID_B, now, &mut out);
+        out.clear();
+        core.on_envelope(LINK_B, rrc::Envelope::hello(ID_B, "rat", "1"), &mut out);
+        assert!(resource_sends(&out).is_empty());
+        let chunks = notice_texts(&out);
+        assert!(chunks.len() > 1, "900 bytes cannot be one notice");
+        assert_eq!(chunks.concat(), greeting);
+        assert_all_sendable(&out);
+        assert!(core.sessions[&LINK_B].outbound_resource.is_none());
+
+        // A greeting that fits one packet stays one notice even for a capable
+        // peer: the threshold is the packet budget, not a byte constant.
+        let mut core = greeting_core("hello mesh", ChannelHubConfig::default());
+        let out = welcomed_capable_session(&mut core, LINK_A, ID_A, "nomad");
+        assert!(resource_sends(&out).is_empty());
+        assert_eq!(notice_texts(&out), vec!["hello mesh".to_string()]);
+    }
+
+    #[test]
+    fn command_output_never_takes_the_resource_path() {
+        let config = ChannelHubConfig {
+            server_operators: vec![ID_A],
+            ..ChannelHubConfig::default()
+        };
+        let mut core = core_with(config);
+        welcomed_capable_session(&mut core, LINK_A, ID_A, "nomad");
+        assert!(core.sessions[&LINK_A].supports_resources());
+        join(&mut core, LINK_A, ID_A, "lobby");
+        for index in 0..30u8 {
+            let link = [0xA0, index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, index];
+            welcomed_session(&mut core, link, [index; 16], &format!("member{index:02}"));
+            join(&mut core, link, [index; 16], "lobby");
+        }
+        run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        for index in 0..30u8 {
+            core.rooms
+                .get_mut("lobby")
+                .unwrap()
+                .bans
+                .insert([0xC0, index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, index]);
+        }
+
+        // NomadNet parses /list and /who in its NOTICE handler only, so a
+        // resource-delivered reply never updates its room list or member set
+        // and suppresses the next genuine reply.
+        for command in ["/who lobby", "/list", "/ban lobby list", "/stats"] {
+            let out = run_command(&mut core, LINK_A, ID_A, command);
+            assert!(!out.is_empty(), "{command} produced no reply");
+            assert!(
+                resource_sends(&out).is_empty(),
+                "{command} must never become a resource"
+            );
+            assert_all_sendable(&out);
+        }
+
+        // Structural, not incidental: the chunker itself has no resource
+        // branch, so even a headerless multi-packet reply stays notices.
+        let entries: Vec<String> = (0..40)
+            .map(|index| format!("entry-{index:03}-{}", "z".repeat(20)))
+            .collect();
+        let mut out = Vec::new();
+        core.push_notice_entries(LINK_A, NoticeHeader::None, &entries, ", ", None, &mut out);
+        assert!(out.len() > 1);
+        assert!(resource_sends(&out).is_empty());
+    }
+
+    #[test]
+    fn outbound_resource_ceiling_falls_back_to_chunking() {
+        let greeting = "g".repeat(2048);
+        let mut core = greeting_core(
+            &greeting,
+            ChannelHubConfig {
+                max_outbound_resource_bytes: 1024,
+                ..ChannelHubConfig::default()
+            },
+        );
+        let out = welcomed_capable_session(&mut core, LINK_A, ID_A, "nomad");
+
+        // Past the ceiling the client's 30s expectation TTL is the binding
+        // constraint; chunking always lands where a slow transfer is dropped.
+        assert!(resource_sends(&out).is_empty());
+        let chunks = notice_texts(&out);
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.concat(), greeting);
+        assert!(
+            core.sessions[&LINK_A].outbound_resource.is_none(),
+            "a refused start must not hold the slot"
+        );
+    }
+
+    #[test]
+    fn outbound_resources_serialize_per_link() {
+        let greeting = "g".repeat(900);
+        let mut core = greeting_core(&greeting, ChannelHubConfig::default());
+        let out = welcomed_capable_session(&mut core, LINK_A, ID_A, "nomad");
+        assert_eq!(resource_sends(&out).len(), 1);
+        core.on_resource_started(LINK_A, Some([0x09; 32]));
+
+        // Both reference clients bind an arriving resource to a pending
+        // expectation by size alone, so a second live transfer would
+        // cross-match. It falls back to chunking rather than advertising.
+        let mut out = Vec::new();
+        core.push_greeting(LINK_A, &greeting, &mut out);
+        assert!(resource_sends(&out).is_empty());
+        assert_eq!(notice_texts(&out).concat(), greeting);
+
+        // Another transfer's conclusion must not free this slot.
+        core.on_outbound_resource_concluded(LINK_A, [0x22; 32]);
+        assert!(core.sessions[&LINK_A].outbound_resource.is_some());
+
+        core.on_outbound_resource_concluded(LINK_A, [0x09; 32]);
+        assert!(core.sessions[&LINK_A].outbound_resource.is_none());
+        let mut out = Vec::new();
+        core.push_greeting(LINK_A, &greeting, &mut out);
+        assert_eq!(resource_sends(&out).len(), 1);
+    }
+
+    #[test]
+    fn outbound_start_failure_releases_the_slot() {
+        let greeting = "g".repeat(900);
+        let mut core = greeting_core(&greeting, ChannelHubConfig::default());
+        let out = welcomed_capable_session(&mut core, LINK_A, ID_A, "nomad");
+        assert_eq!(resource_sends(&out).len(), 1);
+        assert!(core.sessions[&LINK_A].outbound_resource.is_some());
+
+        // The shell reports a failed advertisement or start as `None`, which
+        // releases the slot on the same pass rather than after the sweep.
+        core.on_resource_started(LINK_A, None);
+        assert!(core.sessions[&LINK_A].outbound_resource.is_none());
+        let mut out = Vec::new();
+        core.push_greeting(LINK_A, &greeting, &mut out);
+        assert_eq!(resource_sends(&out).len(), 1);
+    }
+
+    #[test]
+    fn resource_cycle_times_out_a_wedged_outbound_transfer() {
+        let greeting = "g".repeat(900);
+        let mut core = greeting_core(&greeting, ChannelHubConfig::default());
+        welcomed_capable_session(&mut core, LINK_A, ID_A, "nomad");
+        core.on_resource_started(LINK_A, Some([0x07; 32]));
+
+        let now = Instant::now();
+        core.resource_cycle(now);
+        assert!(
+            core.sessions[&LINK_A].outbound_resource.is_some(),
+            "a transfer still inside the window keeps its slot"
+        );
+        core.resource_cycle(now + OUTBOUND_RESOURCE_TIMEOUT + Duration::from_secs(1));
+        assert!(core.sessions[&LINK_A].outbound_resource.is_none());
+    }
+
+    #[test]
+    fn disabling_resource_send_withdraws_the_capability_and_chunks() {
+        assert!(
+            !ChannelHubConfig::default().resource_accept_enabled,
+            "inbound acceptance stays off by default"
+        );
+        let greeting = "g".repeat(900);
+        let mut core = greeting_core(
+            &greeting,
+            ChannelHubConfig {
+                resource_send_enabled: false,
+                ..ChannelHubConfig::default()
+            },
+        );
+        let out = welcomed_capable_session(&mut core, LINK_A, ID_A, "nomad");
+
+        let welcome = first_envelope(&out);
+        assert_eq!(welcome.message_type, rrc::MessageType::Welcome);
+        assert_eq!(
+            rrc::parse_welcome(welcome)
+                .capabilities
+                .get(&rrc::CAP_RESOURCE_ENVELOPE),
+            None,
+            "the advertisement follows the send flag"
+        );
+        assert!(resource_sends(&out).is_empty());
+        assert_eq!(notice_texts(&out).concat(), greeting);
     }
 }

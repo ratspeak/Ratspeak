@@ -23,6 +23,12 @@ pub struct ChannelHubConfigArgs {
     pub greeting: Option<String>,
     #[serde(default)]
     pub announce_interval_secs: Option<u64>,
+    /// Send oversized greetings as a resource, and advertise the capability.
+    #[serde(default)]
+    pub resource_send: Option<bool>,
+    /// Accept inbound resource notices. Off by default.
+    #[serde(default)]
+    pub resource_accept: Option<bool>,
 }
 
 fn current_snapshot(state: &State<'_, Arc<AppState>>) -> ChannelHubSnapshot {
@@ -111,6 +117,14 @@ pub async fn channel_hub_set_config(
             interval.to_string(),
         )
         .await?;
+    }
+    for (key, value) in [
+        ("channel_hub_resource_send", args.resource_send),
+        ("channel_hub_resource_accept", args.resource_accept),
+    ] {
+        if let Some(enabled) = value {
+            persist_setting(&state, key, if enabled { "1" } else { "0" }.to_string()).await?;
+        }
     }
     if !restart_running_hub(&state).await {
         return Err(AppError::service_unavailable(

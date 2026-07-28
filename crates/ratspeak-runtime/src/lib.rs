@@ -911,6 +911,12 @@ fn channel_hub_config_from_settings(db: &db::DbPool) -> channel_hub::ChannelHubC
     {
         config.announce_interval_secs = interval;
     }
+    if let Some(enabled) = db::get_setting(db, "channel_hub_resource_send") {
+        config.resource_send_enabled = enabled.trim() == "1";
+    }
+    if let Some(enabled) = db::get_setting(db, "channel_hub_resource_accept") {
+        config.resource_accept_enabled = enabled.trim() == "1";
+    }
     config
 }
 
