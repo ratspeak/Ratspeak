@@ -15,19 +15,27 @@
 //! command replies are parsed per packet by the reference clients, so a
 //! resource-delivered one is silently ignored.
 //!
+//! Inbound resources are off by default and, when enabled, accept exactly one
+//! thing: an announced `notice` payload for a room the sender may already
+//! relay into. It passes the same gates a packet would, is never dispatched as
+//! a command, and its size is checked three times — at the envelope, at the
+//! accept closure, and against the bytes actually delivered.
+//!
 //! Protocol behavior follows the reference daemon (kc1awv/rrcd 0.3.2) except
 //! where the fix registry records a deliberate deviation (idempotent re-HELLO
 //! is one: a duplicate HELLO re-welcomes without wiping room membership).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use ciborium::value::Value;
 use rns_identity::identity::Identity;
-use rns_link::link::CloseReason;
+use rns_link::link::{CloseReason, ResourceStrategy};
+use rns_protocol::resource_adv::ResourceAdvertisement;
 use rns_runtime::destination_runtime::{
-    DestinationRuntimeOptions, IdentityGatePolicy, RegisteredDestination,
+    DestinationRuntimeOptions, IdentityGatePolicy, RegisteredDestination, ResourceAcceptPolicy,
 };
 use rns_runtime::lifecycle::ShutdownSignal;
 use rns_runtime::link_manager::{
@@ -58,6 +66,18 @@ const LINK_PACKET_BUDGET: usize = rns_wire::constants::LINK_MDU;
 /// transfer the peer has already given up on cannot hold the slot.
 const OUTBOUND_RESOURCE_TIMEOUT: Duration = Duration::from_secs(40);
 const RESOURCE_CYCLE_INTERVAL_SECS: u64 = 10;
+/// How long an announced inbound payload stays claimable (reference parity).
+const RESOURCE_EXPECTATION_TTL: Duration = Duration::from_secs(30);
+/// Advertisements one link may have outstanding at once (reference parity).
+const MAX_PENDING_EXPECTATIONS: usize = 8;
+/// Concurrent inbound transfers per link. Each one costs reassembly memory
+/// bounded by `max_resource_notice_bytes`, so this is the amplification cap.
+const MAX_INBOUND_RESOURCES_PER_LINK: usize = 4;
+/// Backstop for an inbound transfer that never concludes on either channel.
+const INBOUND_RESOURCE_TIMEOUT: Duration = Duration::from_secs(300);
+/// The only inbound resource kind we accept. The reference also takes `motd`
+/// and `blob`, then discards both: amplification with no interop value.
+const RES_KIND_NOTICE: &str = "notice";
 const HUB_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const DEFAULT_HUB_NAME: &str = "Ratspeak hub";
@@ -88,6 +108,10 @@ pub struct ChannelHubConfig {
     /// expire the expectation 30s after the advertisement, so a payload that
     /// cannot conclude inside that window is better chunked than advertised.
     pub max_outbound_resource_bytes: usize,
+    /// Inbound ceiling for a resource-delivered NOTICE. A capable client can
+    /// inject this much text into a room, fanned to every member, so the
+    /// amplification grows linearly with room size if it is raised.
+    pub max_resource_notice_bytes: usize,
     /// Absolute protocol ceiling for a resource in either direction.
     pub max_resource_bytes: u64,
     /// Server operators (implicit ops in every room). The hosting identity is
@@ -121,6 +145,7 @@ impl Default for ChannelHubConfig {
             resource_send_enabled: true,
             resource_accept_enabled: false,
             max_outbound_resource_bytes: 16 * 1024,
+            max_resource_notice_bytes: 4096,
             max_resource_bytes: 256 * 1024,
             server_operators: Vec::new(),
             banned_identities: Vec::new(),
@@ -146,6 +171,9 @@ struct HubStats {
     duplicates: u64,
     pings_out: u64,
     pongs_in: u64,
+    /// Inbound resource payloads that survived every gate and fanned out.
+    resources_received: u64,
+    resource_bytes_received: u64,
     /// Envelopes the shell could not send. Should stay zero; a nonzero value
     /// means a producer escaped the budget helpers.
     oversize: u64,
@@ -324,6 +352,251 @@ impl RateBucket {
         } else {
             false
         }
+    }
+}
+
+/// A payload a link has announced but not yet delivered.
+#[derive(Clone)]
+struct InboundExpectation {
+    id: [u8; 8],
+    /// The announced byte count. A claim, not evidence: it buys a
+    /// matching-size transfer slot and nothing more.
+    size: usize,
+    sha256: Option<[u8; 32]>,
+    encoding: Option<String>,
+    /// Normalized room the payload will be relayed into.
+    room: String,
+    created_at: Instant,
+}
+
+#[derive(Default)]
+struct AdmissionState {
+    enabled: bool,
+    max_bytes: usize,
+    expectations: HashMap<[u8; 16], Vec<InboundExpectation>>,
+    /// Admitted transfers per link, timestamped so a wedged one is swept.
+    live: HashMap<[u8; 16], HashMap<[u8; 32], Instant>>,
+}
+
+impl AdmissionState {
+    fn prune(&mut self, now: Instant) {
+        self.expectations.retain(|_, pending| {
+            pending.retain(|exp| now.duration_since(exp.created_at) <= RESOURCE_EXPECTATION_TTL);
+            !pending.is_empty()
+        });
+        self.live.retain(|_, live| {
+            live.retain(|_, started| now.duration_since(*started) <= INBOUND_RESOURCE_TIMEOUT);
+            !live.is_empty()
+        });
+    }
+}
+
+/// Inbound resource gate, shared with the LinkManager task.
+///
+/// `admit` is called synchronously inside that task for every advertisement,
+/// so each method takes the lock for a couple of lookups and one insert and
+/// releases it; nothing here is ever held across an await. A poisoned lock
+/// fails closed — rejecting is always the safe answer.
+pub(crate) struct ResourceAdmission {
+    state: RwLock<AdmissionState>,
+    /// The closure cannot reach `HubStats`, so the counter lives here and
+    /// `/stats` reads it.
+    rejected: AtomicU64,
+}
+
+impl ResourceAdmission {
+    fn new(enabled: bool, max_bytes: usize) -> Self {
+        Self {
+            state: RwLock::new(AdmissionState {
+                enabled,
+                max_bytes,
+                ..AdmissionState::default()
+            }),
+            rejected: AtomicU64::new(0),
+        }
+    }
+
+    /// Record an announced payload. False means the link's pending budget is
+    /// full, which the caller answers with the reference ERROR.
+    fn expect(&self, link_id: [u8; 16], expectation: InboundExpectation) -> bool {
+        let Ok(mut state) = self.state.write() else {
+            return false;
+        };
+        let now = expectation.created_at;
+        state.prune(now);
+        let pending = state.expectations.entry(link_id).or_default();
+        // A repeat announcement of the same id refreshes rather than stacks,
+        // so a retrying client cannot exhaust its own budget.
+        if let Some(existing) = pending.iter_mut().find(|exp| exp.id == expectation.id) {
+            *existing = expectation;
+            return true;
+        }
+        if pending.len() >= MAX_PENDING_EXPECTATIONS {
+            return false;
+        }
+        pending.push(expectation);
+        true
+    }
+
+    /// The LinkManager-side gate. Order is load-bearing: every cheap structural
+    /// refusal runs before the expectation lookup, and the live-set check runs
+    /// last so a re-advertisement of an in-flight transfer is never a new slot.
+    fn admit(&self, link_id: [u8; 16], adv: &ResourceAdvertisement) -> bool {
+        let admitted = self.admit_inner(link_id, adv);
+        if !admitted {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
+        }
+        admitted
+    }
+
+    fn admit_inner(&self, link_id: [u8; 16], adv: &ResourceAdvertisement) -> bool {
+        let Ok(mut state) = self.state.write() else {
+            return false;
+        };
+        if !state.enabled {
+            return false;
+        }
+        // A split transfer announces one segment at a time, so no segment's
+        // size matches the announced payload and reassembly is not bounded by
+        // our per-advertisement cap.
+        if adv.total_segments > 1 || adv.flags.split {
+            return false;
+        }
+        // `total_size = data_size + metadata_size`: a metadata prefix shifts
+        // the byte count the expectation matches on, and we never ask for any.
+        if adv.flags.has_metadata || adv.metadata_size > 0 {
+            return false;
+        }
+        if adv.data_size == 0 || adv.data_size > state.max_bytes {
+            return false;
+        }
+        let now = Instant::now();
+        // Consulted per segment: an already-admitted transfer stays admitted
+        // even once its expectation has aged out.
+        if state
+            .live
+            .get(&link_id)
+            .is_some_and(|live| live.contains_key(&adv.resource_hash))
+        {
+            return true;
+        }
+        state.prune(now);
+        let announced = state
+            .expectations
+            .get(&link_id)
+            .is_some_and(|pending| pending.iter().any(|exp| exp.size == adv.data_size));
+        if !announced {
+            return false;
+        }
+        let live = state.live.entry(link_id).or_default();
+        if live.len() >= MAX_INBOUND_RESOURCES_PER_LINK {
+            return false;
+        }
+        live.insert(adv.resource_hash, now);
+        true
+    }
+
+    /// Claim the expectation a delivered payload satisfies. Matching is by
+    /// real byte count and, when one was announced, real digest.
+    fn take_matching(
+        &self,
+        link_id: [u8; 16],
+        size: usize,
+        digest: [u8; 32],
+    ) -> Option<InboundExpectation> {
+        let mut state = self.state.write().ok()?;
+        state.prune(Instant::now());
+        let pending = state.expectations.get_mut(&link_id)?;
+        let index = pending
+            .iter()
+            .position(|exp| exp.size == size && exp.sha256.is_none_or(|want| want == digest))?;
+        Some(pending.remove(index))
+    }
+
+    /// Release a live slot. Idempotent: both conclusion channels call it.
+    fn retire(&self, link_id: [u8; 16], resource_hash: [u8; 32]) {
+        let Ok(mut state) = self.state.write() else {
+            return;
+        };
+        let emptied = match state.live.get_mut(&link_id) {
+            Some(live) => {
+                live.remove(&resource_hash);
+                live.is_empty()
+            }
+            None => false,
+        };
+        if emptied {
+            state.live.remove(&link_id);
+        }
+    }
+
+    fn forget_link(&self, link_id: [u8; 16]) {
+        if let Ok(mut state) = self.state.write() {
+            state.expectations.remove(&link_id);
+            state.live.remove(&link_id);
+        }
+    }
+
+    fn sweep(&self, now: Instant) {
+        if let Ok(mut state) = self.state.write() {
+            state.prune(now);
+        }
+    }
+
+    fn note_rejected(&self) {
+        self.rejected.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn rejected(&self) -> u64 {
+        self.rejected.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn pending_count(&self, link_id: [u8; 16]) -> usize {
+        self.state
+            .read()
+            .map(|state| {
+                state
+                    .expectations
+                    .get(&link_id)
+                    .map_or(0, |pending| pending.len())
+            })
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    fn live_count(&self, link_id: [u8; 16]) -> usize {
+        self.state
+            .read()
+            .map(|state| state.live.get(&link_id).map_or(0, HashMap::len))
+            .unwrap_or(0)
+    }
+}
+
+/// Effective inbound ceiling: the notice cap, never above the absolute
+/// protocol ceiling.
+fn inbound_resource_cap(config: &ChannelHubConfig) -> usize {
+    config
+        .max_resource_notice_bytes
+        .min(usize::try_from(config.max_resource_bytes).unwrap_or(usize::MAX))
+}
+
+/// Reference ERROR text for a rejected advertisement body. Our codec folds the
+/// reference's per-field checks into typed errors; this unfolds them again so
+/// a client sees the same string it would from rrcd.
+fn resource_envelope_error(error: &rrc::ProtocolError) -> &'static str {
+    match error {
+        rrc::ProtocolError::MissingField(rrc::RESOURCE_ID)
+        | rrc::ProtocolError::InvalidField(rrc::RESOURCE_ID) => "resource envelope missing id",
+        rrc::ProtocolError::MissingField(rrc::RESOURCE_KIND)
+        | rrc::ProtocolError::InvalidField(rrc::RESOURCE_KIND) => "resource envelope missing kind",
+        rrc::ProtocolError::MissingField(rrc::RESOURCE_SIZE)
+        | rrc::ProtocolError::InvalidField(rrc::RESOURCE_SIZE) => "resource envelope invalid size",
+        rrc::ProtocolError::MissingField(rrc::RESOURCE_SHA256)
+        | rrc::ProtocolError::InvalidField(rrc::RESOURCE_SHA256) => {
+            "resource envelope invalid sha256"
+        }
+        _ => "invalid resource envelope body",
     }
 }
 
@@ -518,6 +791,8 @@ pub(crate) struct HubCore {
     /// Server operators are implicit ops in every room.
     server_ops: HashSet<[u8; 16]>,
     klines: Arc<RwLock<HashSet<[u8; 16]>>>,
+    /// Shared with the LinkManager's accept closure; see `ResourceAdmission`.
+    admission: Arc<ResourceAdmission>,
     /// Verify-only material for room join keys; never persisted.
     pepper: Zeroizing<[u8; 32]>,
     pepper_id: [u8; 8],
@@ -534,6 +809,7 @@ impl HubCore {
         config: ChannelHubConfig,
         hub_hash: [u8; 16],
         klines: Arc<RwLock<HashSet<[u8; 16]>>>,
+        admission: Arc<ResourceAdmission>,
         pepper: Zeroizing<[u8; 32]>,
         restored: Vec<db::HubRoomRow>,
     ) -> Self {
@@ -551,6 +827,7 @@ impl HubCore {
             by_identity: HashMap::new(),
             server_ops,
             klines,
+            admission,
             pepper,
             pepper_id,
             started_wall: now_unix(),
@@ -1197,6 +1474,240 @@ impl HubCore {
                 session.outbound_resource = None;
             }
         }
+        self.admission.sweep(now);
+    }
+
+    fn inbound_resource_cap(&self) -> usize {
+        inbound_resource_cap(&self.config)
+    }
+
+    /// Inbound RESOURCE_ENVELOPE: the announce half of announce-then-transfer.
+    /// Everything in it is attacker input, so the announced size only buys a
+    /// matching-size transfer slot; the delivered bytes are re-checked in full.
+    fn on_resource_envelope(
+        &mut self,
+        link_id: [u8; 16],
+        envelope: rrc::Envelope,
+        out: &mut Vec<HubSend>,
+    ) {
+        let raw_room = envelope.room.clone();
+        let raw = raw_room.as_deref();
+        if !self.config.resource_accept_enabled {
+            self.admission.note_rejected();
+            out.push(self.hub_error_echo(link_id, "resource transfer disabled", raw));
+            return;
+        }
+        let Some(identity) = self.session_identity(link_id) else {
+            return;
+        };
+        let body = match rrc::parse_resource_envelope(&envelope) {
+            Ok(body) => body,
+            Err(error) => {
+                self.admission.note_rejected();
+                out.push(self.hub_error_echo(link_id, resource_envelope_error(&error), raw));
+                return;
+            }
+        };
+        if body.kind != RES_KIND_NOTICE {
+            self.admission.note_rejected();
+            out.push(self.hub_error_echo(link_id, "unsupported resource kind", raw));
+            return;
+        }
+        let cap = self.inbound_resource_cap();
+        if body.size > cap as u64 {
+            self.admission.note_rejected();
+            out.push(self.hub_error_echo(
+                link_id,
+                &format!("resource too large: {} > {cap}", body.size),
+                raw,
+            ));
+            return;
+        }
+        // A roomless notice has nowhere to fan out, so accepting the transfer
+        // would be pure amplification.
+        let Some(room_raw) = raw.filter(|room| !room.is_empty()) else {
+            self.admission.note_rejected();
+            out.push(self.hub_error_echo(link_id, "notice resource requires room name", None));
+            return;
+        };
+        let room_name = match self.norm_room(room_raw) {
+            Ok(room_name) => room_name,
+            Err(reason) => {
+                self.admission.note_rejected();
+                out.push(self.hub_error_echo(link_id, &reason, raw));
+                return;
+            }
+        };
+        // Gate before the transfer as well as after it: a peer who could not
+        // relay this as a packet does not get to spend the link on it first.
+        if !self.relay_gate(link_id, identity, &room_name, out) {
+            self.admission.note_rejected();
+            return;
+        }
+        let expectation = InboundExpectation {
+            id: body.id,
+            size: body.size as usize,
+            sha256: body.sha256,
+            encoding: body.encoding,
+            room: room_name,
+            created_at: Instant::now(),
+        };
+        if !self.admission.expect(link_id, expectation) {
+            self.admission.note_rejected();
+            out.push(self.hub_error_echo(link_id, "too many pending resource expectations", raw));
+        }
+    }
+
+    /// A delivered inbound payload. The size cap is enforced here for the third
+    /// time — envelope, accept closure, and now the bytes actually in hand,
+    /// which are the only ones that were ever evidence.
+    pub(crate) fn on_resource_completed(
+        &mut self,
+        link_id: [u8; 16],
+        resource_hash: [u8; 32],
+        data: Vec<u8>,
+        has_metadata: bool,
+        out: &mut Vec<HubSend>,
+    ) {
+        // Retire first and unconditionally: `resource_completions` and
+        // `resource_events` are independent bounded channels, so either may be
+        // the only one that arrives.
+        self.admission.retire(link_id, resource_hash);
+        if !self.config.resource_accept_enabled {
+            return;
+        }
+        let Some(identity) = self.session_identity(link_id) else {
+            return;
+        };
+        if has_metadata || data.is_empty() || data.len() > self.inbound_resource_cap() {
+            self.admission.note_rejected();
+            return;
+        }
+        let digest = rns_crypto::sha::sha256(&data);
+        let Some(expectation) = self.admission.take_matching(link_id, data.len(), digest) else {
+            // No expectation matches these real bytes: an unannounced payload,
+            // a size that did not hold up, or a digest that did not.
+            self.admission.note_rejected();
+            return;
+        };
+        // Nothing here transcodes; an encoding we cannot read is refused
+        // rather than guessed at.
+        let readable = expectation
+            .encoding
+            .as_deref()
+            .is_none_or(|encoding| encoding.eq_ignore_ascii_case("utf-8"));
+        let Some(text) = readable.then(|| String::from_utf8(data).ok()).flatten() else {
+            self.admission.note_rejected();
+            return;
+        };
+        // A 4 KiB `/kick` is exactly what must not happen: command dispatch is
+        // a packet path, and a resource never reaches it.
+        if text.trim_start().starts_with('/') {
+            self.admission.note_rejected();
+            out.push(self.hub_error_echo(
+                link_id,
+                "commands must be sent as a message, not a resource",
+                Some(&expectation.room),
+            ));
+            return;
+        }
+        // Re-gate: the advertisement may be seconds old, and a ban or `+m` set
+        // in the meantime has to win.
+        if !self.relay_gate(link_id, identity, &expectation.room, out) {
+            self.admission.note_rejected();
+            return;
+        }
+        self.fan_out_resource_notice(link_id, identity, &expectation.room, &text, out);
+    }
+
+    /// Release the slot a concluded inbound transfer held. Idempotent with the
+    /// completion path.
+    pub(crate) fn on_inbound_resource_concluded(
+        &mut self,
+        link_id: [u8; 16],
+        resource_hash: [u8; 32],
+    ) {
+        self.admission.retire(link_id, resource_hash);
+    }
+
+    /// Text bytes that fit one NOTICE packet relayed as `source` into `room`.
+    fn relayed_notice_budget(
+        &self,
+        source: [u8; 16],
+        room_name: &str,
+        nickname: Option<&str>,
+    ) -> usize {
+        let mut probe = rrc::Envelope::new(rrc::MessageType::Notice, source);
+        probe.room = Some(room_name.to_string());
+        probe.nickname = nickname.map(str::to_string);
+        probe.body = Some(Value::Text(String::new()));
+        let overhead = rrc::encode(&probe)
+            .map(|bytes| bytes.len())
+            .unwrap_or(LINK_PACKET_BUDGET);
+        LINK_PACKET_BUDGET
+            .saturating_sub(overhead)
+            .saturating_sub(CBOR_TEXT_HEADER_SLACK)
+    }
+
+    /// Fan a resource-delivered notice into the room as ordinary packets, split
+    /// to the link budget. The sender is echoed, exactly like packet relay.
+    fn fan_out_resource_notice(
+        &mut self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        room_name: &str,
+        text: &str,
+        out: &mut Vec<HubSend>,
+    ) {
+        let mut nickname = self
+            .sessions
+            .get(&link_id)
+            .and_then(|session| session.nickname.clone())
+            .and_then(|nickname| {
+                rrc::normalize_nickname(&nickname, self.config.max_nick_bytes).ok()
+            });
+        let mut budget = self.relayed_notice_budget(identity, room_name, nickname.as_deref());
+        if budget < MIN_NOTICE_BODY_BYTES && nickname.is_some() {
+            // Same trade as packet relay: both clients cache nicks by source,
+            // so the hint is what gets dropped, never the text.
+            nickname = None;
+            budget = self.relayed_notice_budget(identity, room_name, None);
+        }
+        let chunks = chunk_text(text, budget.max(MIN_NOTICE_BODY_BYTES));
+
+        // One token per relayed chunk, on top of the one the envelope packet
+        // already cost. The reference bypasses the bucket for payloads
+        // entirely, which makes a resource the cheapest way to flood a room.
+        let now = Instant::now();
+        let mut allowed = true;
+        for _ in 0..chunks.len() {
+            allowed &= self.note_packet(link_id, now);
+        }
+        if !allowed {
+            self.stats.rate_limited += 1;
+            out.push(self.hub_error_echo(link_id, "rate limited", Some(room_name)));
+            return;
+        }
+
+        let Some(room) = self.rooms.get(room_name) else {
+            return;
+        };
+        let members: Vec<[u8; 16]> = room.members.iter().copied().collect();
+        self.stats.notices_forwarded += 1;
+        self.stats.resources_received += 1;
+        self.stats.resource_bytes_received += text.len() as u64;
+        for chunk in chunks {
+            let mut notice = rrc::Envelope::new(rrc::MessageType::Notice, identity);
+            notice.room = Some(room_name.to_string());
+            notice.nickname = nickname.clone();
+            notice.body = Some(Value::Text(chunk));
+            for member in &members {
+                out.push(HubSend::Envelope {
+                    link_id: *member,
+                    envelope: notice.clone(),
+                });
+            }
+        }
     }
 
     fn hub_notice(&self, link_id: [u8; 16], text: &str, room: Option<&str>) -> HubSend {
@@ -1211,6 +1722,24 @@ impl HubCore {
         envelope.room = room.map(str::to_string);
         envelope.body = Some(Value::Text(text.to_string()));
         HubSend::Envelope { link_id, envelope }
+    }
+
+    /// An ERROR echoing a room name that came straight off the wire. The echo
+    /// lets the client scope the message, but the room is attacker-sized, so
+    /// drop it rather than hand the shell a packet it must discard.
+    fn hub_error_echo(&self, link_id: [u8; 16], text: &str, room: Option<&str>) -> HubSend {
+        let send = self.hub_error(link_id, text, room);
+        let fits = match &send {
+            HubSend::Envelope { envelope, .. } => {
+                rrc::encode(envelope).is_ok_and(|bytes| bytes.len() <= LINK_PACKET_BUDGET)
+            }
+            _ => false,
+        };
+        if fits {
+            send
+        } else {
+            self.hub_error(link_id, text, None)
+        }
     }
 
     pub(crate) fn on_link_established(&mut self, link_id: [u8; 16], now: Instant) {
@@ -1238,6 +1767,7 @@ impl HubCore {
             out.push(self.hub_error(link_id, "banned", None));
             out.push(HubSend::Close { link_id });
             self.sessions.remove(&link_id);
+            self.admission.forget_link(link_id);
             return;
         }
         let per_minute = self.config.rate_messages_per_minute;
@@ -1265,6 +1795,9 @@ impl HubCore {
     }
 
     pub(crate) fn on_link_closed(&mut self, link_id: [u8; 16], out: &mut Vec<HubSend>) {
+        // Expectations and live slots die with the link, whether or not it ever
+        // carried a session: nothing about them survives a reconnect.
+        self.admission.forget_link(link_id);
         let Some(session) = self.sessions.remove(&link_id) else {
             return;
         };
@@ -1376,8 +1909,11 @@ impl HubCore {
             rrc::MessageType::Message | rrc::MessageType::Notice | rrc::MessageType::Action => {
                 self.on_relay(link_id, envelope, out)
             }
-            // Resource envelopes land in a later phase; unknown types stay
-            // silently forward-compatible.
+            // Deliberately after the welcome guard: the reference dispatches
+            // type 50 ahead of it, which lets an unwelcomed peer register
+            // expectations and start transfers.
+            rrc::MessageType::ResourceEnvelope => self.on_resource_envelope(link_id, envelope, out),
+            // Unknown types stay silently forward-compatible.
             _ => {}
         }
     }
@@ -1627,6 +2163,47 @@ impl HubCore {
             .and_then(|session| session.identity)
     }
 
+    /// Reference gate order for anything relayed into a room, shared by packet
+    /// relay and by a resource-delivered notice. False means the caller must
+    /// stop; the ERROR is already queued.
+    ///
+    /// The order is wire behavior, not style: `+n` is checked *only* on the
+    /// non-member branch and nested inside the room lookup, so a non-member
+    /// naming a room that does not exist gets `no such room` rather than `+n`.
+    fn relay_gate(
+        &self,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        room_name: &str,
+        out: &mut Vec<HubSend>,
+    ) -> bool {
+        let is_member = self
+            .sessions
+            .get(&link_id)
+            .is_some_and(|session| session.rooms.contains(room_name));
+        if !is_member {
+            let Some(room) = self.rooms.get(room_name) else {
+                out.push(self.hub_error(link_id, "no such room", Some(room_name)));
+                return false;
+            };
+            if room.no_outside_msgs {
+                out.push(self.hub_error(link_id, "no outside messages (+n)", Some(room_name)));
+                return false;
+            }
+        }
+        if let Some(room) = self.rooms.get(room_name) {
+            if room.bans.contains(&identity) {
+                out.push(self.hub_error(link_id, "banned from room", Some(room_name)));
+                return false;
+            }
+            if room.moderated && !self.is_voiced(room, identity) {
+                out.push(self.hub_error(link_id, "room is moderated (+m)", Some(room_name)));
+                return false;
+            }
+        }
+        true
+    }
+
     /// MSG/NOTICE/ACTION relay: slash interception first, then the reference
     /// gate order, then in-place source/room/nick rewrite and member fan-out
     /// (sender included, envelope id and timestamp preserved).
@@ -1688,29 +2265,8 @@ impl HubCore {
             }
         };
 
-        let is_member = self
-            .sessions
-            .get(&link_id)
-            .is_some_and(|session| session.rooms.contains(&room_name));
-        if !is_member {
-            let Some(room) = self.rooms.get(&room_name) else {
-                out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
-                return;
-            };
-            if room.no_outside_msgs {
-                out.push(self.hub_error(link_id, "no outside messages (+n)", Some(&room_name)));
-                return;
-            }
-        }
-        if let Some(room) = self.rooms.get(&room_name) {
-            if room.bans.contains(&identity) {
-                out.push(self.hub_error(link_id, "banned from room", Some(&room_name)));
-                return;
-            }
-            if room.moderated && !self.is_voiced(room, identity) {
-                out.push(self.hub_error(link_id, "room is moderated (+m)", Some(&room_name)));
-                return;
-            }
+        if !self.relay_gate(link_id, identity, &room_name, out) {
+            return;
         }
 
         envelope.source = identity;
@@ -2898,6 +3454,12 @@ impl HubCore {
                 self.stats.duplicates,
                 self.stats.oversize
             ),
+            format!(
+                "resources: in={} bytes={} rejected={}",
+                self.stats.resources_received,
+                self.stats.resource_bytes_received,
+                self.admission.rejected()
+            ),
             format!("klines: {klines}"),
         ]
         .to_vec();
@@ -3119,6 +3681,11 @@ impl ChannelHubHandle {
         }));
         let klines: Arc<RwLock<HashSet<[u8; 16]>>> = Arc::new(RwLock::new(seeded));
         let gate_klines = klines.clone();
+        let admission = Arc::new(ResourceAdmission::new(
+            config.resource_accept_enabled,
+            inbound_resource_cap(&config),
+        ));
+        let gate_admission = admission.clone();
         let options = DestinationRuntimeOptions {
             accepts_links: true,
             default_app_data: Some(hub_announce_app_data(&config.hub_name)),
@@ -3127,6 +3694,17 @@ impl ChannelHubHandle {
                     .read()
                     .map(|klines| !klines.contains(&identity))
                     .unwrap_or(true)
+            })),
+            // Both halves are required to accept anything: `AcceptApp` without
+            // a policy rejects every advertisement, and a policy is never
+            // consulted under `AcceptNone`. Off means off at the strategy.
+            resource_strategy: if config.resource_accept_enabled {
+                ResourceStrategy::AcceptApp
+            } else {
+                ResourceStrategy::AcceptNone
+            },
+            resource_accept: Some(ResourceAcceptPolicy::new(move |link_id, advertisement| {
+                gate_admission.admit(link_id, advertisement)
             })),
             ..DestinationRuntimeOptions::default()
         };
@@ -3144,7 +3722,14 @@ impl ChannelHubHandle {
         let pepper = room_key_pepper(&hub_identity).ok_or_else(|| {
             ChannelHubError::Identity("hub identity has no private key".to_string())
         })?;
-        let core = HubCore::new(config.clone(), hub_identity.hash, klines, pepper, restored);
+        let core = HubCore::new(
+            config.clone(),
+            hub_identity.hash,
+            klines,
+            admission,
+            pepper,
+            restored,
+        );
         tokio::spawn(run_hub(
             registration,
             core,
@@ -3318,11 +3903,32 @@ async fn run_hub(
                 if let Some(LinkResourceEvent::Concluded {
                     link_id,
                     resource_id,
-                    direction: LinkResourceDirection::Outbound,
+                    direction,
                     ..
                 }) = event
                 {
-                    core.on_outbound_resource_concluded(link_id, resource_id);
+                    match direction {
+                        LinkResourceDirection::Outbound => {
+                            core.on_outbound_resource_concluded(link_id, resource_id)
+                        }
+                        // This and `resource_completions` are independent
+                        // bounded channels; both retire the slot, idempotently,
+                        // so a drop on either one cannot strand it.
+                        LinkResourceDirection::Inbound => {
+                            core.on_inbound_resource_concluded(link_id, resource_id)
+                        }
+                    }
+                }
+            }
+            completion = registration.events.resource_completions.recv() => {
+                if let Some(completion) = completion {
+                    core.on_resource_completed(
+                        completion.link_id,
+                        completion.resource_hash,
+                        completion.data,
+                        completion.metadata.is_some(),
+                        &mut out,
+                    );
                 }
             }
             _ = resource_tick.tick() => core.resource_cycle(Instant::now()),
@@ -3621,10 +4227,15 @@ mod tests {
         if !config.server_operators.contains(&ID_A) {
             config.server_operators.push(ID_A);
         }
+        let admission = Arc::new(ResourceAdmission::new(
+            config.resource_accept_enabled,
+            inbound_resource_cap(&config),
+        ));
         HubCore::new(
             config,
             [0x77; 16],
             Arc::new(RwLock::new(HashSet::new())),
+            admission,
             Zeroizing::new([0x5A; 32]),
             Vec::new(),
         )
@@ -4648,6 +5259,7 @@ mod tests {
             ChannelHubConfig::default(),
             [0x77; 16],
             Arc::new(RwLock::new(HashSet::new())),
+            Arc::new(ResourceAdmission::new(false, 4096)),
             Zeroizing::new([0x5A; 32]),
             vec![row, bad],
         );
@@ -5422,5 +6034,708 @@ mod tests {
         );
         assert!(resource_sends(&out).is_empty());
         assert_eq!(notice_texts(&out).concat(), greeting);
+    }
+
+    fn accepting_config() -> ChannelHubConfig {
+        ChannelHubConfig {
+            resource_accept_enabled: true,
+            ..ChannelHubConfig::default()
+        }
+    }
+
+    /// A RESOURCE_ENVELOPE shaped the way a client sends one.
+    fn resource_envelope(
+        id: [u8; 8],
+        kind: &str,
+        size: u64,
+        sha256: Option<[u8; 32]>,
+        room: Option<&str>,
+    ) -> rrc::Envelope {
+        let mut envelope = rrc::Envelope::new(rrc::MessageType::ResourceEnvelope, ID_B);
+        envelope.room = room.map(str::to_string);
+        envelope.body = Some(rrc::resource_envelope_body(&rrc::ResourceEnvelopeBody {
+            id,
+            kind: kind.to_string(),
+            size,
+            sha256,
+            encoding: None,
+        }));
+        envelope
+    }
+
+    /// Announce `payload` so a later completion has something to match.
+    fn announce(
+        core: &mut HubCore,
+        link_id: [u8; 16],
+        id: [u8; 8],
+        payload: &[u8],
+        room: &str,
+    ) -> Vec<HubSend> {
+        let mut out = Vec::new();
+        core.on_envelope(
+            link_id,
+            resource_envelope(
+                id,
+                "notice",
+                payload.len() as u64,
+                Some(rns_crypto::sha::sha256(payload)),
+                Some(room),
+            ),
+            &mut out,
+        );
+        out
+    }
+
+    /// A single-segment, metadata-free advertisement: the only shape we admit.
+    fn advertisement(size: usize, resource_hash: [u8; 32]) -> ResourceAdvertisement {
+        ResourceAdvertisement::new(
+            size + 64,
+            size,
+            1,
+            resource_hash,
+            vec![0u8; 4],
+            rns_protocol::resource::ResourceFlags::default(),
+            &[],
+            rns_wire::constants::LINK_MDU,
+        )
+    }
+
+    fn error_texts(out: &[HubSend], target: [u8; 16]) -> Vec<String> {
+        sends_to(out, target)
+            .into_iter()
+            .filter(|envelope| envelope.message_type == rrc::MessageType::Error)
+            .filter_map(|envelope| rrc::text_body(envelope).map(str::to_string))
+            .collect()
+    }
+
+    fn relayed_texts(out: &[HubSend], target: [u8; 16]) -> Vec<String> {
+        sends_to(out, target)
+            .into_iter()
+            .filter(|envelope| envelope.message_type == rrc::MessageType::Notice)
+            .filter_map(|envelope| rrc::text_body(envelope).map(str::to_string))
+            .collect()
+    }
+
+    /// Operator ID_A owns "lobby"; ID_B is a welcomed member of it.
+    fn resource_room(config: ChannelHubConfig) -> HubCore {
+        let mut core = core_with(config);
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+        core
+    }
+
+    #[test]
+    fn resource_envelope_requires_welcome() {
+        let (mut core, link_id) = identified_core(accepting_config());
+        let mut out = Vec::new();
+        core.on_envelope(
+            link_id,
+            resource_envelope([0x11; 8], "notice", 64, None, Some("lobby")),
+            &mut out,
+        );
+        // The reference dispatches type 50 ahead of its welcome guard, which
+        // lets an unwelcomed peer register expectations and start transfers.
+        assert_eq!(error_texts(&out, link_id), vec!["send HELLO first"]);
+        assert_eq!(core.admission.pending_count(link_id), 0);
+        assert!(
+            !core
+                .admission
+                .admit(link_id, &advertisement(64, [0x01; 32]))
+        );
+
+        // The same envelope after HELLO and a join registers.
+        let mut core = resource_room(accepting_config());
+        let out = announce(&mut core, LINK_B, [0x11; 8], &[0u8; 64], "lobby");
+        assert!(error_texts(&out, LINK_B).is_empty());
+        assert_eq!(core.admission.pending_count(LINK_B), 1);
+    }
+
+    #[test]
+    fn resource_envelope_validation_matches_reference_texts() {
+        let mut off = resource_room(ChannelHubConfig::default());
+        let mut out = Vec::new();
+        off.on_envelope(
+            LINK_B,
+            resource_envelope([0x01; 8], "notice", 64, None, Some("Lobby")),
+            &mut out,
+        );
+        assert_eq!(
+            error_texts(&out, LINK_B),
+            vec!["resource transfer disabled"]
+        );
+        // The raw room rides back so the client can scope the message.
+        assert_eq!(sends_to(&out, LINK_B)[0].room.as_deref(), Some("Lobby"));
+        assert_eq!(off.admission.pending_count(LINK_B), 0);
+
+        let mut core = resource_room(accepting_config());
+        let refuse = |core: &mut HubCore, envelope: rrc::Envelope| -> String {
+            let mut out = Vec::new();
+            core.on_envelope(LINK_B, envelope, &mut out);
+            let texts = error_texts(&out, LINK_B);
+            assert_eq!(texts.len(), 1, "exactly one refusal");
+            assert_eq!(core.admission.pending_count(LINK_B), 0);
+            texts.into_iter().next().unwrap()
+        };
+
+        let mut not_a_map = rrc::Envelope::new(rrc::MessageType::ResourceEnvelope, ID_B);
+        not_a_map.room = Some("lobby".into());
+        not_a_map.body = Some(Value::Text("nope".into()));
+        assert_eq!(
+            refuse(&mut core, not_a_map),
+            "invalid resource envelope body"
+        );
+
+        let field = |fields: Vec<(u64, Value)>| {
+            let mut envelope = rrc::Envelope::new(rrc::MessageType::ResourceEnvelope, ID_B);
+            envelope.room = Some("lobby".into());
+            envelope.body = Some(rrc::integer_map(fields));
+            envelope
+        };
+        assert_eq!(
+            refuse(
+                &mut core,
+                field(vec![
+                    (rrc::RESOURCE_KIND, Value::Text("notice".into())),
+                    (rrc::RESOURCE_SIZE, Value::Integer(64.into())),
+                ])
+            ),
+            "resource envelope missing id"
+        );
+        assert_eq!(
+            refuse(
+                &mut core,
+                field(vec![
+                    (rrc::RESOURCE_ID, Value::Bytes(vec![0x02; 8])),
+                    (rrc::RESOURCE_SIZE, Value::Integer(64.into())),
+                ])
+            ),
+            "resource envelope missing kind"
+        );
+        assert_eq!(
+            refuse(
+                &mut core,
+                field(vec![
+                    (rrc::RESOURCE_ID, Value::Bytes(vec![0x03; 8])),
+                    (rrc::RESOURCE_KIND, Value::Text("notice".into())),
+                ])
+            ),
+            "resource envelope invalid size"
+        );
+        assert_eq!(
+            refuse(
+                &mut core,
+                resource_envelope([0x04; 8], "notice", 0, None, Some("lobby"))
+            ),
+            "resource envelope invalid size"
+        );
+        assert_eq!(
+            refuse(
+                &mut core,
+                field(vec![
+                    (rrc::RESOURCE_ID, Value::Bytes(vec![0x05; 8])),
+                    (rrc::RESOURCE_KIND, Value::Text("notice".into())),
+                    (rrc::RESOURCE_SIZE, Value::Integer(64.into())),
+                    (rrc::RESOURCE_SHA256, Value::Bytes(vec![0xAA; 7])),
+                ])
+            ),
+            "resource envelope invalid sha256"
+        );
+
+        // The reference accepts motd/blob and then discards them: pure
+        // amplification, so they never buy a transfer here.
+        for kind in ["motd", "blob", "notice2", ""] {
+            assert_eq!(
+                refuse(
+                    &mut core,
+                    resource_envelope([0x06; 8], kind, 64, None, Some("lobby"))
+                ),
+                "unsupported resource kind",
+                "kind {kind:?} must not be accepted"
+            );
+        }
+
+        assert_eq!(
+            refuse(
+                &mut core,
+                resource_envelope([0x07; 8], "notice", 5000, None, Some("lobby"))
+            ),
+            "resource too large: 5000 > 4096"
+        );
+        assert_eq!(
+            refuse(
+                &mut core,
+                resource_envelope([0x08; 8], "notice", 64, None, None)
+            ),
+            "notice resource requires room name"
+        );
+        assert_eq!(
+            refuse(
+                &mut core,
+                resource_envelope([0x09; 8], "notice", 64, None, Some(&"r".repeat(65)))
+            ),
+            "room name too long: 65 bytes > 64 bytes"
+        );
+    }
+
+    #[test]
+    fn resource_expectation_budget_and_ttl() {
+        let mut core = resource_room(accepting_config());
+        for index in 0..MAX_PENDING_EXPECTATIONS {
+            let out = announce(
+                &mut core,
+                LINK_B,
+                [index as u8; 8],
+                &vec![0u8; 64 + index],
+                "lobby",
+            );
+            assert!(error_texts(&out, LINK_B).is_empty());
+        }
+        assert_eq!(
+            core.admission.pending_count(LINK_B),
+            MAX_PENDING_EXPECTATIONS
+        );
+
+        let out = announce(&mut core, LINK_B, [0xEE; 8], &[0u8; 4000], "lobby");
+        assert_eq!(
+            error_texts(&out, LINK_B),
+            vec!["too many pending resource expectations"]
+        );
+
+        // A repeat announcement of a live id refreshes rather than stacks, so a
+        // retrying client cannot exhaust its own budget.
+        let out = announce(&mut core, LINK_B, [0x00; 8], &[0u8; 128], "lobby");
+        assert!(error_texts(&out, LINK_B).is_empty());
+        assert_eq!(
+            core.admission.pending_count(LINK_B),
+            MAX_PENDING_EXPECTATIONS
+        );
+
+        assert!(
+            core.admission
+                .admit(LINK_B, &advertisement(128, [0x77; 32]))
+        );
+        core.admission.retire(LINK_B, [0x77; 32]);
+
+        // Past the TTL the announcement no longer buys a transfer.
+        core.resource_cycle(Instant::now() + RESOURCE_EXPECTATION_TTL + Duration::from_secs(1));
+        assert_eq!(core.admission.pending_count(LINK_B), 0);
+        assert!(
+            !core
+                .admission
+                .admit(LINK_B, &advertisement(128, [0x78; 32]))
+        );
+    }
+
+    #[test]
+    fn resource_admission_refuses_unannounced_oversized_split_and_metadata() {
+        let mut core = resource_room(accepting_config());
+        let payload = vec![0x41u8; 100];
+        announce(&mut core, LINK_B, [0x01; 8], &payload, "lobby");
+
+        assert!(
+            !core.admission.admit(LINK_B, &advertisement(99, [0x01; 32])),
+            "a size nobody announced is refused"
+        );
+        assert!(
+            !core
+                .admission
+                .admit(LINK_B, &advertisement(4097, [0x03; 32]))
+        );
+
+        // Isolated from the announced-size check: an expectation the envelope
+        // path could never produce still cannot buy an over-cap or empty
+        // transfer, because the closure re-checks the cap itself.
+        let tight = ResourceAdmission::new(true, 128);
+        for size in [0usize, 200] {
+            assert!(tight.expect(
+                LINK_B,
+                InboundExpectation {
+                    id: [size as u8; 8],
+                    size,
+                    sha256: None,
+                    encoding: None,
+                    room: "lobby".into(),
+                    created_at: Instant::now(),
+                },
+            ));
+            assert!(
+                !tight.admit(LINK_B, &advertisement(size, [size as u8; 32])),
+                "an announced {size}-byte payload is still refused by the cap"
+            );
+        }
+        // The cap itself is admissible: the refusal is `>`, not `>=`.
+        assert!(tight.expect(
+            LINK_B,
+            InboundExpectation {
+                id: [0x99; 8],
+                size: 128,
+                sha256: None,
+                encoding: None,
+                room: "lobby".into(),
+                created_at: Instant::now(),
+            },
+        ));
+        assert!(tight.admit(LINK_B, &advertisement(128, [0x99; 32])));
+
+        let mut split = advertisement(100, [0x04; 32]);
+        split.flags.split = true;
+        assert!(!core.admission.admit(LINK_B, &split));
+        let mut segmented = advertisement(100, [0x05; 32]);
+        segmented.total_segments = 2;
+        assert!(!core.admission.admit(LINK_B, &segmented));
+        // total_size = data_size + metadata_size, so metadata shifts the byte
+        // count the expectation matches on.
+        let mut with_metadata = advertisement(100, [0x06; 32]);
+        with_metadata.flags.has_metadata = true;
+        assert!(!core.admission.admit(LINK_B, &with_metadata));
+        let mut prefixed = advertisement(100, [0x07; 32]);
+        prefixed.metadata_size = 8;
+        assert!(!core.admission.admit(LINK_B, &prefixed));
+        assert_eq!(core.admission.live_count(LINK_B), 0);
+
+        assert!(
+            core.admission
+                .admit(LINK_B, &advertisement(100, [0x10; 32]))
+        );
+        assert_eq!(core.admission.live_count(LINK_B), 1);
+        // Re-advertisement of a live transfer is not a second slot: the policy
+        // is consulted again per segment.
+        assert!(
+            core.admission
+                .admit(LINK_B, &advertisement(100, [0x10; 32]))
+        );
+        assert_eq!(core.admission.live_count(LINK_B), 1);
+
+        for index in 1..MAX_INBOUND_RESOURCES_PER_LINK as u8 {
+            assert!(
+                core.admission
+                    .admit(LINK_B, &advertisement(100, [0x10 + index; 32]))
+            );
+        }
+        assert_eq!(
+            core.admission.live_count(LINK_B),
+            MAX_INBOUND_RESOURCES_PER_LINK
+        );
+        assert!(
+            !core
+                .admission
+                .admit(LINK_B, &advertisement(100, [0x20; 32])),
+            "the fifth concurrent transfer on one link is refused"
+        );
+        // Another link is unaffected, and has announced nothing of its own.
+        assert!(
+            !core
+                .admission
+                .admit(LINK_A, &advertisement(100, [0x30; 32]))
+        );
+
+        // With acceptance off nothing is admitted, announced or not.
+        let disabled = ResourceAdmission::new(false, 4096);
+        assert!(!disabled.admit(LINK_B, &advertisement(100, [0x40; 32])));
+        assert_eq!(disabled.rejected(), 1);
+    }
+
+    #[test]
+    fn inbound_resource_notice_passes_relay_gates() {
+        let mut core = resource_room(accepting_config());
+        let link_c = [0x03; 16];
+        let id_c = [0xCC; 16];
+        welcomed_session(&mut core, link_c, id_c, "gamma");
+
+        core.rooms.get_mut("lobby").unwrap().no_outside_msgs = true;
+        let out = announce(&mut core, link_c, [0x01; 8], &[0u8; 64], "lobby");
+        assert_eq!(error_texts(&out, link_c), vec!["no outside messages (+n)"]);
+        assert_eq!(core.admission.pending_count(link_c), 0);
+
+        let out = announce(&mut core, link_c, [0x02; 8], &[0u8; 64], "ghost");
+        assert_eq!(error_texts(&out, link_c), vec!["no such room"]);
+        core.rooms.get_mut("lobby").unwrap().no_outside_msgs = false;
+
+        core.rooms.get_mut("lobby").unwrap().bans.insert(ID_B);
+        let out = announce(&mut core, LINK_B, [0x03; 8], &[0u8; 64], "lobby");
+        assert_eq!(error_texts(&out, LINK_B), vec!["banned from room"]);
+        core.rooms.get_mut("lobby").unwrap().bans.remove(&ID_B);
+
+        core.rooms.get_mut("lobby").unwrap().moderated = true;
+        let out = announce(&mut core, LINK_B, [0x04; 8], &[0u8; 64], "lobby");
+        assert_eq!(error_texts(&out, LINK_B), vec!["room is moderated (+m)"]);
+        core.rooms.get_mut("lobby").unwrap().moderated = false;
+
+        // Gated again at completion: the advertisement is seconds old and a ban
+        // set in the meantime has to win.
+        let payload = b"a legitimate broadcast".to_vec();
+        announce(&mut core, LINK_B, [0x05; 8], &payload, "lobby");
+        core.rooms.get_mut("lobby").unwrap().bans.insert(ID_B);
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x55; 32], payload.clone(), false, &mut out);
+        assert_eq!(error_texts(&out, LINK_B), vec!["banned from room"]);
+        assert!(relayed_texts(&out, LINK_A).is_empty());
+        core.rooms.get_mut("lobby").unwrap().bans.remove(&ID_B);
+
+        // Happy path: one payload too big for a packet, fanned to every member
+        // including the sender, losing nothing.
+        let payload = "long notice ".repeat(100).into_bytes();
+        announce(&mut core, LINK_B, [0x06; 8], &payload, "lobby");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x66; 32], payload.clone(), false, &mut out);
+        assert!(error_texts(&out, LINK_B).is_empty());
+        let to_a = relayed_texts(&out, LINK_A);
+        let to_b = relayed_texts(&out, LINK_B);
+        assert!(to_a.len() > 1, "1200 bytes cannot ride one packet");
+        assert_eq!(
+            to_a, to_b,
+            "the sender is echoed, exactly like packet relay"
+        );
+        assert_eq!(
+            to_a.concat().into_bytes(),
+            payload,
+            "every byte arrives, in order"
+        );
+        assert!(
+            relayed_texts(&out, link_c).is_empty(),
+            "non-members get nothing"
+        );
+        for envelope in sends_to(&out, LINK_A) {
+            assert_eq!(envelope.source, ID_B, "the relayed source is the sender");
+            assert_eq!(envelope.room.as_deref(), Some("lobby"));
+            assert_eq!(envelope.nickname.as_deref(), Some("beta"));
+        }
+        assert_all_sendable(&out);
+        // The expectation is consumed, so the same bytes cannot be replayed.
+        assert_eq!(core.admission.pending_count(LINK_B), 0);
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x66; 32], payload, false, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn inbound_resource_notice_charges_rate_per_chunk() {
+        let mut core = resource_room(accepting_config());
+        let payload = "x".repeat(1200).into_bytes();
+        announce(&mut core, LINK_B, [0x01; 8], &payload, "lobby");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x01; 32], payload.clone(), false, &mut out);
+        let chunks = relayed_texts(&out, LINK_B).len();
+        assert!(chunks >= 4);
+
+        // One token per relayed chunk, on top of the token the envelope packet
+        // already cost. The reference bypasses the bucket entirely here.
+        let mut core = resource_room(ChannelHubConfig {
+            rate_messages_per_minute: chunks,
+            ..accepting_config()
+        });
+        announce(&mut core, LINK_B, [0x02; 8], &payload, "lobby");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x02; 32], payload.clone(), false, &mut out);
+        assert_eq!(relayed_texts(&out, LINK_B).len(), chunks);
+        assert!(
+            !core.note_packet(LINK_B, Instant::now()),
+            "the fan-out drained the bucket"
+        );
+
+        let mut core = resource_room(ChannelHubConfig {
+            rate_messages_per_minute: chunks - 1,
+            ..accepting_config()
+        });
+        announce(&mut core, LINK_B, [0x03; 8], &payload, "lobby");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x03; 32], payload, false, &mut out);
+        assert_eq!(error_texts(&out, LINK_B), vec!["rate limited"]);
+        assert!(
+            relayed_texts(&out, LINK_A).is_empty(),
+            "a payload that cannot be paid for is never partly relayed"
+        );
+        assert_eq!(core.stats.rate_limited, 1);
+    }
+
+    #[test]
+    fn inbound_resource_rejects_sha_mismatch_oversize_and_bad_utf8() {
+        let mut core = resource_room(accepting_config());
+        let payload = b"the announced payload".to_vec();
+        announce(&mut core, LINK_B, [0x01; 8], &payload, "lobby");
+
+        let forged = b"a different payload!!".to_vec();
+        assert_eq!(forged.len(), payload.len(), "same size, different bytes");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x01; 32], forged, false, &mut out);
+        assert!(out.is_empty(), "a digest that does not hold up is dropped");
+        assert_eq!(
+            core.admission.pending_count(LINK_B),
+            1,
+            "the genuine expectation is not burned by a forgery"
+        );
+
+        // `data_size` is unvalidated attacker input, so a legal claim followed
+        // by oversized bytes is caught on the bytes.
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x02; 32], vec![0x41; 5000], false, &mut out);
+        assert!(out.is_empty());
+
+        // Metadata never reaches a payload we asked for.
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x03; 32], payload.clone(), true, &mut out);
+        assert!(out.is_empty());
+
+        // Unannounced entirely.
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x04; 32], b"surprise".to_vec(), false, &mut out);
+        assert!(out.is_empty());
+
+        // Bytes that are not text at all.
+        let invalid = vec![0xF0, 0x9F, 0x92, 0xA9, 0xFF, 0xFE];
+        announce(&mut core, LINK_B, [0x05; 8], &invalid, "lobby");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x05; 32], invalid, false, &mut out);
+        assert!(out.is_empty(), "a notice that is not UTF-8 is dropped");
+
+        assert_eq!(core.stats.resources_received, 0);
+        assert!(core.admission.rejected() >= 5);
+
+        // The genuine payload still relays.
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x01; 32], payload.clone(), false, &mut out);
+        assert_eq!(
+            relayed_texts(&out, LINK_A),
+            vec![String::from_utf8(payload).unwrap()]
+        );
+    }
+
+    #[test]
+    fn inbound_resource_refuses_slash_commands() {
+        let mut core = resource_room(accepting_config());
+        assert!(core.rooms["lobby"].members.contains(&LINK_B));
+        // A 4 KiB /kick is exactly what a resource must never be able to do.
+        let payload = format!("/kick lobby beta {}", "x".repeat(4000)).into_bytes();
+        announce(&mut core, LINK_A, [0x01; 8], &payload, "lobby");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_A, [0x01; 32], payload, false, &mut out);
+        assert_eq!(
+            error_texts(&out, LINK_A),
+            vec!["commands must be sent as a message, not a resource"]
+        );
+        assert_eq!(sends_to(&out, LINK_A)[0].room.as_deref(), Some("lobby"));
+        assert!(
+            core.rooms["lobby"].members.contains(&LINK_B),
+            "the command was refused, not executed"
+        );
+        assert!(relayed_texts(&out, LINK_B).is_empty(), "and never relayed");
+
+        // Leading whitespace does not smuggle one through.
+        let payload = b"   /stats".to_vec();
+        announce(&mut core, LINK_A, [0x02; 8], &payload, "lobby");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_A, [0x02; 32], payload, false, &mut out);
+        assert_eq!(
+            error_texts(&out, LINK_A),
+            vec!["commands must be sent as a message, not a resource"]
+        );
+    }
+
+    #[test]
+    fn live_slot_retires_on_completion_as_well_as_conclusion() {
+        let mut core = resource_room(accepting_config());
+        let payload = b"a relayed notice".to_vec();
+
+        announce(&mut core, LINK_B, [0x01; 8], &payload, "lobby");
+        assert!(
+            core.admission
+                .admit(LINK_B, &advertisement(payload.len(), [0x01; 32]))
+        );
+        assert_eq!(core.admission.live_count(LINK_B), 1);
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x01; 32], payload.clone(), false, &mut out);
+        assert_eq!(
+            core.admission.live_count(LINK_B),
+            0,
+            "the completion channel retires the slot"
+        );
+
+        // `resource_events` and `resource_completions` are independent bounded
+        // channels; either one alone must free the slot.
+        announce(&mut core, LINK_B, [0x02; 8], &payload, "lobby");
+        assert!(
+            core.admission
+                .admit(LINK_B, &advertisement(payload.len(), [0x02; 32]))
+        );
+        core.on_inbound_resource_concluded(LINK_B, [0x02; 32]);
+        assert_eq!(core.admission.live_count(LINK_B), 0);
+        // Idempotent: the other channel's copy changes nothing.
+        core.on_inbound_resource_concluded(LINK_B, [0x02; 32]);
+        assert_eq!(core.admission.live_count(LINK_B), 0);
+
+        // A transfer that concludes on neither channel is swept.
+        announce(&mut core, LINK_B, [0x03; 8], &payload, "lobby");
+        assert!(
+            core.admission
+                .admit(LINK_B, &advertisement(payload.len(), [0x03; 32]))
+        );
+        let now = Instant::now();
+        core.resource_cycle(now);
+        assert_eq!(core.admission.live_count(LINK_B), 1);
+        core.resource_cycle(now + INBOUND_RESOURCE_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(core.admission.live_count(LINK_B), 0);
+    }
+
+    #[test]
+    fn link_close_clears_resource_state() {
+        let mut core = resource_room(accepting_config());
+        announce(&mut core, LINK_B, [0x01; 8], &[0u8; 64], "lobby");
+        assert!(core.admission.admit(LINK_B, &advertisement(64, [0x01; 32])));
+        assert_eq!(core.admission.pending_count(LINK_B), 1);
+        assert_eq!(core.admission.live_count(LINK_B), 1);
+
+        let mut out = Vec::new();
+        core.on_link_closed(LINK_B, &mut out);
+        assert_eq!(core.admission.pending_count(LINK_B), 0);
+        assert_eq!(core.admission.live_count(LINK_B), 0);
+        assert!(
+            !core.admission.admit(LINK_B, &advertisement(64, [0x02; 32])),
+            "nothing about a closed link survives a reconnect"
+        );
+
+        // A klined identity is torn down at identify; its state goes too.
+        announce(&mut core, LINK_A, [0x02; 8], &[0u8; 64], "lobby");
+        assert!(core.admission.admit(LINK_A, &advertisement(64, [0x03; 32])));
+        core.klines.write().unwrap().insert(ID_A);
+        let mut out = Vec::new();
+        core.on_link_identified(LINK_A, ID_A, Instant::now(), &mut out);
+        assert_eq!(error_texts(&out, LINK_A), vec!["banned"]);
+        assert_eq!(core.admission.pending_count(LINK_A), 0);
+        assert_eq!(core.admission.live_count(LINK_A), 0);
+    }
+
+    #[test]
+    fn stats_counts_resource_transfers() {
+        let mut core = resource_room(accepting_config());
+        let stats_line = |core: &mut HubCore| -> String {
+            let out = run_command(core, LINK_A, ID_A, "/stats");
+            let text = sends_to(&out, LINK_A)
+                .into_iter()
+                .filter_map(rrc::text_body)
+                .collect::<Vec<_>>()
+                .join("");
+            text.lines()
+                .find(|line| line.starts_with("resources: "))
+                .map(str::to_string)
+                .expect("a resources line")
+        };
+        assert_eq!(stats_line(&mut core), "resources: in=0 bytes=0 rejected=0");
+
+        let payload = b"counted once".to_vec();
+        announce(&mut core, LINK_B, [0x01; 8], &payload, "lobby");
+        let mut out = Vec::new();
+        core.on_resource_completed(LINK_B, [0x01; 32], payload, false, &mut out);
+        assert_eq!(stats_line(&mut core), "resources: in=1 bytes=12 rejected=0");
+
+        // The accept closure cannot reach HubStats, so its refusals are counted
+        // inside the admission gate and read here.
+        assert!(
+            !core
+                .admission
+                .admit(LINK_B, &advertisement(999, [0x02; 32]))
+        );
+        assert_eq!(stats_line(&mut core), "resources: in=1 bytes=12 rejected=1");
     }
 }
