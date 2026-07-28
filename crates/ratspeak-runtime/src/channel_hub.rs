@@ -238,7 +238,6 @@ impl HubSession {
 /// registry-backed rooms restored at startup.
 #[derive(Default)]
 struct HubRoom {
-    founder: Option<[u8; 16]>,
     topic: Option<String>,
     key: Option<String>,
     ops: HashSet<[u8; 16]>,
@@ -379,9 +378,7 @@ impl HubCore {
     }
 
     fn is_room_op(&self, room: &HubRoom, identity: [u8; 16]) -> bool {
-        self.server_ops.contains(&identity)
-            || room.founder == Some(identity)
-            || room.ops.contains(&identity)
+        self.server_ops.contains(&identity) || room.ops.contains(&identity)
     }
 
     fn is_voiced(&self, room: &HubRoom, identity: [u8; 16]) -> bool {
@@ -662,10 +659,21 @@ impl HubCore {
             return;
         }
 
-        let room = self.rooms.entry(room_name.clone()).or_default();
+        // Only the hub operator brings a room into existence. Letting any
+        // joiner found one is an unbounded growth vector and would put remote
+        // peers in the operator's registry.
+        if !self.rooms.contains_key(&room_name) {
+            if !self.server_ops.contains(&identity) {
+                out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+                return;
+            }
+            let room = self.rooms.entry(room_name.clone()).or_default();
+            room.ops.insert(identity);
+        }
+
+        let room = self.rooms.get(&room_name).expect("room exists");
         if room.invite_only {
             let bypass = self.server_ops.contains(&identity)
-                || room.founder == Some(identity)
                 || room.ops.contains(&identity)
                 || Self::is_invited(room, identity, now);
             if !bypass {
@@ -674,9 +682,8 @@ impl HubCore {
             }
         }
         if let Some(key) = self.rooms.get(&room_name).and_then(|room| room.key.clone()) {
-            let room = self.rooms.get(&room_name).expect("room just ensured");
+            let room = self.rooms.get(&room_name).expect("room exists");
             let bypass = self.server_ops.contains(&identity)
-                || room.founder == Some(identity)
                 || room.ops.contains(&identity)
                 || Self::is_invited(room, identity, now);
             let provided = envelope.body.as_ref().and_then(|body| match body {
@@ -697,11 +704,7 @@ impl HubCore {
             return;
         }
 
-        let room = self.rooms.get_mut(&room_name).expect("room just ensured");
-        if room.members.is_empty() && room.founder.is_none() {
-            room.founder = Some(identity);
-            room.ops.insert(identity);
-        }
+        let room = self.rooms.get_mut(&room_name).expect("room exists");
         let existing_members: Vec<[u8; 16]> = room
             .members
             .iter()
@@ -1360,10 +1363,10 @@ impl HubCore {
         let Some(room) = self.rooms.get_mut(&room_name) else {
             return;
         };
-        if room.founder != Some(identity) {
+        if !self.server_ops.contains(&identity) {
             out.push(self.hub_error(
                 link_id,
-                "only the room founder can register",
+                "only a server operator can register",
                 Some(&room_name),
             ));
             return;
@@ -1410,10 +1413,10 @@ impl HubCore {
             ));
             return;
         }
-        if room.founder != Some(identity) {
+        if !self.server_ops.contains(&identity) {
             out.push(self.hub_error(
                 link_id,
-                "only the room founder can unregister",
+                "only a server operator can unregister",
                 Some(&room_name),
             ));
             return;
@@ -1445,7 +1448,10 @@ impl HubCore {
                 return;
             }
         };
-        let room = self.rooms.entry(room_name.clone()).or_default();
+        let Some(room) = self.rooms.get(&room_name) else {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        };
         if args.len() == 1 {
             let topic = room.topic.clone().unwrap_or_else(|| "(none)".to_string());
             out.push(self.hub_notice(
@@ -1511,13 +1517,11 @@ impl HubCore {
                 return;
             }
         };
-        let authorized = {
-            let room = self.rooms.entry(room_name.clone()).or_default();
-            let _ = &room;
-            let room = self.rooms.get(&room_name).expect("room just ensured");
-            self.is_room_op(room, identity)
+        let Some(room) = self.rooms.get(&room_name) else {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
         };
-        if !authorized {
+        if !self.is_room_op(room, identity) {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
         }
@@ -1582,8 +1586,12 @@ impl HubCore {
                         room.ops.insert(target);
                     }
                     "-o" => {
-                        if room.founder == Some(target) {
-                            out.push(self.hub_notice(link_id, "cannot deop founder", raw_room));
+                        if self.server_ops.contains(&target) {
+                            out.push(self.hub_notice(
+                                link_id,
+                                "cannot deop a server operator",
+                                raw_room,
+                            ));
                             return;
                         }
                         room.ops.remove(&target);
@@ -1642,13 +1650,11 @@ impl HubCore {
                 return;
             }
         };
-        let authorized = {
-            let room = self.rooms.entry(room_name.clone()).or_default();
-            let _ = &room;
-            let room = self.rooms.get(&room_name).expect("room just ensured");
-            self.is_room_op(room, identity)
+        let Some(room) = self.rooms.get(&room_name) else {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
         };
-        if !authorized {
+        if !self.is_room_op(room, identity) {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
         }
@@ -1666,8 +1672,8 @@ impl HubCore {
                 format!("op granted in {room_name}")
             }
             "deop" => {
-                if room.founder == Some(target) {
-                    out.push(self.hub_notice(link_id, "cannot deop founder", raw_room));
+                if self.server_ops.contains(&target) {
+                    out.push(self.hub_notice(link_id, "cannot deop a server operator", raw_room));
                     return;
                 }
                 room.ops.remove(&target);
@@ -1725,13 +1731,11 @@ impl HubCore {
             out.push(self.hub_notice(link_id, USAGE, None));
             return;
         }
-        let authorized = {
-            let room = self.rooms.entry(room_name.clone()).or_default();
-            let _ = &room;
-            let room = self.rooms.get(&room_name).expect("room just ensured");
-            self.is_room_op(room, identity)
+        let Some(room) = self.rooms.get(&room_name) else {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
         };
-        if !authorized {
+        if !self.is_room_op(room, identity) {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
         }
@@ -1820,13 +1824,11 @@ impl HubCore {
                 return;
             }
         };
-        let authorized = {
-            let room = self.rooms.entry(room_name.clone()).or_default();
-            let _ = &room;
-            let room = self.rooms.get(&room_name).expect("room just ensured");
-            self.is_room_op(room, identity)
+        let Some(room) = self.rooms.get(&room_name) else {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
         };
-        if !authorized {
+        if !self.is_room_op(room, identity) {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
         }
@@ -1888,11 +1890,15 @@ impl HubCore {
                 .get(&room_name)
                 .map(|room| (room.invite_only || room.key.is_some(), room.key.is_some()))
                 .unwrap_or((false, false));
-            self.rooms
-                .get_mut(&room_name)
-                .expect("room just ensured")
-                .invited
-                .insert(target, now + ttl);
+            // Only record a grant when there is a gate to bypass; an ungated
+            // room needs no invite and would accrue dead rows.
+            if gated {
+                self.rooms
+                    .get_mut(&room_name)
+                    .expect("room exists")
+                    .invited
+                    .insert(target, now + ttl);
+            }
             if let Some(target_link) = self.by_identity.get(&target).copied() {
                 let text = if keyed {
                     format!(
@@ -2421,7 +2427,13 @@ fn publish_snapshot(
 mod tests {
     use super::*;
 
-    fn core_with(config: ChannelHubConfig) -> HubCore {
+    /// ID_A is always a server operator, mirroring production: `start` seeds
+    /// the hosting identity into `server_operators`. Rooms only exist because
+    /// an operator made them, so most fixtures create through ID_A.
+    fn core_with(mut config: ChannelHubConfig) -> HubCore {
+        if !config.server_operators.contains(&ID_A) {
+            config.server_operators.push(ID_A);
+        }
         HubCore::new(config, [0x77; 16], Arc::new(RwLock::new(HashSet::new())))
     }
 
@@ -2980,20 +2992,109 @@ mod tests {
     }
 
     #[test]
-    fn register_forces_modes_and_only_founder_registers() {
+    fn join_of_an_unknown_room_is_refused_for_non_operators() {
         let mut core = op_core();
-        // ID_B founds the room, so ID_A (server op, not founder) cannot register.
-        join(&mut core, LINK_B, ID_B, "lobby");
-        join(&mut core, LINK_A, ID_A, "lobby");
-        let out = run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        let out = join(&mut core, LINK_B, ID_B, "ghost");
+        let error = sends_to(&out, LINK_B)[0];
+        assert_eq!(error.message_type, rrc::MessageType::Error);
+        assert_eq!(rrc::text_body(error), Some("no such room"));
+        // NomadNet rolls a pending join back only when the ERROR names the
+        // room, and it matches on the normalized name.
+        assert_eq!(error.room.as_deref(), Some("ghost"));
+        assert!(
+            core.rooms.is_empty(),
+            "a refused join must not create a room"
+        );
+    }
+
+    #[test]
+    fn operator_join_creates_the_room_and_others_may_then_join() {
+        let mut core = op_core();
+        let out = join(&mut core, LINK_A, ID_A, " Lobby ");
         assert_eq!(
-            rrc::text_body(sends_to(&out, LINK_A)[0]),
-            Some("only the room founder can register")
+            sends_to(&out, LINK_A)[0].message_type,
+            rrc::MessageType::Joined
+        );
+        assert!(core.rooms.contains_key("lobby"));
+        assert!(core.rooms.get("lobby").unwrap().ops.contains(&ID_A));
+
+        let out = join(&mut core, LINK_B, ID_B, "lobby");
+        assert_eq!(
+            sends_to(&out, LINK_B)[0].message_type,
+            rrc::MessageType::Joined
+        );
+    }
+
+    #[test]
+    fn commands_never_create_rooms() {
+        // Every command that touches a room used to call entry().or_default()
+        // before authorizing, so any peer could grow the hub without limit.
+        let mut core = op_core();
+        for command in [
+            "/topic ghost",
+            "/topic ghost a new topic",
+            "/mode ghost +m",
+            "/op ghost beta",
+            "/voice ghost beta",
+            "/ban ghost add beta",
+            "/invite ghost add beta",
+        ] {
+            let out = run_command(&mut core, LINK_B, ID_B, command);
+            assert_eq!(
+                rrc::text_body(sends_to(&out, LINK_B)[0]),
+                Some("no such room"),
+                "{command} must not create a room"
+            );
+            assert!(core.rooms.is_empty(), "{command} created a room");
+        }
+
+        // The operator is refused too: creation is a JOIN/register concern.
+        for command in ["/topic ghost hi", "/mode ghost +m"] {
+            let out = run_command(&mut core, LINK_A, ID_A, command);
+            assert_eq!(
+                rrc::text_body(sends_to(&out, LINK_A)[0]),
+                Some("no such room")
+            );
+            assert!(core.rooms.is_empty());
+        }
+    }
+
+    #[test]
+    fn invite_grants_are_recorded_only_for_gated_rooms() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "open");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+
+        // An ungated room needs no invite, so no grant row is kept.
+        let out = run_command(&mut core, LINK_A, ID_A, "/invite open add beta");
+        assert!(core.rooms.get("open").unwrap().invited.is_empty());
+        assert!(
+            sends_to(&out, LINK_A)
+                .iter()
+                .any(|env| rrc::text_body(env) == Some("invite sent to beta for open"))
         );
 
+        // Gating the room makes the invite meaningful, and it is recorded.
+        run_command(&mut core, LINK_A, ID_A, "/mode open +i");
+        run_command(&mut core, LINK_A, ID_A, "/invite open add beta");
+        assert!(core.rooms.get("open").unwrap().invited.contains_key(&ID_B));
+    }
+
+    #[test]
+    fn register_forces_modes_and_requires_a_server_operator() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+        // ID_B is a plain member, not a server operator.
         let out = run_command(&mut core, LINK_B, ID_B, "/register lobby");
         assert_eq!(
             rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("only a server operator can register")
+        );
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
             Some("registered room lobby")
         );
         let room = core.rooms.get("lobby").unwrap();
@@ -3004,13 +3105,11 @@ mod tests {
     #[test]
     fn mode_changes_broadcast_and_reject_unauthorized() {
         let mut core = op_core();
-        join(&mut core, LINK_B, ID_B, "lobby");
         join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
 
-        // ID_B is not an op (ID_A founded via first join? no — ID_B joined first).
-        // ID_B founded lobby, so ID_B is op; use a fresh non-op for rejection.
+        // ID_A is a server operator, so it is an implicit op in every room.
         let out = run_command(&mut core, LINK_A, ID_A, "/mode lobby +m");
-        // ID_A is a server op → authorized; +m broadcasts to both members.
         assert_eq!(sends_to(&out, LINK_A).len(), 1);
         assert_eq!(
             rrc::text_body(sends_to(&out, LINK_B)[0]),
@@ -3033,9 +3132,10 @@ mod tests {
     }
 
     #[test]
-    fn op_voice_grants_and_founder_cannot_be_deopped() {
+    fn op_voice_grants_and_a_server_operator_cannot_be_deopped() {
         let mut core = op_core();
-        join(&mut core, LINK_B, ID_B, "lobby"); // ID_B founder
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
         let out = run_command(&mut core, LINK_A, ID_A, "/op lobby beta");
         assert_eq!(
             rrc::text_body(sends_to(&out, LINK_A)[0]),
@@ -3043,10 +3143,20 @@ mod tests {
         );
         assert!(core.rooms.get("lobby").unwrap().ops.contains(&ID_B));
 
+        // A granted op can be removed...
         let out = run_command(&mut core, LINK_A, ID_A, "/deop lobby beta");
         assert_eq!(
             rrc::text_body(sends_to(&out, LINK_A)[0]),
-            Some("cannot deop founder")
+            Some("op removed in lobby")
+        );
+        assert!(!core.rooms.get("lobby").unwrap().ops.contains(&ID_B));
+
+        // ...but a server operator's authority is not room-scoped, so it
+        // cannot be dropped from inside a room.
+        let out = run_command(&mut core, LINK_A, ID_A, "/deop lobby alpha");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_A)[0]),
+            Some("cannot deop a server operator")
         );
 
         let out = run_command(&mut core, LINK_A, ID_A, "/voice lobby beta");
