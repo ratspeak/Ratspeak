@@ -3413,10 +3413,14 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use r2d2_sqlite::SqliteConnectionManager;
     use rns_identity::destination::Destination;
     use rns_link::link::Link;
+    use rns_transport::actor::TransportActor;
     use rns_transport::link_messages::DestinationEvent;
     use rns_transport::messages::OutboundRequest;
+
+    use crate::channel_hub::{ChannelHubConfig, ChannelHubHandle, HubStore};
 
     #[test]
     fn parses_reference_hub_announce_and_filters_name() {
@@ -3507,6 +3511,79 @@ mod tests {
             other => panic!("known local hub unexpectedly queried discovery: {other:?}"),
         }
         manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn hosted_hub_and_client_share_one_runtime_through_an_authenticated_link() {
+        let (actor, transport_tx) = TransportActor::new();
+        let actor_task = tokio::spawn(actor.run());
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        crate::db::init_schema(&pool).unwrap();
+        let hub_identity = Identity::new();
+        let hub_public_key = hub_identity.get_public_key();
+        let destination_hash = hex::encode(Destination::hash_from_name_and_identity(
+            rrc::RRC_HUB_ASPECT,
+            Some(&hub_identity.hash),
+        ));
+        let client_identity = Identity::new();
+        let client_hash = client_identity.hash;
+        let emitter: Arc<dyn ratspeak_core::Emitter> = Arc::new(ratspeak_core::NoopEmitter);
+        let hub = ChannelHubHandle::start(
+            transport_tx.clone(),
+            hub_identity,
+            ChannelHubConfig {
+                hub_name: "Local test hub".into(),
+                ..ChannelHubConfig::default()
+            },
+            client_hash,
+            HubStore::new(pool, hex::encode(client_hash)),
+            emitter.clone(),
+            ShutdownSignal::new(),
+            Weak::new(),
+        )
+        .await
+        .unwrap();
+        let manager = ChannelsManagerHandle::start(
+            transport_tx.clone(),
+            client_identity,
+            emitter,
+            ShutdownSignal::new(),
+            Weak::new(),
+        );
+
+        manager
+            .connect_known(
+                &destination_hash,
+                "Field Rat",
+                hub_public_key,
+                Some("Local test hub".into()),
+            )
+            .await
+            .unwrap();
+        let active =
+            wait_snapshot(&manager, |snapshot| snapshot.phase == ChannelsPhase::Active).await;
+        assert_eq!(
+            active.hub.as_ref().and_then(|hub| hub.name.as_deref()),
+            Some("Local test hub")
+        );
+
+        manager.join("general", None).await.unwrap();
+        let joined = wait_snapshot(&manager, |snapshot| {
+            snapshot
+                .rooms
+                .iter()
+                .any(|room| room.name == "general" && room.phase == ChannelRoomPhase::Joined)
+        })
+        .await;
+        assert!(joined.rooms[0].members.iter().any(|member| member.is_self));
+
+        manager.shutdown().await;
+        assert!(hub.shutdown().await);
+        transport_tx.send(TransportMessage::Shutdown).await.unwrap();
+        actor_task.await.unwrap();
     }
 
     #[test]
