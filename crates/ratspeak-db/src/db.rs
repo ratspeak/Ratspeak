@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 34;
+const SCHEMA_VERSION: i64 = 35;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -354,6 +354,50 @@ CREATE INDEX IF NOT EXISTS idx_channel_hubs_identity_recent
     ON channel_hubs(identity_id, last_connected DESC);
 CREATE INDEX IF NOT EXISTS idx_channel_rooms_identity_hub
     ON channel_rooms(identity_id, hub_destination_hash, room_name);
+
+-- Hub registry: the rooms this node hosts and the operator policy on them.
+-- Durable policy only; relayed traffic never lands here. Join keys persist as
+-- a verifiable digest, never as a recoverable key.
+CREATE TABLE IF NOT EXISTS channel_hub_rooms (
+    identity_id      TEXT NOT NULL,
+    room_name        TEXT NOT NULL,
+    topic            TEXT NOT NULL DEFAULT '',
+    key_salt         TEXT NOT NULL DEFAULT '',
+    key_mac          TEXT NOT NULL DEFAULT '',
+    key_pepper_id    TEXT NOT NULL DEFAULT '',
+    moderated        INTEGER NOT NULL DEFAULT 0,
+    invite_only      INTEGER NOT NULL DEFAULT 0,
+    topic_ops_only   INTEGER NOT NULL DEFAULT 0,
+    no_outside_msgs  INTEGER NOT NULL DEFAULT 0,
+    private          INTEGER NOT NULL DEFAULT 0,
+    created_at       REAL NOT NULL,
+    last_used        REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (identity_id, room_name),
+    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+);
+
+-- Per-room grants. kind is op|voice|ban|invite; expires_at is 0 for permanent
+-- grants and an absolute unix time for invites.
+CREATE TABLE IF NOT EXISTS channel_hub_grants (
+    identity_id  TEXT NOT NULL,
+    room_name    TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    subject      TEXT NOT NULL,
+    granted_at   REAL NOT NULL,
+    expires_at   REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (identity_id, room_name, kind, subject),
+    FOREIGN KEY (identity_id, room_name)
+        REFERENCES channel_hub_rooms(identity_id, room_name) ON DELETE CASCADE
+);
+
+-- Hub-level identity bans (/kline).
+CREATE TABLE IF NOT EXISTS channel_hub_klines (
+    identity_id  TEXT NOT NULL,
+    subject      TEXT NOT NULL,
+    banned_at    REAL NOT NULL,
+    PRIMARY KEY (identity_id, subject),
+    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+);
 
 CREATE INDEX IF NOT EXISTS idx_contacts_identity ON contacts(identity_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_identity_name ON contacts(identity_id, display_name);
@@ -1324,6 +1368,51 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 35 {
+        migration_step(conn, 35, |conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS channel_hub_rooms (
+                    identity_id      TEXT NOT NULL,
+                    room_name        TEXT NOT NULL,
+                    topic            TEXT NOT NULL DEFAULT '',
+                    key_salt         TEXT NOT NULL DEFAULT '',
+                    key_mac          TEXT NOT NULL DEFAULT '',
+                    key_pepper_id    TEXT NOT NULL DEFAULT '',
+                    moderated        INTEGER NOT NULL DEFAULT 0,
+                    invite_only      INTEGER NOT NULL DEFAULT 0,
+                    topic_ops_only   INTEGER NOT NULL DEFAULT 0,
+                    no_outside_msgs  INTEGER NOT NULL DEFAULT 0,
+                    private          INTEGER NOT NULL DEFAULT 0,
+                    created_at       REAL NOT NULL,
+                    last_used        REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, room_name),
+                    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS channel_hub_grants (
+                    identity_id  TEXT NOT NULL,
+                    room_name    TEXT NOT NULL,
+                    kind         TEXT NOT NULL,
+                    subject      TEXT NOT NULL,
+                    granted_at   REAL NOT NULL,
+                    expires_at   REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, room_name, kind, subject),
+                    FOREIGN KEY (identity_id, room_name)
+                        REFERENCES channel_hub_rooms(identity_id, room_name) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS channel_hub_klines (
+                    identity_id  TEXT NOT NULL,
+                    subject      TEXT NOT NULL,
+                    banned_at    REAL NOT NULL,
+                    PRIMARY KEY (identity_id, subject),
+                    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+                );
+                UPDATE schema_version SET version = 35;",
+            )?;
+            tracing::info!("Migrated to schema version 35 (RRC hub registry)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -1513,6 +1602,9 @@ pub const RESET_TABLES: &[&str] = &[
     "pending_blackholes",
     "channel_rooms",
     "channel_hubs",
+    "channel_hub_grants",
+    "channel_hub_rooms",
+    "channel_hub_klines",
 ];
 
 /// Per-identity cascade for `delete_identity`. Static DELETEs (no format!()
@@ -1548,6 +1640,18 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "channel_hubs",
         "DELETE FROM channel_hubs WHERE identity_id = ?1",
+    ),
+    (
+        "channel_hub_grants",
+        "DELETE FROM channel_hub_grants WHERE identity_id = ?1",
+    ),
+    (
+        "channel_hub_rooms",
+        "DELETE FROM channel_hub_rooms WHERE identity_id = ?1",
+    ),
+    (
+        "channel_hub_klines",
+        "DELETE FROM channel_hub_klines WHERE identity_id = ?1",
     ),
     ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
     ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
@@ -2644,6 +2748,225 @@ pub fn rename_identity_and_retire_alias(
     })
 }
 
+/// One hosted room's durable policy. Grants ride along so a restore is a
+/// single query pair rather than one query per room.
+#[derive(Clone, PartialEq)]
+pub struct HubRoomRow {
+    pub room_name: String,
+    pub topic: String,
+    pub key_salt: String,
+    pub key_mac: String,
+    pub key_pepper_id: String,
+    pub moderated: bool,
+    pub invite_only: bool,
+    pub topic_ops_only: bool,
+    pub no_outside_msgs: bool,
+    pub private: bool,
+    pub last_used: f64,
+    /// `(kind, subject hex, expires_at)`; kind is `op|voice|ban|invite`.
+    pub grants: Vec<(String, String, f64)>,
+}
+
+/// Hand-written so a room key digest can never reach a log or a panic message.
+impl std::fmt::Debug for HubRoomRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HubRoomRow")
+            .field("room_name", &self.room_name)
+            .field("keyed", &!self.key_mac.is_empty())
+            .field("grants", &self.grants.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum HubRoomOp {
+    Upsert(Box<HubRoomRow>),
+    Touched { room_name: String, last_used: f64 },
+    Removed { room_name: String },
+    ReplaceKlines(Vec<String>),
+    GcInvites { before: f64 },
+}
+
+pub fn list_hub_rooms(pool: &DbPool, identity_id: &str) -> Result<Vec<HubRoomRow>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut rooms: Vec<HubRoomRow> = conn
+        .prepare(
+            "SELECT room_name, topic, key_salt, key_mac, key_pepper_id, moderated,
+                    invite_only, topic_ops_only, no_outside_msgs, private, last_used
+             FROM channel_hub_rooms WHERE identity_id = ?1 ORDER BY room_name",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![identity_id], |row| {
+                Ok(HubRoomRow {
+                    room_name: row.get(0)?,
+                    topic: row.get(1)?,
+                    key_salt: row.get(2)?,
+                    key_mac: row.get(3)?,
+                    key_pepper_id: row.get(4)?,
+                    moderated: row.get::<_, i64>(5)? != 0,
+                    invite_only: row.get::<_, i64>(6)? != 0,
+                    topic_ops_only: row.get::<_, i64>(7)? != 0,
+                    no_outside_msgs: row.get::<_, i64>(8)? != 0,
+                    private: row.get::<_, i64>(9)? != 0,
+                    last_used: row.get(10)?,
+                    grants: Vec::new(),
+                })
+            })
+            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut grants: std::collections::HashMap<String, Vec<(String, String, f64)>> =
+        std::collections::HashMap::new();
+    conn.prepare(
+        "SELECT room_name, kind, subject, expires_at
+         FROM channel_hub_grants WHERE identity_id = ?1",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map(params![identity_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        })
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+    })
+    .map_err(|error| error.to_string())?
+    .into_iter()
+    .for_each(|(room, kind, subject, expires)| {
+        grants
+            .entry(room)
+            .or_default()
+            .push((kind, subject, expires));
+    });
+
+    for room in &mut rooms {
+        if let Some(found) = grants.remove(&room.room_name) {
+            room.grants = found;
+        }
+    }
+    Ok(rooms)
+}
+
+pub fn list_hub_klines(pool: &DbPool, identity_id: &str) -> Result<Vec<String>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.prepare("SELECT subject FROM channel_hub_klines WHERE identity_id = ?1")
+        .and_then(|mut stmt| {
+            stmt.query_map(params![identity_id], |row| row.get::<_, String>(0))
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// Apply a batch of registry writes in one transaction, in order. Ordering is
+/// load-bearing: two writes to the same room must not reorder, so the caller
+/// hands the whole batch over rather than spawning a task per op.
+pub fn apply_hub_ops(pool: &DbPool, identity_id: &str, ops: &[HubRoomOp]) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let now = now_ts();
+    for op in ops {
+        match op {
+            HubRoomOp::Upsert(room) => {
+                tx.execute(
+                    "INSERT INTO channel_hub_rooms
+                        (identity_id, room_name, topic, key_salt, key_mac, key_pepper_id,
+                         moderated, invite_only, topic_ops_only, no_outside_msgs, private,
+                         created_at, last_used)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+                     ON CONFLICT(identity_id, room_name) DO UPDATE SET
+                        topic = excluded.topic,
+                        key_salt = excluded.key_salt,
+                        key_mac = excluded.key_mac,
+                        key_pepper_id = excluded.key_pepper_id,
+                        moderated = excluded.moderated,
+                        invite_only = excluded.invite_only,
+                        topic_ops_only = excluded.topic_ops_only,
+                        no_outside_msgs = excluded.no_outside_msgs,
+                        private = excluded.private,
+                        last_used = excluded.last_used",
+                    params![
+                        identity_id,
+                        room.room_name,
+                        room.topic,
+                        room.key_salt,
+                        room.key_mac,
+                        room.key_pepper_id,
+                        room.moderated as i64,
+                        room.invite_only as i64,
+                        room.topic_ops_only as i64,
+                        room.no_outside_msgs as i64,
+                        room.private as i64,
+                        now,
+                        room.last_used
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                // Grants are authoritative per room: replace wholesale so a
+                // revoked op or expired invite cannot survive as a stale row.
+                tx.execute(
+                    "DELETE FROM channel_hub_grants WHERE identity_id = ?1 AND room_name = ?2",
+                    params![identity_id, room.room_name],
+                )
+                .map_err(|error| error.to_string())?;
+                for (kind, subject, expires_at) in &room.grants {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO channel_hub_grants
+                            (identity_id, room_name, kind, subject, granted_at, expires_at)
+                         VALUES (?1,?2,?3,?4,?5,?6)",
+                        params![identity_id, room.room_name, kind, subject, now, expires_at],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+            }
+            HubRoomOp::Touched {
+                room_name,
+                last_used,
+            } => {
+                tx.execute(
+                    "UPDATE channel_hub_rooms SET last_used = ?1
+                     WHERE identity_id = ?2 AND room_name = ?3",
+                    params![last_used, identity_id, room_name],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            HubRoomOp::Removed { room_name } => {
+                tx.execute(
+                    "DELETE FROM channel_hub_rooms WHERE identity_id = ?1 AND room_name = ?2",
+                    params![identity_id, room_name],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            HubRoomOp::ReplaceKlines(subjects) => {
+                tx.execute(
+                    "DELETE FROM channel_hub_klines WHERE identity_id = ?1",
+                    params![identity_id],
+                )
+                .map_err(|error| error.to_string())?;
+                for subject in subjects {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO channel_hub_klines
+                            (identity_id, subject, banned_at) VALUES (?1,?2,?3)",
+                        params![identity_id, subject, now],
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+            }
+            HubRoomOp::GcInvites { before } => {
+                tx.execute(
+                    "DELETE FROM channel_hub_grants
+                     WHERE identity_id = ?1 AND kind = 'invite' AND expires_at <= ?2",
+                    params![identity_id, before],
+                )
+                .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    tx.commit().map_err(|error| error.to_string())
+}
+
 pub fn remove_channel_hub(
     pool: &DbPool,
     identity_id: &str,
@@ -2855,6 +3178,198 @@ mod channel_bookmark_tests {
                 .retired_bookmarks,
             0
         );
+    }
+
+    fn hub_room(name: &str) -> HubRoomRow {
+        HubRoomRow {
+            room_name: name.to_string(),
+            topic: "field ops".into(),
+            key_salt: "aabb".into(),
+            key_mac: "ccdd".into(),
+            key_pepper_id: "eeff".into(),
+            moderated: true,
+            invite_only: false,
+            topic_ops_only: true,
+            no_outside_msgs: true,
+            private: true,
+            last_used: 1234.0,
+            grants: vec![
+                ("op".into(), "a".repeat(32), 0.0),
+                ("ban".into(), "b".repeat(32), 0.0),
+                ("invite".into(), "c".repeat(32), 9_000.0),
+            ],
+        }
+    }
+
+    #[test]
+    fn hub_registry_round_trips_rooms_grants_and_klines() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+
+        apply_hub_ops(
+            &pool,
+            "identity-a",
+            &[
+                HubRoomOp::Upsert(Box::new(hub_room("lobby"))),
+                HubRoomOp::ReplaceKlines(vec!["d".repeat(32)]),
+            ],
+        )
+        .unwrap();
+
+        let rooms = list_hub_rooms(&pool, "identity-a").unwrap();
+        assert_eq!(rooms.len(), 1);
+        let room = &rooms[0];
+        assert_eq!(room.room_name, "lobby");
+        assert_eq!(room.topic, "field ops");
+        assert_eq!(room.key_mac, "ccdd");
+        // +p must survive a restart; the reference loses it.
+        assert!(room.private && room.moderated && room.topic_ops_only && room.no_outside_msgs);
+        assert_eq!(room.last_used, 1234.0);
+        let mut kinds: Vec<&str> = room.grants.iter().map(|(k, _, _)| k.as_str()).collect();
+        kinds.sort();
+        assert_eq!(kinds, vec!["ban", "invite", "op"]);
+        assert_eq!(
+            list_hub_klines(&pool, "identity-a").unwrap(),
+            vec!["d".repeat(32)]
+        );
+    }
+
+    #[test]
+    fn a_room_upsert_replaces_its_grants_wholesale() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        apply_hub_ops(
+            &pool,
+            "identity-a",
+            &[HubRoomOp::Upsert(Box::new(hub_room("lobby")))],
+        )
+        .unwrap();
+
+        // A revoked op must not survive as a stale row.
+        let mut room = hub_room("lobby");
+        room.grants = vec![("voice".into(), "e".repeat(32), 0.0)];
+        apply_hub_ops(&pool, "identity-a", &[HubRoomOp::Upsert(Box::new(room))]).unwrap();
+
+        let rooms = list_hub_rooms(&pool, "identity-a").unwrap();
+        assert_eq!(rooms[0].grants.len(), 1);
+        assert_eq!(rooms[0].grants[0].0, "voice");
+    }
+
+    #[test]
+    fn hub_registry_ops_apply_in_batch_order() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        // Touch-then-remove and remove-then-upsert must not reorder.
+        apply_hub_ops(
+            &pool,
+            "identity-a",
+            &[
+                HubRoomOp::Upsert(Box::new(hub_room("lobby"))),
+                HubRoomOp::Touched {
+                    room_name: "lobby".into(),
+                    last_used: 4321.0,
+                },
+                HubRoomOp::Removed {
+                    room_name: "lobby".into(),
+                },
+                HubRoomOp::Upsert(Box::new(hub_room("lobby"))),
+            ],
+        )
+        .unwrap();
+        let rooms = list_hub_rooms(&pool, "identity-a").unwrap();
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].last_used, 1234.0, "the final upsert wins");
+    }
+
+    #[test]
+    fn removing_a_room_cascades_its_grants() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        apply_hub_ops(
+            &pool,
+            "identity-a",
+            &[HubRoomOp::Upsert(Box::new(hub_room("lobby")))],
+        )
+        .unwrap();
+        apply_hub_ops(
+            &pool,
+            "identity-a",
+            &[HubRoomOp::Removed {
+                room_name: "lobby".into(),
+            }],
+        )
+        .unwrap();
+
+        assert!(list_hub_rooms(&pool, "identity-a").unwrap().is_empty());
+        let orphans: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM channel_hub_grants", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(orphans, 0, "grants must not outlive their room");
+    }
+
+    #[test]
+    fn gc_invites_drops_only_expired_invite_grants() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        apply_hub_ops(
+            &pool,
+            "identity-a",
+            &[HubRoomOp::Upsert(Box::new(hub_room("lobby")))],
+        )
+        .unwrap();
+
+        apply_hub_ops(
+            &pool,
+            "identity-a",
+            &[HubRoomOp::GcInvites { before: 10_000.0 }],
+        )
+        .unwrap();
+        let rooms = list_hub_rooms(&pool, "identity-a").unwrap();
+        let kinds: Vec<&str> = rooms[0].grants.iter().map(|(k, _, _)| k.as_str()).collect();
+        assert!(!kinds.contains(&"invite"), "the expired invite is gone");
+        assert!(
+            kinds.contains(&"op") && kinds.contains(&"ban"),
+            "permanent grants (expires_at 0) must never be collected"
+        );
+    }
+
+    #[test]
+    fn hub_registry_is_identity_scoped_and_cascades_with_the_identity() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        save_identity(&pool, "identity-b", "lxmf-b", "B", "B");
+        for id in ["identity-a", "identity-b"] {
+            apply_hub_ops(
+                &pool,
+                id,
+                &[
+                    HubRoomOp::Upsert(Box::new(hub_room("lobby"))),
+                    HubRoomOp::ReplaceKlines(vec!["d".repeat(32)]),
+                ],
+            )
+            .unwrap();
+        }
+
+        delete_identity(&pool, "identity-a", true).unwrap();
+        assert!(list_hub_rooms(&pool, "identity-a").unwrap().is_empty());
+        assert!(list_hub_klines(&pool, "identity-a").unwrap().is_empty());
+        assert_eq!(list_hub_rooms(&pool, "identity-b").unwrap().len(), 1);
+        assert_eq!(list_hub_klines(&pool, "identity-b").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_hub_room_row_never_debug_prints_its_key() {
+        let rendered = format!("{:?}", hub_room("lobby"));
+        assert!(!rendered.contains("ccdd"), "the key MAC must not be logged");
+        assert!(
+            !rendered.contains("aabb"),
+            "the key salt must not be logged"
+        );
+        assert!(rendered.contains("keyed: true"));
     }
 
     #[test]
@@ -5013,6 +5528,9 @@ mod migration_tests {
             "messages_fts",
             "channel_hubs",
             "channel_rooms",
+            "channel_hub_rooms",
+            "channel_hub_grants",
+            "channel_hub_klines",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -5370,6 +5888,70 @@ mod migration_tests {
             })
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_from_v34_adds_channel_hub_registry_tables() {
+        let pool = empty_pool();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (34);",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        for table in [
+            "channel_hub_rooms",
+            "channel_hub_grants",
+            "channel_hub_klines",
+        ] {
+            assert!(table_exists(&conn, table).unwrap());
+        }
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    /// The migrated schema and the fresh schema must agree; the DDL is
+    /// duplicated between them by house convention, so drift is easy.
+    #[test]
+    fn migrated_and_fresh_hub_registry_schemas_match() {
+        let migrated = empty_pool();
+        {
+            let conn = migrated.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (34);",
+            )
+            .unwrap();
+        }
+        init_schema(&migrated).unwrap();
+        let fresh = empty_pool();
+        init_schema(&fresh).unwrap();
+
+        for table in [
+            "channel_hub_rooms",
+            "channel_hub_grants",
+            "channel_hub_klines",
+        ] {
+            let columns = |pool: &DbPool| -> Vec<String> {
+                let conn = pool.get().unwrap();
+                get_column_names(&conn, table).unwrap()
+            };
+            assert_eq!(
+                columns(&migrated),
+                columns(&fresh),
+                "{table} drifted between the migration and the fresh schema"
+            );
+        }
     }
 }
 
