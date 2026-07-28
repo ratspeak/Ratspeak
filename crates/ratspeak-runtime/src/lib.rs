@@ -715,12 +715,17 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
     if let Some(channels) = state.take_channels() {
         channels.shutdown().await;
     }
-    if let Some(channel_hub) = state.take_channel_hub() {
-        if !channel_hub.shutdown().await {
-            tracing::warn!(
-                reason = "shutdown_unacknowledged",
-                "channel hub teardown did not complete before runtime shutdown"
-            );
+    {
+        let _hub_control = state.channel_hub_control_lock.lock().await;
+        if let Some(channel_hub) = state.channel_hub_handle() {
+            if channel_hub.shutdown().await {
+                state.take_channel_hub();
+            } else {
+                tracing::warn!(
+                    reason = "shutdown_unacknowledged",
+                    "channel hub teardown did not complete before runtime shutdown"
+                );
+            }
         }
     }
     if let Ok(sig) = state.session_shutdown.read() {
@@ -896,41 +901,22 @@ fn has_plain_identity_material(ratspeak_dir: &std::path::Path) -> bool {
             .unwrap_or(false)
 }
 
-/// Hub configuration from operator settings; unset keys keep defaults.
-fn channel_hub_config_from_settings(db: &db::DbPool) -> channel_hub::ChannelHubConfig {
-    let mut config = channel_hub::ChannelHubConfig::default();
-    if let Some(name) = db::get_setting(db, "channel_hub_name") {
-        let name = name.trim();
-        if !name.is_empty() {
-            config.hub_name = name.to_string();
-        }
-    }
-    if let Some(greeting) = db::get_setting(db, "channel_hub_greeting") {
-        let greeting = greeting.trim();
-        if !greeting.is_empty() {
-            config.greeting = Some(greeting.to_string());
-        }
-    }
-    if let Some(interval) = db::get_setting(db, "channel_hub_announce_interval")
-        .and_then(|value| value.parse::<u64>().ok())
-    {
-        config.announce_interval_secs = interval;
-    }
-    if let Some(enabled) = db::get_setting(db, "channel_hub_resource_send") {
-        config.resource_send_enabled = enabled.trim() == "1";
-    }
-    if let Some(enabled) = db::get_setting(db, "channel_hub_resource_accept") {
-        config.resource_accept_enabled = enabled.trim() == "1";
-    }
-    config
-}
-
 /// Start the RRC hub service for the active identity. The hub identity is a
 /// dedicated per-identity keypair stored beside the identity's runtime state,
 /// never the operator's chat identity. Requires a running RNS session.
 pub async fn start_channel_hub_service(state: &Arc<AppState>) -> bool {
-    if state.channel_hub_handle().is_some() {
-        return true;
+    if !channel_hub::channel_hub_hosting_supported() {
+        tracing::warn!(reason = "unsupported_platform", "channel hub not started");
+        return false;
+    }
+    if let Some(existing) = state.channel_hub_handle() {
+        if existing.snapshot().running {
+            return true;
+        }
+        // A timed-out shutdown keeps its handle in the slot specifically so a
+        // replacement cannot overlap it. Once its shared snapshot says
+        // stopped, the stale handle is safe to retire.
+        state.take_channel_hub();
     }
     let transport_tx = state
         .rns
@@ -986,7 +972,13 @@ pub async fn start_channel_hub_service(state: &Arc<AppState>) -> bool {
             return false;
         }
     };
-    let config = channel_hub_config_from_settings(&state.db);
+    let config = match channel_hub::ChannelHubSettings::load(&state.db) {
+        Ok(settings) => settings.runtime_config(),
+        Err(_) => {
+            tracing::warn!(reason = "settings_unavailable", "channel hub not started");
+            return false;
+        }
+    };
     match channel_hub::ChannelHubHandle::start(
         transport_tx,
         hub_identity,
@@ -1868,7 +1860,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 ));
                 tracing::info!("Channels runtime initialized");
             }
-            if db::get_setting(&state.db, "channel_hub_enabled").as_deref() == Some("1") {
+            if channel_hub::channel_hub_hosting_supported()
+                && channel_hub::ChannelHubSettings::load(&state.db)
+                    .is_ok_and(|settings| settings.enabled)
+            {
+                let _hub_control = state.channel_hub_control_lock.lock().await;
                 start_channel_hub_service(&state).await;
             }
             tracing::info!("RNS runtime initialized");

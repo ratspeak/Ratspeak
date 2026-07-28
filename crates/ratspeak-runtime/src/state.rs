@@ -276,6 +276,9 @@ pub struct AppState {
     /// Session-scoped RRC hub service. Same teardown ordering as `channels`:
     /// before RNS, so client links receive their teardown packets.
     pub channel_hub: RwLock<Option<crate::channel_hub::ChannelHubHandle>>,
+    /// Serializes hub start, stop, configuration restart, and identity/runtime
+    /// teardown. The handle slot alone cannot make check-then-register atomic.
+    pub channel_hub_control_lock: tokio::sync::Mutex<()>,
     pub lxmf: Mutex<Option<LxmfManager>>,
     #[cfg(feature = "lxst-voice")]
     pub lxst_voice: Mutex<Option<crate::voice::LxstVoiceServiceHandle>>,
@@ -454,6 +457,7 @@ impl AppState {
             rnode_activity_session_generation: AtomicU64::new(0),
             channels: RwLock::new(None),
             channel_hub: RwLock::new(None),
+            channel_hub_control_lock: tokio::sync::Mutex::new(()),
             lxmf: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
             lxst_voice: Mutex::new(None),

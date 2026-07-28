@@ -225,6 +225,12 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     let root = repo_root();
     let hub = read_source(root.join("crates/ratspeak-runtime/src/channel_hub.rs"))
         .expect("channel hub runtime");
+    let runtime =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lifecycle");
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channel_hub.rs"))
+        .expect("channel hub commands");
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
 
@@ -326,6 +332,37 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
             tauri_lib.contains(command),
             "{command} must stay registered"
         );
+    }
+
+    // Hosting is a desktop capability even though status IPC remains
+    // available everywhere for one stable frontend contract.
+    assert!(hub.contains("pub const fn channel_hub_hosting_supported()"));
+    assert!(hub.contains("target_os = \"android\", target_os = \"ios\""));
+    assert_eq!(
+        commands.matches("ensure_supported()?;").count(),
+        3,
+        "every mutating hub command must reject mobile hosting"
+    );
+    assert!(runtime.contains("channel_hub_hosting_supported()"));
+
+    // Configuration reads independently of live state, writes as one SQLite
+    // transaction, and serializes every lifecycle mutation.
+    assert!(commands.contains("pub struct ChannelHubOverview"));
+    assert!(commands.contains("ChannelHubSettings::load"));
+    assert!(commands.contains("try_set_settings"));
+    assert!(db.contains("pub fn try_set_settings"));
+    assert!(db.contains("let transaction = conn.transaction()"));
+    assert!(state.contains("pub channel_hub_control_lock: tokio::sync::Mutex<()>"));
+    for command in [
+        "pub async fn channel_hub_start",
+        "pub async fn channel_hub_stop",
+        "pub async fn channel_hub_set_config",
+    ] {
+        let body = commands
+            .split(command)
+            .nth(1)
+            .expect("hub lifecycle command");
+        assert!(body.contains("channel_hub_control_lock.lock().await"));
     }
 }
 

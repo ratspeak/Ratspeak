@@ -88,6 +88,123 @@ const HUB_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_HUB_NAME: &str = "Ratspeak hub";
 pub const DEFAULT_PING_INTERVAL_SECS: u64 = 55;
 pub const DEFAULT_PING_TIMEOUT_SECS: u64 = 120;
+pub const CHANNEL_HUB_SETTING_KEYS: [&str; 6] = [
+    "channel_hub_enabled",
+    "channel_hub_name",
+    "channel_hub_greeting",
+    "channel_hub_announce_interval",
+    "channel_hub_resource_send",
+    "channel_hub_resource_accept",
+];
+
+/// Operator-editable hub settings. This is deliberately separate from the
+/// live snapshot: saved configuration must remain readable while the network
+/// and hub actor are stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelHubSettings {
+    pub enabled: bool,
+    pub hub_name: String,
+    pub greeting: String,
+    pub announce_interval_secs: u64,
+    pub resource_send_enabled: bool,
+    pub resource_accept_enabled: bool,
+}
+
+impl Default for ChannelHubSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hub_name: DEFAULT_HUB_NAME.to_string(),
+            greeting: String::new(),
+            announce_interval_secs: 0,
+            resource_send_enabled: true,
+            resource_accept_enabled: false,
+        }
+    }
+}
+
+impl ChannelHubSettings {
+    pub fn load(pool: &db::DbPool) -> Result<Self, String> {
+        let values = db::get_settings(pool, &CHANNEL_HUB_SETTING_KEYS)?;
+        let defaults = Self::default();
+        let hub_name = values
+            .get("channel_hub_name")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&defaults.hub_name)
+            .to_string();
+        let announce_interval_secs = values
+            .get("channel_hub_announce_interval")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value == 0 || (300..=86_400).contains(value))
+            .unwrap_or(defaults.announce_interval_secs);
+
+        Ok(Self {
+            enabled: values
+                .get("channel_hub_enabled")
+                .is_some_and(|value| value.trim() == "1"),
+            hub_name,
+            greeting: values
+                .get("channel_hub_greeting")
+                .map(|value| value.trim().to_string())
+                .unwrap_or_default(),
+            announce_interval_secs,
+            resource_send_enabled: values
+                .get("channel_hub_resource_send")
+                .map(|value| value.trim() == "1")
+                .unwrap_or(defaults.resource_send_enabled),
+            resource_accept_enabled: values
+                .get("channel_hub_resource_accept")
+                .map(|value| value.trim() == "1")
+                .unwrap_or(defaults.resource_accept_enabled),
+        })
+    }
+
+    pub fn setting_rows(&self) -> Vec<(String, String)> {
+        vec![
+            (
+                "channel_hub_enabled".to_string(),
+                bool_setting(self.enabled),
+            ),
+            ("channel_hub_name".to_string(), self.hub_name.clone()),
+            ("channel_hub_greeting".to_string(), self.greeting.clone()),
+            (
+                "channel_hub_announce_interval".to_string(),
+                self.announce_interval_secs.to_string(),
+            ),
+            (
+                "channel_hub_resource_send".to_string(),
+                bool_setting(self.resource_send_enabled),
+            ),
+            (
+                "channel_hub_resource_accept".to_string(),
+                bool_setting(self.resource_accept_enabled),
+            ),
+        ]
+    }
+
+    pub fn runtime_config(&self) -> ChannelHubConfig {
+        ChannelHubConfig {
+            hub_name: self.hub_name.clone(),
+            greeting: (!self.greeting.is_empty()).then(|| self.greeting.clone()),
+            announce_interval_secs: self.announce_interval_secs,
+            resource_send_enabled: self.resource_send_enabled,
+            resource_accept_enabled: self.resource_accept_enabled,
+            ..ChannelHubConfig::default()
+        }
+    }
+}
+
+fn bool_setting(enabled: bool) -> String {
+    if enabled { "1" } else { "0" }.to_string()
+}
+
+/// Hosting is a desktop service. Keep this runtime boundary even when the
+/// frontend omits the controls so mobile builds cannot be enabled through a
+/// stale setting or direct IPC call.
+pub const fn channel_hub_hosting_supported() -> bool {
+    !cfg!(any(target_os = "android", target_os = "ios"))
+}
 
 #[derive(Debug, Clone)]
 pub struct ChannelHubConfig {
@@ -4806,6 +4923,59 @@ fn publish_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings_pool() -> db::DbPool {
+        let manager = r2d2_sqlite::SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        db::init_schema(&pool).unwrap();
+        pool
+    }
+
+    #[test]
+    fn hub_settings_are_readable_without_a_live_service() {
+        let pool = settings_pool();
+        let defaults = ChannelHubSettings::load(&pool).unwrap();
+        assert!(!defaults.enabled);
+        assert_eq!(defaults.hub_name, DEFAULT_HUB_NAME);
+        assert!(defaults.greeting.is_empty());
+        assert!(defaults.resource_send_enabled);
+        assert!(!defaults.resource_accept_enabled);
+
+        let configured = ChannelHubSettings {
+            enabled: true,
+            hub_name: "Mountain relay".to_string(),
+            greeting: "Welcome".to_string(),
+            announce_interval_secs: 900,
+            resource_send_enabled: false,
+            resource_accept_enabled: true,
+        };
+        db::try_set_settings(&pool, &configured.setting_rows()).unwrap();
+        assert_eq!(ChannelHubSettings::load(&pool).unwrap(), configured);
+    }
+
+    #[test]
+    fn corrupt_hub_settings_fall_back_to_safe_defaults() {
+        let pool = settings_pool();
+        db::try_set_settings(
+            &pool,
+            &[
+                ("channel_hub_enabled".to_string(), "yes".to_string()),
+                ("channel_hub_name".to_string(), "   ".to_string()),
+                (
+                    "channel_hub_announce_interval".to_string(),
+                    "42".to_string(),
+                ),
+                ("channel_hub_resource_accept".to_string(), "yes".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let settings = ChannelHubSettings::load(&pool).unwrap();
+        assert!(!settings.enabled);
+        assert_eq!(settings.hub_name, DEFAULT_HUB_NAME);
+        assert_eq!(settings.announce_interval_secs, 0);
+        assert!(!settings.resource_accept_enabled);
+    }
 
     /// ID_A is always a server operator, mirroring production: `start` seeds
     /// the hosting identity into `server_operators`. Rooms only exist because
