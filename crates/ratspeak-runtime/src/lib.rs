@@ -981,6 +981,7 @@ pub async fn start_channel_hub_service(state: &Arc<AppState>) -> bool {
         hub_identity,
         config,
         operator_identity,
+        channel_hub::HubStore::new(state.db.clone(), identity_hash.clone()),
         state.emitter.clone(),
         shutdown,
         Arc::downgrade(state),

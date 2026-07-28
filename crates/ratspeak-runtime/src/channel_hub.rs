@@ -25,6 +25,7 @@ use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
 
+use crate::db;
 use crate::rrc;
 use crate::state::AppState;
 use ratspeak_core::Emitter;
@@ -64,6 +65,11 @@ pub struct ChannelHubConfig {
     pub banned_identities: Vec<[u8; 16]>,
     /// Invite lifetime for `/invite add` (reference default 900s).
     pub invite_timeout_secs: u64,
+    /// Drop a registered room nobody has used in this long. 0 disables.
+    pub room_registry_prune_after_secs: u64,
+    pub room_registry_prune_interval_secs: u64,
+    /// Sanity cap on the registry; room creation is already operator-only.
+    pub max_registered_rooms: usize,
 }
 
 impl Default for ChannelHubConfig {
@@ -85,6 +91,9 @@ impl Default for ChannelHubConfig {
             server_operators: Vec::new(),
             banned_identities: Vec::new(),
             invite_timeout_secs: 900,
+            room_registry_prune_after_secs: 30 * 24 * 3600,
+            room_registry_prune_interval_secs: 3600,
+            max_registered_rooms: 256,
         }
     }
 }
@@ -114,6 +123,9 @@ pub struct ChannelHubSnapshot {
     pub sessions: usize,
     pub welcomed_sessions: usize,
     pub rooms: usize,
+    pub registered_rooms: usize,
+    /// True while a durable registry write is outstanding.
+    pub registry_degraded: bool,
     pub announce_interval_secs: u64,
     pub updated_at_ms: u64,
 }
@@ -127,6 +139,8 @@ impl ChannelHubSnapshot {
             sessions: 0,
             welcomed_sessions: 0,
             rooms: 0,
+            registered_rooms: 0,
+            registry_degraded: false,
             announce_interval_secs: 0,
             updated_at_ms: now_ms(),
         }
@@ -141,6 +155,8 @@ pub enum ChannelHubError {
     Identity(String),
     #[error("hub destination registration failed: {0}")]
     Registration(String),
+    #[error("hub registry is unavailable: {0}")]
+    Registry(String),
 }
 
 enum HubCommand {
@@ -218,6 +234,20 @@ fn room_key_digest(
         mac,
         pepper_id,
     }
+}
+
+fn decode_room_key(row: &db::HubRoomRow) -> Option<RoomKeyDigest> {
+    if row.key_mac.is_empty() {
+        return None;
+    }
+    let salt = <[u8; 16]>::try_from(hex::decode(&row.key_salt).ok()?).ok()?;
+    let mac = <[u8; 32]>::try_from(hex::decode(&row.key_mac).ok()?).ok()?;
+    let pepper_id = <[u8; 8]>::try_from(hex::decode(&row.key_pepper_id).ok()?).ok()?;
+    Some(RoomKeyDigest {
+        salt,
+        mac,
+        pepper_id,
+    })
 }
 
 fn room_key_matches(pepper: &[u8; 32], room: &str, provided: &str, digest: &RoomKeyDigest) -> bool {
@@ -316,13 +346,18 @@ struct HubRoom {
     ops: HashSet<[u8; 16]>,
     voiced: HashSet<[u8; 16]>,
     bans: HashSet<[u8; 16]>,
-    invited: HashMap<[u8; 16], Instant>,
+    invited: HashMap<[u8; 16], f64>,
     moderated: bool,
     invite_only: bool,
     topic_ops_only: bool,
     no_outside_msgs: bool,
     private: bool,
     registered: bool,
+    /// Wall-clock last activity, used only by the registry prune.
+    last_used: f64,
+    last_used_dirty: bool,
+    /// Set when a write for this room failed and must be retried.
+    persist_dirty: bool,
     /// Link ids, not identities: two links from one identity both relay.
     members: HashSet<[u8; 16]>,
 }
@@ -371,6 +406,18 @@ pub(crate) enum HubSend {
     Close {
         link_id: [u8; 16],
     },
+    /// A durable-write intent. Keeping persistence as an intent lets `HubCore`
+    /// stay synchronous and database-free.
+    Persist(HubPersist),
+}
+
+#[derive(Debug)]
+pub(crate) struct HubPersist {
+    pub op: db::HubRoomOp,
+    /// Link that caused the write; a failure notice goes here and nowhere else.
+    pub origin: Option<[u8; 16]>,
+    /// Room scope for that notice, so it lands in the right transcript.
+    pub room: Option<String>,
 }
 
 /// Transport-free hub protocol core: every inbound event mutates state and
@@ -389,6 +436,10 @@ pub(crate) struct HubCore {
     /// Verify-only material for room join keys; never persisted.
     pepper: Zeroizing<[u8; 32]>,
     pepper_id: [u8; 8],
+    started_wall: f64,
+    klines_dirty: bool,
+    pending_removals: HashSet<String>,
+    pepper_rotation_notice: Option<String>,
     stats: HubStats,
     started_at: Instant,
 }
@@ -399,6 +450,7 @@ impl HubCore {
         hub_hash: [u8; 16],
         klines: Arc<RwLock<HashSet<[u8; 16]>>>,
         pepper: Zeroizing<[u8; 32]>,
+        restored: Vec<db::HubRoomRow>,
     ) -> Self {
         if let Ok(mut set) = klines.write() {
             set.extend(config.banned_identities.iter().copied());
@@ -406,7 +458,7 @@ impl HubCore {
         let server_ops = config.server_operators.iter().copied().collect();
         let mut pepper_id = [0u8; 8];
         pepper_id.copy_from_slice(&hub_hash[..8]);
-        Self {
+        let mut core = Self {
             config,
             hub_hash,
             sessions: HashMap::new(),
@@ -416,8 +468,93 @@ impl HubCore {
             klines,
             pepper,
             pepper_id,
+            started_wall: now_unix(),
+            klines_dirty: false,
+            pending_removals: HashSet::new(),
+            pepper_rotation_notice: None,
             stats: HubStats::default(),
             started_at: Instant::now(),
+        };
+        core.restore(restored);
+        core
+    }
+
+    /// Rebuild live rooms from the registry. Rows are re-validated rather than
+    /// trusted: a row that no longer normalizes is dropped from memory but
+    /// left on disk, since silently deleting an operator's room over a config
+    /// change would be destructive.
+    fn restore(&mut self, restored: Vec<db::HubRoomRow>) {
+        let now = now_unix();
+        let mut key_rotated = 0usize;
+        for row in restored {
+            let Ok(room_name) = self.norm_room(&row.room_name) else {
+                tracing::warn!(reason = "invalid_room_name", "hub registry row skipped");
+                continue;
+            };
+            if room_name != row.room_name {
+                tracing::warn!(
+                    reason = "unnormalized_room_name",
+                    "hub registry row skipped"
+                );
+                continue;
+            }
+            let key = decode_room_key(&row);
+            if row.key_mac.is_empty() != key.is_none() {
+                // Present but unusable: a different hub identity wrote it.
+                key_rotated += 1;
+            }
+            let key = key.filter(|digest| digest.pepper_id == self.pepper_id);
+            if !row.key_mac.is_empty() && key.is_none() {
+                key_rotated += 1;
+            }
+            let mut room = HubRoom {
+                registered: true,
+                topic: (!row.topic.is_empty()).then(|| row.topic.clone()),
+                key,
+                moderated: row.moderated,
+                invite_only: row.invite_only,
+                topic_ops_only: row.topic_ops_only,
+                no_outside_msgs: row.no_outside_msgs,
+                private: row.private,
+                last_used: row.last_used,
+                ..HubRoom::default()
+            };
+            for (kind, subject, expires_at) in &row.grants {
+                let Some(identity) = hex::decode(subject)
+                    .ok()
+                    .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                else {
+                    continue;
+                };
+                match kind.as_str() {
+                    "op" => {
+                        room.ops.insert(identity);
+                    }
+                    "voice" => {
+                        room.voiced.insert(identity);
+                    }
+                    "ban" => {
+                        room.bans.insert(identity);
+                    }
+                    "invite" if *expires_at > now => {
+                        room.invited.insert(identity, *expires_at);
+                    }
+                    _ => {}
+                }
+            }
+            self.rooms.insert(room_name, room);
+        }
+        if key_rotated > 0 {
+            // The operator has to be told: +k rooms are now unjoinable for
+            // anyone without op status, and a log line is not visible in-app.
+            tracing::warn!(
+                rooms = key_rotated,
+                reason = "hub_key_rotated",
+                "room keys cleared after a hub identity change"
+            );
+            self.pepper_rotation_notice = Some(format!(
+                "{key_rotated} room key(s) were cleared because the hub identity changed; set them again with /mode <room> +k"
+            ));
         }
     }
 
@@ -432,6 +569,229 @@ impl HubCore {
 
     fn room_count(&self) -> usize {
         self.rooms.len()
+    }
+
+    pub(crate) fn registered_room_count(&self) -> usize {
+        self.rooms.values().filter(|room| room.registered).count()
+    }
+
+    /// True while any durable write is outstanding, so the operator can be
+    /// told the registry is behind rather than silently losing policy.
+    pub(crate) fn registry_degraded(&self) -> bool {
+        self.klines_dirty
+            || !self.pending_removals.is_empty()
+            || self.rooms.values().any(|room| room.persist_dirty)
+    }
+
+    /// Project a registered room to its durable form and queue the write.
+    /// Unregistered rooms are deliberately ephemeral, matching the reference.
+    fn persist_room(&mut self, room_name: &str, origin: Option<[u8; 16]>, out: &mut Vec<HubSend>) {
+        let now = now_unix();
+        let Some(room) = self.rooms.get_mut(room_name) else {
+            return;
+        };
+        if !room.registered {
+            return;
+        }
+        room.invited.retain(|_, expires| *expires > now);
+        room.last_used_dirty = false;
+        room.persist_dirty = false;
+        let key = room.key.clone();
+        let mut grants: Vec<(String, String, f64)> = Vec::new();
+        for (kind, subjects) in [
+            ("op", &room.ops),
+            ("voice", &room.voiced),
+            ("ban", &room.bans),
+        ] {
+            grants.extend(
+                subjects
+                    .iter()
+                    .map(|subject| (kind.to_string(), hex::encode(subject), 0.0)),
+            );
+        }
+        grants.extend(
+            room.invited
+                .iter()
+                .map(|(subject, expires)| ("invite".to_string(), hex::encode(subject), *expires)),
+        );
+        let row = db::HubRoomRow {
+            room_name: room_name.to_string(),
+            topic: room.topic.clone().unwrap_or_default(),
+            key_salt: key
+                .as_ref()
+                .map(|key| hex::encode(key.salt))
+                .unwrap_or_default(),
+            key_mac: key
+                .as_ref()
+                .map(|key| hex::encode(key.mac))
+                .unwrap_or_default(),
+            key_pepper_id: key
+                .as_ref()
+                .map(|key| hex::encode(key.pepper_id))
+                .unwrap_or_default(),
+            moderated: room.moderated,
+            invite_only: room.invite_only,
+            topic_ops_only: room.topic_ops_only,
+            no_outside_msgs: room.no_outside_msgs,
+            private: room.private,
+            last_used: room.last_used,
+            grants,
+        };
+        out.push(HubSend::Persist(HubPersist {
+            op: db::HubRoomOp::Upsert(Box::new(row)),
+            origin,
+            room: Some(room_name.to_string()),
+        }));
+    }
+
+    fn persist_klines(&mut self, origin: Option<[u8; 16]>, out: &mut Vec<HubSend>) {
+        self.klines_dirty = false;
+        let subjects = self
+            .klines
+            .read()
+            .map(|klines| klines.iter().map(hex::encode).collect::<Vec<_>>())
+            .unwrap_or_default();
+        out.push(HubSend::Persist(HubPersist {
+            op: db::HubRoomOp::ReplaceKlines(subjects),
+            origin,
+            room: None,
+        }));
+    }
+
+    /// Mark room activity for the prune clock. Deliberately does not write:
+    /// a durable round trip per relayed message would be absurd.
+    fn touch_room(&mut self, room_name: &str) {
+        if let Some(room) = self.rooms.get_mut(room_name)
+            && room.registered
+        {
+            room.last_used = now_unix();
+            room.last_used_dirty = true;
+        }
+    }
+
+    pub(crate) fn flush_dirty_last_used(&mut self, out: &mut Vec<HubSend>) {
+        let dirty: Vec<(String, f64)> = self
+            .rooms
+            .iter_mut()
+            .filter(|(_, room)| room.registered && room.last_used_dirty)
+            .map(|(name, room)| {
+                room.last_used_dirty = false;
+                (name.clone(), room.last_used)
+            })
+            .collect();
+        for (room_name, last_used) in dirty {
+            out.push(HubSend::Persist(HubPersist {
+                op: db::HubRoomOp::Touched {
+                    room_name,
+                    last_used,
+                },
+                origin: None,
+                room: None,
+            }));
+        }
+    }
+
+    /// Drop registered rooms nobody has used in a long time. Unlike the
+    /// reference this runs whether or not a session is connected.
+    pub(crate) fn prune_registry(&mut self, now: f64, out: &mut Vec<HubSend>) {
+        if self.config.room_registry_prune_after_secs == 0 {
+            return;
+        }
+        // A device with no RTC reports an epoch near zero; pruning on that
+        // clock would delete the operator's rooms.
+        if now < 1_700_000_000.0 {
+            return;
+        }
+        // Give the clock a chance to settle before the first pass. An
+        // interval of 0 means "no startup delay" and is used by tests.
+        if self.config.room_registry_prune_interval_secs > 0
+            && self.started_at.elapsed()
+                < Duration::from_secs(self.config.room_registry_prune_interval_secs)
+        {
+            return;
+        }
+        let cutoff = self.config.room_registry_prune_after_secs as f64;
+        let mut stale: Vec<String> = Vec::new();
+        for (name, room) in self.rooms.iter_mut() {
+            if !room.registered || !room.members.is_empty() {
+                continue;
+            }
+            let last_used = if room.last_used <= 0.0 {
+                self.started_wall
+            } else {
+                room.last_used
+            };
+            // A clock that jumped backwards must not make a room look ancient.
+            if last_used > now {
+                room.last_used = now;
+                room.last_used_dirty = true;
+                continue;
+            }
+            if now - last_used > cutoff {
+                stale.push(name.clone());
+            }
+        }
+        for room_name in stale {
+            self.rooms.remove(&room_name);
+            out.push(HubSend::Persist(HubPersist {
+                op: db::HubRoomOp::Removed {
+                    room_name: room_name.clone(),
+                },
+                origin: None,
+                room: None,
+            }));
+        }
+        out.push(HubSend::Persist(HubPersist {
+            op: db::HubRoomOp::GcInvites { before: now },
+            origin: None,
+            room: None,
+        }));
+    }
+
+    /// Record a failed write so the next tick re-emits it from live state.
+    /// Re-projecting rather than replaying a stale snapshot keeps the retry
+    /// set bounded and always current.
+    pub(crate) fn note_persist_failed(&mut self, op: &db::HubRoomOp) {
+        match op {
+            db::HubRoomOp::Upsert(room) => {
+                if let Some(live) = self.rooms.get_mut(&room.room_name) {
+                    live.persist_dirty = true;
+                }
+            }
+            db::HubRoomOp::Touched { room_name, .. } => {
+                if let Some(live) = self.rooms.get_mut(room_name) {
+                    live.last_used_dirty = true;
+                }
+            }
+            db::HubRoomOp::Removed { room_name } => {
+                self.pending_removals.insert(room_name.clone());
+            }
+            db::HubRoomOp::ReplaceKlines(_) => self.klines_dirty = true,
+            db::HubRoomOp::GcInvites { .. } => {}
+        }
+    }
+
+    pub(crate) fn retry_failed_persists(&mut self, out: &mut Vec<HubSend>) {
+        let removals: Vec<String> = self.pending_removals.drain().collect();
+        for room_name in removals {
+            out.push(HubSend::Persist(HubPersist {
+                op: db::HubRoomOp::Removed { room_name },
+                origin: None,
+                room: None,
+            }));
+        }
+        let dirty: Vec<String> = self
+            .rooms
+            .iter()
+            .filter(|(_, room)| room.registered && room.persist_dirty)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for room_name in dirty {
+            self.persist_room(&room_name, None, out);
+        }
+        if self.klines_dirty {
+            self.persist_klines(None, out);
+        }
     }
 
     pub(crate) fn note_rate_limited(&mut self) {
@@ -466,10 +826,10 @@ impl HubCore {
         self.is_room_op(room, identity) || room.voiced.contains(&identity)
     }
 
-    fn is_invited(room: &HubRoom, identity: [u8; 16], now: Instant) -> bool {
+    fn is_invited(room: &HubRoom, identity: [u8; 16], now_unix: f64) -> bool {
         room.invited
             .get(&identity)
-            .is_some_and(|expires| *expires > now)
+            .is_some_and(|expires| *expires > now_unix)
     }
 
     /// Same identity still present in `room` through a different link.
@@ -756,7 +1116,7 @@ impl HubCore {
         if room.invite_only {
             let bypass = self.server_ops.contains(&identity)
                 || room.ops.contains(&identity)
-                || Self::is_invited(room, identity, now);
+                || Self::is_invited(room, identity, now_unix());
             if !bypass {
                 out.push(self.hub_error(link_id, "invite-only (+i)", Some(&room_name)));
                 return;
@@ -766,7 +1126,7 @@ impl HubCore {
             let room = self.rooms.get(&room_name).expect("room exists");
             let bypass = self.server_ops.contains(&identity)
                 || room.ops.contains(&identity)
-                || Self::is_invited(room, identity, now);
+                || Self::is_invited(room, identity, now_unix());
             let provided = envelope.body.as_ref().and_then(|body| match body {
                 Value::Text(text) => Some(text.as_str()),
                 _ => None,
@@ -797,6 +1157,9 @@ impl HubCore {
             .collect();
         room.members.insert(link_id);
         room.invited.remove(&identity);
+        drop(room);
+        self.touch_room(&room_name);
+        let room = self.rooms.get_mut(&room_name).expect("room exists");
         if let Some(session) = self.sessions.get_mut(&link_id) {
             session.rooms.insert(room_name.clone());
         }
@@ -1379,6 +1742,7 @@ impl HubCore {
             if let Ok(mut klines) = self.klines.write() {
                 klines.insert(target);
             }
+            self.persist_klines(Some(link_id), out);
             out.push(self.hub_notice(
                 link_id,
                 &format!("kline added for {}", hex::encode(target)),
@@ -1404,6 +1768,9 @@ impl HubCore {
                 .write()
                 .map(|mut klines| klines.remove(&target))
                 .unwrap_or(false);
+            if removed {
+                self.persist_klines(Some(link_id), out);
+            }
             let text = if removed {
                 format!("kline removed for {}", hex::encode(target))
             } else {
@@ -1455,10 +1822,17 @@ impl HubCore {
             ));
             return;
         }
+        if self.registered_room_count() >= self.config.max_registered_rooms {
+            out.push(self.hub_notice(link_id, "registry is full", raw_room));
+            return;
+        }
+        let room = self.rooms.get_mut(&room_name).expect("room exists");
         room.registered = true;
         room.no_outside_msgs = true;
         room.topic_ops_only = true;
         room.ops.insert(identity);
+        room.last_used = now_unix();
+        self.persist_room(&room_name, Some(link_id), out);
         out.push(self.hub_notice(link_id, &format!("registered room {room_name}"), raw_room));
     }
 
@@ -1510,6 +1884,13 @@ impl HubCore {
         if empty {
             self.rooms.remove(&room_name);
         }
+        out.push(HubSend::Persist(HubPersist {
+            op: db::HubRoomOp::Removed {
+                room_name: room_name.clone(),
+            },
+            origin: Some(link_id),
+            room: Some(room_name.clone()),
+        }));
         out.push(self.hub_notice(link_id, &format!("unregistered room {room_name}"), raw_room));
     }
 
@@ -1569,6 +1950,7 @@ impl HubCore {
                 Some(&room_name),
             ));
         }
+        self.persist_room(&room_name, Some(link_id), out);
     }
 
     fn broadcast_mode(&self, room_name: &str, out: &mut Vec<HubSend>) {
@@ -1621,6 +2003,7 @@ impl HubCore {
                     _ => room.private = enable,
                 }
                 self.broadcast_mode(&room_name, out);
+                self.persist_room(&room_name, Some(link_id), out);
             }
             "+k" => {
                 if args.len() < 3 {
@@ -1652,6 +2035,7 @@ impl HubCore {
                 let room = self.rooms.get_mut(&room_name).expect("room exists");
                 room.key = Some(digest);
                 self.broadcast_mode(&room_name, out);
+                self.persist_room(&room_name, Some(link_id), out);
             }
             "-k" => {
                 let room = self.rooms.get_mut(&room_name).expect("room just ensured");
@@ -1716,6 +2100,7 @@ impl HubCore {
                 for member in members {
                     out.push(self.hub_notice(member, &text, Some(&room_name)));
                 }
+                self.persist_room(&room_name, Some(link_id), out);
             }
             _ => {
                 out.push(self.hub_notice(
@@ -1789,6 +2174,7 @@ impl HubCore {
                 format!("voice removed in {room_name}")
             }
         };
+        self.persist_room(&room_name, Some(link_id), out);
         out.push(self.hub_notice(link_id, &text, raw_room));
     }
 
@@ -1895,11 +2281,13 @@ impl HubCore {
                     Some(&room_name),
                 ));
             }
+            self.persist_room(&room_name, Some(link_id), out);
             out.push(self.hub_notice(link_id, &format!("ban added in {room_name}"), raw_room));
         } else {
             if let Some(room) = self.rooms.get_mut(&room_name) {
                 room.bans.remove(&target);
             }
+            self.persist_room(&room_name, Some(link_id), out);
             out.push(self.hub_notice(link_id, &format!("ban removed in {room_name}"), raw_room));
         }
     }
@@ -1933,7 +2321,7 @@ impl HubCore {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
         }
-        let now = Instant::now();
+        let now = now_unix();
         if op == "list" {
             let mut items: Vec<String> = self
                 .rooms
@@ -1946,7 +2334,7 @@ impl HubCore {
                             format!(
                                 "{} expires_in={}s",
                                 hex::encode(identity),
-                                expires.duration_since(now).as_secs()
+                                (*expires - now).max(0.0) as u64
                             )
                         })
                         .collect()
@@ -1998,7 +2386,7 @@ impl HubCore {
                     .get_mut(&room_name)
                     .expect("room exists")
                     .invited
-                    .insert(target, now + ttl);
+                    .insert(target, now + ttl.as_secs_f64());
             }
             if let Some(target_link) = self.by_identity.get(&target).copied() {
                 let text = if keyed {
@@ -2018,11 +2406,15 @@ impl HubCore {
             } else {
                 format!("invite sent to {token} for {room_name}")
             };
+            if gated {
+                self.persist_room(&room_name, Some(link_id), out);
+            }
             out.push(self.hub_notice(link_id, &confirmation, raw_room));
         } else {
             if let Some(room) = self.rooms.get_mut(&room_name) {
                 room.invited.remove(&target);
             }
+            self.persist_room(&room_name, Some(link_id), out);
             out.push(self.hub_notice(link_id, &format!("invite removed in {room_name}"), raw_room));
         }
     }
@@ -2041,6 +2433,14 @@ impl HubCore {
             format!("uptime: {}s", self.started_at.elapsed().as_secs()),
             format!("sessions: {sessions} ({welcomed} welcomed)"),
             format!("rooms: {} ({registered} registered)", self.rooms.len()),
+            format!(
+                "registry: {}",
+                if self.registry_degraded() {
+                    "degraded"
+                } else {
+                    "ok"
+                }
+            ),
             format!(
                 "relay: msgs={} notices={} actions={} direct={}",
                 self.stats.messages_forwarded,
@@ -2173,6 +2573,16 @@ fn now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+/// Wall clock, used wherever a value has to mean the same thing in memory and
+/// on disk (invite expiry, room last-used).
+fn now_unix() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 /// rrcd announces `{"proto": "rrc", "v": 1, "hub": <name>}` — the one RRC
 /// structure keyed by text, and the only announce shape rrc-gui discovers.
 pub fn hub_announce_app_data(hub_name: &str) -> Vec<u8> {
@@ -2214,11 +2624,13 @@ pub struct ChannelHubHandle {
 impl ChannelHubHandle {
     /// Register the hub destination and spawn the service loop. Fails fast if
     /// the destination cannot be registered, so callers can surface the error.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         transport_tx: mpsc::Sender<TransportMessage>,
         hub_identity: Identity,
         mut config: ChannelHubConfig,
         operator_identity: [u8; 16],
+        store: HubStore,
         emitter: Arc<dyn Emitter>,
         shutdown: ShutdownSignal,
         _state: Weak<AppState>,
@@ -2228,7 +2640,22 @@ impl ChannelHubHandle {
         if !config.server_operators.contains(&operator_identity) {
             config.server_operators.push(operator_identity);
         }
-        let klines: Arc<RwLock<HashSet<[u8; 16]>>> = Arc::new(RwLock::new(HashSet::new()));
+        // Load before registering. Booting with an empty registry would turn
+        // every restored +i/+k/banned room into an open one, so a load failure
+        // must stop the hub rather than start it wide open.
+        let (restored, restored_klines) = store
+            .load()
+            .await
+            .map_err(|error| ChannelHubError::Registry(error.to_string()))?;
+        // Seed the kline set before the destination exists, otherwise a banned
+        // identity can establish a link in the window before HubCore fills it.
+        let mut seeded: HashSet<[u8; 16]> = config.banned_identities.iter().copied().collect();
+        seeded.extend(restored_klines.iter().filter_map(|hex| {
+            hex::decode(hex)
+                .ok()
+                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        }));
+        let klines: Arc<RwLock<HashSet<[u8; 16]>>> = Arc::new(RwLock::new(seeded));
         let gate_klines = klines.clone();
         let options = DestinationRuntimeOptions {
             accepts_links: true,
@@ -2255,11 +2682,12 @@ impl ChannelHubHandle {
         let pepper = room_key_pepper(&hub_identity).ok_or_else(|| {
             ChannelHubError::Identity("hub identity has no private key".to_string())
         })?;
-        let core = HubCore::new(config.clone(), hub_identity.hash, klines, pepper);
+        let core = HubCore::new(config.clone(), hub_identity.hash, klines, pepper, restored);
         tokio::spawn(run_hub(
             registration,
             core,
             config,
+            store,
             emitter,
             shutdown,
             command_rx,
@@ -2305,6 +2733,7 @@ async fn run_hub(
     mut registration: RegisteredDestination,
     mut core: HubCore,
     config: ChannelHubConfig,
+    store: HubStore,
     emitter: Arc<dyn Emitter>,
     shutdown: ShutdownSignal,
     mut command_rx: mpsc::Receiver<HubCommand>,
@@ -2336,6 +2765,11 @@ async fn run_hub(
     let ping_period = Duration::from_secs(config.ping_interval_secs.max(1));
     let mut ping_tick = tokio::time::interval(ping_period);
     ping_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut prune_tick = tokio::time::interval(Duration::from_secs(
+        config.room_registry_prune_interval_secs.max(1),
+    ));
+    prune_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    prune_tick.reset();
 
     publish_snapshot(&snapshot, &emitter, &core, &config, Some(destination_hash));
     tracing::info!(
@@ -2408,6 +2842,11 @@ async fn run_hub(
                 }
             }
             _ = ping_tick.tick() => core.ping_cycle(Instant::now(), &mut out),
+            _ = prune_tick.tick() => {
+                core.prune_registry(now_unix(), &mut out);
+                core.flush_dirty_last_used(&mut out);
+                core.retry_failed_persists(&mut out);
+            }
             _ = announce_tick.tick() => {
                 if config.announce_interval_secs > 0
                     && registration.handle.announce(announce_options()).await.is_err()
@@ -2416,9 +2855,16 @@ async fn run_hub(
                 }
             }
         }
-        flush_sends(&registration, out).await;
+        flush_sends(&registration, &store, &mut core, out).await;
         publish_snapshot(&snapshot, &emitter, &core, &config, Some(destination_hash));
     }
+
+    // Land any outstanding writes before the task ends: a restart reloads the
+    // registry immediately and would otherwise race the old task's tail.
+    let mut final_out = Vec::new();
+    core.flush_dirty_last_used(&mut final_out);
+    core.retry_failed_persists(&mut final_out);
+    flush_sends(&registration, &store, &mut core, final_out).await;
 
     if let Ok(mut current) = snapshot.write() {
         *current = ChannelHubSnapshot::stopped();
@@ -2439,9 +2885,104 @@ fn shell_error(core: &HubCore, text: &str) -> rrc::Envelope {
     envelope
 }
 
-async fn flush_sends(registration: &RegisteredDestination, sends: Vec<HubSend>) {
+/// Durable side of the hub registry. The sole hex boundary: `HubCore` speaks
+/// bytes, the database stores hex.
+#[derive(Clone)]
+pub struct HubStore {
+    pool: db::DbPool,
+    identity_id: String,
+}
+
+impl HubStore {
+    pub fn new(pool: db::DbPool, identity_id: String) -> Self {
+        Self { pool, identity_id }
+    }
+
+    async fn load(&self) -> Result<(Vec<db::HubRoomRow>, Vec<String>), String> {
+        let pool = self.pool.clone();
+        let identity = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            let rooms = db::list_hub_rooms(&pool, &identity)?;
+            let klines = db::list_hub_klines(&pool, &identity)?;
+            Ok::<_, String>((rooms, klines))
+        })
+        .await
+        .map_err(|_| "registry load task panicked".to_string())?
+    }
+
+    /// Apply a whole batch in one transaction, in order. Ordering matters:
+    /// two writes to the same room must not reorder, which is exactly what a
+    /// task-per-op would risk.
+    async fn apply_batch(&self, ops: Vec<db::HubRoomOp>) -> Result<(), String> {
+        if ops.is_empty() {
+            return Ok(());
+        }
+        let pool = self.pool.clone();
+        let identity = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| db::apply_hub_ops(&pool, &identity, &ops))
+            .await
+            .map_err(|_| "registry write task panicked".to_string())?
+    }
+}
+
+/// Apply durable writes first, then send. An operator confirmation must not
+/// go out ahead of the write it is confirming.
+async fn flush_sends(
+    registration: &RegisteredDestination,
+    store: &HubStore,
+    core: &mut HubCore,
+    sends: Vec<HubSend>,
+) {
+    let mut ops: Vec<db::HubRoomOp> = Vec::new();
+    let mut failures: Vec<(Option<[u8; 16]>, Option<String>)> = Vec::new();
+    let mut envelopes: Vec<HubSend> = Vec::with_capacity(sends.len());
     for send in sends {
         match send {
+            HubSend::Persist(persist) => {
+                ops.push(persist.op);
+                failures.push((persist.origin, persist.room));
+            }
+            other => envelopes.push(other),
+        }
+    }
+
+    if !ops.is_empty() && store.apply_batch(ops.clone()).await.is_err() {
+        tracing::warn!(
+            reason = "registry_write_failed",
+            ops = ops.len(),
+            "hub registry write failed"
+        );
+        for op in &ops {
+            core.note_persist_failed(op);
+        }
+        // One static notice per originating link; the database error text is
+        // never echoed outward.
+        let mut told: HashSet<[u8; 16]> = HashSet::new();
+        for (origin, room) in failures {
+            if let Some(origin) = origin
+                && told.insert(origin)
+            {
+                envelopes.insert(
+                    0,
+                    HubSend::Envelope {
+                        link_id: origin,
+                        envelope: {
+                            let mut envelope =
+                                rrc::Envelope::new(rrc::MessageType::Notice, core.hub_hash);
+                            envelope.room = room;
+                            envelope.body =
+                                Some(Value::Text("room config persist failed".to_string()));
+                            envelope
+                        },
+                    },
+                );
+            }
+        }
+    }
+
+    for send in envelopes {
+        match send {
+            HubSend::Persist(_) => unreachable!("persist ops are partitioned out"),
             HubSend::Envelope { link_id, envelope } => match rrc::encode(&envelope) {
                 Ok(encoded) if encoded.len() <= LINK_PACKET_BUDGET => {
                     if registration
@@ -2491,6 +3032,8 @@ fn current_snapshot(
         sessions,
         welcomed_sessions: welcomed,
         rooms: core.room_count(),
+        registered_rooms: core.registered_room_count(),
+        registry_degraded: core.registry_degraded(),
         announce_interval_secs: config.announce_interval_secs,
         updated_at_ms: now_ms(),
     }
@@ -2511,6 +3054,8 @@ fn publish_snapshot(
                 || current.sessions != next.sessions
                 || current.welcomed_sessions != next.welcomed_sessions
                 || current.rooms != next.rooms
+                || current.registered_rooms != next.registered_rooms
+                || current.registry_degraded != next.registry_degraded
         })
         .unwrap_or(true);
     if let Ok(mut current) = snapshot.write() {
@@ -2540,6 +3085,7 @@ mod tests {
             [0x77; 16],
             Arc::new(RwLock::new(HashSet::new())),
             Zeroizing::new([0x5A; 32]),
+            Vec::new(),
         )
     }
 
@@ -2820,7 +3366,7 @@ mod tests {
             .get_mut("vault")
             .unwrap()
             .invited
-            .insert(ID_B, Instant::now() + Duration::from_secs(60));
+            .insert(ID_B, now_unix() + 60.0);
         let out = join(&mut core, LINK_B, ID_B, "vault");
         assert_eq!(
             sends_to(&out, LINK_B)[0].message_type,
@@ -3100,6 +3646,214 @@ mod tests {
         assert_eq!(
             rrc::text_body(sends_to(&out, LINK_A)[0]),
             Some("Registered public rooms:\n  lobby - hello there")
+        );
+    }
+
+    fn persist_ops(out: &[HubSend]) -> Vec<&db::HubRoomOp> {
+        out.iter()
+            .filter_map(|send| match send {
+                HubSend::Persist(persist) => Some(&persist.op),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn upserted<'a>(out: &'a [HubSend], room: &str) -> Option<&'a db::HubRoomRow> {
+        persist_ops(out).into_iter().find_map(|op| match op {
+            db::HubRoomOp::Upsert(row) if row.room_name == room => Some(&**row),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn only_registered_rooms_are_persisted() {
+        let mut core = op_core();
+        let out = join(&mut core, LINK_A, ID_A, "lobby");
+        assert!(
+            persist_ops(&out).is_empty(),
+            "an unregistered room is ephemeral"
+        );
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/topic lobby hi");
+        assert!(
+            persist_ops(&out).is_empty(),
+            "editing an unregistered room still persists nothing"
+        );
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        assert!(upserted(&out, "lobby").is_some());
+    }
+
+    #[test]
+    fn a_registered_room_projects_its_policy_and_grants() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "vault");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        run_command(&mut core, LINK_A, ID_A, "/register vault");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +p");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +k open-sesame");
+        run_command(&mut core, LINK_A, ID_A, "/voice vault beta");
+        let out = run_command(&mut core, LINK_A, ID_A, "/ban vault add beta");
+
+        let row = upserted(&out, "vault").expect("ban persists the room");
+        // +p must survive a restart; the reference loses it.
+        assert!(row.private);
+        // /register forces these two on.
+        assert!(row.no_outside_msgs && row.topic_ops_only);
+        assert!(!row.key_mac.is_empty() && !row.key_salt.is_empty());
+        let kinds: Vec<&str> = row.grants.iter().map(|(k, _, _)| k.as_str()).collect();
+        assert!(kinds.contains(&"op"), "the operator's grant is recorded");
+        assert!(kinds.contains(&"voice") && kinds.contains(&"ban"));
+    }
+
+    #[test]
+    fn unregister_removes_the_room_from_the_registry() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        let out = run_command(&mut core, LINK_A, ID_A, "/unregister lobby");
+        assert!(matches!(
+            persist_ops(&out).first(),
+            Some(db::HubRoomOp::Removed { room_name }) if room_name == "lobby"
+        ));
+    }
+
+    #[test]
+    fn klines_persist_the_whole_set() {
+        let mut core = op_core();
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        let out = run_command(&mut core, LINK_A, ID_A, "/kline add beta");
+        let Some(db::HubRoomOp::ReplaceKlines(subjects)) = persist_ops(&out).first().copied()
+        else {
+            panic!("expected a kline write");
+        };
+        assert_eq!(subjects, &vec![hex::encode(ID_B)]);
+    }
+
+    #[test]
+    fn a_failed_write_is_retried_from_live_state() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        let out = run_command(&mut core, LINK_A, ID_A, "/register lobby");
+        assert!(!core.registry_degraded());
+
+        for op in persist_ops(&out) {
+            core.note_persist_failed(op);
+        }
+        assert!(
+            core.registry_degraded(),
+            "the operator must be able to see this"
+        );
+
+        // The retry re-projects from live state rather than replaying the
+        // failed snapshot, so a change made meanwhile is carried along.
+        core.rooms.get_mut("lobby").unwrap().topic = Some("recovered".to_string());
+        let mut retry = Vec::new();
+        core.retry_failed_persists(&mut retry);
+        let row = upserted(&retry, "lobby").expect("the failed room is retried");
+        assert_eq!(row.topic, "recovered");
+        assert!(!core.registry_degraded(), "the retry clears the flag");
+    }
+
+    #[test]
+    fn prune_drops_only_idle_registered_rooms_and_respects_the_clock() {
+        let config = ChannelHubConfig {
+            room_registry_prune_after_secs: 10,
+            room_registry_prune_interval_secs: 0,
+            ..ChannelHubConfig::default()
+        };
+        let mut core = core_with(config);
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        join(&mut core, LINK_A, ID_A, "occupied");
+        run_command(&mut core, LINK_A, ID_A, "/register occupied");
+        join(&mut core, LINK_A, ID_A, "idle");
+        run_command(&mut core, LINK_A, ID_A, "/register idle");
+        // Vacate the second room.
+        let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_A);
+        part.room = Some("idle".to_string());
+        let mut out = Vec::new();
+        core.on_envelope(LINK_A, part, &mut out);
+        core.rooms.get_mut("idle").unwrap().last_used = 1_800_000_000.0;
+
+        // A device with no RTC must never prune.
+        let mut out = Vec::new();
+        core.prune_registry(1_000.0, &mut out);
+        assert!(out.is_empty(), "an implausible clock disables pruning");
+        assert!(core.rooms.contains_key("idle"));
+
+        // A clock that jumped backwards must not age a room out either.
+        let mut out = Vec::new();
+        core.prune_registry(1_799_999_000.0, &mut out);
+        assert!(core.rooms.contains_key("idle"));
+
+        let mut out = Vec::new();
+        core.prune_registry(1_800_000_100.0, &mut out);
+        assert!(!core.rooms.contains_key("idle"), "the idle room is pruned");
+        assert!(
+            core.rooms.contains_key("occupied"),
+            "an occupied room is never pruned"
+        );
+        assert!(
+            persist_ops(&out).iter().any(
+                |op| matches!(op, db::HubRoomOp::Removed { room_name } if room_name == "idle")
+            )
+        );
+        assert!(
+            persist_ops(&out)
+                .iter()
+                .any(|op| matches!(op, db::HubRoomOp::GcInvites { .. })),
+            "expired invites are collected on the same tick"
+        );
+    }
+
+    #[test]
+    fn a_restored_registry_rebuilds_rooms_and_drops_foreign_keys() {
+        let row = db::HubRoomRow {
+            room_name: "vault".into(),
+            topic: "ops".into(),
+            key_salt: hex::encode([0x11; 16]),
+            key_mac: hex::encode([0x22; 32]),
+            // Written under a different hub identity.
+            key_pepper_id: hex::encode([0x99; 8]),
+            moderated: true,
+            invite_only: true,
+            topic_ops_only: true,
+            no_outside_msgs: true,
+            private: true,
+            last_used: 1_800_000_000.0,
+            grants: vec![
+                ("op".into(), hex::encode(ID_B), 0.0),
+                ("ban".into(), hex::encode([0xCC; 16]), 0.0),
+                ("invite".into(), hex::encode([0xDD; 16]), 0.0),
+            ],
+        };
+        let bad = db::HubRoomRow {
+            room_name: "NotNormalized".into(),
+            ..row.clone()
+        };
+        let core = HubCore::new(
+            ChannelHubConfig::default(),
+            [0x77; 16],
+            Arc::new(RwLock::new(HashSet::new())),
+            Zeroizing::new([0x5A; 32]),
+            vec![row, bad],
+        );
+
+        let room = core.rooms.get("vault").expect("the room is restored");
+        assert!(room.registered && room.private && room.invite_only);
+        assert!(room.members.is_empty(), "membership never persists");
+        assert!(room.ops.contains(&ID_B) && room.bans.contains(&[0xCC; 16]));
+        assert!(room.invited.is_empty(), "an expired invite is not restored");
+        // The key was written under another hub identity, so it is unusable
+        // and must be dropped rather than left permanently unmatchable.
+        assert!(room.key.is_none());
+        assert!(
+            core.pepper_rotation_notice.is_some(),
+            "the operator is told"
+        );
+        assert!(
+            !core.rooms.contains_key("NotNormalized"),
+            "a row that no longer normalizes is skipped"
         );
     }
 
