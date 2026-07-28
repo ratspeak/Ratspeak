@@ -6,6 +6,7 @@ var _channelHubOverviewLoadedAt = 0;
 var _channelHubOverviewPromise = null;
 var _channelHubStatusRenderer = null;
 var _channelHubManagerSequence = 0;
+var _channelHubHomeBusy = false;
 
 function _channelHubPlural(count, singular, plural) {
     return count + ' ' + (count === 1 ? singular : (plural || singular + 's'));
@@ -52,11 +53,78 @@ function _channelHubAnnounceLabel(seconds) {
     return 'Every day';
 }
 
+function channelHubOwnDestinationHash() {
+    if (!channelHubOverview) return '';
+    var status = channelHubOverview.status || {};
+    return String(status.destination_hash || channelHubOverview.destination_hash || '').toLowerCase();
+}
+
+function _channelHubHasOwnedHub(overview) {
+    if (!overview || !overview.supported) return false;
+    return !!(overview.created ||
+        (overview.settings && overview.settings.enabled) ||
+        (overview.status && overview.status.running));
+}
+
+function _channelHubCurrentDestination() {
+    if (typeof channelsSnapshot === 'undefined' || !channelsSnapshot.hub) return '';
+    return String(channelsSnapshot.hub.destination_hash || '').toLowerCase();
+}
+
+function channelHubRenderHome(overview) {
+    overview = overview || channelHubOverview;
+    var section = document.getElementById('channel-owned-hub');
+    if (!section) return;
+    var visible = _channelHubHasOwnedHub(overview);
+    section.hidden = !visible;
+    if (!visible) return;
+
+    var settings = overview.settings || {};
+    var status = overview.status || {};
+    var model = _channelHubStatusModel(overview);
+    var destination = channelHubOwnDestinationHash();
+    var current = !!destination && _channelHubCurrentDestination() === destination;
+    var connected = current && typeof _channelsIsConnected === 'function' && _channelsIsConnected();
+    var connecting = current && typeof _channelsIsConnecting === 'function' && _channelsIsConnecting();
+    var counts = _channelHubPlural(Number(status.welcomed_sessions) || 0, 'person', 'people') +
+        ' · ' + _channelHubPlural(Number(status.registered_rooms) || 0, 'channel');
+    var statusText = model.label;
+    if (status.running) {
+        statusText = connected ? 'Connected · ' + counts : (connecting ? 'Connecting… · Hosting' : 'Hosting · ' + counts);
+    }
+
+    var card = document.getElementById('channel-owned-hub-card');
+    var name = document.getElementById('channel-owned-hub-name');
+    var meta = document.getElementById('channel-owned-hub-status');
+    var open = document.getElementById('channel-owned-hub-open');
+    var manage = document.getElementById('channel-owned-hub-manage');
+    var hubName = settings.hub_name || status.hub_name || 'Ratspeak Hub';
+    if (name) name.textContent = hubName;
+    if (meta) meta.textContent = statusText;
+    if (card) {
+        card.dataset.tone = status.registry_degraded ? 'warning' : model.tone;
+        card.dataset.current = current ? 'true' : 'false';
+    }
+    if (open) {
+        open.disabled = _channelHubHomeBusy;
+        open.setAttribute('aria-label', status.running
+            ? (connected ? 'Open your hub' : 'Connect to ' + hubName)
+            : 'Manage ' + hubName);
+        open.title = status.running ? (connected ? 'Open your hub' : 'Connect to your hub') : 'Manage your hub';
+    }
+    if (manage) {
+        manage.disabled = _channelHubHomeBusy;
+        manage.setAttribute('aria-label', 'Manage ' + hubName);
+        manage.title = 'Manage ' + hubName;
+    }
+}
+
 function _channelHubApplyOverview(overview) {
     if (!overview) return channelHubOverview;
     channelHubOverview = overview;
     _channelHubOverviewLoadedAt = Date.now();
     if (_channelHubStatusRenderer) _channelHubStatusRenderer(overview);
+    channelHubRenderHome(overview);
     return overview;
 }
 
@@ -147,7 +215,7 @@ function channelsOpenAddSheet() {
         var model = _channelHubStatusModel(overview);
         var host = _channelHubChoice(
             'host',
-            overview.settings && overview.settings.enabled ? 'Manage your hub' : 'Host your own',
+            overview.created || (overview.settings && overview.settings.enabled) ? 'Manage your hub' : 'Host your own',
             model.detail,
             model.label
         );
@@ -486,7 +554,7 @@ function channelHubOpenManager(initialOverview) {
             ? 'nr-btn nr-btn-primary channel-host-state-btn'
             : 'nr-btn nr-btn-secondary channel-host-state-btn';
         stateButton.disabled = busy;
-        var destination = status.destination_hash || '';
+        var destination = status.destination_hash || overview.destination_hash || '';
         addressValue.textContent = destination;
         address.classList.toggle('is-empty', !destination);
         addressLabel.textContent = destination ? 'Hub address' : 'Hub address appears after the first start';
@@ -568,11 +636,89 @@ function channelHubOpenManager(initialOverview) {
 RS.listen('channel_hub_snapshot', function(status) {
     if (!channelHubOverview) return;
     channelHubOverview.status = status || {};
+    if (status && status.destination_hash) {
+        channelHubOverview.created = true;
+        channelHubOverview.destination_hash = status.destination_hash;
+    }
     _channelHubOverviewLoadedAt = Date.now();
     if (_channelHubStatusRenderer) _channelHubStatusRenderer(channelHubOverview);
+    channelHubRenderHome(channelHubOverview);
 });
 
 RS.listen('lxmf_identity', function() {
     channelHubOverview = null;
     _channelHubOverviewLoadedAt = 0;
+    channelHubRenderHome(null);
 });
+
+function channelHubOpenOwnHub() {
+    var overview = channelHubOverview;
+    var status = overview && overview.status || {};
+    var destination = channelHubOwnDestinationHash();
+    if (!overview || !status.running || !destination) {
+        channelHubOpenManager(overview);
+        return;
+    }
+
+    var currentDestination = _channelHubCurrentDestination();
+    var current = currentDestination === destination;
+    if (current && typeof _channelsIsConnecting === 'function' && _channelsIsConnecting()) return;
+    if (current && typeof _channelsIsConnected === 'function' && _channelsIsConnected()) {
+        if (typeof renderChannels === 'function') renderChannels();
+        return;
+    }
+
+    var proceed = Promise.resolve(true);
+    if (currentDestination && currentDestination !== destination &&
+            typeof channelsSnapshot !== 'undefined' &&
+            channelsSnapshot.phase !== 'offline' && channelsSnapshot.phase !== 'unavailable') {
+        var currentName = typeof _channelsHubName === 'function'
+            ? _channelsHubName(channelsSnapshot.hub)
+            : 'your current hub';
+        proceed = rsConfirm({
+            title: 'Switch hubs?',
+            message: 'This will leave ' + currentName + ' and connect to your hub.',
+            confirmText: 'Switch hubs'
+        });
+    }
+
+    proceed.then(function(confirmed) {
+        if (!confirmed) return;
+        if (typeof channelsConnectToHub !== 'function') {
+            channelsOpenConnectSheet({
+                destination_hash: destination,
+                announced_name: overview.settings && overview.settings.hub_name
+            });
+            return;
+        }
+        _channelHubHomeBusy = true;
+        channelHubRenderHome(overview);
+        return channelsConnectToHub({
+            destination_hash: destination,
+            announced_name: overview.settings && overview.settings.hub_name,
+            nickname: typeof _channelsDefaultNickname === 'function' ? _channelsDefaultNickname() : ''
+        }).catch(function(error) {
+            if (typeof showToast === 'function') {
+                showToast((error && error.message) || 'Could not open your hub', 'toast-red', 3200);
+            }
+        }).then(function() {
+            _channelHubHomeBusy = false;
+            channelHubRenderHome(overview);
+        });
+    });
+}
+
+function _channelHubBindHome() {
+    var open = document.getElementById('channel-owned-hub-open');
+    var manage = document.getElementById('channel-owned-hub-manage');
+    if (open && open.dataset.bound !== 'true') {
+        open.dataset.bound = 'true';
+        open.addEventListener('click', channelHubOpenOwnHub);
+    }
+    if (manage && manage.dataset.bound !== 'true') {
+        manage.dataset.bound = 'true';
+        manage.addEventListener('click', function() { channelHubOpenManager(channelHubOverview); });
+    }
+}
+
+_channelHubBindHome();

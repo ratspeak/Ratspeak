@@ -950,11 +950,7 @@ pub async fn start_channel_hub_service(state: &Arc<AppState>) -> bool {
     // Always resolve from the configured data dir: taking a caller-supplied
     // root gave boot and the Start button different keyfiles, and so different
     // hub destination hashes for the same hub.
-    let identity_path = state
-        .config
-        .data_dir
-        .join("channel_hub")
-        .join(format!("hub_identity_{identity_hash}"));
+    let identity_path = channel_hub::hub_identity_path(&state.config.data_dir, &identity_hash);
     let hub_identity = match channel_hub::load_or_create_hub_identity(&identity_path) {
         Ok(identity) => identity,
         Err(_) => {

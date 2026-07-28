@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ciborium::value::Value;
 use ratspeak_core::Emitter;
-use rns_identity::identity::Identity;
+use rns_identity::{destination::Destination, identity::Identity};
 use rns_runtime::lifecycle::ShutdownSignal;
 use rns_runtime::link_session::{
     LinkSession, LinkSessionCloseReason, LinkSessionConfig, LinkSessionError, LinkSessionEvent,
@@ -364,6 +364,7 @@ enum ChannelsCommand {
     Connect {
         destination_hash: [u8; 16],
         nickname: String,
+        known_hub: Option<KnownHubTarget>,
         activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
@@ -396,6 +397,14 @@ enum ChannelsCommand {
         activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<()>,
     },
+}
+
+#[derive(Clone)]
+struct KnownHubTarget {
+    public_key: [u8; 64],
+    identity_hash: [u8; 16],
+    announced_name: Option<String>,
+    hops: u8,
 }
 
 #[derive(Clone)]
@@ -455,12 +464,56 @@ impl ChannelsManagerHandle {
     ) -> Result<(), ChannelsError> {
         let destination_hash = parse_destination_hash(destination_hash)?;
         let nickname = rrc::normalize_nickname(nickname, DEFAULT_NICK_MAX_BYTES)?;
+        self.connect_target(destination_hash, nickname, None).await
+    }
+
+    /// Connect to an already-authenticated hub identity without relying on a
+    /// locally cached announce. Used for a hub hosted by this same Ratspeak
+    /// process, whose outbound announce is not required to re-enter the cache.
+    pub async fn connect_known(
+        &self,
+        destination_hash: &str,
+        nickname: &str,
+        public_key: [u8; 64],
+        announced_name: Option<String>,
+    ) -> Result<(), ChannelsError> {
+        let destination_hash = parse_destination_hash(destination_hash)?;
+        let nickname = rrc::normalize_nickname(nickname, DEFAULT_NICK_MAX_BYTES)?;
+        let identity = Identity::from_public_key(&public_key)
+            .map_err(|error| ChannelsError::Protocol(error.to_string()))?;
+        let expected =
+            Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&identity.hash));
+        if expected != destination_hash {
+            return Err(ChannelsError::Protocol(
+                "channel hub identity does not match its destination".into(),
+            ));
+        }
+        self.connect_target(
+            destination_hash,
+            nickname,
+            Some(KnownHubTarget {
+                public_key,
+                identity_hash: identity.hash,
+                announced_name,
+                hops: 1,
+            }),
+        )
+        .await
+    }
+
+    async fn connect_target(
+        &self,
+        destination_hash: [u8; 16],
+        nickname: String,
+        known_hub: Option<KnownHubTarget>,
+    ) -> Result<(), ChannelsError> {
         let activity_fence = self.activity.capture_fence();
         let (result_tx, result_rx) = oneshot::channel();
         self.command_tx
             .send(ChannelsCommand::Connect {
                 destination_hash,
                 nickname,
+                known_hub,
                 activity_fence,
                 result_tx,
             })
@@ -862,6 +915,7 @@ struct ConnectAttemptInput {
     identity: Identity,
     destination_hash: [u8; 16],
     nickname: String,
+    known_hub: Option<KnownHubTarget>,
     update_tx: mpsc::Sender<ConnectUpdate>,
     cancel_rx: oneshot::Receiver<()>,
     activity_context: SessionActivityContext,
@@ -948,6 +1002,7 @@ async fn run_manager(
                     ChannelsCommand::Connect {
                         destination_hash,
                         nickname,
+                        known_hub,
                         activity_fence,
                         result_tx,
                     } => {
@@ -994,6 +1049,7 @@ async fn run_manager(
                             identity: identity.clone(),
                             destination_hash,
                             nickname,
+                            known_hub,
                             update_tx: connect_update_tx.clone(),
                             cancel_rx,
                             activity_context,
@@ -1261,6 +1317,7 @@ async fn run_connect_attempt(input: ConnectAttemptInput) {
         identity,
         destination_hash,
         nickname,
+        known_hub,
         update_tx,
         cancel_rx,
         activity_context,
@@ -1271,6 +1328,7 @@ async fn run_connect_attempt(input: ConnectAttemptInput) {
         identity,
         destination_hash,
         nickname,
+        known_hub,
         update_tx.clone(),
         activity_context,
     );
@@ -1296,6 +1354,7 @@ async fn connect_to_hub(
     identity: Identity,
     destination_hash: [u8; 16],
     nickname: String,
+    known_hub: Option<KnownHubTarget>,
     update_tx: mpsc::Sender<ConnectUpdate>,
     activity_context: SessionActivityContext,
 ) -> Result<ConnectedSession, ConnectAttemptError> {
@@ -1305,27 +1364,42 @@ async fn connect_to_hub(
         activity::ChannelSessionTransition::PathRequested,
     )
     .await;
-    let announce = rns_runtime::link_session::discover_destination(
-        &transport_tx,
-        destination_hash,
-        CONNECT_PATH_TIMEOUT,
-    )
-    .await
-    .map_err(path_connect_error)?;
-    let public_key = announce.public_key.ok_or_else(|| ConnectAttemptError {
-        product: ChannelsError::Transport("channel hub announce has no public key".into()),
-        activity: ConnectFailure::Failed(activity::ChannelSessionFailureReason::InvalidAnnounce),
-    })?;
-    let hub_identity = Identity::from_public_key(&public_key)
-        .map_err(|error| ConnectAttemptError {
-            product: ChannelsError::Transport(error.to_string()),
+    let (public_key, hub_identity, announced_name, hops) = if let Some(known) = known_hub {
+        (
+            known.public_key,
+            known.identity_hash,
+            known.announced_name,
+            known.hops.max(1),
+        )
+    } else {
+        let announce = rns_runtime::link_session::discover_destination(
+            &transport_tx,
+            destination_hash,
+            CONNECT_PATH_TIMEOUT,
+        )
+        .await
+        .map_err(path_connect_error)?;
+        let public_key = announce.public_key.ok_or_else(|| ConnectAttemptError {
+            product: ChannelsError::Transport("channel hub announce has no public key".into()),
             activity: ConnectFailure::Failed(
                 activity::ChannelSessionFailureReason::InvalidAnnounce,
             ),
-        })?
-        .hash;
-    let announced_name = parse_announce_hub_name(announce.app_data.as_deref());
-    let hops = announce.hops.max(1);
+        })?;
+        let hub_identity = Identity::from_public_key(&public_key)
+            .map_err(|error| ConnectAttemptError {
+                product: ChannelsError::Transport(error.to_string()),
+                activity: ConnectFailure::Failed(
+                    activity::ChannelSessionFailureReason::InvalidAnnounce,
+                ),
+            })?
+            .hash;
+        (
+            public_key,
+            hub_identity,
+            parse_announce_hub_name(announce.app_data.as_deref()),
+            announce.hops.max(1),
+        )
+    };
     let _ = update_tx
         .send(ConnectUpdate::Discovered {
             attempt,
@@ -3375,6 +3449,64 @@ mod tests {
         );
         assert!(parse_destination_hash("0011").is_err());
         assert!(parse_destination_hash("zz112233445566778899aabbccddeeff").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_known_hub_identity_must_match_its_destination() {
+        let client_identity = Identity::new();
+        let hub_identity = Identity::new();
+        let (transport_tx, _transport_rx) = mpsc::channel::<TransportMessage>(8);
+        let manager = ChannelsManagerHandle::start(
+            transport_tx,
+            client_identity,
+            Arc::new(ratspeak_core::NoopEmitter),
+            ShutdownSignal::new(),
+            Weak::new(),
+        );
+
+        let error = manager
+            .connect_known(
+                &hex::encode([0x44; 16]),
+                "Field Rat",
+                hub_identity.get_public_key(),
+                Some("Local hub".into()),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ChannelsError::Protocol(_)));
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_known_local_hub_does_not_require_its_own_announce_cache_entry() {
+        let client_identity = Identity::new();
+        let hub_identity = Identity::new();
+        let hub_destination =
+            Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
+        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(16);
+        let manager = ChannelsManagerHandle::start(
+            transport_tx,
+            client_identity,
+            Arc::new(ratspeak_core::NoopEmitter),
+            ShutdownSignal::new(),
+            Weak::new(),
+        );
+
+        manager
+            .connect_known(
+                &hex::encode(hub_destination),
+                "Field Rat",
+                hub_identity.get_public_key(),
+                Some("Local hub".into()),
+            )
+            .await
+            .unwrap();
+
+        match timeout_transport(&mut transport_rx).await {
+            TransportMessage::RegisterDestination { .. } => {}
+            other => panic!("known local hub unexpectedly queried discovery: {other:?}"),
+        }
+        manager.shutdown().await;
     }
 
     #[test]

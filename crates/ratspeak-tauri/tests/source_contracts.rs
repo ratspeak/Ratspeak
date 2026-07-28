@@ -126,6 +126,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(!index.contains("Group conversations"));
     assert!(!index.contains("channels-sidebar-subtitle"));
     assert!(index.contains("Available hubs"));
+    assert!(index.contains("id=\"channel-owned-hub\""));
+    assert!(index.contains("id=\"channel-owned-hub-manage\""));
     assert!(!index.contains("channels-refresh-btn"));
     assert!(index.contains("id=\"channel-members-back\""));
     assert!(!index.contains("Messages are not saved and disappear when this session ends."));
@@ -136,6 +138,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_js.contains("RS.listen('announce_received'"));
     assert!(channels_js.contains("function _channelsBuildHubMark"));
     assert!(channels_js.contains("function _channelsHubDistance"));
+    assert!(channels_js.contains("function channelsConnectToHub"));
+    assert!(channels_js.contains("channelHubOwnDestinationHash"));
     assert!(!channels_js.contains("hub.nearby ? 'Nearby' : 'Recent'"));
     assert!(channels_js.contains("TextEncoder"));
     assert!(channels_js.contains("channel-transition-card"));
@@ -193,6 +197,10 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("pub hub_greeting: Option<ChannelTranscriptItem>"));
     assert!(runtime.contains("WELCOME source does not match the authenticated hub"));
     assert!(commands.contains("fn parse_local_composer_command"));
+    assert!(runtime.contains("pub async fn connect_known"));
+    assert!(runtime.contains("channel hub identity does not match its destination"));
+    assert!(commands.contains("Identity::from_file(&identity_path)"));
+    assert!(commands.contains(".connect_known("));
     assert!(commands.contains("LocalComposerCommand::Join"));
     assert!(commands.contains("LocalComposerCommand::Part"));
     assert!(commands.contains("\"/list\""));
@@ -367,19 +375,27 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub_ui.contains("RS.invoke('channel_hub_stop')"));
     assert!(hub_ui.contains("RS.invoke('channel_hub_set_config'"));
     assert!(hub_ui.contains("RS.listen('channel_hub_snapshot'"));
+    assert!(hub_ui.contains("function channelHubRenderHome"));
+    assert!(hub_ui.contains("function channelHubOpenOwnHub"));
+    assert!(hub_ui.contains("overview.created"));
     assert!(hub_ui.contains("Some channel changes are still waiting to be saved."));
     assert!(hub_ui.contains("copyAddress.hidden = !destination"));
     assert!(channels_css.contains(".channel-host-admin-sheet"));
     assert!(channels_css.contains(".channel-host-registry-warning"));
     assert!(channels_css.contains(".channel-host-copy-btn[hidden]"));
+    assert!(channels_css.contains(".channel-owned-hub-card"));
 
     // Configuration reads independently of live state, writes as one SQLite
     // transaction, and serializes every lifecycle mutation.
     assert!(commands.contains("pub struct ChannelHubOverview"));
+    assert!(commands.contains("pub created: bool"));
+    assert!(commands.contains("pub destination_hash: Option<String>"));
+    assert!(runtime.contains("channel_hub::hub_identity_path"));
     assert!(commands.contains("ChannelHubSettings::load"));
     assert!(commands.contains("try_set_settings"));
     assert!(commands.contains("hub.status()"));
-    assert!(commands.contains("status: current_snapshot(state).await"));
+    assert!(commands.contains("let status = current_snapshot(state).await"));
+    assert!(commands.contains("existing_hub_destination_hash(&identity_path)"));
     assert!(db.contains("pub fn try_set_settings"));
     assert!(db.contains("let transaction = conn.transaction()"));
     assert!(state.contains("pub channel_hub_control_lock: tokio::sync::Mutex<()>"));

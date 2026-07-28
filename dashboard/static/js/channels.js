@@ -113,6 +113,34 @@ function _channelsHubName(hub) {
     return hub.name || hub.announced_name || hub.label || 'Channel hub';
 }
 
+function _channelsOwnedHubReady() {
+    return typeof channelHubOverview !== 'undefined' && channelHubOverview &&
+        channelHubOverview.status && channelHubOverview.status.running &&
+        typeof channelHubOwnDestinationHash === 'function' &&
+        !!channelHubOwnDestinationHash();
+}
+
+function channelsConnectToHub(hub) {
+    hub = hub || {};
+    var destination = String(hub.destination_hash || '').trim().toLowerCase();
+    var nickname = String(hub.nickname || _channelsDefaultNickname()).trim();
+    if (!/^[0-9a-f]{32}$/.test(destination)) {
+        return Promise.reject(new Error('Enter a 32-character hexadecimal destination hash.'));
+    }
+    if (!nickname) return Promise.reject(new Error('Choose a nickname for this session.'));
+    channelsPendingHubLabel = hub.label || hub.announced_name || '';
+    return RS.invoke('connect_channel_hub', {
+        args: { destination_hash: destination, nickname: nickname }
+    }).then(function(snapshot) {
+        channelsActiveRoom = null;
+        channelsApplySnapshot(snapshot);
+        if (typeof showToast === 'function') {
+            showToast('Connecting to channel hub\u2026', 'toast-blue', 2600);
+        }
+        return snapshot;
+    });
+}
+
 function _channelsPhaseLabel(phase) {
     switch (phase) {
         case 'resolving': return 'Finding path';
@@ -215,7 +243,12 @@ function _channelsMergedHubs() {
             nearby: true
         };
     });
-    return Object.keys(byHash).map(function(key) { return byHash[key]; }).sort(function(a, b) {
+    var ownedDestination = typeof channelHubOwnDestinationHash === 'function'
+        ? channelHubOwnDestinationHash()
+        : '';
+    return Object.keys(byHash).filter(function(key) {
+        return !ownedDestination || key.toLowerCase() !== ownedDestination;
+    }).map(function(key) { return byHash[key]; }).sort(function(a, b) {
         if (a.nearby !== b.nearby) return a.nearby ? -1 : 1;
         // Closer hubs first: fewer hops is a cheaper, more reliable path. A
         // saved hub we have not heard has no hop count and sorts after ones
@@ -266,6 +299,7 @@ function channelsApplySnapshot(snapshot) {
 
     _channelsPersistConveniences();
     renderChannels();
+    if (typeof channelHubRenderHome === 'function') channelHubRenderHome();
 }
 
 function channelsLoad(force) {
@@ -278,7 +312,10 @@ function channelsLoad(force) {
 
     _channelsLoadPromise = Promise.all([
         RS.invoke('api_channels'),
-        RS.invoke('api_saved_channel_hubs').catch(function() { return []; })
+        RS.invoke('api_saved_channel_hubs').catch(function() { return []; }),
+        typeof channelHubLoad === 'function'
+            ? channelHubLoad(force).catch(function() { return null; })
+            : Promise.resolve(null)
     ]).then(function(results) {
         _channelsLoadedAt = Date.now();
         channelsSavedHubs = Array.isArray(results[1]) ? results[1] : [];
@@ -459,8 +496,15 @@ function _channelsRenderList() {
     var hubs = _channelsMergedHubs();
     hubs.forEach(function(hub) { list.appendChild(_channelsBuildHubRow(hub)); });
     if (!hubs.length) {
-        var emptyText = _channelsIsConnecting() ? 'Connecting to hub\u2026' : 'No channel hubs yet';
-        list.appendChild(_channelsEmptyList(emptyText, 'Connect to a hub', 'connect'));
+        var ownHubReady = _channelsOwnedHubReady();
+        var emptyText = _channelsIsConnecting()
+            ? 'Connecting to hub\u2026'
+            : (ownHubReady ? 'No other hubs available' : 'No channel hubs yet');
+        list.appendChild(_channelsEmptyList(
+            emptyText,
+            ownHubReady ? null : 'Connect to a hub',
+            ownHubReady ? null : 'connect'
+        ));
     }
 }
 
@@ -781,10 +825,17 @@ function _channelsRenderRoomEmpty(transcript) {
         button.dataset.channelAction = 'connect';
         button.textContent = 'Reconnect';
     } else {
-        title.textContent = 'Join a conversation';
-        copy.textContent = 'Connect to a trusted hub, then choose a channel.';
-        button.dataset.channelAction = 'connect';
-        button.textContent = 'Find a hub';
+        if (_channelsOwnedHubReady()) {
+            title.textContent = 'Open your hub';
+            copy.textContent = 'Enter as the owner, then create or join a channel.';
+            button.dataset.channelAction = 'open-owned-hub';
+            button.textContent = 'Open hub';
+        } else {
+            title.textContent = 'Join a conversation';
+            copy.textContent = 'Connect to a trusted hub, then choose a channel.';
+            button.dataset.channelAction = 'connect';
+            button.textContent = 'Find a hub';
+        }
     }
     state.appendChild(mark);
     state.appendChild(title);
@@ -1585,14 +1636,12 @@ function channelsOpenConnectSheet(prefill) {
         connect.disabled = true;
         connect.textContent = 'Connecting\u2026';
         error.textContent = '';
-        channelsPendingHubLabel = selectedLabel;
-        RS.invoke('connect_channel_hub', {
-            args: { destination_hash: destination, nickname: nickname }
-        }).then(function(snapshot) {
-            channelsActiveRoom = null;
-            channelsApplySnapshot(snapshot);
+        channelsConnectToHub({
+            destination_hash: destination,
+            announced_name: selectedLabel,
+            nickname: nickname
+        }).then(function() {
             built.dismiss();
-            if (typeof showToast === 'function') showToast('Connecting to channel hub\u2026', 'toast-blue', 2600);
         }).catch(function(err) {
             error.textContent = (err && err.message) || 'Could not connect to this hub.';
             connect.disabled = false;
@@ -1944,6 +1993,7 @@ function _channelsBindUI() {
         if (!actionEl) return;
         var action = actionEl.dataset.channelAction;
         if (action === 'connect') channelsOpenConnectSheet();
+        else if (action === 'open-owned-hub' && typeof channelHubOpenOwnHub === 'function') channelHubOpenOwnHub();
         else if (action === 'join') channelsOpenJoinSheet();
         else if (action === 'disconnect') channelsDisconnect();
         else if (action === 'retry-room') channelsOpenJoinSheet(actionEl.dataset.room || '');

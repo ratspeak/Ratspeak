@@ -38,6 +38,10 @@ pub struct ChannelHubConfigArgs {
 #[derive(Debug, Serialize)]
 pub struct ChannelHubOverview {
     pub supported: bool,
+    /// True once this Ratspeak identity has created a dedicated hub identity.
+    pub created: bool,
+    /// Stable public address, available even while the hub is stopped.
+    pub destination_hash: Option<String>,
     pub settings: ChannelHubSettings,
     pub status: ChannelHubSnapshot,
 }
@@ -92,10 +96,26 @@ async fn overview(
     state: &State<'_, Arc<AppState>>,
     settings: ChannelHubSettings,
 ) -> ChannelHubOverview {
+    let status = current_snapshot(state).await;
+    let identity_id = crate::helpers::active_identity_id(state);
+    let identity_path =
+        ratspeak_runtime::channel_hub::hub_identity_path(&state.config.data_dir, &identity_id);
+    let created = !identity_id.is_empty() && identity_path.is_file();
+    let destination_hash = status.destination_hash.clone().or_else(|| {
+        created
+            .then(|| {
+                ratspeak_runtime::channel_hub::existing_hub_destination_hash(&identity_path)
+                    .ok()
+                    .flatten()
+            })
+            .flatten()
+    });
     ChannelHubOverview {
         supported: channel_hub_hosting_supported(),
+        created,
+        destination_hash,
         settings,
-        status: current_snapshot(state).await,
+        status,
     }
 }
 

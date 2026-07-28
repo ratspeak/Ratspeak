@@ -175,6 +175,149 @@
     background: transparent;
 }
 
+.channel-owned-hub {
+    padding: 0 var(--space-4) var(--space-4);
+    border-bottom: 1px solid var(--border-row);
+}
+
+.channel-owned-hub[hidden] {
+    display: none;
+}
+
+.channel-owned-hub-heading {
+    display: flex;
+    min-height: 30px;
+    align-items: center;
+    padding: 0 var(--space-3);
+}
+
+.channel-owned-hub-card {
+    display: flex;
+    min-width: 0;
+    min-height: 58px;
+    align-items: stretch;
+    overflow: hidden;
+    border: 1px solid var(--border-surface-soft);
+    border-radius: var(--radius-lg);
+    background: var(--surface-panel-muted);
+    transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.channel-owned-hub-card[data-current="true"] {
+    border-color: var(--accent-border);
+    background: var(--accent-bg);
+}
+
+.channel-owned-hub-open,
+.channel-owned-hub-manage {
+    appearance: none;
+    -webkit-appearance: none;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.channel-owned-hub-open {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-3) var(--space-4) var(--space-4);
+    text-align: left;
+}
+
+.channel-owned-hub-open:hover,
+.channel-owned-hub-manage:hover {
+    background: var(--surface-row-hover);
+}
+
+.channel-owned-hub-open:focus-visible,
+.channel-owned-hub-manage:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
+}
+
+.channel-owned-hub-open:disabled {
+    cursor: wait;
+    opacity: var(--opacity-disabled);
+}
+
+.channel-owned-hub-icon {
+    display: inline-flex;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-lg);
+    background: var(--accent-bg-strong);
+    color: var(--accent);
+}
+
+.channel-owned-hub-copy {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+}
+
+.channel-owned-hub-copy > strong {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    font-weight: var(--type-weight-semibold);
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.channel-owned-hub-meta {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+    line-height: 1.3;
+}
+
+.channel-owned-hub-meta i {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 7px;
+    border-radius: var(--radius-full);
+    background: var(--text-muted);
+}
+
+.channel-owned-hub-card[data-tone="online"] .channel-owned-hub-meta i {
+    background: var(--status-online);
+}
+
+.channel-owned-hub-card[data-tone="warning"] .channel-owned-hub-meta i {
+    background: var(--status-warning);
+}
+
+.channel-owned-hub-meta span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.channel-owned-hub-manage {
+    width: 38px;
+    flex: 0 0 38px;
+    border-left: 1px solid var(--border-row);
+    color: var(--text-muted);
+}
+
 .channels-list-toolbar {
     display: flex;
     align-items: center;

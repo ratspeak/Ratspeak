@@ -6,6 +6,7 @@ use std::sync::Arc;
 use ratspeak_runtime::channels::{
     ChannelRoomPhase, ChannelsError, ChannelsSnapshot, DiscoveredChannelHub,
 };
+use rns_identity::identity::Identity;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tauri::State;
@@ -117,10 +118,34 @@ pub async fn connect_channel_hub(
     args: ConnectChannelHubArgs,
 ) -> AppResult<ChannelsSnapshot> {
     let channels = channels_handle(&state)?;
-    channels
-        .connect(&args.destination_hash, &args.nickname)
-        .await
-        .map_err(map_error)?;
+    let destination_hash = clean_destination_hash(&args.destination_hash)?;
+    let owned_hub = state.channel_hub_handle().and_then(|hub| {
+        let status = hub.snapshot();
+        (status.running && status.destination_hash.as_deref() == Some(destination_hash.as_str()))
+            .then_some(status)
+    });
+    if let Some(status) = owned_hub {
+        let identity_id = require_identity(&state)?;
+        let identity_path =
+            ratspeak_runtime::channel_hub::hub_identity_path(&state.config.data_dir, &identity_id);
+        let identity = Identity::from_file(&identity_path).map_err(|_| {
+            AppError::service_unavailable("Your channel hub identity is unavailable")
+        })?;
+        channels
+            .connect_known(
+                &destination_hash,
+                &args.nickname,
+                identity.get_public_key(),
+                Some(status.hub_name),
+            )
+            .await
+            .map_err(map_error)?;
+    } else {
+        channels
+            .connect(&destination_hash, &args.nickname)
+            .await
+            .map_err(map_error)?;
+    }
     Ok(channels.snapshot())
 }
 

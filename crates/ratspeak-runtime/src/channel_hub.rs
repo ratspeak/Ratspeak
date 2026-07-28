@@ -31,7 +31,7 @@ use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use ciborium::value::Value;
-use rns_identity::identity::Identity;
+use rns_identity::{destination::Destination, identity::Identity};
 use rns_link::link::{CloseReason, ResourceStrategy};
 use rns_protocol::resource_adv::ResourceAdvertisement;
 use rns_runtime::destination_runtime::{
@@ -4275,6 +4275,26 @@ pub fn hub_announce_app_data(hub_name: &str) -> Vec<u8> {
 /// Load the per-identity hub identity, generating and persisting one on first
 /// start. The hub identity is deliberately distinct from the operator's chat
 /// identity: joiners learn the hub hash, not the operator hash.
+pub fn hub_identity_path(data_dir: &std::path::Path, identity_hash: &str) -> std::path::PathBuf {
+    data_dir
+        .join("channel_hub")
+        .join(format!("hub_identity_{identity_hash}"))
+}
+
+/// Return the stable public destination for an existing hub identity without
+/// starting the service. This lets the operator surface continue to identify
+/// a hub while it is stopped; no private identity material crosses IPC.
+pub fn existing_hub_destination_hash(path: &std::path::Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let identity = Identity::from_file(path).map_err(|error| error.to_string())?;
+    Ok(Some(hex::encode(Destination::hash_from_name_and_identity(
+        rrc::RRC_HUB_ASPECT,
+        Some(&identity.hash),
+    ))))
+}
+
 pub fn load_or_create_hub_identity(path: &std::path::Path) -> Result<Identity, String> {
     if path.exists() {
         return Identity::from_file(path).map_err(|error| error.to_string());
@@ -4946,6 +4966,29 @@ mod tests {
         };
         db::try_set_settings(&pool, &configured.setting_rows()).unwrap();
         assert_eq!(ChannelHubSettings::load(&pool).unwrap(), configured);
+    }
+
+    #[test]
+    fn owned_hub_destination_remains_available_while_stopped() {
+        let root = std::env::temp_dir().join(format!(
+            "ratspeak-channel-hub-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = hub_identity_path(&root, "operator");
+        assert_eq!(existing_hub_destination_hash(&path).unwrap(), None);
+
+        let identity = load_or_create_hub_identity(&path).unwrap();
+        let expected = hex::encode(Destination::hash_from_name_and_identity(
+            rrc::RRC_HUB_ASPECT,
+            Some(&identity.hash),
+        ));
+        assert_eq!(
+            existing_hub_destination_hash(&path).unwrap(),
+            Some(expected)
+        );
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
