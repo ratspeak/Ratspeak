@@ -1778,7 +1778,7 @@ impl HubCore {
         let repeat_lead = matches!(header, NoticeHeader::Every(_));
         let mut current = lead.to_string();
         let mut current_has_entry = false;
-        let mut flush = |text: &mut String, has_entry: &mut bool, out: &mut Vec<HubSend>| {
+        let flush = |text: &mut String, has_entry: &mut bool, out: &mut Vec<HubSend>| {
             if *has_entry {
                 out.push(self.hub_notice(link_id, text, room));
             }
@@ -2432,7 +2432,7 @@ impl HubCore {
             }
             rrc::MessageType::Join => {
                 self.stats.joins += 1;
-                self.on_join(link_id, envelope, Instant::now(), out);
+                self.on_join(link_id, envelope, out);
             }
             rrc::MessageType::Part => {
                 self.stats.parts += 1;
@@ -2450,13 +2450,7 @@ impl HubCore {
         }
     }
 
-    fn on_join(
-        &mut self,
-        link_id: [u8; 16],
-        envelope: rrc::Envelope,
-        now: Instant,
-        out: &mut Vec<HubSend>,
-    ) {
+    fn on_join(&mut self, link_id: [u8; 16], envelope: rrc::Envelope, out: &mut Vec<HubSend>) {
         let Some(identity) = self.session_identity(link_id) else {
             return;
         };
@@ -2535,18 +2529,19 @@ impl HubCore {
             return;
         }
 
-        let room = self.rooms.get_mut(&room_name).expect("room exists");
-        let existing_members: Vec<[u8; 16]> = room
-            .members
-            .iter()
-            .copied()
-            .filter(|member| *member != link_id)
-            .collect();
-        room.members.insert(link_id);
-        room.invited.remove(&identity);
-        drop(room);
+        let existing_members = {
+            let room = self.rooms.get_mut(&room_name).expect("room exists");
+            let members: Vec<[u8; 16]> = room
+                .members
+                .iter()
+                .copied()
+                .filter(|member| *member != link_id)
+                .collect();
+            room.members.insert(link_id);
+            room.invited.remove(&identity);
+            members
+        };
         self.touch_room(&room_name);
-        let room = self.rooms.get_mut(&room_name).expect("room exists");
         if let Some(session) = self.sessions.get_mut(&link_id) {
             session.rooms.insert(room_name.clone());
         }
@@ -3369,9 +3364,9 @@ impl HubCore {
             ));
             return;
         }
-        let Some(room) = self.rooms.get_mut(&room_name) else {
+        if !self.rooms.contains_key(&room_name) {
             return;
-        };
+        }
         if !self.server_ops.contains(&identity) {
             out.push(self.hub_error(
                 link_id,
