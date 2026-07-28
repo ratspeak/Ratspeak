@@ -1951,7 +1951,10 @@ function _channelsBindUI() {
     });
 
     var connect = _channelsEl('channels-connect-btn');
-    if (connect) connect.addEventListener('click', function() { channelsOpenConnectSheet(); });
+    if (connect) connect.addEventListener('click', function() {
+        if (typeof channelsOpenAddSheet === 'function') channelsOpenAddSheet();
+        else channelsOpenConnectSheet();
+    });
     var refresh = _channelsEl('channels-refresh-btn');
     if (refresh) refresh.addEventListener('click', function() { channelsScan(true); });
     var join = _channelsEl('channels-join-btn');

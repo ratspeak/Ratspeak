@@ -231,6 +231,11 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
     let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channel_hub.rs"))
         .expect("channel hub commands");
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let hub_ui =
+        read_source(root.join("dashboard/static/js/channel_hub.js")).expect("channel hub frontend");
+    let channels_css =
+        read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
 
@@ -345,11 +350,28 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     );
     assert!(runtime.contains("channel_hub_hosting_supported()"));
 
+    // Desktop hosting is discoverable from the existing Channels add action,
+    // but stays separate from client session state and obeys backend support.
+    assert!(index.contains("/static/js/channel_hub.js"));
+    assert!(hub_ui.contains("if (!overview || !overview.supported)"));
+    assert!(hub_ui.contains("RS.invoke('api_channel_hub')"));
+    assert!(hub_ui.contains("RS.invoke('channel_hub_start')"));
+    assert!(hub_ui.contains("RS.invoke('channel_hub_stop')"));
+    assert!(hub_ui.contains("RS.invoke('channel_hub_set_config'"));
+    assert!(hub_ui.contains("RS.listen('channel_hub_snapshot'"));
+    assert!(hub_ui.contains("Some channel changes are still waiting to be saved."));
+    assert!(hub_ui.contains("copyAddress.hidden = !destination"));
+    assert!(channels_css.contains(".channel-host-admin-sheet"));
+    assert!(channels_css.contains(".channel-host-registry-warning"));
+    assert!(channels_css.contains(".channel-host-copy-btn[hidden]"));
+
     // Configuration reads independently of live state, writes as one SQLite
     // transaction, and serializes every lifecycle mutation.
     assert!(commands.contains("pub struct ChannelHubOverview"));
     assert!(commands.contains("ChannelHubSettings::load"));
     assert!(commands.contains("try_set_settings"));
+    assert!(commands.contains("hub.status()"));
+    assert!(commands.contains("status: current_snapshot(state).await"));
     assert!(db.contains("pub fn try_set_settings"));
     assert!(db.contains("let transaction = conn.transaction()"));
     assert!(state.contains("pub channel_hub_control_lock: tokio::sync::Mutex<()>"));
