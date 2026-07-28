@@ -1,12 +1,18 @@
 //! RRC hub service: hosts a Reticulum Relay Chat hub (`rrc.hub`) so remote
 //! clients can connect, join rooms, and relay through this node.
 //!
-//! Relay state is live-only. Nothing in this module writes channel traffic to
-//! the Ratspeak database; persisted hub state is limited to operator settings
-//! and, later, the registered-room registry. Protocol behavior follows the
-//! reference daemon (kc1awv/rrcd 0.3.2) except where the fix registry records
-//! a deliberate deviation (idempotent re-HELLO is one: a duplicate HELLO
-//! re-welcomes without wiping room membership).
+//! Relay traffic is live-only: message bodies, transcripts, and rosters
+//! never reach the Ratspeak database. What persists is operator policy — the
+//! `channel_hub_*` registry of registered rooms, their grants, and hub-level
+//! klines — plus a verify-only digest of each room join key, never the key.
+//!
+//! Rooms exist only because the hub operator made them; a join naming an
+//! unknown room is refused rather than founding one, so no remote peer can
+//! write to the operator's registry.
+//!
+//! Protocol behavior follows the reference daemon (kc1awv/rrcd 0.3.2) except
+//! where the fix registry records a deliberate deviation (idempotent re-HELLO
+//! is one: a duplicate HELLO re-welcomes without wiping room membership).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock, Weak};
@@ -2723,7 +2729,9 @@ impl ChannelHubHandle {
             .await
             .is_ok()
         {
-            let _ = tokio::time::timeout(Duration::from_secs(2), result_rx).await;
+            // The task flushes outstanding registry writes before it acks, so
+            // this budget covers a slow disk, not just a channel round trip.
+            let _ = tokio::time::timeout(Duration::from_secs(10), result_rx).await;
         }
     }
 }

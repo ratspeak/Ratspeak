@@ -1,5 +1,6 @@
 //! Channel hub (RRC server) IPC commands. Hub relay traffic is live session
-//! state; only operator configuration persists, in the settings table.
+//! state. Two things persist: operator configuration in the settings table,
+//! and the `channel_hub_*` room registry owned by `ratspeak-runtime`.
 
 use std::sync::Arc;
 
@@ -43,12 +44,16 @@ async fn persist_setting(
     Ok(())
 }
 
-async fn restart_running_hub(state: &State<'_, Arc<AppState>>) {
-    if let Some(hub) = state.take_channel_hub() {
-        hub.shutdown().await;
-        let app_state: Arc<AppState> = state.inner().clone();
-        ratspeak_runtime::start_channel_hub_service(&app_state).await;
-    }
+/// Restart a running hub so configuration changes take effect. Returns false
+/// if it was running and did not come back, which the caller surfaces rather
+/// than leaving the operator thinking the hub is still up.
+async fn restart_running_hub(state: &State<'_, Arc<AppState>>) -> bool {
+    let Some(hub) = state.take_channel_hub() else {
+        return true;
+    };
+    hub.shutdown().await;
+    let app_state: Arc<AppState> = state.inner().clone();
+    ratspeak_runtime::start_channel_hub_service(&app_state).await
 }
 
 #[tauri::command]
@@ -107,6 +112,10 @@ pub async fn channel_hub_set_config(
         )
         .await?;
     }
-    restart_running_hub(&state).await;
+    if !restart_running_hub(&state).await {
+        return Err(AppError::service_unavailable(
+            "Channel hub could not restart with the new configuration",
+        ));
+    }
     Ok(current_snapshot(&state))
 }
