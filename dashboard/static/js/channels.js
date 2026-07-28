@@ -18,9 +18,10 @@ var channelsSavedRooms = [];
 var channelsActiveRoom = null;
 var channelsPendingHubLabel = '';
 var _channelsLoadedAt = 0;
-var _channelsLastScanAt = 0;
+var _channelsLastHubRefreshAt = 0;
 var _channelsLoadPromise = null;
-var _channelsScanPromise = null;
+var _channelsHubRefreshPromise = null;
+var _channelsDiscoveryRefreshTimer = null;
 var _channelsSavedRoomsHub = null;
 var _channelsSaveHubKey = null;
 var _channelsSaveHubPromise = null;
@@ -285,8 +286,8 @@ function channelsLoad(force) {
         if (channelsSnapshot.hub && channelsSnapshot.hub.destination_hash) {
             channelsLoadSavedRooms(channelsSnapshot.hub.destination_hash);
         }
-        if (!_channelsIsConnected() && Date.now() - _channelsLastScanAt > 15000) {
-            channelsScan(false);
+        if (!_channelsIsConnected() && Date.now() - _channelsLastHubRefreshAt > 5000) {
+            channelsRefreshAvailableHubs();
         }
         return channelsSnapshot;
     }).catch(function(error) {
@@ -301,36 +302,20 @@ function channelsLoad(force) {
     return _channelsLoadPromise;
 }
 
-function channelsScan(explicit) {
-    if (_channelsScanPromise) return _channelsScanPromise;
-    var button = _channelsEl('channels-refresh-btn');
-    if (button) {
-        button.disabled = true;
-        button.textContent = 'Scanning';
-    }
-    _channelsScanPromise = RS.invoke('discover_channel_hubs').then(function(hubs) {
+function channelsRefreshAvailableHubs() {
+    if (_channelsHubRefreshPromise) return _channelsHubRefreshPromise;
+    _channelsHubRefreshPromise = RS.invoke('discover_channel_hubs').then(function(hubs) {
         channelsDiscoveredHubs = Array.isArray(hubs) ? hubs : [];
-        _channelsLastScanAt = Date.now();
+        _channelsLastHubRefreshAt = Date.now();
         renderChannels();
-        if (explicit && channelsDiscoveredHubs.length === 0 && typeof showToast === 'function') {
-            showToast('No channel hubs heard yet', 'toast-orange', 2600);
-        }
         return channelsDiscoveredHubs;
-    }).catch(function(error) {
-        if (explicit && typeof showToast === 'function') {
-            showToast((error && error.message) || 'Could not scan for channel hubs', 'toast-red', 3500);
-        }
+    }).catch(function() {
         return [];
     }).then(function(result) {
-        _channelsScanPromise = null;
-        var refresh = _channelsEl('channels-refresh-btn');
-        if (refresh) {
-            refresh.disabled = false;
-            refresh.textContent = 'Scan';
-        }
+        _channelsHubRefreshPromise = null;
         return result;
     });
-    return _channelsScanPromise;
+    return _channelsHubRefreshPromise;
 }
 
 function channelsLoadSavedRooms(destinationHash) {
@@ -449,14 +434,12 @@ function _channelsRenderList() {
     var list = _channelsEl('channels-list');
     var label = _channelsEl('channels-list-label');
     var join = _channelsEl('channels-join-btn');
-    var scan = _channelsEl('channels-refresh-btn');
     if (!list) return;
     list.textContent = '';
 
     if (_channelsIsConnected()) {
         if (label) label.textContent = 'Channels';
         if (join) join.hidden = false;
-        if (scan) scan.hidden = true;
         var liveNames = {};
         channelsSnapshot.rooms.forEach(function(room) {
             liveNames[room.name] = true;
@@ -471,9 +454,8 @@ function _channelsRenderList() {
         return;
     }
 
-    if (label) label.textContent = 'Nearby & recent';
+    if (label) label.textContent = 'Available hubs';
     if (join) join.hidden = true;
-    if (scan) scan.hidden = false;
     var hubs = _channelsMergedHubs();
     hubs.forEach(function(hub) { list.appendChild(_channelsBuildHubRow(hub)); });
     if (!hubs.length) {
@@ -507,16 +489,39 @@ function _channelsRoomIcon() {
     return '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="3" x2="7" y2="21"/><line x1="17" y1="3" x2="15" y2="21"/><line x1="4" y1="9" x2="20" y2="9"/><line x1="3" y1="15" x2="19" y2="15"/></svg>';
 }
 
+function _channelsHubMonogram(hub) {
+    var name = _channelsHubName(hub).trim();
+    var characters = Array.from(name || 'H');
+    return (characters[0] || 'H').toLocaleUpperCase();
+}
+
+function _channelsHubDistance(hub) {
+    if (!hub || !hub.nearby || typeof hub.hops !== 'number') return '';
+    if (hub.hops === 0) return 'Direct';
+    return hub.hops + (hub.hops === 1 ? ' hop' : ' hops');
+}
+
+function _channelsHubMeta(hub) {
+    var hash = _channelsShortHash(hub && hub.destination_hash);
+    return hub && hub.saved && !hub.nearby ? 'Saved \u00b7 ' + hash : hash;
+}
+
+function _channelsBuildHubMark(hub) {
+    var mark = document.createElement('span');
+    mark.className = 'channel-hub-row-mark';
+    mark.dataset.tone = _channelsIdentityTone(hub && hub.destination_hash);
+    mark.textContent = _channelsHubMonogram(hub);
+    mark.setAttribute('aria-hidden', 'true');
+    return mark;
+}
+
 function _channelsBuildHubRow(hub) {
     var row = document.createElement('button');
     row.type = 'button';
     row.className = 'channel-hub-row';
     row.dataset.destinationHash = hub.destination_hash;
 
-    var icon = document.createElement('span');
-    icon.className = 'channel-hub-row-icon';
-    icon.innerHTML = _channelsRadioIcon();
-    row.appendChild(icon);
+    row.appendChild(_channelsBuildHubMark(hub));
 
     var copy = document.createElement('span');
     copy.className = 'channel-hub-row-copy';
@@ -525,15 +530,15 @@ function _channelsBuildHubRow(hub) {
     title.textContent = _channelsHubName(hub);
     var meta = document.createElement('span');
     meta.className = 'channel-hub-row-meta';
-    meta.textContent = (hub.nearby && hub.hops != null ? hub.hops + (hub.hops === 1 ? ' hop' : ' hops') + ' \u00b7 ' : '') + _channelsShortHash(hub.destination_hash);
+    meta.textContent = _channelsHubMeta(hub);
     copy.appendChild(title);
     copy.appendChild(meta);
     row.appendChild(copy);
 
-    var status = document.createElement('span');
-    status.className = 'channel-row-status';
-    status.textContent = hub.nearby ? 'Nearby' : 'Recent';
-    row.appendChild(status);
+    var distance = document.createElement('span');
+    distance.className = 'channel-hub-row-distance';
+    distance.textContent = _channelsHubDistance(hub);
+    if (distance.textContent) row.appendChild(distance);
     row.addEventListener('click', function() { channelsOpenConnectSheet(hub); });
     return row;
 }
@@ -1505,7 +1510,7 @@ function channelsOpenConnectSheet(prefill) {
     if (hubs.length) {
         var availableLabel = document.createElement('div');
         availableLabel.className = 'channels-section-label';
-        availableLabel.textContent = 'Nearby & recent';
+        availableLabel.textContent = 'Available hubs';
         built.body.appendChild(availableLabel);
         var available = document.createElement('div');
         available.className = 'channel-sheet-hubs';
@@ -1513,19 +1518,20 @@ function channelsOpenConnectSheet(prefill) {
             var row = document.createElement('button');
             row.type = 'button';
             row.className = 'channel-sheet-hub' + (hub.destination_hash === selectedHash ? ' selected' : '');
-            var icon = document.createElement('span');
-            icon.className = 'channel-hub-row-icon';
-            icon.innerHTML = _channelsRadioIcon();
             var rowCopy = document.createElement('span');
             rowCopy.className = 'channel-sheet-hub-copy';
             var title = document.createElement('strong');
             title.textContent = _channelsHubName(hub);
             var hash = document.createElement('span');
-            hash.textContent = _channelsShortHash(hub.destination_hash);
+            hash.textContent = _channelsHubMeta(hub);
             rowCopy.appendChild(title);
             rowCopy.appendChild(hash);
-            row.appendChild(icon);
+            row.appendChild(_channelsBuildHubMark(hub));
             row.appendChild(rowCopy);
+            var distance = document.createElement('span');
+            distance.className = 'channel-hub-row-distance';
+            distance.textContent = _channelsHubDistance(hub);
+            if (distance.textContent) row.appendChild(distance);
             row.addEventListener('click', function() {
                 selectedHash = hub.destination_hash;
                 selectedLabel = hub.label || hub.announced_name || '';
@@ -1955,8 +1961,6 @@ function _channelsBindUI() {
         if (typeof channelsOpenAddSheet === 'function') channelsOpenAddSheet();
         else channelsOpenConnectSheet();
     });
-    var refresh = _channelsEl('channels-refresh-btn');
-    if (refresh) refresh.addEventListener('click', function() { channelsScan(true); });
     var join = _channelsEl('channels-join-btn');
     if (join) join.addEventListener('click', function() { channelsOpenJoinSheet(); });
     var hubMenu = _channelsEl('channel-hub-menu-btn');
@@ -2014,6 +2018,21 @@ RS.listen('channels_snapshot', function(snapshot) {
     channelsApplySnapshot(snapshot);
 });
 
+// Hub discovery is announce-driven. The backend query reads Reticulum's
+// recent announce cache, so presenting it as an active "scan" is misleading.
+// Coalesce busy announce streams and refresh only while this directory matters.
+RS.listen('announce_received', function() {
+    if (_channelsIsConnected() || (typeof isViewActive === 'function' && !isViewActive('channels'))) {
+        _channelsLastHubRefreshAt = 0;
+        return;
+    }
+    if (_channelsDiscoveryRefreshTimer) return;
+    _channelsDiscoveryRefreshTimer = setTimeout(function() {
+        _channelsDiscoveryRefreshTimer = null;
+        channelsRefreshAvailableHubs();
+    }, 750);
+});
+
 RS.listen('lxmf_identity', function() {
     channelsSavedHubs = [];
     channelsSavedRooms = [];
@@ -2028,6 +2047,7 @@ RS.listen('lxmf_identity', function() {
     _channelsSaveHubPromise = null;
     _channelsSavedRoomKeys = {};
     _channelsLoadedAt = 0;
+    _channelsLastHubRefreshAt = 0;
     if (typeof currentView !== 'undefined' && currentView === 'channels') {
         setTimeout(function() { channelsLoad(true); }, 150);
     } else {

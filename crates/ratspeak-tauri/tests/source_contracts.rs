@@ -125,12 +125,18 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(index.contains("id=\"channel-message-input\""));
     assert!(!index.contains("Group conversations"));
     assert!(!index.contains("channels-sidebar-subtitle"));
+    assert!(index.contains("Available hubs"));
+    assert!(!index.contains("channels-refresh-btn"));
     assert!(index.contains("id=\"channel-members-back\""));
     assert!(!index.contains("Messages are not saved and disappear when this session ends."));
     assert!(!index.contains("id=\"channel-session-banner\""));
     assert!(channels_js.contains("hub relays and can read channel messages"));
     assert!(channels_js.contains("Keys are sent over the authenticated Link and are never saved"));
     assert!(channels_js.contains("RS.listen('channels_snapshot'"));
+    assert!(channels_js.contains("RS.listen('announce_received'"));
+    assert!(channels_js.contains("function _channelsBuildHubMark"));
+    assert!(channels_js.contains("function _channelsHubDistance"));
+    assert!(!channels_js.contains("hub.nearby ? 'Nearby' : 'Recent'"));
     assert!(channels_js.contains("TextEncoder"));
     assert!(channels_js.contains("channel-transition-card"));
     assert!(channels_js.contains("Messages unlock when the hub confirms your membership."));
@@ -139,6 +145,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert_eq!(channels_js.matches("return 'Live'").count(), 1);
     assert!(channels_js.contains("function _channelsIdentityTone"));
     assert!(!channels_js.contains("function _channelsInitials"));
+    assert!(channels_css.contains(".channel-hub-row-mark"));
+    assert!(channels_css.contains(".channel-hub-row-distance"));
     assert!(channels_js.contains("function _channelsBuildHubNotice"));
     assert!(channels_js.contains("function _channelsBuildHubGreeting"));
     assert!(channels_js.contains("function _channelsGroupPresenceEvents"));

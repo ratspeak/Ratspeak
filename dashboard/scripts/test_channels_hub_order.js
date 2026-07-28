@@ -10,6 +10,7 @@ var vm = require('vm');
 
 var channelsPath = path.join(__dirname, '..', 'static', 'js', 'channels.js');
 var channelsSource = fs.readFileSync(channelsPath, 'utf8');
+var indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 
 function sourceFunction(name, nextName) {
     var start = channelsSource.indexOf('function ' + name);
@@ -82,5 +83,40 @@ var direct = merge([], [
 ]);
 assert.strictEqual(hashesOf(direct), 'zero,one',
     'a zero-hop hub is the closest, not an unknown distance');
+
+var presentationContext = {
+    _channelsHubName: function(hub) { return hub.announced_name || 'Channel hub'; },
+    _channelsShortHash: function(value) { return 'short:' + value; }
+};
+vm.runInNewContext(
+    sourceFunction('_channelsHubMonogram', '_channelsBuildHubRow') +
+        '\nthis.monogram = _channelsHubMonogram;' +
+        '\nthis.distance = _channelsHubDistance;' +
+        '\nthis.meta = _channelsHubMeta;',
+    presentationContext
+);
+assert.strictEqual(presentationContext.monogram({ announced_name: 'fishy hub' }), 'F');
+assert.strictEqual(presentationContext.monogram({ announced_name: 'Почен Брянск' }), 'П');
+assert.strictEqual(presentationContext.distance({ nearby: true, hops: 0 }), 'Direct');
+assert.strictEqual(presentationContext.distance({ nearby: true, hops: 1 }), '1 hop');
+assert.strictEqual(presentationContext.distance({ nearby: true, hops: 4 }), '4 hops');
+assert.strictEqual(presentationContext.distance({ saved: true, nearby: false }), '');
+assert.strictEqual(
+    presentationContext.meta({ destination_hash: 'abcd', saved: true, nearby: false }),
+    'Saved · short:abcd'
+);
+assert.strictEqual(
+    presentationContext.meta({ destination_hash: 'abcd', saved: true, nearby: true }),
+    'short:abcd'
+);
+
+assert(indexSource.indexOf('Available hubs') !== -1,
+    'the directory heading should describe the choices, not their cache provenance');
+assert(indexSource.indexOf('channels-refresh-btn') === -1,
+    'the announce cache must not be presented as an active network scan');
+assert(channelsSource.indexOf("RS.listen('announce_received'") !== -1,
+    'new announces should refresh the visible hub directory automatically');
+assert(channelsSource.indexOf("hub.nearby ? 'Nearby' : 'Recent'") === -1,
+    'each row should not repeat the directory heading as a status chip');
 
 console.log('channel hub ordering tests passed');
