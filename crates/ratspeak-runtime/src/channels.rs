@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::pending;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -41,6 +42,17 @@ const DEFAULT_MESSAGE_MAX_BYTES: usize = 350;
 const TRANSCRIPT_LIMIT: usize = 300;
 const NOTICE_LIMIT: usize = 100;
 const SEEN_MESSAGE_LIMIT: usize = 2_048;
+
+// Snapshot ordering crosses two asynchronous delivery paths: direct Tauri
+// command responses and live `channels_snapshot` events. A process-local
+// generation separates manager lifetimes (notably identity switches), while
+// each manager's revision orders state within that lifetime. Wall time remains
+// diagnostic only: two mutations can share a millisecond and clocks can move.
+static NEXT_CHANNELS_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_channels_generation() -> u64 {
+    NEXT_CHANNELS_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Fenced Activity recorder shared with the hub service: both sides of
 /// Channels record through the same origin-fence logic rather than two copies.
@@ -268,6 +280,11 @@ impl ChannelRoomSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelsSnapshot {
     pub protocol_version: &'static str,
+    /// Process-local manager lifetime. Higher generations supersede every
+    /// snapshot emitted by a retired manager.
+    pub generation: u64,
+    /// Strictly increasing state version within one manager generation.
+    pub revision: u64,
     pub phase: ChannelsPhase,
     pub nickname: Option<String>,
     pub hub: Option<ChannelHubSnapshot>,
@@ -285,6 +302,8 @@ impl ChannelsSnapshot {
     pub fn offline() -> Self {
         Self {
             protocol_version: "0.1.3",
+            generation: 0,
+            revision: 0,
             phase: ChannelsPhase::Offline,
             nickname: None,
             hub: None,
@@ -300,6 +319,14 @@ impl ChannelsSnapshot {
         Self {
             phase: ChannelsPhase::Unavailable,
             last_error: Some("Reticulum is not ready".into()),
+            ..Self::offline()
+        }
+    }
+
+    fn for_manager(generation: u64) -> Self {
+        Self {
+            generation,
+            revision: 1,
             ..Self::offline()
         }
     }
@@ -423,7 +450,9 @@ impl ChannelsManagerHandle {
         state: Weak<AppState>,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_BUFFER);
-        let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::offline()));
+        let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::for_manager(
+            next_channels_generation(),
+        )));
         let activity = ChannelsActivity::new(state);
         tokio::spawn(run_manager(
             transport_tx,
@@ -921,6 +950,17 @@ struct ConnectAttemptInput {
     activity_context: SessionActivityContext,
 }
 
+struct ConnectToHubInput {
+    attempt: u64,
+    transport_tx: mpsc::Sender<TransportMessage>,
+    identity: Identity,
+    destination_hash: [u8; 16],
+    nickname: String,
+    known_hub: Option<KnownHubTarget>,
+    update_tx: mpsc::Sender<ConnectUpdate>,
+    activity_context: SessionActivityContext,
+}
+
 struct ConnectUpdateContext<'a> {
     current_attempt: u64,
     connect_cancel: &'a mut Option<oneshot::Sender<()>>,
@@ -1322,16 +1362,16 @@ async fn run_connect_attempt(input: ConnectAttemptInput) {
         cancel_rx,
         activity_context,
     } = input;
-    let connect = connect_to_hub(
+    let connect = connect_to_hub(ConnectToHubInput {
         attempt,
         transport_tx,
         identity,
         destination_hash,
         nickname,
         known_hub,
-        update_tx.clone(),
+        update_tx: update_tx.clone(),
         activity_context,
-    );
+    });
     tokio::select! {
         _ = cancel_rx => {}
         result = connect => {
@@ -1348,16 +1388,17 @@ async fn run_connect_attempt(input: ConnectAttemptInput) {
     }
 }
 
-async fn connect_to_hub(
-    attempt: u64,
-    transport_tx: mpsc::Sender<TransportMessage>,
-    identity: Identity,
-    destination_hash: [u8; 16],
-    nickname: String,
-    known_hub: Option<KnownHubTarget>,
-    update_tx: mpsc::Sender<ConnectUpdate>,
-    activity_context: SessionActivityContext,
-) -> Result<ConnectedSession, ConnectAttemptError> {
+async fn connect_to_hub(input: ConnectToHubInput) -> Result<ConnectedSession, ConnectAttemptError> {
+    let ConnectToHubInput {
+        attempt,
+        transport_tx,
+        identity,
+        destination_hash,
+        nickname,
+        known_hub,
+        update_tx,
+        activity_context,
+    } = input;
     send_session_activity_update(
         &update_tx,
         attempt,
@@ -3339,14 +3380,25 @@ fn mutate_snapshot(
     mutate: impl FnOnce(&mut ChannelsSnapshot),
 ) {
     if let Ok(mut snapshot) = snapshot.write() {
+        let generation = snapshot.generation;
+        let revision = snapshot.revision;
         mutate(&mut snapshot);
+        // Mutations sometimes replace the whole value with `offline()` first;
+        // the ordering identity belongs to the manager, never the replacement.
+        snapshot.generation = generation;
+        snapshot.revision = revision.saturating_add(1);
         snapshot.updated_at_ms = now_ms();
     }
 }
 
 fn replace_snapshot(snapshot: &Arc<RwLock<ChannelsSnapshot>>, replacement: ChannelsSnapshot) {
     if let Ok(mut snapshot) = snapshot.write() {
+        let generation = snapshot.generation;
+        let revision = snapshot.revision.saturating_add(1);
         *snapshot = replacement;
+        snapshot.generation = generation;
+        snapshot.revision = revision;
+        snapshot.updated_at_ms = now_ms();
     }
 }
 
@@ -3421,6 +3473,67 @@ mod tests {
     use rns_transport::messages::OutboundRequest;
 
     use crate::channel_hub::{ChannelHubConfig, ChannelHubHandle, HubStore};
+
+    #[test]
+    fn snapshot_order_is_monotonic_and_survives_whole_value_replacement() {
+        let generation = next_channels_generation();
+        let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::for_manager(generation)));
+        let initial = snapshot.read().unwrap().clone();
+
+        mutate_snapshot(&snapshot, |state| state.phase = ChannelsPhase::Resolving);
+        let resolving = snapshot.read().unwrap().clone();
+        assert_eq!(resolving.generation, generation);
+        assert_eq!(resolving.revision, initial.revision + 1);
+
+        // This mirrors the connect/ready paths, which intentionally build a
+        // fresh offline value before filling in live state.
+        mutate_snapshot(&snapshot, |state| {
+            *state = ChannelsSnapshot::offline();
+            state.phase = ChannelsPhase::Active;
+        });
+        let active = snapshot.read().unwrap().clone();
+        assert_eq!(active.generation, generation);
+        assert_eq!(active.revision, resolving.revision + 1);
+
+        replace_snapshot(&snapshot, ChannelsSnapshot::offline());
+        let offline = snapshot.read().unwrap().clone();
+        assert_eq!(offline.generation, generation);
+        assert_eq!(offline.revision, active.revision + 1);
+        assert_eq!(offline.phase, ChannelsPhase::Offline);
+    }
+
+    #[tokio::test]
+    async fn later_channel_managers_receive_newer_generations() {
+        let (transport_tx, _transport_rx) = mpsc::channel::<TransportMessage>(8);
+        let first = ChannelsManagerHandle::start(
+            transport_tx.clone(),
+            Identity::new(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            ShutdownSignal::new(),
+            Weak::new(),
+        );
+        let first_generation = first.snapshot().generation;
+        first.shutdown().await;
+
+        let second = ChannelsManagerHandle::start(
+            transport_tx,
+            Identity::new(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            ShutdownSignal::new(),
+            Weak::new(),
+        );
+        let second_generation = second.snapshot().generation;
+        assert!(second_generation > first_generation);
+        second.shutdown().await;
+    }
+
+    #[test]
+    fn snapshot_order_is_part_of_the_serialized_ipc_contract() {
+        let snapshot = ChannelsSnapshot::for_manager(42);
+        let value = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(value["generation"], 42);
+        assert_eq!(value["revision"], 1);
+    }
 
     #[test]
     fn parses_reference_hub_announce_and_filters_name() {
@@ -3536,6 +3649,7 @@ mod tests {
             hub_identity,
             ChannelHubConfig {
                 hub_name: "Local test hub".into(),
+                ping_interval_secs: 1,
                 ..ChannelHubConfig::default()
             },
             client_hash,
@@ -3569,6 +3683,14 @@ mod tests {
             active.hub.as_ref().and_then(|hub| hub.name.as_deref()),
             Some("Local test hub")
         );
+
+        // Let the otherwise-idle same-runtime session complete at least one
+        // application PING/PONG cycle before joining. The production report
+        // surfaced only after a long idle period; this keeps that lifecycle
+        // boundary in the product regression without making the test slow.
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        let after_idle = manager.snapshot();
+        assert!(after_idle.revision > active.revision);
 
         manager.join("general", None).await.unwrap();
         let joined = wait_snapshot(&manager, |snapshot| {

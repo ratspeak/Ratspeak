@@ -163,11 +163,16 @@ pub async fn join_channel(
     state: State<'_, Arc<AppState>>,
     args: JoinChannelArgs,
 ) -> AppResult<Value> {
-    let room = channels_handle(&state)?
+    let channels = channels_handle(&state)?;
+    let room = channels
         .join(&args.room, args.key)
         .await
         .map_err(map_error)?;
-    Ok(json!({ "room": room, "joining": true }))
+    Ok(json!({
+        "room": room,
+        "joining": true,
+        "snapshot": channels.snapshot()
+    }))
 }
 
 #[tauri::command]
@@ -175,11 +180,13 @@ pub async fn part_channel(
     state: State<'_, Arc<AppState>>,
     args: ChannelRoomArgs,
 ) -> AppResult<Value> {
-    channels_handle(&state)?
-        .part(&args.room)
-        .await
-        .map_err(map_error)?;
-    Ok(json!({ "room": args.room, "parting": true }))
+    let channels = channels_handle(&state)?;
+    channels.part(&args.room).await.map_err(map_error)?;
+    Ok(json!({
+        "room": args.room,
+        "parting": true,
+        "snapshot": channels.snapshot()
+    }))
 }
 
 #[tauri::command]
@@ -208,7 +215,8 @@ pub async fn send_channel_message(
                     "accepted": true,
                     "local_command": "join",
                     "room": room,
-                    "already_joined": true
+                    "already_joined": true,
+                    "snapshot": snapshot
                 }));
             }
             let room = channels.join(&room, None).await.map_err(map_error)?;
@@ -216,7 +224,8 @@ pub async fn send_channel_message(
                 "accepted": true,
                 "local_command": "join",
                 "room": room,
-                "joining": true
+                "joining": true,
+                "snapshot": channels.snapshot()
             }))
         }
         Some(LocalComposerCommand::Part(requested_room)) => {
@@ -236,7 +245,8 @@ pub async fn send_channel_message(
                     "accepted": true,
                     "local_command": "part",
                     "room": room,
-                    "already_parting": true
+                    "already_parting": true,
+                    "snapshot": snapshot
                 }));
             }
             channels.part(&room).await.map_err(map_error)?;
@@ -244,7 +254,8 @@ pub async fn send_channel_message(
                 "accepted": true,
                 "local_command": "part",
                 "room": room,
-                "parting": true
+                "parting": true,
+                "snapshot": channels.snapshot()
             }))
         }
         None => {

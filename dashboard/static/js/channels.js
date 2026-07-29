@@ -3,6 +3,8 @@
 
 var channelsSnapshot = {
     protocol_version: '0.1.3',
+    generation: 0,
+    revision: 0,
     phase: 'unavailable',
     nickname: null,
     hub: null,
@@ -265,8 +267,28 @@ function _channelsSetText(id, value) {
     if (el) el.textContent = value == null ? '' : String(value);
 }
 
+function _channelsSnapshotVersion(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return null;
+    var generation = Number(snapshot.generation);
+    var revision = Number(snapshot.revision);
+    if (!Number.isSafeInteger(generation) || generation < 0 ||
+            !Number.isSafeInteger(revision) || revision < 0) return null;
+    return { generation: generation, revision: revision };
+}
+
+function _channelsSnapshotIsNewer(snapshot, current) {
+    var incoming = _channelsSnapshotVersion(snapshot);
+    if (!incoming) return false;
+    var existing = _channelsSnapshotVersion(current);
+    if (!existing) return true;
+    if (incoming.generation !== existing.generation) {
+        return incoming.generation > existing.generation;
+    }
+    return incoming.revision > existing.revision;
+}
+
 function channelsApplySnapshot(snapshot) {
-    if (!snapshot || typeof snapshot !== 'object') return;
+    if (!_channelsSnapshotIsNewer(snapshot, channelsSnapshot)) return false;
     var oldHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
     channelsSnapshot = snapshot;
     if (!Array.isArray(channelsSnapshot.rooms)) channelsSnapshot.rooms = [];
@@ -300,6 +322,7 @@ function channelsApplySnapshot(snapshot) {
     _channelsPersistConveniences();
     renderChannels();
     if (typeof channelHubRenderHome === 'function') channelHubRenderHome();
+    return true;
 }
 
 function channelsLoad(force) {
@@ -328,8 +351,14 @@ function channelsLoad(force) {
         }
         return channelsSnapshot;
     }).catch(function(error) {
-        channelsSnapshot.phase = 'unavailable';
-        channelsSnapshot.last_error = error && error.message ? error.message : 'Channels are unavailable';
+        // A failed refresh must not mutate an already-versioned live snapshot:
+        // a later equal API response would correctly be treated as idempotent
+        // and could not heal that local-only regression.
+        var current = _channelsSnapshotVersion(channelsSnapshot);
+        if (!current || current.generation === 0) {
+            channelsSnapshot.phase = 'unavailable';
+            channelsSnapshot.last_error = error && error.message ? error.message : 'Channels are unavailable';
+        }
         renderChannels();
         return channelsSnapshot;
     }).then(function(result) {
@@ -1771,8 +1800,9 @@ function channelsOpenJoinSheet(prefillRoom) {
             args: { room: room, key: keyInput.value || null }
         }).then(function(result) {
             channelsActiveRoom = (result && result.room) || room;
+            if (result && result.snapshot) channelsApplySnapshot(result.snapshot);
             built.dismiss();
-            channelsLoad(true).then(function() { channelsSelectRoom(channelsActiveRoom); });
+            channelsSelectRoom(channelsActiveRoom);
         }).catch(function(err) {
             error.textContent = (err && err.message) || 'Could not join this channel.';
             join.disabled = false;
@@ -1907,6 +1937,7 @@ function _channelsRoomDetail(labelText, value) {
 
 function _channelsPartRoom(roomName) {
     return RS.invoke('part_channel', { args: { room: roomName } }).then(function(result) {
+        if (result && result.snapshot) channelsApplySnapshot(result.snapshot);
         if (_channelsCompact() && RS.viewStack && RS.viewStack.top() && RS.viewStack.top().viewId === 'channel-detail') {
             RS.viewStack.pop();
         }
@@ -1926,6 +1957,7 @@ function channelsDisconnect() {
 
 function _channelsHandleComposerResult(result, originRoom) {
     result = result || {};
+    if (result.snapshot) channelsApplySnapshot(result.snapshot);
     var command = result.local_command;
     var targetRoom = String(result.room || originRoom || '').trim().toLowerCase();
     if (command === 'join') {
@@ -1935,7 +1967,8 @@ function _channelsHandleComposerResult(result, originRoom) {
             channelsSelectRoom(targetRoom);
             return Promise.resolve();
         }
-        return channelsLoad(true).then(function() { channelsSelectRoom(targetRoom); });
+        channelsSelectRoom(targetRoom);
+        return Promise.resolve();
     }
     if (command === 'part') {
         if (result.already_parting) {
@@ -1947,7 +1980,7 @@ function _channelsHandleComposerResult(result, originRoom) {
                 RS.viewStack.top() && RS.viewStack.top().viewId === 'channel-detail') {
             RS.viewStack.pop();
         }
-        return channelsLoad(true);
+        return Promise.resolve();
     }
     return Promise.resolve();
 }

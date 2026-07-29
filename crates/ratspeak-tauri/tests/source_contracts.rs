@@ -115,6 +115,9 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
         .expect("channels runtime");
     let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channels.rs"))
         .expect("channels commands");
+    let snapshot_order_test =
+        read_source(root.join("dashboard/scripts/test_channels_snapshot_order.js"))
+            .expect("channels snapshot ordering test");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     let tauri_build = read_source(root.join("src-tauri/build.rs")).expect("tauri build script");
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
@@ -135,6 +138,9 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_js.contains("hub relays and can read channel messages"));
     assert!(channels_js.contains("Keys are sent over the authenticated Link and are never saved"));
     assert!(channels_js.contains("RS.listen('channels_snapshot'"));
+    assert!(channels_js.contains("function _channelsSnapshotIsNewer"));
+    assert!(channels_js.contains("incoming.generation > existing.generation"));
+    assert!(channels_js.contains("incoming.revision > existing.revision"));
     assert!(channels_js.contains("RS.listen('announce_received'"));
     assert!(channels_js.contains("function _channelsBuildHubMark"));
     assert!(channels_js.contains("function _channelsHubDistance"));
@@ -195,6 +201,9 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("hub-attested observation of its source"));
     assert!(runtime.contains("room.members_complete = false"));
     assert!(runtime.contains("pub hub_greeting: Option<ChannelTranscriptItem>"));
+    assert!(runtime.contains("pub generation: u64"));
+    assert!(runtime.contains("pub revision: u64"));
+    assert!(runtime.contains("snapshot.revision = revision.saturating_add(1)"));
     assert!(runtime.contains("WELCOME source does not match the authenticated hub"));
     assert!(commands.contains("fn parse_local_composer_command"));
     assert!(runtime.contains("pub async fn connect_known"));
@@ -204,6 +213,20 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(commands.contains("LocalComposerCommand::Join"));
     assert!(commands.contains("LocalComposerCommand::Part"));
     assert!(commands.contains("\"/list\""));
+    assert!(
+        commands
+            .matches("\"snapshot\": channels.snapshot()")
+            .count()
+            >= 4
+    );
+    assert!(commands.matches("\"snapshot\": snapshot").count() >= 2);
+    assert!(
+        snapshot_order_test.contains("a delayed API batch must not overwrite a newer live event")
+    );
+    assert!(snapshot_order_test.contains("an older manager generation can never supersede"));
+    assert!(
+        snapshot_order_test.contains("direct joins must not start the stale multi-query reload")
+    );
     for command in [
         "api_channels",
         "discover_channel_hubs",
