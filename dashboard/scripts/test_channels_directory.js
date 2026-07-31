@@ -277,7 +277,7 @@ async function main() {
 
     assert(navSource.indexOf('channelsRefreshDirectory(false);') !== -1,
         'entering the Channels view must request an idle or stale directory');
-    assert(channelsSource.indexOf('service_model_version: 2') !== -1);
+    assert(channelsSource.indexOf('service_model_version: 3') !== -1);
     assert(channelsSource.indexOf('channelsOpenJoinSheet(room.name)') !== -1);
     assert(channelsSource.indexOf("RS.invoke('refresh_channel_directory')") !== -1);
 

@@ -3730,6 +3730,28 @@
         padding: var(--space-4) var(--space-5);
     }
 
+    .channel-welcome-actions {
+        width: 100%;
+    }
+
+    .channel-welcome-actions .nr-btn {
+        min-height: 42px;
+        flex: 1 1 132px;
+    }
+
+    .channel-hub-profile-capabilities {
+        grid-template-columns: 1fr;
+    }
+
+    .channel-hub-profile-hero h2 {
+        font-size: var(--text-lg);
+    }
+
+    .channel-hub-profile-detail {
+        grid-template-columns: minmax(82px, auto) minmax(0, 1fr);
+        gap: var(--space-3);
+    }
+
     .channel-welcome-mark {
         width: 68px;
         height: 68px;

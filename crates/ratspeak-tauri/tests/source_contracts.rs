@@ -132,6 +132,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     let hub_switcher_test =
         read_source(root.join("dashboard/scripts/test_channels_hub_switcher.js"))
             .expect("channels hub switcher test");
+    let hub_profile_test =
+        read_source(root.join("dashboard/scripts/test_channels_hub_profile.js"))
+            .expect("channels hub profile test");
     let tauri_events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri event bridge");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
@@ -244,6 +247,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_css.contains(".channels-layout:not(.room-live)"));
     assert!(channels_css.contains(".channel-transition-rail"));
     assert!(channels_css.contains(".channel-hub-greeting"));
+    assert!(channels_css.contains(".channel-hub-profile-capabilities"));
+    assert!(channels_css.contains(".channel-hub-greeting-delivery"));
     assert!(channels_css.contains(".channel-presence-summary"));
     assert!(channels_css.contains(".channel-history-rail"));
     assert!(channels_css.contains(".channel-day-separator"));
@@ -431,6 +436,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_css.contains(".channel-share-input"));
     assert!(share_test.contains("channel share tests passed"));
     assert!(hub_switcher_test.contains("channel hub switcher tests passed"));
+    assert!(hub_profile_test.contains("channel hub profile tests passed"));
 }
 
 #[test]

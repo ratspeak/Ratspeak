@@ -2078,9 +2078,13 @@ function channelHubOpenManager(initialOverview) {
     greetingInput.className = 'nr-input-sm channel-host-greeting';
     greetingInput.maxLength = 512;
     greetingInput.rows = 3;
-    greetingInput.placeholder = 'Welcome people and tell them where to begin';
+    greetingInput.placeholder = 'Welcome people, share rules, and tell them where to begin';
     greetingInput.value = settings.greeting || '';
-    var greetingField = _channelHubField('Welcome message', greetingInput, 'Shown once when someone connects');
+    var greetingField = _channelHubField(
+        'Welcome & guidance',
+        greetingInput,
+        'Shown after WELCOME when someone connects'
+    );
     var greetingCount = greetingField.querySelector('.channel-host-field-hint');
     profile.appendChild(greetingField);
     panels.settings.appendChild(profile);
@@ -2426,7 +2430,8 @@ function channelHubOpenManager(initialOverview) {
         save.disabled = busy || adminMutationBusy || !dirty || !nameInput.value.trim();
         save.hidden = activeTab !== 'settings';
         impact.hidden = !(dirty && overview.status && overview.status.running);
-        greetingCount.textContent = (greetingInput.value.length || 0) + '/512 · Shown once when someone connects';
+        greetingCount.textContent = (greetingInput.value.length || 0) +
+            '/512 \u00b7 Use for rules and where to begin';
     }
 
     function setBusy(value, label) {

@@ -613,6 +613,114 @@ function _channelsHubSwitcherModel() {
     };
 }
 
+function _channelsCurrentHubObserved() {
+    var destination = String(
+        (channelsSnapshot.hub && channelsSnapshot.hub.destination_hash) ||
+        channelsSnapshot.selected_hub_destination ||
+        ''
+    ).toLowerCase();
+    var hubs = Array.isArray(channelsSnapshot.hubs) ? channelsSnapshot.hubs : [];
+    for (var i = 0; i < hubs.length; i++) {
+        if (String(hubs[i].destination_hash || '').toLowerCase() !== destination) continue;
+        return hubs[i].observed || null;
+    }
+    return null;
+}
+
+// A presentation-safe view of authenticated native state. This intentionally
+// interprets no RRC payloads in JavaScript: WELCOME, directory, and greeting
+// provenance have already crossed the native validation boundary as typed
+// fields.
+function _channelsHubProfileModel() {
+    var observed = _channelsCurrentHubObserved();
+    var hub = (observed && observed.hub) || channelsSnapshot.hub || {};
+    var directory = (observed && observed.directory) ||
+        channelsSnapshot.directory || {};
+    var greeting = (observed && observed.greeting) ||
+        channelsSnapshot.hub_greeting || null;
+    var authenticatedName = String(hub.name || '').trim();
+    var announcedName = String(hub.announced_name || '').trim();
+    var destination = String(hub.destination_hash || '').toLowerCase();
+    var directoryRooms = Array.isArray(directory.rooms) ? directory.rooms : [];
+    var omitted = Number.isSafeInteger(Number(directory.omitted_count))
+        ? Math.max(0, Number(directory.omitted_count)) : 0;
+    var directoryPhase = String(directory.phase || 'idle');
+    var directorySummary;
+    if (directoryPhase === 'loading') {
+        directorySummary = 'Refreshing public channels\u2026';
+    } else if (directoryPhase === 'error') {
+        directorySummary = directory.last_error ||
+            'Public channel information is unavailable.';
+    } else if (directoryPhase !== 'ready') {
+        directorySummary = 'Public channels have not been requested for this Link.';
+    } else if (!directoryRooms.length && directory.complete) {
+        directorySummary = 'No public channels were advertised.';
+    } else {
+        directorySummary = directoryRooms.length + ' public ' +
+            (directoryRooms.length === 1 ? 'channel' : 'channels');
+        if (!directory.complete) {
+            directorySummary += omitted
+                ? ' shown \u00b7 ' + omitted + ' more omitted by the hub'
+                : ' shown \u00b7 response may be incomplete';
+        }
+    }
+
+    function safeLimit(value) {
+        if (value === null || value === undefined || value === '') return null;
+        value = Number(value);
+        return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    }
+
+    var capabilities = hub.capabilities || {};
+    var limits = hub.limits || {};
+    var phase = String((observed && observed.phase) ||
+        channelsSnapshot.phase || 'offline');
+    var identityHash = String(hub.identity_hash || '').toLowerCase();
+    var connectedAt = safeLimit(hub.connected_at_ms);
+    return {
+        hub: hub,
+        destination_hash: destination,
+        identity_hash: identityHash,
+        authenticated_name: authenticatedName || null,
+        announced_name: announcedName || null,
+        display_name: authenticatedName || announcedName ||
+            (destination ? 'Channel hub ' + destination.slice(0, 8) : 'Channel hub'),
+        name_mismatch: !!(authenticatedName && announcedName &&
+            authenticatedName.toLowerCase() !== announcedName.toLowerCase()),
+        phase: phase,
+        authenticated_session: !!(identityHash && connectedAt != null &&
+            (phase === 'active' || phase === 'stale')),
+        nickname: (observed && observed.nickname) || channelsSnapshot.nickname || null,
+        hops: safeLimit(hub.hops),
+        link_mdu: safeLimit(hub.link_mdu),
+        connected_at_ms: connectedAt,
+        hub_version: hub.version || null,
+        protocol_version: channelsSnapshot.protocol_version || null,
+        greeting: greeting,
+        directory: {
+            phase: directoryPhase,
+            count: directoryRooms.length,
+            complete: !!directory.complete,
+            omitted_count: omitted,
+            refreshed_at_ms: safeLimit(directory.refreshed_at_ms),
+            summary: directorySummary
+        },
+        capabilities: {
+            actions: !!capabilities.actions,
+            direct_notices: !!capabilities.direct_notices,
+            resource_envelopes: !!capabilities.resource_envelopes,
+            rejoin_grace: !!capabilities.rejoin_grace
+        },
+        limits: {
+            max_nick_bytes: safeLimit(limits.max_nick_bytes),
+            max_room_name_bytes: safeLimit(limits.max_room_name_bytes),
+            max_message_body_bytes: safeLimit(limits.max_message_body_bytes),
+            max_rooms_per_session: safeLimit(limits.max_rooms_per_session),
+            rate_messages_per_minute: safeLimit(limits.rate_messages_per_minute)
+        }
+    };
+}
+
 function _channelsConnectCommandBlocked() {
     return channelsSnapshot.phase === 'resolving' ||
         channelsSnapshot.phase === 'connecting' ||
@@ -2095,6 +2203,7 @@ function _channelsRenderRoomEmpty(transcript) {
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'nr-btn nr-btn-primary';
+    var secondary = null;
 
     if (_channelsIsConnecting()) {
         title.textContent = _channelsPhaseLabel(channelsSnapshot.phase) + '\u2026';
@@ -2103,12 +2212,24 @@ function _channelsRenderRoomEmpty(transcript) {
         button.dataset.channelAction = 'disconnect';
         button.textContent = 'Cancel';
     } else if (_channelsIsConnected()) {
-        title.textContent = 'Connected. Join a channel.';
-        copy.textContent = 'Choose a channel on ' + _channelsHubName(channelsSnapshot.hub) + '.';
+        var profile = _channelsHubProfileModel();
+        state.classList.add('channel-hub-home-state');
+        title.textContent = profile.display_name;
+        copy.textContent = 'Authenticated Reticulum Link' +
+            (profile.hops == null
+                ? ''
+                : ' \u00b7 ' + profile.hops +
+                    (profile.hops === 1 ? ' hop' : ' hops')) +
+            '. ' + profile.directory.summary;
         button.dataset.channelAction = 'join';
-        button.textContent = 'Join a channel';
-        if (channelsSnapshot.hub_greeting) {
-            transcript.appendChild(_channelsBuildHubGreeting(channelsSnapshot.hub_greeting));
+        button.textContent = 'Browse & join';
+        secondary = document.createElement('button');
+        secondary.type = 'button';
+        secondary.className = 'nr-btn nr-btn-secondary';
+        secondary.dataset.channelAction = 'hub-info';
+        secondary.textContent = 'Hub information';
+        if (profile.greeting) {
+            transcript.appendChild(_channelsBuildHubGreeting(profile.greeting));
             state.classList.add('has-hub-greeting');
         }
     } else if (channelsSnapshot.phase === 'error') {
@@ -2132,19 +2253,28 @@ function _channelsRenderRoomEmpty(transcript) {
     state.appendChild(mark);
     state.appendChild(title);
     state.appendChild(copy);
-    state.appendChild(button);
+    var actions = document.createElement('div');
+    actions.className = 'channel-welcome-actions';
+    actions.appendChild(button);
+    if (secondary) actions.appendChild(secondary);
+    state.appendChild(actions);
     transcript.appendChild(state);
 }
 
 function _channelsBuildHubGreeting(item, compact) {
     var greeting = document.createElement('aside');
     greeting.className = 'channel-hub-greeting' + (compact ? ' compact' : '');
-    greeting.setAttribute('aria-label', 'Hub greeting');
+    greeting.dataset.delivery = item.delivery || 'notice';
+    greeting.dataset.completeness = item.completeness || 'unframed';
+    greeting.setAttribute(
+        'aria-label',
+        'Welcome and guidance from the authenticated channel hub'
+    );
     var heading = document.createElement('div');
     heading.className = 'channel-hub-greeting-heading';
     var label = document.createElement('span');
     label.className = 'channel-hub-notice-label';
-    label.textContent = 'Hub greeting';
+    label.textContent = 'Welcome & guidance';
     var hub = document.createElement('span');
     hub.className = 'channel-hub-greeting-source';
     hub.textContent = _channelsHubName(channelsSnapshot.hub);
@@ -2155,6 +2285,14 @@ function _channelsBuildHubGreeting(item, compact) {
     heading.appendChild(hub);
     greeting.appendChild(heading);
     greeting.appendChild(body);
+    var delivery = document.createElement('div');
+    delivery.className = 'channel-hub-greeting-delivery';
+    if (item.delivery === 'resource' && item.completeness === 'complete') {
+        delivery.textContent = 'Complete bounded transfer \u00b7 authenticated Link';
+    } else {
+        delivery.textContent = 'NOTICE delivery \u00b7 completion not signaled by this hub';
+    }
+    greeting.appendChild(delivery);
     return greeting;
 }
 
@@ -3868,27 +4006,251 @@ function channelsOpenJoinSheet(prefillRoom) {
     _channelsPresentSheet(built, roomInput);
 }
 
+function _channelsHubProfileDetail(labelText, value, mono) {
+    var row = _channelsRoomDetail(labelText, value);
+    row.classList.add('channel-hub-profile-detail');
+    if (mono) row.querySelector('strong').classList.add('mono');
+    return row;
+}
+
+function _channelsHubProfileSection(titleText, copyText) {
+    var section = document.createElement('section');
+    section.className = 'channel-hub-profile-section';
+    var title = document.createElement('h3');
+    title.textContent = titleText;
+    section.appendChild(title);
+    if (copyText) {
+        var copy = document.createElement('p');
+        copy.textContent = copyText;
+        section.appendChild(copy);
+    }
+    return section;
+}
+
+function _channelsHubCapability(labelText, description, enabled) {
+    var capability = document.createElement('div');
+    capability.className = 'channel-hub-profile-capability';
+    capability.dataset.enabled = enabled ? 'true' : 'false';
+    var mark = document.createElement('span');
+    mark.className = 'channel-hub-profile-capability-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = enabled ? '\u2713' : '\u2014';
+    var copy = document.createElement('span');
+    copy.className = 'channel-hub-profile-capability-copy';
+    var label = document.createElement('strong');
+    label.textContent = labelText;
+    var detail = document.createElement('span');
+    detail.textContent = enabled ? description : 'Not advertised by this hub';
+    copy.appendChild(label);
+    copy.appendChild(detail);
+    capability.appendChild(mark);
+    capability.appendChild(copy);
+    return capability;
+}
+
 function channelsOpenHubOptions() {
     if (!channelsSnapshot.hub || typeof _rsBuildSheet !== 'function') return;
-    var hub = channelsSnapshot.hub;
-    var built = _rsBuildSheet({ title: _channelsHubName(hub) }, function() {});
-    var copy = document.createElement('p');
-    copy.className = 'channel-sheet-copy mono';
-    copy.textContent = hub.destination_hash;
-    built.body.appendChild(copy);
-    var details = document.createElement('p');
-    details.className = 'channel-sheet-copy';
-    var parts = [_channelsPhaseLabel(channelsSnapshot.phase)];
-    if (hub.hops != null) parts.push(hub.hops + (hub.hops === 1 ? ' hop' : ' hops'));
-    if (hub.version) parts.push('Hub ' + hub.version);
-    details.textContent = parts.join(' \u00b7 ');
-    built.body.appendChild(details);
-    if (channelsSnapshot.hub_greeting) {
-        built.body.appendChild(_channelsBuildHubGreeting(channelsSnapshot.hub_greeting, true));
+    var profile = _channelsHubProfileModel();
+    var hub = profile.hub;
+    var built = _rsBuildSheet({ title: 'Hub information' }, function() {});
+    built.body.classList.add('channel-hub-profile');
+
+    var hero = document.createElement('header');
+    hero.className = 'channel-hub-profile-hero';
+    hero.dataset.phase = profile.phase;
+    var eyebrow = document.createElement('div');
+    eyebrow.className = 'channel-hub-profile-eyebrow';
+    var statusDot = document.createElement('span');
+    statusDot.className = 'channel-hub-profile-status-dot';
+    statusDot.setAttribute('aria-hidden', 'true');
+    var status = document.createElement('span');
+    status.textContent = profile.authenticated_session
+        ? 'Authenticated channel hub'
+        : 'Channel hub connection';
+    eyebrow.appendChild(statusDot);
+    eyebrow.appendChild(status);
+    var name = document.createElement('h2');
+    name.textContent = profile.display_name;
+    var summary = document.createElement('p');
+    var summaryParts = [_channelsPhaseLabel(profile.phase)];
+    if (profile.hops != null) {
+        summaryParts.push(profile.hops + (profile.hops === 1 ? ' hop' : ' hops'));
     }
+    if (profile.hub_version) summaryParts.push('Hub software ' + profile.hub_version);
+    summary.textContent = summaryParts.join(' \u00b7 ');
+    hero.appendChild(eyebrow);
+    hero.appendChild(name);
+    hero.appendChild(summary);
+    built.body.appendChild(hero);
+
+    if (profile.name_mismatch) {
+        var mismatch = document.createElement('div');
+        mismatch.className = 'channel-hub-profile-mismatch';
+        mismatch.setAttribute('role', 'note');
+        var mismatchTitle = document.createElement('strong');
+        mismatchTitle.textContent = 'Name differs from the recent announce';
+        var mismatchCopy = document.createElement('span');
+        mismatchCopy.textContent = 'The announce said \u201c' + profile.announced_name +
+            '\u201d; this authenticated WELCOME says \u201c' +
+            profile.authenticated_name + '\u201d.';
+        mismatch.appendChild(mismatchTitle);
+        mismatch.appendChild(mismatchCopy);
+        built.body.appendChild(mismatch);
+    }
+
+    if (profile.greeting) {
+        built.body.appendChild(_channelsBuildHubGreeting(profile.greeting, true));
+    } else {
+        var noGuidance = document.createElement('div');
+        noGuidance.className = 'channel-hub-profile-empty-guidance';
+        noGuidance.textContent =
+            'This hub did not send welcome or rules guidance for this Link session.';
+        built.body.appendChild(noGuidance);
+    }
+
+    var identitySection = _channelsHubProfileSection(
+        'Connection identity',
+        profile.authenticated_session
+            ? 'These values come from the destination and authenticated Link, not from a share label.'
+            : 'Ratspeak has no active authenticated WELCOME for this hub right now.'
+    );
+    var identityDetails = document.createElement('div');
+    identityDetails.className = 'channel-room-details channel-hub-profile-details';
+    identityDetails.appendChild(_channelsHubProfileDetail(
+        'Destination',
+        profile.destination_hash || 'Unavailable',
+        true
+    ));
+    identityDetails.appendChild(_channelsHubProfileDetail(
+        'Hub identity',
+        profile.identity_hash || 'Unavailable',
+        true
+    ));
+    if (profile.authenticated_name) {
+        identityDetails.appendChild(_channelsHubProfileDetail(
+            'WELCOME name',
+            profile.authenticated_name
+        ));
+    }
+    if (profile.announced_name) {
+        identityDetails.appendChild(_channelsHubProfileDetail(
+            'Recent announce',
+            profile.announced_name
+        ));
+    }
+    if (profile.nickname) {
+        identityDetails.appendChild(_channelsHubProfileDetail(
+            'Your nickname',
+            profile.nickname
+        ));
+    }
+    identityDetails.appendChild(_channelsHubProfileDetail(
+        'Path',
+        profile.hops == null
+            ? 'Hop count unavailable'
+            : profile.hops + (profile.hops === 1 ? ' hop' : ' hops')
+    ));
+    if (profile.link_mdu != null) {
+        identityDetails.appendChild(_channelsHubProfileDetail(
+            'Link MDU',
+            profile.link_mdu + ' bytes'
+        ));
+    }
+    if (profile.protocol_version) {
+        identityDetails.appendChild(_channelsHubProfileDetail(
+            'RRC profile',
+            profile.protocol_version
+        ));
+    }
+    identitySection.appendChild(identityDetails);
+    built.body.appendChild(identitySection);
+
+    var directorySection = _channelsHubProfileSection(
+        'Public directory',
+        profile.directory.summary
+    );
+    var directoryNote = document.createElement('p');
+    directoryNote.className = 'channel-hub-profile-note';
+    directoryNote.textContent =
+        'Only public channels disclosed on this Link appear here. Private or secret channels may be intentionally hidden.';
+    directorySection.appendChild(directoryNote);
+    built.body.appendChild(directorySection);
+
+    var capabilitySection = _channelsHubProfileSection(
+        'Session capabilities',
+        'Advertised by this hub in the authenticated WELCOME.'
+    );
+    var capabilityGrid = document.createElement('div');
+    capabilityGrid.className = 'channel-hub-profile-capabilities';
+    capabilityGrid.appendChild(_channelsHubCapability(
+        'Action messages',
+        'Supports action-style channel posts',
+        profile.capabilities.actions
+    ));
+    capabilityGrid.appendChild(_channelsHubCapability(
+        'Direct notices',
+        'Can address a hub notice to one session',
+        profile.capabilities.direct_notices
+    ));
+    capabilityGrid.appendChild(_channelsHubCapability(
+        'Complete welcome transfer',
+        'Can deliver bounded welcome guidance as a Resource',
+        profile.capabilities.resource_envelopes
+    ));
+    capabilityGrid.appendChild(_channelsHubCapability(
+        'Invite rejoin grace',
+        'May restore a short identity-bound invite after reconnect',
+        profile.capabilities.rejoin_grace
+    ));
+    capabilitySection.appendChild(capabilityGrid);
+    built.body.appendChild(capabilitySection);
+
+    var limitRows = [];
+    if (profile.limits.max_message_body_bytes != null) {
+        limitRows.push(['Message body', profile.limits.max_message_body_bytes + ' UTF-8 bytes']);
+    }
+    if (profile.limits.max_rooms_per_session != null) {
+        limitRows.push([
+            'Joined channels',
+            profile.limits.max_rooms_per_session + ' per session'
+        ]);
+    }
+    if (profile.limits.rate_messages_per_minute != null) {
+        limitRows.push([
+            'Message rate',
+            profile.limits.rate_messages_per_minute + ' per minute'
+        ]);
+    }
+    if (profile.limits.max_nick_bytes != null) {
+        limitRows.push(['Nickname', profile.limits.max_nick_bytes + ' UTF-8 bytes']);
+    }
+    if (profile.limits.max_room_name_bytes != null) {
+        limitRows.push([
+            'Channel name',
+            profile.limits.max_room_name_bytes + ' UTF-8 bytes'
+        ]);
+    }
+    var limitsSection = _channelsHubProfileSection(
+        'Hub limits',
+        limitRows.length
+            ? 'Applied by the hub to this session.'
+            : 'This hub did not advertise concrete session limits.'
+    );
+    if (limitRows.length) {
+        var limitDetails = document.createElement('div');
+        limitDetails.className = 'channel-room-details channel-hub-profile-details';
+        limitRows.forEach(function(row) {
+            limitDetails.appendChild(_channelsHubProfileDetail(row[0], row[1]));
+        });
+        limitsSection.appendChild(limitDetails);
+    }
+    built.body.appendChild(limitsSection);
+
     var trust = document.createElement('div');
     trust.className = 'channel-sheet-trust-note';
-    trust.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>This hub is authenticated and the Link is encrypted. The hub can still read and relay everything posted to its channels.</span>';
+    trust.innerHTML = profile.authenticated_session
+        ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>The destination and Link are authenticated and encrypted. The hub operator can still read, moderate, and relay everything posted to its channels.</span>'
+        : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>Ratspeak authenticates the destination and Link before any channel action. This view is not proof of an active session.</span>';
     built.body.appendChild(trust);
 
     var copyButton = document.createElement('button');
@@ -4204,6 +4566,7 @@ function _channelsBindUI() {
         if (action === 'connect') channelsOpenConnectSheet();
         else if (action === 'open-owned-hub' && typeof channelHubOpenOwnHub === 'function') channelHubOpenOwnHub();
         else if (action === 'join') channelsOpenJoinSheet();
+        else if (action === 'hub-info') channelsOpenHubOptions();
         else if (action === 'disconnect') channelsDisconnect();
         else if (action === 'retry-room') channelsOpenJoinSheet(actionEl.dataset.room || '');
         else if (action === 'leave-room') {
