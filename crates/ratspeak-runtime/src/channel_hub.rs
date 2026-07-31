@@ -25,7 +25,7 @@
 //! where the fix registry records a deliberate deviation (idempotent re-HELLO
 //! is one: a duplicate HELLO re-welcomes without wiping room membership).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
@@ -83,6 +83,14 @@ const RES_KIND_NOTICE: &str = "notice";
 /// Throttle/drop counters are reported as one aggregate at this cadence, never
 /// per rejected packet: a flooding peer must not be able to drive the event bus.
 const THROTTLE_REPORT_INTERVAL: Duration = Duration::from_secs(60);
+/// Local operator evidence is deliberately not hub history. It exists only in
+/// the live actor, is returned only by an explicit owner read, and is bounded
+/// independently by age, count, and estimated payload.
+pub const CHANNEL_HUB_EVIDENCE_RETENTION_SECS: u64 = 15 * 60;
+pub const CHANNEL_HUB_EVIDENCE_MAX_EVENTS: usize = 128;
+pub const CHANNEL_HUB_EVIDENCE_MAX_BYTES: usize = 64 * 1024;
+pub const CHANNEL_HUB_EVIDENCE_EXCERPT_BYTES: usize = 256;
+pub const CHANNEL_HUB_ADMIN_MODEL_VERSION: u16 = 1;
 const HUB_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const DEFAULT_HUB_NAME: &str = "Ratspeak hub";
@@ -341,6 +349,169 @@ impl ChannelHubSnapshot {
     }
 }
 
+/// Stable, local-only Admin Center read model. It intentionally contains
+/// actionable identity hashes and bounded message excerpts, so it is never
+/// emitted on the global Activity/event bus and is never persisted.
+#[derive(Clone, Serialize)]
+pub struct ChannelHubAdminSnapshot {
+    pub model_version: u16,
+    pub running: bool,
+    pub generated_at_ms: u64,
+    pub uptime_secs: u64,
+    pub pending_sessions: usize,
+    pub registry_degraded: bool,
+    pub rooms: Vec<ChannelHubAdminRoom>,
+    pub people: Vec<ChannelHubAdminPerson>,
+    pub server_operators: Vec<String>,
+    pub hub_bans: Vec<String>,
+    pub stats: ChannelHubAdminStats,
+    pub limits: ChannelHubAdminLimits,
+    pub evidence_policy: ChannelHubEvidencePolicy,
+    /// Newest first. The sequence is an opaque decimal string for JavaScript.
+    pub evidence: Vec<ChannelHubEvidence>,
+    /// Includes age, count, and byte-budget evictions during this hub run.
+    pub evidence_evicted: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChannelHubAdminRoom {
+    pub name: String,
+    pub topic: Option<String>,
+    pub registered: bool,
+    /// Unique authenticated identities currently represented in the room.
+    pub live_member_count: usize,
+    /// Live links in the room; may exceed `live_member_count`.
+    pub live_session_count: usize,
+    pub modes: ChannelHubAdminRoomModes,
+    pub operators: Vec<String>,
+    pub voiced: Vec<String>,
+    pub bans: Vec<String>,
+    pub invitations: Vec<ChannelHubAdminInvitation>,
+    pub last_used_ms: Option<u64>,
+    pub save_pending: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChannelHubAdminRoomModes {
+    pub invite_only: bool,
+    pub join_key_configured: bool,
+    pub moderated: bool,
+    pub no_outside_messages: bool,
+    pub private: bool,
+    pub topic_operators_only: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChannelHubAdminInvitation {
+    pub identity_hash: String,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChannelHubAdminPerson {
+    pub identity_hash: String,
+    pub nickname: Option<String>,
+    pub session_count: usize,
+    pub welcomed_session_count: usize,
+    /// Age of the oldest live session for this identity.
+    pub connected_for_secs: u64,
+    pub rooms: Vec<String>,
+    pub server_operator: bool,
+    pub room_operator_in: Vec<String>,
+    pub voiced_in: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChannelHubAdminStats {
+    pub joins: u64,
+    pub parts: u64,
+    pub messages_forwarded: u64,
+    pub notices_forwarded: u64,
+    pub actions_forwarded: u64,
+    pub direct_notices: u64,
+    pub pings_out: u64,
+    pub pongs_in: u64,
+    pub rate_limited: u64,
+    pub bad_packets: u64,
+    pub duplicates: u64,
+    pub resources_received: u64,
+    pub resource_bytes_received: u64,
+    pub resources_rejected: u64,
+    pub oversize: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChannelHubAdminLimits {
+    pub max_registered_rooms: usize,
+    pub max_rooms_per_session: usize,
+    pub max_message_body_bytes: usize,
+    pub rate_messages_per_minute: usize,
+    pub invite_timeout_secs: u64,
+    pub rejoin_grace_secs: u64,
+    pub max_resource_notice_bytes: usize,
+    pub max_resource_bytes: u64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChannelHubEvidencePolicy {
+    pub retention_secs: u64,
+    pub max_events: usize,
+    pub max_estimated_bytes: usize,
+    pub max_excerpt_bytes: usize,
+    pub persistent: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChannelHubEvidence {
+    pub sequence: String,
+    pub observed_at_ms: u64,
+    pub kind: ChannelHubEvidenceKind,
+    pub action: Option<ChannelHubEvidenceAction>,
+    pub count: Option<u64>,
+    pub room: Option<String>,
+    pub source_identity_hash: Option<String>,
+    pub source_nickname: Option<String>,
+    pub target_identity_hash: Option<String>,
+    /// Display-sanitized and byte-bounded; absent for non-content evidence.
+    pub excerpt: Option<String>,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelHubEvidenceKind {
+    Message,
+    Action,
+    Notice,
+    Join,
+    Part,
+    Moderation,
+    Trust,
+    Service,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelHubEvidenceAction {
+    Register,
+    Unregister,
+    Topic,
+    Mode,
+    Op,
+    Deop,
+    Voice,
+    Devoice,
+    Ban,
+    Unban,
+    Kick,
+    Invite,
+    Uninvite,
+    KlineAdded,
+    KlineRemoved,
+    AnnounceFailed,
+    EnvelopeOversize,
+    SendFailed,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelHubError {
     #[error("channel hub is not running")]
@@ -356,6 +527,9 @@ pub enum ChannelHubError {
 enum HubCommand {
     Status {
         result_tx: oneshot::Sender<ChannelHubSnapshot>,
+    },
+    AdminSnapshot {
+        result_tx: oneshot::Sender<ChannelHubAdminSnapshot>,
     },
     Shutdown {
         result_tx: oneshot::Sender<()>,
@@ -989,6 +1163,24 @@ pub(crate) enum HubEvent {
     },
 }
 
+/// Content-bearing owner evidence stays on this private path. Do not derive
+/// `Debug`: an accidental structured log of the ring would turn a local,
+/// ephemeral moderation aid into a diagnostics leak.
+struct HubEvidenceRecord {
+    sequence: u64,
+    observed_at_ms: u64,
+    observed_at: Instant,
+    kind: ChannelHubEvidenceKind,
+    action: Option<ChannelHubEvidenceAction>,
+    count: Option<u64>,
+    room: Option<String>,
+    source_identity: Option<[u8; 16]>,
+    source_nickname: Option<String>,
+    target_identity: Option<[u8; 16]>,
+    excerpt: Option<String>,
+    estimated_bytes: usize,
+}
+
 /// Lower a hub event onto the sealed Activity catalog. The correlation rides
 /// with the event because the session that owns it may already be gone by the
 /// time the shell drains.
@@ -1154,6 +1346,12 @@ pub(crate) struct HubCore {
     /// Correlation for events that belong to the hub run rather than a session.
     hub_correlation: CorrelationId,
     events: Vec<HubEvent>,
+    /// Explicit local-owner moderation evidence. Never drained into Activity,
+    /// emitted as an app event, written to the registry, or sent over RRC.
+    evidence: VecDeque<HubEvidenceRecord>,
+    evidence_bytes: usize,
+    evidence_sequence: u64,
+    evidence_evicted: u64,
     throttle_reported_at: Instant,
     throttle_baseline: (u64, u64),
 }
@@ -1194,6 +1392,10 @@ impl HubCore {
             room_tokens: HashMap::new(),
             hub_correlation: CorrelationId::random(),
             events: Vec::new(),
+            evidence: VecDeque::new(),
+            evidence_bytes: 0,
+            evidence_sequence: 0,
+            evidence_evicted: 0,
             throttle_reported_at: started_at,
             throttle_baseline: (0, 0),
         };
@@ -1206,6 +1408,130 @@ impl HubCore {
     /// `out: &mut Vec<HubSend>` signatures stay untouched.
     pub(crate) fn drain_events(&mut self) -> Vec<HubEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    fn evict_oldest_evidence(&mut self) {
+        if let Some(evicted) = self.evidence.pop_front() {
+            self.evidence_bytes = self.evidence_bytes.saturating_sub(evicted.estimated_bytes);
+            self.evidence_evicted = self.evidence_evicted.saturating_add(1);
+        }
+    }
+
+    fn prune_evidence(&mut self, now: Instant) {
+        let retention = Duration::from_secs(CHANNEL_HUB_EVIDENCE_RETENTION_SECS);
+        while self
+            .evidence
+            .front()
+            .is_some_and(|entry| now.saturating_duration_since(entry.observed_at) >= retention)
+        {
+            self.evict_oldest_evidence();
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_evidence(
+        &mut self,
+        now: Instant,
+        observed_at_ms: u64,
+        kind: ChannelHubEvidenceKind,
+        action: Option<ChannelHubEvidenceAction>,
+        count: Option<u64>,
+        room: Option<&str>,
+        source_identity: Option<[u8; 16]>,
+        source_nickname: Option<&str>,
+        target_identity: Option<[u8; 16]>,
+        excerpt: Option<&str>,
+    ) {
+        self.prune_evidence(now);
+        if self.evidence_sequence == u64::MAX {
+            while !self.evidence.is_empty() {
+                self.evict_oldest_evidence();
+            }
+            self.evidence_sequence = 0;
+        }
+        self.evidence_sequence += 1;
+        let room = room.map(str::to_string);
+        let source_nickname = source_nickname
+            .and_then(|value| bounded_evidence_text(value, self.config.max_nick_bytes));
+        let excerpt = excerpt
+            .and_then(|value| bounded_evidence_text(value, CHANNEL_HUB_EVIDENCE_EXCERPT_BYTES));
+        let estimated_bytes = 128usize
+            .saturating_add(room.as_deref().map_or(0, str::len))
+            .saturating_add(source_nickname.as_deref().map_or(0, str::len))
+            .saturating_add(excerpt.as_deref().map_or(0, str::len));
+        if estimated_bytes > CHANNEL_HUB_EVIDENCE_MAX_BYTES {
+            self.evidence_evicted = self.evidence_evicted.saturating_add(1);
+            return;
+        }
+        self.evidence.push_back(HubEvidenceRecord {
+            sequence: self.evidence_sequence,
+            observed_at_ms,
+            observed_at: now,
+            kind,
+            action,
+            count,
+            room,
+            source_identity,
+            source_nickname,
+            target_identity,
+            excerpt,
+            estimated_bytes,
+        });
+        self.evidence_bytes = self.evidence_bytes.saturating_add(estimated_bytes);
+        while self.evidence.len() > CHANNEL_HUB_EVIDENCE_MAX_EVENTS
+            || self.evidence_bytes > CHANNEL_HUB_EVIDENCE_MAX_BYTES
+        {
+            self.evict_oldest_evidence();
+        }
+    }
+
+    fn note_content_evidence(
+        &mut self,
+        source_identity: [u8; 16],
+        source_nickname: Option<&str>,
+        room_name: &str,
+        method: activity::ChannelEnvelopeKind,
+        text: &str,
+    ) {
+        let kind = match method {
+            activity::ChannelEnvelopeKind::Message => ChannelHubEvidenceKind::Message,
+            activity::ChannelEnvelopeKind::Action => ChannelHubEvidenceKind::Action,
+            activity::ChannelEnvelopeKind::Notice => ChannelHubEvidenceKind::Notice,
+            _ => return,
+        };
+        self.push_evidence(
+            Instant::now(),
+            now_ms(),
+            kind,
+            None,
+            None,
+            Some(room_name),
+            Some(source_identity),
+            source_nickname,
+            None,
+            Some(text),
+        );
+    }
+
+    fn note_room_evidence(
+        &mut self,
+        kind: ChannelHubEvidenceKind,
+        identity: [u8; 16],
+        nickname: Option<&str>,
+        room_name: &str,
+    ) {
+        self.push_evidence(
+            Instant::now(),
+            now_ms(),
+            kind,
+            None,
+            None,
+            Some(room_name),
+            Some(identity),
+            nickname,
+            None,
+            None,
+        );
     }
 
     /// Opaque token for a room, stable while the room exists.
@@ -1232,6 +1558,7 @@ impl HubCore {
         link_id: [u8; 16],
         room_name: &str,
         action: activity::HubModerationAction,
+        target_identity: Option<[u8; 16]>,
     ) {
         let correlation = self.link_correlation(link_id);
         let room = self.room_token(room_name);
@@ -1241,6 +1568,54 @@ impl HubCore {
             room,
             action,
         });
+        let source_identity = self.session_identity(link_id);
+        let source_nickname = self
+            .sessions
+            .get(&link_id)
+            .and_then(|session| session.nickname.clone());
+        self.push_evidence(
+            Instant::now(),
+            now_ms(),
+            ChannelHubEvidenceKind::Moderation,
+            Some(admin_moderation_action(action)),
+            None,
+            Some(room_name),
+            source_identity,
+            source_nickname.as_deref(),
+            target_identity,
+            None,
+        );
+    }
+
+    fn note_trust_changed(
+        &mut self,
+        link_id: [u8; 16],
+        change: activity::HubTrustChange,
+        target_identity: [u8; 16],
+    ) {
+        let correlation = self.link_correlation(link_id);
+        self.events.push(HubEvent::TrustChanged {
+            correlation,
+            link: link_id,
+            change,
+        });
+        let source_identity = self.session_identity(link_id);
+        let source_nickname = self
+            .sessions
+            .get(&link_id)
+            .and_then(|session| session.nickname.clone());
+        self.push_evidence(
+            Instant::now(),
+            now_ms(),
+            ChannelHubEvidenceKind::Trust,
+            Some(admin_trust_action(change)),
+            None,
+            None,
+            source_identity,
+            source_nickname.as_deref(),
+            Some(target_identity),
+            None,
+        );
     }
 
     fn note_relayed(
@@ -1311,6 +1686,205 @@ impl HubCore {
             reason,
             count: count as u64,
         });
+        self.push_evidence(
+            Instant::now(),
+            now_ms(),
+            ChannelHubEvidenceKind::Service,
+            Some(admin_service_action(reason)),
+            Some(count as u64),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+
+    fn admin_snapshot(&mut self) -> ChannelHubAdminSnapshot {
+        self.admin_snapshot_at(Instant::now(), now_ms(), now_unix())
+    }
+
+    fn admin_snapshot_at(
+        &mut self,
+        now: Instant,
+        generated_at_ms: u64,
+        wall_now: f64,
+    ) -> ChannelHubAdminSnapshot {
+        self.prune_evidence(now);
+
+        let mut room_names: Vec<String> = self.rooms.keys().cloned().collect();
+        room_names.sort();
+        let rooms = room_names
+            .iter()
+            .filter_map(|room_name| {
+                let room = self.rooms.get(room_name)?;
+                let live_identities: BTreeSet<[u8; 16]> = room
+                    .members
+                    .iter()
+                    .filter_map(|link| self.sessions.get(link).and_then(|session| session.identity))
+                    .collect();
+                let mut operators: Vec<String> = room.ops.iter().map(hex::encode).collect();
+                let mut voiced: Vec<String> = room.voiced.iter().map(hex::encode).collect();
+                let mut bans: Vec<String> = room.bans.iter().map(hex::encode).collect();
+                operators.sort();
+                voiced.sort();
+                bans.sort();
+                let mut invitations: Vec<ChannelHubAdminInvitation> = room
+                    .invited
+                    .iter()
+                    .filter(|(_, expires)| **expires > wall_now)
+                    .filter_map(|(identity, expires)| {
+                        unix_seconds_to_ms(*expires).map(|expires_at_ms| {
+                            ChannelHubAdminInvitation {
+                                identity_hash: hex::encode(identity),
+                                expires_at_ms,
+                            }
+                        })
+                    })
+                    .collect();
+                invitations.sort_by(|left, right| {
+                    left.identity_hash
+                        .cmp(&right.identity_hash)
+                        .then(left.expires_at_ms.cmp(&right.expires_at_ms))
+                });
+                Some(ChannelHubAdminRoom {
+                    name: room_name.clone(),
+                    topic: room.topic.clone(),
+                    registered: room.registered,
+                    live_member_count: live_identities.len(),
+                    live_session_count: room.members.len(),
+                    modes: ChannelHubAdminRoomModes {
+                        invite_only: room.invite_only,
+                        join_key_configured: room.key.is_some(),
+                        moderated: room.moderated,
+                        no_outside_messages: room.no_outside_msgs,
+                        private: room.private,
+                        topic_operators_only: room.topic_ops_only,
+                    },
+                    operators,
+                    voiced,
+                    bans,
+                    invitations,
+                    last_used_ms: unix_seconds_to_ms(room.last_used),
+                    save_pending: room.persist_dirty,
+                })
+            })
+            .collect();
+
+        let mut sessions_by_identity: BTreeMap<[u8; 16], Vec<([u8; 16], &HubSession)>> =
+            BTreeMap::new();
+        for (link_id, session) in &self.sessions {
+            if let Some(identity) = session.identity {
+                sessions_by_identity
+                    .entry(identity)
+                    .or_default()
+                    .push((*link_id, session));
+            }
+        }
+        let people = sessions_by_identity
+            .into_iter()
+            .map(|(identity, mut sessions)| {
+                sessions.sort_by_key(|(link_id, _)| *link_id);
+                let nickname = self
+                    .by_identity
+                    .get(&identity)
+                    .and_then(|link_id| self.sessions.get(link_id))
+                    .and_then(|session| session.nickname.clone())
+                    .or_else(|| {
+                        sessions
+                            .iter()
+                            .filter_map(|(_, session)| session.nickname.clone())
+                            .min()
+                    });
+                let mut joined_rooms = BTreeSet::new();
+                let mut welcomed_session_count = 0usize;
+                let mut connected_for_secs = 0u64;
+                for (_, session) in &sessions {
+                    joined_rooms.extend(session.rooms.iter().cloned());
+                    welcomed_session_count += usize::from(session.welcomed);
+                    connected_for_secs = connected_for_secs.max(
+                        now.saturating_duration_since(session.established_at)
+                            .as_secs(),
+                    );
+                }
+                let room_operator_in = room_names
+                    .iter()
+                    .filter(|room_name| {
+                        self.rooms
+                            .get(*room_name)
+                            .is_some_and(|room| room.ops.contains(&identity))
+                    })
+                    .cloned()
+                    .collect();
+                let voiced_in = room_names
+                    .iter()
+                    .filter(|room_name| {
+                        self.rooms
+                            .get(*room_name)
+                            .is_some_and(|room| room.voiced.contains(&identity))
+                    })
+                    .cloned()
+                    .collect();
+                ChannelHubAdminPerson {
+                    identity_hash: hex::encode(identity),
+                    nickname,
+                    session_count: sessions.len(),
+                    welcomed_session_count,
+                    connected_for_secs,
+                    rooms: joined_rooms.into_iter().collect(),
+                    server_operator: self.server_ops.contains(&identity),
+                    room_operator_in,
+                    voiced_in,
+                }
+            })
+            .collect();
+
+        let mut server_operators: Vec<String> = self.server_ops.iter().map(hex::encode).collect();
+        server_operators.sort();
+        let (mut hub_bans, trust_read_failed) = match self.klines.read() {
+            Ok(klines) => (klines.iter().map(hex::encode).collect::<Vec<_>>(), false),
+            Err(_) => (Vec::new(), true),
+        };
+        hub_bans.sort();
+        let evidence = self
+            .evidence
+            .iter()
+            .rev()
+            .map(|entry| ChannelHubEvidence {
+                sequence: entry.sequence.to_string(),
+                observed_at_ms: entry.observed_at_ms,
+                kind: entry.kind,
+                action: entry.action,
+                count: entry.count,
+                room: entry.room.clone(),
+                source_identity_hash: entry.source_identity.map(hex::encode),
+                source_nickname: entry.source_nickname.clone(),
+                target_identity_hash: entry.target_identity.map(hex::encode),
+                excerpt: entry.excerpt.clone(),
+            })
+            .collect();
+
+        ChannelHubAdminSnapshot {
+            model_version: CHANNEL_HUB_ADMIN_MODEL_VERSION,
+            running: true,
+            generated_at_ms,
+            uptime_secs: now.saturating_duration_since(self.started_at).as_secs(),
+            pending_sessions: self
+                .sessions
+                .values()
+                .filter(|session| session.identity.is_none())
+                .count(),
+            registry_degraded: self.registry_degraded() || trust_read_failed,
+            rooms,
+            people,
+            server_operators,
+            hub_bans,
+            stats: admin_stats(&self.stats, self.admission.rejected()),
+            limits: admin_limits(&self.config),
+            evidence_policy: admin_evidence_policy(),
+            evidence,
+            evidence_evicted: self.evidence_evicted,
+        }
     }
 
     /// Rebuild live rooms from the registry. Rows are re-validated rather than
@@ -2214,6 +2788,13 @@ impl HubCore {
         }
         // One event for the whole payload rather than one per chunk: the
         // chunking is our MDU concern, not something the operator relays.
+        self.note_content_evidence(
+            identity,
+            nickname.as_deref(),
+            room_name,
+            activity::ChannelEnvelopeKind::Notice,
+            text,
+        );
         self.note_relayed(
             link_id,
             room_name,
@@ -2430,6 +3011,9 @@ impl HubCore {
             .is_some_and(|room| self.identity_still_in_room(room, identity, link_id));
         if still_present {
             return;
+        }
+        if was_member {
+            self.note_room_evidence(ChannelHubEvidenceKind::Part, identity, nickname, room_name);
         }
         let body = self
             .config
@@ -2659,6 +3243,16 @@ impl HubCore {
             room: token,
             members,
         });
+        let nickname = self
+            .sessions
+            .get(&link_id)
+            .and_then(|session| session.nickname.clone());
+        self.note_room_evidence(
+            ChannelHubEvidenceKind::Join,
+            identity,
+            nickname.as_deref(),
+            &room_name,
+        );
     }
 
     /// Send the joiner its roster, split across packets when a large room
@@ -2926,6 +3520,15 @@ impl HubCore {
                 link_id: member,
                 envelope: envelope.clone(),
             });
+        }
+        if let Some(text) = rrc::text_body(&envelope) {
+            self.note_content_evidence(
+                identity,
+                envelope.nickname.as_deref(),
+                &room_name,
+                method,
+                text,
+            );
         }
         self.note_relayed(link_id, &room_name, method, encoded, members.len());
     }
@@ -3286,7 +3889,12 @@ impl HubCore {
                 Some(&room_name),
             ));
         }
-        self.note_moderated(link_id, &room_name, activity::HubModerationAction::Kick);
+        self.note_moderated(
+            link_id,
+            &room_name,
+            activity::HubModerationAction::Kick,
+            Some(target),
+        );
         out.push(self.hub_notice(
             link_id,
             &format!("kicked {token} from {room_name}"),
@@ -3357,12 +3965,7 @@ impl HubCore {
                 room.rejoin_until.remove(&target);
             }
             self.persist_klines(Some(link_id), out);
-            let correlation = self.link_correlation(link_id);
-            self.events.push(HubEvent::TrustChanged {
-                correlation,
-                link: link_id,
-                change: activity::HubTrustChange::KlineAdded,
-            });
+            self.note_trust_changed(link_id, activity::HubTrustChange::KlineAdded, target);
             out.push(self.hub_notice(
                 link_id,
                 &format!("kline added for {}", hex::encode(target)),
@@ -3390,12 +3993,7 @@ impl HubCore {
                 .unwrap_or(false);
             if removed {
                 self.persist_klines(Some(link_id), out);
-                let correlation = self.link_correlation(link_id);
-                self.events.push(HubEvent::TrustChanged {
-                    correlation,
-                    link: link_id,
-                    change: activity::HubTrustChange::KlineRemoved,
-                });
+                self.note_trust_changed(link_id, activity::HubTrustChange::KlineRemoved, target);
             }
             let text = if removed {
                 format!("kline removed for {}", hex::encode(target))
@@ -3459,7 +4057,12 @@ impl HubCore {
         room.ops.insert(identity);
         room.last_used = now_unix();
         self.persist_room(&room_name, Some(link_id), out);
-        self.note_moderated(link_id, &room_name, activity::HubModerationAction::Register);
+        self.note_moderated(
+            link_id,
+            &room_name,
+            activity::HubModerationAction::Register,
+            None,
+        );
         out.push(self.hub_notice(link_id, &format!("registered room {room_name}"), raw_room));
     }
 
@@ -3514,6 +4117,7 @@ impl HubCore {
             link_id,
             &room_name,
             activity::HubModerationAction::Unregister,
+            None,
         );
         if empty {
             self.rooms.remove(&room_name);
@@ -3590,7 +4194,12 @@ impl HubCore {
             ));
         }
         self.persist_room(&room_name, Some(link_id), out);
-        self.note_moderated(link_id, &room_name, activity::HubModerationAction::Topic);
+        self.note_moderated(
+            link_id,
+            &room_name,
+            activity::HubModerationAction::Topic,
+            None,
+        );
     }
 
     fn broadcast_mode(&self, room_name: &str, out: &mut Vec<HubSend>) {
@@ -3653,7 +4262,12 @@ impl HubCore {
                 }
                 self.broadcast_mode(&room_name, out);
                 self.persist_room(&room_name, Some(link_id), out);
-                self.note_moderated(link_id, &room_name, activity::HubModerationAction::Mode);
+                self.note_moderated(
+                    link_id,
+                    &room_name,
+                    activity::HubModerationAction::Mode,
+                    None,
+                );
             }
             "+k" => {
                 if args.len() < 3 {
@@ -3686,13 +4300,24 @@ impl HubCore {
                 room.key = Some(digest);
                 self.broadcast_mode(&room_name, out);
                 self.persist_room(&room_name, Some(link_id), out);
-                self.note_moderated(link_id, &room_name, activity::HubModerationAction::Mode);
+                self.note_moderated(
+                    link_id,
+                    &room_name,
+                    activity::HubModerationAction::Mode,
+                    None,
+                );
             }
             "-k" => {
                 let room = self.rooms.get_mut(&room_name).expect("room just ensured");
                 room.key = None;
                 self.broadcast_mode(&room_name, out);
-                self.note_moderated(link_id, &room_name, activity::HubModerationAction::Mode);
+                self.persist_room(&room_name, Some(link_id), out);
+                self.note_moderated(
+                    link_id,
+                    &room_name,
+                    activity::HubModerationAction::Mode,
+                    None,
+                );
             }
             "+r" | "-r" => {
                 out.push(self.hub_notice(
@@ -3759,7 +4384,7 @@ impl HubCore {
                     out.push(self.hub_notice(member, &text, Some(&room_name)));
                 }
                 self.persist_room(&room_name, Some(link_id), out);
-                self.note_moderated(link_id, &room_name, action);
+                self.note_moderated(link_id, &room_name, action, Some(target));
             }
             _ => {
                 out.push(self.hub_notice(
@@ -3850,7 +4475,7 @@ impl HubCore {
             }
         };
         self.persist_room(&room_name, Some(link_id), out);
-        self.note_moderated(link_id, &room_name, action);
+        self.note_moderated(link_id, &room_name, action, Some(target));
         out.push(self.hub_notice(link_id, &text, raw_room));
     }
 
@@ -3962,14 +4587,24 @@ impl HubCore {
                 ));
             }
             self.persist_room(&room_name, Some(link_id), out);
-            self.note_moderated(link_id, &room_name, activity::HubModerationAction::Ban);
+            self.note_moderated(
+                link_id,
+                &room_name,
+                activity::HubModerationAction::Ban,
+                Some(target),
+            );
             out.push(self.hub_notice(link_id, &format!("ban added in {room_name}"), raw_room));
         } else {
             if let Some(room) = self.rooms.get_mut(&room_name) {
                 room.bans.remove(&target);
             }
             self.persist_room(&room_name, Some(link_id), out);
-            self.note_moderated(link_id, &room_name, activity::HubModerationAction::Unban);
+            self.note_moderated(
+                link_id,
+                &room_name,
+                activity::HubModerationAction::Unban,
+                Some(target),
+            );
             out.push(self.hub_notice(link_id, &format!("ban removed in {room_name}"), raw_room));
         }
     }
@@ -4096,7 +4731,12 @@ impl HubCore {
             if gated {
                 self.persist_room(&room_name, Some(link_id), out);
             }
-            self.note_moderated(link_id, &room_name, activity::HubModerationAction::Invite);
+            self.note_moderated(
+                link_id,
+                &room_name,
+                activity::HubModerationAction::Invite,
+                Some(target),
+            );
             out.push(self.hub_notice(link_id, &confirmation, raw_room));
         } else {
             if let Some(room) = self.rooms.get_mut(&room_name) {
@@ -4104,7 +4744,12 @@ impl HubCore {
                 room.rejoin_until.remove(&target);
             }
             self.persist_room(&room_name, Some(link_id), out);
-            self.note_moderated(link_id, &room_name, activity::HubModerationAction::Uninvite);
+            self.note_moderated(
+                link_id,
+                &room_name,
+                activity::HubModerationAction::Uninvite,
+                Some(target),
+            );
             out.push(self.hub_notice(link_id, &format!("invite removed in {room_name}"), raw_room));
         }
     }
@@ -4317,6 +4962,258 @@ fn clip_topic(topic: &str) -> String {
         .find(|index| topic.is_char_boundary(*index))
         .unwrap_or(0);
     format!("{}…", &topic[..cut])
+}
+
+/// Collapse content to one display-safe line, remove directional/zero-width
+/// formatting controls, and clip on a UTF-8 boundary. This is deliberately
+/// stricter than the wire protocol: evidence is a visual decision aid, so
+/// invisible presentation controls must not be able to spoof what an owner
+/// sees.
+fn bounded_evidence_text(value: &str, max_bytes: usize) -> Option<String> {
+    if max_bytes == 0 {
+        return None;
+    }
+    let mut sanitized = String::with_capacity(value.len().min(max_bytes));
+    let mut pending_space = false;
+    for ch in value.chars() {
+        let code = ch as u32;
+        let presentation_control = matches!(
+            code,
+            0x061c
+                | 0x200b..=0x200f
+                | 0x202a..=0x202e
+                | 0x2060..=0x206f
+                | 0xfeff
+        );
+        if ch.is_whitespace() {
+            pending_space = !sanitized.is_empty();
+            continue;
+        }
+        if ch.is_control() || presentation_control {
+            continue;
+        }
+        if pending_space {
+            sanitized.push(' ');
+            pending_space = false;
+        }
+        sanitized.push(ch);
+    }
+    if sanitized.is_empty() {
+        return None;
+    }
+    if sanitized.len() <= max_bytes {
+        return Some(sanitized);
+    }
+
+    let (content_budget, suffix) = if max_bytes >= '…'.len_utf8() {
+        (max_bytes - '…'.len_utf8(), "…")
+    } else {
+        (max_bytes, "")
+    };
+    let cut = (0..=content_budget)
+        .rev()
+        .find(|index| sanitized.is_char_boundary(*index))
+        .unwrap_or(0);
+    let clipped = format!("{}{suffix}", sanitized[..cut].trim_end());
+    (!clipped.is_empty()).then_some(clipped)
+}
+
+const fn admin_moderation_action(
+    action: activity::HubModerationAction,
+) -> ChannelHubEvidenceAction {
+    match action {
+        activity::HubModerationAction::Register => ChannelHubEvidenceAction::Register,
+        activity::HubModerationAction::Unregister => ChannelHubEvidenceAction::Unregister,
+        activity::HubModerationAction::Topic => ChannelHubEvidenceAction::Topic,
+        activity::HubModerationAction::Mode => ChannelHubEvidenceAction::Mode,
+        activity::HubModerationAction::Op => ChannelHubEvidenceAction::Op,
+        activity::HubModerationAction::Deop => ChannelHubEvidenceAction::Deop,
+        activity::HubModerationAction::Voice => ChannelHubEvidenceAction::Voice,
+        activity::HubModerationAction::Devoice => ChannelHubEvidenceAction::Devoice,
+        activity::HubModerationAction::Ban => ChannelHubEvidenceAction::Ban,
+        activity::HubModerationAction::Unban => ChannelHubEvidenceAction::Unban,
+        activity::HubModerationAction::Kick => ChannelHubEvidenceAction::Kick,
+        activity::HubModerationAction::Invite => ChannelHubEvidenceAction::Invite,
+        activity::HubModerationAction::Uninvite => ChannelHubEvidenceAction::Uninvite,
+    }
+}
+
+const fn admin_trust_action(change: activity::HubTrustChange) -> ChannelHubEvidenceAction {
+    match change {
+        activity::HubTrustChange::KlineAdded => ChannelHubEvidenceAction::KlineAdded,
+        activity::HubTrustChange::KlineRemoved => ChannelHubEvidenceAction::KlineRemoved,
+    }
+}
+
+const fn admin_service_action(reason: activity::HubServiceDegradation) -> ChannelHubEvidenceAction {
+    match reason {
+        activity::HubServiceDegradation::Announce => ChannelHubEvidenceAction::AnnounceFailed,
+        activity::HubServiceDegradation::EnvelopeOversize => {
+            ChannelHubEvidenceAction::EnvelopeOversize
+        }
+        activity::HubServiceDegradation::SendFailed => ChannelHubEvidenceAction::SendFailed,
+    }
+}
+
+fn admin_stats(stats: &HubStats, resources_rejected: u64) -> ChannelHubAdminStats {
+    ChannelHubAdminStats {
+        joins: stats.joins,
+        parts: stats.parts,
+        messages_forwarded: stats.messages_forwarded,
+        notices_forwarded: stats.notices_forwarded,
+        actions_forwarded: stats.actions_forwarded,
+        direct_notices: stats.direct_notices,
+        pings_out: stats.pings_out,
+        pongs_in: stats.pongs_in,
+        rate_limited: stats.rate_limited,
+        bad_packets: stats.bad_packets,
+        duplicates: stats.duplicates,
+        resources_received: stats.resources_received,
+        resource_bytes_received: stats.resource_bytes_received,
+        resources_rejected,
+        oversize: stats.oversize,
+    }
+}
+
+fn admin_limits(config: &ChannelHubConfig) -> ChannelHubAdminLimits {
+    ChannelHubAdminLimits {
+        max_registered_rooms: config.max_registered_rooms,
+        max_rooms_per_session: config.max_rooms_per_session,
+        max_message_body_bytes: config.max_message_body_bytes,
+        rate_messages_per_minute: config.rate_messages_per_minute,
+        invite_timeout_secs: config.invite_timeout_secs,
+        rejoin_grace_secs: config.rejoin_grace_secs,
+        max_resource_notice_bytes: config.max_resource_notice_bytes,
+        max_resource_bytes: config.max_resource_bytes,
+    }
+}
+
+const fn admin_evidence_policy() -> ChannelHubEvidencePolicy {
+    ChannelHubEvidencePolicy {
+        retention_secs: CHANNEL_HUB_EVIDENCE_RETENTION_SECS,
+        max_events: CHANNEL_HUB_EVIDENCE_MAX_EVENTS,
+        max_estimated_bytes: CHANNEL_HUB_EVIDENCE_MAX_BYTES,
+        max_excerpt_bytes: CHANNEL_HUB_EVIDENCE_EXCERPT_BYTES,
+        persistent: false,
+    }
+}
+
+fn unix_seconds_to_ms(seconds: f64) -> Option<u64> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    Some((seconds * 1000.0).min(u64::MAX as f64) as u64)
+}
+
+fn decode_identity_hash(value: &str) -> Option<[u8; 16]> {
+    <[u8; 16]>::try_from(hex::decode(value).ok()?).ok()
+}
+
+fn stopped_admin_snapshot(
+    config: &ChannelHubConfig,
+    operator_identity: [u8; 16],
+    rows: Vec<db::HubRoomRow>,
+    stored_klines: Vec<String>,
+) -> ChannelHubAdminSnapshot {
+    let wall_now = now_unix();
+    let mut rooms = Vec::new();
+    for row in rows {
+        let room_name = row.room_name.trim().to_lowercase();
+        if room_name.is_empty()
+            || room_name.len() > config.max_room_name_bytes
+            || room_name != row.room_name
+        {
+            continue;
+        }
+        let mut operators = BTreeSet::new();
+        let mut voiced = BTreeSet::new();
+        let mut bans = BTreeSet::new();
+        let mut invitations = Vec::new();
+        for (kind, subject, expires_at) in &row.grants {
+            let Some(identity) = decode_identity_hash(subject) else {
+                continue;
+            };
+            let identity_hash = hex::encode(identity);
+            match kind.as_str() {
+                "op" => {
+                    operators.insert(identity_hash);
+                }
+                "voice" => {
+                    voiced.insert(identity_hash);
+                }
+                "ban" => {
+                    bans.insert(identity_hash);
+                }
+                "invite" if *expires_at > wall_now => {
+                    if let Some(expires_at_ms) = unix_seconds_to_ms(*expires_at) {
+                        invitations.push(ChannelHubAdminInvitation {
+                            identity_hash,
+                            expires_at_ms,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        invitations.sort_by(|left, right| {
+            left.identity_hash
+                .cmp(&right.identity_hash)
+                .then(left.expires_at_ms.cmp(&right.expires_at_ms))
+        });
+        let join_key_configured = decode_room_key(&row).is_some();
+        let topic = (!row.topic.is_empty()).then_some(row.topic);
+        rooms.push(ChannelHubAdminRoom {
+            name: room_name,
+            topic,
+            registered: true,
+            live_member_count: 0,
+            live_session_count: 0,
+            modes: ChannelHubAdminRoomModes {
+                invite_only: row.invite_only,
+                join_key_configured,
+                moderated: row.moderated,
+                no_outside_messages: row.no_outside_msgs,
+                private: row.private,
+                topic_operators_only: row.topic_ops_only,
+            },
+            operators: operators.into_iter().collect(),
+            voiced: voiced.into_iter().collect(),
+            bans: bans.into_iter().collect(),
+            invitations,
+            last_used_ms: unix_seconds_to_ms(row.last_used),
+            save_pending: false,
+        });
+    }
+    rooms.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let mut server_operators: BTreeSet<String> =
+        config.server_operators.iter().map(hex::encode).collect();
+    server_operators.insert(hex::encode(operator_identity));
+    let mut hub_bans: BTreeSet<String> = config.banned_identities.iter().map(hex::encode).collect();
+    hub_bans.extend(
+        stored_klines
+            .iter()
+            .filter_map(|identity| decode_identity_hash(identity))
+            .map(hex::encode),
+    );
+    let empty_stats = HubStats::default();
+    ChannelHubAdminSnapshot {
+        model_version: CHANNEL_HUB_ADMIN_MODEL_VERSION,
+        running: false,
+        generated_at_ms: now_ms(),
+        uptime_secs: 0,
+        pending_sessions: 0,
+        registry_degraded: false,
+        rooms,
+        people: Vec::new(),
+        server_operators: server_operators.into_iter().collect(),
+        hub_bans: hub_bans.into_iter().collect(),
+        stats: admin_stats(&empty_stats, 0),
+        limits: admin_limits(config),
+        evidence_policy: admin_evidence_policy(),
+        evidence: Vec::new(),
+        evidence_evicted: 0,
+    }
 }
 
 /// Split human text into UTF-8-boundary chunks of at most `max_bytes`.
@@ -4541,6 +5438,18 @@ impl ChannelHubHandle {
         result_rx.await.map_err(|_| ChannelHubError::Stopped)
     }
 
+    /// Pull the local-owner model through the hub actor. Unlike the small
+    /// status snapshot, this is never cached or broadcast because it contains
+    /// actionable identities and bounded moderation evidence.
+    pub async fn admin_snapshot(&self) -> Result<ChannelHubAdminSnapshot, ChannelHubError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        self.command_tx
+            .send(HubCommand::AdminSnapshot { result_tx })
+            .await
+            .map_err(|_| ChannelHubError::Stopped)?;
+        result_rx.await.map_err(|_| ChannelHubError::Stopped)
+    }
+
     /// Stop the service and wait until its registry tail is flushed and the
     /// Reticulum destination has been deregistered. A false result means the
     /// actor did not acknowledge the complete teardown inside the budget; a
@@ -4635,6 +5544,10 @@ async fn run_hub(
                 match command {
                     Some(HubCommand::Status { result_tx }) => {
                         let _ = result_tx.send(current_snapshot(&core, &config, Some(destination_hash)));
+                        continue;
+                    }
+                    Some(HubCommand::AdminSnapshot { result_tx }) => {
+                        let _ = result_tx.send(core.admin_snapshot());
                         continue;
                     }
                     Some(HubCommand::Shutdown { result_tx }) => {
@@ -4819,6 +5732,23 @@ impl HubStore {
         })
         .await
         .map_err(|_| "registry load task panicked".to_string())?
+    }
+
+    /// Read durable room policy while the actor is stopped. Evidence and live
+    /// people are intentionally absent; key verifier bytes never leave this
+    /// module.
+    pub async fn admin_snapshot(
+        &self,
+        config: ChannelHubConfig,
+        operator_identity: [u8; 16],
+    ) -> Result<ChannelHubAdminSnapshot, String> {
+        let (rooms, klines) = self.load().await?;
+        Ok(stopped_admin_snapshot(
+            &config,
+            operator_identity,
+            rooms,
+            klines,
+        ))
     }
 
     /// Apply a whole batch in one transaction, in order. Ordering matters:
@@ -5691,6 +6621,174 @@ mod tests {
         out
     }
 
+    fn clear_admin_evidence(core: &mut HubCore) {
+        core.evidence.clear();
+        core.evidence_bytes = 0;
+        core.evidence_evicted = 0;
+    }
+
+    #[test]
+    fn admin_snapshot_is_deterministic_bounded_and_secret_free() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "vault");
+        join(&mut core, LINK_B, ID_B, "vault");
+        run_command(&mut core, LINK_A, ID_A, "/register vault");
+        run_command(&mut core, LINK_A, ID_A, "/topic vault field operations");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +p");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +k open-sesame");
+        run_command(&mut core, LINK_A, ID_A, "/voice vault beta");
+
+        let unsafe_body = format!("alpha\n beta\u{202e}\u{200b} {}", "x".repeat(270));
+        let mut message = rrc::Envelope::new(rrc::MessageType::Message, ID_B);
+        message.room = Some("vault".to_string());
+        message.body = Some(Value::Text(unsafe_body));
+        core.on_envelope(LINK_B, message, &mut Vec::new());
+
+        let snapshot = core.admin_snapshot();
+        assert!(snapshot.running);
+        assert_eq!(snapshot.model_version, CHANNEL_HUB_ADMIN_MODEL_VERSION);
+        assert_eq!(snapshot.pending_sessions, 0);
+        assert_eq!(snapshot.rooms.len(), 1);
+        let room = &snapshot.rooms[0];
+        assert_eq!(room.name, "vault");
+        assert_eq!(room.topic.as_deref(), Some("field operations"));
+        assert_eq!(room.live_member_count, 2);
+        assert_eq!(room.live_session_count, 2);
+        assert!(room.registered && room.modes.private);
+        assert!(room.modes.join_key_configured);
+        assert_eq!(room.operators, vec![hex::encode(ID_A)]);
+        assert_eq!(room.voiced, vec![hex::encode(ID_B)]);
+
+        assert_eq!(snapshot.people.len(), 2);
+        assert_eq!(snapshot.people[0].identity_hash, hex::encode(ID_A));
+        assert_eq!(snapshot.people[1].identity_hash, hex::encode(ID_B));
+        assert_eq!(snapshot.people[1].nickname.as_deref(), Some("beta"));
+        assert_eq!(snapshot.people[1].rooms, vec!["vault"]);
+        assert_eq!(snapshot.people[1].voiced_in, vec!["vault"]);
+        assert_eq!(snapshot.stats.messages_forwarded, 1);
+
+        let newest = snapshot.evidence.first().expect("message evidence");
+        let excerpt = newest.excerpt.as_deref().expect("bounded excerpt");
+        assert!(excerpt.len() <= CHANNEL_HUB_EVIDENCE_EXCERPT_BYTES);
+        assert!(excerpt.starts_with("alpha beta "));
+        assert!(excerpt.ends_with('…'));
+        assert!(!excerpt.contains(['\n', '\r', '\t', '\u{202e}', '\u{200b}']));
+        assert_eq!(newest.room.as_deref(), Some("vault"));
+        assert_eq!(
+            newest.source_identity_hash.as_deref(),
+            Some(hex::encode(ID_B).as_str())
+        );
+        let sequences: Vec<u64> = snapshot
+            .evidence
+            .iter()
+            .map(|entry| entry.sequence.parse().unwrap())
+            .collect();
+        assert!(
+            sequences.windows(2).all(|pair| pair[0] > pair[1]),
+            "evidence is newest first"
+        );
+
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        assert!(encoded.contains("\"kind\":\"message\""));
+        assert!(encoded.contains(&hex::encode(ID_A)));
+        for forbidden in [
+            "open-sesame",
+            "key_salt",
+            "key_mac",
+            "key_pepper",
+            "pepper_id",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "admin IPC must not expose {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_snapshot_distinguishes_identity_membership_from_live_sessions() {
+        let mut core = op_core();
+        let second_link = [0x03; 16];
+        welcomed_session(&mut core, second_link, ID_A, "alpha-secondary");
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, second_link, ID_A, "lobby");
+
+        let snapshot = core.admin_snapshot();
+        let room = snapshot
+            .rooms
+            .iter()
+            .find(|room| room.name == "lobby")
+            .unwrap();
+        assert_eq!(room.live_member_count, 1);
+        assert_eq!(room.live_session_count, 2);
+        let operator = snapshot
+            .people
+            .iter()
+            .find(|person| person.identity_hash == hex::encode(ID_A))
+            .unwrap();
+        assert_eq!(operator.session_count, 2);
+        assert_eq!(operator.welcomed_session_count, 2);
+        assert_eq!(operator.rooms, vec!["lobby"]);
+    }
+
+    #[test]
+    fn commands_direct_notices_and_rejected_traffic_are_not_content_evidence() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+        clear_admin_evidence(&mut core);
+
+        run_command(&mut core, LINK_A, ID_A, "/stats");
+        let mut direct = rrc::Envelope::new(rrc::MessageType::Notice, ID_A);
+        direct.destination = Some(ID_B);
+        direct.body = Some(Value::Text("private operator note".to_string()));
+        core.on_envelope(LINK_A, direct, &mut Vec::new());
+        let mut oversized = rrc::Envelope::new(rrc::MessageType::Message, ID_B);
+        oversized.room = Some("lobby".to_string());
+        oversized.body = Some(Value::Text("rejected content must stay absent".repeat(32)));
+        core.on_envelope(LINK_B, oversized, &mut Vec::new());
+
+        assert!(
+            core.admin_snapshot().evidence.is_empty(),
+            "only accepted room fan-out may create content evidence"
+        );
+    }
+
+    #[test]
+    fn evidence_ring_enforces_count_and_retention_caps() {
+        let mut core = core_with(ChannelHubConfig::default());
+        let base = Instant::now();
+        for index in 0..(CHANNEL_HUB_EVIDENCE_MAX_EVENTS + 7) {
+            core.push_evidence(
+                base + Duration::from_secs(index as u64),
+                1_800_000_000_000 + index as u64,
+                ChannelHubEvidenceKind::Message,
+                None,
+                None,
+                Some("lobby"),
+                Some(ID_A),
+                Some("alpha"),
+                None,
+                Some("bounded"),
+            );
+        }
+        assert_eq!(core.evidence.len(), CHANNEL_HUB_EVIDENCE_MAX_EVENTS);
+        assert_eq!(core.evidence_evicted, 7);
+        assert!(core.evidence_bytes <= CHANNEL_HUB_EVIDENCE_MAX_BYTES);
+
+        let after_retention = base
+            + Duration::from_secs(
+                CHANNEL_HUB_EVIDENCE_RETENTION_SECS + CHANNEL_HUB_EVIDENCE_MAX_EVENTS as u64 + 7,
+            );
+        let snapshot = core.admin_snapshot_at(after_retention, 1_800_001_000_000, 1_800_001_000.0);
+        assert!(snapshot.evidence.is_empty());
+        assert_eq!(
+            snapshot.evidence_evicted,
+            (CHANNEL_HUB_EVIDENCE_MAX_EVENTS + 7) as u64
+        );
+        assert!(!snapshot.evidence_policy.persistent);
+    }
+
     #[test]
     fn who_and_list_replies_match_reference_wire_text() {
         let mut core = op_core();
@@ -6140,6 +7238,89 @@ mod tests {
         let kinds: Vec<&str> = row.grants.iter().map(|(k, _, _)| k.as_str()).collect();
         assert!(kinds.contains(&"op"), "the operator's grant is recorded");
         assert!(kinds.contains(&"voice") && kinds.contains(&"ban"));
+    }
+
+    #[test]
+    fn clearing_a_registered_join_key_persists_the_removal() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "vault");
+        run_command(&mut core, LINK_A, ID_A, "/register vault");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +k open-sesame");
+
+        let out = run_command(&mut core, LINK_A, ID_A, "/mode vault -k");
+        let row = upserted(&out, "vault").expect("clearing +k persists the room");
+        assert!(row.key_salt.is_empty());
+        assert!(row.key_mac.is_empty());
+        assert!(row.key_pepper_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stopped_admin_snapshot_reads_policy_without_key_material() {
+        let pool = settings_pool();
+        let identity_id = hex::encode(ID_A);
+        db::save_identity(&pool, &identity_id, "", "alpha", "Alpha");
+        let store = HubStore::new(pool, identity_id);
+        let expires_at = now_unix() + 600.0;
+        let row = db::HubRoomRow {
+            room_name: "vault".to_string(),
+            topic: "field operations".to_string(),
+            key_salt: hex::encode([0x11; 16]),
+            key_mac: hex::encode([0x22; 32]),
+            key_pepper_id: hex::encode([0x33; 8]),
+            moderated: true,
+            invite_only: true,
+            topic_ops_only: true,
+            no_outside_msgs: true,
+            private: true,
+            last_used: 1_800_000_000.0,
+            grants: vec![
+                ("op".to_string(), hex::encode(ID_A), 0.0),
+                ("voice".to_string(), hex::encode(ID_B), 0.0),
+                ("ban".to_string(), hex::encode([0xCC; 16]), 0.0),
+                ("invite".to_string(), hex::encode([0xDD; 16]), expires_at),
+                ("op".to_string(), "not-an-identity".to_string(), 0.0),
+            ],
+        };
+        store
+            .apply_batch(vec![
+                db::HubRoomOp::Upsert(Box::new(row)),
+                db::HubRoomOp::ReplaceKlines(vec![hex::encode(ID_B)]),
+            ])
+            .await
+            .unwrap();
+
+        let snapshot = store
+            .admin_snapshot(ChannelHubConfig::default(), ID_A)
+            .await
+            .unwrap();
+        assert!(!snapshot.running);
+        assert!(snapshot.people.is_empty() && snapshot.evidence.is_empty());
+        assert_eq!(snapshot.rooms.len(), 1);
+        let room = &snapshot.rooms[0];
+        assert_eq!(room.name, "vault");
+        assert!(room.registered && room.modes.join_key_configured);
+        assert!(room.modes.private && room.modes.invite_only);
+        assert_eq!(room.operators, vec![hex::encode(ID_A)]);
+        assert_eq!(room.voiced, vec![hex::encode(ID_B)]);
+        assert_eq!(room.invitations.len(), 1);
+        assert_eq!(snapshot.server_operators, vec![hex::encode(ID_A)]);
+        assert_eq!(snapshot.hub_bans, vec![hex::encode(ID_B)]);
+
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let forbidden = [
+            hex::encode([0x11; 16]),
+            hex::encode([0x22; 32]),
+            hex::encode([0x33; 8]),
+            "key_salt".to_string(),
+            "key_mac".to_string(),
+            "key_pepper_id".to_string(),
+        ];
+        for forbidden in &forbidden {
+            assert!(
+                !encoded.contains(forbidden),
+                "stopped IPC must not expose registry key material"
+            );
+        }
     }
 
     #[test]

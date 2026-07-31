@@ -515,6 +515,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     // The IPC surface stays registered unconditionally.
     for command in [
         "channel_hub::api_channel_hub",
+        "channel_hub::api_channel_hub_admin",
         "channel_hub::channel_hub_start",
         "channel_hub::channel_hub_stop",
         "channel_hub::channel_hub_set_config",
@@ -531,8 +532,8 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub.contains("target_os = \"android\", target_os = \"ios\""));
     assert_eq!(
         commands.matches("ensure_supported()?;").count(),
-        3,
-        "every mutating hub command must reject mobile hosting"
+        4,
+        "every hosting-specific hub command must reject mobile hosting"
     );
     assert!(runtime.contains("channel_hub_hosting_supported()"));
 
@@ -564,12 +565,15 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(commands.contains("ChannelHubSettings::load"));
     assert!(commands.contains("try_set_settings"));
     assert!(commands.contains("hub.status()"));
+    assert!(commands.contains("hub.admin_snapshot()"));
+    assert!(commands.contains("HubStore::new"));
     assert!(commands.contains("let status = current_snapshot(state).await"));
     assert!(commands.contains("existing_hub_destination_hash(&identity_path)"));
     assert!(db.contains("pub fn try_set_settings"));
     assert!(db.contains("let transaction = conn.transaction()"));
     assert!(state.contains("pub channel_hub_control_lock: tokio::sync::Mutex<()>"));
     for command in [
+        "pub async fn api_channel_hub_admin",
         "pub async fn channel_hub_start",
         "pub async fn channel_hub_stop",
         "pub async fn channel_hub_set_config",
@@ -580,6 +584,17 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
             .expect("hub lifecycle command");
         assert!(body.contains("channel_hub_control_lock.lock().await"));
     }
+
+    // Owner evidence is an explicit pull through the actor, bounded in live
+    // memory, and kept off the content-free Activity/event path.
+    assert!(hub.contains("HubCommand::AdminSnapshot"));
+    assert!(hub.contains("result_tx.send(core.admin_snapshot())"));
+    assert!(hub.contains("CHANNEL_HUB_EVIDENCE_RETENTION_SECS"));
+    assert!(hub.contains("CHANNEL_HUB_EVIDENCE_MAX_EVENTS"));
+    assert!(hub.contains("CHANNEL_HUB_EVIDENCE_MAX_BYTES"));
+    assert!(hub.contains("persistent: false"));
+    assert!(hub.contains("struct HubEvidenceRecord"));
+    assert!(hub.contains("Do not derive"));
 }
 
 #[test]

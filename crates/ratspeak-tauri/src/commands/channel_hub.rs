@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use ratspeak_runtime::channel_hub::{
-    ChannelHubSettings, ChannelHubSnapshot, channel_hub_hosting_supported,
+    ChannelHubAdminSnapshot, ChannelHubSettings, ChannelHubSnapshot, HubStore,
+    channel_hub_hosting_supported,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -92,6 +93,20 @@ async fn persist_settings(
     .map_err(AppError::database_unavailable)
 }
 
+fn active_operator_identity(state: &State<'_, Arc<AppState>>) -> AppResult<(String, [u8; 16])> {
+    let identity_id = crate::helpers::active_identity_id(state);
+    if !crate::helpers::validate_hex(&identity_id, 32, 32) {
+        return Err(AppError::service_unavailable(
+            "Channel hub administration requires an active identity",
+        ));
+    }
+    let bytes = hex::decode(&identity_id)
+        .ok()
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        .ok_or_else(|| AppError::internal("active identity hash is invalid"))?;
+    Ok((identity_id, bytes))
+}
+
 async fn overview(
     state: &State<'_, Arc<AppState>>,
     settings: ChannelHubSettings,
@@ -155,6 +170,25 @@ pub async fn api_channel_hub(state: State<'_, Arc<AppState>>) -> AppResult<Chann
     let _control = state.channel_hub_control_lock.lock().await;
     let settings = load_settings(&state).await?;
     Ok(overview(&state, settings).await)
+}
+
+#[tauri::command]
+pub async fn api_channel_hub_admin(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<ChannelHubAdminSnapshot> {
+    ensure_supported()?;
+    let _control = state.channel_hub_control_lock.lock().await;
+    let (identity_id, operator_identity) = active_operator_identity(&state)?;
+    if let Some(hub) = state.channel_hub_handle() {
+        return hub.admin_snapshot().await.map_err(|_| {
+            AppError::service_unavailable("Channel hub administration is temporarily unavailable")
+        });
+    }
+    let settings = load_settings(&state).await?;
+    HubStore::new(state.db.clone(), identity_id)
+        .admin_snapshot(settings.runtime_config(), operator_identity)
+        .await
+        .map_err(AppError::database_unavailable)
 }
 
 #[tauri::command]
