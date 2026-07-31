@@ -206,7 +206,7 @@
             var bytes = textBytes(value);
             var maxBytePayload = Math.floor((DATA_CODEWORDS * 8 - 4 - BYTE_COUNT_BITS) / 8);
             if (bytes.length > maxBytePayload) {
-                throw new Error('Contact card is too large for the QR layout');
+                throw new Error('Share payload is too large for the QR layout');
             }
             var bits = [];
             appendBits(bits, 0x4, 4);
@@ -491,12 +491,13 @@ z`,
         });
     }
 
-    function saveQrBlob(blob, fileName) {
+    function saveQrBlob(blob, fileName, shareTitle) {
+        shareTitle = shareTitle || 'Ratspeak Contact Card';
         if (window.File && navigator.canShare && navigator.share) {
             try {
                 var file = new File([blob], fileName, { type: 'image/png' });
                 if (navigator.canShare({ files: [file] })) {
-                    return navigator.share({ files: [file], title: 'Ratspeak Contact Card' })
+                    return navigator.share({ files: [file], title: shareTitle })
                         .then(function() { return 'share'; });
                 }
             } catch (_) {}
@@ -516,6 +517,12 @@ z`,
             a.remove();
             setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
             return 'download';
+        });
+    }
+
+    function shareQrCanvas(canvas, fileName, shareTitle) {
+        return canvasBlob(canvas).then(function(blob) {
+            return saveQrBlob(blob, fileName, shareTitle);
         });
     }
 
@@ -622,7 +629,16 @@ z`,
         });
     }
 
-    function openContactQrScanner() {
+    function openContactQrScanner(options) {
+        options = options || {};
+        var scannerTitle = options.title || 'Scan Contact QR';
+        var checkingText = options.checkingText || 'Checking contact card...';
+        var invalidText = options.invalidText || 'That QR is not a valid Ratspeak contact card.';
+        var invalidImageText = options.invalidImageText ||
+            'That image does not contain a valid Ratspeak contact QR.';
+        var emptyImageText = options.emptyImageText ||
+            'No Ratspeak contact QR found in that image.';
+        var previewCommand = options.previewCommand || 'api_preview_contact_card';
         var built = buildSheet('contact-scan-sheet');
         var stream = null;
         var stopped = false;
@@ -632,7 +648,7 @@ z`,
         var firstDetectLogged = false;
         built.sheet.innerHTML =
             '<div class="contact-card-topbar">' +
-                '<div class="contact-scan-title">Scan Contact QR</div>' +
+                '<div class="contact-scan-title">' + escapeHtml(scannerTitle) + '</div>' +
                 '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
             '</div>' +
             '<div class="contact-scan-body">' +
@@ -724,14 +740,18 @@ z`,
         }
 
         function handleScannedPayload(payload, source, invalidMessage, retry) {
-            status.textContent = 'Checking contact card...';
+            status.textContent = checkingText;
             contactScanDiag('payload_detected', { source: source });
-            return RS.invoke('api_preview_contact_card', { payload: payload }).then(function(card) {
+            return RS.invoke(previewCommand, { payload: payload }).then(function(preview) {
                 stopStream();
-                showScannedCardPreview(body, payload, card, closeAll);
+                if (typeof options.onPreview === 'function') {
+                    options.onPreview(body, payload, preview, closeAll);
+                } else {
+                    showScannedCardPreview(body, payload, preview, closeAll);
+                }
             }).catch(function(err) {
                 contactScanDiag('payload_rejected', scanErrorDetail(err));
-                status.textContent = invalidMessage || 'That QR is not a valid Ratspeak contact card.';
+                status.textContent = invalidMessage || invalidText;
                 if (typeof retry === 'function') retry();
             });
         }
@@ -798,10 +818,10 @@ z`,
                     var code = window.jsQR(image.data, width, height, { inversionAttempts: 'attemptBoth' });
                     if (code && code.data) {
                         contactScanDiag('file_decode_success', { width: width, height: height });
-                        handleScannedPayload(code.data, 'file', 'That image does not contain a valid Ratspeak contact QR.');
+                        handleScannedPayload(code.data, 'file', invalidImageText);
                     } else {
                         contactScanDiag('file_decode_empty', { width: width, height: height });
-                        status.textContent = 'No Ratspeak contact QR found in that image.';
+                        status.textContent = emptyImageText;
                     }
                 } catch (err) {
                     contactScanDiag('file_decode_failed', scanErrorDetail(err));
@@ -948,7 +968,7 @@ z`,
                                 firstDetectLogged = 'done';
                             }
                             if (codes && codes.length && codes[0].rawValue) {
-                                handleScannedPayload(codes[0].rawValue, 'live', 'That QR is not a valid Ratspeak contact card.', function() {
+                                handleScannedPayload(codes[0].rawValue, 'live', invalidText, function() {
                                     setTimeout(function() {
                                         if (!stopped && liveActive) {
                                             status.textContent = 'Point the camera at a Ratspeak QR.';
@@ -1179,9 +1199,15 @@ z`,
 
     window.RSContactCard = {
         renderQrCanvas: renderQrCanvas,
+        shareQrCanvas: shareQrCanvas,
         openIdentityShareScreen: showIdentityShareScreen,
         openContactQrScanner: openContactQrScanner,
         openContactAddOptions: openContactAddOptions,
+    };
+    window.RS.qr = {
+        renderCanvas: renderQrCanvas,
+        shareCanvas: shareQrCanvas,
+        openScanner: openContactQrScanner,
     };
     window.closeContactAddDial = closeContactAddDial;
     window.openIdentityShareScreen = showIdentityShareScreen;

@@ -58,6 +58,7 @@ hex = { workspace = true }
 mime_guess = "2"
 base64 = "0.22"
 glob = "0.3"
+url = "2"
 serialport = { workspace = true, optional = true }
 
 [target.'cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))'.dependencies]

@@ -687,6 +687,8 @@ pub fn run() {
             ratspeak_tauri::commands::channels::set_channel_room_notification_level,
             ratspeak_tauri::commands::channels::discover_channel_hubs,
             ratspeak_tauri::commands::channels::refresh_channel_directory,
+            ratspeak_tauri::commands::channels::api_channel_share,
+            ratspeak_tauri::commands::channels::api_preview_channel_share,
             ratspeak_tauri::commands::channels::connect_channel_hub,
             ratspeak_tauri::commands::channels::disconnect_channel_hub,
             ratspeak_tauri::commands::channels::join_channel,

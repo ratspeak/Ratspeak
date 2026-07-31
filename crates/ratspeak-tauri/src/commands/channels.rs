@@ -11,10 +11,22 @@ use rns_identity::identity::Identity;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::State;
+use url::Url;
 
 use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
 use crate::state::AppState;
+
+const CHANNEL_SHARE_SCHEME: &str = "ratspeak";
+const CHANNEL_SHARE_HOST: &str = "channel";
+const CHANNEL_SHARE_VERSION: &str = "1";
+const CHANNEL_SHARE_FORMAT: &str = "ratspeak.channel.v1";
+// Keep every accepted canonical target inside the version-13 QR byte budget
+// used by the shared contact/channel renderer. This also leaves a little room
+// for the encoder's mode/count/terminator bits instead of accepting links that
+// work when pasted but cannot be re-shared as QR.
+const CHANNEL_SHARE_MAX_BYTES: usize = 230;
+const CHANNEL_SHARE_MAX_ROOM_BYTES: usize = 64;
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectChannelHubArgs {
@@ -33,6 +45,108 @@ pub struct JoinChannelArgs {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChannelShareArgs {
+    pub hub_destination_hash: String,
+    #[serde(default)]
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelShareTarget {
+    pub format: &'static str,
+    pub payload: String,
+    pub hub_destination_hash: String,
+    pub room: Option<String>,
+}
+
+fn build_channel_share_target(
+    hub_destination_hash: &str,
+    room: Option<&str>,
+) -> Result<ChannelShareTarget, String> {
+    let hub_destination_hash = hub_destination_hash.trim().to_ascii_lowercase();
+    if !validate_hex(&hub_destination_hash, 32, 32) {
+        return Err("Channel share hub must be a 16-byte hexadecimal destination".into());
+    }
+    let room = match room {
+        Some(room) => {
+            let room = ratspeak_runtime::rrc::normalize_room(room, CHANNEL_SHARE_MAX_ROOM_BYTES)
+                .map_err(|error| error.to_string())?;
+            if room.chars().any(char::is_control) {
+                return Err("Channel share room contains a control character".into());
+            }
+            Some(room)
+        }
+        None => None,
+    };
+
+    let mut url = Url::parse("ratspeak://channel")
+        .map_err(|_| "Could not create a channel share".to_string())?;
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("v", CHANNEL_SHARE_VERSION)
+            .append_pair("hub", &hub_destination_hash);
+        if let Some(room) = room.as_deref() {
+            query.append_pair("room", room);
+        }
+    }
+    let payload = url.to_string();
+    if payload.len() > CHANNEL_SHARE_MAX_BYTES {
+        return Err("Channel share exceeds the supported size".into());
+    }
+    Ok(ChannelShareTarget {
+        format: CHANNEL_SHARE_FORMAT,
+        payload,
+        hub_destination_hash,
+        room,
+    })
+}
+
+fn parse_channel_share_target(payload: &str) -> Result<ChannelShareTarget, String> {
+    if payload != payload.trim() {
+        return Err("Channel share is not in canonical form".into());
+    }
+    if payload.is_empty() || payload.len() > CHANNEL_SHARE_MAX_BYTES {
+        return Err("Channel share is empty or too large".into());
+    }
+    let url = Url::parse(payload).map_err(|_| "Not a valid Ratspeak channel share".to_string())?;
+    if url.scheme() != CHANNEL_SHARE_SCHEME
+        || url.host_str() != Some(CHANNEL_SHARE_HOST)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.fragment().is_some()
+    {
+        return Err("Not a valid Ratspeak channel share target".into());
+    }
+
+    let mut version = None;
+    let mut hub = None;
+    let mut room = None;
+    for (key, value) in url.query_pairs() {
+        let slot = match key.as_ref() {
+            "v" => &mut version,
+            "hub" => &mut hub,
+            "room" => &mut room,
+            _ => return Err("Channel share contains an unsupported field".into()),
+        };
+        if slot.replace(value.into_owned()).is_some() {
+            return Err("Channel share repeats a field".into());
+        }
+    }
+    if version.as_deref() != Some(CHANNEL_SHARE_VERSION) {
+        return Err("Channel share version is not supported".into());
+    }
+    let hub = hub.ok_or_else(|| "Channel share is missing its hub".to_string())?;
+    let target = build_channel_share_target(&hub, room.as_deref())?;
+    if target.payload != payload {
+        return Err("Channel share is not in canonical form".into());
+    }
+    Ok(target)
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,6 +436,17 @@ pub async fn refresh_channel_directory(
     let channels = channels_handle(&state)?;
     channels.refresh_directory().await.map_err(map_error)?;
     Ok(channels.snapshot())
+}
+
+#[tauri::command]
+pub fn api_channel_share(args: ChannelShareArgs) -> AppResult<ChannelShareTarget> {
+    build_channel_share_target(&args.hub_destination_hash, args.room.as_deref())
+        .map_err(AppError::bad_request)
+}
+
+#[tauri::command]
+pub fn api_preview_channel_share(payload: String) -> AppResult<ChannelShareTarget> {
+    parse_channel_share_target(&payload).map_err(AppError::bad_request)
 }
 
 #[tauri::command]
@@ -738,6 +863,68 @@ mod tests {
     fn session_state_errors_are_conflicts() {
         let error = map_error(ChannelsError::NotConnected);
         assert_eq!(error.code, "conflict");
+    }
+
+    #[test]
+    fn channel_share_round_trips_as_one_canonical_key_free_target() {
+        let hub = "00112233445566778899AABBCCDDEEFF";
+        let target = build_channel_share_target(hub, Some(" #Field Team ")).unwrap();
+        assert_eq!(
+            target.payload,
+            "ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff&room=%23field+team"
+        );
+        assert_eq!(parse_channel_share_target(&target.payload).unwrap(), target);
+        let value = serde_json::to_value(target).unwrap();
+        assert_eq!(value["format"], CHANNEL_SHARE_FORMAT);
+        assert_eq!(value["room"], "#field team");
+        assert!(value.get("key").is_none());
+        assert!(value.get("join_key").is_none());
+
+        let hub_only = build_channel_share_target(hub, None).unwrap();
+        assert_eq!(
+            hub_only.payload,
+            "ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff"
+        );
+        assert_eq!(
+            parse_channel_share_target(&hub_only.payload).unwrap(),
+            hub_only
+        );
+    }
+
+    #[test]
+    fn channel_share_parser_rejects_ambiguous_mutating_or_noncanonical_forms() {
+        let hub = "00112233445566778899aabbccddeeff";
+        for invalid in [
+            "",
+            " ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff",
+            "ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff ",
+            "https://channel?v=1&hub=00112233445566778899aabbccddeeff",
+            "ratspeak://channel/join?v=1&hub=00112233445566778899aabbccddeeff",
+            "ratspeak://user@channel?v=1&hub=00112233445566778899aabbccddeeff",
+            "ratspeak://channel?v=2&hub=00112233445566778899aabbccddeeff",
+            "ratspeak://channel?hub=00112233445566778899aabbccddeeff&v=1",
+            "ratspeak://channel?v=1&hub=00112233445566778899AABBCCDDEEFF",
+            "ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff&hub=00112233445566778899aabbccddeeff",
+            "ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff&key=secret",
+            "ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff&room=general#join",
+            "ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff&room=bad%0Aroom",
+        ] {
+            assert!(
+                parse_channel_share_target(invalid).is_err(),
+                "{invalid} must not become a channel target"
+            );
+        }
+        assert!(build_channel_share_target(hub, Some("")).is_err());
+        assert!(build_channel_share_target(hub, Some("bad\nroom")).is_err());
+        assert!(
+            build_channel_share_target(hub, Some(&"x".repeat(CHANNEL_SHARE_MAX_ROOM_BYTES + 1)))
+                .is_err()
+        );
+        assert!(
+            build_channel_share_target(hub, Some(&"é".repeat(CHANNEL_SHARE_MAX_ROOM_BYTES / 2)))
+                .is_err(),
+            "percent-encoded UTF-8 must still fit the shared QR budget"
+        );
     }
 
     #[test]

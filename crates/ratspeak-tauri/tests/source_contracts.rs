@@ -127,6 +127,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     let notification_route_test =
         read_source(root.join("dashboard/scripts/test_channels_notification_route.js"))
             .expect("channels notification route test");
+    let share_test = read_source(root.join("dashboard/scripts/test_channels_share.js"))
+        .expect("channels share test");
     let tauri_events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri event bridge");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
@@ -324,6 +326,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
         "set_channel_room_notification_level",
         "discover_channel_hubs",
         "refresh_channel_directory",
+        "api_channel_share",
+        "api_preview_channel_share",
         "connect_channel_hub",
         "disconnect_channel_hub",
         "join_channel",
@@ -384,6 +388,18 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("durability: {"));
     assert!(channels_js.contains("directory: {"));
     assert!(channels_js.contains("RS.invoke('refresh_channel_directory')"));
+    assert!(commands.contains(r#"CHANNEL_SHARE_SCHEME: &str = "ratspeak""#));
+    assert!(commands.contains(r#"CHANNEL_SHARE_HOST: &str = "channel""#));
+    assert!(commands.contains("CHANNEL_SHARE_MAX_BYTES: usize = 230"));
+    assert!(commands.contains("Channel share contains an unsupported field"));
+    assert!(commands.contains("target.payload != payload"));
+    assert!(channels_js.contains("RS.invoke('api_channel_share'"));
+    assert!(channels_js.contains("RS.invoke('api_preview_channel_share'"));
+    assert!(channels_js.contains("previewCommand: 'api_preview_channel_share'"));
+    assert!(channels_js.contains("preserve_pending_share: true"));
+    assert!(channels_css.contains(".channel-share-qr-shell"));
+    assert!(channels_css.contains(".channel-share-input"));
+    assert!(share_test.contains("channel share tests passed"));
 }
 
 /// The hub persists operator policy and nothing else, creates rooms only for
@@ -4363,8 +4379,14 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
 
     assert!(contact_card_js.contains("BarcodeDetector"));
     assert!(contact_card_js.contains("RS.mediaPermissions.ensure({ camera: true })"));
-    assert!(contact_card_js.contains("RS.invoke('api_preview_contact_card'"));
+    assert!(
+        contact_card_js
+            .contains("var previewCommand = options.previewCommand || 'api_preview_contact_card'")
+    );
+    assert!(contact_card_js.contains("RS.invoke(previewCommand, { payload: payload })"));
     assert!(contact_card_js.contains("RS.invoke('import_contact_card'"));
+    assert!(contact_card_js.contains("window.RS.qr = {"));
+    assert!(contact_card_js.contains("openScanner: openContactQrScanner"));
     assert!(contact_card_js.contains("renderQrCanvas(canvas, card.payload || '')"));
     assert!(contact_card_js.contains("function QrContactCard(text)"));
     assert!(contact_card_js.contains("var VERSION = 13;"));

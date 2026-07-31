@@ -49,6 +49,7 @@ var channelsUnread = {
 };
 var channelsActiveRoom = null;
 var channelsHistorySelection = null;
+var channelsPendingShareJoin = null;
 var channelsPendingHubLabel = '';
 var _channelsLoadedAt = 0;
 var _channelsLastHubRefreshAt = 0;
@@ -287,8 +288,10 @@ function _channelsOwnedHubReady() {
         !!channelHubOwnDestinationHash();
 }
 
-function channelsConnectToHub(hub) {
+function channelsConnectToHub(hub, options) {
     hub = hub || {};
+    options = options || {};
+    if (!options.preserve_pending_share) channelsPendingShareJoin = null;
     var destination = String(hub.destination_hash || '').trim().toLowerCase();
     var nickname = String(hub.nickname || _channelsDefaultNickname()).trim();
     if (!/^[0-9a-f]{32}$/.test(destination)) {
@@ -610,6 +613,17 @@ function channelsApplySnapshot(snapshot) {
     }
 
     var newHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
+    if (channelsPendingShareJoin &&
+            Number(channelsSnapshot.generation) !== channelsPendingShareJoin.generation) {
+        channelsPendingShareJoin = null;
+    }
+    var selectedHub = String(
+        channelsSnapshot.selected_hub_destination || ''
+    ).toLowerCase();
+    if (channelsPendingShareJoin && selectedHub &&
+            selectedHub !== channelsPendingShareJoin.destination_hash) {
+        channelsPendingShareJoin = null;
+    }
     if (newHub !== oldHub) {
         _channelsDirectoryRequestSeq += 1;
         _channelsDirectoryRefreshPromise = null;
@@ -647,6 +661,27 @@ function channelsApplySnapshot(snapshot) {
     renderChannels();
     if (newHub && _channelsViewVisible() && _channelsDirectoryNeedsRefresh()) {
         channelsRefreshDirectory(false);
+    }
+    if (channelsPendingShareJoin && channelsSnapshot.phase === 'active') {
+        var pendingShare = channelsPendingShareJoin;
+        if (String(newHub || '').toLowerCase() === pendingShare.destination_hash) {
+            var pendingRoom = _channelsRoomByName(pendingShare.room);
+            var pendingRoomTransitioning = pendingRoom &&
+                (pendingRoom.phase === 'joining' ||
+                    pendingRoom.phase === 'parting');
+            if (!pendingRoomTransitioning) {
+                channelsPendingShareJoin = null;
+                setTimeout(function() {
+                    if (pendingRoom && pendingRoom.phase === 'joined') {
+                        channelsSelectRoom(pendingShare.room);
+                    } else {
+                        channelsOpenJoinSheet(pendingShare.room);
+                    }
+                }, 220);
+            }
+        }
+    } else if (channelsPendingShareJoin && channelsSnapshot.phase === 'error') {
+        channelsPendingShareJoin = null;
     }
     var selectedRoom = _channelsSelectedRoomView();
     var selectedHistory = _channelsHistoryContext(selectedRoom);
@@ -2746,19 +2781,373 @@ function channelsCloseMemberPane() {
     if (layout) layout.classList.remove('members-open');
 }
 
+function _channelsSafeShareFileName(roomName) {
+    var room = String(roomName || 'hub').toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40);
+    return 'ratspeak-channel-' + (room || 'hub') + '.png';
+}
+
+function channelsOpenChannelShare(hubDestinationHash, roomName) {
+    if (typeof _rsBuildSheet !== 'function') return;
+    RS.invoke('api_channel_share', {
+        args: {
+            hub_destination_hash: hubDestinationHash,
+            room: roomName || null
+        }
+    }).then(function(target) {
+        var built = _rsBuildSheet({
+            title: target.room ? 'Share Channel' : 'Share Hub'
+        }, function() {});
+        var copy = document.createElement('p');
+        copy.className = 'channel-sheet-copy';
+        copy.textContent = target.room
+            ? 'Share ' + target.room + ' on this hub.'
+            : 'Share this channel hub.';
+        built.body.appendChild(copy);
+
+        var details = document.createElement('div');
+        details.className = 'channel-room-details channel-share-details';
+        details.appendChild(_channelsRoomDetail(
+            'Hub',
+            _channelsTimelineHubName(_channelsHubByDestination(
+                target.hub_destination_hash
+            ))
+        ));
+        details.appendChild(_channelsRoomDetail(
+            'Destination',
+            _channelsShortHash(target.hub_destination_hash)
+        ));
+        if (target.room) {
+            details.appendChild(_channelsRoomDetail('Channel', target.room));
+        }
+        built.body.appendChild(details);
+
+        var canvasShell = document.createElement('div');
+        canvasShell.className = 'channel-share-qr-shell';
+        var canvas = document.createElement('canvas');
+        canvas.className = 'channel-share-qr';
+        canvas.setAttribute('aria-label', 'Ratspeak channel share QR');
+        canvasShell.appendChild(canvas);
+        built.body.appendChild(canvasShell);
+        var qrReady = !!(RS.qr && typeof RS.qr.renderCanvas === 'function');
+        if (qrReady) {
+            try {
+                RS.qr.renderCanvas(canvas, target.payload);
+            } catch (_) {
+                qrReady = false;
+                canvasShell.hidden = true;
+            }
+        } else {
+            canvasShell.hidden = true;
+        }
+
+        var actions = document.createElement('div');
+        actions.className = 'channel-share-actions';
+        var copyLink = document.createElement('button');
+        copyLink.type = 'button';
+        copyLink.className = 'nr-btn nr-btn-secondary';
+        copyLink.textContent = 'Copy link';
+        copyLink.addEventListener('click', function() {
+            RS.copyText(target.payload).then(function(ok) {
+                if (typeof showToast === 'function') {
+                    showToast(
+                        ok ? 'Channel link copied' : 'Could not copy channel link',
+                        ok ? 'toast-green' : 'toast-orange',
+                        2200
+                    );
+                }
+            });
+        });
+        actions.appendChild(copyLink);
+        var shareQr = document.createElement('button');
+        shareQr.type = 'button';
+        shareQr.className = 'nr-btn nr-btn-secondary';
+        shareQr.textContent = 'Share QR';
+        shareQr.hidden = !qrReady || !RS.qr || typeof RS.qr.shareCanvas !== 'function';
+        shareQr.addEventListener('click', function() {
+            shareQr.disabled = true;
+            RS.qr.shareCanvas(
+                canvas,
+                _channelsSafeShareFileName(target.room),
+                'Ratspeak Channel'
+            ).then(function(method) {
+                if (typeof showToast === 'function') {
+                    showToast(
+                        method === 'share' ? 'QR handed to destination' : 'QR image saved',
+                        'toast-green',
+                        2400
+                    );
+                }
+            }).catch(function(error) {
+                if (typeof showToast === 'function') {
+                    showToast(
+                        (error && error.message) || 'Could not share channel QR',
+                        'toast-red',
+                        3200
+                    );
+                }
+            }).then(function() {
+                shareQr.disabled = false;
+            });
+        });
+        actions.appendChild(shareQr);
+        built.body.appendChild(actions);
+
+        var note = document.createElement('div');
+        note.className = 'channel-sheet-trust-note';
+        note.textContent = 'This share contains only the hub destination and optional channel name. It never includes a channel key or joins on open.';
+        built.body.appendChild(note);
+
+        var done = document.createElement('button');
+        done.type = 'button';
+        done.className = 'nr-btn nr-btn-primary';
+        done.textContent = 'Done';
+        done.addEventListener('click', built.dismiss);
+        built.footer.appendChild(done);
+        _channelsPresentSheet(built, copyLink);
+    }).catch(function(error) {
+        if (typeof showToast === 'function') {
+            showToast(
+                (error && error.message) || 'Could not build channel share',
+                'toast-red',
+                3200
+            );
+        }
+    });
+}
+
+function _channelsPresentSharedTarget(target) {
+    if (!target || typeof _rsBuildSheet !== 'function') return;
+    var destination = String(target.hub_destination_hash || '').toLowerCase();
+    var hub = _channelsHubByDestination(destination);
+    var saved = _channelsSavedHub(destination);
+    var discovered = channelsDiscoveredHubs.find(function(candidate) {
+        return String(candidate.destination_hash || '').toLowerCase() === destination;
+    });
+    var activeDestination = channelsSnapshot.hub &&
+        String(channelsSnapshot.hub.destination_hash || '').toLowerCase();
+    var sameHub = _channelsIsConnected() && activeDestination === destination;
+    var joinedRoom = sameHub && target.room && _channelsRoomByName(target.room);
+
+    var built = _rsBuildSheet({ title: 'Shared Channel' }, function() {});
+    var copy = document.createElement('p');
+    copy.className = 'channel-sheet-copy';
+    copy.textContent = target.room
+        ? 'Someone shared ' + target.room + ' on ' + _channelsTimelineHubName(hub) + '.'
+        : 'Someone shared ' + _channelsTimelineHubName(hub) + '.';
+    built.body.appendChild(copy);
+
+    var details = document.createElement('div');
+    details.className = 'channel-room-details channel-share-details';
+    details.appendChild(_channelsRoomDetail('Hub destination', destination));
+    if (target.room) details.appendChild(_channelsRoomDetail('Channel', target.room));
+    var availability;
+    if (sameHub) {
+        availability = 'Connected and authenticated now';
+    } else if (discovered && typeof discovered.hops === 'number') {
+        availability = discovered.hops === 0
+            ? 'Heard directly'
+            : 'Heard at ' + discovered.hops +
+                (discovered.hops === 1 ? ' hop' : ' hops');
+    } else if (saved) {
+        availability = 'Saved on this device; not currently connected';
+    } else {
+        availability = 'Not currently heard or saved on this device';
+    }
+    details.appendChild(_channelsRoomDetail('Availability', availability));
+    built.body.appendChild(details);
+
+    var trust = document.createElement('div');
+    trust.className = 'channel-sheet-trust-note';
+    trust.textContent = 'A share names a destination; it is not proof of who operates it. Ratspeak authenticates the Reticulum Link before any channel action. No channel key is present.';
+    built.body.appendChild(trust);
+
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', built.dismiss);
+    built.footer.appendChild(cancel);
+
+    var review = document.createElement('button');
+    review.type = 'button';
+    review.className = 'nr-btn nr-btn-primary';
+    if (joinedRoom && joinedRoom.phase === 'joined') {
+        review.textContent = 'Open channel';
+    } else if (sameHub && target.room) {
+        review.textContent = 'Review join';
+    } else if (sameHub) {
+        review.textContent = 'View hub';
+    } else {
+        review.textContent = 'Review connection';
+    }
+    review.addEventListener('click', function() {
+        built.dismiss();
+        setTimeout(function() {
+            if (joinedRoom && joinedRoom.phase === 'joined') {
+                channelsSelectRoom(target.room);
+            } else if (sameHub && target.room) {
+                channelsOpenJoinSheet(target.room);
+            } else if (sameHub) {
+                channelsOpenHubOptions();
+            } else {
+                channelsOpenConnectSheet({
+                    destination_hash: destination,
+                    announced_name: hub.announced_name || hub.label || '',
+                    nickname: hub.nickname || '',
+                    shared_room: target.room || null
+                });
+            }
+        }, 220);
+    });
+    built.footer.appendChild(review);
+    _channelsPresentSheet(built, review);
+}
+
+function channelsScanSharedChannel() {
+    if (!RS.qr || typeof RS.qr.openScanner !== 'function') {
+        if (typeof showToast === 'function') {
+            showToast('QR scanning is not available in this build', 'toast-orange', 2800);
+        }
+        return;
+    }
+    RS.qr.openScanner({
+        title: 'Scan Channel QR',
+        checkingText: 'Checking channel share\u2026',
+        previewCommand: 'api_preview_channel_share',
+        invalidText: 'That QR is not a valid Ratspeak channel share.',
+        invalidImageText: 'That image does not contain a valid Ratspeak channel QR.',
+        emptyImageText: 'No Ratspeak channel QR found in that image.',
+        onPreview: function(_body, _payload, target, closeAll) {
+            closeAll();
+            setTimeout(function() { _channelsPresentSharedTarget(target); }, 220);
+        }
+    });
+}
+
+function channelsOpenSharedChannel(payload) {
+    if (typeof _rsBuildSheet !== 'function') return;
+    var built = _rsBuildSheet({ title: 'Open Shared Channel' }, function() {});
+    var copy = document.createElement('p');
+    copy.className = 'channel-sheet-copy';
+    copy.textContent = 'Paste a Ratspeak channel link or scan its QR. Opening it only previews the destination.';
+    built.body.appendChild(copy);
+
+    var input = document.createElement('textarea');
+    input.className = 'nr-input-sm channel-share-input mono';
+    input.rows = 4;
+    input.maxLength = 230;
+    input.placeholder = 'ratspeak://channel?v=1&hub=\u2026';
+    input.autocomplete = 'off';
+    input.setAttribute('autocorrect', 'off');
+    input.setAttribute('autocapitalize', 'none');
+    input.setAttribute('spellcheck', 'false');
+    input.setAttribute('writingsuggestions', 'false');
+    input.value = payload || '';
+    built.body.appendChild(_channelsSheetField('Channel link', input));
+
+    var tools = document.createElement('div');
+    tools.className = 'channel-share-actions';
+    var scan = document.createElement('button');
+    scan.type = 'button';
+    scan.className = 'nr-btn nr-btn-secondary';
+    scan.textContent = 'Scan QR';
+    scan.hidden = !RS.qr || typeof RS.qr.openScanner !== 'function';
+    scan.addEventListener('click', function() {
+        built.dismiss();
+        setTimeout(channelsScanSharedChannel, 220);
+    });
+    tools.appendChild(scan);
+    var paste = document.createElement('button');
+    paste.type = 'button';
+    paste.className = 'nr-btn nr-btn-secondary';
+    paste.textContent = 'Paste';
+    paste.hidden = !navigator.clipboard || typeof navigator.clipboard.readText !== 'function';
+    paste.addEventListener('click', function() {
+        navigator.clipboard.readText().then(function(text) {
+            input.value = text || '';
+            input.focus();
+        }).catch(function() {
+            error.textContent = 'Clipboard access was unavailable. Paste the link into the field.';
+            input.focus();
+        });
+    });
+    tools.appendChild(paste);
+    built.body.appendChild(tools);
+
+    var error = document.createElement('div');
+    error.className = 'channel-sheet-error';
+    error.setAttribute('aria-live', 'polite');
+    built.body.appendChild(error);
+    function preview() {
+        var raw = input.value.trim();
+        if (!raw) {
+            error.textContent = 'Paste or scan a Ratspeak channel link.';
+            input.focus();
+            return;
+        }
+        open.disabled = true;
+        open.textContent = 'Checking\u2026';
+        error.textContent = '';
+        RS.invoke('api_preview_channel_share', { payload: raw }).then(function(target) {
+            built.dismiss();
+            setTimeout(function() { _channelsPresentSharedTarget(target); }, 220);
+        }).catch(function(previewError) {
+            error.textContent = (previewError && previewError.message) ||
+                'That is not a valid Ratspeak channel share.';
+            open.disabled = false;
+            open.textContent = 'Preview';
+        });
+    }
+
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', built.dismiss);
+    var open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'nr-btn nr-btn-primary';
+    open.textContent = 'Preview';
+    open.addEventListener('click', preview);
+    built.footer.appendChild(cancel);
+    built.footer.appendChild(open);
+    _channelsPresentSheet(built, input);
+    if (payload) setTimeout(preview, 0);
+}
+window.channelsOpenSharedChannel = channelsOpenSharedChannel;
+
 function channelsOpenConnectSheet(prefill) {
     if (typeof _rsBuildSheet !== 'function') return;
     prefill = prefill || {};
     var hubs = _channelsMergedHubs();
     var selectedHash = prefill.destination_hash || (channelsSnapshot.hub && channelsSnapshot.hub.destination_hash) || '';
     var selectedLabel = prefill.label || prefill.announced_name || '';
+    var sharedDestination = prefill.shared_room
+        ? String(prefill.destination_hash || '').toLowerCase()
+        : '';
+    var sharedRoom = prefill.shared_room || '';
     var defaultNick = prefill.nickname || (_channelsSavedHub(selectedHash) || {}).nickname || channelsSnapshot.nickname || _channelsDefaultNickname();
     var built = _rsBuildSheet({ title: 'Connect to Channels' }, function() {});
 
     var copy = document.createElement('p');
     copy.className = 'channel-sheet-copy';
-    copy.textContent = 'Choose a recently heard hub or enter its destination. Ratspeak will authenticate the connection.';
+    copy.textContent = sharedRoom
+        ? 'This share points to ' + sharedRoom + '. Review and authenticate the hub first; Ratspeak will then open a separate join review.'
+        : 'Choose a recently heard hub or enter its destination. Ratspeak will authenticate the connection.';
     built.body.appendChild(copy);
+
+    var openShared = document.createElement('button');
+    openShared.type = 'button';
+    openShared.className = 'nr-btn nr-btn-secondary channel-open-share-btn';
+    openShared.textContent = 'Open a shared channel';
+    openShared.addEventListener('click', function() {
+        built.dismiss();
+        setTimeout(function() { channelsOpenSharedChannel(); }, 220);
+    });
+    built.body.appendChild(openShared);
 
     var trust = document.createElement('div');
     trust.className = 'channel-sheet-trust-note';
@@ -2775,7 +3164,9 @@ function channelsOpenConnectSheet(prefill) {
     destinationInput.maxLength = 32;
     destinationInput.value = selectedHash;
     destinationInput.addEventListener('input', function() {
-        if (destinationInput.value.trim().toLowerCase() !== selectedHash) selectedLabel = '';
+        var entered = destinationInput.value.trim().toLowerCase();
+        if (entered !== selectedHash) selectedLabel = '';
+        if (entered !== sharedDestination) sharedRoom = '';
     });
 
     if (hubs.length) {
@@ -2806,6 +3197,9 @@ function channelsOpenConnectSheet(prefill) {
             row.addEventListener('click', function() {
                 selectedHash = hub.destination_hash;
                 selectedLabel = hub.label || hub.announced_name || '';
+                sharedRoom = hub.destination_hash === sharedDestination
+                    ? prefill.shared_room || ''
+                    : '';
                 destinationInput.value = selectedHash;
                 if (hub.nickname) nicknameInput.value = hub.nickname;
                 available.querySelectorAll('.channel-sheet-hub').forEach(function(el) { el.classList.remove('selected'); });
@@ -2839,7 +3233,7 @@ function channelsOpenConnectSheet(prefill) {
     var connect = document.createElement('button');
     connect.type = 'button';
     connect.className = 'nr-btn nr-btn-primary';
-    connect.textContent = 'Connect';
+    connect.textContent = sharedRoom ? 'Connect and review' : 'Connect';
     connect.addEventListener('click', function() {
         var destination = destinationInput.value.trim().toLowerCase();
         var nickname = nicknameInput.value.trim();
@@ -2856,16 +3250,29 @@ function channelsOpenConnectSheet(prefill) {
         connect.disabled = true;
         connect.textContent = 'Connecting\u2026';
         error.textContent = '';
+        var pendingShare = sharedRoom && destination === sharedDestination
+            ? {
+                destination_hash: destination,
+                room: sharedRoom,
+                generation: Number(channelsSnapshot.generation)
+            }
+            : null;
+        channelsPendingShareJoin = pendingShare;
         channelsConnectToHub({
             destination_hash: destination,
             announced_name: selectedLabel,
             nickname: nickname
+        }, {
+            preserve_pending_share: true
         }).then(function() {
             built.dismiss();
         }).catch(function(err) {
+            if (channelsPendingShareJoin === pendingShare) {
+                channelsPendingShareJoin = null;
+            }
             error.textContent = (err && err.message) || 'Could not connect to this hub.';
             connect.disabled = false;
-            connect.textContent = 'Connect';
+            connect.textContent = sharedRoom ? 'Connect and review' : 'Connect';
         });
     });
     built.footer.appendChild(cancel);
@@ -3072,11 +3479,22 @@ function channelsOpenHubOptions() {
             if (typeof showToast === 'function') showToast(ok ? 'Hub address copied' : 'Could not copy', ok ? 'toast-green' : 'toast-orange', 1800);
         });
     });
+    var shareButton = document.createElement('button');
+    shareButton.type = 'button';
+    shareButton.className = 'nr-btn nr-btn-secondary';
+    shareButton.textContent = 'Share hub';
+    shareButton.addEventListener('click', function() {
+        built.dismiss();
+        setTimeout(function() {
+            channelsOpenChannelShare(hub.destination_hash, null);
+        }, 220);
+    });
     var disconnect = document.createElement('button');
     disconnect.type = 'button';
     disconnect.className = 'nr-btn nr-btn-danger';
     disconnect.textContent = _channelsIsConnecting() ? 'Cancel connection' : 'Disconnect';
     disconnect.addEventListener('click', function() {
+        channelsPendingShareJoin = null;
         disconnect.disabled = true;
         RS.invoke('disconnect_channel_hub').then(function(snapshot) {
             built.dismiss();
@@ -3089,6 +3507,7 @@ function channelsOpenHubOptions() {
             if (typeof showToast === 'function') showToast((err && err.message) || 'Could not disconnect', 'toast-red', 3200);
         });
     });
+    built.footer.appendChild(shareButton);
     built.footer.appendChild(copyButton);
     built.footer.appendChild(disconnect);
     _channelsPresentSheet(built, copyButton);
@@ -3185,6 +3604,20 @@ function channelsOpenRoomOptions() {
         });
     });
 
+    var share = document.createElement('button');
+    share.type = 'button';
+    share.className = 'nr-btn nr-btn-secondary';
+    share.textContent = 'Share';
+    share.addEventListener('click', function() {
+        built.dismiss();
+        setTimeout(function() {
+            channelsOpenChannelShare(
+                context.hub_destination_hash,
+                context.room_name
+            );
+        }, 220);
+    });
+
     if (room.history_only) {
         var close = document.createElement('button');
         close.type = 'button';
@@ -3206,6 +3639,7 @@ function channelsOpenRoomOptions() {
                 channelsOpenConnectSheet(_channelsHubByDestination(context.hub_destination_hash));
             }
         });
+        built.footer.appendChild(share);
         built.footer.appendChild(close);
         built.footer.appendChild(open);
         _channelsPresentSheet(built, notificationSelect);
@@ -3236,6 +3670,7 @@ function channelsOpenRoomOptions() {
             if (typeof showToast === 'function') showToast((err && err.message) || 'Could not leave channel', 'toast-red', 3200);
         });
     });
+    built.footer.insertBefore(share, built.footer.firstChild);
     built.footer.appendChild(leave);
     _channelsPresentSheet(built, notificationSelect);
 }
@@ -3263,6 +3698,7 @@ function _channelsPartRoom(roomName) {
 }
 
 function channelsDisconnect() {
+    channelsPendingShareJoin = null;
     return RS.invoke('disconnect_channel_hub').then(function(snapshot) {
         channelsActiveRoom = null;
         channelsHistorySelection = null;

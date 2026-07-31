@@ -1656,6 +1656,50 @@
     line-height: var(--type-leading-copy);
 }
 
+.channel-share-qr-shell {
+    display: flex;
+    width: min(100%, 292px);
+    align-self: center;
+    justify-content: center;
+    padding: var(--space-5);
+    border: 1px solid var(--border-surface-soft);
+    border-radius: var(--radius-xl);
+    background: var(--surface-panel-muted);
+}
+
+.channel-share-qr {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    border-radius: var(--radius-lg);
+}
+
+.channel-share-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+}
+
+.channel-share-actions .nr-btn {
+    flex: 1 1 132px;
+}
+
+.channel-share-input {
+    width: 100%;
+    min-height: 92px;
+    resize: vertical;
+    overflow-wrap: anywhere;
+}
+
+.channel-share-details .channel-room-detail {
+    grid-template-columns: minmax(96px, auto) minmax(0, 1fr);
+}
+
+.channel-open-share-btn {
+    align-self: flex-start;
+}
+
 .channel-room-details {
     overflow: hidden;
     border: 1px solid var(--border-surface-soft);
