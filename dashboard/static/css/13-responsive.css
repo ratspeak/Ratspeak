@@ -3831,6 +3831,95 @@
     .channel-sheet-hubs {
         max-height: 152px;
     }
+
+    .bottom-sheet.channel-host-admin-sheet {
+        max-height: min(92vh, 920px);
+        max-height: min(92dvh, 920px);
+    }
+
+    .channel-host-admin-sheet .bottom-sheet-header,
+    .channel-host-admin-sheet .bottom-sheet-footer {
+        padding-right: var(--space-7);
+        padding-left: var(--space-7);
+    }
+
+    .channel-host-admin-tabs {
+        gap: var(--space-1);
+        margin-right: calc(-1 * var(--space-7));
+        margin-left: calc(-1 * var(--space-7));
+        padding-right: var(--space-7);
+        padding-left: var(--space-7);
+        scroll-padding-inline: var(--space-7);
+    }
+
+    .channel-host-admin-tab {
+        min-height: var(--touch-target);
+        padding-right: var(--space-7);
+        padding-left: var(--space-7);
+        font-size: var(--mobile-list-detail-size);
+    }
+
+    .channel-host-admin-panels {
+        min-height: 300px;
+    }
+
+    .channel-host-admin-panel {
+        padding-top: var(--space-7);
+    }
+
+    .channel-host-admin-panel-header {
+        gap: var(--space-5);
+    }
+
+    .channel-host-admin-refresh {
+        min-height: var(--control-height-md);
+    }
+
+    .channel-host-admin-metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .channel-host-admin-metric:not(:nth-child(4n + 1)) {
+        border-left: 0;
+    }
+
+    .channel-host-admin-metric:nth-child(even) {
+        border-left: 1px solid var(--border-row);
+    }
+
+    .channel-host-admin-metric:nth-child(n + 3) {
+        border-top: 1px solid var(--border-row);
+    }
+
+    .channel-host-admin-room-heading,
+    .channel-host-admin-event-heading {
+        align-items: flex-start;
+    }
+
+    .channel-host-admin-identity {
+        flex-wrap: wrap;
+    }
+
+    .channel-host-admin-identity-meta {
+        order: 3;
+        width: 100%;
+    }
+
+    .channel-host-admin-access-room-body {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--space-7);
+    }
+
+    .channel-host-admin-event-heading {
+        flex-direction: column;
+        gap: var(--space-1);
+    }
+
+    .channel-host-admin-empty {
+        min-height: 140px;
+        padding-right: var(--space-7);
+        padding-left: var(--space-7);
+    }
 }
 
 @media (max-width: 380px) {

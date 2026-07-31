@@ -422,6 +422,10 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         read_source(root.join("dashboard/static/js/channel_hub.js")).expect("channel hub frontend");
     let channels_css =
         read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
+    let admin_ui_test = read_source(root.join("dashboard/scripts/test_channel_hub_admin.js"))
+        .expect("channel hub admin UI tests");
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
 
@@ -542,6 +546,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(index.contains("/static/js/channel_hub.js"));
     assert!(hub_ui.contains("if (!overview || !overview.supported)"));
     assert!(hub_ui.contains("RS.invoke('api_channel_hub')"));
+    assert!(hub_ui.contains("RS.invoke('api_channel_hub_admin')"));
     assert!(hub_ui.contains("RS.invoke('channel_hub_start')"));
     assert!(hub_ui.contains("RS.invoke('channel_hub_stop')"));
     assert!(hub_ui.contains("RS.invoke('channel_hub_set_config'"));
@@ -552,9 +557,46 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub_ui.contains("Some channel changes are still waiting to be saved."));
     assert!(hub_ui.contains("copyAddress.hidden = !destination"));
     assert!(channels_css.contains(".channel-host-admin-sheet"));
+    assert!(channels_css.contains(".channel-host-admin-tabs"));
+    assert!(channels_css.contains(".channel-host-admin-timeline"));
+    assert!(channels_css.contains("unicode-bidi: plaintext"));
+    assert!(responsive_css.contains(".channel-host-admin-metrics"));
     assert!(channels_css.contains(".channel-host-registry-warning"));
     assert!(channels_css.contains(".channel-host-copy-btn[hidden]"));
     assert!(channels_css.contains(".channel-owned-hub-card"));
+
+    // Owner projections are pull-only, identity-fenced, and rendered as text.
+    // No hub-provided nickname, topic, or excerpt may become HTML or browser
+    // persistence, and evidence does not poll in the background.
+    let admin_renderers = hub_ui
+        .split("function _channelHubAdminNode")
+        .nth(1)
+        .and_then(|tail| tail.split("\nfunction channelHubOpenManager").next())
+        .expect("Admin Center renderers");
+    for forbidden in ["innerHTML", "localStorage", "sessionStorage", "setInterval"] {
+        assert!(
+            !admin_renderers.contains(forbidden),
+            "Admin Center renderers must not contain `{forbidden}`"
+        );
+    }
+    let admin_manager = hub_ui
+        .split("function channelHubOpenManager")
+        .nth(1)
+        .and_then(|tail| tail.split("\nfunction channelHubOpenOwnHub").next())
+        .expect("Admin Center manager");
+    assert!(admin_manager.contains("Number(nextAdmin.model_version) !== 1"));
+    assert!(admin_manager.contains("nextAdmin.evidence_policy.persistent !== false"));
+    assert!(admin_manager.contains("request !== adminRequest"));
+    assert!(admin_manager.contains("_channelHubManagerSequence !== sequence"));
+    assert!(!admin_manager.contains("setInterval"));
+    assert!(!admin_manager.contains("localStorage"));
+    assert!(hub_ui.contains("Recent context, not a transcript"));
+    assert!(hub_ui.contains("Memory-only and incomplete"));
+    assert!(hub_ui.contains("var _channelHubIdentityGeneration = 0;"));
+    assert!(hub_ui.contains("identityGeneration !== _channelHubIdentityGeneration"));
+    assert!(hub_ui.contains("_channelHubIdentityGeneration += 1;"));
+    assert!(hub_ui.contains("dismissManager();"));
+    assert!(admin_ui_test.contains("channel hub Admin Center tests passed"));
 
     // Configuration reads independently of live state, writes as one SQLite
     // transaction, and serializes every lifecycle mutation.
