@@ -5,8 +5,9 @@
 use std::sync::Arc;
 
 use ratspeak_runtime::channel_hub::{
-    ChannelHubAdminSnapshot, ChannelHubSettings, ChannelHubSnapshot, HubStore,
-    channel_hub_hosting_supported,
+    ChannelHubAdminKeyChange, ChannelHubAdminMutation, ChannelHubAdminRoomPolicy,
+    ChannelHubAdminRoomRole, ChannelHubAdminSecret, ChannelHubAdminSnapshot, ChannelHubSettings,
+    ChannelHubSnapshot, HubStore, channel_hub_hosting_supported,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -17,6 +18,98 @@ use crate::state::AppState;
 
 const MAX_HUB_NAME_CHARS: usize = 64;
 const MAX_GREETING_CHARS: usize = 512;
+
+/// Complete room policy from the Admin Center. Keeping this non-optional
+/// avoids a UI checkbox omission silently preserving stale authority.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelHubAdminRoomPolicyArgs {
+    pub invite_only: bool,
+    pub moderated: bool,
+    pub no_outside_messages: bool,
+    pub private: bool,
+    pub topic_operators_only: bool,
+}
+
+impl From<ChannelHubAdminRoomPolicyArgs> for ChannelHubAdminRoomPolicy {
+    fn from(value: ChannelHubAdminRoomPolicyArgs) -> Self {
+        Self {
+            invite_only: value.invite_only,
+            moderated: value.moderated,
+            no_outside_messages: value.no_outside_messages,
+            private: value.private,
+            topic_operators_only: value.topic_operators_only,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelHubAdminRoomRoleArgs {
+    Operator,
+    Voice,
+}
+
+impl From<ChannelHubAdminRoomRoleArgs> for ChannelHubAdminRoomRole {
+    fn from(value: ChannelHubAdminRoomRoleArgs) -> Self {
+        match value {
+            ChannelHubAdminRoomRoleArgs::Operator => Self::Operator,
+            ChannelHubAdminRoomRoleArgs::Voice => Self::Voice,
+        }
+    }
+}
+
+/// Tagged owner intents. Deliberately no `Debug`: create and update can carry
+/// a plaintext join key that must become `Zeroizing` runtime input immediately.
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ChannelHubAdminMutationArgs {
+    CreateChannel {
+        room: String,
+        #[serde(default)]
+        topic: Option<String>,
+        policy: ChannelHubAdminRoomPolicyArgs,
+        #[serde(default)]
+        join_key: Option<String>,
+    },
+    UpdateChannel {
+        room: String,
+        /// Complete topic value; an empty string explicitly clears it.
+        topic: String,
+        policy: ChannelHubAdminRoomPolicyArgs,
+        #[serde(default)]
+        join_key: Option<String>,
+        #[serde(default)]
+        clear_join_key: bool,
+    },
+    UnregisterChannel {
+        room: String,
+    },
+    SetRoomRole {
+        room: String,
+        target_identity: String,
+        role: ChannelHubAdminRoomRoleArgs,
+        enabled: bool,
+    },
+    SetRoomBan {
+        room: String,
+        target_identity: String,
+        banned: bool,
+    },
+    SetInvitation {
+        room: String,
+        target_identity: String,
+        invited: bool,
+    },
+    Kick {
+        room: String,
+        target_identity: String,
+    },
+    SetHubBan {
+        target_identity: String,
+        banned: bool,
+    },
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelHubConfigArgs {
@@ -107,6 +200,108 @@ fn active_operator_identity(state: &State<'_, Arc<AppState>>) -> AppResult<(Stri
     Ok((identity_id, bytes))
 }
 
+fn admin_target_identity(value: &str) -> AppResult<[u8; 16]> {
+    if !crate::helpers::validate_hex(value, 32, 32) {
+        return Err(AppError::bad_request(
+            "Target identity must be a complete 32-character identity hash",
+        ));
+    }
+    hex::decode(value)
+        .ok()
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        .ok_or_else(|| AppError::bad_request("Target identity hash is invalid"))
+}
+
+fn admin_mutation(args: ChannelHubAdminMutationArgs) -> AppResult<ChannelHubAdminMutation> {
+    Ok(match args {
+        ChannelHubAdminMutationArgs::CreateChannel {
+            room,
+            topic,
+            policy,
+            join_key,
+        } => ChannelHubAdminMutation::CreateChannel {
+            room,
+            topic,
+            policy: policy.into(),
+            join_key: join_key.map(ChannelHubAdminSecret::new),
+        },
+        ChannelHubAdminMutationArgs::UpdateChannel {
+            room,
+            topic,
+            policy,
+            join_key,
+            clear_join_key,
+        } => {
+            // Wrap before checking the mutually-exclusive controls so even a
+            // rejected key is zeroized on this path.
+            let join_key = join_key.map(ChannelHubAdminSecret::new);
+            if join_key.is_some() && clear_join_key {
+                return Err(AppError::bad_request(
+                    "A join key cannot be set and cleared in the same change",
+                ));
+            }
+            let join_key = match (join_key, clear_join_key) {
+                (Some(key), false) => ChannelHubAdminKeyChange::Set(key),
+                (None, true) => ChannelHubAdminKeyChange::Clear,
+                (None, false) => ChannelHubAdminKeyChange::Keep,
+                (Some(_), true) => unreachable!("conflict returned above"),
+            };
+            ChannelHubAdminMutation::UpdateChannel {
+                room,
+                topic: Some(topic),
+                policy: policy.into(),
+                join_key,
+            }
+        }
+        ChannelHubAdminMutationArgs::UnregisterChannel { room } => {
+            ChannelHubAdminMutation::UnregisterChannel { room }
+        }
+        ChannelHubAdminMutationArgs::SetRoomRole {
+            room,
+            target_identity,
+            role,
+            enabled,
+        } => ChannelHubAdminMutation::SetRoomRole {
+            room,
+            target_identity: admin_target_identity(&target_identity)?,
+            role: role.into(),
+            enabled,
+        },
+        ChannelHubAdminMutationArgs::SetRoomBan {
+            room,
+            target_identity,
+            banned,
+        } => ChannelHubAdminMutation::SetRoomBan {
+            room,
+            target_identity: admin_target_identity(&target_identity)?,
+            banned,
+        },
+        ChannelHubAdminMutationArgs::SetInvitation {
+            room,
+            target_identity,
+            invited,
+        } => ChannelHubAdminMutation::SetInvitation {
+            room,
+            target_identity: admin_target_identity(&target_identity)?,
+            invited,
+        },
+        ChannelHubAdminMutationArgs::Kick {
+            room,
+            target_identity,
+        } => ChannelHubAdminMutation::Kick {
+            room,
+            target_identity: admin_target_identity(&target_identity)?,
+        },
+        ChannelHubAdminMutationArgs::SetHubBan {
+            target_identity,
+            banned,
+        } => ChannelHubAdminMutation::SetHubBan {
+            target_identity: admin_target_identity(&target_identity)?,
+            banned,
+        },
+    })
+}
+
 async fn overview(
     state: &State<'_, Arc<AppState>>,
     settings: ChannelHubSettings,
@@ -189,6 +384,25 @@ pub async fn api_channel_hub_admin(
         .admin_snapshot(settings.runtime_config(), operator_identity)
         .await
         .map_err(AppError::database_unavailable)
+}
+
+#[tauri::command]
+pub async fn channel_hub_admin_mutate(
+    state: State<'_, Arc<AppState>>,
+    args: ChannelHubAdminMutationArgs,
+) -> AppResult<ChannelHubAdminSnapshot> {
+    ensure_supported()?;
+    let _control = state.channel_hub_control_lock.lock().await;
+    // Convert first so any join key becomes zeroizing input even when the
+    // identity or live actor check below rejects the request.
+    let mutation = admin_mutation(args)?;
+    let (_, actor_identity) = active_operator_identity(&state)?;
+    let hub = state.channel_hub_handle().ok_or_else(|| {
+        AppError::service_unavailable("Start the channel hub before making administrative changes")
+    })?;
+    hub.admin_mutate(actor_identity, mutation)
+        .await
+        .map_err(|error| AppError::new(error.code(), error.message()))
 }
 
 #[tauri::command]
@@ -306,5 +520,113 @@ mod tests {
         assert_eq!(updated.announce_interval_secs, 900);
         assert!(updated.resource_send_enabled);
         assert!(updated.resource_accept_enabled);
+    }
+
+    fn room_policy_args() -> ChannelHubAdminRoomPolicyArgs {
+        ChannelHubAdminRoomPolicyArgs {
+            invite_only: false,
+            moderated: false,
+            no_outside_messages: true,
+            private: false,
+            topic_operators_only: true,
+        }
+    }
+
+    #[test]
+    fn admin_mutation_conversion_requires_full_identity_hashes() {
+        let error = match admin_mutation(ChannelHubAdminMutationArgs::Kick {
+            room: "lobby".to_string(),
+            target_identity: "aabbcc".to_string(),
+        }) {
+            Err(error) => error,
+            Ok(_) => panic!("a partial identity hash must be rejected"),
+        };
+        assert_eq!(error.code, "bad_request");
+
+        let mutation = admin_mutation(ChannelHubAdminMutationArgs::SetRoomRole {
+            room: "lobby".to_string(),
+            target_identity: "BB".repeat(16),
+            role: ChannelHubAdminRoomRoleArgs::Voice,
+            enabled: true,
+        })
+        .unwrap();
+        let ChannelHubAdminMutation::SetRoomRole {
+            target_identity,
+            role,
+            ..
+        } = mutation
+        else {
+            panic!("expected a room-role mutation");
+        };
+        assert_eq!(target_identity, [0xBB; 16]);
+        assert!(matches!(role, ChannelHubAdminRoomRole::Voice));
+    }
+
+    #[test]
+    fn admin_update_key_controls_are_explicit_and_mutually_exclusive() {
+        let error = match admin_mutation(ChannelHubAdminMutationArgs::UpdateChannel {
+            room: "vault".to_string(),
+            topic: String::new(),
+            policy: room_policy_args(),
+            join_key: Some("secret-key".to_string()),
+            clear_join_key: true,
+        }) {
+            Err(error) => error,
+            Ok(_) => panic!("set and clear must be mutually exclusive"),
+        };
+        assert_eq!(error.code, "bad_request");
+
+        let mutation = admin_mutation(ChannelHubAdminMutationArgs::UpdateChannel {
+            room: "vault".to_string(),
+            topic: String::new(),
+            policy: room_policy_args(),
+            join_key: None,
+            clear_join_key: false,
+        })
+        .unwrap();
+        let ChannelHubAdminMutation::UpdateChannel {
+            topic, join_key, ..
+        } = mutation
+        else {
+            panic!("expected an update mutation");
+        };
+        assert_eq!(topic.as_deref(), Some(""));
+        assert!(matches!(join_key, ChannelHubAdminKeyChange::Keep));
+    }
+
+    #[test]
+    fn admin_update_deserialization_rejects_partial_or_unknown_policy() {
+        let missing_topic = serde_json::json!({
+            "action": "update_channel",
+            "room": "vault",
+            "policy": {
+                "invite_only": false,
+                "moderated": false,
+                "no_outside_messages": true,
+                "private": false,
+                "topic_operators_only": true
+            }
+        });
+        assert!(
+            serde_json::from_value::<ChannelHubAdminMutationArgs>(missing_topic).is_err(),
+            "an omitted complete topic must not silently clear it"
+        );
+
+        let unknown_policy = serde_json::json!({
+            "action": "create_channel",
+            "room": "vault",
+            "policy": {
+                "invite_only": false,
+                "moderated": false,
+                "no_outside_messages": true,
+                "private": false,
+                "topic_operators_only": true,
+                "future_mode": true
+            }
+        });
+        assert!(
+            serde_json::from_value::<ChannelHubAdminMutationArgs>(unknown_policy).is_err(),
+            "unknown authority fields require an explicit model update"
+        );
     }
 }

@@ -520,6 +520,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     for command in [
         "channel_hub::api_channel_hub",
         "channel_hub::api_channel_hub_admin",
+        "channel_hub::channel_hub_admin_mutate",
         "channel_hub::channel_hub_start",
         "channel_hub::channel_hub_stop",
         "channel_hub::channel_hub_set_config",
@@ -536,7 +537,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub.contains("target_os = \"android\", target_os = \"ios\""));
     assert_eq!(
         commands.matches("ensure_supported()?;").count(),
-        4,
+        5,
         "every hosting-specific hub command must reject mobile hosting"
     );
     assert!(runtime.contains("channel_hub_hosting_supported()"));
@@ -616,6 +617,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(state.contains("pub channel_hub_control_lock: tokio::sync::Mutex<()>"));
     for command in [
         "pub async fn api_channel_hub_admin",
+        "pub async fn channel_hub_admin_mutate",
         "pub async fn channel_hub_start",
         "pub async fn channel_hub_stop",
         "pub async fn channel_hub_set_config",
@@ -637,6 +639,108 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub.contains("persistent: false"));
     assert!(hub.contains("struct HubEvidenceRecord"));
     assert!(hub.contains("Do not derive"));
+}
+
+#[test]
+fn channel_hub_admin_mutations_are_actor_owned_and_durable_before_ack() {
+    let root = repo_root();
+    let hub = read_source(root.join("crates/ratspeak-runtime/src/channel_hub.rs"))
+        .expect("channel hub runtime");
+    let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channel_hub.rs"))
+        .expect("channel hub commands");
+
+    // Plaintext join-key input has no formatting or serialization surface and
+    // becomes a zeroizing runtime value immediately at the IPC boundary.
+    for declaration in [
+        "pub struct ChannelHubAdminSecret",
+        "pub enum ChannelHubAdminMutation",
+    ] {
+        let prefix = hub
+            .split(declaration)
+            .next()
+            .expect("sensitive runtime declaration");
+        let declaration_attributes = prefix.rsplit("\n\n").next().unwrap_or_default();
+        assert!(
+            !declaration_attributes.contains("derive("),
+            "{declaration} must not derive formatting or serialization"
+        );
+    }
+    let args_prefix = commands
+        .split("pub enum ChannelHubAdminMutationArgs")
+        .next()
+        .expect("sensitive IPC declaration");
+    let args_attributes = args_prefix.rsplit("\n\n").next().unwrap_or_default();
+    assert!(!args_attributes.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("#[derive") && line.contains("Debug")
+    }));
+    assert!(hub.contains("pub struct ChannelHubAdminSecret(Zeroizing<String>);"));
+    assert!(commands.contains("join_key.map(ChannelHubAdminSecret::new)"));
+    assert!(commands.contains("let join_key = join_key.map(ChannelHubAdminSecret::new);"));
+
+    // The Tauri command serializes with lifecycle changes, rejects stopped
+    // mutation, requires a full identity hash, and never writes HubStore.
+    let mutation_command = commands
+        .split("pub async fn channel_hub_admin_mutate")
+        .nth(1)
+        .and_then(|tail| tail.split("\n#[tauri::command]").next())
+        .expect("admin mutation command");
+    assert!(mutation_command.contains("channel_hub_control_lock.lock().await"));
+    assert!(mutation_command.contains("active_operator_identity(&state)"));
+    assert!(mutation_command.contains("state.channel_hub_handle().ok_or_else"));
+    assert!(mutation_command.contains("hub.admin_mutate(actor_identity, mutation)"));
+    assert!(!mutation_command.contains("HubStore"));
+    assert!(commands.contains("validate_hex(value, 32, 32)"));
+
+    // Authorization and every state transition happen in HubCore. Durable
+    // access state requires a registered room; live kick remains live-only;
+    // server operators cannot be deopped, kicked, or banned.
+    assert!(hub.contains("pub(crate) fn admin_mutate("));
+    assert!(hub.contains("if !self.server_ops.contains(&actor_identity)"));
+    assert!(hub.contains("fn require_registered_admin_room("));
+    assert!(hub.contains("\"A server operator cannot be removed through a channel role\""));
+    assert!(hub.contains("\"A server operator cannot be banned from a channel\""));
+    assert!(hub.contains("\"A server operator cannot be kicked\""));
+    assert!(hub.contains("\"A server operator cannot be banned from the hub\""));
+    assert!(hub.contains("\"Invitations require an invite-only or join-key channel\""));
+
+    // Local actions write only private evidence for their moderation/trust
+    // intent; they do not fabricate a link-scoped Activity transition.
+    let local_evidence = hub
+        .split("fn note_admin_moderated")
+        .nth(1)
+        .and_then(|tail| tail.split("fn broadcast_admin_topic").next())
+        .expect("local owner evidence helpers");
+    assert!(local_evidence.contains("self.push_evidence("));
+    assert!(!local_evidence.contains("self.events.push"));
+
+    // The actor applies the intent, flushes its complete SQLite projection,
+    // publishes state, and only then acknowledges with a fresh owner model.
+    let run_hub = hub
+        .split("async fn run_hub(")
+        .nth(1)
+        .and_then(|tail| tail.split("/// Every hub event").next())
+        .expect("hub service loop");
+    let applies = run_hub
+        .find("core.admin_mutate(actor_identity, mutation, &mut out)")
+        .expect("actor applies typed mutation");
+    let flushes = run_hub
+        .find("let persisted = flush_sends")
+        .expect("actor flushes mutation");
+    let replies = run_hub
+        .find("if let Some((result_tx, result)) = admin_reply")
+        .expect("actor replies after flush");
+    let sends = run_hub
+        .find("result_tx.send(result)")
+        .expect("actor sends mutation result");
+    assert!(applies < flushes && flushes < replies && replies < sends);
+    assert!(run_hub.contains("ADMIN_ERROR_REGISTRY_UNAVAILABLE"));
+    assert!(
+        hub.contains("const ADMIN_ERROR_REGISTRY_UNAVAILABLE: &str = \"registry_unavailable\";")
+    );
+    assert!(run_hub.contains("Ok(()) => Ok(core.admin_snapshot())"));
+    assert!(hub.contains("async fn flush_sends("));
+    assert!(hub.contains(") -> bool {"));
 }
 
 #[test]

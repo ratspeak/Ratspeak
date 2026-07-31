@@ -476,6 +476,124 @@ pub struct ChannelHubEvidence {
     pub excerpt: Option<String>,
 }
 
+/// Complete durable policy supplied by the local owner UI. Registered state
+/// and the join-key verifier are separate operations so a boolean snapshot can
+/// never be mistaken for secret material.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ChannelHubAdminRoomPolicy {
+    pub invite_only: bool,
+    pub moderated: bool,
+    pub no_outside_messages: bool,
+    pub private: bool,
+    pub topic_operators_only: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChannelHubAdminRoomRole {
+    Operator,
+    Voice,
+}
+
+/// Plaintext owner input exists only long enough to derive the verify-only room
+/// key digest. Deliberately no `Debug`, `Clone`, or serialization.
+pub struct ChannelHubAdminSecret(Zeroizing<String>);
+
+impl ChannelHubAdminSecret {
+    pub fn new(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+
+    fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+/// Updating ordinary policy must not accidentally clear or replace a key.
+/// Deliberately no `Debug` because `Set` owns plaintext secret input.
+pub enum ChannelHubAdminKeyChange {
+    Keep,
+    Set(ChannelHubAdminSecret),
+    Clear,
+}
+
+/// Typed local-owner intents. JavaScript and Tauri only select and validate
+/// fields; `HubCore` remains the authorization and state-transition authority.
+/// Deliberately no `Debug` because create/update can carry a join key.
+pub enum ChannelHubAdminMutation {
+    CreateChannel {
+        room: String,
+        topic: Option<String>,
+        policy: ChannelHubAdminRoomPolicy,
+        join_key: Option<ChannelHubAdminSecret>,
+    },
+    UpdateChannel {
+        room: String,
+        topic: Option<String>,
+        policy: ChannelHubAdminRoomPolicy,
+        join_key: ChannelHubAdminKeyChange,
+    },
+    UnregisterChannel {
+        room: String,
+    },
+    SetRoomRole {
+        room: String,
+        target_identity: [u8; 16],
+        role: ChannelHubAdminRoomRole,
+        enabled: bool,
+    },
+    SetRoomBan {
+        room: String,
+        target_identity: [u8; 16],
+        banned: bool,
+    },
+    SetInvitation {
+        room: String,
+        target_identity: [u8; 16],
+        invited: bool,
+    },
+    Kick {
+        room: String,
+        target_identity: [u8; 16],
+    },
+    SetHubBan {
+        target_identity: [u8; 16],
+        banned: bool,
+    },
+}
+
+/// Stable runtime error boundary for typed owner mutations. Messages never
+/// contain a room key or database detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelHubAdminMutationError {
+    code: &'static str,
+    message: String,
+}
+
+impl ChannelHubAdminMutationError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for ChannelHubAdminMutationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ChannelHubAdminMutationError {}
+
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelHubEvidenceKind {
@@ -531,6 +649,11 @@ enum HubCommand {
     AdminSnapshot {
         result_tx: oneshot::Sender<ChannelHubAdminSnapshot>,
     },
+    AdminMutation {
+        actor_identity: [u8; 16],
+        mutation: ChannelHubAdminMutation,
+        result_tx: oneshot::Sender<Result<ChannelHubAdminSnapshot, ChannelHubAdminMutationError>>,
+    },
     Shutdown {
         result_tx: oneshot::Sender<()>,
     },
@@ -545,6 +668,14 @@ const ROOM_KEY_PEPPER_INFO: &[u8] = b"ratspeak-rrc-roomkey-pepper-v1";
 /// Short keys are trivially brute-forced if the database ever leaks without
 /// the keyfile, and nothing here stretches them.
 const MIN_ROOM_KEY_BYTES: usize = 8;
+const MAX_ADMIN_ROOM_KEY_BYTES: usize = 128;
+const ADMIN_ERROR_BAD_REQUEST: &str = "bad_request";
+const ADMIN_ERROR_FORBIDDEN: &str = "forbidden";
+const ADMIN_ERROR_NOT_FOUND: &str = "not_found";
+const ADMIN_ERROR_CONFLICT: &str = "conflict";
+const ADMIN_ERROR_CAPACITY_REACHED: &str = "capacity_reached";
+const ADMIN_ERROR_SERVICE_UNAVAILABLE: &str = "service_unavailable";
+const ADMIN_ERROR_REGISTRY_UNAVAILABLE: &str = "registry_unavailable";
 
 /// A room join key as it is held and stored: salted, peppered, verify-only.
 /// The reference keeps plaintext in memory and on disk; we never do.
@@ -1885,6 +2016,777 @@ impl HubCore {
             evidence,
             evidence_evicted: self.evidence_evicted,
         }
+    }
+
+    /// Apply one local-owner intent inside the same actor that owns every
+    /// network-originated transition. The caller-supplied identity is checked
+    /// here, not trusted merely because it crossed the Tauri boundary.
+    pub(crate) fn admin_mutate(
+        &mut self,
+        actor_identity: [u8; 16],
+        mutation: ChannelHubAdminMutation,
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        if !self.server_ops.contains(&actor_identity) {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_FORBIDDEN,
+                "This identity is not authorized to administer the running hub",
+            ));
+        }
+
+        match mutation {
+            ChannelHubAdminMutation::CreateChannel {
+                room,
+                topic,
+                policy,
+                join_key,
+            } => self.admin_create_channel(actor_identity, room, topic, policy, join_key, out),
+            ChannelHubAdminMutation::UpdateChannel {
+                room,
+                topic,
+                policy,
+                join_key,
+            } => self.admin_update_channel(actor_identity, room, topic, policy, join_key, out),
+            ChannelHubAdminMutation::UnregisterChannel { room } => {
+                self.admin_unregister_channel(actor_identity, room, out)
+            }
+            ChannelHubAdminMutation::SetRoomRole {
+                room,
+                target_identity,
+                role,
+                enabled,
+            } => {
+                self.admin_set_room_role(actor_identity, room, target_identity, role, enabled, out)
+            }
+            ChannelHubAdminMutation::SetRoomBan {
+                room,
+                target_identity,
+                banned,
+            } => self.admin_set_room_ban(actor_identity, room, target_identity, banned, out),
+            ChannelHubAdminMutation::SetInvitation {
+                room,
+                target_identity,
+                invited,
+            } => self.admin_set_invitation(actor_identity, room, target_identity, invited, out),
+            ChannelHubAdminMutation::Kick {
+                room,
+                target_identity,
+            } => self.admin_kick(actor_identity, room, target_identity, out),
+            ChannelHubAdminMutation::SetHubBan {
+                target_identity,
+                banned,
+            } => self.admin_set_hub_ban(actor_identity, target_identity, banned, out),
+        }
+    }
+
+    fn admin_room_name(&self, room: &str) -> Result<String, ChannelHubAdminMutationError> {
+        self.norm_room(room).map_err(|reason| {
+            ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_BAD_REQUEST,
+                format!("Invalid channel name: {reason}"),
+            )
+        })
+    }
+
+    fn admin_topic(
+        &self,
+        topic: Option<String>,
+    ) -> Result<Option<String>, ChannelHubAdminMutationError> {
+        let Some(topic) = topic else {
+            return Ok(None);
+        };
+        if topic.len() > self.config.max_message_body_bytes {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_BAD_REQUEST,
+                format!(
+                    "Topic is too long: {} bytes exceeds the {} byte limit",
+                    topic.len(),
+                    self.config.max_message_body_bytes
+                ),
+            ));
+        }
+        if topic.chars().any(char::is_control) {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_BAD_REQUEST,
+                "Topic cannot contain control characters",
+            ));
+        }
+        let topic = topic.trim().to_string();
+        Ok((!topic.is_empty()).then_some(topic))
+    }
+
+    fn validate_admin_room_key(
+        &self,
+        key: &ChannelHubAdminSecret,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        let key = key.expose();
+        if key.len() < MIN_ROOM_KEY_BYTES {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_BAD_REQUEST,
+                format!("Join key must be at least {MIN_ROOM_KEY_BYTES} bytes"),
+            ));
+        }
+        if key.len() > MAX_ADMIN_ROOM_KEY_BYTES {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_BAD_REQUEST,
+                format!("Join key cannot exceed {MAX_ADMIN_ROOM_KEY_BYTES} bytes"),
+            ));
+        }
+        if key.chars().any(char::is_whitespace) {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_BAD_REQUEST,
+                "Join key cannot contain whitespace",
+            ));
+        }
+        if key.chars().any(char::is_control) {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_BAD_REQUEST,
+                "Join key cannot contain control characters",
+            ));
+        }
+        Ok(())
+    }
+
+    fn admin_room_key_digest(
+        &self,
+        room_name: &str,
+        key: &ChannelHubAdminSecret,
+    ) -> Result<RoomKeyDigest, ChannelHubAdminMutationError> {
+        self.validate_admin_room_key(key)?;
+        Ok(room_key_digest(
+            &self.pepper,
+            self.pepper_id,
+            room_name,
+            key.expose(),
+            rns_crypto::random::random_16(),
+        ))
+    }
+
+    fn apply_admin_room_policy(room: &mut HubRoom, policy: ChannelHubAdminRoomPolicy) -> bool {
+        let changed = room.invite_only != policy.invite_only
+            || room.moderated != policy.moderated
+            || room.no_outside_msgs != policy.no_outside_messages
+            || room.private != policy.private
+            || room.topic_ops_only != policy.topic_operators_only;
+        if room.invite_only != policy.invite_only {
+            // A reconnect lease belongs to the gate under which it was
+            // minted; explicit policy replacement invalidates it.
+            room.rejoin_until.clear();
+        }
+        room.invite_only = policy.invite_only;
+        room.moderated = policy.moderated;
+        room.no_outside_msgs = policy.no_outside_messages;
+        room.private = policy.private;
+        room.topic_ops_only = policy.topic_operators_only;
+        changed
+    }
+
+    fn require_registered_admin_room(
+        &self,
+        room_name: &str,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        if self
+            .rooms
+            .get(room_name)
+            .is_some_and(|room| room.registered)
+        {
+            Ok(())
+        } else {
+            Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_NOT_FOUND,
+                "Registered channel not found",
+            ))
+        }
+    }
+
+    fn note_admin_moderated(
+        &mut self,
+        actor_identity: [u8; 16],
+        room_name: &str,
+        action: activity::HubModerationAction,
+        target_identity: Option<[u8; 16]>,
+    ) {
+        self.push_evidence(
+            Instant::now(),
+            now_ms(),
+            ChannelHubEvidenceKind::Moderation,
+            Some(admin_moderation_action(action)),
+            None,
+            Some(room_name),
+            Some(actor_identity),
+            None,
+            target_identity,
+            None,
+        );
+    }
+
+    fn note_admin_trust_changed(
+        &mut self,
+        actor_identity: [u8; 16],
+        change: activity::HubTrustChange,
+        target_identity: [u8; 16],
+    ) {
+        self.push_evidence(
+            Instant::now(),
+            now_ms(),
+            ChannelHubEvidenceKind::Trust,
+            Some(admin_trust_action(change)),
+            None,
+            None,
+            Some(actor_identity),
+            None,
+            Some(target_identity),
+            None,
+        );
+    }
+
+    fn broadcast_admin_topic(&self, room_name: &str, out: &mut Vec<HubSend>) {
+        let Some(room) = self.rooms.get(room_name) else {
+            return;
+        };
+        let display = room.topic.as_deref().unwrap_or("(cleared)");
+        for member in room.members.iter().copied() {
+            out.push(self.hub_notice(
+                member,
+                &format!("topic for {room_name} is now: {display}"),
+                Some(room_name),
+            ));
+        }
+    }
+
+    fn broadcast_admin_role(
+        &self,
+        room_name: &str,
+        target_identity: [u8; 16],
+        role: ChannelHubAdminRoomRole,
+        enabled: bool,
+        out: &mut Vec<HubSend>,
+    ) {
+        let Some(room) = self.rooms.get(room_name) else {
+            return;
+        };
+        let flag = match (role, enabled) {
+            (ChannelHubAdminRoomRole::Operator, true) => "+o",
+            (ChannelHubAdminRoomRole::Operator, false) => "-o",
+            (ChannelHubAdminRoomRole::Voice, true) => "+v",
+            (ChannelHubAdminRoomRole::Voice, false) => "-v",
+        };
+        let identity = hex::encode(target_identity);
+        let text = format!("mode for {room_name} is now: {flag} {}", &identity[..12]);
+        for member in room.members.iter().copied() {
+            out.push(self.hub_notice(member, &text, Some(room_name)));
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admin_create_channel(
+        &mut self,
+        actor_identity: [u8; 16],
+        room: String,
+        topic: Option<String>,
+        policy: ChannelHubAdminRoomPolicy,
+        join_key: Option<ChannelHubAdminSecret>,
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        let room_name = self.admin_room_name(&room)?;
+        let topic = self.admin_topic(topic)?;
+        if self
+            .rooms
+            .get(&room_name)
+            .is_some_and(|room| room.registered)
+        {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_CONFLICT,
+                "A registered channel with that name already exists",
+            ));
+        }
+        if self.registered_room_count() >= self.config.max_registered_rooms {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_CAPACITY_REACHED,
+                "The hub has reached its registered channel limit",
+            ));
+        }
+        let key = join_key
+            .as_ref()
+            .map(|key| self.admin_room_key_digest(&room_name, key))
+            .transpose()?;
+        // The verifier is all later code needs; zero plaintext before touching
+        // room state or constructing persistence/network intents.
+        drop(join_key);
+
+        if !self.rooms.contains_key(&room_name) {
+            self.rooms.insert(room_name.clone(), HubRoom::default());
+        }
+        let room = self.rooms.get_mut(&room_name).expect("room just ensured");
+        room.topic = topic;
+        room.key = key;
+        Self::apply_admin_room_policy(room, policy);
+        room.registered = true;
+        room.ops.insert(actor_identity);
+        room.last_used = now_unix();
+        room.persist_dirty = false;
+        self.pending_removals.remove(&room_name);
+
+        self.broadcast_admin_topic(&room_name, out);
+        self.broadcast_mode(&room_name, out);
+        self.persist_room(&room_name, None, out);
+        self.note_admin_moderated(
+            actor_identity,
+            &room_name,
+            activity::HubModerationAction::Register,
+            None,
+        );
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admin_update_channel(
+        &mut self,
+        actor_identity: [u8; 16],
+        room: String,
+        topic: Option<String>,
+        policy: ChannelHubAdminRoomPolicy,
+        join_key: ChannelHubAdminKeyChange,
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        let room_name = self.admin_room_name(&room)?;
+        self.require_registered_admin_room(&room_name)?;
+        let topic = self.admin_topic(topic)?;
+        let replacement_key = match join_key {
+            ChannelHubAdminKeyChange::Keep => None,
+            ChannelHubAdminKeyChange::Clear => Some(None),
+            ChannelHubAdminKeyChange::Set(key) => {
+                self.validate_admin_room_key(&key)?;
+                let unchanged = self
+                    .rooms
+                    .get(&room_name)
+                    .and_then(|room| room.key.as_ref())
+                    .is_some_and(|digest| {
+                        room_key_matches(&self.pepper, &room_name, key.expose(), digest)
+                    });
+                if unchanged {
+                    None
+                } else {
+                    Some(Some(self.admin_room_key_digest(&room_name, &key)?))
+                }
+            }
+        };
+
+        let room = self
+            .rooms
+            .get_mut(&room_name)
+            .expect("registered room exists");
+        let topic_changed = room.topic != topic;
+        room.topic = topic;
+        let policy_changed = Self::apply_admin_room_policy(room, policy);
+        let key_changed = replacement_key.is_some();
+        if let Some(key) = replacement_key {
+            room.key = key;
+        }
+        if !topic_changed && !policy_changed && !key_changed {
+            return Ok(());
+        }
+
+        if topic_changed {
+            self.broadcast_admin_topic(&room_name, out);
+        }
+        if policy_changed || key_changed {
+            self.broadcast_mode(&room_name, out);
+        }
+        // One complete projection prevents a mixed old/new policy from
+        // becoming durable if several controls changed together.
+        self.persist_room(&room_name, None, out);
+        if topic_changed {
+            self.note_admin_moderated(
+                actor_identity,
+                &room_name,
+                activity::HubModerationAction::Topic,
+                None,
+            );
+        }
+        if policy_changed || key_changed {
+            self.note_admin_moderated(
+                actor_identity,
+                &room_name,
+                activity::HubModerationAction::Mode,
+                None,
+            );
+        }
+        Ok(())
+    }
+
+    fn admin_unregister_channel(
+        &mut self,
+        actor_identity: [u8; 16],
+        room: String,
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        let room_name = self.admin_room_name(&room)?;
+        self.require_registered_admin_room(&room_name)?;
+        let empty = {
+            let room = self
+                .rooms
+                .get_mut(&room_name)
+                .expect("registered room exists");
+            room.registered = false;
+            room.rejoin_until.clear();
+            room.persist_dirty = false;
+            room.members.is_empty()
+        };
+        self.broadcast_mode(&room_name, out);
+        self.note_admin_moderated(
+            actor_identity,
+            &room_name,
+            activity::HubModerationAction::Unregister,
+            None,
+        );
+        if empty {
+            self.rooms.remove(&room_name);
+            self.room_tokens.remove(&room_name);
+        }
+        self.pending_removals.remove(&room_name);
+        out.push(HubSend::Persist(HubPersist {
+            op: db::HubRoomOp::Removed {
+                room_name: room_name.clone(),
+            },
+            origin: None,
+            room: Some(room_name),
+        }));
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admin_set_room_role(
+        &mut self,
+        actor_identity: [u8; 16],
+        room: String,
+        target_identity: [u8; 16],
+        role: ChannelHubAdminRoomRole,
+        enabled: bool,
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        let room_name = self.admin_room_name(&room)?;
+        self.require_registered_admin_room(&room_name)?;
+        if role == ChannelHubAdminRoomRole::Operator
+            && !enabled
+            && self.server_ops.contains(&target_identity)
+        {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_CONFLICT,
+                "A server operator cannot be removed through a channel role",
+            ));
+        }
+
+        let room = self
+            .rooms
+            .get_mut(&room_name)
+            .expect("registered room exists");
+        let changed = match (role, enabled) {
+            (ChannelHubAdminRoomRole::Operator, true) => room.ops.insert(target_identity),
+            (ChannelHubAdminRoomRole::Operator, false) => room.ops.remove(&target_identity),
+            (ChannelHubAdminRoomRole::Voice, true) => room.voiced.insert(target_identity),
+            (ChannelHubAdminRoomRole::Voice, false) => room.voiced.remove(&target_identity),
+        };
+        if !changed {
+            return Ok(());
+        }
+        self.broadcast_admin_role(&room_name, target_identity, role, enabled, out);
+        self.persist_room(&room_name, None, out);
+        let action = match (role, enabled) {
+            (ChannelHubAdminRoomRole::Operator, true) => activity::HubModerationAction::Op,
+            (ChannelHubAdminRoomRole::Operator, false) => activity::HubModerationAction::Deop,
+            (ChannelHubAdminRoomRole::Voice, true) => activity::HubModerationAction::Voice,
+            (ChannelHubAdminRoomRole::Voice, false) => activity::HubModerationAction::Devoice,
+        };
+        self.note_admin_moderated(actor_identity, &room_name, action, Some(target_identity));
+        Ok(())
+    }
+
+    fn room_links_for_identity(&self, room_name: &str, target_identity: [u8; 16]) -> Vec<[u8; 16]> {
+        self.rooms
+            .get(room_name)
+            .map(|room| {
+                room.members
+                    .iter()
+                    .copied()
+                    .filter(|member| {
+                        self.sessions
+                            .get(member)
+                            .is_some_and(|session| session.identity == Some(target_identity))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn eject_identity_from_room(
+        &mut self,
+        room_name: &str,
+        target_identity: [u8; 16],
+        reason: &str,
+        out: &mut Vec<HubSend>,
+    ) -> usize {
+        let target_links = self.room_links_for_identity(room_name, target_identity);
+        if let Some(room) = self.rooms.get_mut(room_name) {
+            room.rejoin_until.remove(&target_identity);
+        }
+        for target_link in target_links.iter().copied() {
+            let nickname = self
+                .sessions
+                .get(&target_link)
+                .and_then(|session| session.nickname.clone());
+            if let Some(session) = self.sessions.get_mut(&target_link) {
+                session.rooms.remove(room_name);
+            }
+            self.remove_member_with_parted(
+                room_name,
+                target_link,
+                target_identity,
+                nickname.as_deref(),
+                out,
+            );
+            out.push(self.hub_error(target_link, reason, Some(room_name)));
+        }
+        target_links.len()
+    }
+
+    fn admin_set_room_ban(
+        &mut self,
+        actor_identity: [u8; 16],
+        room: String,
+        target_identity: [u8; 16],
+        banned: bool,
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        let room_name = self.admin_room_name(&room)?;
+        self.require_registered_admin_room(&room_name)?;
+        if banned && self.server_ops.contains(&target_identity) {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_CONFLICT,
+                "A server operator cannot be banned from a channel",
+            ));
+        }
+
+        let changed = {
+            let room = self
+                .rooms
+                .get_mut(&room_name)
+                .expect("registered room exists");
+            if banned {
+                room.bans.insert(target_identity)
+            } else {
+                room.bans.remove(&target_identity)
+            }
+        };
+        let ejected = if banned {
+            self.eject_identity_from_room(
+                &room_name,
+                target_identity,
+                &format!("banned from {room_name}"),
+                out,
+            )
+        } else {
+            0
+        };
+        if !changed && ejected == 0 {
+            return Ok(());
+        }
+        if changed {
+            self.persist_room(&room_name, None, out);
+        }
+        self.note_admin_moderated(
+            actor_identity,
+            &room_name,
+            if banned {
+                activity::HubModerationAction::Ban
+            } else {
+                activity::HubModerationAction::Unban
+            },
+            Some(target_identity),
+        );
+        Ok(())
+    }
+
+    fn admin_set_invitation(
+        &mut self,
+        actor_identity: [u8; 16],
+        room: String,
+        target_identity: [u8; 16],
+        invited: bool,
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        let room_name = self.admin_room_name(&room)?;
+        self.require_registered_admin_room(&room_name)?;
+        if invited {
+            let (gated, keyed) = self
+                .rooms
+                .get(&room_name)
+                .map(|room| (room.invite_only || room.key.is_some(), room.key.is_some()))
+                .unwrap_or((false, false));
+            if !gated {
+                return Err(ChannelHubAdminMutationError::new(
+                    ADMIN_ERROR_CONFLICT,
+                    "Invitations require an invite-only or join-key channel",
+                ));
+            }
+            let ttl = Duration::from_secs(self.config.invite_timeout_secs.max(1));
+            self.rooms
+                .get_mut(&room_name)
+                .expect("registered room exists")
+                .invited
+                .insert(target_identity, now_unix() + ttl.as_secs_f64());
+            let target_links: Vec<[u8; 16]> = self
+                .sessions
+                .iter()
+                .filter(|(_, session)| session.identity == Some(target_identity))
+                .map(|(link_id, _)| *link_id)
+                .collect();
+            let text = if keyed {
+                format!(
+                    "You have been invited to join {room_name}. This invite allows joining without the key (+k)."
+                )
+            } else {
+                format!("You have been invited to join {room_name}.")
+            };
+            for target_link in target_links {
+                out.push(self.hub_notice(target_link, &text, Some(&room_name)));
+            }
+        } else {
+            let changed = {
+                let room = self
+                    .rooms
+                    .get_mut(&room_name)
+                    .expect("registered room exists");
+                let invite = room.invited.remove(&target_identity).is_some();
+                let lease = room.rejoin_until.remove(&target_identity).is_some();
+                invite || lease
+            };
+            if !changed {
+                return Ok(());
+            }
+        }
+        self.persist_room(&room_name, None, out);
+        self.note_admin_moderated(
+            actor_identity,
+            &room_name,
+            if invited {
+                activity::HubModerationAction::Invite
+            } else {
+                activity::HubModerationAction::Uninvite
+            },
+            Some(target_identity),
+        );
+        Ok(())
+    }
+
+    fn admin_kick(
+        &mut self,
+        actor_identity: [u8; 16],
+        room: String,
+        target_identity: [u8; 16],
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        let room_name = self.admin_room_name(&room)?;
+        if !self.rooms.contains_key(&room_name) {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_NOT_FOUND,
+                "Live channel not found",
+            ));
+        }
+        if self.server_ops.contains(&target_identity) {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_CONFLICT,
+                "A server operator cannot be kicked",
+            ));
+        }
+        if self
+            .room_links_for_identity(&room_name, target_identity)
+            .is_empty()
+        {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_NOT_FOUND,
+                "That identity is not currently in the channel",
+            ));
+        }
+        self.eject_identity_from_room(
+            &room_name,
+            target_identity,
+            &format!("kicked from {room_name}"),
+            out,
+        );
+        self.note_admin_moderated(
+            actor_identity,
+            &room_name,
+            activity::HubModerationAction::Kick,
+            Some(target_identity),
+        );
+        Ok(())
+    }
+
+    fn admin_set_hub_ban(
+        &mut self,
+        actor_identity: [u8; 16],
+        target_identity: [u8; 16],
+        banned: bool,
+        out: &mut Vec<HubSend>,
+    ) -> Result<(), ChannelHubAdminMutationError> {
+        if banned && self.server_ops.contains(&target_identity) {
+            return Err(ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_CONFLICT,
+                "A server operator cannot be banned from the hub",
+            ));
+        }
+        let changed = self
+            .klines
+            .write()
+            .map(|mut klines| {
+                if banned {
+                    klines.insert(target_identity)
+                } else {
+                    klines.remove(&target_identity)
+                }
+            })
+            .map_err(|_| {
+                ChannelHubAdminMutationError::new(
+                    ADMIN_ERROR_SERVICE_UNAVAILABLE,
+                    "Hub access policy is temporarily unavailable",
+                )
+            })?;
+        if !changed {
+            return Ok(());
+        }
+
+        if banned {
+            for room in self.rooms.values_mut() {
+                room.rejoin_until.remove(&target_identity);
+            }
+        }
+        self.persist_klines(None, out);
+        self.note_admin_trust_changed(
+            actor_identity,
+            if banned {
+                activity::HubTrustChange::KlineAdded
+            } else {
+                activity::HubTrustChange::KlineRemoved
+            },
+            target_identity,
+        );
+        if banned {
+            let links: Vec<[u8; 16]> = self
+                .sessions
+                .iter()
+                .filter(|(_, session)| session.identity == Some(target_identity))
+                .map(|(link_id, _)| *link_id)
+                .collect();
+            for target_link in links {
+                out.push(self.hub_error(target_link, "banned", None));
+                out.push(HubSend::Close {
+                    link_id: target_link,
+                });
+                self.close_session(target_link, activity::HubSessionCloseReason::Kicked, out);
+            }
+        }
+        Ok(())
     }
 
     /// Rebuild live rooms from the registry. Rows are re-validated rather than
@@ -5450,6 +6352,36 @@ impl ChannelHubHandle {
         result_rx.await.map_err(|_| ChannelHubError::Stopped)
     }
 
+    /// Submit a typed local-owner intent to the live actor. Actor shutdown is
+    /// folded into the same stable, secret-free error boundary as policy
+    /// rejection so Tauri never needs to inspect internal channel failures.
+    pub async fn admin_mutate(
+        &self,
+        actor_identity: [u8; 16],
+        mutation: ChannelHubAdminMutation,
+    ) -> Result<ChannelHubAdminSnapshot, ChannelHubAdminMutationError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        self.command_tx
+            .send(HubCommand::AdminMutation {
+                actor_identity,
+                mutation,
+                result_tx,
+            })
+            .await
+            .map_err(|_| {
+                ChannelHubAdminMutationError::new(
+                    ADMIN_ERROR_SERVICE_UNAVAILABLE,
+                    "Channel hub administration is temporarily unavailable",
+                )
+            })?;
+        result_rx.await.map_err(|_| {
+            ChannelHubAdminMutationError::new(
+                ADMIN_ERROR_SERVICE_UNAVAILABLE,
+                "Channel hub administration is temporarily unavailable",
+            )
+        })?
+    }
+
     /// Stop the service and wait until its registry tail is flushed and the
     /// Reticulum destination has been deregistered. A false result means the
     /// actor did not acknowledge the complete teardown inside the budget; a
@@ -5537,6 +6469,7 @@ async fn run_hub(
 
     loop {
         let mut out = Vec::new();
+        let mut admin_reply = None;
         tokio::select! {
             biased;
             _ = shutdown.wait() => break,
@@ -5549,6 +6482,14 @@ async fn run_hub(
                     Some(HubCommand::AdminSnapshot { result_tx }) => {
                         let _ = result_tx.send(core.admin_snapshot());
                         continue;
+                    }
+                    Some(HubCommand::AdminMutation {
+                        actor_identity,
+                        mutation,
+                        result_tx,
+                    }) => {
+                        let result = core.admin_mutate(actor_identity, mutation, &mut out);
+                        admin_reply = Some((result_tx, result));
                     }
                     Some(HubCommand::Shutdown { result_tx }) => {
                         shutdown_ack = Some(result_tx);
@@ -5654,9 +6595,20 @@ async fn run_hub(
                 }
             }
         }
-        flush_sends(&registration, &store, &mut core, out).await;
+        let persisted = flush_sends(&registration, &store, &mut core, out).await;
         record_hub_events(&recorder, activity_hub, core.drain_events());
         publish_snapshot(&snapshot, &emitter, &core, &config, Some(destination_hash));
+        if let Some((result_tx, result)) = admin_reply {
+            let result = match result {
+                Err(error) => Err(error),
+                Ok(()) if !persisted => Err(ChannelHubAdminMutationError::new(
+                    ADMIN_ERROR_REGISTRY_UNAVAILABLE,
+                    "The change is active, but the hub registry could not save it yet",
+                )),
+                Ok(()) => Ok(core.admin_snapshot()),
+            };
+            let _ = result_tx.send(result);
+        }
     }
 
     // Land any outstanding writes before the task ends: a restart reloads the
@@ -5664,7 +6616,7 @@ async fn run_hub(
     let mut final_out = Vec::new();
     core.flush_dirty_last_used(&mut final_out);
     core.retry_failed_persists(&mut final_out);
-    flush_sends(&registration, &store, &mut core, final_out).await;
+    let _ = flush_sends(&registration, &store, &mut core, final_out).await;
     core.note_service_stopped();
     record_hub_events(&recorder, activity_hub, core.drain_events());
 
@@ -5773,7 +6725,7 @@ async fn flush_sends(
     store: &HubStore,
     core: &mut HubCore,
     sends: Vec<HubSend>,
-) {
+) -> bool {
     let mut ops: Vec<db::HubRoomOp> = Vec::new();
     let mut failures: Vec<(Option<[u8; 16]>, Option<String>)> = Vec::new();
     let mut envelopes: Vec<HubSend> = Vec::with_capacity(sends.len());
@@ -5787,7 +6739,9 @@ async fn flush_sends(
         }
     }
 
+    let mut persisted = true;
     if !ops.is_empty() && store.apply_batch(ops.clone()).await.is_err() {
+        persisted = false;
         tracing::warn!(
             reason = "registry_write_failed",
             ops = ops.len(),
@@ -5921,6 +6875,7 @@ async fn flush_sends(
     if send_failed > 0 {
         core.note_send_failed(send_failed);
     }
+    persisted
 }
 
 fn current_snapshot(
@@ -6625,6 +7580,440 @@ mod tests {
         core.evidence.clear();
         core.evidence_bytes = 0;
         core.evidence_evicted = 0;
+    }
+
+    fn admin_policy() -> ChannelHubAdminRoomPolicy {
+        ChannelHubAdminRoomPolicy {
+            invite_only: false,
+            moderated: false,
+            no_outside_messages: true,
+            private: false,
+            topic_operators_only: true,
+        }
+    }
+
+    fn admin_create(
+        core: &mut HubCore,
+        room: &str,
+        policy: ChannelHubAdminRoomPolicy,
+    ) -> Vec<HubSend> {
+        let mut out = Vec::new();
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::CreateChannel {
+                room: room.to_string(),
+                topic: None,
+                policy,
+                join_key: None,
+            },
+            &mut out,
+        )
+        .unwrap();
+        out
+    }
+
+    #[test]
+    fn typed_admin_create_is_actor_owned_atomic_and_secret_free() {
+        let mut core = op_core();
+        core.drain_events();
+        clear_admin_evidence(&mut core);
+        let policy = ChannelHubAdminRoomPolicy {
+            invite_only: true,
+            moderated: true,
+            no_outside_messages: true,
+            private: true,
+            topic_operators_only: true,
+        };
+
+        let mut out = Vec::new();
+        let error = core
+            .admin_mutate(
+                ID_B,
+                ChannelHubAdminMutation::CreateChannel {
+                    room: "vault".to_string(),
+                    topic: Some("field operations".to_string()),
+                    policy,
+                    join_key: Some(ChannelHubAdminSecret::new("operator-only-key".to_string())),
+                },
+                &mut out,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "forbidden");
+        assert!(out.is_empty() && core.rooms.is_empty());
+
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::CreateChannel {
+                room: " Vault ".to_string(),
+                topic: Some("  field operations  ".to_string()),
+                policy,
+                join_key: Some(ChannelHubAdminSecret::new("operator-only-key".to_string())),
+            },
+            &mut out,
+        )
+        .unwrap();
+
+        assert_eq!(persist_ops(&out).len(), 1);
+        let row = upserted(&out, "vault").expect("create queues one complete room projection");
+        assert!(row.invite_only && row.moderated && row.private);
+        assert!(row.no_outside_msgs && row.topic_ops_only);
+        assert_eq!(row.topic, "field operations");
+        assert!(!row.key_mac.is_empty());
+        assert!(!format!("{row:?}").contains("operator-only-key"));
+
+        let room = core.rooms.get("vault").unwrap();
+        assert!(room.registered && room.ops.contains(&ID_A));
+        let digest = room.key.as_ref().expect("join key digest");
+        assert!(room_key_matches(
+            &core.pepper,
+            "vault",
+            "operator-only-key",
+            digest
+        ));
+        assert!(
+            core.drain_events().is_empty(),
+            "local create must not fake a link-scoped Activity event"
+        );
+        let evidence = core.admin_snapshot().evidence;
+        assert_eq!(evidence.len(), 1);
+        assert!(matches!(
+            evidence[0].action,
+            Some(ChannelHubEvidenceAction::Register)
+        ));
+        assert_eq!(
+            evidence[0].source_identity_hash.as_deref(),
+            Some(hex::encode(ID_A).as_str())
+        );
+        let encoded = serde_json::to_string(&core.admin_snapshot()).unwrap();
+        assert!(!encoded.contains("operator-only-key"));
+    }
+
+    #[test]
+    fn typed_admin_validation_is_bounded_and_leaves_no_partial_room() {
+        let mut core = op_core();
+        let mut out = Vec::new();
+        let error = core
+            .admin_mutate(
+                ID_A,
+                ChannelHubAdminMutation::CreateChannel {
+                    room: "bad-topic".to_string(),
+                    topic: Some("line one\nline two".to_string()),
+                    policy: admin_policy(),
+                    join_key: None,
+                },
+                &mut out,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "bad_request");
+        assert!(!core.rooms.contains_key("bad-topic") && out.is_empty());
+
+        let error = core
+            .admin_mutate(
+                ID_A,
+                ChannelHubAdminMutation::CreateChannel {
+                    room: "bad-key".to_string(),
+                    topic: None,
+                    policy: admin_policy(),
+                    join_key: Some(ChannelHubAdminSecret::new("has spaces".to_string())),
+                },
+                &mut out,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "bad_request");
+        assert!(!core.rooms.contains_key("bad-key") && out.is_empty());
+
+        let error = core
+            .admin_mutate(
+                ID_A,
+                ChannelHubAdminMutation::CreateChannel {
+                    room: "long-key".to_string(),
+                    topic: None,
+                    policy: admin_policy(),
+                    join_key: Some(ChannelHubAdminSecret::new(
+                        "x".repeat(MAX_ADMIN_ROOM_KEY_BYTES + 1),
+                    )),
+                },
+                &mut out,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "bad_request");
+        assert!(!core.rooms.contains_key("long-key") && out.is_empty());
+    }
+
+    #[test]
+    fn typed_admin_update_is_one_projection_and_idempotent() {
+        let mut core = op_core();
+        admin_create(&mut core, "vault", admin_policy());
+        core.drain_events();
+        clear_admin_evidence(&mut core);
+        let policy = ChannelHubAdminRoomPolicy {
+            invite_only: true,
+            moderated: true,
+            no_outside_messages: true,
+            private: true,
+            topic_operators_only: true,
+        };
+
+        let mut out = Vec::new();
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::UpdateChannel {
+                room: "vault".to_string(),
+                topic: Some("night watch".to_string()),
+                policy,
+                join_key: ChannelHubAdminKeyChange::Set(ChannelHubAdminSecret::new(
+                    "new-vault-key".to_string(),
+                )),
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(
+            persist_ops(&out).len(),
+            1,
+            "a multi-field edit is one durable projection"
+        );
+        let row = upserted(&out, "vault").unwrap();
+        assert_eq!(row.topic, "night watch");
+        assert!(row.invite_only && row.moderated && row.private);
+        let digest = core.rooms["vault"].key.as_ref().unwrap();
+        assert!(room_key_matches(
+            &core.pepper,
+            "vault",
+            "new-vault-key",
+            digest
+        ));
+        assert!(core.drain_events().is_empty());
+        assert_eq!(
+            core.admin_snapshot().evidence.len(),
+            2,
+            "topic and mode changes remain distinct private evidence"
+        );
+
+        clear_admin_evidence(&mut core);
+        out.clear();
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::UpdateChannel {
+                room: "vault".to_string(),
+                topic: Some("night watch".to_string()),
+                policy,
+                join_key: ChannelHubAdminKeyChange::Set(ChannelHubAdminSecret::new(
+                    "new-vault-key".to_string(),
+                )),
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert!(out.is_empty(), "an exact replay is a successful no-op");
+        assert!(core.admin_snapshot().evidence.is_empty());
+
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::UpdateChannel {
+                room: "vault".to_string(),
+                topic: Some("night watch".to_string()),
+                policy,
+                join_key: ChannelHubAdminKeyChange::Clear,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(persist_ops(&out).len(), 1);
+        assert!(core.rooms["vault"].key.is_none());
+    }
+
+    #[test]
+    fn typed_admin_access_controls_cover_all_live_sessions_and_protect_server_ops() {
+        let mut core = op_core();
+        let link_b2 = [0x03; 16];
+        welcomed_session(&mut core, link_b2, ID_B, "beta-secondary");
+        admin_create(&mut core, "lobby", admin_policy());
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+        join(&mut core, link_b2, ID_B, "lobby");
+        core.drain_events();
+        clear_admin_evidence(&mut core);
+
+        let mut out = Vec::new();
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::SetRoomRole {
+                room: "lobby".to_string(),
+                target_identity: ID_B,
+                role: ChannelHubAdminRoomRole::Voice,
+                enabled: true,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert!(core.rooms["lobby"].voiced.contains(&ID_B));
+        assert_eq!(persist_ops(&out).len(), 1);
+
+        out.clear();
+        let error = core
+            .admin_mutate(
+                ID_A,
+                ChannelHubAdminMutation::SetInvitation {
+                    room: "lobby".to_string(),
+                    target_identity: [0xCC; 16],
+                    invited: true,
+                },
+                &mut out,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "conflict");
+        assert!(out.is_empty());
+
+        let gated = ChannelHubAdminRoomPolicy {
+            invite_only: true,
+            ..admin_policy()
+        };
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::UpdateChannel {
+                room: "lobby".to_string(),
+                topic: None,
+                policy: gated,
+                join_key: ChannelHubAdminKeyChange::Keep,
+            },
+            &mut out,
+        )
+        .unwrap();
+        out.clear();
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::SetInvitation {
+                room: "lobby".to_string(),
+                target_identity: [0xCC; 16],
+                invited: true,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert!(core.rooms["lobby"].invited.contains_key(&[0xCC; 16]));
+        assert_eq!(persist_ops(&out).len(), 1);
+
+        out.clear();
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::Kick {
+                room: "lobby".to_string(),
+                target_identity: ID_B,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert!(!core.sessions[&LINK_B].rooms.contains("lobby"));
+        assert!(!core.sessions[&link_b2].rooms.contains("lobby"));
+        assert_eq!(
+            sends_to(&out, LINK_A)
+                .iter()
+                .filter(|envelope| envelope.message_type == rrc::MessageType::Parted)
+                .count(),
+            1,
+            "one identity departure is fanned out once across duplicate sessions"
+        );
+        assert!(persist_ops(&out).is_empty(), "kick is live-only");
+
+        for mutation in [
+            ChannelHubAdminMutation::SetRoomRole {
+                room: "lobby".to_string(),
+                target_identity: ID_A,
+                role: ChannelHubAdminRoomRole::Operator,
+                enabled: false,
+            },
+            ChannelHubAdminMutation::SetRoomBan {
+                room: "lobby".to_string(),
+                target_identity: ID_A,
+                banned: true,
+            },
+            ChannelHubAdminMutation::Kick {
+                room: "lobby".to_string(),
+                target_identity: ID_A,
+            },
+            ChannelHubAdminMutation::SetHubBan {
+                target_identity: ID_A,
+                banned: true,
+            },
+        ] {
+            out.clear();
+            let error = core.admin_mutate(ID_A, mutation, &mut out).unwrap_err();
+            assert_eq!(error.code(), "conflict");
+            assert!(out.is_empty());
+        }
+
+        out.clear();
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::SetHubBan {
+                target_identity: ID_B,
+                banned: true,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert!(!core.sessions.contains_key(&LINK_B));
+        assert!(!core.sessions.contains_key(&link_b2));
+        assert!(core.klines.read().unwrap().contains(&ID_B));
+        let persist_at = out
+            .iter()
+            .position(|send| matches!(send, HubSend::Persist(_)))
+            .unwrap();
+        let first_close = out
+            .iter()
+            .position(|send| matches!(send, HubSend::Close { .. }))
+            .unwrap();
+        assert!(
+            persist_at < first_close,
+            "hub-ban durability is queued ahead of disconnects"
+        );
+        let events = core.drain_events();
+        assert!(
+            events.iter().all(|event| !matches!(
+                event,
+                HubEvent::RoomModerated { .. } | HubEvent::TrustChanged { .. }
+            )),
+            "typed actions must not invent a network-originated moderation event"
+        );
+    }
+
+    #[test]
+    fn typed_admin_unregister_removes_durability_but_preserves_a_live_room() {
+        let mut core = op_core();
+        admin_create(&mut core, "lobby", admin_policy());
+        join(&mut core, LINK_A, ID_A, "lobby");
+        let mut out = Vec::new();
+        core.admin_mutate(
+            ID_A,
+            ChannelHubAdminMutation::UnregisterChannel {
+                room: "lobby".to_string(),
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert!(!core.rooms["lobby"].registered);
+        assert!(
+            persist_ops(&out).iter().any(
+                |op| matches!(op, db::HubRoomOp::Removed { room_name } if room_name == "lobby")
+            )
+        );
+
+        out.clear();
+        let error = core
+            .admin_mutate(
+                ID_A,
+                ChannelHubAdminMutation::SetRoomRole {
+                    room: "lobby".to_string(),
+                    target_identity: ID_B,
+                    role: ChannelHubAdminRoomRole::Voice,
+                    enabled: true,
+                },
+                &mut out,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "not_found");
+        assert!(out.is_empty());
     }
 
     #[test]

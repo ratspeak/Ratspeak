@@ -703,6 +703,7 @@ pub fn run() {
             ratspeak_tauri::commands::channels::remove_saved_channel_room,
             ratspeak_tauri::commands::channel_hub::api_channel_hub,
             ratspeak_tauri::commands::channel_hub::api_channel_hub_admin,
+            ratspeak_tauri::commands::channel_hub::channel_hub_admin_mutate,
             ratspeak_tauri::commands::channel_hub::channel_hub_start,
             ratspeak_tauri::commands::channel_hub::channel_hub_stop,
             ratspeak_tauri::commands::channel_hub::channel_hub_set_config,
