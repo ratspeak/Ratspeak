@@ -4443,12 +4443,8 @@ fn greeting_resource_offer_matches(
 }
 
 async fn reject_greeting_resource_offer(offer: LinkSessionResourceOffer, reason: &'static str) {
-    if let Err(error) = offer.reject().await {
-        tracing::debug!(
-            reason,
-            error = %error,
-            "failed to reject channel Resource offer"
-        );
+    if offer.reject().await.is_err() {
+        tracing::debug!(reason, "failed to reject channel Resource offer");
     }
 }
 
@@ -4494,11 +4490,8 @@ async fn handle_hub_greeting_resource_offer(
                     .await;
             });
         }
-        Err(error) => {
-            tracing::debug!(
-                error = %error,
-                "failed to accept authenticated channel hub greeting Resource"
-            );
+        Err(_) => {
+            tracing::debug!("failed to accept authenticated channel hub greeting Resource");
             if expectation.created_at.elapsed() <= HUB_GREETING_RESOURCE_TIMEOUT {
                 active.greeting_resource_expectation = Some(expectation);
             }

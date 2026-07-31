@@ -132,9 +132,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     let hub_switcher_test =
         read_source(root.join("dashboard/scripts/test_channels_hub_switcher.js"))
             .expect("channels hub switcher test");
-    let hub_profile_test =
-        read_source(root.join("dashboard/scripts/test_channels_hub_profile.js"))
-            .expect("channels hub profile test");
+    let hub_profile_test = read_source(root.join("dashboard/scripts/test_channels_hub_profile.js"))
+        .expect("channels hub profile test");
     let tauri_events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri event bridge");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");

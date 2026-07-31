@@ -9623,7 +9623,9 @@ mod tests {
         core.on_link_established(LINK_B, now);
         core.on_link_identified(LINK_B, ID_B, now, &mut out);
         out.clear();
-        core.on_envelope(LINK_B, rrc::Envelope::hello(ID_B, "rat", "1"), &mut out);
+        let mut legacy_hello = rrc::Envelope::hello(ID_B, "rat", "1");
+        legacy_hello.body = None;
+        core.on_envelope(LINK_B, legacy_hello, &mut out);
         assert!(resource_sends(&out).is_empty());
         let chunks = notice_texts(&out);
         assert!(chunks.len() > 1, "900 bytes cannot be one notice");
