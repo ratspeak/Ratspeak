@@ -41,6 +41,10 @@ pub const LIMIT_RATE_MESSAGES_PER_MINUTE: u64 = 4;
 pub const CAP_RESOURCE_ENVELOPE: u64 = 0;
 pub const CAP_ACTION: u64 = 1;
 pub const CAP_DIRECT_NOTICE: u64 = 2;
+/// The hub grants a short, identity-bound rejoin window for registered `+i`
+/// rooms after an unexpected disconnect. The capability is boolean because
+/// the grace duration remains local hub policy, not a client-controlled value.
+pub const CAP_REJOIN_GRACE: u64 = 3;
 
 pub const RESOURCE_ID: u64 = 0;
 pub const RESOURCE_KIND: u64 = 1;

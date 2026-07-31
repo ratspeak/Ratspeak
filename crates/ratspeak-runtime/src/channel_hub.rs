@@ -88,6 +88,9 @@ const HUB_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_HUB_NAME: &str = "Ratspeak hub";
 pub const DEFAULT_PING_INTERVAL_SECS: u64 = 55;
 pub const DEFAULT_PING_TIMEOUT_SECS: u64 = 120;
+/// Short enough to bound access after an unexpected disconnect, long enough
+/// for Reticulum path rediscovery and reconnect backoff on constrained links.
+pub const DEFAULT_REJOIN_GRACE_SECS: u64 = 5 * 60;
 pub const CHANNEL_HUB_SETTING_KEYS: [&str; 6] = [
     "channel_hub_enabled",
     "channel_hub_name",
@@ -243,6 +246,9 @@ pub struct ChannelHubConfig {
     pub banned_identities: Vec<[u8; 16]>,
     /// Invite lifetime for `/invite add` (reference default 900s).
     pub invite_timeout_secs: u64,
+    /// Identity-bound `+i` rejoin window after an unexpected disconnect.
+    /// This never bypasses `+k`, is never persisted, and 0 disables it.
+    pub rejoin_grace_secs: u64,
     /// Drop a registered room nobody has used in this long. 0 disables.
     pub room_registry_prune_after_secs: u64,
     pub room_registry_prune_interval_secs: u64,
@@ -272,6 +278,7 @@ impl Default for ChannelHubConfig {
             server_operators: Vec::new(),
             banned_identities: Vec::new(),
             invite_timeout_secs: 900,
+            rejoin_grace_secs: DEFAULT_REJOIN_GRACE_SECS,
             room_registry_prune_after_secs: 30 * 24 * 3600,
             room_registry_prune_interval_secs: 3600,
             max_registered_rooms: 256,
@@ -809,6 +816,9 @@ struct HubRoom {
     voiced: HashSet<[u8; 16]>,
     bans: HashSet<[u8; 16]>,
     invited: HashMap<[u8; 16], f64>,
+    /// Ephemeral, identity-bound access after an unexpected disconnect. A
+    /// lease only bypasses `+i`; unlike an invite it never bypasses `+k`.
+    rejoin_until: HashMap<[u8; 16], f64>,
     moderated: bool,
     invite_only: bool,
     topic_ops_only: bool,
@@ -1666,6 +1676,27 @@ impl HubCore {
             .is_some_and(|expires| *expires > now_unix)
     }
 
+    fn can_rejoin(room: &HubRoom, identity: [u8; 16], now_unix: f64) -> bool {
+        room.rejoin_until
+            .get(&identity)
+            .is_some_and(|expires| *expires > now_unix)
+    }
+
+    fn identity_in_room(&self, room: &HubRoom, identity: [u8; 16]) -> bool {
+        room.members.iter().any(|member| {
+            self.sessions
+                .get(member)
+                .is_some_and(|session| session.identity == Some(identity))
+        })
+    }
+
+    /// `+p` hides room existence and metadata from outsiders. Current members
+    /// and durable room operators retain visibility; server operators already
+    /// satisfy `is_room_op`.
+    fn can_view_room(&self, room: &HubRoom, identity: [u8; 16]) -> bool {
+        !room.private || self.is_room_op(room, identity) || self.identity_in_room(room, identity)
+    }
+
     /// Same identity still present in `room` through a different link.
     fn identity_still_in_room(
         &self,
@@ -1702,6 +1733,9 @@ impl HubCore {
         // advertise nothing useful and hide what we can actually do.
         if self.config.resource_send_enabled {
             capabilities.insert(rrc::CAP_RESOURCE_ENVELOPE, true);
+        }
+        if self.config.rejoin_grace_secs > 0 {
+            capabilities.insert(rrc::CAP_REJOIN_GRACE, true);
         }
         rrc::WelcomeInfo {
             hub_name: Some(self.config.hub_name.clone()),
@@ -2306,6 +2340,12 @@ impl HubCore {
         let identity = session.identity;
         let nickname = session.nickname.clone();
         let rooms: Vec<String> = session.rooms.iter().cloned().collect();
+        let rejoin_expires = matches!(
+            reason,
+            activity::HubSessionCloseReason::Remote | activity::HubSessionCloseReason::PingTimeout
+        )
+        .then(|| now_unix() + self.config.rejoin_grace_secs as f64)
+        .filter(|_| self.config.rejoin_grace_secs > 0);
         self.events.push(HubEvent::SessionClosed {
             correlation: session.correlation,
             link: link_id,
@@ -2321,6 +2361,21 @@ impl HubCore {
                 self.by_identity.remove(&identity);
             }
             for room_name in rooms {
+                if let Some(expires) = rejoin_expires {
+                    let eligible = self.rooms.get(&room_name).is_some_and(|room| {
+                        room.registered
+                            && room.invite_only
+                            && !room.bans.contains(&identity)
+                            && !self.identity_still_in_room(room, identity, link_id)
+                    });
+                    if eligible {
+                        self.rooms
+                            .get_mut(&room_name)
+                            .expect("eligible room exists")
+                            .rejoin_until
+                            .insert(identity, expires);
+                    }
+                }
                 self.remove_member_with_parted(
                     &room_name,
                     link_id,
@@ -2493,11 +2548,15 @@ impl HubCore {
             room.ops.insert(identity);
         }
 
+        let now = now_unix();
         let room = self.rooms.get(&room_name).expect("room exists");
+        let invited = Self::is_invited(room, identity, now);
+        let rejoining = Self::can_rejoin(room, identity, now);
         if room.invite_only {
             let bypass = self.server_ops.contains(&identity)
                 || room.ops.contains(&identity)
-                || Self::is_invited(room, identity, now_unix());
+                || invited
+                || rejoining;
             if !bypass {
                 out.push(self.hub_error(link_id, "invite-only (+i)", Some(&room_name)));
                 return;
@@ -2505,9 +2564,8 @@ impl HubCore {
         }
         if let Some(digest) = self.rooms.get(&room_name).and_then(|room| room.key.clone()) {
             let room = self.rooms.get(&room_name).expect("room exists");
-            let bypass = self.server_ops.contains(&identity)
-                || room.ops.contains(&identity)
-                || Self::is_invited(room, identity, now_unix());
+            let bypass =
+                self.server_ops.contains(&identity) || room.ops.contains(&identity) || invited;
             let provided = envelope.body.as_ref().and_then(|body| match body {
                 Value::Text(text) => Some(text.as_str()),
                 _ => None,
@@ -2529,7 +2587,7 @@ impl HubCore {
             return;
         }
 
-        let existing_members = {
+        let (existing_members, consumed_invite) = {
             let room = self.rooms.get_mut(&room_name).expect("room exists");
             let members: Vec<[u8; 16]> = room
                 .members
@@ -2538,10 +2596,16 @@ impl HubCore {
                 .filter(|member| *member != link_id)
                 .collect();
             room.members.insert(link_id);
-            room.invited.remove(&identity);
-            members
+            let consumed_invite = room.invited.remove(&identity).is_some();
+            room.rejoin_until.remove(&identity);
+            (members, consumed_invite)
         };
         self.touch_room(&room_name);
+        // Joining consumes a durable invite. Project that removal before any
+        // JOINED confirmation so a hub restart cannot resurrect access.
+        if consumed_invite {
+            self.persist_room(&room_name, Some(link_id), out);
+        }
         if let Some(session) = self.sessions.get_mut(&link_id) {
             session.rooms.insert(room_name.clone());
         }
@@ -2727,6 +2791,10 @@ impl HubCore {
                 out.push(self.hub_error(link_id, "no such room", Some(room_name)));
                 return false;
             };
+            if !self.can_view_room(room, identity) {
+                out.push(self.hub_error(link_id, "no such room", Some(room_name)));
+                return false;
+            }
             if room.no_outside_msgs {
                 out.push(self.hub_error(link_id, "no outside messages (+n)", Some(room_name)));
                 return false;
@@ -3031,11 +3099,10 @@ impl HubCore {
     }
 
     fn cmd_list(&mut self, link_id: [u8; 16], identity: [u8; 16], out: &mut Vec<HubSend>) {
-        let server_op = self.server_ops.contains(&identity);
         let mut rooms: Vec<(&String, &HubRoom)> = self
             .rooms
             .iter()
-            .filter(|(_, room)| room.registered && (server_op || !room.private))
+            .filter(|(_, room)| room.registered && self.can_view_room(room, identity))
             .collect();
         rooms.sort_by(|a, b| a.0.cmp(b.0));
         if rooms.is_empty() {
@@ -3097,16 +3164,12 @@ impl HubCore {
                 return;
             }
         };
-        if self
+        let visible = self
             .rooms
             .get(&room_name)
-            .is_some_and(|room| room.private && !self.server_ops.contains(&identity))
-        {
-            out.push(self.hub_notice(link_id, &format!("room {room_name} is private"), None));
-            return;
-        }
+            .is_some_and(|room| self.can_view_room(room, identity));
         let mut members: Vec<String> = Vec::new();
-        if let Some(room) = self.rooms.get(&room_name) {
+        if visible && let Some(room) = self.rooms.get(&room_name) {
             let mut entries: Vec<(Option<String>, [u8; 16])> = room
                 .members
                 .iter()
@@ -3159,11 +3222,15 @@ impl HubCore {
                 return;
             }
         };
-        let authorized = self
-            .rooms
-            .get(&room_name)
-            .is_some_and(|room| self.is_room_op(room, identity));
-        if !authorized {
+        let Some(room) = self.rooms.get(&room_name) else {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        };
+        if !self.can_view_room(room, identity) {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        }
+        if !self.is_room_op(room, identity) {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
         }
@@ -3192,6 +3259,9 @@ impl HubCore {
         if target_links.is_empty() {
             out.push(self.hub_notice(link_id, "target not in room", raw_room));
             return;
+        }
+        if let Some(room) = self.rooms.get_mut(&room_name) {
+            room.rejoin_until.remove(&target);
         }
         for target_link in target_links {
             let nickname = self
@@ -3282,6 +3352,9 @@ impl HubCore {
         if op == "add" {
             if let Ok(mut klines) = self.klines.write() {
                 klines.insert(target);
+            }
+            for room in self.rooms.values_mut() {
+                room.rejoin_until.remove(&target);
             }
             self.persist_klines(Some(link_id), out);
             let correlation = self.link_correlation(link_id);
@@ -3409,6 +3482,14 @@ impl HubCore {
                 return;
             }
         };
+        if !self.server_ops.contains(&identity) {
+            out.push(self.hub_error(
+                link_id,
+                "only a server operator can unregister",
+                Some(&room_name),
+            ));
+            return;
+        }
         let Some(room) = self.rooms.get_mut(&room_name) else {
             out.push(self.hub_notice(
                 link_id,
@@ -3425,15 +3506,8 @@ impl HubCore {
             ));
             return;
         }
-        if !self.server_ops.contains(&identity) {
-            out.push(self.hub_error(
-                link_id,
-                "only a server operator can unregister",
-                Some(&room_name),
-            ));
-            return;
-        }
         room.registered = false;
+        room.rejoin_until.clear();
         let empty = room.members.is_empty();
         // Recorded before the room can disappear: the token dies with it.
         self.note_moderated(
@@ -3478,6 +3552,10 @@ impl HubCore {
             out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
             return;
         };
+        if !self.can_view_room(room, identity) {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        }
         if args.len() == 1 {
             let topic = room.topic.clone().unwrap_or_else(|| "(none)".to_string());
             out.push(self.hub_notice(
@@ -3549,6 +3627,10 @@ impl HubCore {
             out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
             return;
         };
+        if !self.can_view_room(room, identity) {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        }
         if !self.is_room_op(room, identity) {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
@@ -3559,7 +3641,12 @@ impl HubCore {
                 let room = self.rooms.get_mut(&room_name).expect("room just ensured");
                 match &flag[1..] {
                     "m" => room.moderated = enable,
-                    "i" => room.invite_only = enable,
+                    "i" => {
+                        room.invite_only = enable;
+                        // Mode changes are explicit policy boundaries: a lease
+                        // minted under the prior gate must not survive them.
+                        room.rejoin_until.clear();
+                    }
                     "t" => room.topic_ops_only = enable,
                     "n" => room.no_outside_msgs = enable,
                     _ => room.private = enable,
@@ -3712,6 +3799,10 @@ impl HubCore {
             out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
             return;
         };
+        if !self.can_view_room(room, identity) {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        }
         if !self.is_room_op(room, identity) {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
@@ -3784,12 +3875,24 @@ impl HubCore {
                 return;
             }
         };
+        if op != "add" && op != "del" && op != "list" {
+            out.push(self.hub_notice(link_id, USAGE, None));
+            return;
+        }
+        let Some(room) = self.rooms.get(&room_name) else {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        };
+        if !self.can_view_room(room, identity) {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        }
+        if !self.is_room_op(room, identity) {
+            out.push(self.hub_error(link_id, "not authorized", None));
+            return;
+        }
         if op == "list" {
-            let mut items: Vec<String> = self
-                .rooms
-                .get(&room_name)
-                .map(|room| room.bans.iter().map(hex::encode).collect())
-                .unwrap_or_default();
+            let mut items: Vec<String> = room.bans.iter().map(hex::encode).collect();
             items.sort();
             if items.is_empty() {
                 out.push(self.hub_notice(link_id, &format!("no bans in {room_name}"), raw_room));
@@ -3805,18 +3908,6 @@ impl HubCore {
             );
             return;
         }
-        if op != "add" && op != "del" {
-            out.push(self.hub_notice(link_id, USAGE, None));
-            return;
-        }
-        let Some(room) = self.rooms.get(&room_name) else {
-            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
-            return;
-        };
-        if !self.is_room_op(room, identity) {
-            out.push(self.hub_error(link_id, "not authorized", None));
-            return;
-        }
         let Some(token) = args.get(2) else {
             out.push(self.hub_notice(link_id, USAGE, None));
             return;
@@ -3829,11 +3920,9 @@ impl HubCore {
             }
         };
         if op == "add" {
-            self.rooms
-                .get_mut(&room_name)
-                .expect("room just ensured")
-                .bans
-                .insert(target);
+            let room = self.rooms.get_mut(&room_name).expect("room just ensured");
+            room.bans.insert(target);
+            room.rejoin_until.remove(&target);
             let target_links: Vec<[u8; 16]> = self
                 .rooms
                 .get(&room_name)
@@ -3910,6 +3999,10 @@ impl HubCore {
             out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
             return;
         };
+        if !self.can_view_room(room, identity) {
+            out.push(self.hub_error(link_id, "no such room", Some(&room_name)));
+            return;
+        }
         if !self.is_room_op(room, identity) {
             out.push(self.hub_error(link_id, "not authorized", None));
             return;
@@ -4008,6 +4101,7 @@ impl HubCore {
         } else {
             if let Some(room) = self.rooms.get_mut(&room_name) {
                 room.invited.remove(&target);
+                room.rejoin_until.remove(&target);
             }
             self.persist_room(&room_name, Some(link_id), out);
             self.note_moderated(link_id, &room_name, activity::HubModerationAction::Uninvite);
@@ -4136,6 +4230,10 @@ impl HubCore {
         // keepalive is configured: turning PINGs off must not leave half-open
         // links alive forever or silence the drop counters.
         self.report_throttle(now);
+        let wall_now = now_unix();
+        for room in self.rooms.values_mut() {
+            room.rejoin_until.retain(|_, expires| *expires > wall_now);
+        }
         let timeout = Duration::from_secs(self.config.ping_timeout_secs.max(1));
         let keepalive = self.config.ping_interval_secs > 0;
         let mut dead: Vec<([u8; 16], activity::HubSessionCloseReason)> = Vec::new();
@@ -5072,6 +5170,7 @@ mod tests {
             info.capabilities.get(&rrc::CAP_RESOURCE_ENVELOPE),
             Some(&true)
         );
+        assert_eq!(info.capabilities.get(&rrc::CAP_REJOIN_GRACE), Some(&true));
     }
 
     #[test]
@@ -5243,6 +5342,21 @@ mod tests {
         let mut out = Vec::new();
         let mut envelope = rrc::Envelope::new(rrc::MessageType::Join, identity);
         envelope.room = Some(room.to_string());
+        core.on_envelope(link_id, envelope, &mut out);
+        out
+    }
+
+    fn join_with_key(
+        core: &mut HubCore,
+        link_id: [u8; 16],
+        identity: [u8; 16],
+        room: &str,
+        key: &str,
+    ) -> Vec<HubSend> {
+        let mut out = Vec::new();
+        let mut envelope = rrc::Envelope::new(rrc::MessageType::Join, identity);
+        envelope.room = Some(room.to_string());
+        envelope.body = Some(Value::Text(key.to_string()));
         core.on_envelope(link_id, envelope, &mut out);
         out
     }
@@ -5593,6 +5707,99 @@ mod tests {
         assert_eq!(
             rrc::text_body(sends_to(&out, LINK_A)[0]),
             Some("Registered public rooms:\n  lobby - hello there")
+        );
+    }
+
+    #[test]
+    fn private_rooms_hide_existence_but_remain_visible_to_members_and_room_ops() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "vault");
+        run_command(&mut core, LINK_A, ID_A, "/register vault");
+        run_command(&mut core, LINK_A, ID_A, "/topic vault mountain frequency");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +p");
+
+        let out = run_command(&mut core, LINK_B, ID_B, "/list");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("No public rooms registered")
+        );
+
+        // Hidden and absent rooms have the same /who shape. In particular, no
+        // "private" response confirms that the hidden room exists.
+        let out = run_command(&mut core, LINK_B, ID_B, "/who vault");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("members in vault: (none)")
+        );
+        let out = run_command(&mut core, LINK_B, ID_B, "/who ghost");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("members in ghost: (none)")
+        );
+
+        for command in [
+            "/topic vault",
+            "/mode vault +m",
+            "/op vault beta",
+            "/invite vault list",
+            "/ban vault list",
+            "/kick vault alpha",
+        ] {
+            let out = run_command(&mut core, LINK_B, ID_B, command);
+            assert_eq!(
+                rrc::text_body(sends_to(&out, LINK_B)[0]),
+                Some("no such room"),
+                "{command} exposed a private room"
+            );
+        }
+        let message =
+            rrc::Envelope::room_text(rrc::MessageType::Message, ID_B, "vault", "beta", "probe");
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, message, &mut out);
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("no such room"),
+            "relay gates must not expose +n or moderation policy on a hidden room"
+        );
+
+        // +p is visibility policy, not an access gate: a peer that knows the
+        // name may join, after which room metadata and roster are visible.
+        let out = join(&mut core, LINK_B, ID_B, "vault");
+        assert_eq!(
+            sends_to(&out, LINK_B)[0].message_type,
+            rrc::MessageType::Joined
+        );
+        let out = run_command(&mut core, LINK_B, ID_B, "/topic vault");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("topic for vault: mountain frequency")
+        );
+        let out = run_command(&mut core, LINK_B, ID_B, "/who vault");
+        let body = rrc::text_body(sends_to(&out, LINK_B)[0]).unwrap();
+        assert!(body.contains("alpha (") && body.contains("beta ("));
+
+        // Visibility does not grant moderation authority or expose its lists.
+        let out = run_command(&mut core, LINK_B, ID_B, "/ban vault list");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("not authorized")
+        );
+
+        // A durable room op keeps visibility after leaving the room.
+        run_command(&mut core, LINK_A, ID_A, "/op vault beta");
+        let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_B);
+        part.room = Some("vault".to_string());
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, part, &mut out);
+        let out = run_command(&mut core, LINK_B, ID_B, "/topic vault");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_B)[0]),
+            Some("topic for vault: mountain frequency")
+        );
+        let out = run_command(&mut core, LINK_B, ID_B, "/list");
+        assert!(
+            rrc::text_body(sends_to(&out, LINK_B)[0])
+                .is_some_and(|body| body.contains("\n  vault - mountain frequency"))
         );
     }
 
@@ -6478,6 +6685,189 @@ mod tests {
                 .is_some_and(|body| body.starts_with("invite added in lobby (expires in 900s)"))
         }));
         assert!(core.rooms.get("lobby").unwrap().invited.contains_key(&ID_B));
+    }
+
+    #[test]
+    fn consumed_invite_is_projected_before_join_confirmation() {
+        let mut core = op_core();
+        join(&mut core, LINK_A, ID_A, "vault");
+        run_command(&mut core, LINK_A, ID_A, "/register vault");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +i");
+        run_command(&mut core, LINK_A, ID_A, "/invite vault add beta");
+        assert!(core.rooms["vault"].invited.contains_key(&ID_B));
+
+        let out = join(&mut core, LINK_B, ID_B, "vault");
+        assert!(!core.rooms["vault"].invited.contains_key(&ID_B));
+        let row = upserted(&out, "vault").expect("consumed invite must update the registry");
+        assert!(
+            row.grants
+                .iter()
+                .all(|(kind, subject, _)| kind != "invite" || subject != &hex::encode(ID_B)),
+            "a restart must not resurrect the consumed invite"
+        );
+
+        let persist_at = out
+            .iter()
+            .position(|send| matches!(send, HubSend::Persist(_)))
+            .expect("invite consumption must be persisted");
+        let joined_at = out
+            .iter()
+            .position(|send| {
+                matches!(
+                    send,
+                    HubSend::Envelope { link_id, envelope }
+                        if *link_id == LINK_B
+                            && envelope.message_type == rrc::MessageType::Joined
+                )
+            })
+            .expect("join must be confirmed");
+        assert!(
+            persist_at < joined_at,
+            "durable invite consumption must precede JOINED"
+        );
+    }
+
+    #[test]
+    fn unexpected_disconnect_rejoins_invite_only_room_without_bypassing_key() {
+        const LINK_C: [u8; 16] = [0x03; 16];
+        let config = ChannelHubConfig {
+            rejoin_grace_secs: 300,
+            ..ChannelHubConfig::default()
+        };
+        let mut core = core_with(config);
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        join(&mut core, LINK_A, ID_A, "vault");
+        run_command(&mut core, LINK_A, ID_A, "/register vault");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +i");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +k sesame99");
+        run_command(&mut core, LINK_A, ID_A, "/invite vault add beta");
+        let out = join(&mut core, LINK_B, ID_B, "vault");
+        assert_eq!(
+            sends_to(&out, LINK_B)[0].message_type,
+            rrc::MessageType::Joined
+        );
+
+        let mut out = Vec::new();
+        core.on_link_closed(LINK_B, &mut out);
+        assert!(
+            core.rooms["vault"]
+                .rejoin_until
+                .get(&ID_B)
+                .is_some_and(|expires| *expires > now_unix())
+        );
+
+        welcomed_session(&mut core, LINK_C, ID_B, "beta");
+        let out = join(&mut core, LINK_C, ID_B, "vault");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_C)[0]),
+            Some("bad key (+k)"),
+            "a rejoin lease bypasses +i but never +k"
+        );
+        assert!(
+            core.rooms["vault"].rejoin_until.contains_key(&ID_B),
+            "a failed key attempt must not consume the lease"
+        );
+
+        let out = join_with_key(&mut core, LINK_C, ID_B, "vault", "sesame99");
+        assert_eq!(
+            sends_to(&out, LINK_C)[0].message_type,
+            rrc::MessageType::Joined
+        );
+        assert!(!core.rooms["vault"].rejoin_until.contains_key(&ID_B));
+    }
+
+    #[test]
+    fn rejoin_leases_expire_require_last_link_and_obey_policy_revocation() {
+        const LINK_B2: [u8; 16] = [0x03; 16];
+        const LINK_C: [u8; 16] = [0x04; 16];
+        let config = ChannelHubConfig {
+            ping_interval_secs: 0,
+            rejoin_grace_secs: 300,
+            ..ChannelHubConfig::default()
+        };
+        let mut core = core_with(config);
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        welcomed_session(&mut core, LINK_B2, ID_B, "beta");
+        join(&mut core, LINK_A, ID_A, "vault");
+        run_command(&mut core, LINK_A, ID_A, "/register vault");
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +i");
+
+        // Each same-identity link needs a one-shot invite, but closing only the
+        // first must not mint access while the identity remains present.
+        core.rooms
+            .get_mut("vault")
+            .unwrap()
+            .invited
+            .insert(ID_B, now_unix() + 60.0);
+        join(&mut core, LINK_B, ID_B, "vault");
+        core.rooms
+            .get_mut("vault")
+            .unwrap()
+            .invited
+            .insert(ID_B, now_unix() + 60.0);
+        join(&mut core, LINK_B2, ID_B, "vault");
+
+        let mut out = Vec::new();
+        core.on_link_closed(LINK_B, &mut out);
+        assert!(
+            !core.rooms["vault"].rejoin_until.contains_key(&ID_B),
+            "another live link means no rejoin grant is needed"
+        );
+        core.on_link_closed(LINK_B2, &mut out);
+        assert!(core.rooms["vault"].rejoin_until.contains_key(&ID_B));
+
+        // An explicit uninvite revokes both ordinary invites and reconnect
+        // leases, even when the identity is offline.
+        run_command(
+            &mut core,
+            LINK_A,
+            ID_A,
+            &format!("/invite vault del {}", hex::encode(ID_B)),
+        );
+        assert!(!core.rooms["vault"].rejoin_until.contains_key(&ID_B));
+
+        core.rooms
+            .get_mut("vault")
+            .unwrap()
+            .rejoin_until
+            .insert(ID_B, now_unix() - 1.0);
+        core.ping_cycle(Instant::now(), &mut out);
+        assert!(
+            !core.rooms["vault"].rejoin_until.contains_key(&ID_B),
+            "the maintenance cycle must reap expired leases even with PING disabled"
+        );
+
+        welcomed_session(&mut core, LINK_C, ID_B, "beta");
+        let out = join(&mut core, LINK_C, ID_B, "vault");
+        assert_eq!(
+            rrc::text_body(sends_to(&out, LINK_C)[0]),
+            Some("invite-only (+i)")
+        );
+
+        // Changing the invite-only boundary and adding a ban both revoke any
+        // lease that may have been minted under older policy.
+        core.rooms
+            .get_mut("vault")
+            .unwrap()
+            .rejoin_until
+            .insert(ID_B, now_unix() + 60.0);
+        run_command(&mut core, LINK_A, ID_A, "/mode vault -i");
+        assert!(core.rooms["vault"].rejoin_until.is_empty());
+        run_command(&mut core, LINK_A, ID_A, "/mode vault +i");
+        core.rooms
+            .get_mut("vault")
+            .unwrap()
+            .rejoin_until
+            .insert(ID_B, now_unix() + 60.0);
+        run_command(
+            &mut core,
+            LINK_A,
+            ID_A,
+            &format!("/ban vault add {}", hex::encode(ID_B)),
+        );
+        assert!(!core.rooms["vault"].rejoin_until.contains_key(&ID_B));
     }
 
     #[test]
