@@ -75,6 +75,7 @@ async function main() {
         channelHubRenderHome: function() {},
         channelsLoadSavedRooms: function() { return Promise.resolve([]); },
         channelsRefreshAvailableHubs: function() { return Promise.resolve([]); },
+        channelsRefreshUnread: function() { return Promise.resolve(); },
         _channelsIsConnected: function() {
             return context.channelsSnapshot.phase === 'active' ||
                 context.channelsSnapshot.phase === 'stale';

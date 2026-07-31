@@ -122,6 +122,13 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
             .expect("channels snapshot ordering test");
     let history_test = read_source(root.join("dashboard/scripts/test_channels_history.js"))
         .expect("channels history test");
+    let unread_test = read_source(root.join("dashboard/scripts/test_channels_unread.js"))
+        .expect("channels unread test");
+    let notification_route_test =
+        read_source(root.join("dashboard/scripts/test_channels_notification_route.js"))
+            .expect("channels notification route test");
+    let tauri_events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri event bridge");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     let tauri_build = read_source(root.join("src-tauri/build.rs")).expect("tauri build script");
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
@@ -177,6 +184,14 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("after: after"));
     assert!(channels_js.contains("function _channelsTimelineEntries"));
     assert!(channels_js.contains("function channelsSelectHistoryRoom"));
+    assert!(channels_js.contains("function channelsApplyUnread"));
+    assert!(channels_js.contains("RS.invoke('api_channel_unread')"));
+    assert!(channels_js.contains("RS.invoke('mark_channel_room_read'"));
+    assert!(channels_js.contains("RS.invoke('set_channel_room_notification_level'"));
+    assert!(channels_js.contains("function channelsPrepareVisibleRead"));
+    assert!(channels_js.contains("function _channelsInsertQuote"));
+    assert!(channels_js.contains("function _channelsInsertMemberMention"));
+    assert!(channels_js.contains("function channelsOpenNotificationRoute"));
     assert!(channels_js.contains("api_channel_room_index"));
     assert!(channels_js.contains("latest_recorded_at_ms"));
     assert!(channels_js.contains("Local timeline"));
@@ -207,13 +222,20 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_css.contains(".channel-history-rail"));
     assert!(channels_css.contains(".channel-day-separator"));
     assert!(channels_css.contains(".channel-member-detail-fields"));
+    assert!(channels_css.contains(".channel-unread-badge"));
+    assert!(channels_css.contains(".channel-event.mentioned"));
+    assert!(channels_css.contains(".channel-quote-button"));
     assert!(channels_js.contains("layout.classList.remove('members-open')"));
     assert!(build_css.contains("09-channels.css"));
     assert!(tauri_build.contains(r#""09-channels.css""#));
 
     assert!(nav_js.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];"));
     assert!(nav_js.contains("if (viewId === 'channels') return 'message';"));
+    assert!(nav_js.contains("function setMessageUnreadSource"));
+    assert!(nav_js.contains("var _messageUnreadSources = { direct: 0, channels: 0 };"));
     assert!(!nav_js.contains("MOBILE_TAB_SLOTS = ['peers', 'message', 'channels'"));
+    assert!(tauri_events.contains("function _decodeChannelNotificationRoute"));
+    assert!(tauri_events.contains("window.channelsOpenNotificationRoute"));
 
     assert!(runtime.contains("Observed room membership remains session-scoped"));
     assert!(runtime.contains("bounded client-local append log"));
@@ -222,8 +244,14 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(runtime.contains("TRANSCRIPT_LIMIT"));
     assert!(runtime.contains("pub struct ChannelsHistorySnapshot"));
     assert!(runtime.contains("HISTORY_COMMAND_BUFFER"));
+    assert!(runtime.contains("ChannelHistoryCommand::Barrier"));
+    assert!(runtime.contains("pub async fn flush_history"));
     assert!(runtime.contains("command_tx.try_send"));
     assert!(runtime.contains("db::append_channel_history_events"));
+    assert!(runtime.contains("fn contains_exact_mention"));
+    assert!(runtime.contains("fn channel_text_mentions"));
+    assert!(runtime.contains("NativeNotification::channel"));
+    assert!(runtime.contains("4_000_000"));
     assert!(runtime.contains("JOIN_CONFIRM_TIMEOUT"));
     assert!(runtime.contains("apply_rrcd_room_status_notice"));
     assert!(runtime.contains("parse_rrcd_room_status"));
@@ -284,9 +312,16 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(history_test.contains("receive sequence, not peer timestamps"));
     assert!(history_test.contains("forward catch-up closes the gap"));
     assert!(history_test.contains("previous identity epoch must be discarded"));
+    assert!(unread_test.contains("background rooms must never be marked read"));
+    assert!(unread_test.contains("shared mobile Messages badge"));
+    assert!(notification_route_test.contains("invalid UTF-8 must never reach navigation"));
+    assert!(notification_route_test.contains("must never reconnect or carry a room key"));
     for command in [
         "api_channels",
         "api_channel_history",
+        "api_channel_unread",
+        "mark_channel_room_read",
+        "set_channel_room_notification_level",
         "discover_channel_hubs",
         "connect_channel_hub",
         "disconnect_channel_hub",
@@ -336,6 +371,12 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(db.contains("pub next_after: Option<String>"));
     assert!(db.contains("pub struct ChannelRoomIndexEntry"));
     assert!(db.contains("pub fn list_channel_room_index"));
+    assert!(db.contains("mentioned             INTEGER NOT NULL DEFAULT 0"));
+    assert!(db.contains("CREATE TABLE IF NOT EXISTS channel_room_state"));
+    assert!(db.contains("pub struct ChannelUnreadSummary"));
+    assert!(db.contains("pub fn mark_channel_room_read"));
+    assert!(db.contains("pub fn set_channel_room_notification_level"));
+    assert!(db.contains("pub fn get_channel_unread_summary"));
     assert!(channels_js.contains("service_model_version: 1"));
     assert!(channels_js.contains("connection_budget: 1"));
     assert!(channels_js.contains("selected_hub_destination: null"));
@@ -3394,11 +3435,14 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     let notification_rs =
         read_source(root.join("crates/ratspeak-core/src/notification.rs")).expect("notification");
     assert!(notification_rs.contains("NativeNotificationKind::Call"));
+    assert!(notification_rs.contains("NativeNotificationKind::Channel"));
     assert!(notification_rs.contains("pub fn call("));
+    assert!(notification_rs.contains("pub fn channel("));
 
     let notifier_rs =
         read_source(root.join("crates/ratspeak-tauri/src/notifier.rs")).expect("notifier");
     assert!(notifier_rs.contains("NativeNotificationKind::Call => \"ratspeak_calls\""));
+    assert!(notifier_rs.contains("| ratspeak_core::NativeNotificationKind::Channel"));
 
     let ringtone_js =
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");

@@ -63,7 +63,8 @@ impl NativeNotifier for TauriNotifier {
             }
             if let Some(thread_id) = thread_id {
                 // `route` lets the frontend `onAction` handler deep-link a tapped
-                // notification to the right view (lxmf:<hash> / lrgp:<session>).
+                // notification to the right view (lxmf:<hash> /
+                // lrgp:<session> / channels:<hub>:<hex-room>).
                 // Recoverable on Android via the serialized notification payload.
                 // TODO(desktop): notify-rust has no tap/action callback, so taps
                 // only focus the window; investigate a richer backend later.
@@ -73,6 +74,7 @@ impl NativeNotifier for TauriNotifier {
             {
                 let channel_id = match _kind {
                     ratspeak_core::NativeNotificationKind::Message
+                    | ratspeak_core::NativeNotificationKind::Channel
                     | ratspeak_core::NativeNotificationKind::Game => "ratspeak_messages",
                     ratspeak_core::NativeNotificationKind::Call => "ratspeak_calls",
                 };

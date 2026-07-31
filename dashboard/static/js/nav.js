@@ -1,4 +1,34 @@
 var currentView = 'dashboard';
+var _messageUnreadSources = { direct: 0, channels: 0 };
+
+// Direct LXMF and Channels share the mobile Messages slot but have distinct
+// desktop destinations. Keep one source-aware badge reducer so asynchronous
+// listeners cannot hide each other's attention state.
+function setMessageUnreadSource(source, count) {
+    if (source !== 'direct' && source !== 'channels') return;
+    count = Number(count);
+    if (!Number.isFinite(count) || count < 0) count = 0;
+    count = Math.floor(count);
+    _messageUnreadSources[source] = count;
+
+    var directDot = document.getElementById('nav-unread-dot');
+    if (directDot) directDot.style.display = _messageUnreadSources.direct > 0 ? '' : 'none';
+    var channelsDot = document.getElementById('nav-channels-unread');
+    if (channelsDot) channelsDot.style.display = _messageUnreadSources.channels > 0 ? '' : 'none';
+    var bottomDot = document.getElementById('bb-unread');
+    if (bottomDot) {
+        bottomDot.style.display =
+            (_messageUnreadSources.direct + _messageUnreadSources.channels) > 0 ? '' : 'none';
+    }
+    document.querySelectorAll('[data-message-mode-badge]').forEach(function(badge) {
+        var badgeSource = badge.dataset.messageModeBadge;
+        var value = _messageUnreadSources[badgeSource] || 0;
+        badge.textContent = value > 99 ? '99+' : String(value);
+        badge.hidden = value === 0;
+        badge.setAttribute('aria-label', value + ' unread');
+    });
+}
+window.setMessageUnreadSource = setMessageUnreadSource;
 var VIEWS = ['dashboard', 'message', 'channels', 'contacts', 'identity', 'peers', 'network', 'games', 'settings'];
 
 // Tab-bar destinations use replaceState; MORE_VIEWS live under the hamburger.
@@ -439,7 +469,13 @@ var VIEW_LIFECYCLE = {
     },
 
     channels: function() {
-        if (typeof channelsLoad === 'function') channelsLoad();
+        if (typeof channelsLoad === 'function') {
+            Promise.resolve(channelsLoad()).then(function() {
+                if (typeof channelsPrepareVisibleRead === 'function') {
+                    channelsPrepareVisibleRead();
+                }
+            });
+        }
     },
 
     contacts: function() {

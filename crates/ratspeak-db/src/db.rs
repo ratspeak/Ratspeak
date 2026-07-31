@@ -4063,25 +4063,26 @@ pub fn get_channel_unread_summary(
     let mut statement = conn
         .prepare(
             "SELECT
-                history.hub_destination_hash,
-                history.room_name,
-                COUNT(*) AS unread_count,
-                SUM(history.mentioned) AS mention_count,
-                COALESCE(state.notification_level, 'mentions') AS notification_level
-             FROM channel_history AS history
-             LEFT JOIN channel_room_state AS state
-               ON state.identity_id = history.identity_id
-              AND state.hub_destination_hash = history.hub_destination_hash
-              AND state.room_name = history.room_name
-             WHERE history.identity_id = ?1
-               AND history.ours = 0
-               AND history.kind IN ('message', 'notice', 'action')
-               AND history.sequence > COALESCE(state.last_read_sequence, 0)
-             GROUP BY
-                history.hub_destination_hash,
-                history.room_name,
+                state.hub_destination_hash,
+                state.room_name,
+                COUNT(history.sequence) AS unread_count,
+                COALESCE(SUM(history.mentioned), 0) AS mention_count,
                 state.notification_level
-             ORDER BY MAX(history.sequence) DESC",
+             FROM channel_room_state AS state
+             LEFT JOIN channel_history AS history
+               ON history.identity_id = state.identity_id
+              AND history.hub_destination_hash = state.hub_destination_hash
+              AND history.room_name = state.room_name
+              AND history.ours = 0
+              AND history.kind IN ('message', 'notice', 'action')
+              AND history.sequence > state.last_read_sequence
+             WHERE state.identity_id = ?1
+             GROUP BY
+                state.hub_destination_hash,
+                state.room_name,
+                state.notification_level
+             ORDER BY
+                COALESCE(MAX(history.sequence), MAX(state.last_read_sequence)) DESC",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -5249,11 +5250,13 @@ mod channel_history_tests {
             regressed.last_read_sequence, tail,
             "read cursors are monotonic"
         );
+        let cleared = get_channel_unread_summary(&pool, IDENTITY_A).unwrap();
+        assert_eq!(cleared.unread_total, 0);
+        assert_eq!(cleared.rooms.len(), 1);
         assert_eq!(
-            get_channel_unread_summary(&pool, IDENTITY_A)
-                .unwrap()
-                .unread_total,
-            0
+            cleared.rooms[0].notification_level,
+            ChannelRoomNotificationLevel::All,
+            "zero-unread rooms remain addressable for notification controls"
         );
 
         set_channel_room_notification_level(

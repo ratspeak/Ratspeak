@@ -22,6 +22,7 @@ var policySource = sourceFunction(
     '_channelsApplyComposerTypingPolicy',
     'channelsSelectRoom'
 );
+var insertionSource = sourceFunction('_channelsCanCompose', '_channelsDurableRoom');
 var sendSource = sourceFunction('channelsSendMessage', '_channelsBindUI');
 
 function fakeInput(attributes) {
@@ -29,10 +30,17 @@ function fakeInput(attributes) {
     return {
         value: '',
         style: {},
+        scrollHeight: 40,
+        selectionStart: 0,
+        selectionEnd: 0,
         setAttribute: function(name, value) { values[name] = String(value); },
         removeAttribute: function(name) { delete values[name]; },
         hasAttribute: function(name) { return Object.prototype.hasOwnProperty.call(values, name); },
         getAttribute: function(name) { return values[name]; },
+        setSelectionRange: function(start, end) {
+            this.selectionStart = start;
+            this.selectionEnd = end;
+        },
         focus: function() {}
     };
 }
@@ -81,6 +89,61 @@ policyContext.handleBeforeInput({
 }, true);
 assert.strictEqual(replacementPrevented, false);
 
+var insertionInput = fakeInput();
+var insertionContext = {
+    channelsActiveRoom: 'general',
+    channelsHistorySelection: null,
+    channelsSnapshot: { phase: 'active' },
+    _channelsEl: function() { return insertionInput; },
+    _channelsRoomByName: function() { return { name: 'general', phase: 'joined' }; },
+    _channelsMessageLimit: function() { return 350; },
+    _channelsMessageBody: function(value) { return value; },
+    _channelsUtf8Length: function(value) { return Buffer.byteLength(value, 'utf8'); },
+    _channelsUtf8Truncate: function(value, limit) {
+        var result = '';
+        Array.from(value).some(function(character) {
+            if (Buffer.byteLength(result + character, 'utf8') > limit) return true;
+            result += character;
+            return false;
+        });
+        return result;
+    },
+    _channelsUpdateComposer: function() {},
+    showToast: function() {},
+    Buffer: Buffer
+};
+vm.runInNewContext(insertionSource, insertionContext, {
+    filename: 'channels-composer-insertion.js'
+});
+
+insertionInput.value = 'hello';
+insertionInput.selectionStart = insertionInput.selectionEnd = 5;
+assert.strictEqual(
+    insertionContext._channelsInsertMemberMention({ nickname: 'Field Rat', is_self: false }),
+    true
+);
+assert.strictEqual(insertionInput.value, 'hello @Field Rat ',
+    'member mentions must be literal composer text with a safe boundary');
+
+insertionInput.value = 'Draft';
+insertionInput.selectionStart = insertionInput.selectionEnd = 5;
+assert.strictEqual(insertionContext._channelsInsertQuote({
+    kind: 'message',
+    text: 'line one\nline two'
+}, 'Scout'), true);
+assert.strictEqual(
+    insertionInput.value,
+    'Draft\n> Scout: line one line two\n\n',
+    'quotes must remain plain, interoperable text rather than a wire extension'
+);
+
+insertionContext.channelsHistorySelection = { room_name: 'general' };
+assert.strictEqual(
+    insertionContext._channelsInsertMemberMention({ nickname: 'Scout', is_self: false }),
+    false,
+    'read-only history must never unlock composer insertion'
+);
+
 var sentPayload = null;
 var composerInput = fakeInput();
 composerInput.value = 'beep FoO';
@@ -113,4 +176,5 @@ setImmediate(function() {
     process.stdout.write('\u2713 mobile typing defaults preserved\n');
     process.stdout.write('\u2713 automatic desktop replacements rejected\n');
     process.stdout.write('\u2713 mixed-case channel payload preserved\n');
+    process.stdout.write('\u2713 quote and mention insertion stays wire-compatible\n');
 });

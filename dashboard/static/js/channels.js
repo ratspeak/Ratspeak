@@ -33,6 +33,12 @@ var channelsDiscoveredHubs = [];
 var channelsSavedHubs = [];
 var channelsSavedRooms = [];
 var channelsRoomIndex = [];
+var channelsUnread = {
+    rooms: [],
+    unread_total: 0,
+    mention_total: 0,
+    attention_total: 0
+};
 var channelsActiveRoom = null;
 var channelsHistorySelection = null;
 var channelsPendingHubLabel = '';
@@ -57,6 +63,7 @@ var _channelsHistoryCache = {};
 var _channelsHistoryRequestSeq = 0;
 var _channelsHistoryEpoch = 0;
 var _channelsRoomIndexRequestSeq = 0;
+var _channelsUnreadRequestSeq = 0;
 var _channelsRenderedRoomKey = '';
 var CHANNEL_PRESENCE_GROUP_WINDOW_MS = 5 * 60 * 1000;
 // Brief leave/rejoin churn is one continuous presence when nothing happens between it.
@@ -97,6 +104,19 @@ function _channelsUtf8Length(value) {
     return unescape(encodeURIComponent(text)).length;
 }
 
+function _channelsUtf8Truncate(value, maxBytes) {
+    var result = '';
+    var used = 0;
+    Array.from(String(value || '')).some(function(character) {
+        var bytes = _channelsUtf8Length(character);
+        if (used + bytes > maxBytes) return true;
+        result += character;
+        used += bytes;
+        return false;
+    });
+    return result;
+}
+
 function _channelsMessageBody(value) {
     var text = String(value || '');
     return text.indexOf('/me ') === 0 ? text.slice(4) : text;
@@ -105,6 +125,78 @@ function _channelsMessageBody(value) {
 function _channelsMessageLimit() {
     var limits = channelsSnapshot.hub && channelsSnapshot.hub.limits;
     return (limits && limits.max_message_body_bytes) || 350;
+}
+
+function _channelsCanCompose() {
+    var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
+    return !!room && !channelsHistorySelection && room.phase === 'joined' &&
+        channelsSnapshot.phase === 'active';
+}
+
+function _channelsInsertComposerText(value) {
+    var input = _channelsEl('channel-message-input');
+    if (!input || !_channelsCanCompose()) return false;
+    var insertion = String(value || '');
+    if (!insertion) return false;
+    var current = String(input.value || '');
+    var start = Number.isInteger(input.selectionStart) ? input.selectionStart : current.length;
+    var end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
+    start = Math.max(0, Math.min(start, current.length));
+    end = Math.max(start, Math.min(end, current.length));
+    var before = current.slice(0, start);
+    var after = current.slice(end);
+    var characters = Array.from(insertion);
+    var fitted = characters.join('');
+    var limit = _channelsMessageLimit();
+    while (characters.length &&
+            _channelsUtf8Length(_channelsMessageBody(before + fitted + after)) > limit) {
+        characters.pop();
+        fitted = characters.join('');
+    }
+    if (!fitted ||
+            _channelsUtf8Length(_channelsMessageBody(before + fitted + after)) > limit) {
+        if (typeof showToast === 'function') {
+            showToast('The channel message is already at its byte limit', 'toast-orange', 2400);
+        }
+        return false;
+    }
+    input.value = before + fitted + after;
+    var cursor = before.length + fitted.length;
+    if (typeof input.setSelectionRange === 'function') {
+        input.setSelectionRange(cursor, cursor);
+    }
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 132) + 'px';
+    _channelsUpdateComposer();
+    input.focus();
+    return true;
+}
+
+function _channelsInsertQuote(item, authorText) {
+    var input = _channelsEl('channel-message-input');
+    if (!input || !item) return false;
+    var body = String(item.text || '').replace(/\s+/g, ' ').trim();
+    if (!body) return false;
+    var author = String(authorText || 'Channel member').replace(/\s+/g, ' ').trim();
+    var quote = item.kind === 'action'
+        ? '> * ' + author + ' ' + body
+        : '> ' + author + ': ' + body;
+    quote = _channelsUtf8Truncate(quote, Math.min(200, _channelsMessageLimit()));
+    var start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+    var needsLineBreak = start > 0 && input.value.charAt(start - 1) !== '\n';
+    return _channelsInsertComposerText((needsLineBreak ? '\n' : '') + quote + '\n\n');
+}
+
+function _channelsInsertMemberMention(member) {
+    if (!member || member.is_self) return false;
+    var target = String(member.nickname || member.identity_hash || '').trim();
+    if (!target || /[\u0000-\u001f\u007f]/.test(target)) return false;
+    var input = _channelsEl('channel-message-input');
+    if (!input) return false;
+    var start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+    var previous = start > 0 ? input.value.charAt(start - 1) : '';
+    var leading = previous && !/\s/.test(previous) ? ' ' : '';
+    return _channelsInsertComposerText(leading + '@' + target + ' ');
 }
 
 function _channelsDurableRoom(roomName) {
@@ -249,6 +341,72 @@ function _channelsHistoryKey(hubDestinationHash, roomName) {
     return hub && room ? hub + '\n' + room : '';
 }
 
+function _channelsUnreadCount(value) {
+    value = Number(value);
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function channelsApplyUnread(summary) {
+    summary = summary && typeof summary === 'object' ? summary : {};
+    var rooms = Array.isArray(summary.rooms) ? summary.rooms : [];
+    channelsUnread = {
+        rooms: rooms.filter(function(room) {
+            return room && _channelsHistoryKey(
+                room.hub_destination_hash,
+                room.room_name
+            );
+        }).map(function(room) {
+            var level = ['all', 'mentions', 'mute'].indexOf(room.notification_level) !== -1
+                ? room.notification_level : 'mentions';
+            return {
+                hub_destination_hash: String(room.hub_destination_hash).toLowerCase(),
+                room_name: String(room.room_name).toLowerCase(),
+                unread_count: _channelsUnreadCount(room.unread_count),
+                mention_count: _channelsUnreadCount(room.mention_count),
+                notification_level: level
+            };
+        }),
+        unread_total: _channelsUnreadCount(summary.unread_total),
+        mention_total: _channelsUnreadCount(summary.mention_total),
+        attention_total: _channelsUnreadCount(summary.attention_total)
+    };
+    if (typeof setMessageUnreadSource === 'function') {
+        setMessageUnreadSource('channels', channelsUnread.attention_total);
+    }
+    if (_channelsEl('channels-list')) _channelsRenderList();
+    return channelsUnread;
+}
+
+function channelsRefreshUnread() {
+    var request = ++_channelsUnreadRequestSeq;
+    var epoch = _channelsHistoryEpoch;
+    return RS.invoke('api_channel_unread').then(function(summary) {
+        if (request !== _channelsUnreadRequestSeq || epoch !== _channelsHistoryEpoch) {
+            return channelsUnread;
+        }
+        return channelsApplyUnread(summary);
+    }).catch(function() {
+        return channelsUnread;
+    });
+}
+
+function _channelsRoomUnreadState(hubDestinationHash, roomName) {
+    var key = _channelsHistoryKey(hubDestinationHash, roomName);
+    for (var i = 0; i < channelsUnread.rooms.length; i++) {
+        var room = channelsUnread.rooms[i];
+        if (_channelsHistoryKey(room.hub_destination_hash, room.room_name) === key) {
+            return room;
+        }
+    }
+    return {
+        hub_destination_hash: String(hubDestinationHash || '').toLowerCase(),
+        room_name: String(roomName || '').toLowerCase(),
+        unread_count: 0,
+        mention_count: 0,
+        notification_level: 'mentions'
+    };
+}
+
 function _channelsHubByDestination(destinationHash) {
     var target = String(destinationHash || '').toLowerCase();
     var activeHub = channelsSnapshot.hub;
@@ -312,7 +470,8 @@ function _channelsAddLocalRoomEvent(roomName, text) {
         source_hash: null,
         nickname: null,
         text: text,
-        ours: true
+        ours: true,
+        mentioned: false
     });
     if (events.length > 20) events.splice(0, events.length - 20);
     _channelsLocalRoomEvents[room] = events;
@@ -464,6 +623,7 @@ function channelsLoad(force) {
         renderChannels();
         return Promise.resolve(channelsSnapshot);
     }
+    channelsRefreshUnread();
 
     var roomIndexRequest = ++_channelsRoomIndexRequestSeq;
     var roomIndexEpoch = _channelsHistoryEpoch;
@@ -591,7 +751,10 @@ function _channelsHistoryEntry(context) {
             request_id: 0,
             syncing: false,
             sync_id: 0,
-            sync_timer: null
+            sync_timer: null,
+            marking: false,
+            mark_requested: false,
+            marked_sequence: '0'
         };
     }
     return _channelsHistoryCache[context.key];
@@ -608,7 +771,8 @@ function _channelsNormalizeHistoryItem(item) {
         source_hash: item.source_hash || null,
         nickname: item.nickname || null,
         text: String(item.text || ''),
-        ours: !!item.ours
+        ours: !!item.ours,
+        mentioned: !!item.mentioned
     };
 }
 
@@ -697,6 +861,9 @@ function _channelsLoadHistory(context, older) {
         if (!older && Number(writer.pending_events) === 0 &&
                 (writer.phase === 'ready' || writer.phase === 'degraded')) {
             _channelsScheduleHistorySync(context);
+        } else if (!older && Number(writer.pending_events) === 0 &&
+                writer.phase === 'unavailable') {
+            _channelsMaybeMarkRoomRead(context, entry);
         }
         return result;
     });
@@ -760,10 +927,78 @@ function _channelsSyncHistory(context) {
         if (epoch !== _channelsHistoryEpoch || entry.sync_id !== syncId) return result;
         entry.syncing = false;
         if (changed && _channelsCurrentHistoryKey() === context.key) _channelsRenderRoom();
-        if (needsAnotherPass) _channelsScheduleHistorySync(context);
+        if (needsAnotherPass) {
+            _channelsScheduleHistorySync(context);
+        } else {
+            _channelsMaybeMarkRoomRead(context, entry);
+        }
         return result;
     });
 }
+
+function _channelsContextIsVisible(context) {
+    if (!context || context.key !== _channelsCurrentHistoryKey()) return false;
+    if (document.visibilityState && document.visibilityState !== 'visible') return false;
+    if (typeof currentView !== 'undefined' && currentView !== 'channels') return false;
+    if (_channelsCompact()) {
+        var top = RS.viewStack && RS.viewStack.top ? RS.viewStack.top() : null;
+        if (!top || top.viewId !== 'channel-detail') return false;
+    }
+    return true;
+}
+
+function _channelsMaybeMarkRoomRead(context, entry) {
+    entry = entry || _channelsHistoryEntry(context);
+    if (!entry || !entry.loaded || entry.loading || entry.syncing ||
+            !_channelsContextIsVisible(context)) return;
+    var writer = channelsSnapshot.history || {};
+    if (Number(writer.pending_events) > 0 || writer.phase === 'pending') return;
+    var through = String(entry.latest_sequence || '0');
+    if (!/^[1-9][0-9]*$/.test(through) || entry.marked_sequence === through) return;
+    if (entry.marking) {
+        entry.mark_requested = true;
+        return;
+    }
+    var epoch = _channelsHistoryEpoch;
+    entry.marking = true;
+    entry.mark_requested = false;
+    RS.invoke('mark_channel_room_read', {
+        args: {
+            hub_destination_hash: context.hub_destination_hash,
+            room: context.room_name,
+            through: through
+        }
+    }).then(function() {
+        if (epoch !== _channelsHistoryEpoch) return;
+        entry.marked_sequence = through;
+        channelsRefreshUnread();
+    }).catch(function(error) {
+        window.RS.diag('warn', '[Channels] could not advance room read state:', error);
+    }).then(function() {
+        if (epoch !== _channelsHistoryEpoch) return;
+        entry.marking = false;
+        if (entry.mark_requested || String(entry.latest_sequence || '0') !== through) {
+            entry.mark_requested = false;
+            setTimeout(function() { channelsPrepareVisibleRead(); }, 0);
+        }
+    });
+}
+
+function channelsPrepareVisibleRead() {
+    var room = _channelsSelectedRoomView();
+    var context = _channelsHistoryContext(room);
+    if (!context || !_channelsContextIsVisible(context)) return;
+    var entry = _channelsEnsureHistory(context);
+    if (!entry || !entry.loaded || entry.loading || entry.syncing) return;
+    var writer = channelsSnapshot.history || {};
+    if (Number(writer.pending_events) > 0 || writer.phase === 'pending') return;
+    if (writer.phase === 'ready' || writer.phase === 'degraded') {
+        _channelsSyncHistory(context);
+    } else {
+        _channelsMaybeMarkRoomRead(context, entry);
+    }
+}
+window.channelsPrepareVisibleRead = channelsPrepareVisibleRead;
 
 function _channelsEnsureHistory(context) {
     var entry = _channelsHistoryEntry(context);
@@ -1026,7 +1261,9 @@ function _channelsBuildHubRow(hub) {
 
 function _channelsBuildRoomRow(room, savedOnly, options) {
     options = options || {};
-    var historyKey = _channelsHistoryKey(options.hub_destination_hash, room.name);
+    var roomHub = options.hub_destination_hash ||
+        (channelsSnapshot.hub && channelsSnapshot.hub.destination_hash) || '';
+    var historyKey = _channelsHistoryKey(roomHub, room.name);
     var selectedHistoryKey = channelsHistorySelection
         ? _channelsHistoryKey(
             channelsHistorySelection.hub_destination_hash,
@@ -1071,6 +1308,23 @@ function _channelsBuildRoomRow(room, savedOnly, options) {
     copy.appendChild(title);
     copy.appendChild(meta);
     row.appendChild(copy);
+
+    var unread = _channelsRoomUnreadState(roomHub, room.name);
+    if (unread.unread_count > 0) {
+        var unreadBadge = document.createElement('span');
+        unreadBadge.className = 'channel-unread-badge' +
+            (unread.mention_count > 0 ? ' mention' : '') +
+            (unread.notification_level === 'mute' ? ' muted' : '');
+        unreadBadge.textContent = unread.unread_count > 99 ? '99+' : String(unread.unread_count);
+        unreadBadge.setAttribute(
+            'aria-label',
+            unread.unread_count + ' unread' +
+                (unread.mention_count ? ', ' + unread.mention_count + ' mentions' : '')
+        );
+        row.classList.add('has-unread');
+        if (unread.mention_count > 0) row.classList.add('has-mention');
+        row.appendChild(unreadBadge);
+    }
 
     if (savedOnly || room.phase !== 'joined') {
         var status = document.createElement('span');
@@ -1124,7 +1378,7 @@ function _channelsRenderRoom(scrollRestore) {
     var membersToggle = _channelsEl('channel-members-toggle');
     if (membersToggle) membersToggle.hidden = room.phase !== 'joined';
     var roomMenu = _channelsEl('channel-room-menu-btn');
-    if (roomMenu) roomMenu.hidden = !!room.history_only;
+    if (roomMenu) roomMenu.hidden = false;
     _channelsSetText('channel-room-title', room.name);
     var phase = _channelsEl('channel-room-phase');
     if (phase) {
@@ -1250,7 +1504,8 @@ function _channelsTimelineEntries(room, historyEntry) {
         var stored = item && item.id ? historyById[item.id] : null;
         var merged = stored ? Object.assign({}, item, {
             sequence: stored.sequence,
-            recorded_at_ms: stored.recorded_at_ms
+            recorded_at_ms: stored.recorded_at_ms,
+            mentioned: !!(item.mentioned || stored.mentioned)
         }) : item;
         append(merged, _channelsIsHubNotice(merged));
     });
@@ -1558,14 +1813,35 @@ function _channelsBuildHubNotice(item) {
     time.className = 'channel-event-time';
     time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
     time.textContent = _channelsFormatTime(item.timestamp_ms);
+    var meta = document.createElement('span');
+    meta.className = 'channel-event-meta';
+    meta.appendChild(time);
+    var quote = _channelsBuildQuoteButton(item, 'Hub');
+    if (quote) meta.appendChild(quote);
     var body = document.createElement('div');
     body.className = 'channel-hub-notice-text';
     body.textContent = item.text || '';
     heading.appendChild(label);
-    heading.appendChild(time);
+    heading.appendChild(meta);
     notice.appendChild(heading);
     notice.appendChild(body);
     return notice;
+}
+
+function _channelsBuildQuoteButton(item, authorText) {
+    if (!_channelsCanCompose() || !item ||
+            ['message', 'action', 'notice'].indexOf(item.kind || 'message') === -1 ||
+            !String(item.text || '').trim()) return null;
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'channel-quote-button';
+    button.title = 'Quote in reply';
+    button.setAttribute('aria-label', 'Quote ' + authorText + ' in reply');
+    button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"></polyline><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path></svg>';
+    button.addEventListener('click', function() {
+        _channelsInsertQuote(item, authorText);
+    });
+    return button;
 }
 
 function _channelsIsPresenceEvent(entry) {
@@ -1786,7 +2062,9 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     if (hubNotice || _channelsIsHubNotice(item)) return _channelsBuildHubNotice(item);
 
     var event = document.createElement('article');
-    event.className = 'channel-event ' + kind + (item.ours ? ' ours' : '');
+    var mentioned = !!item.mentioned && !item.ours;
+    event.className = 'channel-event ' + kind +
+        (item.ours ? ' ours' : '') + (mentioned ? ' mentioned' : '');
     var authorText = item.nickname || (item.ours ? (channelsSnapshot.nickname || 'You') : _channelsShortHash(item.source_hash)) || 'Hub';
     event.dataset.tone = item.ours ? 'self' : _channelsIdentityTone(item.source_hash || authorText);
 
@@ -1799,16 +2077,27 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     authorLabel.textContent = item.ours ? authorText + ' (you)' : authorText;
     author.appendChild(marker);
     author.appendChild(authorLabel);
+    if (mentioned) {
+        var mentionMarker = document.createElement('span');
+        mentionMarker.className = 'channel-mention-marker';
+        mentionMarker.textContent = 'Mention';
+        author.appendChild(mentionMarker);
+    }
     var time = document.createElement('time');
     time.className = 'channel-event-time';
     time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
     time.textContent = _channelsFormatTime(item.timestamp_ms);
+    var meta = document.createElement('span');
+    meta.className = 'channel-event-meta';
+    meta.appendChild(time);
+    var quote = _channelsBuildQuoteButton(item, authorText);
+    if (quote) meta.appendChild(quote);
     var body = document.createElement('div');
     body.className = 'channel-event-text';
     body.textContent = kind === 'action' ? authorText + ' ' + (item.text || '') : (item.text || '');
 
     event.appendChild(author);
-    event.appendChild(time);
+    event.appendChild(meta);
     event.appendChild(body);
     return event;
 }
@@ -1983,18 +2272,29 @@ function _channelsRenderMemberDetail(room, member, list, note) {
         list.appendChild(hint);
     }
 
-    if (!member.is_self && details.lxmfAddress && typeof openConversationWith === 'function') {
+    if (!member.is_self) {
         var actions = document.createElement('div');
         actions.className = 'channel-member-detail-actions entity-action-grid';
-        var message = document.createElement('button');
-        message.type = 'button';
-        message.className = 'nr-btn entity-action-btn';
-        message.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg><span>Message</span>';
-        message.addEventListener('click', function() {
-            channelsCloseMemberPane();
-            openConversationWith(details.lxmfAddress);
+        var mention = document.createElement('button');
+        mention.type = 'button';
+        mention.className = 'nr-btn entity-action-btn';
+        mention.disabled = !_channelsCanCompose();
+        mention.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.9 7.9"></path></svg><span>Mention</span>';
+        mention.addEventListener('click', function() {
+            if (_channelsInsertMemberMention(member)) channelsCloseMemberPane();
         });
-        actions.appendChild(message);
+        actions.appendChild(mention);
+        if (details.lxmfAddress && typeof openConversationWith === 'function') {
+            var message = document.createElement('button');
+            message.type = 'button';
+            message.className = 'nr-btn entity-action-btn';
+            message.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg><span>Message</span>';
+            message.addEventListener('click', function() {
+                channelsCloseMemberPane();
+                openConversationWith(details.lxmfAddress);
+            });
+            actions.appendChild(message);
+        }
         list.appendChild(actions);
     }
 }
@@ -2186,6 +2486,7 @@ function channelsSelectRoom(roomName) {
             RS.viewStack.push('channel-detail', { room: room.name });
         }
     }
+    setTimeout(function() { channelsPrepareVisibleRead(); }, 0);
 }
 
 function channelsSelectHistoryRoom(hubDestinationHash, roomName) {
@@ -2209,7 +2510,34 @@ function channelsSelectHistoryRoom(hubDestinationHash, roomName) {
             });
         }
     }
+    setTimeout(function() { channelsPrepareVisibleRead(); }, 0);
 }
+
+function channelsOpenNotificationRoute(hubDestinationHash, roomName) {
+    var hub = String(hubDestinationHash || '').trim().toLowerCase();
+    var room = String(roomName || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(hub) || !room ||
+            _channelsUtf8Length(room) > 256 ||
+            /[\u0000-\u001f\u007f]/.test(room)) return Promise.resolve(false);
+    if (typeof switchView === 'function') switchView('channels');
+    var load = typeof channelsLoad === 'function'
+        ? channelsLoad(true)
+        : Promise.resolve(channelsSnapshot);
+    return Promise.resolve(load).then(function() {
+        var activeHub = channelsSnapshot.hub &&
+            String(channelsSnapshot.hub.destination_hash || '').toLowerCase();
+        if (activeHub === hub && _channelsRoomByName(room)) {
+            channelsSelectRoom(room);
+        } else {
+            // Routes intentionally carry no room key and never initiate a
+            // connection. The bounded local timeline remains safe to open
+            // while its hub is offline or no longer bookmarked.
+            channelsSelectHistoryRoom(hub, room);
+        }
+        return true;
+    });
+}
+window.channelsOpenNotificationRoute = channelsOpenNotificationRoute;
 
 function _onChannelDetailExit() {
     channelsCloseMemberPane();
@@ -2574,12 +2902,15 @@ function channelsOpenHubOptions() {
 }
 
 function channelsOpenRoomOptions() {
-    var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
-    if (!room || typeof _rsBuildSheet !== 'function') return;
+    var room = _channelsSelectedRoomView();
+    var context = _channelsHistoryContext(room);
+    if (!room || !context || typeof _rsBuildSheet !== 'function') return;
     var built = _rsBuildSheet({ title: room.name }, function() {});
     var copy = document.createElement('p');
     copy.className = 'channel-sheet-copy';
-    if (room.phase === 'joining') {
+    if (room.history_only) {
+        copy.textContent = 'This is activity retained on this device. Notification choices apply if new activity arrives for this room again.';
+    } else if (room.phase === 'joining') {
         copy.textContent = 'Canceling sends a leave request in case the hub already accepted your join. This attempt will then disappear.';
     } else if (room.phase === 'error') {
         copy.textContent = room.last_error || 'The hub did not confirm this join. Try again without reconnecting, or leave this channel.';
@@ -2599,6 +2930,93 @@ function channelsOpenRoomOptions() {
         var modeLabels = _channelsRoomModeLabels(room.modes);
         if (modeLabels.length) details.appendChild(_channelsRoomDetail('Access', modeLabels.join(' · ')));
         built.body.appendChild(details);
+    }
+
+    var unread = _channelsRoomUnreadState(context.hub_destination_hash, context.room_name);
+    var notificationSelect = document.createElement('select');
+    notificationSelect.className = 'nr-select channel-room-notification-select';
+    [
+        ['mentions', 'Mentions'],
+        ['all', 'All activity'],
+        ['mute', 'Muted']
+    ].forEach(function(choice) {
+        var option = document.createElement('option');
+        option.value = choice[0];
+        option.textContent = choice[1];
+        notificationSelect.appendChild(option);
+    });
+    notificationSelect.value = unread.notification_level;
+    var policyNote = document.createElement('p');
+    policyNote.className = 'channel-room-notification-note';
+    var policyNoteId = 'channel-room-notification-note-' + (++_channelsFieldSeq);
+    policyNote.id = policyNoteId;
+    notificationSelect.setAttribute('aria-describedby', policyNoteId);
+    function renderPolicyNote() {
+        if (notificationSelect.value === 'all') {
+            policyNote.textContent = 'Show app attention and native alerts for new messages, actions, and notices.';
+        } else if (notificationSelect.value === 'mute') {
+            policyNote.textContent = 'Keep unread counts in the room list, but suppress app attention and native alerts.';
+        } else {
+            policyNote.textContent = 'Show app attention and native alerts only when this identity is mentioned.';
+        }
+    }
+    renderPolicyNote();
+    built.body.appendChild(_channelsSheetField('Notifications', notificationSelect));
+    built.body.appendChild(policyNote);
+    notificationSelect.addEventListener('change', function() {
+        var previous = unread.notification_level;
+        var selected = notificationSelect.value;
+        renderPolicyNote();
+        notificationSelect.disabled = true;
+        RS.invoke('set_channel_room_notification_level', {
+            args: {
+                hub_destination_hash: context.hub_destination_hash,
+                room: context.room_name,
+                notification_level: selected
+            }
+        }).then(function() {
+            unread.notification_level = selected;
+            return channelsRefreshUnread();
+        }).then(function() {
+            if (typeof showToast === 'function') {
+                showToast('Channel notifications updated', 'toast-green', 1800);
+            }
+        }).catch(function(error) {
+            notificationSelect.value = previous;
+            renderPolicyNote();
+            if (typeof showToast === 'function') {
+                showToast((error && error.message) || 'Could not update channel notifications', 'toast-red', 3200);
+            }
+        }).then(function() {
+            notificationSelect.disabled = false;
+        });
+    });
+
+    if (room.history_only) {
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'nr-btn nr-btn-secondary';
+        close.textContent = 'Close';
+        close.addEventListener('click', built.dismiss);
+        var activeHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
+        var sameHub = _channelsIsConnected() &&
+            String(activeHub || '').toLowerCase() === context.hub_destination_hash;
+        var open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'nr-btn nr-btn-primary';
+        open.textContent = sameHub ? 'Rejoin channel' : 'Connect to hub';
+        open.addEventListener('click', function() {
+            built.dismiss();
+            if (sameHub) {
+                channelsOpenJoinSheet(context.room_name);
+            } else {
+                channelsOpenConnectSheet(_channelsHubByDestination(context.hub_destination_hash));
+            }
+        });
+        built.footer.appendChild(close);
+        built.footer.appendChild(open);
+        _channelsPresentSheet(built, notificationSelect);
+        return;
     }
     if (room.phase === 'error') {
         var retry = document.createElement('button');
@@ -2626,7 +3044,7 @@ function channelsOpenRoomOptions() {
         });
     });
     built.footer.appendChild(leave);
-    _channelsPresentSheet(built, leave);
+    _channelsPresentSheet(built, notificationSelect);
 }
 
 function _channelsRoomDetail(labelText, value) {
@@ -2802,11 +3220,21 @@ function _channelsBindUI() {
     }
     var send = _channelsEl('channel-send-btn');
     if (send) send.addEventListener('click', channelsSendMessage);
+    // Hydrate global attention even when the Channels view has not been opened;
+    // the writer's startup event can precede WebView listener registration.
+    channelsRefreshUnread();
     renderChannels();
 }
 
 RS.listen('channels_snapshot', function(snapshot) {
     channelsApplySnapshot(snapshot);
+});
+
+// Treat push payloads as invalidation signals. A request sequence around the
+// follow-up DB read prevents an older event or command response from replacing
+// newer unread state on the independent Tauri delivery paths.
+RS.listen('channels_unread', function() {
+    channelsRefreshUnread();
 });
 
 // Hub discovery is announce-driven. The backend query reads Reticulum's
@@ -2828,6 +3256,16 @@ RS.listen('lxmf_identity', function() {
     channelsSavedHubs = [];
     channelsSavedRooms = [];
     channelsRoomIndex = [];
+    channelsUnread = {
+        rooms: [],
+        unread_total: 0,
+        mention_total: 0,
+        attention_total: 0
+    };
+    _channelsUnreadRequestSeq++;
+    if (typeof setMessageUnreadSource === 'function') {
+        setMessageUnreadSource('channels', 0);
+    }
     channelsActiveRoom = null;
     channelsHistorySelection = null;
     channelsPendingHubLabel = '';
@@ -2844,11 +3282,16 @@ RS.listen('lxmf_identity', function() {
     _channelsRenderedRoomKey = '';
     _channelsLoadedAt = 0;
     _channelsLastHubRefreshAt = 0;
+    setTimeout(function() { channelsRefreshUnread(); }, 150);
     if (typeof currentView !== 'undefined' && currentView === 'channels') {
         setTimeout(function() { channelsLoad(true); }, 150);
     } else {
         renderChannels();
     }
+});
+
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) setTimeout(function() { channelsPrepareVisibleRead(); }, 0);
 });
 
 document.addEventListener('DOMContentLoaded', _channelsBindUI);

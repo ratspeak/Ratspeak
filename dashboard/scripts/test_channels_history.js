@@ -55,6 +55,7 @@ async function main() {
         _channelsHistoryCache: {},
         _channelsHistoryRequestSeq: 0,
         _channelsHistoryEpoch: 0,
+        document: { visibilityState: 'hidden' },
         _channelsEl: function() { return transcript; },
         _channelsCurrentHistoryKey: function() { return 'hub-a\ngeneral'; },
         _channelsRenderRoom: function(restore) { renders.push(restore); },

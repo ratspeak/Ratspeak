@@ -5248,10 +5248,9 @@ RS.listen('contact_identity_status', function(data) {
 });
 
 RS.listen('unread_total', function(data) {
-    var dot = document.getElementById('nav-unread-dot');
-    if (dot) dot.style.display = (data.count > 0) ? '' : 'none';
-    var bbDot = document.getElementById('bb-unread');
-    if (bbDot) bbDot.style.display = (data.count > 0) ? '' : 'none';
+    if (typeof setMessageUnreadSource === 'function') {
+        setMessageUnreadSource('direct', data && data.count);
+    }
 });
 
 function showConversationDeleteDialog(hash, name) {

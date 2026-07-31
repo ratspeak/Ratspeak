@@ -8,7 +8,7 @@ use ratspeak_runtime::channels::{
     ChannelRoomPhase, ChannelsError, ChannelsSnapshot, DiscoveredChannelHub,
 };
 use rns_identity::identity::Identity;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::State;
 
@@ -113,6 +113,26 @@ pub struct ChannelHistoryArgs {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MarkChannelRoomReadArgs {
+    pub hub_destination_hash: String,
+    pub room: String,
+    pub through: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetChannelRoomNotificationLevelArgs {
+    pub hub_destination_hash: String,
+    pub room: String,
+    pub notification_level: crate::db::ChannelRoomNotificationLevel,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChannelRoomStateUpdate {
+    pub room: crate::db::ChannelRoomReadState,
+    pub unread: crate::db::ChannelUnreadSummary,
+}
+
 #[tauri::command]
 pub async fn api_channels(state: State<'_, Arc<AppState>>) -> AppResult<ChannelsSnapshot> {
     Ok(state
@@ -182,6 +202,107 @@ pub async fn api_channel_history(
     .await
     .map_err(|_| AppError::internal("channel history database task panicked"))?
     .map_err(AppError::database_unavailable)
+}
+
+#[tauri::command]
+pub async fn api_channel_unread(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<crate::db::ChannelUnreadSummary> {
+    let _identity_lifecycle = state.identity_switch_lock.lock().await;
+    let identity_id = require_identity(&state)?;
+    let pool = state.db.clone();
+    crate::db::spawn_db(pool, move |pool| {
+        crate::db::get_channel_unread_summary(&pool, &identity_id)
+    })
+    .await
+    .map_err(|_| AppError::internal("channel unread database task panicked"))?
+    .map_err(AppError::database_unavailable)
+}
+
+#[tauri::command]
+pub async fn mark_channel_room_read(
+    state: State<'_, Arc<AppState>>,
+    args: MarkChannelRoomReadArgs,
+) -> AppResult<ChannelRoomStateUpdate> {
+    let _identity_lifecycle = state.identity_switch_lock.lock().await;
+    let identity_id = require_identity(&state)?;
+    let destination_hash = clean_destination_hash(&args.hub_destination_hash)?;
+    let room = ratspeak_runtime::rrc::normalize_room(
+        &args.room,
+        crate::db::CHANNEL_HISTORY_MAX_ROOM_BYTES,
+    )
+    .map_err(|error| AppError::bad_request(error.to_string()))?;
+    crate::db::validate_channel_history_after_cursor(&args.through)
+        .map_err(AppError::bad_request)?;
+
+    // The manager command and history-writer barrier are FIFO. Every event
+    // accepted before this read request is either committed first or this
+    // command fails; events accepted later receive a greater sequence.
+    if let Some(channels) = state.channels_handle() {
+        channels.flush_history().await.map_err(map_error)?;
+    }
+
+    let through = args.through;
+    let pool = state.db.clone();
+    let update = crate::db::spawn_db(pool, move |pool| {
+        let room_state = crate::db::mark_channel_room_read(
+            &pool,
+            &identity_id,
+            &destination_hash,
+            &room,
+            &through,
+        )?;
+        let unread = crate::db::get_channel_unread_summary(&pool, &identity_id)?;
+        Ok::<_, String>(ChannelRoomStateUpdate {
+            room: room_state,
+            unread,
+        })
+    })
+    .await
+    .map_err(|_| AppError::internal("channel read-state database task panicked"))?
+    .map_err(AppError::database_unavailable)?;
+    if let Ok(payload) = serde_json::to_value(&update.unread) {
+        state.emit_to_all("channels_unread", payload);
+    }
+    Ok(update)
+}
+
+#[tauri::command]
+pub async fn set_channel_room_notification_level(
+    state: State<'_, Arc<AppState>>,
+    args: SetChannelRoomNotificationLevelArgs,
+) -> AppResult<ChannelRoomStateUpdate> {
+    let _identity_lifecycle = state.identity_switch_lock.lock().await;
+    let identity_id = require_identity(&state)?;
+    let destination_hash = clean_destination_hash(&args.hub_destination_hash)?;
+    let room = ratspeak_runtime::rrc::normalize_room(
+        &args.room,
+        crate::db::CHANNEL_HISTORY_MAX_ROOM_BYTES,
+    )
+    .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let notification_level = args.notification_level;
+    let pool = state.db.clone();
+    let update = crate::db::spawn_db(pool, move |pool| {
+        let room_state = crate::db::set_channel_room_notification_level(
+            &pool,
+            &identity_id,
+            &destination_hash,
+            &room,
+            notification_level,
+        )?;
+        let unread = crate::db::get_channel_unread_summary(&pool, &identity_id)?;
+        Ok::<_, String>(ChannelRoomStateUpdate {
+            room: room_state,
+            unread,
+        })
+    })
+    .await
+    .map_err(|_| AppError::internal("channel notification-state database task panicked"))?
+    .map_err(AppError::database_unavailable)?;
+    if let Ok(payload) = serde_json::to_value(&update.unread) {
+        state.emit_to_all("channels_unread", payload);
+    }
+    Ok(update)
 }
 
 #[tauri::command]
@@ -540,9 +661,10 @@ fn map_error(error: ChannelsError) -> AppError {
             AppError::new("channel_key_required", error.to_string())
         }
         ChannelsError::HubRejected(_) => AppError::new("channel_hub_rejected", error.to_string()),
-        ChannelsError::Unavailable | ChannelsError::Transport(_) | ChannelsError::Stopped => {
-            AppError::service_unavailable(error.to_string())
-        }
+        ChannelsError::Unavailable
+        | ChannelsError::Transport(_)
+        | ChannelsError::LocalHistoryUnavailable
+        | ChannelsError::Stopped => AppError::service_unavailable(error.to_string()),
     }
 }
 

@@ -76,6 +76,7 @@
         <a class="nav-item" data-view="channels" href="#channels" title="Channels">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5a6 6 0 0 1 0-9"/><path d="M15.5 7.5a6 6 0 0 1 0 9"/><path d="M5.5 19.5a10 10 0 0 1 0-15"/><path d="M18.5 4.5a10 10 0 0 1 0 15"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/></svg>
             <span class="nav-label">Channels</span>
+            <span class="nav-unread-dot" id="nav-channels-unread" style="display:none;"></span>
         </a>
         <a class="nav-item" data-view="contacts" href="#contacts" title="Contacts">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -417,8 +418,8 @@
                 <div class="lxmf-layout">
                     <div class="lxmf-sidebar">
                         <div class="message-mode-switch" role="tablist" aria-label="Messaging mode">
-                            <button class="message-mode-option active" type="button" data-message-mode="direct" role="tab" aria-selected="true">Direct</button>
-                            <button class="message-mode-option" type="button" data-message-mode="channels" role="tab" aria-selected="false">Channels</button>
+                            <button class="message-mode-option active" type="button" data-message-mode="direct" role="tab" aria-selected="true">Direct <span class="message-mode-badge" data-message-mode-badge="direct" hidden></span></button>
+                            <button class="message-mode-option" type="button" data-message-mode="channels" role="tab" aria-selected="false">Channels <span class="message-mode-badge" data-message-mode-badge="channels" hidden></span></button>
                         </div>
                         <div class="msg-profile-strip" id="msg-profile-strip">
                             <div class="msg-profile-avatar" id="msg-profile-avatar"></div>
@@ -550,8 +551,8 @@
             <div class="channels-layout" id="channels-layout">
                 <aside class="channels-sidebar" aria-label="Channel rooms">
                     <div class="message-mode-switch" role="tablist" aria-label="Messaging mode">
-                        <button class="message-mode-option" type="button" data-message-mode="direct" role="tab" aria-selected="false">Direct</button>
-                        <button class="message-mode-option active" type="button" data-message-mode="channels" role="tab" aria-selected="true">Channels</button>
+                        <button class="message-mode-option" type="button" data-message-mode="direct" role="tab" aria-selected="false">Direct <span class="message-mode-badge" data-message-mode-badge="direct" hidden></span></button>
+                        <button class="message-mode-option active" type="button" data-message-mode="channels" role="tab" aria-selected="true">Channels <span class="message-mode-badge" data-message-mode-badge="channels" hidden></span></button>
                     </div>
 
                     <div class="channels-sidebar-header">
@@ -1847,7 +1848,7 @@
 <script src="/static/js/vendor/jsQR.js"></script>
 <script src="/static/js/contact_card.js"></script>
 <script src="/static/js/lxmf.js"></script>
-<script src="/static/js/channels.js?v=1.0.29"></script>
+<script src="/static/js/channels.js?v=1.0.30"></script>
 <script src="/static/js/channel_hub.js?v=1.0.28"></script>
 <script src="/static/js/propagation.js"></script>
 <script src="/static/js/settings.js"></script>

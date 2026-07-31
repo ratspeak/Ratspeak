@@ -55,9 +55,35 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
 
 // Native notification tap routing. When the app is backgrounded and the user
 // taps a notification, deep-link to the originating conversation/game via the
-// `route` extra the backend attaches (lxmf:<hash> / lrgp:<session_id>).
+// `route` extra the backend attaches (lxmf:<hash> / lrgp:<session_id> /
+// channels:<hub_hash>:<hex_utf8_room>).
 // Android-only in practice today: desktop notify-rust exposes no tap callback
 // and iOS notifications are stubbed pre-release (see ratspeak-tauri notifier.rs).
+function _decodeChannelNotificationRoute(route) {
+    var match = /^channels:([0-9a-f]{32}):([0-9a-f]{2,512})$/.exec(String(route || ''));
+    if (!match || match[2].length % 2 !== 0) return null;
+    var bytes = new Uint8Array(match[2].length / 2);
+    for (var i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(match[2].slice(i * 2, i * 2 + 2), 16);
+    }
+    var room;
+    try {
+        if (typeof TextDecoder === 'function') {
+            room = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } else {
+            var encoded = '';
+            for (var j = 0; j < bytes.length; j++) {
+                encoded += '%' + bytes[j].toString(16).padStart(2, '0');
+            }
+            room = decodeURIComponent(encoded);
+        }
+    } catch (_) {
+        return null;
+    }
+    if (!room || room !== room.trim() || /[\u0000-\u001f\u007f]/.test(room)) return null;
+    return { hub_destination_hash: match[1], room_name: room };
+}
+
 function _routeNotificationTap(payload) {
     if (!payload || typeof payload !== 'object') return;
     // Android delivers {inputValue, actionId, notification:{...,extra}}; a flat
@@ -65,6 +91,16 @@ function _routeNotificationTap(payload) {
     var extra = (payload.notification && payload.notification.extra) || payload.extra;
     var route = extra && extra.route;
     if (typeof route !== 'string') return;
+    if (route.indexOf('channels:') === 0) {
+        var channel = _decodeChannelNotificationRoute(route);
+        if (channel && typeof window.channelsOpenNotificationRoute === 'function') {
+            window.channelsOpenNotificationRoute(
+                channel.hub_destination_hash,
+                channel.room_name
+            );
+        }
+        return;
+    }
     var sep = route.indexOf(':');
     if (sep < 0) return;
     var kind = route.slice(0, sep);

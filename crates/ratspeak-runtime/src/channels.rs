@@ -56,6 +56,7 @@ const AUTO_REJOIN_ROOM_LIMIT: usize = 32;
 const HISTORY_COMMAND_BUFFER: usize = 128;
 const HISTORY_RETRY_DELAY: Duration = Duration::from_secs(1);
 const HISTORY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const HISTORY_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_JOIN_KEY_BYTES: usize = 1_024;
 const MAX_SEALED_ROOM_SECRET_BYTES: usize = 4_096;
 const ROOM_SECRET_SEAL_SCHEME: &str = "rns_identity";
@@ -276,6 +277,7 @@ pub struct ChannelTranscriptItem {
     pub nickname: Option<String>,
     pub text: String,
     pub ours: bool,
+    pub mentioned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -570,6 +572,8 @@ pub enum ChannelsError {
     Protocol(String),
     #[error("channel transport error: {0}")]
     Transport(String),
+    #[error("local channel history is not ready")]
+    LocalHistoryUnavailable,
     #[error("Channels runtime stopped")]
     Stopped,
 }
@@ -628,6 +632,9 @@ enum ChannelsCommand {
     },
     RefreshDurable {
         result_tx: oneshot::Sender<()>,
+    },
+    FlushHistory {
+        result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
     Shutdown {
         activity_fence: Option<ActivityRequestFence>,
@@ -816,6 +823,16 @@ impl ChannelsStore {
             .await
             .map_err(|_| "Channels history database task panicked".to_string())?
     }
+
+    async fn unread_summary(&self) -> Result<db::ChannelUnreadSummary, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::get_channel_unread_summary(&pool, &identity_id)
+        })
+        .await
+        .map_err(|_| "Channels unread database task panicked".to_string())?
+    }
 }
 
 fn load_durable_channels(
@@ -836,7 +853,17 @@ const HISTORY_EVENTS_DROPPED: &str =
 
 enum ChannelHistoryCommand {
     Append(db::NewChannelHistoryEvent),
+    Barrier { result_tx: oneshot::Sender<()> },
     Shutdown { result_tx: oneshot::Sender<()> },
+}
+
+struct ChannelHistoryWorkerContext {
+    status: Arc<RwLock<ChannelsHistorySnapshot>>,
+    stopping: Arc<AtomicBool>,
+    snapshot: Arc<RwLock<ChannelsSnapshot>>,
+    emitter: Arc<dyn Emitter>,
+    app_state: Weak<AppState>,
+    identity_generation: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -852,6 +879,7 @@ impl ChannelHistoryWriter {
         store: Option<ChannelsStore>,
         snapshot: Arc<RwLock<ChannelsSnapshot>>,
         emitter: Arc<dyn Emitter>,
+        app_state: Weak<AppState>,
     ) -> Self {
         let Some(store) = store else {
             let status = ChannelsHistorySnapshot {
@@ -876,13 +904,20 @@ impl ChannelHistoryWriter {
         let status = Arc::new(RwLock::new(ChannelsHistorySnapshot::default()));
         let stopping = Arc::new(AtomicBool::new(false));
         let (command_tx, command_rx) = mpsc::channel(HISTORY_COMMAND_BUFFER);
+        let identity_generation = app_state
+            .upgrade()
+            .map(|state| state.current_identity_session_generation());
         tokio::spawn(run_channel_history_writer(
             store,
             command_rx,
-            status.clone(),
-            stopping.clone(),
-            snapshot,
-            emitter,
+            ChannelHistoryWorkerContext {
+                status: status.clone(),
+                stopping: stopping.clone(),
+                snapshot,
+                emitter,
+                app_state,
+                identity_generation,
+            },
         ));
         Self {
             command_tx: Some(command_tx),
@@ -951,6 +986,22 @@ impl ChannelHistoryWriter {
         })
     }
 
+    async fn barrier(&self) -> Result<(), ChannelsError> {
+        let Some(command_tx) = self.command_tx.as_ref() else {
+            return Err(ChannelsError::LocalHistoryUnavailable);
+        };
+        let (result_tx, result_rx) = oneshot::channel();
+        tokio::time::timeout(HISTORY_BARRIER_TIMEOUT, async {
+            command_tx
+                .send(ChannelHistoryCommand::Barrier { result_tx })
+                .await
+                .map_err(|_| ChannelsError::Stopped)?;
+            result_rx.await.map_err(|_| ChannelsError::Stopped)
+        })
+        .await
+        .map_err(|_| ChannelsError::LocalHistoryUnavailable)?
+    }
+
     async fn shutdown(&self) {
         let Some(command_tx) = self.command_tx.as_ref() else {
             return;
@@ -1004,14 +1055,157 @@ fn finish_channel_history_batch(status: &Arc<RwLock<ChannelsHistorySnapshot>>, c
     }
 }
 
+fn channel_writer_origin_is_current(
+    app_state: &Weak<AppState>,
+    identity_generation: Option<u64>,
+) -> bool {
+    match (app_state.upgrade(), identity_generation) {
+        (Some(state), Some(generation)) => {
+            state.current_identity_session_generation() == generation
+        }
+        // Headless tests intentionally start the writer without AppState.
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn emit_channel_unread_summary(
+    emitter: &Arc<dyn Emitter>,
+    app_state: &Weak<AppState>,
+    identity_generation: Option<u64>,
+    summary: &db::ChannelUnreadSummary,
+) {
+    if !channel_writer_origin_is_current(app_state, identity_generation) {
+        return;
+    }
+    match serde_json::to_value(summary) {
+        Ok(payload) => emitter.emit("channels_unread", payload),
+        Err(_) => tracing::warn!(
+            reason = "serialization_failed",
+            "failed to serialize Channels unread summary"
+        ),
+    }
+}
+
+fn channel_notification_text(value: &str, fallback: &str, limit: usize) -> String {
+    let inspected: String = value
+        .chars()
+        .take(limit.saturating_mul(4).max(limit))
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let collapsed = inspected.split_whitespace().collect::<Vec<_>>().join(" ");
+    let truncated: String = collapsed.chars().take(limit).collect();
+    if truncated.is_empty() {
+        fallback.into()
+    } else {
+        truncated
+    }
+}
+
+fn notify_committed_channel_events(
+    app_state: &Weak<AppState>,
+    identity_generation: Option<u64>,
+    batch: &[db::NewChannelHistoryEvent],
+    outcome: &db::ChannelHistoryAppendOutcome,
+    summary: &db::ChannelUnreadSummary,
+) {
+    let Some(state) = app_state.upgrade() else {
+        return;
+    };
+    if identity_generation
+        .is_none_or(|generation| state.current_identity_session_generation() != generation)
+        || state.is_foreground()
+        || !state.native_notifications_enabled()
+    {
+        return;
+    }
+
+    // One replacement notification per room avoids a burst when a recovered
+    // Link delivers several committed events in one writer batch.
+    let mut selected = BTreeMap::<(String, String), usize>::new();
+    for inserted in &outcome.inserted_events {
+        let Some(event) = batch.get(inserted.batch_index) else {
+            continue;
+        };
+        if event.ours
+            || !matches!(
+                event.kind,
+                db::ChannelHistoryKind::Message
+                    | db::ChannelHistoryKind::Notice
+                    | db::ChannelHistoryKind::Action
+            )
+        {
+            continue;
+        }
+        let Some(room) = summary.rooms.iter().find(|room| {
+            room.hub_destination_hash == event.hub_destination_hash
+                && room.room_name == event.room_name
+        }) else {
+            // A concurrent read barrier may already have consumed it.
+            continue;
+        };
+        if room.unread_count == 0 {
+            continue;
+        }
+        let allowed = match room.notification_level {
+            db::ChannelRoomNotificationLevel::All => true,
+            db::ChannelRoomNotificationLevel::Mentions => event.mentioned,
+            db::ChannelRoomNotificationLevel::Mute => false,
+        };
+        if allowed {
+            selected.insert(
+                (event.hub_destination_hash.clone(), event.room_name.clone()),
+                inserted.batch_index,
+            );
+        }
+    }
+
+    for ((hub_destination_hash, room_name), batch_index) in selected {
+        let Some(event) = batch.get(batch_index) else {
+            continue;
+        };
+        let sender = channel_notification_text(
+            event.nickname.as_deref().unwrap_or(""),
+            if event.kind == db::ChannelHistoryKind::Notice {
+                "Channel hub"
+            } else {
+                "Someone"
+            },
+            48,
+        );
+        let room_label = channel_notification_text(&room_name, "channel", 48);
+        let title = if event.mentioned {
+            format!("{sender} mentioned you in {room_label}")
+        } else {
+            format!("{sender} in {room_label}")
+        };
+        let body = channel_notification_text(&event.text, "New channel activity", 120);
+        let encoded_room = hex::encode(room_name.as_bytes());
+        let route = format!("channels:{hub_destination_hash}:{encoded_room}");
+        let notification_key = format!("{hub_destination_hash}:{encoded_room}");
+        state.emit_native_notification(ratspeak_core::NativeNotification::channel(
+            title,
+            body,
+            route,
+            crate::stable_notification_id(&notification_key, 4_000_000),
+        ));
+    }
+}
+
 async fn run_channel_history_writer(
     store: ChannelsStore,
     mut command_rx: mpsc::Receiver<ChannelHistoryCommand>,
-    status: Arc<RwLock<ChannelsHistorySnapshot>>,
-    stopping: Arc<AtomicBool>,
-    snapshot: Arc<RwLock<ChannelsSnapshot>>,
-    emitter: Arc<dyn Emitter>,
+    context: ChannelHistoryWorkerContext,
 ) {
+    let ChannelHistoryWorkerContext {
+        status,
+        stopping,
+        snapshot,
+        emitter,
+        app_state,
+        identity_generation,
+    } = context;
+
     match store.prune_history().await {
         Ok(_) => finish_channel_history_batch(&status, 0),
         Err(_) => {
@@ -1022,6 +1216,9 @@ async fn run_channel_history_writer(
         }
     }
     publish_channel_history_status(&status, &snapshot, &emitter);
+    if let Ok(summary) = store.unread_summary().await {
+        emit_channel_unread_summary(&emitter, &app_state, identity_generation, &summary);
+    }
 
     let mut deferred = None;
     loop {
@@ -1053,11 +1250,26 @@ async fn run_channel_history_writer(
                 let mut failure_reported = false;
                 loop {
                     match store.append_history(batch.clone()).await {
-                        Ok(_) => {
+                        Ok(outcome) => {
                             if failure_reported {
                                 tracing::info!(
                                     reason = "write_recovered",
                                     "local Channels history writes recovered"
+                                );
+                            }
+                            if let Ok(summary) = store.unread_summary().await {
+                                emit_channel_unread_summary(
+                                    &emitter,
+                                    &app_state,
+                                    identity_generation,
+                                    &summary,
+                                );
+                                notify_committed_channel_events(
+                                    &app_state,
+                                    identity_generation,
+                                    batch.as_slice(),
+                                    &outcome,
+                                    &summary,
                                 );
                             }
                             finish_channel_history_batch(&status, batch_len);
@@ -1087,6 +1299,9 @@ async fn run_channel_history_writer(
                         }
                     }
                 }
+            }
+            ChannelHistoryCommand::Barrier { result_tx } => {
+                let _ = result_tx.send(());
             }
             ChannelHistoryCommand::Shutdown { result_tx } => {
                 let _ = result_tx.send(());
@@ -1398,6 +1613,18 @@ impl ChannelsManagerHandle {
         {
             let _ = result_rx.await;
         }
+    }
+
+    /// FIFO barrier for durable read transitions. Every transcript event the
+    /// manager accepted before this command is committed (or the command
+    /// fails) before the caller may advance a room cursor.
+    pub async fn flush_history(&self) -> Result<(), ChannelsError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        self.command_tx
+            .send(ChannelsCommand::FlushHistory { result_tx })
+            .await
+            .map_err(|_| ChannelsError::Stopped)?;
+        result_rx.await.map_err(|_| ChannelsError::Stopped)?
     }
 
     /// Adopt a renamed identity for the live session, if it is still using the
@@ -1935,7 +2162,12 @@ async fn run_manager(input: ChannelsManagerInput) {
     let mut stored_secrets = StoredRoomSecrets::new();
     let mut room_transition_tick = tokio::time::interval(ROOM_TRANSITION_TICK);
     room_transition_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let history = ChannelHistoryWriter::start(store.clone(), snapshot.clone(), emitter.clone());
+    let history = ChannelHistoryWriter::start(
+        store.clone(),
+        snapshot.clone(),
+        emitter.clone(),
+        app_state.clone(),
+    );
 
     match &store {
         Some(store) => apply_store_result(&snapshot, &mut stored_secrets, store.load().await),
@@ -2469,6 +2701,15 @@ async fn run_manager(input: ChannelsManagerInput) {
                         }
                         emit_snapshot(&emitter, &snapshot);
                         let _ = result_tx.send(());
+                    }
+                    ChannelsCommand::FlushHistory { result_tx } => {
+                        if let Some(session) = active.as_mut()
+                            && history.enqueue(&mut session.history_events)
+                        {
+                            history.project(&snapshot);
+                            emit_snapshot(&emitter, &snapshot);
+                        }
+                        let _ = result_tx.send(history.barrier().await);
                     }
                     ChannelsCommand::Shutdown {
                         activity_fence,
@@ -4382,6 +4623,7 @@ fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope
                     nickname: Some(active.nickname.clone()),
                     text: "You joined".into(),
                     ours: true,
+                    mentioned: false,
                 }
             };
             append_room_item(
@@ -4412,6 +4654,7 @@ fn reconnected_transcript_item(envelope: &Envelope) -> ChannelTranscriptItem {
         nickname: None,
         text: "Reconnected to hub".into(),
         ours: true,
+        mentioned: false,
     }
 }
 
@@ -4471,6 +4714,39 @@ fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
     );
 }
 
+fn mention_word_continuation(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '_' | '-')
+}
+
+fn contains_exact_mention(text: &str, target: &str) -> bool {
+    if target.is_empty() {
+        return false;
+    }
+    let text = text.to_lowercase();
+    let needle = format!("@{}", target.to_lowercase());
+    let mut offset = 0usize;
+    while let Some(found) = text[offset..].find(&needle) {
+        let start = offset.saturating_add(found);
+        let end = start.saturating_add(needle.len());
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+        if before.is_none_or(|ch| !mention_word_continuation(ch))
+            && after.is_none_or(|ch| !mention_word_continuation(ch))
+        {
+            return true;
+        }
+        // The marker is ASCII, so advancing one byte stays on a UTF-8
+        // boundary and still permits overlapping candidate searches.
+        offset = start.saturating_add(1);
+    }
+    false
+}
+
+fn channel_text_mentions(text: &str, nickname: &str, identity_hash: [u8; 16]) -> bool {
+    contains_exact_mention(text, nickname)
+        || contains_exact_mention(text, &hex::encode(identity_hash))
+}
+
 fn append_content(
     active: &mut ActiveSession,
     activity_recorder: &ChannelsActivity,
@@ -4485,13 +4761,20 @@ fn append_content(
         MessageType::Action => ChannelItemKind::Action,
         _ => ChannelItemKind::Message,
     };
-    let item = transcript_item(
+    let mentioned = envelope.source != active.source
+        && matches!(
+            envelope.message_type,
+            MessageType::Message | MessageType::Action
+        )
+        && channel_text_mentions(text, &active.nickname, active.source);
+    let mut item = transcript_item(
         envelope,
         kind,
         envelope.nickname.clone(),
         text.to_string(),
         envelope.source == active.source,
     );
+    item.mentioned = mentioned;
     if let Some(room_name) = envelope.room.as_deref()
         && let Some(room) = active.rooms.get_mut(room_name)
     {
@@ -4771,6 +5054,7 @@ fn transcript_item(
         nickname,
         text,
         ours,
+        mentioned: false,
     }
 }
 
@@ -4799,7 +5083,7 @@ fn append_room_item(
         nickname: item.nickname.clone(),
         text: item.text.clone(),
         ours: item.ours,
-        mentioned: false,
+        mentioned: item.mentioned,
     });
     room.transcript.push(item);
     if room.transcript.len() > TRANSCRIPT_LIMIT {
@@ -5712,13 +5996,26 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use r2d2_sqlite::SqliteConnectionManager;
+    use ratspeak_core::{NativeNotification, NativeNotificationKind, NativeNotifier};
     use rns_identity::destination::Destination;
     use rns_link::link::{CloseReason, Link};
     use rns_transport::actor::TransportActor;
     use rns_transport::link_messages::DestinationEvent;
     use rns_transport::messages::OutboundRequest;
+    use std::sync::Mutex;
 
     use crate::channel_hub::{ChannelHubConfig, ChannelHubHandle, HubStore};
+
+    #[derive(Default)]
+    struct RecordingNotifier {
+        seen: Mutex<Vec<NativeNotification>>,
+    }
+
+    impl NativeNotifier for RecordingNotifier {
+        fn notify(&self, notification: NativeNotification) {
+            self.seen.lock().unwrap().push(notification);
+        }
+    }
 
     #[test]
     fn snapshot_order_is_monotonic_and_survives_whole_value_replacement() {
@@ -5816,6 +6113,7 @@ mod tests {
             Some(ChannelsStore::new(pool.clone(), identity_id.clone())),
             snapshot.clone(),
             Arc::new(ratspeak_core::NoopEmitter),
+            Weak::new(),
         );
         tokio::time::timeout(Duration::from_secs(2), async {
             while writer
@@ -5829,7 +6127,9 @@ mod tests {
         .await
         .unwrap();
 
-        let mut pending = VecDeque::from([history_test_event("event-1")]);
+        let mut event = history_test_event("event-1");
+        event.mentioned = true;
+        let mut pending = VecDeque::from([event]);
         assert!(writer.enqueue(&mut pending));
         assert!(pending.is_empty());
         writer.project(&snapshot);
@@ -5847,13 +6147,101 @@ mod tests {
         })
         .await
         .unwrap();
+        writer.barrier().await.unwrap();
 
         let page =
             db::list_channel_history(&pool, &identity_id, &"11".repeat(16), "general", None, 10)
                 .unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].event_id, "event-1");
+        assert!(page.items[0].mentioned);
+        let unread = db::get_channel_unread_summary(&pool, &identity_id).unwrap();
+        assert_eq!(unread.unread_total, 1);
+        assert_eq!(unread.mention_total, 1);
         writer.shutdown().await;
+    }
+
+    #[test]
+    fn committed_channel_notifications_are_policy_fenced_and_room_coalesced() {
+        let identity = Identity::new();
+        let notifier = Arc::new(RecordingNotifier::default());
+        let state = channels_test_state_with_notifier(&identity, notifier.clone());
+        state.set_native_notifications_enabled(true);
+        state.is_foreground.store(false, Ordering::Release);
+        let generation = state.current_identity_session_generation();
+        let weak = Arc::downgrade(&state);
+
+        let mut plain = history_test_event("plain");
+        plain.nickname = Some("Scout".into());
+        let mut mention = history_test_event("mention");
+        mention.nickname = Some("Scout".into());
+        mention.text = "@Field Rat check in".into();
+        mention.mentioned = true;
+        let batch = vec![plain, mention];
+        let outcome = db::ChannelHistoryAppendOutcome {
+            inserted: 2,
+            duplicates: 0,
+            pruned: 0,
+            latest_sequence: Some("2".into()),
+            inserted_events: vec![
+                db::ChannelHistoryInsertedEvent {
+                    batch_index: 0,
+                    sequence: "1".into(),
+                },
+                db::ChannelHistoryInsertedEvent {
+                    batch_index: 1,
+                    sequence: "2".into(),
+                },
+            ],
+        };
+        let summary = db::ChannelUnreadSummary {
+            rooms: vec![db::ChannelRoomUnread {
+                hub_destination_hash: "11".repeat(16),
+                room_name: "general".into(),
+                unread_count: 2,
+                mention_count: 1,
+                notification_level: db::ChannelRoomNotificationLevel::Mentions,
+            }],
+            unread_total: 2,
+            mention_total: 1,
+            attention_total: 1,
+        };
+
+        notify_committed_channel_events(&weak, Some(generation), &batch, &outcome, &summary);
+        let seen = notifier.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "a batch coalesces to one room alert");
+        assert_eq!(seen[0].kind, NativeNotificationKind::Channel);
+        assert!(seen[0].title.contains("mentioned you in general"));
+        let expected_route = format!("channels:{}:{}", "11".repeat(16), hex::encode("general"));
+        assert_eq!(seen[0].thread_id.as_deref(), Some(expected_route.as_str()),);
+        drop(seen);
+
+        let duplicate = db::ChannelHistoryAppendOutcome {
+            duplicates: 2,
+            ..db::ChannelHistoryAppendOutcome::default()
+        };
+        notify_committed_channel_events(&weak, Some(generation), &batch, &duplicate, &summary);
+        assert_eq!(
+            notifier.seen.lock().unwrap().len(),
+            1,
+            "deduplicated retries never replay notifications"
+        );
+
+        let mut muted = summary.clone();
+        muted.rooms[0].notification_level = db::ChannelRoomNotificationLevel::Mute;
+        notify_committed_channel_events(&weak, Some(generation), &batch, &outcome, &muted);
+        notify_committed_channel_events(
+            &weak,
+            Some(generation.wrapping_add(1)),
+            &batch,
+            &outcome,
+            &summary,
+        );
+        assert_eq!(
+            notifier.seen.lock().unwrap().len(),
+            1,
+            "mute and stale identity generations suppress alerts"
+        );
     }
 
     #[test]
@@ -6517,6 +6905,58 @@ mod tests {
     }
 
     #[test]
+    fn mentions_are_exact_literal_case_insensitive_and_identity_addressable() {
+        let identity = [0xab; 16];
+        assert!(channel_text_mentions(
+            "Signal for @Field Rat.",
+            "field rat",
+            identity
+        ));
+        assert!(channel_text_mentions(
+            "(@FieLD rAT) check in",
+            "Field Rat",
+            identity
+        ));
+        assert!(channel_text_mentions("hello @学习", "学习", identity));
+        assert!(channel_text_mentions(
+            "literal @Field.Rat works",
+            "Field.Rat",
+            identity
+        ));
+        assert!(channel_text_mentions(
+            &format!("identity ping @{}", hex::encode(identity)),
+            "someone else",
+            identity
+        ));
+
+        assert!(!channel_text_mentions(
+            "@Field Rattle",
+            "Field Rat",
+            identity
+        ));
+        assert!(!channel_text_mentions(
+            "mail@Field Rat",
+            "Field Rat",
+            identity
+        ));
+        assert!(!channel_text_mentions(
+            "@Field Rat-team",
+            "Field Rat",
+            identity
+        ));
+        assert!(!channel_text_mentions(
+            &format!("@{}a", hex::encode(identity)),
+            "someone else",
+            identity
+        ));
+        assert!(!channel_text_mentions(
+            "plain traffic",
+            "Field Rat",
+            identity
+        ));
+    }
+
+    #[test]
     fn live_transcripts_are_strictly_bounded() {
         let mut room = ChannelRoomSnapshot::joining("field team".into());
         let mut history = VecDeque::new();
@@ -6533,6 +6973,7 @@ mod tests {
                     nickname: None,
                     text: "signal".into(),
                     ours: false,
+                    mentioned: false,
                 },
             );
         }
@@ -7493,6 +7934,27 @@ mod tests {
                 .any(|item| item.text == "signal check" && item.ours)
         );
 
+        let remote_identity = Identity::new();
+        let mut mention = Envelope::new(MessageType::Message, remote_identity.hash);
+        mention.room = Some("field team".into());
+        mention.nickname = Some("Scout".into());
+        mention.body = Some(Value::Text("Copy, @FIELD RAT.".into()));
+        send_server_envelope(&delivery_tx, &mut responder, &mention).await;
+        let mentioned = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.transcript
+                    .iter()
+                    .any(|item| item.id == hex::encode(mention.message_id) && item.mentioned)
+            })
+        })
+        .await;
+        assert!(
+            mentioned.rooms[0]
+                .transcript
+                .iter()
+                .any(|item| { item.text == "Copy, @FIELD RAT." && item.mentioned && !item.ours })
+        );
+
         let mut ping = Envelope::new(MessageType::Ping, hub_identity.hash);
         ping.body = Some(Value::Bytes(vec![1, 2, 3, 4]));
         send_server_envelope(&delivery_tx, &mut responder, &ping).await;
@@ -7923,7 +8385,10 @@ mod tests {
             .unwrap();
     }
 
-    fn channels_test_state(identity: &Identity) -> Arc<AppState> {
+    fn channels_test_state_with_notifier(
+        identity: &Identity,
+        notifier: Arc<dyn NativeNotifier>,
+    ) -> Arc<AppState> {
         let tmp = std::env::temp_dir().join(format!(
             "ratspeak-channels-key-test-{}-{}",
             std::process::id(),
@@ -7943,8 +8408,12 @@ mod tests {
             crate::config::DashboardConfig::from_env_and_defaults(tmp),
             pool,
             Arc::new(ratspeak_core::NoopEmitter),
-            Arc::new(ratspeak_core::NoopNotifier),
+            notifier,
         ))
+    }
+
+    fn channels_test_state(identity: &Identity) -> Arc<AppState> {
+        channels_test_state_with_notifier(identity, Arc::new(ratspeak_core::NoopNotifier))
     }
 
     async fn wait_snapshot(
