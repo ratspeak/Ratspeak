@@ -474,6 +474,9 @@ var VIEW_LIFECYCLE = {
                 if (typeof channelsPrepareVisibleRead === 'function') {
                     channelsPrepareVisibleRead();
                 }
+                if (typeof channelsRefreshDirectory === 'function') {
+                    channelsRefreshDirectory(false);
+                }
             });
         }
     },

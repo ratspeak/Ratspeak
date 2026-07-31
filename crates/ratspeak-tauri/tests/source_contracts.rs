@@ -323,6 +323,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
         "mark_channel_room_read",
         "set_channel_room_notification_level",
         "discover_channel_hubs",
+        "refresh_channel_directory",
         "connect_channel_hub",
         "disconnect_channel_hub",
         "join_channel",
@@ -377,10 +378,12 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(db.contains("pub fn mark_channel_room_read"));
     assert!(db.contains("pub fn set_channel_room_notification_level"));
     assert!(db.contains("pub fn get_channel_unread_summary"));
-    assert!(channels_js.contains("service_model_version: 1"));
+    assert!(channels_js.contains("service_model_version: 2"));
     assert!(channels_js.contains("connection_budget: 1"));
     assert!(channels_js.contains("selected_hub_destination: null"));
     assert!(channels_js.contains("durability: {"));
+    assert!(channels_js.contains("directory: {"));
+    assert!(channels_js.contains("RS.invoke('refresh_channel_directory')"));
 }
 
 /// The hub persists operator policy and nothing else, creates rooms only for

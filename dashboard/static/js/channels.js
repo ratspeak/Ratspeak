@@ -4,7 +4,7 @@
 
 var channelsSnapshot = {
     protocol_version: '0.1.3',
-    service_model_version: 1,
+    service_model_version: 2,
     generation: 0,
     revision: 0,
     connection_budget: 1,
@@ -24,6 +24,14 @@ var channelsSnapshot = {
     nickname: null,
     hub: null,
     rooms: [],
+    directory: {
+        phase: 'idle',
+        rooms: [],
+        complete: false,
+        omitted_count: 0,
+        refreshed_at_ms: null,
+        last_error: null
+    },
     hub_greeting: null,
     notices: [],
     last_error: null,
@@ -46,6 +54,8 @@ var _channelsLoadedAt = 0;
 var _channelsLastHubRefreshAt = 0;
 var _channelsLoadPromise = null;
 var _channelsHubRefreshPromise = null;
+var _channelsDirectoryRefreshPromise = null;
+var _channelsDirectoryRequestSeq = 0;
 var _channelsDiscoveryRefreshTimer = null;
 var _channelsSavedRoomsHub = null;
 var _channelsSaveHubKey = null;
@@ -72,6 +82,7 @@ var CHANNEL_HISTORY_PAGE_SIZE = 100;
 var CHANNEL_HISTORY_SYNC_PAGE_SIZE = 200;
 var CHANNEL_HISTORY_CACHE_ROOM_LIMIT = 5000;
 var CHANNEL_HISTORY_MAX_SYNC_PAGES = 32;
+var CHANNEL_DIRECTORY_STALE_AFTER_MS = 5 * 60 * 1000;
 
 function _channelsEl(id) {
     return document.getElementById(id);
@@ -90,6 +101,21 @@ function _channelsIsConnecting() {
         channelsSnapshot.phase === 'connecting' ||
         channelsSnapshot.phase === 'awaiting_welcome' ||
         channelsSnapshot.phase === 'reconnecting';
+}
+
+function _channelsViewVisible() {
+    var view = _channelsEl('view-channels');
+    return !!(view && view.classList && view.classList.contains('active'));
+}
+
+function _channelsDirectoryNeedsRefresh() {
+    if (!_channelsIsConnected()) return false;
+    var directory = channelsSnapshot.directory || {};
+    if (directory.phase === 'idle') return true;
+    if (directory.phase !== 'ready') return false;
+    var refreshedAt = Number(directory.refreshed_at_ms);
+    return !Number.isFinite(refreshedAt) ||
+        Date.now() - refreshedAt >= CHANNEL_DIRECTORY_STALE_AFTER_MS;
 }
 
 function _channelsShortHash(value) {
@@ -559,6 +585,19 @@ function channelsApplySnapshot(snapshot) {
     var oldHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
     channelsSnapshot = snapshot;
     if (!Array.isArray(channelsSnapshot.rooms)) channelsSnapshot.rooms = [];
+    if (!channelsSnapshot.directory) {
+        channelsSnapshot.directory = {
+            phase: 'idle',
+            rooms: [],
+            complete: false,
+            omitted_count: 0,
+            refreshed_at_ms: null,
+            last_error: null
+        };
+    }
+    if (!Array.isArray(channelsSnapshot.directory.rooms)) {
+        channelsSnapshot.directory.rooms = [];
+    }
     if (!channelsSnapshot.hub_greeting) channelsSnapshot.hub_greeting = null;
     if (!Array.isArray(channelsSnapshot.notices)) channelsSnapshot.notices = [];
     if (!channelsSnapshot.history) {
@@ -572,6 +611,8 @@ function channelsApplySnapshot(snapshot) {
 
     var newHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
     if (newHub !== oldHub) {
+        _channelsDirectoryRequestSeq += 1;
+        _channelsDirectoryRefreshPromise = null;
         _channelsLocalRoomEvents = {};
         _channelsExpandedPresenceGroups = {};
         _channelsSelectedMemberKey = null;
@@ -604,6 +645,9 @@ function channelsApplySnapshot(snapshot) {
 
     _channelsPersistConveniences();
     renderChannels();
+    if (newHub && _channelsViewVisible() && _channelsDirectoryNeedsRefresh()) {
+        channelsRefreshDirectory(false);
+    }
     var selectedRoom = _channelsSelectedRoomView();
     var selectedHistory = _channelsHistoryContext(selectedRoom);
     var writer = channelsSnapshot.history || {};
@@ -696,6 +740,37 @@ function channelsRefreshAvailableHubs() {
         return result;
     });
     return _channelsHubRefreshPromise;
+}
+
+function channelsRefreshDirectory(force) {
+    if (!_channelsIsConnected() || !channelsSnapshot.hub) {
+        return Promise.resolve(channelsSnapshot);
+    }
+    if (_channelsDirectoryRefreshPromise) return _channelsDirectoryRefreshPromise;
+    if (!force && !_channelsDirectoryNeedsRefresh()) {
+        return Promise.resolve(channelsSnapshot);
+    }
+
+    var destination = channelsSnapshot.hub.destination_hash;
+    var request = ++_channelsDirectoryRequestSeq;
+    var pending = RS.invoke('refresh_channel_directory').then(function(snapshot) {
+        if (request !== _channelsDirectoryRequestSeq) return channelsSnapshot;
+        var currentHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
+        if (currentHub !== destination) return channelsSnapshot;
+        channelsApplySnapshot(snapshot);
+        return channelsSnapshot;
+    }).catch(function() {
+        // The manager projects request failures into its authoritative
+        // snapshot. Never invent a competing browser-local directory phase.
+        return channelsSnapshot;
+    }).then(function(result) {
+        if (request === _channelsDirectoryRequestSeq) {
+            _channelsDirectoryRefreshPromise = null;
+        }
+        return result;
+    });
+    _channelsDirectoryRefreshPromise = pending;
+    return pending;
 }
 
 function channelsLoadSavedRooms(destinationHash) {
@@ -1116,22 +1191,74 @@ function _channelsRenderList() {
         var liveNames = {};
         channelsSnapshot.rooms.forEach(function(room) {
             liveNames[room.name] = true;
+        });
+        var savedOnlyRooms = channelsSavedRooms.filter(function(saved) {
+            return !liveNames[saved.room_name];
+        });
+        if (channelsSnapshot.rooms.length || savedOnlyRooms.length) {
+            list.appendChild(_channelsListSection('Your channels'));
+        }
+        channelsSnapshot.rooms.forEach(function(room) {
             list.appendChild(_channelsBuildRoomRow(room, false));
         });
-        channelsSavedRooms.forEach(function(saved) {
-            if (!liveNames[saved.room_name]) {
-                var indexed = channelsRoomIndex.find(function(entry) {
-                    return entry.hub_destination_hash === saved.hub_destination_hash &&
-                        entry.room_name === saved.room_name;
-                });
-                list.appendChild(_channelsBuildRoomRow({ name: saved.room_name }, true, {
-                    hub_destination_hash: saved.hub_destination_hash,
-                    has_history: !!(indexed && indexed.has_history)
-                }));
-            }
+        savedOnlyRooms.forEach(function(saved) {
+            var indexed = channelsRoomIndex.find(function(entry) {
+                return entry.hub_destination_hash === saved.hub_destination_hash &&
+                    entry.room_name === saved.room_name;
+            });
+            list.appendChild(_channelsBuildRoomRow({ name: saved.room_name }, true, {
+                hub_destination_hash: saved.hub_destination_hash,
+                has_history: !!(indexed && indexed.has_history)
+            }));
         });
-        if (!list.children.length) {
-            list.appendChild(_channelsEmptyList('No channels joined', 'Join a channel', 'join'));
+
+        var directory = channelsSnapshot.directory || {};
+        var directoryRooms = Array.isArray(directory.rooms) ? directory.rooms : [];
+        var knownNames = Object.assign({}, liveNames);
+        savedOnlyRooms.forEach(function(saved) { knownNames[saved.room_name] = true; });
+        var availableRooms = directoryRooms.filter(function(room) {
+            return room && room.name && !knownNames[room.name];
+        });
+        list.appendChild(_channelsListSection('Public on this hub', {
+            className: 'channel-directory-section',
+            actionText: directory.phase === 'loading' ? 'Checking\u2026' : 'Refresh',
+            actionDisabled: directory.phase === 'loading',
+            action: function() { channelsRefreshDirectory(true); }
+        }));
+        availableRooms.forEach(function(room) {
+            list.appendChild(_channelsBuildDirectoryRoomRow(room));
+        });
+        if (directory.phase === 'loading') {
+            list.appendChild(_channelsDirectoryStatus(
+                availableRooms.length ? 'Refreshing public channels\u2026' : 'Checking this hub\u2026'
+            ));
+        } else if (directory.phase === 'error') {
+            list.appendChild(_channelsDirectoryStatus(
+                'Could not refresh public channels',
+                directory.last_error || 'Try again when the Link is available',
+                'error'
+            ));
+        } else if (directory.phase === 'idle') {
+            list.appendChild(_channelsDirectoryStatus(
+                'Public channels have not been requested yet',
+                'Refresh to ask this hub'
+            ));
+        } else if (!availableRooms.length) {
+            list.appendChild(_channelsDirectoryStatus(
+                directoryRooms.length
+                    ? 'All advertised channels are already in your list'
+                    : 'No public channels advertised'
+            ));
+        }
+        if (directory.complete === false && Number(directory.omitted_count) > 0) {
+            var omitted = Number(directory.omitted_count);
+            list.appendChild(_channelsDirectoryStatus(
+                omitted + (omitted === 1
+                    ? ' more channel was not included'
+                    : ' more channels were not included'),
+                'The hub kept its response within one constrained packet',
+                'warning'
+            ));
         }
         return;
     }
@@ -1173,11 +1300,43 @@ function _channelsRenderList() {
     }
 }
 
-function _channelsListSection(text) {
+function _channelsListSection(text, options) {
+    options = options || {};
     var section = document.createElement('div');
-    section.className = 'channels-list-section';
-    section.textContent = text;
+    section.className = 'channels-list-section' +
+        (options.className ? ' ' + options.className : '');
+    var label = document.createElement('span');
+    label.textContent = text;
+    section.appendChild(label);
+    if (options.actionText) {
+        var action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'channels-list-section-action';
+        action.textContent = options.actionText;
+        action.disabled = !!options.actionDisabled;
+        action.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (typeof options.action === 'function') options.action();
+        });
+        section.appendChild(action);
+    }
     return section;
+}
+
+function _channelsDirectoryStatus(text, detail, tone) {
+    var status = document.createElement('div');
+    status.className = 'channel-directory-status';
+    if (tone) status.dataset.tone = tone;
+    var label = document.createElement('span');
+    label.textContent = text;
+    status.appendChild(label);
+    if (detail) {
+        var copy = document.createElement('small');
+        copy.textContent = detail;
+        status.appendChild(copy);
+    }
+    return status;
 }
 
 function _channelsEmptyList(text, actionText, action) {
@@ -1256,6 +1415,40 @@ function _channelsBuildHubRow(hub) {
     distance.textContent = _channelsHubDistance(hub);
     if (distance.textContent) row.appendChild(distance);
     row.addEventListener('click', function() { channelsOpenConnectSheet(hub); });
+    return row;
+}
+
+function _channelsBuildDirectoryRoomRow(room) {
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'channel-room-row channel-directory-room';
+    row.dataset.room = room.name;
+    row.setAttribute('aria-label', 'Join ' + room.name);
+
+    var icon = document.createElement('span');
+    icon.className = 'channel-room-row-icon';
+    icon.innerHTML = _channelsRoomIcon();
+    row.appendChild(icon);
+
+    var copy = document.createElement('span');
+    copy.className = 'channel-room-row-copy';
+    var title = document.createElement('span');
+    title.className = 'channel-room-row-title';
+    title.textContent = room.name;
+    var meta = document.createElement('span');
+    meta.className = 'channel-room-row-meta';
+    meta.textContent = room.topic || 'Public channel on this hub';
+    copy.appendChild(title);
+    copy.appendChild(meta);
+    row.appendChild(copy);
+
+    var action = document.createElement('span');
+    action.className = 'channel-row-status joined';
+    action.textContent = 'Join';
+    row.appendChild(action);
+    row.addEventListener('click', function() {
+        channelsOpenJoinSheet(room.name);
+    });
     return row;
 }
 

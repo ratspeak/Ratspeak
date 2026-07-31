@@ -39,6 +39,11 @@ const HUB_GREETING_WINDOW: Duration = Duration::from_secs(30);
 const JOIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 const PART_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
 const ROOM_TRANSITION_TICK: Duration = Duration::from_secs(1);
+const DIRECTORY_REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
+const DIRECTORY_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
+const DIRECTORY_MAX_RESPONSE_BYTES: usize = 16 * 1024;
+const DIRECTORY_MAX_ROOMS: usize = 256;
+const DIRECTORY_MAX_TOPIC_BYTES: usize = 512;
 const DEFAULT_NICK_MAX_BYTES: usize = 32;
 const DEFAULT_ROOM_MAX_BYTES: usize = 64;
 const DEFAULT_MESSAGE_MAX_BYTES: usize = 350;
@@ -71,7 +76,7 @@ const ROOM_KEY_REQUIRED: &str = "Channel key required. Enter the current key.";
 /// Initial scheduler budget. The hub-keyed model deliberately supports raising
 /// this later without pretending the current runtime holds multiple Links.
 pub const CHANNELS_CONNECTION_BUDGET: usize = 1;
-pub const CHANNELS_SERVICE_MODEL_VERSION: u16 = 1;
+pub const CHANNELS_SERVICE_MODEL_VERSION: u16 = 2;
 
 // Snapshot ordering crosses two asynchronous delivery paths: direct Tauri
 // command responses and live `channels_snapshot` events. A process-local
@@ -421,6 +426,36 @@ pub struct ChannelObservedRoomSnapshot {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelRoomDirectoryPhase {
+    #[default]
+    Idle,
+    Loading,
+    Ready,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelDirectoryRoomSnapshot {
+    pub name: String,
+    pub topic: Option<String>,
+}
+
+/// A Link-scoped interpretation of the reference `/list` NOTICE. It is
+/// observation only: never a bookmark, membership claim, or hub backlog.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelRoomDirectorySnapshot {
+    pub phase: ChannelRoomDirectoryPhase,
+    pub rooms: Vec<ChannelDirectoryRoomSnapshot>,
+    /// False when a constrained hub explicitly reports that entries were
+    /// omitted from its single-packet compatibility response.
+    pub complete: bool,
+    pub omitted_count: usize,
+    pub refreshed_at_ms: Option<u64>,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelHubObservedSnapshot {
     /// Network observation, never a desired-state alias.
@@ -428,6 +463,7 @@ pub struct ChannelHubObservedSnapshot {
     pub nickname: Option<String>,
     pub hub: ChannelHubSnapshot,
     pub rooms: Vec<ChannelObservedRoomSnapshot>,
+    pub directory: ChannelRoomDirectorySnapshot,
     pub last_error: Option<String>,
 }
 
@@ -475,6 +511,9 @@ pub struct ChannelsSnapshot {
     pub nickname: Option<String>,
     pub hub: Option<ChannelHubSnapshot>,
     pub rooms: Vec<ChannelRoomSnapshot>,
+    /// Public rooms currently advertised by the authenticated hub. This is
+    /// cleared with the Link and is intentionally never persisted.
+    pub directory: ChannelRoomDirectorySnapshot,
     /// The first authenticated roomless hub NOTICE after WELCOME. `rrcd`
     /// delivers its configured greeting this way, so keep it in hub context
     /// instead of merging it into every room transcript.
@@ -506,6 +545,7 @@ impl ChannelsSnapshot {
             nickname: None,
             hub: None,
             rooms: Vec::new(),
+            directory: ChannelRoomDirectorySnapshot::default(),
             hub_greeting: None,
             notices: Vec::new(),
             last_error: None,
@@ -627,6 +667,10 @@ enum ChannelsCommand {
     Send {
         room: String,
         text: String,
+        activity_fence: Option<ActivityRequestFence>,
+        result_tx: oneshot::Sender<Result<(), ChannelsError>>,
+    },
+    RefreshDirectory {
         activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
@@ -1600,6 +1644,22 @@ impl ChannelsManagerHandle {
         result_rx.await.map_err(|_| ChannelsError::Stopped)?
     }
 
+    /// Request the reference-compatible public room list. The response is
+    /// interpreted into Link-scoped observation; it is not persisted and does
+    /// not imply that any listed room has been joined.
+    pub async fn refresh_directory(&self) -> Result<(), ChannelsError> {
+        let activity_fence = self.activity.capture_fence();
+        let (result_tx, result_rx) = oneshot::channel();
+        self.command_tx
+            .send(ChannelsCommand::RefreshDirectory {
+                activity_fence,
+                result_tx,
+            })
+            .await
+            .map_err(|_| ChannelsError::Stopped)?;
+        result_rx.await.map_err(|_| ChannelsError::Stopped)?
+    }
+
     /// Reconcile bookmark changes made through the existing IPC surface into
     /// the unified service snapshot. Best-effort callers can ignore a stopped
     /// manager; a fresh manager reloads the same identity-scoped rows.
@@ -1717,6 +1777,9 @@ struct ActiveSession {
     supports_action: bool,
     limits: HubLimits,
     rooms: BTreeMap<String, ChannelRoomSnapshot>,
+    directory: ChannelRoomDirectorySnapshot,
+    directory_request_deadline: Option<Instant>,
+    directory_last_requested_at: Option<Instant>,
     hub_greeting: Option<ChannelTranscriptItem>,
     hub_greeting_deadline_ms: u64,
     notices: VecDeque<ChannelTranscriptItem>,
@@ -2619,6 +2682,22 @@ async fn run_manager(input: ChannelsManagerInput) {
                                 .await;
                         let _ = result_tx.send(result);
                     }
+                    ChannelsCommand::RefreshDirectory {
+                        activity_fence,
+                        result_tx,
+                    } => {
+                        let result = refresh_room_directory(
+                            active.as_mut(),
+                            &activity,
+                            activity_fence,
+                        )
+                        .await;
+                        if let Some(session) = active.as_ref() {
+                            sync_session_snapshot(session, &snapshot);
+                            emit_snapshot(&emitter, &snapshot);
+                        }
+                        let _ = result_tx.send(result);
+                    }
                     ChannelsCommand::IdentityRenamed { previous, current } => {
                         let mut adopted_target = None;
                         if let Some(session) = active.as_mut()
@@ -2841,6 +2920,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                         &activity,
                         now_ms(),
                     );
+                    changed |= expire_directory_request(active, Instant::now());
                     active.auto_rejoining.retain(|room| {
                         active
                             .rooms
@@ -2961,6 +3041,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                                     // identity may since have retired.
                                     state.nickname = None;
                                     state.rooms.clear();
+                                    state.directory = ChannelRoomDirectorySnapshot::default();
                                     state.hub_greeting = None;
                                     state.notices.clear();
                                     state.last_error = Some(product_reason);
@@ -3008,6 +3089,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                             };
                             state.nickname = None;
                             state.rooms.clear();
+                            state.directory = ChannelRoomDirectorySnapshot::default();
                             state.hub_greeting = None;
                             state.notices.clear();
                             state.last_error = Some("Channel link closed".into());
@@ -3724,6 +3806,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                 state.phase = ChannelsPhase::Error;
                 state.nickname = None;
                 state.rooms.clear();
+                state.directory = ChannelRoomDirectorySnapshot::default();
                 state.hub_greeting = None;
                 state.notices.clear();
                 state.last_error = Some(error.to_string());
@@ -3762,6 +3845,9 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                 supports_action: capabilities.actions,
                 limits: welcome.limits.clone(),
                 rooms: BTreeMap::new(),
+                directory: ChannelRoomDirectorySnapshot::default(),
+                directory_request_deadline: None,
+                directory_last_requested_at: None,
                 hub_greeting: None,
                 hub_greeting_deadline_ms: now_ms()
                     .saturating_add(HUB_GREETING_WINDOW.as_millis() as u64),
@@ -4087,6 +4173,57 @@ async fn send_room_text(
         .map(|_| ())
 }
 
+async fn refresh_room_directory(
+    active: Option<&mut ActiveSession>,
+    activity_recorder: &ChannelsActivity,
+    activity_fence: Option<ActivityRequestFence>,
+) -> Result<(), ChannelsError> {
+    let active = active.ok_or(ChannelsError::NotConnected)?;
+    let now = Instant::now();
+    if active.directory_request_deadline.is_some() {
+        return Ok(());
+    }
+    if active
+        .directory_last_requested_at
+        .is_some_and(|last| now.saturating_duration_since(last) < DIRECTORY_REFRESH_COOLDOWN)
+    {
+        return Ok(());
+    }
+
+    let mut envelope = Envelope::new(MessageType::Message, active.source);
+    envelope.nickname = Some(active.nickname.clone());
+    envelope.body = Some(Value::Text("/list".into()));
+    active.directory_last_requested_at = Some(now);
+    match send_active_envelope(active, activity_recorder, &envelope, activity_fence).await {
+        Ok(_) => {
+            active.directory.phase = ChannelRoomDirectoryPhase::Loading;
+            active.directory.last_error = None;
+            active.directory_request_deadline = Some(now + DIRECTORY_REFRESH_TIMEOUT);
+            Ok(())
+        }
+        Err(error) => {
+            active.directory.phase = ChannelRoomDirectoryPhase::Error;
+            active.directory.last_error =
+                Some("Could not request public channels from this hub".into());
+            active.directory_request_deadline = None;
+            Err(error)
+        }
+    }
+}
+
+fn expire_directory_request(active: &mut ActiveSession, now: Instant) -> bool {
+    if active
+        .directory_request_deadline
+        .is_none_or(|deadline| deadline > now)
+    {
+        return false;
+    }
+    active.directory_request_deadline = None;
+    active.directory.phase = ChannelRoomDirectoryPhase::Error;
+    active.directory.last_error = Some("The hub did not answer the public channel request".into());
+    true
+}
+
 enum LinkEventOutcome {
     Keep,
     Stale,
@@ -4288,22 +4425,34 @@ async fn handle_envelope(
         }
         MessageType::Message | MessageType::Notice | MessageType::Action => {
             if envelope.message_type == MessageType::Notice {
-                let confirmation = join_confirmation_context(active, &envelope);
-                if apply_rrcd_room_status_notice(active, &envelope) {
-                    record_join_confirmation(
-                        active,
-                        activity_recorder,
-                        confirmation,
-                        activity::ChannelJoinEvidence::RrcdStatusNotice,
-                    );
-                } else {
-                    append_content(active, activity_recorder, &envelope, encoded_bytes)
+                match apply_room_directory_notice(active, &envelope) {
+                    RoomDirectoryNoticeHandling::AppliedConsumed => {}
+                    RoomDirectoryNoticeHandling::AppliedVisible => {
+                        append_content(active, activity_recorder, &envelope, encoded_bytes);
+                    }
+                    RoomDirectoryNoticeHandling::NotDirectory => {
+                        let confirmation = join_confirmation_context(active, &envelope);
+                        if apply_rrcd_room_status_notice(active, &envelope) {
+                            record_join_confirmation(
+                                active,
+                                activity_recorder,
+                                confirmation,
+                                activity::ChannelJoinEvidence::RrcdStatusNotice,
+                            );
+                        } else {
+                            append_content(active, activity_recorder, &envelope, encoded_bytes)
+                        }
+                    }
                 }
             } else {
                 append_content(active, activity_recorder, &envelope, encoded_bytes)
             }
         }
-        MessageType::Error => append_error(active, activity_recorder, &envelope),
+        MessageType::Error => {
+            if !apply_room_directory_error(active, &envelope) {
+                append_error(active, activity_recorder, &envelope);
+            }
+        }
         MessageType::ResourceEnvelope | MessageType::Unknown(_) => {}
     }
 }
@@ -4534,6 +4683,172 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
             item,
         );
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedRoomDirectoryNotice {
+    NotDirectory,
+    Malformed,
+    Directory {
+        rooms: Vec<ChannelDirectoryRoomSnapshot>,
+        omitted_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoomDirectoryNoticeHandling {
+    NotDirectory,
+    AppliedVisible,
+    AppliedConsumed,
+}
+
+fn parse_directory_omitted_marker(line: &str) -> Option<usize> {
+    line.strip_prefix("(+")?
+        .strip_suffix(" more)")?
+        .parse()
+        .ok()
+        .filter(|count| *count > 0)
+}
+
+/// Interpret the byte-compatible `/list` response already used by rrcd and
+/// NomadNet. Exact framing keeps ordinary roomless greetings out of the
+/// directory, while source and room checks prevent peers from forging it.
+fn parse_room_directory_notice(
+    envelope: &Envelope,
+    hub_identity: [u8; 16],
+    max_room_bytes: usize,
+) -> ParsedRoomDirectoryNotice {
+    if envelope.source != hub_identity || envelope.room.is_some() {
+        return ParsedRoomDirectoryNotice::NotDirectory;
+    }
+    let Some(text) = rrc::text_body(envelope) else {
+        return ParsedRoomDirectoryNotice::NotDirectory;
+    };
+    let text = text.trim();
+    if text == "No public rooms registered" {
+        return ParsedRoomDirectoryNotice::Directory {
+            rooms: Vec::new(),
+            omitted_count: 0,
+        };
+    }
+
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("Registered public rooms:") {
+        return ParsedRoomDirectoryNotice::NotDirectory;
+    }
+    if text.len() > DIRECTORY_MAX_RESPONSE_BYTES {
+        return ParsedRoomDirectoryNotice::Malformed;
+    }
+
+    let lines: Vec<&str> = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut rooms = BTreeMap::<String, Option<String>>::new();
+    let mut omitted_count = 0usize;
+    for (index, line) in lines.iter().copied().enumerate() {
+        if let Some(omitted) = parse_directory_omitted_marker(line) {
+            if index + 1 != lines.len() {
+                return ParsedRoomDirectoryNotice::Malformed;
+            }
+            omitted_count = omitted;
+            continue;
+        }
+        if line.starts_with("(+") && line.ends_with(" more)") {
+            return ParsedRoomDirectoryNotice::Malformed;
+        }
+        if line.chars().any(char::is_control) {
+            return ParsedRoomDirectoryNotice::Malformed;
+        }
+        let (name, topic) = match line.split_once(" - ") {
+            Some((name, topic)) => (name, Some(topic.trim())),
+            None => (line, None),
+        };
+        let Ok(name) = rrc::normalize_room(name, max_room_bytes) else {
+            return ParsedRoomDirectoryNotice::Malformed;
+        };
+        if name.chars().any(char::is_control) {
+            return ParsedRoomDirectoryNotice::Malformed;
+        }
+        let topic = topic.filter(|topic| !topic.is_empty()).map(str::to_string);
+        if topic.as_ref().is_some_and(|topic| {
+            topic.len() > DIRECTORY_MAX_TOPIC_BYTES || topic.chars().any(char::is_control)
+        }) {
+            return ParsedRoomDirectoryNotice::Malformed;
+        }
+        rooms.entry(name).or_insert(topic);
+        if rooms.len() > DIRECTORY_MAX_ROOMS {
+            return ParsedRoomDirectoryNotice::Malformed;
+        }
+    }
+
+    ParsedRoomDirectoryNotice::Directory {
+        rooms: rooms
+            .into_iter()
+            .map(|(name, topic)| ChannelDirectoryRoomSnapshot { name, topic })
+            .collect(),
+        omitted_count,
+    }
+}
+
+fn apply_room_directory_notice(
+    active: &mut ActiveSession,
+    envelope: &Envelope,
+) -> RoomDirectoryNoticeHandling {
+    let pending = active.directory_request_deadline.is_some();
+    let parsed = parse_room_directory_notice(
+        envelope,
+        active.hub_identity,
+        active
+            .limits
+            .max_room_name_bytes
+            .unwrap_or(DEFAULT_ROOM_MAX_BYTES),
+    );
+    match parsed {
+        ParsedRoomDirectoryNotice::NotDirectory => RoomDirectoryNoticeHandling::NotDirectory,
+        ParsedRoomDirectoryNotice::Malformed if !pending => {
+            RoomDirectoryNoticeHandling::AppliedVisible
+        }
+        ParsedRoomDirectoryNotice::Malformed => {
+            active.directory_request_deadline = None;
+            active.directory.phase = ChannelRoomDirectoryPhase::Error;
+            active.directory.last_error =
+                Some("The hub returned an invalid public channel list".into());
+            RoomDirectoryNoticeHandling::AppliedConsumed
+        }
+        ParsedRoomDirectoryNotice::Directory {
+            rooms,
+            omitted_count,
+        } => {
+            active.directory = ChannelRoomDirectorySnapshot {
+                phase: ChannelRoomDirectoryPhase::Ready,
+                rooms,
+                complete: omitted_count == 0,
+                omitted_count,
+                refreshed_at_ms: Some(now_ms()),
+                last_error: None,
+            };
+            active.directory_request_deadline = None;
+            if pending {
+                RoomDirectoryNoticeHandling::AppliedConsumed
+            } else {
+                RoomDirectoryNoticeHandling::AppliedVisible
+            }
+        }
+    }
+}
+
+fn apply_room_directory_error(active: &mut ActiveSession, envelope: &Envelope) -> bool {
+    if active.directory_request_deadline.is_none()
+        || envelope.source != active.hub_identity
+        || envelope.room.is_some()
+    {
+        return false;
+    }
+    active.directory_request_deadline = None;
+    active.directory.phase = ChannelRoomDirectoryPhase::Error;
+    active.directory.last_error = Some("The hub rejected the public channel request".into());
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5264,6 +5579,7 @@ fn sync_session_snapshot(active: &ActiveSession, snapshot: &Arc<RwLock<ChannelsS
     mutate_snapshot(snapshot, |state| {
         state.nickname = Some(active.nickname.clone());
         state.rooms = active.rooms.values().cloned().collect();
+        state.directory = active.directory.clone();
         state.hub_greeting = active.hub_greeting.clone();
         state.notices = active.notices.iter().cloned().collect();
     });
@@ -5274,6 +5590,7 @@ fn clear_observed_snapshot(state: &mut ChannelsSnapshot) {
     state.nickname = None;
     state.hub = None;
     state.rooms.clear();
+    state.directory = ChannelRoomDirectorySnapshot::default();
     state.hub_greeting = None;
     state.notices.clear();
     state.last_error = None;
@@ -5841,6 +6158,7 @@ fn sync_hub_service_projection(state: &mut ChannelsSnapshot) {
                     last_error: room.last_error.clone(),
                 })
                 .collect(),
+            directory: state.directory.clone(),
             last_error: state.last_error.clone(),
         };
         client_hub_mut(state, &observed_hub.destination_hash).observed = Some(observed);
@@ -6083,6 +6401,8 @@ mod tests {
         assert_eq!(value["connection_budget"], CHANNELS_CONNECTION_BUDGET);
         assert_eq!(value["history"]["phase"], "loading");
         assert_eq!(value["history"]["pending_events"], 0);
+        assert_eq!(value["directory"]["phase"], "idle");
+        assert_eq!(value["directory"]["complete"], false);
     }
 
     fn history_test_event(id: &str) -> db::NewChannelHistoryEvent {
@@ -6310,6 +6630,17 @@ mod tests {
         snapshot.hub = Some(ChannelHubSnapshot::pending(
             parse_destination_hash(destination).unwrap(),
         ));
+        snapshot.directory = ChannelRoomDirectorySnapshot {
+            phase: ChannelRoomDirectoryPhase::Ready,
+            rooms: vec![ChannelDirectoryRoomSnapshot {
+                name: "lobby".into(),
+                topic: Some("Public coordination".into()),
+            }],
+            complete: true,
+            omitted_count: 0,
+            refreshed_at_ms: Some(9),
+            last_error: None,
+        };
         sync_hub_service_projection(&mut snapshot);
 
         assert_eq!(
@@ -6328,6 +6659,12 @@ mod tests {
         assert_eq!(
             hub.observed.as_ref().map(|observed| observed.phase),
             Some(ChannelsPhase::Resolving)
+        );
+        assert_eq!(
+            hub.observed
+                .as_ref()
+                .map(|observed| observed.directory.rooms[0].name.as_str()),
+            Some("lobby")
         );
 
         // Losing observation does not rewrite user intent or its durable copy.
@@ -6871,6 +7208,136 @@ mod tests {
                 "room another-room: registered; mode=+nrt; topic=(none)"
             )
             .is_none()
+        );
+    }
+
+    fn directory_notice(source: [u8; 16], text: &str) -> Envelope {
+        let mut envelope = Envelope::new(MessageType::Notice, source);
+        envelope.body = Some(Value::Text(text.into()));
+        envelope
+    }
+
+    #[test]
+    fn parses_reference_room_directory_as_bounded_canonical_observation() {
+        let hub = [7u8; 16];
+        let parsed = parse_room_directory_notice(
+            &directory_notice(
+                hub,
+                "Registered public rooms:\n  General - Field coordination\n  #Town Square\n  Почен - Привет\n  GENERAL - duplicate is ignored",
+            ),
+            hub,
+            64,
+        );
+        assert_eq!(
+            parsed,
+            ParsedRoomDirectoryNotice::Directory {
+                rooms: vec![
+                    ChannelDirectoryRoomSnapshot {
+                        name: "#town square".into(),
+                        topic: None,
+                    },
+                    ChannelDirectoryRoomSnapshot {
+                        name: "general".into(),
+                        topic: Some("Field coordination".into()),
+                    },
+                    ChannelDirectoryRoomSnapshot {
+                        name: "почен".into(),
+                        topic: Some("Привет".into()),
+                    },
+                ],
+                omitted_count: 0,
+            }
+        );
+        assert_eq!(
+            parse_room_directory_notice(
+                &directory_notice(hub, "No public rooms registered"),
+                hub,
+                64,
+            ),
+            ParsedRoomDirectoryNotice::Directory {
+                rooms: Vec::new(),
+                omitted_count: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn room_directory_preserves_honest_single_packet_truncation() {
+        let hub = [8u8; 16];
+        assert_eq!(
+            parse_room_directory_notice(
+                &directory_notice(
+                    hub,
+                    "Registered public rooms:\n  alpha - First\n  bravo\n  (+17 more)"
+                ),
+                hub,
+                64,
+            ),
+            ParsedRoomDirectoryNotice::Directory {
+                rooms: vec![
+                    ChannelDirectoryRoomSnapshot {
+                        name: "alpha".into(),
+                        topic: Some("First".into()),
+                    },
+                    ChannelDirectoryRoomSnapshot {
+                        name: "bravo".into(),
+                        topic: None,
+                    },
+                ],
+                omitted_count: 17,
+            }
+        );
+    }
+
+    #[test]
+    fn room_directory_requires_authenticated_roomless_exact_framing() {
+        let hub = [9u8; 16];
+        let peer = [10u8; 16];
+        let text = "Registered public rooms:\n  general";
+        assert_eq!(
+            parse_room_directory_notice(&directory_notice(peer, text), hub, 64),
+            ParsedRoomDirectoryNotice::NotDirectory
+        );
+        let mut room_scoped = directory_notice(hub, text);
+        room_scoped.room = Some("general".into());
+        assert_eq!(
+            parse_room_directory_notice(&room_scoped, hub, 64),
+            ParsedRoomDirectoryNotice::NotDirectory
+        );
+        assert_eq!(
+            parse_room_directory_notice(
+                &directory_notice(hub, "Registered public rooms\n  general"),
+                hub,
+                64,
+            ),
+            ParsedRoomDirectoryNotice::NotDirectory
+        );
+        assert_eq!(
+            parse_room_directory_notice(
+                &directory_notice(
+                    hub,
+                    "Registered public rooms:\n  general\n  (+2 more)\n  hidden"
+                ),
+                hub,
+                64,
+            ),
+            ParsedRoomDirectoryNotice::Malformed
+        );
+        assert_eq!(
+            parse_room_directory_notice(
+                &directory_notice(hub, "Registered public rooms:\n  room - bad\u{0007}topic"),
+                hub,
+                64,
+            ),
+            ParsedRoomDirectoryNotice::Malformed
+        );
+        assert_eq!(
+            parse_room_directory_notice(
+                &directory_notice(hub, "Registered public rooms:\n  too-long"),
+                hub,
+                4,
+            ),
+            ParsedRoomDirectoryNotice::Malformed
         );
     }
 
@@ -7845,6 +8312,57 @@ mod tests {
                 .hub
                 .as_ref()
                 .is_some_and(|hub| hub.capabilities.actions)
+        );
+
+        manager.refresh_directory().await.unwrap();
+        let list_request = receive_client_envelope(
+            &mut transport_rx,
+            &delivery_tx,
+            &mut responder,
+            &hub_signing,
+        )
+        .await;
+        assert_eq!(list_request.message_type, MessageType::Message);
+        assert_eq!(list_request.room, None);
+        assert_eq!(list_request.nickname.as_deref(), Some("Field Rat"));
+        assert_eq!(rrc::text_body(&list_request), Some("/list"));
+        assert_eq!(
+            manager.snapshot().directory.phase,
+            ChannelRoomDirectoryPhase::Loading
+        );
+
+        let directory_notice = directory_notice(
+            hub_identity.hash,
+            "Registered public rooms:\n  field team - Field coordination\n  lobby\n  (+3 more)",
+        );
+        send_server_envelope(&delivery_tx, &mut responder, &directory_notice).await;
+        let directory_snapshot = wait_snapshot(&manager, |snapshot| {
+            snapshot.directory.phase == ChannelRoomDirectoryPhase::Ready
+        })
+        .await;
+        assert!(
+            directory_snapshot.rooms.is_empty(),
+            "listing never joins a room"
+        );
+        assert_eq!(directory_snapshot.directory.rooms.len(), 2);
+        assert_eq!(directory_snapshot.directory.rooms[0].name, "field team");
+        assert_eq!(
+            directory_snapshot.directory.rooms[0].topic.as_deref(),
+            Some("Field coordination")
+        );
+        assert!(!directory_snapshot.directory.complete);
+        assert_eq!(directory_snapshot.directory.omitted_count, 3);
+        assert!(
+            directory_snapshot.notices.is_empty(),
+            "the response to an internal refresh is structured, not chat copy"
+        );
+        assert_eq!(
+            directory_snapshot
+                .hubs
+                .first()
+                .and_then(|hub| hub.observed.as_ref())
+                .map(|observed| observed.directory.clone()),
+            Some(directory_snapshot.directory.clone())
         );
 
         let mut greeting = Envelope::new(MessageType::Notice, hub_identity.hash);

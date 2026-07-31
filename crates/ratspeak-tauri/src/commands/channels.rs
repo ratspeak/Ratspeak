@@ -316,6 +316,15 @@ pub async fn discover_channel_hubs(
 }
 
 #[tauri::command]
+pub async fn refresh_channel_directory(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<ChannelsSnapshot> {
+    let channels = channels_handle(&state)?;
+    channels.refresh_directory().await.map_err(map_error)?;
+    Ok(channels.snapshot())
+}
+
+#[tauri::command]
 pub async fn connect_channel_hub(
     state: State<'_, Arc<AppState>>,
     args: ConnectChannelHubArgs,
