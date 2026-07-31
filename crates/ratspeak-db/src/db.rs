@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 37;
+const SCHEMA_VERSION: i64 = 38;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -48,6 +48,15 @@ fn now_ts() -> f64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 pub fn init_pool(data_dir: &Path) -> Result<DbPool, Box<dyn std::error::Error + Send + Sync>> {
@@ -91,6 +100,7 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
     }
 
     conn.execute_batch(SCHEMA_SQL)?;
+    conn.execute_batch(CHANNEL_HISTORY_SCHEMA_SQL)?;
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
     if count == 0 {
@@ -325,9 +335,10 @@ CREATE TABLE IF NOT EXISTS identity_activity (
 );
 CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
 
--- Channels persists user intent and connection conveniences, never observed
--- room membership or traffic. desired_* is the durable scheduler input;
--- actual Link and JOIN state remains runtime-owned.
+-- Channels service-state persists user intent and connection conveniences.
+-- desired_* is the durable scheduler input; actual Link and JOIN state remains
+-- runtime-owned. A separate bounded append log stores accepted transcript
+-- observations without routing them through the LXMF conversation store.
 CREATE TABLE IF NOT EXISTS channel_hubs (
     identity_id       TEXT NOT NULL,
     destination_hash  TEXT NOT NULL,
@@ -430,6 +441,38 @@ CREATE INDEX IF NOT EXISTS idx_contacts_identity ON contacts(identity_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_identity_name ON contacts(identity_id, display_name);
 CREATE INDEX IF NOT EXISTS idx_blocked_identity ON blocked_contacts(identity_id);
 CREATE INDEX IF NOT EXISTS idx_identities_active ON identities(is_active) WHERE is_active = 1;
+"#;
+
+// Kept outside `SCHEMA_SQL` so migrations and fresh initialization execute the
+// exact same DDL. History deliberately has no bookmark foreign key: forgetting
+// a saved hub or room must not silently erase the user's local transcript.
+const CHANNEL_HISTORY_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS channel_history (
+    sequence             INTEGER PRIMARY KEY AUTOINCREMENT,
+    identity_id          TEXT NOT NULL,
+    hub_destination_hash TEXT NOT NULL,
+    room_name            TEXT NOT NULL,
+    event_id             TEXT NOT NULL,
+    kind                 TEXT NOT NULL
+        CHECK (kind IN ('message', 'notice', 'action', 'join', 'part', 'error', 'system')),
+    timestamp_ms          INTEGER NOT NULL CHECK (timestamp_ms >= 0),
+    recorded_at_ms        INTEGER NOT NULL CHECK (recorded_at_ms >= 0),
+    source_hash           TEXT,
+    nickname              TEXT,
+    text                  TEXT NOT NULL,
+    ours                  INTEGER NOT NULL CHECK (ours IN (0, 1)),
+    UNIQUE (identity_id, hub_destination_hash, room_name, event_id),
+    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_history_room_sequence
+    ON channel_history(
+        identity_id, hub_destination_hash, room_name, sequence DESC
+    );
+CREATE INDEX IF NOT EXISTS idx_channel_history_identity_sequence
+    ON channel_history(identity_id, sequence DESC);
+CREATE INDEX IF NOT EXISTS idx_channel_history_recorded_at
+    ON channel_history(recorded_at_ms);
 "#;
 
 /// Run one schema-version step inside an explicit transaction so a crash
@@ -1506,6 +1549,15 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 38 {
+        migration_step(conn, 38, |conn| {
+            conn.execute_batch(CHANNEL_HISTORY_SCHEMA_SQL)?;
+            conn.execute_batch("UPDATE schema_version SET version = 38;")?;
+            tracing::info!("Migrated to schema version 38 (bounded Channels history)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -1693,6 +1745,7 @@ pub const RESET_TABLES: &[&str] = &[
     "blocked_contacts",
     "identity_activity",
     "pending_blackholes",
+    "channel_history",
     "channel_room_secrets",
     "channel_rooms",
     "channel_hubs",
@@ -1726,6 +1779,10 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "pending_blackholes",
         "DELETE FROM pending_blackholes WHERE identity_id = ?1",
+    ),
+    (
+        "channel_history",
+        "DELETE FROM channel_history WHERE identity_id = ?1",
     ),
     (
         "channel_room_secrets",
@@ -2814,6 +2871,507 @@ mod settings_tests {
     }
 }
 
+/// Local Channels history is intentionally finite. These ceilings bound disk
+/// growth without asking a constrained hub to become a backlog service.
+pub const CHANNEL_HISTORY_RETENTION_DAYS: u64 = 90;
+pub const CHANNEL_HISTORY_MAX_EVENTS_PER_ROOM: usize = 5_000;
+pub const CHANNEL_HISTORY_MAX_EVENTS_PER_IDENTITY: usize = 50_000;
+pub const CHANNEL_HISTORY_DEFAULT_PAGE_SIZE: usize = 100;
+pub const CHANNEL_HISTORY_MAX_PAGE_SIZE: usize = 200;
+pub const CHANNEL_HISTORY_MAX_APPEND_BATCH: usize = 256;
+
+const CHANNEL_HISTORY_MAX_ROOM_BYTES: usize = 256;
+const CHANNEL_HISTORY_MAX_EVENT_ID_BYTES: usize = 128;
+const CHANNEL_HISTORY_MAX_NICKNAME_BYTES: usize = 256;
+const CHANNEL_HISTORY_MAX_TEXT_BYTES: usize = 64 * 1024;
+const JAVASCRIPT_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const MILLIS_PER_DAY: i64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelHistoryKind {
+    Message,
+    Notice,
+    Action,
+    Join,
+    Part,
+    Error,
+    System,
+}
+
+impl ChannelHistoryKind {
+    fn as_storage(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Notice => "notice",
+            Self::Action => "action",
+            Self::Join => "join",
+            Self::Part => "part",
+            Self::Error => "error",
+            Self::System => "system",
+        }
+    }
+
+    fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "message" => Some(Self::Message),
+            "notice" => Some(Self::Notice),
+            "action" => Some(Self::Action),
+            "join" => Some(Self::Join),
+            "part" => Some(Self::Part),
+            "error" => Some(Self::Error),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+/// An accepted transcript observation waiting to enter the local append log.
+///
+/// `timestamp_ms` is peer-provided display metadata. Retention uses the local
+/// insertion clock, and ordering/pagination uses the SQLite sequence.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NewChannelHistoryEvent {
+    pub hub_destination_hash: String,
+    pub room_name: String,
+    pub event_id: String,
+    pub kind: ChannelHistoryKind,
+    pub timestamp_ms: u64,
+    pub source_hash: Option<String>,
+    pub nickname: Option<String>,
+    pub text: String,
+    pub ours: bool,
+}
+
+// Transcript text and nicknames can be private. Keep them out of routine
+// diagnostics even if a caller logs a failed batch.
+impl std::fmt::Debug for NewChannelHistoryEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NewChannelHistoryEvent")
+            .field("hub_destination_hash", &self.hub_destination_hash)
+            .field("room_name", &self.room_name)
+            .field("event_id", &self.event_id)
+            .field("kind", &self.kind)
+            .field("timestamp_ms", &self.timestamp_ms)
+            .field("source_present", &self.source_hash.is_some())
+            .field("text", &"<redacted>")
+            .field("ours", &self.ours)
+            .finish()
+    }
+}
+
+/// One stored transcript item. The opaque decimal sequence is serialized as a
+/// string so JavaScript cannot round a 64-bit SQLite cursor.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ChannelHistoryEvent {
+    pub sequence: String,
+    pub hub_destination_hash: String,
+    pub room_name: String,
+    pub event_id: String,
+    pub kind: ChannelHistoryKind,
+    pub timestamp_ms: u64,
+    pub recorded_at_ms: u64,
+    pub source_hash: Option<String>,
+    pub nickname: Option<String>,
+    pub text: String,
+    pub ours: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ChannelHistoryPage {
+    pub items: Vec<ChannelHistoryEvent>,
+    pub next_before: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelHistoryAppendOutcome {
+    pub inserted: usize,
+    pub duplicates: usize,
+    pub pruned: usize,
+    pub latest_sequence: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct ChannelHistoryRetentionPolicy {
+    max_age_ms: i64,
+    max_events_per_room: usize,
+    max_events_per_identity: usize,
+}
+
+const CHANNEL_HISTORY_RETENTION: ChannelHistoryRetentionPolicy = ChannelHistoryRetentionPolicy {
+    max_age_ms: CHANNEL_HISTORY_RETENTION_DAYS as i64 * MILLIS_PER_DAY,
+    max_events_per_room: CHANNEL_HISTORY_MAX_EVENTS_PER_ROOM,
+    max_events_per_identity: CHANNEL_HISTORY_MAX_EVENTS_PER_IDENTITY,
+};
+
+fn is_canonical_channel_hash(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_channel_history_scope(
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+) -> Result<(), String> {
+    if !is_canonical_channel_hash(identity_id) {
+        return Err("invalid Channels history identity".into());
+    }
+    if !is_canonical_channel_hash(hub_destination_hash) {
+        return Err("invalid Channels history hub destination".into());
+    }
+    if room_name.is_empty()
+        || room_name.len() > CHANNEL_HISTORY_MAX_ROOM_BYTES
+        || room_name.trim() != room_name
+        || room_name.to_lowercase() != room_name
+    {
+        return Err("invalid normalized Channels history room".into());
+    }
+    Ok(())
+}
+
+fn validate_channel_history_event(
+    identity_id: &str,
+    event: &NewChannelHistoryEvent,
+) -> Result<(), String> {
+    validate_channel_history_scope(identity_id, &event.hub_destination_hash, &event.room_name)?;
+    if event.event_id.is_empty()
+        || event.event_id.len() > CHANNEL_HISTORY_MAX_EVENT_ID_BYTES
+        || event.event_id.chars().any(char::is_control)
+    {
+        return Err("invalid Channels history event id".into());
+    }
+    if event.timestamp_ms > JAVASCRIPT_MAX_SAFE_INTEGER {
+        return Err("Channels history timestamp exceeds the safe display range".into());
+    }
+    if event
+        .source_hash
+        .as_deref()
+        .is_some_and(|source| !is_canonical_channel_hash(source))
+    {
+        return Err("invalid Channels history source".into());
+    }
+    if event
+        .nickname
+        .as_deref()
+        .is_some_and(|nickname| nickname.len() > CHANNEL_HISTORY_MAX_NICKNAME_BYTES)
+    {
+        return Err("Channels history nickname is too long".into());
+    }
+    if event.text.len() > CHANNEL_HISTORY_MAX_TEXT_BYTES {
+        return Err("Channels history text is too long".into());
+    }
+    Ok(())
+}
+
+fn parse_channel_history_cursor(before: Option<&str>) -> Result<Option<i64>, String> {
+    let Some(before) = before else {
+        return Ok(None);
+    };
+    if before.is_empty()
+        || before == "0"
+        || before.starts_with('0')
+        || !before.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("invalid Channels history cursor".into());
+    }
+    let sequence = before
+        .parse::<i64>()
+        .map_err(|_| "invalid Channels history cursor".to_string())?;
+    if sequence <= 0 {
+        return Err("invalid Channels history cursor".into());
+    }
+    Ok(Some(sequence))
+}
+
+fn prune_expired_channel_history_at(
+    conn: &Connection,
+    now_ms: i64,
+    max_age_ms: i64,
+) -> Result<usize, String> {
+    let cutoff = now_ms.saturating_sub(max_age_ms);
+    conn.execute(
+        "DELETE FROM channel_history WHERE recorded_at_ms < ?1",
+        params![cutoff],
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Remove age-expired rows across every identity. The runtime invokes this at
+/// startup; append also performs the same pass so dormant identities are
+/// eventually cleaned without server participation.
+pub fn prune_expired_channel_history(pool: &DbPool) -> Result<usize, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    prune_expired_channel_history_at(&conn, now_unix_ms(), CHANNEL_HISTORY_RETENTION.max_age_ms)
+}
+
+pub fn append_channel_history_events(
+    pool: &DbPool,
+    identity_id: &str,
+    events: &[NewChannelHistoryEvent],
+) -> Result<ChannelHistoryAppendOutcome, String> {
+    append_channel_history_events_at(
+        pool,
+        identity_id,
+        events,
+        now_unix_ms(),
+        CHANNEL_HISTORY_RETENTION,
+    )
+}
+
+fn append_channel_history_events_at(
+    pool: &DbPool,
+    identity_id: &str,
+    events: &[NewChannelHistoryEvent],
+    recorded_at_ms: i64,
+    retention: ChannelHistoryRetentionPolicy,
+) -> Result<ChannelHistoryAppendOutcome, String> {
+    if events.len() > CHANNEL_HISTORY_MAX_APPEND_BATCH {
+        return Err(format!(
+            "Channels history batch exceeds {CHANNEL_HISTORY_MAX_APPEND_BATCH} events"
+        ));
+    }
+    if recorded_at_ms < 0
+        || retention.max_age_ms < 0
+        || retention.max_events_per_room == 0
+        || retention.max_events_per_identity == 0
+    {
+        return Err("invalid Channels history retention policy".into());
+    }
+    if events.is_empty() {
+        return Ok(ChannelHistoryAppendOutcome::default());
+    }
+    for event in events {
+        validate_channel_history_event(identity_id, event)?;
+    }
+
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let mut inserted = 0usize;
+    let mut touched_rooms = std::collections::BTreeSet::new();
+    for event in events {
+        inserted += transaction
+            .execute(
+                "INSERT INTO channel_history
+                    (identity_id, hub_destination_hash, room_name, event_id,
+                     kind, timestamp_ms, recorded_at_ms, source_hash, nickname,
+                     text, ours)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(
+                    identity_id, hub_destination_hash, room_name, event_id
+                 ) DO NOTHING",
+                params![
+                    identity_id,
+                    event.hub_destination_hash,
+                    event.room_name,
+                    event.event_id,
+                    event.kind.as_storage(),
+                    event.timestamp_ms as i64,
+                    recorded_at_ms,
+                    event.source_hash,
+                    event.nickname,
+                    event.text,
+                    event.ours as i64,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        touched_rooms.insert((
+            event.hub_destination_hash.as_str(),
+            event.room_name.as_str(),
+        ));
+    }
+
+    let cutoff = recorded_at_ms.saturating_sub(retention.max_age_ms);
+    let mut pruned = transaction
+        .execute(
+            "DELETE FROM channel_history WHERE recorded_at_ms < ?1",
+            params![cutoff],
+        )
+        .map_err(|error| error.to_string())?;
+    let room_limit = i64::try_from(retention.max_events_per_room)
+        .map_err(|_| "Channels room history limit is too large".to_string())?;
+    for (hub_destination_hash, room_name) in touched_rooms {
+        pruned = pruned.saturating_add(
+            transaction
+                .execute(
+                    "DELETE FROM channel_history
+                     WHERE sequence IN (
+                        SELECT sequence FROM channel_history
+                        WHERE identity_id = ?1
+                          AND hub_destination_hash = ?2
+                          AND room_name = ?3
+                        ORDER BY sequence DESC
+                        LIMIT -1 OFFSET ?4
+                     )",
+                    params![identity_id, hub_destination_hash, room_name, room_limit],
+                )
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    let identity_limit = i64::try_from(retention.max_events_per_identity)
+        .map_err(|_| "Channels identity history limit is too large".to_string())?;
+    pruned = pruned.saturating_add(
+        transaction
+            .execute(
+                "DELETE FROM channel_history
+                 WHERE sequence IN (
+                    SELECT sequence FROM channel_history
+                    WHERE identity_id = ?1
+                    ORDER BY sequence DESC
+                    LIMIT -1 OFFSET ?2
+                 )",
+                params![identity_id, identity_limit],
+            )
+            .map_err(|error| error.to_string())?,
+    );
+    let latest_sequence = transaction
+        .query_row(
+            "SELECT MAX(sequence) FROM channel_history WHERE identity_id = ?1",
+            params![identity_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(|error| error.to_string())?
+        .map(|sequence| sequence.to_string());
+    transaction.commit().map_err(|error| error.to_string())?;
+
+    Ok(ChannelHistoryAppendOutcome {
+        inserted,
+        duplicates: events.len().saturating_sub(inserted),
+        pruned,
+        latest_sequence,
+    })
+}
+
+fn channel_history_row(row: &rusqlite::Row<'_>) -> Result<ChannelHistoryEvent, rusqlite::Error> {
+    let sequence = row.get::<_, i64>(0)?;
+    let kind = row.get::<_, String>(4)?;
+    let kind = ChannelHistoryKind::from_storage(&kind).ok_or(rusqlite::Error::InvalidQuery)?;
+    let timestamp_ms = u64::try_from(row.get::<_, i64>(5)?).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            5,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })?;
+    let recorded_at_ms = u64::try_from(row.get::<_, i64>(6)?).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            6,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })?;
+    Ok(ChannelHistoryEvent {
+        sequence: sequence.to_string(),
+        hub_destination_hash: row.get(1)?,
+        room_name: row.get(2)?,
+        event_id: row.get(3)?,
+        kind,
+        timestamp_ms,
+        recorded_at_ms,
+        source_hash: row.get(7)?,
+        nickname: row.get(8)?,
+        text: row.get(9)?,
+        ours: row.get::<_, i64>(10)? != 0,
+    })
+}
+
+/// Return one room page in display order (oldest to newest). `before` is an
+/// exclusive opaque cursor obtained from a prior page.
+pub fn list_channel_history(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    before: Option<&str>,
+    limit: usize,
+) -> Result<ChannelHistoryPage, String> {
+    validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
+    if limit == 0 || limit > CHANNEL_HISTORY_MAX_PAGE_SIZE {
+        return Err(format!(
+            "Channels history page size must be between 1 and {CHANNEL_HISTORY_MAX_PAGE_SIZE}"
+        ));
+    }
+    let before = parse_channel_history_cursor(before)?;
+    let query_limit = i64::try_from(limit.saturating_add(1))
+        .map_err(|_| "Channels history page size is too large".to_string())?;
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT sequence, hub_destination_hash, room_name, event_id, kind,
+                    timestamp_ms, recorded_at_ms, source_hash, nickname, text,
+                    ours
+             FROM channel_history
+             WHERE identity_id = ?1
+               AND hub_destination_hash = ?2
+               AND room_name = ?3
+               AND (?4 IS NULL OR sequence < ?4)
+             ORDER BY sequence DESC
+             LIMIT ?5",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut items = statement
+        .query_map(
+            params![
+                identity_id,
+                hub_destination_hash,
+                room_name,
+                before,
+                query_limit
+            ],
+            channel_history_row,
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    items.reverse();
+    let next_before = has_more
+        .then(|| items.first().map(|item| item.sequence.clone()))
+        .flatten();
+    Ok(ChannelHistoryPage {
+        items,
+        next_before,
+        has_more,
+    })
+}
+
+/// Explicit history deletion is separate from bookmark removal.
+pub fn clear_channel_room_history(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+) -> Result<usize, String> {
+    validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM channel_history
+         WHERE identity_id = ?1 AND hub_destination_hash = ?2 AND room_name = ?3",
+        params![identity_id, hub_destination_hash, room_name],
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub fn clear_channel_history_for_identity(
+    pool: &DbPool,
+    identity_id: &str,
+) -> Result<usize, String> {
+    if !is_canonical_channel_hash(identity_id) {
+        return Err("invalid Channels history identity".into());
+    }
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM channel_history WHERE identity_id = ?1",
+        params![identity_id],
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SavedChannelHub {
     pub destination_hash: String,
@@ -3530,6 +4088,276 @@ pub fn remove_channel_room(
     )
     .map(|changed| changed > 0)
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod channel_history_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    const IDENTITY_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const IDENTITY_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const HUB_A: &str = "11111111111111111111111111111111";
+    const HUB_B: &str = "22222222222222222222222222222222";
+
+    fn test_pool() -> DbPool {
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|connection| connection.execute_batch("PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        init_schema(&pool).unwrap();
+        save_identity(&pool, IDENTITY_A, "", "A", "A");
+        save_identity(&pool, IDENTITY_B, "", "B", "B");
+        pool
+    }
+
+    fn event(hub: &str, room: &str, id: &str) -> NewChannelHistoryEvent {
+        NewChannelHistoryEvent {
+            hub_destination_hash: hub.into(),
+            room_name: room.into(),
+            event_id: id.into(),
+            kind: ChannelHistoryKind::Message,
+            timestamp_ms: 1_700_000_000_000,
+            source_hash: Some(IDENTITY_B.into()),
+            nickname: Some("Field Rat".into()),
+            text: format!("message {id}"),
+            ours: false,
+        }
+    }
+
+    fn ids(page: &ChannelHistoryPage) -> Vec<&str> {
+        page.items
+            .iter()
+            .map(|item| item.event_id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn history_is_deduplicated_identity_scoped_and_cursor_paginated() {
+        let pool = test_pool();
+        save_channel_hub(&pool, IDENTITY_A, HUB_A, "Relay", "A", false).unwrap();
+        save_channel_room(&pool, IDENTITY_A, HUB_A, "general", false).unwrap();
+
+        let events: Vec<_> = (1..=5)
+            .map(|index| event(HUB_A, "general", &format!("event-{index}")))
+            .collect();
+        let recorded_at_ms = now_unix_ms();
+        let outcome = append_channel_history_events_at(
+            &pool,
+            IDENTITY_A,
+            &events,
+            recorded_at_ms,
+            CHANNEL_HISTORY_RETENTION,
+        )
+        .unwrap();
+        assert_eq!(outcome.inserted, 5);
+        assert_eq!(outcome.duplicates, 0);
+        assert_eq!(outcome.pruned, 0);
+        assert!(outcome.latest_sequence.is_some());
+
+        let duplicate = event(HUB_A, "general", "event-3");
+        let outcome = append_channel_history_events_at(
+            &pool,
+            IDENTITY_A,
+            &[duplicate],
+            recorded_at_ms.saturating_add(1),
+            CHANNEL_HISTORY_RETENTION,
+        )
+        .unwrap();
+        assert_eq!(outcome.inserted, 0);
+        assert_eq!(outcome.duplicates, 1);
+
+        let newest = list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 2).unwrap();
+        assert_eq!(ids(&newest), vec!["event-4", "event-5"]);
+        assert!(newest.has_more);
+        let cursor = newest.next_before.as_deref().unwrap();
+        assert!(cursor.bytes().all(|byte| byte.is_ascii_digit()));
+
+        let middle =
+            list_channel_history(&pool, IDENTITY_A, HUB_A, "general", Some(cursor), 2).unwrap();
+        assert_eq!(ids(&middle), vec!["event-2", "event-3"]);
+        assert!(middle.has_more);
+        let oldest = list_channel_history(
+            &pool,
+            IDENTITY_A,
+            HUB_A,
+            "general",
+            middle.next_before.as_deref(),
+            2,
+        )
+        .unwrap();
+        assert_eq!(ids(&oldest), vec!["event-1"]);
+        assert!(!oldest.has_more);
+        assert!(oldest.next_before.is_none());
+
+        // The same event id is independent across identities, hubs, and rooms.
+        append_channel_history_events(&pool, IDENTITY_B, &[event(HUB_A, "general", "event-1")])
+            .unwrap();
+        append_channel_history_events(&pool, IDENTITY_A, &[event(HUB_B, "general", "event-1")])
+            .unwrap();
+        assert_eq!(
+            list_channel_history(&pool, IDENTITY_B, HUB_A, "general", None, 10)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_channel_history(&pool, IDENTITY_A, HUB_B, "general", None, 10)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+
+        // History is user data in its own right, not a child of a bookmark.
+        assert!(remove_channel_hub(&pool, IDENTITY_A, HUB_A).unwrap());
+        assert_eq!(
+            list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 10)
+                .unwrap()
+                .items
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn retention_uses_local_time_and_bounds_rooms_and_identities() {
+        let pool = test_pool();
+        let retention = ChannelHistoryRetentionPolicy {
+            max_age_ms: 100,
+            max_events_per_room: 3,
+            max_events_per_identity: 5,
+        };
+        let alpha: Vec<_> = (1..=4)
+            .map(|index| event(HUB_A, "alpha", &format!("a-{index}")))
+            .collect();
+        let outcome =
+            append_channel_history_events_at(&pool, IDENTITY_A, &alpha, 1_000, retention).unwrap();
+        assert_eq!(outcome.inserted, 4);
+        assert_eq!(outcome.pruned, 1);
+        assert_eq!(
+            ids(&list_channel_history(&pool, IDENTITY_A, HUB_A, "alpha", None, 10).unwrap()),
+            vec!["a-2", "a-3", "a-4"]
+        );
+
+        let beta: Vec<_> = (1..=3)
+            .map(|index| event(HUB_A, "beta", &format!("b-{index}")))
+            .collect();
+        let outcome =
+            append_channel_history_events_at(&pool, IDENTITY_A, &beta, 1_010, retention).unwrap();
+        assert_eq!(outcome.pruned, 1, "identity ceiling removes the oldest row");
+        assert_eq!(
+            ids(&list_channel_history(&pool, IDENTITY_A, HUB_A, "alpha", None, 10).unwrap()),
+            vec!["a-3", "a-4"]
+        );
+        assert_eq!(
+            ids(&list_channel_history(&pool, IDENTITY_A, HUB_A, "beta", None, 10).unwrap()),
+            vec!["b-1", "b-2", "b-3"]
+        );
+
+        // A forged remote timestamp cannot extend retention. Advancing only
+        // the local recording clock expires all five prior rows.
+        let mut fresh = event(HUB_A, "gamma", "fresh");
+        fresh.timestamp_ms = 1;
+        let outcome =
+            append_channel_history_events_at(&pool, IDENTITY_A, &[fresh], 1_111, retention)
+                .unwrap();
+        assert_eq!(outcome.pruned, 5);
+        assert_eq!(
+            ids(&list_channel_history(&pool, IDENTITY_A, HUB_A, "gamma", None, 10).unwrap()),
+            vec!["fresh"]
+        );
+    }
+
+    #[test]
+    fn explicit_clear_is_scoped_and_identity_delete_cascades() {
+        let pool = test_pool();
+        append_channel_history_events(
+            &pool,
+            IDENTITY_A,
+            &[
+                event(HUB_A, "general", "a-general"),
+                event(HUB_A, "other", "a-other"),
+            ],
+        )
+        .unwrap();
+        append_channel_history_events(&pool, IDENTITY_B, &[event(HUB_A, "general", "b-general")])
+            .unwrap();
+
+        assert_eq!(
+            clear_channel_room_history(&pool, IDENTITY_A, HUB_A, "general").unwrap(),
+            1
+        );
+        assert!(
+            list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 10)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert_eq!(
+            list_channel_history(&pool, IDENTITY_A, HUB_A, "other", None, 10)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_channel_history(&pool, IDENTITY_B, HUB_A, "general", None, 10)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+
+        delete_identity(&pool, IDENTITY_A, true).unwrap();
+        let remaining: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM channel_history WHERE identity_id = ?1",
+                params![IDENTITY_A],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn history_rejects_ambiguous_cursors_and_unbounded_inputs() {
+        let pool = test_pool();
+        let valid = event(HUB_A, "general", "secret-event");
+        assert!(!format!("{valid:?}").contains("message secret-event"));
+        append_channel_history_events(&pool, IDENTITY_A, &[valid]).unwrap();
+
+        for cursor in ["", "0", "01", "-1", "abc", "9223372036854775808"] {
+            assert!(
+                list_channel_history(&pool, IDENTITY_A, HUB_A, "general", Some(cursor), 10)
+                    .is_err(),
+                "cursor `{cursor}` must be rejected"
+            );
+        }
+        assert!(list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 0).is_err());
+        assert!(
+            list_channel_history(
+                &pool,
+                IDENTITY_A,
+                HUB_A,
+                "general",
+                None,
+                CHANNEL_HISTORY_MAX_PAGE_SIZE + 1
+            )
+            .is_err()
+        );
+
+        let mut invalid = event(HUB_A, "General", "bad-room");
+        assert!(append_channel_history_events(&pool, IDENTITY_A, &[invalid.clone()]).is_err());
+        invalid.room_name = "general".into();
+        invalid.hub_destination_hash = "ABCDEFABCDEFABCDEFABCDEFABCDEFAB".into();
+        assert!(append_channel_history_events(&pool, IDENTITY_A, &[invalid]).is_err());
+
+        let oversized = vec![event(HUB_A, "general", "same"); CHANNEL_HISTORY_MAX_APPEND_BATCH + 1];
+        assert!(append_channel_history_events(&pool, IDENTITY_A, &oversized).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -6189,6 +7017,7 @@ mod migration_tests {
             "channel_hubs",
             "channel_rooms",
             "channel_room_secrets",
+            "channel_history",
             "channel_hub_rooms",
             "channel_hub_grants",
             "channel_hub_klines",
@@ -6210,6 +7039,9 @@ mod migration_tests {
             "idx_messages_dest_identity",
             "idx_channel_hubs_identity_recent",
             "idx_channel_rooms_identity_hub",
+            "idx_channel_history_room_sequence",
+            "idx_channel_history_identity_sequence",
+            "idx_channel_history_recorded_at",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -6704,6 +7536,60 @@ mod migration_tests {
             "migration must not infer key policy from past membership"
         );
         assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_from_v37_adds_bookmark_independent_channel_history() {
+        let migrated = empty_pool();
+        {
+            let conn = migrated.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (37);",
+            )
+            .unwrap();
+        }
+        init_schema(&migrated).unwrap();
+
+        let fresh = empty_pool();
+        init_schema(&fresh).unwrap();
+        assert_eq!(
+            get_column_names(&migrated.get().unwrap(), "channel_history").unwrap(),
+            get_column_names(&fresh.get().unwrap(), "channel_history").unwrap()
+        );
+
+        let conn = migrated.get().unwrap();
+        let foreign_tables: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_list(channel_history)")
+            .unwrap()
+            .query_map([], |row| row.get(2))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            foreign_tables,
+            vec!["identities"],
+            "history must survive removal of channel hub and room bookmarks"
+        );
+        for index in [
+            "idx_channel_history_room_sequence",
+            "idx_channel_history_identity_sequence",
+            "idx_channel_history_recorded_at",
+        ] {
+            assert!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+                    > 0,
+                "missing migrated history index `{index}`"
+            );
+        }
+        drop(conn);
+        assert_eq!(read_schema_version(&migrated), SCHEMA_VERSION);
     }
 
     #[test]
