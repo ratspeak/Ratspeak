@@ -113,6 +113,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     let build_css = read_source(root.join("dashboard/build-css.sh")).expect("css build script");
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/channels.rs"))
         .expect("channels runtime");
+    let channel_hub = read_source(root.join("crates/ratspeak-runtime/src/channel_hub.rs"))
+        .expect("channel hub runtime");
     let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channels.rs"))
         .expect("channels commands");
     let snapshot_order_test =
@@ -152,6 +154,7 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(channels_js.contains("Messages unlock when the hub confirms your membership."));
     assert!(channels_js.contains("dataset.channelAction = 'retry-room'"));
     assert!(channels_js.contains("case 'joined': return 'Live';"));
+    assert!(channels_js.contains("case 'reconnecting': return 'Reconnecting';"));
     assert_eq!(channels_js.matches("return 'Live'").count(), 1);
     assert!(channels_js.contains("function _channelsIdentityTone"));
     assert!(!channels_js.contains("function _channelsInitials"));
@@ -210,6 +213,11 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("pub struct ChannelHubDesiredSnapshot"));
     assert!(runtime.contains("pub struct ChannelHubObservedSnapshot"));
     assert!(runtime.contains("pub struct ChannelHubDurableSnapshot"));
+    assert!(runtime.contains("pub struct ChannelHubRecoverySnapshot"));
+    assert!(runtime.contains("RECONNECT_MAX_DELAY"));
+    assert!(runtime.contains("RECONNECT_STABLE_RESET"));
+    assert!(runtime.contains("prepare_auto_rejoin"));
+    assert!(runtime.contains("\"Reconnected to hub\""));
     assert!(runtime.contains("db::set_channel_hub_desired"));
     assert!(runtime.contains("db::set_channel_room_desired"));
     assert!(runtime.contains("snapshot.revision = revision.saturating_add(1)"));
@@ -217,6 +225,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(commands.contains("fn parse_local_composer_command"));
     assert!(runtime.contains("pub async fn connect_known"));
     assert!(runtime.contains("channel hub identity does not match its destination"));
+    assert!(channel_hub.contains("public identity data and is never serialized"));
+    assert!(channel_hub.contains("pub fn public_key(&self) -> [u8; 64]"));
     assert!(commands.contains("Identity::from_file(&identity_path)"));
     assert!(commands.contains(".connect_known("));
     assert!(commands.contains("LocalComposerCommand::Join"));

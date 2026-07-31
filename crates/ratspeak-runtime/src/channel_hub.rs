@@ -4411,6 +4411,9 @@ pub fn load_or_create_hub_identity(path: &std::path::Path) -> Result<Identity, S
 pub struct ChannelHubHandle {
     command_tx: mpsc::Sender<HubCommand>,
     snapshot: Arc<RwLock<ChannelHubSnapshot>>,
+    /// Rust-only recovery material for the local Channels client. This is
+    /// public identity data and is never serialized through the hub IPC model.
+    public_key: [u8; 64],
 }
 
 impl ChannelHubHandle {
@@ -4498,6 +4501,7 @@ impl ChannelHubHandle {
             pepper,
             restored,
         );
+        let public_key = hub_identity.get_public_key();
         tokio::spawn(run_hub(
             registration,
             core,
@@ -4512,6 +4516,7 @@ impl ChannelHubHandle {
         Ok(Self {
             command_tx,
             snapshot,
+            public_key,
         })
     }
 
@@ -4520,6 +4525,11 @@ impl ChannelHubHandle {
             .read()
             .map(|snapshot| snapshot.clone())
             .unwrap_or_else(|_| ChannelHubSnapshot::stopped())
+    }
+
+    /// Public identity key for an authenticated same-runtime client Link.
+    pub fn public_key(&self) -> [u8; 64] {
+        self.public_key
     }
 
     pub async fn status(&self) -> Result<ChannelHubSnapshot, ChannelHubError> {

@@ -63,7 +63,8 @@ function _channelsIsConnected() {
 function _channelsIsConnecting() {
     return channelsSnapshot.phase === 'resolving' ||
         channelsSnapshot.phase === 'connecting' ||
-        channelsSnapshot.phase === 'awaiting_welcome';
+        channelsSnapshot.phase === 'awaiting_welcome' ||
+        channelsSnapshot.phase === 'reconnecting';
 }
 
 function _channelsShortHash(value) {
@@ -156,6 +157,7 @@ function _channelsPhaseLabel(phase) {
         case 'resolving': return 'Finding path';
         case 'connecting': return 'Securing link';
         case 'awaiting_welcome': return 'Waiting for hub';
+        case 'reconnecting': return 'Reconnecting';
         case 'active': return 'Connected';
         case 'stale': return 'Recovering';
         case 'error': return 'Session ended';

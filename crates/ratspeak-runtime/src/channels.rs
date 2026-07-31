@@ -43,6 +43,11 @@ const DEFAULT_MESSAGE_MAX_BYTES: usize = 350;
 const TRANSCRIPT_LIMIT: usize = 300;
 const NOTICE_LIMIT: usize = 100;
 const SEEN_MESSAGE_LIMIT: usize = 2_048;
+const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(2);
+const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5 * 60);
+const RECONNECT_STABLE_RESET: Duration = Duration::from_secs(2 * 60);
+const RECONNECT_JITTER_PERCENT: u32 = 20;
+const AUTO_REJOIN_ROOM_LIMIT: usize = 32;
 /// Initial scheduler budget. The hub-keyed model deliberately supports raising
 /// this later without pretending the current runtime holds multiple Links.
 pub const CHANNELS_CONNECTION_BUDGET: usize = 1;
@@ -116,6 +121,7 @@ pub enum ChannelsPhase {
     Resolving,
     Connecting,
     AwaitingWelcome,
+    Reconnecting,
     Active,
     Stale,
     Error,
@@ -299,6 +305,26 @@ pub enum ChannelsDurabilityPhase {
     Degraded,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelRecoveryPhase {
+    #[default]
+    Idle,
+    Scheduled,
+    Connecting,
+    Rejoining,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelHubRecoverySnapshot {
+    pub phase: ChannelRecoveryPhase,
+    /// Consecutive failed attempts or short-lived sessions.
+    pub attempt: u32,
+    pub next_attempt_at_ms: Option<u64>,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ChannelsDurabilitySnapshot {
     pub phase: ChannelsDurabilityPhase,
@@ -365,6 +391,7 @@ pub struct ChannelClientHubStateSnapshot {
     pub desired: ChannelHubDesiredSnapshot,
     pub observed: Option<ChannelHubObservedSnapshot>,
     pub durable: ChannelHubDurableSnapshot,
+    pub recovery: ChannelHubRecoverySnapshot,
 }
 
 impl ChannelClientHubStateSnapshot {
@@ -374,6 +401,7 @@ impl ChannelClientHubStateSnapshot {
             desired: ChannelHubDesiredSnapshot::default(),
             observed: None,
             durable: ChannelHubDurableSnapshot::default(),
+            recovery: ChannelHubRecoverySnapshot::default(),
         }
     }
 }
@@ -580,6 +608,7 @@ struct ChannelsManagerInput {
     snapshot: Arc<RwLock<ChannelsSnapshot>>,
     activity: ChannelsActivity,
     store: Option<ChannelsStore>,
+    app_state: Weak<AppState>,
 }
 
 impl ChannelsStore {
@@ -689,7 +718,7 @@ impl ChannelsManagerHandle {
         let store = state
             .upgrade()
             .map(|state| ChannelsStore::new(state.db.clone(), hex::encode(identity.hash)));
-        let activity = ChannelsActivity::new(state);
+        let activity = ChannelsActivity::new(state.clone());
         tokio::spawn(run_manager(ChannelsManagerInput {
             transport_tx,
             identity,
@@ -699,6 +728,7 @@ impl ChannelsManagerHandle {
             snapshot: snapshot.clone(),
             activity: activity.clone(),
             store,
+            app_state: state,
         }));
         Self {
             command_tx,
@@ -927,6 +957,9 @@ struct ActiveSession {
     message_tokens: HashMap<[u8; 8], activity::ChannelMessageToken>,
     message_token_order: VecDeque<[u8; 8]>,
     room_activity: BTreeMap<String, RoomActivityContext>,
+    auto_rejoin_queue: VecDeque<String>,
+    auto_rejoining: HashSet<String>,
+    connect_origin: ConnectOrigin,
     activity: SessionActivityContext,
 }
 
@@ -1008,11 +1041,108 @@ struct ConnectedSession {
     activity: SessionActivityContext,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ConnectOrigin {
+    #[default]
+    User,
+    Recovery,
+}
+
 #[derive(Clone, Copy)]
 enum ConnectFailure {
     PathTimedOut,
     WelcomeRejected(activity::ChannelSessionFailureReason),
     Failed(activity::ChannelSessionFailureReason),
+}
+
+#[derive(Default)]
+struct ReconnectController {
+    failure_streak: u32,
+    deadline: Option<Instant>,
+    next_attempt_at_ms: Option<u64>,
+    last_error: Option<String>,
+    blocked: bool,
+}
+
+impl ReconnectController {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn schedule_immediate(&mut self) {
+        self.deadline = Some(Instant::now());
+        self.next_attempt_at_ms = Some(now_ms());
+        self.last_error = None;
+        self.blocked = false;
+    }
+
+    fn schedule_failure(&mut self, error: String, jitter: u16) -> Duration {
+        self.failure_streak = self.failure_streak.saturating_add(1);
+        let delay = reconnect_delay(self.failure_streak, jitter);
+        self.deadline = Some(Instant::now() + delay);
+        self.next_attempt_at_ms =
+            Some(now_ms().saturating_add(delay.as_millis().try_into().unwrap_or(u64::MAX)));
+        self.last_error = Some(error);
+        self.blocked = false;
+        delay
+    }
+
+    fn block(&mut self, error: String) {
+        self.deadline = None;
+        self.next_attempt_at_ms = None;
+        self.last_error = Some(error);
+        self.blocked = true;
+    }
+
+    fn begin_attempt(&mut self) {
+        self.deadline = None;
+        self.next_attempt_at_ms = None;
+        self.blocked = false;
+    }
+
+    fn note_session_ended(&mut self, connected_for: Duration) {
+        if connected_for >= RECONNECT_STABLE_RESET {
+            self.failure_streak = 0;
+        }
+    }
+}
+
+fn reconnect_delay(attempt: u32, jitter: u16) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(16);
+    let multiplier = 1u32 << exponent;
+    let base = RECONNECT_BASE_DELAY
+        .saturating_mul(multiplier)
+        .min(RECONNECT_MAX_DELAY);
+    let spread = RECONNECT_JITTER_PERCENT * 2;
+    let jitter_percent =
+        100 - RECONNECT_JITTER_PERCENT + (u32::from(jitter) * spread / u32::from(u16::MAX));
+    Duration::from_millis(
+        base.as_millis()
+            .saturating_mul(u128::from(jitter_percent))
+            .saturating_div(100)
+            .min(RECONNECT_MAX_DELAY.as_millis())
+            .try_into()
+            .unwrap_or(u64::MAX),
+    )
+}
+
+fn reconnect_jitter() -> u16 {
+    let bytes = rns_crypto::random::random_bytes(2);
+    u16::from_be_bytes([bytes[0], bytes[1]])
+}
+
+fn retryable_connect_failure(failure: ConnectFailure) -> bool {
+    match failure {
+        ConnectFailure::PathTimedOut => true,
+        ConnectFailure::Failed(reason) | ConnectFailure::WelcomeRejected(reason) => matches!(
+            reason,
+            activity::ChannelSessionFailureReason::AuthenticationFailed
+                | activity::ChannelSessionFailureReason::PathLookupFailed
+                | activity::ChannelSessionFailureReason::SendFailed
+                | activity::ChannelSessionFailureReason::TransportUnavailable
+                | activity::ChannelSessionFailureReason::WelcomeTimedOut
+        ),
+    }
 }
 
 struct ConnectAttemptError {
@@ -1226,6 +1356,17 @@ struct ConnectUpdateContext<'a> {
     store: Option<&'a ChannelsStore>,
 }
 
+fn connect_update_attempt(update: &ConnectUpdate) -> u64 {
+    match update {
+        ConnectUpdate::SessionActivity { attempt, .. }
+        | ConnectUpdate::EnvelopeActivity { attempt, .. }
+        | ConnectUpdate::Discovered { attempt, .. }
+        | ConnectUpdate::AwaitingWelcome { attempt, .. }
+        | ConnectUpdate::Ready { attempt, .. }
+        | ConnectUpdate::Failed { attempt, .. } => *attempt,
+    }
+}
+
 async fn run_manager(input: ChannelsManagerInput) {
     let ChannelsManagerInput {
         transport_tx,
@@ -1236,6 +1377,7 @@ async fn run_manager(input: ChannelsManagerInput) {
         snapshot,
         activity,
         store,
+        app_state,
     } = input;
     let source = identity.hash;
     let (connect_update_tx, mut connect_update_rx) = mpsc::channel(CONNECT_UPDATE_BUFFER);
@@ -1243,6 +1385,8 @@ async fn run_manager(input: ChannelsManagerInput) {
     let mut attempt: u64 = 0;
     let mut connect_cancel: Option<oneshot::Sender<()>> = None;
     let mut pending_connect_activity: Option<SessionActivityContext> = None;
+    let mut connect_origin = ConnectOrigin::User;
+    let mut reconnect = ReconnectController::default();
     let mut room_transition_tick = tokio::time::interval(ROOM_TRANSITION_TICK);
     room_transition_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -1262,6 +1406,14 @@ async fn run_manager(input: ChannelsManagerInput) {
                 last_error: None,
             };
         }),
+    }
+    if snapshot
+        .read()
+        .ok()
+        .is_some_and(|state| state.selected_hub_destination.is_some())
+    {
+        reconnect.schedule_immediate();
+        project_reconnect(&snapshot, &reconnect, ChannelRecoveryPhase::Scheduled);
     }
     emit_snapshot(&emitter, &snapshot);
 
@@ -1288,6 +1440,70 @@ async fn run_manager(input: ChannelsManagerInput) {
                 mutate_snapshot(&snapshot, clear_observed_snapshot);
                 emit_snapshot(&emitter, &snapshot);
                 break;
+            }
+            _ = wait_for_reconnect(reconnect.deadline),
+                if active.is_none() && connect_cancel.is_none() =>
+            {
+                let (destination_hash, nickname) =
+                    match desired_connection_target(&snapshot) {
+                        Ok(Some(target)) => target,
+                        Ok(None) => {
+                            reconnect.clear();
+                            continue;
+                        }
+                        Err(error) => {
+                            reconnect.block(error);
+                            project_reconnect(
+                                &snapshot,
+                                &reconnect,
+                                ChannelRecoveryPhase::Blocked,
+                            );
+                            emit_snapshot(&emitter, &snapshot);
+                            continue;
+                        }
+                    };
+                let this_attempt = invalidate_connect_attempt(&mut attempt);
+                let activity_context = SessionActivityContext {
+                    hub: activity::DestinationHash::new(destination_hash),
+                    correlation_id: CorrelationId::random(),
+                    origin: None,
+                };
+                record_session_origin(
+                    &activity,
+                    activity_context,
+                    activity::ChannelSessionTransition::ConnectRequested,
+                );
+                pending_connect_activity = Some(activity_context);
+                connect_origin = ConnectOrigin::Recovery;
+                reconnect.begin_attempt();
+                let destination_text = hex::encode(destination_hash);
+                mutate_snapshot(&snapshot, |state| {
+                    clear_observed_snapshot(state);
+                    state.phase = ChannelsPhase::Reconnecting;
+                    state.nickname = Some(nickname.clone());
+                    state.hub = Some(ChannelHubSnapshot::pending(destination_hash));
+                    project_reconnect_state(
+                        state,
+                        &destination_text,
+                        &reconnect,
+                        ChannelRecoveryPhase::Connecting,
+                    );
+                });
+                emit_snapshot(&emitter, &snapshot);
+                let known_hub = known_owned_hub_target(&app_state, destination_hash);
+                let (cancel_tx, cancel_rx) = oneshot::channel();
+                connect_cancel = Some(cancel_tx);
+                tokio::spawn(run_connect_attempt(ConnectAttemptInput {
+                    attempt: this_attempt,
+                    transport_tx: transport_tx.clone(),
+                    identity: identity.clone(),
+                    destination_hash,
+                    nickname,
+                    known_hub,
+                    update_tx: connect_update_tx.clone(),
+                    cancel_rx,
+                    activity_context,
+                }));
             }
             command = command_rx.recv() => {
                 let Some(command) = command else {
@@ -1326,6 +1542,8 @@ async fn run_manager(input: ChannelsManagerInput) {
                             let _ = result_tx.send(Err(ChannelsError::AlreadyConnecting));
                             continue;
                         }
+                        reconnect.clear();
+                        connect_origin = ConnectOrigin::User;
                         let this_attempt = invalidate_connect_attempt(&mut attempt);
                         cancel_connection(&mut connect_cancel);
                         if let Some(session) = active.as_ref() {
@@ -1355,6 +1573,12 @@ async fn run_manager(input: ChannelsManagerInput) {
                             state.phase = ChannelsPhase::Resolving;
                             state.nickname = Some(nickname.clone());
                             state.hub = Some(ChannelHubSnapshot::pending(destination_hash));
+                            project_reconnect_state(
+                                state,
+                                &destination_text,
+                                &reconnect,
+                                ChannelRecoveryPhase::Connecting,
+                            );
                         });
                         emit_snapshot(&emitter, &snapshot);
                         if let Some(store) = &store {
@@ -1373,6 +1597,8 @@ async fn run_manager(input: ChannelsManagerInput) {
 
                         let (cancel_tx, cancel_rx) = oneshot::channel();
                         connect_cancel = Some(cancel_tx);
+                        let known_hub = known_hub
+                            .or_else(|| known_owned_hub_target(&app_state, destination_hash));
                         tokio::spawn(run_connect_attempt(ConnectAttemptInput {
                             attempt: this_attempt,
                             transport_tx: transport_tx.clone(),
@@ -1390,6 +1616,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                         activity_fence,
                         result_tx,
                     } => {
+                        reconnect.clear();
                         invalidate_connect_attempt(&mut attempt);
                         if let Some(context) = pending_connect_activity.take() {
                             record_session_command(
@@ -1427,6 +1654,12 @@ async fn run_manager(input: ChannelsManagerInput) {
                         mutate_snapshot(&snapshot, |state| {
                             if let Some((destination, nickname)) = desired_target.as_ref() {
                                 set_desired_hub(state, destination, nickname, false);
+                                project_reconnect_state(
+                                    state,
+                                    destination,
+                                    &reconnect,
+                                    ChannelRecoveryPhase::Idle,
+                                );
                             }
                             clear_observed_snapshot(state);
                         });
@@ -1589,6 +1822,24 @@ async fn run_manager(input: ChannelsManagerInput) {
                                 };
                             });
                         }
+                        let selected = snapshot
+                            .read()
+                            .ok()
+                            .and_then(|state| state.selected_hub_destination.clone());
+                        if selected.is_none() {
+                            reconnect.clear();
+                        } else if active.is_none()
+                            && connect_cancel.is_none()
+                            && reconnect.deadline.is_none()
+                            && !reconnect.blocked
+                        {
+                            reconnect.schedule_immediate();
+                            project_reconnect(
+                                &snapshot,
+                                &reconnect,
+                                ChannelRecoveryPhase::Scheduled,
+                            );
+                        }
                         emit_snapshot(&emitter, &snapshot);
                         let _ = result_tx.send(());
                     }
@@ -1629,6 +1880,19 @@ async fn run_manager(input: ChannelsManagerInput) {
             }
             update = connect_update_rx.recv() => {
                 let Some(update) = update else { continue; };
+                let update_attempt = connect_update_attempt(&update);
+                let failed = if update_attempt == attempt {
+                    match &update {
+                        ConnectUpdate::Failed { error, failure, .. } => {
+                            Some((*failure, error.to_string()))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let ready = update_attempt == attempt
+                    && matches!(&update, ConnectUpdate::Ready { .. });
                 handle_connect_update(
                     update,
                     ConnectUpdateContext {
@@ -1643,19 +1907,88 @@ async fn run_manager(input: ChannelsManagerInput) {
                         store: store.as_ref(),
                     },
                 ).await;
+                if ready {
+                    reconnect.deadline = None;
+                    reconnect.next_attempt_at_ms = None;
+                    reconnect.last_error = None;
+                    reconnect.blocked = false;
+                    if let Some(session) = active.as_mut() {
+                        session.connect_origin = connect_origin;
+                        prepare_auto_rejoin(session, &snapshot);
+                        let phase = if session.auto_rejoin_queue.is_empty() {
+                            ChannelRecoveryPhase::Idle
+                        } else {
+                            ChannelRecoveryPhase::Rejoining
+                        };
+                        project_reconnect(&snapshot, &reconnect, phase);
+                        let _ = drive_auto_rejoin(
+                            session,
+                            &snapshot,
+                            &emitter,
+                            &activity,
+                        ).await;
+                    }
+                    emit_snapshot(&emitter, &snapshot);
+                } else if let Some((failure, error)) = failed {
+                    if selected_hub_is_desired(&snapshot) {
+                        if retryable_connect_failure(failure) {
+                            reconnect.schedule_failure(error, reconnect_jitter());
+                            mutate_snapshot(&snapshot, |state| {
+                                state.phase = ChannelsPhase::Reconnecting;
+                                project_selected_reconnect_state(
+                                    state,
+                                    &reconnect,
+                                    ChannelRecoveryPhase::Scheduled,
+                                );
+                            });
+                        } else {
+                            reconnect.block(error);
+                            project_reconnect(
+                                &snapshot,
+                                &reconnect,
+                                ChannelRecoveryPhase::Blocked,
+                            );
+                        }
+                        emit_snapshot(&emitter, &snapshot);
+                    } else {
+                        reconnect.clear();
+                    }
+                }
             }
             _ = room_transition_tick.tick() => {
-                if let Some(active) = active.as_mut()
-                    && expire_room_transitions(
+                if let Some(active) = active.as_mut() {
+                    let mut changed = expire_room_transitions(
                         &mut active.rooms,
                         &mut active.room_activity,
                         active.activity,
                         &activity,
                         now_ms(),
-                    )
-                {
-                    sync_session_snapshot(active, &snapshot);
-                    emit_snapshot(&emitter, &snapshot);
+                    );
+                    active.auto_rejoining.retain(|room| {
+                        active
+                            .rooms
+                            .get(room)
+                            .is_some_and(|room| room.phase == ChannelRoomPhase::Joining)
+                    });
+                    changed |= drive_auto_rejoin(
+                        active,
+                        &snapshot,
+                        &emitter,
+                        &activity,
+                    ).await;
+                    if active.auto_rejoin_queue.is_empty()
+                        && active.auto_rejoining.is_empty()
+                    {
+                        changed |= project_reconnect(
+                            &snapshot,
+                            &reconnect,
+                            ChannelRecoveryPhase::Idle,
+                        );
+                    }
+                    if changed {
+                        sync_session_snapshot(active, &snapshot);
+                        emit_snapshot(&emitter, &snapshot);
+                    }
                 }
             }
             event = async {
@@ -1703,6 +2036,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                                 activity_reason,
                             } => {
                                 let session = active.as_ref().expect("active session");
+                                let connected_for = session.connected_at.elapsed();
                                 record_lost_room_operations(&activity, session);
                                 record_session_spontaneous(
                                     &activity,
@@ -1710,8 +2044,20 @@ async fn run_manager(input: ChannelsManagerInput) {
                                     session.closed_transition(activity_reason),
                                 );
                                 active = None;
+                                let should_reconnect = selected_hub_is_desired(&snapshot);
+                                if should_reconnect {
+                                    reconnect.note_session_ended(connected_for);
+                                    reconnect.schedule_failure(
+                                        product_reason.clone(),
+                                        reconnect_jitter(),
+                                    );
+                                }
                                 mutate_snapshot(&snapshot, |state| {
-                                    state.phase = ChannelsPhase::Error;
+                                    state.phase = if should_reconnect {
+                                        ChannelsPhase::Reconnecting
+                                    } else {
+                                        ChannelsPhase::Error
+                                    };
                                     // The nickname belongs to the dead session;
                                     // keeping it would re-offer a name the
                                     // identity may since have retired.
@@ -1720,12 +2066,23 @@ async fn run_manager(input: ChannelsManagerInput) {
                                     state.hub_greeting = None;
                                     state.notices.clear();
                                     state.last_error = Some(product_reason);
+                                    if should_reconnect {
+                                        project_selected_reconnect_state(
+                                            state,
+                                            &reconnect,
+                                            ChannelRecoveryPhase::Scheduled,
+                                        );
+                                    }
                                 });
                             }
                         }
                         emit_snapshot(&emitter, &snapshot);
                     }
                     None => {
+                        let connected_for = active
+                            .as_ref()
+                            .map(|session| session.connected_at.elapsed())
+                            .unwrap_or_default();
                         if let Some(session) = active.as_ref() {
                             record_lost_room_operations(&activity, session);
                             record_session_spontaneous(
@@ -1737,13 +2094,32 @@ async fn run_manager(input: ChannelsManagerInput) {
                             );
                         }
                         active = None;
+                        let should_reconnect = selected_hub_is_desired(&snapshot);
+                        if should_reconnect {
+                            reconnect.note_session_ended(connected_for);
+                            reconnect.schedule_failure(
+                                "Channel link closed".into(),
+                                reconnect_jitter(),
+                            );
+                        }
                         mutate_snapshot(&snapshot, |state| {
-                            state.phase = ChannelsPhase::Error;
+                            state.phase = if should_reconnect {
+                                ChannelsPhase::Reconnecting
+                            } else {
+                                ChannelsPhase::Error
+                            };
                             state.nickname = None;
                             state.rooms.clear();
                             state.hub_greeting = None;
                             state.notices.clear();
                             state.last_error = Some("Channel link closed".into());
+                            if should_reconnect {
+                                project_selected_reconnect_state(
+                                    state,
+                                    &reconnect,
+                                    ChannelRecoveryPhase::Scheduled,
+                                );
+                            }
                         });
                         emit_snapshot(&emitter, &snapshot);
                     }
@@ -2356,14 +2732,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
         source,
         store,
     } = context;
-    let update_attempt = match &update {
-        ConnectUpdate::SessionActivity { attempt, .. }
-        | ConnectUpdate::EnvelopeActivity { attempt, .. }
-        | ConnectUpdate::Discovered { attempt, .. }
-        | ConnectUpdate::AwaitingWelcome { attempt, .. }
-        | ConnectUpdate::Ready { attempt, .. }
-        | ConnectUpdate::Failed { attempt, .. } => *attempt,
-    };
+    let update_attempt = connect_update_attempt(&update);
     if update_attempt != current_attempt {
         if let ConnectUpdate::Ready { connected, .. } = update {
             connected.session.handle.close().await;
@@ -2503,6 +2872,9 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                 message_tokens: HashMap::new(),
                 message_token_order: VecDeque::new(),
                 room_activity: BTreeMap::new(),
+                auto_rejoin_queue: VecDeque::new(),
+                auto_rejoining: HashSet::new(),
+                connect_origin: ConnectOrigin::User,
                 activity,
             };
             for (envelope, encoded_bytes) in buffered {
@@ -2577,11 +2949,14 @@ async fn join_room(
     {
         return Err(ChannelsError::AlreadyJoining(pending.name.clone()));
     }
-    if active
-        .limits
-        .max_rooms_per_session
-        .is_some_and(|limit| active.rooms.len() >= limit)
-    {
+    if active.limits.max_rooms_per_session.is_some_and(|limit| {
+        active
+            .rooms
+            .values()
+            .filter(|room| room.phase != ChannelRoomPhase::Error)
+            .count()
+            >= limit
+    }) {
         return Err(ChannelsError::RoomLimitReached);
     }
 
@@ -3117,6 +3492,8 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     ) else {
         return;
     };
+    let reconnecting_room = active.auto_rejoining.remove(&room_name)
+        && active.connect_origin == ConnectOrigin::Recovery;
     let Some(room) = active.rooms.get_mut(&room_name) else {
         return;
     };
@@ -3171,18 +3548,15 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     } else {
         envelope.nickname.clone()
     };
-    let join_already_visible = joining_self
-        && room
-            .transcript
-            .iter()
-            .any(|item| item.kind == ChannelItemKind::Join && item.ours);
+    let join_already_visible = joining_self && self_join_transition_visible(room);
     // A multi-identity JOINED that does not include us is a roster fragment,
     // never a join event: hubs split large rosters across packets, and
     // treating a continuation as an arrival invents "A member joined" lines.
     let is_join_event = joining_self || identity_count == 1;
     if !join_already_visible && is_join_event {
-        append_room_item(
-            room,
+        let item = if reconnecting_room && joining_self {
+            reconnected_transcript_item(envelope)
+        } else {
             transcript_item(
                 envelope,
                 ChannelItemKind::Join,
@@ -3193,8 +3567,9 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
                     format!("{} joined", nickname.unwrap_or_else(|| "A member".into()))
                 },
                 joining_self,
-            ),
-        );
+            )
+        };
+        append_room_item(room, item);
     }
 }
 
@@ -3250,6 +3625,8 @@ fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope
     let Some(status) = parse_rrcd_room_status(&room_name, text) else {
         return false;
     };
+    let reconnecting_room = active.auto_rejoining.remove(&room_name)
+        && active.connect_origin == ConnectOrigin::Recovery;
     let Some(room) = active.rooms.get_mut(&room_name) else {
         return false;
     };
@@ -3271,13 +3648,10 @@ fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope
             Some(active.nickname.clone()),
             true,
         );
-        if !room
-            .transcript
-            .iter()
-            .any(|item| item.kind == ChannelItemKind::Join && item.ours)
-        {
-            append_room_item(
-                room,
+        if !self_join_transition_visible(room) {
+            let item = if reconnecting_room {
+                reconnected_transcript_item(envelope)
+            } else {
                 ChannelTranscriptItem {
                     id: format!("{}-joined", hex::encode(envelope.message_id)),
                     kind: ChannelItemKind::Join,
@@ -3286,11 +3660,32 @@ fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope
                     nickname: Some(active.nickname.clone()),
                     text: "You joined".into(),
                     ours: true,
-                },
-            );
+                }
+            };
+            append_room_item(room, item);
         }
     }
     true
+}
+
+fn self_join_transition_visible(room: &ChannelRoomSnapshot) -> bool {
+    room.transcript.iter().any(|item| {
+        item.ours
+            && (item.kind == ChannelItemKind::Join
+                || (item.kind == ChannelItemKind::System && item.text == "Reconnected to hub"))
+    })
+}
+
+fn reconnected_transcript_item(envelope: &Envelope) -> ChannelTranscriptItem {
+    ChannelTranscriptItem {
+        id: format!("{}-reconnected", hex::encode(envelope.message_id)),
+        kind: ChannelItemKind::System,
+        timestamp_ms: envelope.timestamp_ms,
+        source_hash: None,
+        nickname: None,
+        text: "Reconnected to hub".into(),
+        ours: true,
+    }
 }
 
 fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
@@ -3455,9 +3850,12 @@ fn append_error(
     } else {
         None
     };
-    if let Some(room_name) = explicit_room.or(inferred_room)
-        && let Some(room) = active.rooms.get_mut(&room_name)
-    {
+    if let Some(room_name) = explicit_room.or(inferred_room) {
+        active.auto_rejoining.remove(&room_name);
+        let Some(room) = active.rooms.get_mut(&room_name) else {
+            append_bounded(&mut active.notices, item, NOTICE_LIMIT);
+            return;
+        };
         let prior_phase = room.phase;
         if room.phase == ChannelRoomPhase::Joining {
             room.phase = ChannelRoomPhase::Error;
@@ -3785,6 +4183,214 @@ fn clear_observed_snapshot(state: &mut ChannelsSnapshot) {
     state.last_error = None;
 }
 
+async fn wait_for_reconnect(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => pending::<()>().await,
+    }
+}
+
+fn selected_hub_is_desired(snapshot: &Arc<RwLock<ChannelsSnapshot>>) -> bool {
+    snapshot.read().ok().is_some_and(|state| {
+        let Some(selected) = state.selected_hub_destination.as_deref() else {
+            return false;
+        };
+        state
+            .hubs
+            .iter()
+            .any(|hub| hub.destination_hash == selected && hub.desired.connected)
+    })
+}
+
+fn desired_connection_target(
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+) -> Result<Option<([u8; 16], String)>, String> {
+    let state = snapshot
+        .read()
+        .map_err(|_| "Channels state is unavailable".to_string())?;
+    let Some(destination) = state.selected_hub_destination.as_deref() else {
+        return Ok(None);
+    };
+    let destination_hash =
+        parse_destination_hash(destination).map_err(|error| error.to_string())?;
+    let nickname = state
+        .hubs
+        .iter()
+        .find(|hub| hub.destination_hash == destination)
+        .and_then(|hub| hub.desired.nickname.as_deref())
+        .ok_or_else(|| "Saved channel nickname is unavailable".to_string())?;
+    let nickname = rrc::normalize_nickname(nickname, DEFAULT_NICK_MAX_BYTES)
+        .map_err(|_| "Saved channel nickname is invalid; reconnect manually".to_string())?;
+    Ok(Some((destination_hash, nickname)))
+}
+
+fn known_owned_hub_target(
+    state: &Weak<AppState>,
+    destination_hash: [u8; 16],
+) -> Option<KnownHubTarget> {
+    let state = state.upgrade()?;
+    let hub = state.channel_hub_handle()?;
+    let status = hub.snapshot();
+    let expected = hex::encode(destination_hash);
+    if !status.running || status.destination_hash.as_deref() != Some(expected.as_str()) {
+        return None;
+    }
+
+    let public_key = hub.public_key();
+    let identity_hash = Identity::from_public_key(&public_key).ok()?.hash;
+    Some(KnownHubTarget {
+        public_key,
+        identity_hash,
+        announced_name: (!status.hub_name.is_empty()).then_some(status.hub_name),
+        hops: 1,
+    })
+}
+
+fn project_reconnect_state(
+    state: &mut ChannelsSnapshot,
+    destination_hash: &str,
+    reconnect: &ReconnectController,
+    phase: ChannelRecoveryPhase,
+) {
+    client_hub_mut(state, destination_hash).recovery = reconnect_snapshot(reconnect, phase);
+}
+
+fn reconnect_snapshot(
+    reconnect: &ReconnectController,
+    phase: ChannelRecoveryPhase,
+) -> ChannelHubRecoverySnapshot {
+    ChannelHubRecoverySnapshot {
+        phase,
+        attempt: if phase == ChannelRecoveryPhase::Idle {
+            0
+        } else {
+            reconnect.failure_streak
+        },
+        next_attempt_at_ms: if phase == ChannelRecoveryPhase::Idle {
+            None
+        } else {
+            reconnect.next_attempt_at_ms
+        },
+        last_error: if phase == ChannelRecoveryPhase::Idle {
+            None
+        } else {
+            reconnect.last_error.clone()
+        },
+    }
+}
+
+fn project_selected_reconnect_state(
+    state: &mut ChannelsSnapshot,
+    reconnect: &ReconnectController,
+    phase: ChannelRecoveryPhase,
+) {
+    if let Some(destination) = state.selected_hub_destination.clone() {
+        project_reconnect_state(state, &destination, reconnect, phase);
+    }
+}
+
+fn project_reconnect(
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+    reconnect: &ReconnectController,
+    phase: ChannelRecoveryPhase,
+) -> bool {
+    let recovery = reconnect_snapshot(reconnect, phase);
+    let should_project = snapshot.read().ok().is_some_and(|state| {
+        let Some(destination) = state.selected_hub_destination.as_deref() else {
+            return false;
+        };
+        state
+            .hubs
+            .iter()
+            .find(|hub| hub.destination_hash == destination)
+            .is_none_or(|hub| hub.recovery != recovery)
+    });
+    if !should_project {
+        return false;
+    }
+    mutate_snapshot(snapshot, |state| {
+        project_selected_reconnect_state(state, reconnect, phase)
+    });
+    true
+}
+
+fn prepare_auto_rejoin(active: &mut ActiveSession, snapshot: &Arc<RwLock<ChannelsSnapshot>>) {
+    let destination = hex::encode(active.destination_hash);
+    let desired_rooms = snapshot
+        .read()
+        .ok()
+        .and_then(|state| {
+            state
+                .hubs
+                .iter()
+                .find(|hub| hub.destination_hash == destination)
+                .map(|hub| {
+                    hub.desired
+                        .rooms
+                        .iter()
+                        .filter(|room| room.joined)
+                        .map(|room| room.name.clone())
+                        .collect::<Vec<_>>()
+                })
+        })
+        .unwrap_or_default();
+    let negotiated_limit = active
+        .limits
+        .max_rooms_per_session
+        .unwrap_or(AUTO_REJOIN_ROOM_LIMIT);
+    let limit = negotiated_limit.min(AUTO_REJOIN_ROOM_LIMIT);
+    active.auto_rejoin_queue = desired_rooms.into_iter().take(limit).collect();
+    active.auto_rejoining.clear();
+}
+
+async fn drive_auto_rejoin(
+    active: &mut ActiveSession,
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+    emitter: &Arc<dyn Emitter>,
+    activity_recorder: &ChannelsActivity,
+) -> bool {
+    if active
+        .rooms
+        .values()
+        .any(|room| room.phase == ChannelRoomPhase::Joining)
+    {
+        return false;
+    }
+    while let Some(room) = active.auto_rejoin_queue.pop_front() {
+        if active
+            .rooms
+            .get(&room)
+            .is_some_and(|state| state.phase == ChannelRoomPhase::Joined)
+        {
+            continue;
+        }
+        match join_room(
+            Some(active),
+            snapshot,
+            emitter,
+            activity_recorder,
+            room.clone(),
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(room) => {
+                active.auto_rejoining.insert(room);
+                return true;
+            }
+            Err(error) => {
+                let mut failed = ChannelRoomSnapshot::joining(room.clone());
+                failed.phase = ChannelRoomPhase::Error;
+                failed.last_error = Some(format!("Automatic rejoin failed: {error}"));
+                active.rooms.insert(room, failed);
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn client_hub_mut<'a>(
     state: &'a mut ChannelsSnapshot,
     destination_hash: &str,
@@ -3811,6 +4417,7 @@ fn set_desired_hub(
     if connected {
         for hub in &mut state.hubs {
             hub.desired.connected = false;
+            hub.recovery = ChannelHubRecoverySnapshot::default();
         }
         state.selected_hub_destination = Some(destination_hash.to_string());
     } else if state.selected_hub_destination.as_deref() == Some(destination_hash) {
@@ -3899,6 +4506,9 @@ fn apply_durable_channels(state: &mut ChannelsSnapshot, durable: DurableChannels
                 .cmp(&left.last_joined_at_ms)
                 .then_with(|| left.name.cmp(&right.name))
         });
+        if !hub.desired.connected {
+            hub.recovery = ChannelHubRecoverySnapshot::default();
+        }
     }
     state.durability = ChannelsDurabilitySnapshot {
         phase: ChannelsDurabilityPhase::Ready,
@@ -4089,7 +4699,7 @@ mod tests {
     use bytes::Bytes;
     use r2d2_sqlite::SqliteConnectionManager;
     use rns_identity::destination::Destination;
-    use rns_link::link::Link;
+    use rns_link::link::{CloseReason, Link};
     use rns_transport::actor::TransportActor;
     use rns_transport::link_messages::DestinationEvent;
     use rns_transport::messages::OutboundRequest;
@@ -4251,6 +4861,108 @@ mod tests {
             .unwrap();
         assert!(!first.desired.connected);
         assert!(first.desired.rooms[0].joined);
+    }
+
+    #[test]
+    fn reconnect_backoff_is_jittered_bounded_and_stability_aware() {
+        assert_eq!(reconnect_delay(1, u16::MAX / 2 + 1), RECONNECT_BASE_DELAY);
+        assert_eq!(
+            reconnect_delay(2, u16::MAX / 2 + 1),
+            RECONNECT_BASE_DELAY * 2
+        );
+        assert_eq!(
+            reconnect_delay(1, 0),
+            Duration::from_millis(
+                RECONNECT_BASE_DELAY.as_millis() as u64 * u64::from(100 - RECONNECT_JITTER_PERCENT)
+                    / 100
+            )
+        );
+        assert!(
+            reconnect_delay(u32::MAX, u16::MAX) <= RECONNECT_MAX_DELAY,
+            "jitter must never raise a retry above the resource ceiling"
+        );
+
+        let mut reconnect = ReconnectController {
+            failure_streak: 7,
+            ..ReconnectController::default()
+        };
+        reconnect.note_session_ended(RECONNECT_STABLE_RESET - Duration::from_millis(1));
+        assert_eq!(
+            reconnect.failure_streak, 7,
+            "a flapping Link keeps its retry penalty"
+        );
+        reconnect.note_session_ended(RECONNECT_STABLE_RESET);
+        assert_eq!(
+            reconnect.failure_streak, 0,
+            "a stable Link earns a fresh retry budget"
+        );
+    }
+
+    #[test]
+    fn reconnect_projection_changes_once_and_idle_clears_public_attempts() {
+        let destination = "11".repeat(16);
+        let mut initial = ChannelsSnapshot::offline();
+        set_desired_hub(&mut initial, &destination, "Field Rat", true);
+        let snapshot = Arc::new(RwLock::new(initial));
+        let reconnect = ReconnectController {
+            failure_streak: 3,
+            next_attempt_at_ms: Some(42),
+            last_error: Some("link closed".into()),
+            ..ReconnectController::default()
+        };
+
+        let initial_revision = snapshot.read().unwrap().revision;
+        assert!(project_reconnect(
+            &snapshot,
+            &reconnect,
+            ChannelRecoveryPhase::Scheduled
+        ));
+        let scheduled_revision = snapshot.read().unwrap().revision;
+        assert_eq!(scheduled_revision, initial_revision + 1);
+        assert!(!project_reconnect(
+            &snapshot,
+            &reconnect,
+            ChannelRecoveryPhase::Scheduled
+        ));
+        assert_eq!(snapshot.read().unwrap().revision, scheduled_revision);
+
+        assert!(project_reconnect(
+            &snapshot,
+            &reconnect,
+            ChannelRecoveryPhase::Idle
+        ));
+        let state = snapshot.read().unwrap();
+        let recovery = &state.hubs[0].recovery;
+        assert_eq!(recovery.phase, ChannelRecoveryPhase::Idle);
+        assert_eq!(recovery.attempt, 0);
+        assert_eq!(recovery.next_attempt_at_ms, None);
+        assert_eq!(recovery.last_error, None);
+    }
+
+    #[test]
+    fn reconnect_retries_transport_failures_but_blocks_protocol_or_policy_failures() {
+        use activity::ChannelSessionFailureReason as Reason;
+
+        for failure in [
+            ConnectFailure::PathTimedOut,
+            ConnectFailure::Failed(Reason::PathLookupFailed),
+            ConnectFailure::Failed(Reason::TransportUnavailable),
+            ConnectFailure::Failed(Reason::SendFailed),
+            ConnectFailure::WelcomeRejected(Reason::WelcomeTimedOut),
+            ConnectFailure::Failed(Reason::AuthenticationFailed),
+        ] {
+            assert!(retryable_connect_failure(failure));
+        }
+        for reason in [
+            Reason::HubRejected,
+            Reason::IdentificationFailed,
+            Reason::InvalidAnnounce,
+            Reason::MalformedWelcome,
+            Reason::UnsupportedVersion,
+            Reason::WrongSource,
+        ] {
+            assert!(!retryable_connect_failure(ConnectFailure::Failed(reason)));
+        }
     }
 
     #[tokio::test]
@@ -4790,15 +5502,181 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         drop(transport_rx);
 
-        let closed =
-            wait_snapshot(&manager, |snapshot| snapshot.phase == ChannelsPhase::Error).await;
+        let closed = wait_snapshot(&manager, |snapshot| {
+            snapshot.phase == ChannelsPhase::Reconnecting
+        })
+        .await;
         let reason = closed.last_error.expect("closed session reason");
         assert!(
             reason.contains("transport unavailable"),
             "the Link actor must own the authoritative close reason: {reason}"
         );
         assert_ne!(reason, "Channel link send failed");
+        let recovery = &closed.hubs[0].recovery;
+        assert_eq!(recovery.phase, ChannelRecoveryPhase::Scheduled);
+        assert_eq!(recovery.attempt, 1);
+        assert!(recovery.next_attempt_at_ms.is_some());
 
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn an_unexpected_close_reconnects_and_sequentially_rejoins_desired_rooms() {
+        let client_identity = Identity::new();
+        let hub_identity = Identity::new();
+        let hub_destination =
+            Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
+        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(32);
+        let manager = ChannelsManagerHandle::start(
+            transport_tx,
+            client_identity.clone(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            ShutdownSignal::new(),
+            Weak::new(),
+        );
+
+        manager
+            .connect(&hex::encode(hub_destination), "Field Rat")
+            .await
+            .unwrap();
+        let (first_delivery, mut first_responder) = accept_test_hub_session(
+            &mut transport_rx,
+            &client_identity,
+            &hub_identity,
+            hub_destination,
+        )
+        .await;
+        wait_snapshot(&manager, |snapshot| snapshot.phase == ChannelsPhase::Active).await;
+
+        let joined_for = |room_name: &str| {
+            let mut joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+            joined.room = Some(room_name.into());
+            joined.body = Some(Value::Array(vec![Value::Bytes(
+                client_identity.hash.to_vec(),
+            )]));
+            joined
+        };
+        for room_name in ["general", "field"] {
+            manager.join(room_name, None).await.unwrap();
+            let join = receive_client_envelope(
+                &mut transport_rx,
+                &first_delivery,
+                &mut first_responder,
+                &hub_identity.get_signing_key().unwrap(),
+            )
+            .await;
+            assert_eq!(join.message_type, MessageType::Join);
+            assert_eq!(join.room.as_deref(), Some(room_name));
+            send_server_envelope(
+                &first_delivery,
+                &mut first_responder,
+                &joined_for(room_name),
+            )
+            .await;
+            wait_snapshot(&manager, |snapshot| {
+                snapshot
+                    .rooms
+                    .iter()
+                    .any(|room| room.name == room_name && room.phase == ChannelRoomPhase::Joined)
+            })
+            .await;
+        }
+
+        let teardown = first_responder
+            .teardown(CloseReason::DestinationClosed)
+            .unwrap();
+        send_link_packet(
+            &first_delivery,
+            first_responder.link_id,
+            rns_wire::flags::PacketType::Data,
+            rns_wire::context::PacketContext::LinkClose,
+            &teardown,
+        )
+        .await;
+        let recovering = wait_snapshot(&manager, |snapshot| {
+            snapshot.phase == ChannelsPhase::Reconnecting
+        })
+        .await;
+        assert!(recovering.hubs[0].desired.connected);
+        assert!(
+            recovering.hubs[0]
+                .desired
+                .rooms
+                .iter()
+                .filter(|room| room.joined)
+                .count()
+                == 2
+        );
+
+        let (second_delivery, mut second_responder) = accept_test_hub_session(
+            &mut transport_rx,
+            &client_identity,
+            &hub_identity,
+            hub_destination,
+        )
+        .await;
+        let first_rejoin = receive_client_envelope(
+            &mut transport_rx,
+            &second_delivery,
+            &mut second_responder,
+            &hub_identity.get_signing_key().unwrap(),
+        )
+        .await;
+        assert_eq!(first_rejoin.message_type, MessageType::Join);
+        assert_eq!(first_rejoin.room.as_deref(), Some("field"));
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                receive_client_envelope(
+                    &mut transport_rx,
+                    &second_delivery,
+                    &mut second_responder,
+                    &hub_identity.get_signing_key().unwrap(),
+                ),
+            )
+            .await
+            .is_err(),
+            "the next desired room must wait for hub confirmation"
+        );
+        send_server_envelope(
+            &second_delivery,
+            &mut second_responder,
+            &joined_for("field"),
+        )
+        .await;
+
+        let second_rejoin = receive_client_envelope(
+            &mut transport_rx,
+            &second_delivery,
+            &mut second_responder,
+            &hub_identity.get_signing_key().unwrap(),
+        )
+        .await;
+        assert_eq!(second_rejoin.message_type, MessageType::Join);
+        assert_eq!(second_rejoin.room.as_deref(), Some("general"));
+        send_server_envelope(
+            &second_delivery,
+            &mut second_responder,
+            &joined_for("general"),
+        )
+        .await;
+        let recovered = wait_snapshot(&manager, |snapshot| {
+            snapshot.hubs[0].recovery.phase == ChannelRecoveryPhase::Idle
+                && ["field", "general"].iter().all(|room_name| {
+                    snapshot.rooms.iter().any(|room| {
+                        room.name == *room_name
+                            && room.phase == ChannelRoomPhase::Joined
+                            && room.transcript.iter().any(|item| {
+                                item.kind == ChannelItemKind::System
+                                    && item.text == "Reconnected to hub"
+                            })
+                    })
+                })
+        })
+        .await;
+        assert_eq!(recovered.hubs[0].recovery.phase, ChannelRecoveryPhase::Idle);
+
+        manager.disconnect().await.unwrap();
         manager.shutdown().await;
     }
 
@@ -5334,6 +6212,82 @@ mod tests {
             .await;
             return rrc::decode(&plaintext).unwrap();
         }
+    }
+
+    async fn accept_test_hub_session(
+        transport_rx: &mut mpsc::Receiver<TransportMessage>,
+        client_identity: &Identity,
+        hub_identity: &Identity,
+        hub_destination: [u8; 16],
+    ) -> (mpsc::Sender<DestinationEvent>, Link) {
+        let response_tx = loop {
+            match timeout_transport(transport_rx).await {
+                TransportMessage::Rpc {
+                    query: TransportQuery::GetRecentAnnounces,
+                    response_tx,
+                } => break response_tx,
+                _ => continue,
+            }
+        };
+        response_tx
+            .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
+                dest_hash: hub_destination,
+                hops: 1,
+                app_data: Some(reference_announce_data("Recovery relay")),
+                timestamp: 1_700_000_000.0,
+                public_key: Some(hub_identity.get_public_key()),
+                ratchet: None,
+                name_hash: rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT),
+                is_path_response: false,
+                retained: false,
+            }]))
+            .unwrap();
+        let delivery_tx = loop {
+            match timeout_transport(transport_rx).await {
+                TransportMessage::RegisterDestination {
+                    delivery_tx: Some(delivery_tx),
+                    ..
+                } => break delivery_tx,
+                _ => continue,
+            }
+        };
+        let request = next_outbound(transport_rx).await;
+        let (_, request_offset) = rns_wire::header::PacketHeader::unpack(&request.raw).unwrap();
+        let signing = hub_identity.get_signing_key().unwrap();
+        let (mut responder, link_proof) =
+            Link::new_responder(&request.raw[request_offset..], &signing, hub_destination, 1)
+                .unwrap();
+        send_link_packet(
+            &delivery_tx,
+            responder.link_id,
+            rns_wire::flags::PacketType::Proof,
+            rns_wire::context::PacketContext::None,
+            &link_proof,
+        )
+        .await;
+        let lrrtt = next_attached_outbound(transport_rx).await;
+        let (_, lrrtt_offset) = rns_wire::header::PacketHeader::unpack(&lrrtt.raw).unwrap();
+        responder
+            .receive_rtt_packet(&lrrtt.raw[lrrtt_offset..])
+            .unwrap();
+        let identify = next_attached_outbound(transport_rx).await;
+        let (_, identify_offset) = rns_wire::header::PacketHeader::unpack(&identify.raw).unwrap();
+        assert_eq!(
+            responder
+                .handle_identification(&identify.raw[identify_offset..])
+                .unwrap(),
+            client_identity.get_public_key()
+        );
+        let hello =
+            receive_client_envelope(transport_rx, &delivery_tx, &mut responder, &signing).await;
+        assert_eq!(hello.message_type, MessageType::Hello);
+        let mut welcome = Envelope::new(MessageType::Welcome, hub_identity.hash);
+        welcome.body = Some(Value::Map(vec![(
+            Value::Integer(rrc::WELCOME_HUB_NAME.into()),
+            Value::Text("Recovery relay".into()),
+        )]));
+        send_server_envelope(&delivery_tx, &mut responder, &welcome).await;
+        (delivery_tx, responder)
     }
 
     async fn send_server_envelope(
