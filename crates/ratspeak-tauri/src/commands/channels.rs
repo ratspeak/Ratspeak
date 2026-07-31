@@ -26,6 +26,12 @@ pub struct JoinChannelArgs {
     pub room: String,
     #[serde(default)]
     pub key: Option<String>,
+    #[serde(default = "default_true")]
+    pub remember_key: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,7 +171,7 @@ pub async fn join_channel(
 ) -> AppResult<Value> {
     let channels = channels_handle(&state)?;
     let room = channels
-        .join(&args.room, args.key)
+        .join_with_key_policy(&args.room, args.key, args.remember_key)
         .await
         .map_err(map_error)?;
     Ok(json!({
@@ -430,12 +436,16 @@ fn map_error(error: ChannelsError) -> AppError {
         ChannelsError::InvalidDestination
         | ChannelsError::EmptyMessage
         | ChannelsError::MessageTooLong(_)
+        | ChannelsError::JoinKeyTooLong(_)
         | ChannelsError::Protocol(_) => AppError::bad_request(error.to_string()),
         ChannelsError::NotConnected
         | ChannelsError::AlreadyConnecting
         | ChannelsError::NotJoined(_)
         | ChannelsError::AlreadyJoining(_)
         | ChannelsError::RoomLimitReached => AppError::conflict(error.to_string()),
+        ChannelsError::SavedJoinKeyUnavailable(_) => {
+            AppError::new("channel_key_required", error.to_string())
+        }
         ChannelsError::HubRejected(_) => AppError::new("channel_hub_rejected", error.to_string()),
         ChannelsError::Unavailable | ChannelsError::Transport(_) | ChannelsError::Stopped => {
             AppError::service_unavailable(error.to_string())
@@ -451,6 +461,20 @@ mod tests {
     fn protocol_input_errors_are_stable_bad_requests() {
         let error = map_error(ChannelsError::InvalidDestination);
         assert_eq!(error.code, "bad_request");
+    }
+
+    #[test]
+    fn join_keys_default_to_confirmed_identity_sealed_storage() {
+        let args: JoinChannelArgs =
+            serde_json::from_value(json!({ "room": "general", "key": "field-pass" })).unwrap();
+        assert!(args.remember_key);
+        let opted_out: JoinChannelArgs = serde_json::from_value(json!({
+            "room": "general",
+            "key": "field-pass",
+            "remember_key": false
+        }))
+        .unwrap();
+        assert!(!opted_out.remember_key);
     }
 
     #[test]

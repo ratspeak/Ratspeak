@@ -23,6 +23,7 @@ use rns_transport::messages::{
 };
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::activity::{CorrelationId, producer as activity};
 use crate::db;
@@ -48,6 +49,17 @@ const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5 * 60);
 const RECONNECT_STABLE_RESET: Duration = Duration::from_secs(2 * 60);
 const RECONNECT_JITTER_PERCENT: u32 = 20;
 const AUTO_REJOIN_ROOM_LIMIT: usize = 32;
+const MAX_JOIN_KEY_BYTES: usize = 1_024;
+const MAX_SEALED_ROOM_SECRET_BYTES: usize = 4_096;
+const ROOM_SECRET_SEAL_SCHEME: &str = "rns_identity";
+const ROOM_SECRET_SEAL_VERSION: u32 = 1;
+const ROOM_SECRET_MAGIC: &[u8; 8] = b"RSCHKEY\0";
+const ROOM_SECRET_FORMAT_VERSION: u8 = 1;
+const BAD_ROOM_KEY_ERROR: &str = "bad key (+k)";
+const SAVED_ROOM_KEY_REJECTED: &str = "Saved join key was rejected. Enter the current key.";
+const ENTERED_ROOM_KEY_REJECTED: &str = "Channel key was rejected. Check it and try again.";
+const SAVED_ROOM_KEY_UNAVAILABLE: &str = "Saved join key is unavailable. Enter the current key.";
+const ROOM_KEY_REQUIRED: &str = "Channel key required. Enter the current key.";
 /// Initial scheduler budget. The hub-keyed model deliberately supports raising
 /// this later without pretending the current runtime holds multiple Links.
 pub const CHANNELS_CONNECTION_BUDGET: usize = 1;
@@ -351,6 +363,9 @@ pub struct ChannelDurableRoomSnapshot {
     pub added_at_ms: u64,
     pub last_joined_at_ms: u64,
     pub desired_joined: bool,
+    pub join_key_required: bool,
+    /// Availability only. Ciphertext and seal metadata never cross IPC.
+    pub has_stored_join_key: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -508,6 +523,10 @@ pub enum ChannelsError {
     EmptyMessage,
     #[error("message exceeds the hub's {0}-byte limit")]
     MessageTooLong(usize),
+    #[error("channel key exceeds the {0}-byte client limit")]
+    JoinKeyTooLong(usize),
+    #[error("saved join key for {0} is unavailable; enter the current key")]
+    SavedJoinKeyUnavailable(String),
     #[error("the hub's room limit has been reached")]
     RoomLimitReached,
     #[error("channel hub rejected the session: {0}")]
@@ -556,7 +575,8 @@ enum ChannelsCommand {
     },
     Join {
         room: String,
-        key: Option<String>,
+        key: Option<Zeroizing<String>>,
+        remember_key: bool,
         activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<String, ChannelsError>>,
     },
@@ -597,7 +617,10 @@ struct ChannelsStore {
 struct DurableChannelsState {
     hubs: Vec<db::SavedChannelHub>,
     rooms: Vec<db::SavedChannelRoom>,
+    secrets: Vec<db::StoredChannelRoomSecret>,
 }
+
+type StoredRoomSecrets = BTreeMap<(String, String), db::StoredChannelRoomSecret>;
 
 struct ChannelsManagerInput {
     transport_tx: mpsc::Sender<TransportMessage>,
@@ -662,6 +685,60 @@ impl ChannelsStore {
         .map_err(|_| "Channels state database task panicked".to_string())?
     }
 
+    async fn save_room_secret(
+        &self,
+        destination_hash: String,
+        room: String,
+        ciphertext: Vec<u8>,
+    ) -> Result<DurableChannelsState, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::save_channel_room_secret(
+                &pool,
+                &identity_id,
+                &destination_hash,
+                &room,
+                ROOM_SECRET_SEAL_SCHEME,
+                ROOM_SECRET_SEAL_VERSION,
+                &ciphertext,
+            )?;
+            load_durable_channels(&pool, &identity_id)
+        })
+        .await
+        .map_err(|_| "Channels state database task panicked".to_string())?
+    }
+
+    async fn remove_room_secret(
+        &self,
+        destination_hash: String,
+        room: String,
+    ) -> Result<DurableChannelsState, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::remove_channel_room_secret(&pool, &identity_id, &destination_hash, &room, true)?;
+            load_durable_channels(&pool, &identity_id)
+        })
+        .await
+        .map_err(|_| "Channels state database task panicked".to_string())?
+    }
+
+    async fn mark_room_key_required(
+        &self,
+        destination_hash: String,
+        room: String,
+    ) -> Result<DurableChannelsState, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::mark_channel_room_key_required(&pool, &identity_id, &destination_hash, &room)?;
+            load_durable_channels(&pool, &identity_id)
+        })
+        .await
+        .map_err(|_| "Channels state database task panicked".to_string())?
+    }
+
     async fn note_connected(
         &self,
         destination_hash: String,
@@ -693,7 +770,102 @@ fn load_durable_channels(
     Ok(DurableChannelsState {
         hubs: db::list_saved_channel_hubs(pool, identity_id)?,
         rooms: db::list_saved_channel_rooms_for_identity(pool, identity_id)?,
+        secrets: db::list_channel_room_secrets_for_identity(pool, identity_id)?,
     })
+}
+
+#[derive(Debug, thiserror::Error)]
+enum RoomSecretError {
+    #[error("invalid room-key secret context")]
+    InvalidContext,
+    #[error("room-key identity seal failed")]
+    SealFailed,
+}
+
+fn seal_room_key(
+    identity: &Identity,
+    destination_hash: [u8; 16],
+    room: &str,
+    key: &str,
+) -> Result<Vec<u8>, RoomSecretError> {
+    let room_bytes = room.as_bytes();
+    let key_bytes = key.as_bytes();
+    if room_bytes.is_empty()
+        || room_bytes.len() > u16::MAX as usize
+        || key_bytes.is_empty()
+        || key_bytes.len() > MAX_JOIN_KEY_BYTES
+    {
+        return Err(RoomSecretError::InvalidContext);
+    }
+
+    let mut plaintext = Zeroizing::new(Vec::with_capacity(
+        ROOM_SECRET_MAGIC.len() + 1 + 16 + 16 + 2 + 2 + room_bytes.len() + key_bytes.len(),
+    ));
+    plaintext.extend_from_slice(ROOM_SECRET_MAGIC);
+    plaintext.push(ROOM_SECRET_FORMAT_VERSION);
+    plaintext.extend_from_slice(&identity.hash);
+    plaintext.extend_from_slice(&destination_hash);
+    plaintext.extend_from_slice(&(room_bytes.len() as u16).to_be_bytes());
+    plaintext.extend_from_slice(&(key_bytes.len() as u16).to_be_bytes());
+    plaintext.extend_from_slice(room_bytes);
+    plaintext.extend_from_slice(key_bytes);
+
+    let ciphertext = identity
+        .encrypt(&plaintext, None)
+        .map_err(|_| RoomSecretError::SealFailed)?;
+    if ciphertext.is_empty() || ciphertext.len() > MAX_SEALED_ROOM_SECRET_BYTES {
+        return Err(RoomSecretError::SealFailed);
+    }
+    Ok(ciphertext)
+}
+
+fn unseal_room_key(
+    identity: &Identity,
+    destination_hash: [u8; 16],
+    room: &str,
+    secret: &db::StoredChannelRoomSecret,
+) -> Result<Zeroizing<String>, RoomSecretError> {
+    if secret.seal_scheme != ROOM_SECRET_SEAL_SCHEME
+        || secret.seal_version != ROOM_SECRET_SEAL_VERSION
+        || secret.ciphertext.is_empty()
+        || secret.ciphertext.len() > MAX_SEALED_ROOM_SECRET_BYTES
+    {
+        return Err(RoomSecretError::InvalidContext);
+    }
+    let plaintext = Zeroizing::new(
+        identity
+            .decrypt(&secret.ciphertext, None, false)
+            .map_err(|_| RoomSecretError::SealFailed)?,
+    );
+    const HEADER_LEN: usize = 8 + 1 + 16 + 16 + 2 + 2;
+    if plaintext.len() < HEADER_LEN
+        || &plaintext[..8] != ROOM_SECRET_MAGIC
+        || plaintext[8] != ROOM_SECRET_FORMAT_VERSION
+        || plaintext[9..25] != identity.hash
+        || plaintext[25..41] != destination_hash
+    {
+        return Err(RoomSecretError::InvalidContext);
+    }
+    let room_len = u16::from_be_bytes([plaintext[41], plaintext[42]]) as usize;
+    let key_len = u16::from_be_bytes([plaintext[43], plaintext[44]]) as usize;
+    let expected_len = HEADER_LEN
+        .checked_add(room_len)
+        .and_then(|length| length.checked_add(key_len))
+        .ok_or(RoomSecretError::InvalidContext)?;
+    if expected_len != plaintext.len()
+        || room_len == 0
+        || key_len == 0
+        || key_len > MAX_JOIN_KEY_BYTES
+    {
+        return Err(RoomSecretError::InvalidContext);
+    }
+    let room_end = HEADER_LEN + room_len;
+    if &plaintext[HEADER_LEN..room_end] != room.as_bytes() {
+        return Err(RoomSecretError::InvalidContext);
+    }
+    let key =
+        std::str::from_utf8(&plaintext[room_end..]).map_err(|_| RoomSecretError::InvalidContext)?;
+    Ok(Zeroizing::new(key.to_string()))
 }
 
 #[derive(Clone)]
@@ -832,12 +1004,28 @@ impl ChannelsManagerHandle {
     }
 
     pub async fn join(&self, room: &str, key: Option<String>) -> Result<String, ChannelsError> {
+        self.join_with_key_policy(room, key, false).await
+    }
+
+    pub async fn join_with_key_policy(
+        &self,
+        room: &str,
+        key: Option<String>,
+        remember_key: bool,
+    ) -> Result<String, ChannelsError> {
+        if key
+            .as_ref()
+            .is_some_and(|key| key.len() > MAX_JOIN_KEY_BYTES)
+        {
+            return Err(ChannelsError::JoinKeyTooLong(MAX_JOIN_KEY_BYTES));
+        }
         let activity_fence = self.activity.capture_fence();
         let (result_tx, result_rx) = oneshot::channel();
         self.command_tx
             .send(ChannelsCommand::Join {
                 room: room.to_string(),
-                key,
+                key: key.map(Zeroizing::new),
+                remember_key,
                 activity_fence,
                 result_tx,
             })
@@ -938,6 +1126,37 @@ struct RoomActivityContext {
     part: Option<RoomOperationContext>,
 }
 
+enum PendingJoinSecret {
+    UserRemember(Zeroizing<String>),
+    UserEphemeral,
+    Stored,
+}
+
+enum JoinSecretInput {
+    None,
+    User {
+        key: Zeroizing<String>,
+        remember: bool,
+    },
+    Stored(Zeroizing<String>),
+}
+
+enum RoomSecretAction {
+    Persist {
+        room: String,
+        key: Zeroizing<String>,
+    },
+    ForgetRequired {
+        room: String,
+    },
+    ForgetRejected {
+        room: String,
+    },
+    MarkRequired {
+        room: String,
+    },
+}
+
 struct ActiveSession {
     handle: rns_runtime::link_session::LinkSessionHandle,
     events: mpsc::Receiver<LinkSessionEvent>,
@@ -959,6 +1178,8 @@ struct ActiveSession {
     room_activity: BTreeMap<String, RoomActivityContext>,
     auto_rejoin_queue: VecDeque<String>,
     auto_rejoining: HashSet<String>,
+    pending_join_secrets: BTreeMap<String, PendingJoinSecret>,
+    room_secret_actions: VecDeque<RoomSecretAction>,
     connect_origin: ConnectOrigin,
     activity: SessionActivityContext,
 }
@@ -1354,6 +1575,7 @@ struct ConnectUpdateContext<'a> {
     pending_connect_activity: &'a mut Option<SessionActivityContext>,
     source: [u8; 16],
     store: Option<&'a ChannelsStore>,
+    stored_secrets: &'a mut StoredRoomSecrets,
 }
 
 fn connect_update_attempt(update: &ConnectUpdate) -> u64 {
@@ -1387,19 +1609,12 @@ async fn run_manager(input: ChannelsManagerInput) {
     let mut pending_connect_activity: Option<SessionActivityContext> = None;
     let mut connect_origin = ConnectOrigin::User;
     let mut reconnect = ReconnectController::default();
+    let mut stored_secrets = StoredRoomSecrets::new();
     let mut room_transition_tick = tokio::time::interval(ROOM_TRANSITION_TICK);
     room_transition_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     match &store {
-        Some(store) => match store.load().await {
-            Ok(durable) => {
-                mutate_snapshot(&snapshot, |state| apply_durable_channels(state, durable))
-            }
-            Err(error) => {
-                tracing::warn!(reason = %error, "failed to load durable Channels state");
-                mutate_snapshot(&snapshot, mark_durability_degraded);
-            }
-        },
+        Some(store) => apply_store_result(&snapshot, &mut stored_secrets, store.load().await),
         None => mutate_snapshot(&snapshot, |state| {
             state.durability = ChannelsDurabilitySnapshot {
                 phase: ChannelsDurabilityPhase::Ready,
@@ -1584,6 +1799,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                         if let Some(store) = &store {
                             apply_store_result(
                                 &snapshot,
+                                &mut stored_secrets,
                                 store
                                     .set_hub_desired(
                                         destination_text,
@@ -1669,6 +1885,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                         {
                             apply_store_result(
                                 &snapshot,
+                                &mut stored_secrets,
                                 store
                                     .set_hub_desired(destination, nickname, false)
                                     .await,
@@ -1680,16 +1897,81 @@ async fn run_manager(input: ChannelsManagerInput) {
                     ChannelsCommand::Join {
                         room,
                         key,
+                        remember_key,
                         activity_fence,
                         result_tx,
                     } => {
+                        let Some(session) = active.as_ref() else {
+                            let _ = result_tx.send(Err(ChannelsError::NotConnected));
+                            continue;
+                        };
+                        let max_room = session
+                            .limits
+                            .max_room_name_bytes
+                            .unwrap_or(DEFAULT_ROOM_MAX_BYTES);
+                        let room = match rrc::normalize_room(&room, max_room) {
+                            Ok(room) => room,
+                            Err(error) => {
+                                let _ = result_tx.send(Err(error.into()));
+                                continue;
+                            }
+                        };
+                        let destination_hash = session.destination_hash;
+                        let destination = hex::encode(destination_hash);
+                        let secret = match key {
+                            Some(key) if !key.is_empty() => JoinSecretInput::User {
+                                key,
+                                remember: remember_key,
+                            },
+                            _ => {
+                                let secret_id = (destination.clone(), room.clone());
+                                match stored_secrets.get(&secret_id) {
+                                    Some(stored) => match unseal_room_key(
+                                        &identity,
+                                        destination_hash,
+                                        &room,
+                                        stored,
+                                    ) {
+                                        Ok(key) => JoinSecretInput::Stored(key),
+                                        Err(_) => {
+                                            stored_secrets.remove(&secret_id);
+                                            set_room_secret_status(
+                                                &snapshot,
+                                                &destination,
+                                                &room,
+                                                false,
+                                                true,
+                                            );
+                                            if let Some(store) = &store {
+                                                apply_store_result(
+                                                    &snapshot,
+                                                    &mut stored_secrets,
+                                                    store
+                                                        .remove_room_secret(
+                                                            destination,
+                                                            room.clone(),
+                                                        )
+                                                        .await,
+                                                );
+                                            }
+                                            emit_snapshot(&emitter, &snapshot);
+                                            let _ = result_tx.send(Err(
+                                                ChannelsError::SavedJoinKeyUnavailable(room),
+                                            ));
+                                            continue;
+                                        }
+                                    },
+                                    None => JoinSecretInput::None,
+                                }
+                            }
+                        };
                         let result = join_room(
                             active.as_mut(),
                             &snapshot,
                             &emitter,
                             &activity,
                             room,
-                            key,
+                            secret,
                             activity_fence,
                         ).await;
                         if let Ok(joined_room) = result.as_ref()
@@ -1702,6 +1984,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                             if let Some(store) = &store {
                                 apply_store_result(
                                     &snapshot,
+                                    &mut stored_secrets,
                                     store
                                         .set_room_desired(
                                             destination,
@@ -1749,6 +2032,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                             if let Some(store) = &store {
                                 apply_store_result(
                                     &snapshot,
+                                    &mut stored_secrets,
                                     store
                                         .set_room_desired(destination, room, false)
                                         .await,
@@ -1796,6 +2080,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                             if let Some(store) = &store {
                                 apply_store_result(
                                     &snapshot,
+                                    &mut stored_secrets,
                                     store
                                         .set_hub_desired(destination, adopted, true)
                                         .await,
@@ -1806,14 +2091,22 @@ async fn run_manager(input: ChannelsManagerInput) {
                             // The rename transaction may have retired a saved
                             // default nickname even without a live session.
                             if let Some(store) = &store {
-                                apply_store_result(&snapshot, store.load().await);
+                                apply_store_result(
+                                    &snapshot,
+                                    &mut stored_secrets,
+                                    store.load().await,
+                                );
                                 emit_snapshot(&emitter, &snapshot);
                             }
                         }
                     }
                     ChannelsCommand::RefreshDurable { result_tx } => {
                         if let Some(store) = &store {
-                            apply_store_result(&snapshot, store.load().await);
+                            apply_store_result(
+                                &snapshot,
+                                &mut stored_secrets,
+                                store.load().await,
+                            );
                         } else {
                             mutate_snapshot(&snapshot, |state| {
                                 state.durability = ChannelsDurabilitySnapshot {
@@ -1905,6 +2198,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                         pending_connect_activity: &mut pending_connect_activity,
                         source,
                         store: store.as_ref(),
+                        stored_secrets: &mut stored_secrets,
                     },
                 ).await;
                 if ready {
@@ -1926,6 +2220,9 @@ async fn run_manager(input: ChannelsManagerInput) {
                             &snapshot,
                             &emitter,
                             &activity,
+                            &identity,
+                            &mut stored_secrets,
+                            store.as_ref(),
                         ).await;
                     }
                     emit_snapshot(&emitter, &snapshot);
@@ -1970,11 +2267,20 @@ async fn run_manager(input: ChannelsManagerInput) {
                             .get(room)
                             .is_some_and(|room| room.phase == ChannelRoomPhase::Joining)
                     });
+                    active.pending_join_secrets.retain(|room, _| {
+                        active
+                            .rooms
+                            .get(room)
+                            .is_some_and(|room| room.phase == ChannelRoomPhase::Joining)
+                    });
                     changed |= drive_auto_rejoin(
                         active,
                         &snapshot,
                         &emitter,
                         &activity,
+                        &identity,
+                        &mut stored_secrets,
+                        store.as_ref(),
                     ).await;
                     if active.auto_rejoin_queue.is_empty()
                         && active.auto_rejoining.is_empty()
@@ -2006,6 +2312,14 @@ async fn run_manager(input: ChannelsManagerInput) {
                         ).await;
                         match outcome {
                             LinkEventOutcome::Keep => {
+                                apply_room_secret_actions(
+                                    active.as_mut().expect("active session"),
+                                    &identity,
+                                    store.as_ref(),
+                                    &mut stored_secrets,
+                                    &snapshot,
+                                )
+                                .await;
                                 sync_session_snapshot(active.as_ref().expect("active session"), &snapshot);
                             }
                             LinkEventOutcome::Stale => {
@@ -2731,6 +3045,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
         pending_connect_activity,
         source,
         store,
+        stored_secrets,
     } = context;
     let update_attempt = connect_update_attempt(&update);
     if update_attempt != current_attempt {
@@ -2874,6 +3189,8 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                 room_activity: BTreeMap::new(),
                 auto_rejoin_queue: VecDeque::new(),
                 auto_rejoining: HashSet::new(),
+                pending_join_secrets: BTreeMap::new(),
+                room_secret_actions: VecDeque::new(),
                 connect_origin: ConnectOrigin::User,
                 activity,
             };
@@ -2903,6 +3220,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
             if let Some(store) = store {
                 apply_store_result(
                     snapshot,
+                    stored_secrets,
                     store
                         .note_connected(destination_text, durable_label, nickname)
                         .await,
@@ -2919,7 +3237,7 @@ async fn join_room(
     emitter: &Arc<dyn Emitter>,
     activity_recorder: &ChannelsActivity,
     room: String,
-    key: Option<String>,
+    secret: JoinSecretInput,
     activity_fence: Option<ActivityRequestFence>,
 ) -> Result<String, ChannelsError> {
     let active = active.ok_or(ChannelsError::NotConnected)?;
@@ -2939,6 +3257,7 @@ async fn join_room(
             ChannelRoomPhase::Error => {
                 active.rooms.remove(&room);
                 active.room_activity.remove(&room);
+                active.pending_join_secrets.remove(&room);
             }
         }
     }
@@ -2985,12 +3304,24 @@ async fn join_room(
     );
     let mut envelope =
         Envelope::room_command(MessageType::Join, active.source, &room, &active.nickname);
-    if let Some(key) = key.filter(|key| !key.is_empty()) {
-        envelope.body = Some(Value::Text(key));
+    let key = match &secret {
+        JoinSecretInput::None => None,
+        JoinSecretInput::User { key, .. } | JoinSecretInput::Stored(key) => Some(key.as_str()),
+    };
+    if let Some(key) = key {
+        if key.len() > MAX_JOIN_KEY_BYTES {
+            active.rooms.remove(&room);
+            active.room_activity.remove(&room);
+            return Err(ChannelsError::JoinKeyTooLong(MAX_JOIN_KEY_BYTES));
+        }
+        envelope.body = Some(Value::Text(key.to_string()));
     }
-    if let Err(error) =
-        send_active_envelope(active, activity_recorder, &envelope, activity_fence).await
-    {
+    let send_result =
+        send_active_envelope(active, activity_recorder, &envelope, activity_fence).await;
+    if let Some(Value::Text(key)) = envelope.body.as_mut() {
+        key.zeroize();
+    }
+    if let Err(error) = send_result {
         active.rooms.remove(&room);
         active.room_activity.remove(&room);
         record_room_operation(
@@ -3003,6 +3334,29 @@ async fn join_room(
             },
         );
         return Err(error);
+    }
+    match secret {
+        JoinSecretInput::None => {}
+        JoinSecretInput::User {
+            key,
+            remember: true,
+        } => {
+            active
+                .pending_join_secrets
+                .insert(room.clone(), PendingJoinSecret::UserRemember(key));
+        }
+        JoinSecretInput::User {
+            remember: false, ..
+        } => {
+            active
+                .pending_join_secrets
+                .insert(room.clone(), PendingJoinSecret::UserEphemeral);
+        }
+        JoinSecretInput::Stored(_) => {
+            active
+                .pending_join_secrets
+                .insert(room.clone(), PendingJoinSecret::Stored);
+        }
     }
     sync_session_snapshot(active, snapshot);
     emit_snapshot(emitter, snapshot);
@@ -3023,6 +3377,7 @@ async fn part_room(
         .max_room_name_bytes
         .unwrap_or(DEFAULT_ROOM_MAX_BYTES);
     let room = rrc::normalize_room(&room, max_room)?;
+    active.pending_join_secrets.remove(&room);
     let prior = active
         .rooms
         .get(&room)
@@ -3437,6 +3792,7 @@ fn record_join_confirmation(
     if let Some(context) = active.room_activity.get_mut(&confirmation.room) {
         context.join = None;
     }
+    complete_pending_join_secret(active, &confirmation.room);
     if let Some(operation) = confirmation.operation {
         record_room_operation(
             recorder,
@@ -3454,6 +3810,23 @@ fn record_join_confirmation(
             activity::ChannelRoomTransition::Joined { evidence },
         );
     }
+}
+
+fn complete_pending_join_secret(active: &mut ActiveSession, room: &str) {
+    let Some(pending) = active.pending_join_secrets.remove(room) else {
+        return;
+    };
+    let action = match pending {
+        PendingJoinSecret::UserRemember(key) => RoomSecretAction::Persist {
+            room: room.to_string(),
+            key,
+        },
+        PendingJoinSecret::UserEphemeral => RoomSecretAction::ForgetRequired {
+            room: room.to_string(),
+        },
+        PendingJoinSecret::Stored => return,
+    };
+    active.room_secret_actions.push_back(action);
 }
 
 fn record_part_confirmation(
@@ -3818,14 +4191,7 @@ fn append_error(
     activity_recorder: &ChannelsActivity,
     envelope: &Envelope,
 ) {
-    let text = rrc::text_body(envelope).unwrap_or("Channel hub reported an error");
-    let item = transcript_item(
-        envelope,
-        ChannelItemKind::Error,
-        None,
-        text.to_string(),
-        false,
-    );
+    let hub_text = rrc::text_body(envelope).unwrap_or("Channel hub reported an error");
     let explicit_room = envelope.room.as_deref().and_then(|room| {
         rrc::normalize_room(
             room,
@@ -3852,19 +4218,66 @@ fn append_error(
     };
     if let Some(room_name) = explicit_room.or(inferred_room) {
         active.auto_rejoining.remove(&room_name);
-        let Some(room) = active.rooms.get_mut(&room_name) else {
+        let Some(prior_phase) = active.rooms.get(&room_name).map(|room| room.phase) else {
+            let item = transcript_item(
+                envelope,
+                ChannelItemKind::Error,
+                None,
+                hub_text.to_string(),
+                false,
+            );
             append_bounded(&mut active.notices, item, NOTICE_LIMIT);
             return;
         };
-        let prior_phase = room.phase;
+        let pending = if prior_phase == ChannelRoomPhase::Joining {
+            active.pending_join_secrets.remove(&room_name)
+        } else {
+            None
+        };
+        let bad_room_key =
+            prior_phase == ChannelRoomPhase::Joining && hub_text == BAD_ROOM_KEY_ERROR;
+        let saved_key_rejected =
+            bad_room_key && matches!(pending.as_ref(), Some(PendingJoinSecret::Stored));
+        if bad_room_key {
+            let action = if saved_key_rejected {
+                RoomSecretAction::ForgetRejected {
+                    room: room_name.clone(),
+                }
+            } else {
+                RoomSecretAction::MarkRequired {
+                    room: room_name.clone(),
+                }
+            };
+            active.room_secret_actions.push_back(action);
+        }
+        let product_text = if saved_key_rejected {
+            SAVED_ROOM_KEY_REJECTED
+        } else if bad_room_key && pending.is_some() {
+            ENTERED_ROOM_KEY_REJECTED
+        } else if bad_room_key {
+            ROOM_KEY_REQUIRED
+        } else {
+            hub_text
+        };
+        let item = transcript_item(
+            envelope,
+            ChannelItemKind::Error,
+            None,
+            product_text.to_string(),
+            false,
+        );
+        let room = active
+            .rooms
+            .get_mut(&room_name)
+            .expect("room phase was read above");
         if room.phase == ChannelRoomPhase::Joining {
             room.phase = ChannelRoomPhase::Error;
             room.phase_started_at_ms = now_ms();
-            room.last_error = Some(text.to_string());
+            room.last_error = Some(product_text.to_string());
         } else if room.phase == ChannelRoomPhase::Parting {
             room.phase = ChannelRoomPhase::Joined;
             room.phase_started_at_ms = now_ms();
-            room.last_error = Some(text.to_string());
+            room.last_error = Some(product_text.to_string());
         }
         append_room_item(room, item);
         let operation = active
@@ -3897,6 +4310,13 @@ fn append_error(
             );
         }
     } else {
+        let item = transcript_item(
+            envelope,
+            ChannelItemKind::Error,
+            None,
+            hub_text.to_string(),
+            false,
+        );
         append_bounded(&mut active.notices, item, NOTICE_LIMIT);
     }
 }
@@ -4348,6 +4768,9 @@ async fn drive_auto_rejoin(
     snapshot: &Arc<RwLock<ChannelsSnapshot>>,
     emitter: &Arc<dyn Emitter>,
     activity_recorder: &ChannelsActivity,
+    identity: &Identity,
+    stored_secrets: &mut StoredRoomSecrets,
+    store: Option<&ChannelsStore>,
 ) -> bool {
     if active
         .rooms
@@ -4364,13 +4787,41 @@ async fn drive_auto_rejoin(
         {
             continue;
         }
+        let destination = hex::encode(active.destination_hash);
+        let secret_id = (destination.clone(), room.clone());
+        let secret = match stored_secrets.get(&secret_id) {
+            Some(stored) => match unseal_room_key(identity, active.destination_hash, &room, stored)
+            {
+                Ok(key) => JoinSecretInput::Stored(key),
+                Err(_) => {
+                    stored_secrets.remove(&secret_id);
+                    set_room_secret_status(snapshot, &destination, &room, false, true);
+                    if let Some(store) = store {
+                        apply_store_result(
+                            snapshot,
+                            stored_secrets,
+                            store
+                                .remove_room_secret(destination.clone(), room.clone())
+                                .await,
+                        );
+                    }
+                    insert_auto_rejoin_error(active, room, SAVED_ROOM_KEY_UNAVAILABLE);
+                    return true;
+                }
+            },
+            None if room_key_required(snapshot, &destination, &room) => {
+                insert_auto_rejoin_error(active, room, ROOM_KEY_REQUIRED);
+                return true;
+            }
+            None => JoinSecretInput::None,
+        };
         match join_room(
             Some(active),
             snapshot,
             emitter,
             activity_recorder,
             room.clone(),
-            None,
+            secret,
             None,
         )
         .await
@@ -4389,6 +4840,129 @@ async fn drive_auto_rejoin(
         }
     }
     false
+}
+
+fn insert_auto_rejoin_error(active: &mut ActiveSession, room: String, error: &str) {
+    let mut failed = ChannelRoomSnapshot::joining(room.clone());
+    failed.phase = ChannelRoomPhase::Error;
+    failed.last_error = Some(error.to_string());
+    active.rooms.insert(room, failed);
+}
+
+async fn apply_room_secret_actions(
+    active: &mut ActiveSession,
+    identity: &Identity,
+    store: Option<&ChannelsStore>,
+    stored_secrets: &mut StoredRoomSecrets,
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+) {
+    let destination_hash = active.destination_hash;
+    let destination = hex::encode(destination_hash);
+    while let Some(action) = active.room_secret_actions.pop_front() {
+        match action {
+            RoomSecretAction::Persist { room, key } => {
+                let secret_id = (destination.clone(), room.clone());
+                let ciphertext = match seal_room_key(identity, destination_hash, &room, &key) {
+                    Ok(ciphertext) => ciphertext,
+                    Err(_) => {
+                        stored_secrets.remove(&secret_id);
+                        set_room_secret_status(snapshot, &destination, &room, false, true);
+                        mutate_snapshot(snapshot, mark_durability_degraded);
+                        continue;
+                    }
+                };
+                let Some(store) = store else {
+                    stored_secrets.remove(&secret_id);
+                    set_room_secret_status(snapshot, &destination, &room, false, true);
+                    mutate_snapshot(snapshot, mark_durability_degraded);
+                    continue;
+                };
+                let result = store
+                    .save_room_secret(destination.clone(), room.clone(), ciphertext)
+                    .await;
+                if result.is_err() {
+                    stored_secrets.remove(&secret_id);
+                    set_room_secret_status(snapshot, &destination, &room, false, true);
+                }
+                apply_store_result(snapshot, stored_secrets, result);
+            }
+            RoomSecretAction::ForgetRequired { room }
+            | RoomSecretAction::ForgetRejected { room } => {
+                stored_secrets.remove(&(destination.clone(), room.clone()));
+                set_room_secret_status(snapshot, &destination, &room, false, true);
+                if let Some(store) = store {
+                    apply_store_result(
+                        snapshot,
+                        stored_secrets,
+                        store
+                            .remove_room_secret(destination.clone(), room.clone())
+                            .await,
+                    );
+                }
+            }
+            RoomSecretAction::MarkRequired { room } => {
+                let has_stored_join_key =
+                    stored_secrets.contains_key(&(destination.clone(), room.clone()));
+                set_room_secret_status(snapshot, &destination, &room, has_stored_join_key, true);
+                if let Some(store) = store {
+                    apply_store_result(
+                        snapshot,
+                        stored_secrets,
+                        store
+                            .mark_room_key_required(destination.clone(), room.clone())
+                            .await,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn room_key_required(
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+    destination_hash: &str,
+    room_name: &str,
+) -> bool {
+    snapshot.read().ok().is_some_and(|state| {
+        state
+            .hubs
+            .iter()
+            .find(|hub| hub.destination_hash == destination_hash)
+            .and_then(|hub| hub.durable.rooms.iter().find(|room| room.name == room_name))
+            .is_some_and(|room| room.join_key_required)
+    })
+}
+
+fn set_room_secret_status(
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+    destination_hash: &str,
+    room_name: &str,
+    has_stored_join_key: bool,
+    join_key_required: bool,
+) {
+    mutate_snapshot_if_changed(snapshot, |state| {
+        let Some(room) = state
+            .hubs
+            .iter_mut()
+            .find(|hub| hub.destination_hash == destination_hash)
+            .and_then(|hub| {
+                hub.durable
+                    .rooms
+                    .iter_mut()
+                    .find(|room| room.name == room_name)
+            })
+        else {
+            return false;
+        };
+        if room.has_stored_join_key == has_stored_join_key
+            && room.join_key_required == join_key_required
+        {
+            return false;
+        }
+        room.has_stored_join_key = has_stored_join_key;
+        room.join_key_required = join_key_required;
+        true
+    });
 }
 
 fn client_hub_mut<'a>(
@@ -4462,14 +5036,19 @@ fn timestamp_ms_from_seconds(seconds: f64) -> u64 {
     (seconds * 1000.0).min(u64::MAX as f64) as u64
 }
 
-fn apply_durable_channels(state: &mut ChannelsSnapshot, durable: DurableChannelsState) {
+fn apply_durable_channels(
+    state: &mut ChannelsSnapshot,
+    hubs: Vec<db::SavedChannelHub>,
+    rooms: Vec<db::SavedChannelRoom>,
+    secrets: &StoredRoomSecrets,
+) {
     for hub in &mut state.hubs {
         hub.durable = ChannelHubDurableSnapshot::default();
         hub.desired = ChannelHubDesiredSnapshot::default();
     }
     state.selected_hub_destination = None;
 
-    for saved in durable.hubs {
+    for saved in hubs {
         let destination_hash = saved.destination_hash.clone();
         let hub = client_hub_mut(state, &destination_hash);
         hub.durable = ChannelHubDurableSnapshot {
@@ -4487,15 +5066,19 @@ fn apply_durable_channels(state: &mut ChannelsSnapshot, durable: DurableChannels
         }
     }
 
-    for saved in durable.rooms {
+    for saved in rooms {
         let destination_hash = saved.hub_destination_hash;
         let room_name = saved.room_name;
+        let has_stored_join_key =
+            secrets.contains_key(&(destination_hash.clone(), room_name.clone()));
         let hub = client_hub_mut(state, &destination_hash);
         hub.durable.rooms.push(ChannelDurableRoomSnapshot {
             name: room_name.clone(),
             added_at_ms: timestamp_ms_from_seconds(saved.added_at),
             last_joined_at_ms: timestamp_ms_from_seconds(saved.last_joined),
             desired_joined: saved.desired_joined,
+            join_key_required: saved.join_key_required,
+            has_stored_join_key,
         });
         set_desired_room(state, &destination_hash, &room_name, saved.desired_joined);
     }
@@ -4525,12 +5108,35 @@ fn mark_durability_degraded(state: &mut ChannelsSnapshot) {
 
 fn apply_store_result(
     snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+    stored_secrets: &mut StoredRoomSecrets,
     result: Result<DurableChannelsState, String>,
 ) {
     match result {
-        Ok(durable) => mutate_snapshot(snapshot, |state| apply_durable_channels(state, durable)),
+        Ok(durable) => {
+            let DurableChannelsState {
+                hubs,
+                rooms,
+                secrets,
+            } = durable;
+            let loaded = secrets
+                .into_iter()
+                .map(|secret| {
+                    (
+                        (
+                            secret.hub_destination_hash.clone(),
+                            secret.room_name.clone(),
+                        ),
+                        secret,
+                    )
+                })
+                .collect();
+            mutate_snapshot(snapshot, |state| {
+                apply_durable_channels(state, hubs, rooms, &loaded)
+            });
+            *stored_secrets = loaded;
+        }
         Err(error) => {
-            tracing::warn!(reason = %error, "failed to save durable Channels state");
+            tracing::warn!(reason = %error, "failed to load or save durable Channels state");
             mutate_snapshot(snapshot, mark_durability_degraded);
         }
     }
@@ -4619,6 +5225,22 @@ fn mutate_snapshot(
         snapshot.revision = revision.saturating_add(1);
         snapshot.updated_at_ms = now_ms();
     }
+}
+
+fn mutate_snapshot_if_changed(
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+    mutate: impl FnOnce(&mut ChannelsSnapshot) -> bool,
+) -> bool {
+    let Ok(mut snapshot) = snapshot.write() else {
+        return false;
+    };
+    if !mutate(&mut snapshot) {
+        return false;
+    }
+    sync_hub_service_projection(&mut snapshot);
+    snapshot.revision = snapshot.revision.saturating_add(1);
+    snapshot.updated_at_ms = now_ms();
+    true
 }
 
 #[cfg(test)]
@@ -4776,25 +5398,36 @@ mod tests {
     fn hub_service_model_separates_desired_observed_and_durable_state() {
         let destination = "00112233445566778899aabbccddeeff";
         let mut snapshot = ChannelsSnapshot::for_manager(42);
+        let secrets = StoredRoomSecrets::from([(
+            (destination.into(), "general".into()),
+            db::StoredChannelRoomSecret {
+                hub_destination_hash: destination.into(),
+                room_name: "general".into(),
+                seal_scheme: ROOM_SECRET_SEAL_SCHEME.into(),
+                seal_version: ROOM_SECRET_SEAL_VERSION,
+                ciphertext: vec![1, 2, 3],
+                updated_at: 5.0,
+            },
+        )]);
         apply_durable_channels(
             &mut snapshot,
-            DurableChannelsState {
-                hubs: vec![db::SavedChannelHub {
-                    destination_hash: destination.into(),
-                    label: "Mountain relay".into(),
-                    nickname: "Field Rat".into(),
-                    added_at: 1.0,
-                    last_connected: 2.0,
-                    desired_connected: true,
-                }],
-                rooms: vec![db::SavedChannelRoom {
-                    hub_destination_hash: destination.into(),
-                    room_name: "general".into(),
-                    added_at: 3.0,
-                    last_joined: 4.0,
-                    desired_joined: true,
-                }],
-            },
+            vec![db::SavedChannelHub {
+                destination_hash: destination.into(),
+                label: "Mountain relay".into(),
+                nickname: "Field Rat".into(),
+                added_at: 1.0,
+                last_connected: 2.0,
+                desired_connected: true,
+            }],
+            vec![db::SavedChannelRoom {
+                hub_destination_hash: destination.into(),
+                room_name: "general".into(),
+                added_at: 3.0,
+                last_joined: 4.0,
+                desired_joined: true,
+                join_key_required: true,
+            }],
+            &secrets,
         );
         snapshot.phase = ChannelsPhase::Resolving;
         snapshot.nickname = Some("Field Rat".into());
@@ -4814,6 +5447,8 @@ mod tests {
         assert!(hub.durable.saved);
         assert_eq!(hub.durable.label, "Mountain relay");
         assert_eq!(hub.durable.added_at_ms, 1_000);
+        assert!(hub.durable.rooms[0].join_key_required);
+        assert!(hub.durable.rooms[0].has_stored_join_key);
         assert_eq!(
             hub.observed.as_ref().map(|observed| observed.phase),
             Some(ChannelsPhase::Resolving)
@@ -4861,6 +5496,89 @@ mod tests {
             .unwrap();
         assert!(!first.desired.connected);
         assert!(first.desired.rooms[0].joined);
+    }
+
+    #[test]
+    fn room_keys_round_trip_only_for_the_bound_identity_hub_and_room() {
+        let identity = Identity::new();
+        let other_identity = Identity::new();
+        let destination = [0x42; 16];
+        let other_destination = [0x24; 16];
+        let key = "field key with spaces";
+        let ciphertext = seal_room_key(&identity, destination, "general", key).unwrap();
+        assert!(
+            !ciphertext
+                .windows(key.len())
+                .any(|window| window == key.as_bytes()),
+            "recoverable storage must never contain the plaintext key"
+        );
+        let stored = db::StoredChannelRoomSecret {
+            hub_destination_hash: hex::encode(destination),
+            room_name: "general".into(),
+            seal_scheme: ROOM_SECRET_SEAL_SCHEME.into(),
+            seal_version: ROOM_SECRET_SEAL_VERSION,
+            ciphertext: ciphertext.clone(),
+            updated_at: 1.0,
+        };
+
+        assert_eq!(
+            unseal_room_key(&identity, destination, "general", &stored)
+                .unwrap()
+                .as_str(),
+            key
+        );
+        assert!(unseal_room_key(&other_identity, destination, "general", &stored).is_err());
+        assert!(unseal_room_key(&identity, other_destination, "general", &stored).is_err());
+        assert!(unseal_room_key(&identity, destination, "other-room", &stored).is_err());
+
+        let mut tampered = stored.clone();
+        let last = tampered.ciphertext.len() - 1;
+        tampered.ciphertext[last] ^= 0x80;
+        assert!(unseal_room_key(&identity, destination, "general", &tampered).is_err());
+
+        let mut wrong_scheme = stored;
+        wrong_scheme.seal_scheme = "unknown".into();
+        assert!(unseal_room_key(&identity, destination, "general", &wrong_scheme).is_err());
+    }
+
+    #[test]
+    fn service_snapshot_exposes_key_availability_but_never_seal_material() {
+        let destination = "00112233445566778899aabbccddeeff";
+        let durable = DurableChannelsState {
+            hubs: vec![db::SavedChannelHub {
+                destination_hash: destination.into(),
+                label: "Relay".into(),
+                nickname: "Field Rat".into(),
+                added_at: 1.0,
+                last_connected: 2.0,
+                desired_connected: true,
+            }],
+            rooms: vec![db::SavedChannelRoom {
+                hub_destination_hash: destination.into(),
+                room_name: "general".into(),
+                added_at: 1.0,
+                last_joined: 2.0,
+                desired_joined: true,
+                join_key_required: true,
+            }],
+            secrets: vec![db::StoredChannelRoomSecret {
+                hub_destination_hash: destination.into(),
+                room_name: "general".into(),
+                seal_scheme: ROOM_SECRET_SEAL_SCHEME.into(),
+                seal_version: ROOM_SECRET_SEAL_VERSION,
+                ciphertext: b"opaque-ciphertext-marker".to_vec(),
+                updated_at: 1.0,
+            }],
+        };
+        let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::for_manager(1)));
+        let mut secrets = StoredRoomSecrets::new();
+        apply_store_result(&snapshot, &mut secrets, Ok(durable));
+
+        let serialized = serde_json::to_string(&*snapshot.read().unwrap()).unwrap();
+        assert!(serialized.contains("\"has_stored_join_key\":true"));
+        assert!(!serialized.contains("opaque-ciphertext-marker"));
+        assert!(!serialized.contains(ROOM_SECRET_SEAL_SCHEME));
+        assert!(!serialized.contains("seal_version"));
     }
 
     #[test]
@@ -5005,13 +5723,14 @@ mod tests {
         );
 
         let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::for_manager(1)));
-        apply_store_result(&snapshot, Ok(durable));
+        let mut stored_secrets = StoredRoomSecrets::new();
+        apply_store_result(&snapshot, &mut stored_secrets, Ok(durable));
         assert_eq!(
             snapshot.read().unwrap().selected_hub_destination.as_deref(),
             Some("bb")
         );
         db::remove_channel_hub(&store.pool, "identity-a", "bb").unwrap();
-        apply_store_result(&snapshot, store.load().await);
+        apply_store_result(&snapshot, &mut stored_secrets, store.load().await);
         let reconciled = snapshot.read().unwrap();
         assert!(
             reconciled.selected_hub_destination.is_none(),
@@ -5681,6 +6400,331 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirmed_room_key_is_replayed_then_forgotten_after_authenticated_rejection() {
+        let client_identity = Identity::new();
+        let identity_id = hex::encode(client_identity.hash);
+        let hub_identity = Identity::new();
+        let hub_destination =
+            Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
+        let hub_destination_hex = hex::encode(hub_destination);
+        let state = channels_test_state(&client_identity);
+        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(64);
+        let manager = ChannelsManagerHandle::start(
+            transport_tx,
+            client_identity.clone(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            ShutdownSignal::new(),
+            Arc::downgrade(&state),
+        );
+
+        manager
+            .connect(&hub_destination_hex, "Field Rat")
+            .await
+            .unwrap();
+        let (first_delivery, mut first_responder) = accept_test_hub_session(
+            &mut transport_rx,
+            &client_identity,
+            &hub_identity,
+            hub_destination,
+        )
+        .await;
+        wait_snapshot(&manager, |snapshot| snapshot.phase == ChannelsPhase::Active).await;
+
+        let room = "locked";
+        let join_key = "correct field key";
+        manager
+            .join_with_key_policy(room, Some(join_key.into()), true)
+            .await
+            .unwrap();
+        let first_join = receive_client_envelope(
+            &mut transport_rx,
+            &first_delivery,
+            &mut first_responder,
+            &hub_identity.get_signing_key().unwrap(),
+        )
+        .await;
+        assert_eq!(first_join.message_type, MessageType::Join);
+        assert_eq!(first_join.room.as_deref(), Some(room));
+        assert_eq!(rrc::text_body(&first_join), Some(join_key));
+        assert!(
+            db::list_channel_room_secrets_for_identity(&state.db, &identity_id)
+                .unwrap()
+                .is_empty(),
+            "sending JOIN must not persist an unconfirmed key"
+        );
+
+        let mut joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        joined.room = Some(room.into());
+        joined.body = Some(Value::Array(vec![Value::Bytes(
+            client_identity.hash.to_vec(),
+        )]));
+        send_server_envelope(&first_delivery, &mut first_responder, &joined).await;
+        let confirmed = wait_snapshot(&manager, |snapshot| {
+            snapshot
+                .rooms
+                .iter()
+                .any(|room| room.name == "locked" && room.phase == ChannelRoomPhase::Joined)
+                && snapshot.hubs.iter().any(|hub| {
+                    hub.destination_hash == hub_destination_hex
+                        && hub.durable.rooms.iter().any(|room| {
+                            room.name == "locked"
+                                && room.join_key_required
+                                && room.has_stored_join_key
+                        })
+                })
+        })
+        .await;
+        assert_eq!(confirmed.durability.phase, ChannelsDurabilityPhase::Ready);
+        let stored = db::list_channel_room_secrets_for_identity(&state.db, &identity_id).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(
+            !stored[0]
+                .ciphertext
+                .windows(join_key.len())
+                .any(|window| window == join_key.as_bytes()),
+            "the database must contain only identity-sealed ciphertext"
+        );
+
+        let invited_room = "invited";
+        manager.join(invited_room, None).await.unwrap();
+        let invited_join = receive_client_envelope(
+            &mut transport_rx,
+            &first_delivery,
+            &mut first_responder,
+            &hub_identity.get_signing_key().unwrap(),
+        )
+        .await;
+        assert_eq!(invited_join.message_type, MessageType::Join);
+        assert_eq!(invited_join.room.as_deref(), Some(invited_room));
+        assert_eq!(rrc::text_body(&invited_join), None);
+        let mut invited_joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        invited_joined.room = Some(invited_room.into());
+        invited_joined.body = Some(Value::Array(vec![Value::Bytes(
+            client_identity.hash.to_vec(),
+        )]));
+        send_server_envelope(&first_delivery, &mut first_responder, &invited_joined).await;
+        wait_snapshot(&manager, |snapshot| {
+            snapshot
+                .rooms
+                .iter()
+                .any(|room| room.name == "invited" && room.phase == ChannelRoomPhase::Joined)
+        })
+        .await;
+
+        close_test_hub_session(&first_delivery, &mut first_responder).await;
+        wait_snapshot(&manager, |snapshot| {
+            snapshot.phase == ChannelsPhase::Reconnecting
+        })
+        .await;
+        let (second_delivery, mut second_responder) = accept_test_hub_session(
+            &mut transport_rx,
+            &client_identity,
+            &hub_identity,
+            hub_destination,
+        )
+        .await;
+        let invited_rejoin = receive_client_envelope(
+            &mut transport_rx,
+            &second_delivery,
+            &mut second_responder,
+            &hub_identity.get_signing_key().unwrap(),
+        )
+        .await;
+        assert_eq!(invited_rejoin.message_type, MessageType::Join);
+        assert_eq!(invited_rejoin.room.as_deref(), Some(invited_room));
+        assert_eq!(rrc::text_body(&invited_rejoin), None);
+        let mut invited_rejoined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        invited_rejoined.room = Some(invited_room.into());
+        invited_rejoined.body = Some(Value::Array(vec![Value::Bytes(
+            client_identity.hash.to_vec(),
+        )]));
+        send_server_envelope(&second_delivery, &mut second_responder, &invited_rejoined).await;
+        let replayed_join = receive_client_envelope(
+            &mut transport_rx,
+            &second_delivery,
+            &mut second_responder,
+            &hub_identity.get_signing_key().unwrap(),
+        )
+        .await;
+        assert_eq!(replayed_join.message_type, MessageType::Join);
+        assert_eq!(replayed_join.room.as_deref(), Some(room));
+        assert_eq!(rrc::text_body(&replayed_join), Some(join_key));
+
+        let mut forged_rejection = Envelope::new(MessageType::Error, [0x77; 16]);
+        forged_rejection.room = Some(room.into());
+        forged_rejection.body = Some(Value::Text(BAD_ROOM_KEY_ERROR.into()));
+        send_server_envelope(&second_delivery, &mut second_responder, &forged_rejection).await;
+        next_outbound_with_context(
+            &mut transport_rx,
+            rns_wire::context::PacketContext::LinkProof,
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(
+            manager
+                .snapshot()
+                .rooms
+                .iter()
+                .any(|room| { room.name == "locked" && room.phase == ChannelRoomPhase::Joining }),
+            "a non-hub control source cannot reject a pending join"
+        );
+        assert_eq!(
+            db::list_channel_room_secrets_for_identity(&state.db, &identity_id)
+                .unwrap()
+                .len(),
+            1,
+            "a forged bad-key error cannot delete recoverable ciphertext"
+        );
+
+        let mut rejected = Envelope::new(MessageType::Error, hub_identity.hash);
+        rejected.room = Some(room.into());
+        rejected.body = Some(Value::Text(BAD_ROOM_KEY_ERROR.into()));
+        send_server_envelope(&second_delivery, &mut second_responder, &rejected).await;
+        let rejected_snapshot = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.iter().any(|room| {
+                room.name == "locked"
+                    && room.phase == ChannelRoomPhase::Error
+                    && room.last_error.as_deref() == Some(SAVED_ROOM_KEY_REJECTED)
+            }) && snapshot.hubs.iter().any(|hub| {
+                hub.destination_hash == hub_destination_hex
+                    && hub.durable.rooms.iter().any(|room| {
+                        room.name == "locked" && room.join_key_required && !room.has_stored_join_key
+                    })
+            })
+        })
+        .await;
+        assert_eq!(
+            rejected_snapshot
+                .rooms
+                .iter()
+                .find(|room| room.name == "locked")
+                .and_then(|room| room.last_error.as_deref()),
+            Some(SAVED_ROOM_KEY_REJECTED)
+        );
+        assert!(
+            db::list_channel_room_secrets_for_identity(&state.db, &identity_id)
+                .unwrap()
+                .is_empty(),
+            "an authenticated bad-key rejection must remove replayable ciphertext"
+        );
+        assert!(
+            rejected_snapshot.hubs.iter().any(|hub| {
+                hub.destination_hash == hub_destination_hex
+                    && hub
+                        .desired
+                        .rooms
+                        .iter()
+                        .any(|room| room.name == "locked" && room.joined)
+            }),
+            "bad-key recovery must preserve the user's room intent"
+        );
+
+        close_test_hub_session(&second_delivery, &mut second_responder).await;
+        wait_snapshot(&manager, |snapshot| {
+            snapshot.phase == ChannelsPhase::Reconnecting
+        })
+        .await;
+        let (third_delivery, mut third_responder) = accept_test_hub_session(
+            &mut transport_rx,
+            &client_identity,
+            &hub_identity,
+            hub_destination,
+        )
+        .await;
+        let invited_keyless_rejoin = receive_client_envelope(
+            &mut transport_rx,
+            &third_delivery,
+            &mut third_responder,
+            &hub_identity.get_signing_key().unwrap(),
+        )
+        .await;
+        assert_eq!(invited_keyless_rejoin.message_type, MessageType::Join);
+        assert_eq!(invited_keyless_rejoin.room.as_deref(), Some(invited_room));
+        assert_eq!(rrc::text_body(&invited_keyless_rejoin), None);
+        let mut invited_key_required = Envelope::new(MessageType::Error, hub_identity.hash);
+        invited_key_required.room = Some(invited_room.into());
+        invited_key_required.body = Some(Value::Text(BAD_ROOM_KEY_ERROR.into()));
+        send_server_envelope(&third_delivery, &mut third_responder, &invited_key_required).await;
+        wait_snapshot(&manager, |snapshot| {
+            ["invited", "locked"].iter().all(|room_name| {
+                snapshot.rooms.iter().any(|room| {
+                    room.name == *room_name
+                        && room.phase == ChannelRoomPhase::Error
+                        && room.last_error.as_deref() == Some(ROOM_KEY_REQUIRED)
+                })
+            }) && snapshot.hubs.iter().any(|hub| {
+                hub.destination_hash == hub_destination_hex
+                    && hub.durable.rooms.iter().any(|room| {
+                        room.name == "invited"
+                            && room.join_key_required
+                            && !room.has_stored_join_key
+                    })
+            })
+        })
+        .await;
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(250),
+                receive_client_envelope(
+                    &mut transport_rx,
+                    &third_delivery,
+                    &mut third_responder,
+                    &hub_identity.get_signing_key().unwrap(),
+                ),
+            )
+            .await
+            .is_err(),
+            "known key-required rooms without ciphertext must not loop keyless JOINs"
+        );
+
+        let replacement_key = "rotated field key";
+        manager
+            .join_with_key_policy(room, Some(replacement_key.into()), false)
+            .await
+            .unwrap();
+        let replacement_join = receive_client_envelope(
+            &mut transport_rx,
+            &third_delivery,
+            &mut third_responder,
+            &hub_identity.get_signing_key().unwrap(),
+        )
+        .await;
+        assert_eq!(replacement_join.message_type, MessageType::Join);
+        assert_eq!(replacement_join.room.as_deref(), Some(room));
+        assert_eq!(rrc::text_body(&replacement_join), Some(replacement_key));
+        let mut replacement_joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        replacement_joined.room = Some(room.into());
+        replacement_joined.body = Some(Value::Array(vec![Value::Bytes(
+            client_identity.hash.to_vec(),
+        )]));
+        send_server_envelope(&third_delivery, &mut third_responder, &replacement_joined).await;
+        wait_snapshot(&manager, |snapshot| {
+            snapshot
+                .rooms
+                .iter()
+                .any(|room| room.name == "locked" && room.phase == ChannelRoomPhase::Joined)
+                && snapshot.hubs.iter().any(|hub| {
+                    hub.destination_hash == hub_destination_hex
+                        && hub.durable.rooms.iter().any(|room| {
+                            room.name == "locked"
+                                && room.join_key_required
+                                && !room.has_stored_join_key
+                        })
+                })
+        })
+        .await;
+        assert!(
+            db::list_channel_room_secrets_for_identity(&state.db, &identity_id)
+                .unwrap()
+                .is_empty(),
+            "opting out must keep a confirmed replacement key session-only"
+        );
+
+        manager.disconnect().await.unwrap();
+        manager.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn authenticated_session_runs_welcome_room_message_ping_and_part() {
         let client_identity = Identity::new();
         let hub_identity = Identity::new();
@@ -6143,7 +7187,14 @@ mod tests {
     }
 
     async fn timeout_transport(rx: &mut mpsc::Receiver<TransportMessage>) -> TransportMessage {
-        tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        timeout_transport_within(rx, Duration::from_secs(3)).await
+    }
+
+    async fn timeout_transport_within(
+        rx: &mut mpsc::Receiver<TransportMessage>,
+        duration: Duration,
+    ) -> TransportMessage {
+        tokio::time::timeout(duration, rx.recv())
             .await
             .expect("transport message timed out")
             .expect("transport channel closed")
@@ -6221,7 +7272,7 @@ mod tests {
         hub_destination: [u8; 16],
     ) -> (mpsc::Sender<DestinationEvent>, Link) {
         let response_tx = loop {
-            match timeout_transport(transport_rx).await {
+            match timeout_transport_within(transport_rx, Duration::from_secs(6)).await {
                 TransportMessage::Rpc {
                     query: TransportQuery::GetRecentAnnounces,
                     response_tx,
@@ -6307,6 +7358,21 @@ mod tests {
         .await;
     }
 
+    async fn close_test_hub_session(
+        delivery_tx: &mpsc::Sender<DestinationEvent>,
+        responder: &mut Link,
+    ) {
+        let teardown = responder.teardown(CloseReason::DestinationClosed).unwrap();
+        send_link_packet(
+            delivery_tx,
+            responder.link_id,
+            rns_wire::flags::PacketType::Data,
+            rns_wire::context::PacketContext::LinkClose,
+            &teardown,
+        )
+        .await;
+    }
+
     async fn send_link_packet(
         delivery_tx: &mpsc::Sender<DestinationEvent>,
         link_id: [u8; 16],
@@ -6337,6 +7403,30 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    fn channels_test_state(identity: &Identity) -> Arc<AppState> {
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-channels-key-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|connection| connection.execute_batch("PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        db::init_schema(&pool).unwrap();
+        let identity_id = hex::encode(identity.hash);
+        db::save_identity(&pool, &identity_id, &identity_id, "Field Rat", "Field Rat");
+        db::set_active_identity(&pool, &identity_id).unwrap();
+        Arc::new(AppState::new(
+            crate::config::DashboardConfig::from_env_and_defaults(tmp),
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ))
     }
 
     async fn wait_snapshot(

@@ -89,6 +89,20 @@ function _channelsMessageLimit() {
     return (limits && limits.max_message_body_bytes) || 350;
 }
 
+function _channelsDurableRoom(roomName) {
+    var destination = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
+    var hubs = Array.isArray(channelsSnapshot.hubs) ? channelsSnapshot.hubs : [];
+    for (var i = 0; i < hubs.length; i++) {
+        if (hubs[i].destination_hash !== destination) continue;
+        var rooms = hubs[i].durable && Array.isArray(hubs[i].durable.rooms)
+            ? hubs[i].durable.rooms : [];
+        for (var j = 0; j < rooms.length; j++) {
+            if (rooms[j].name === roomName) return rooms[j];
+        }
+    }
+    return null;
+}
+
 function _channelsIdentityTone(value) {
     var text = String(value || 'channel-member');
     var hash = 2166136261;
@@ -1778,11 +1792,34 @@ function channelsOpenJoinSheet(prefillRoom) {
     keyInput.className = 'nr-input-sm';
     keyInput.placeholder = 'Only if this channel requires one';
     keyInput.autocomplete = 'off';
+    keyInput.maxLength = 1024;
     built.body.appendChild(_channelsSheetField('Channel key (optional)', keyInput));
+    var rememberRow = document.createElement('label');
+    rememberRow.className = 'rs-dialog-checkbox-row channel-key-remember';
+    var rememberKey = document.createElement('input');
+    rememberKey.type = 'checkbox';
+    rememberKey.checked = true;
+    rememberKey.disabled = true;
+    var rememberLabel = document.createElement('span');
+    rememberLabel.textContent = 'Remember for reconnect';
+    rememberRow.appendChild(rememberKey);
+    rememberRow.appendChild(rememberLabel);
+    built.body.appendChild(rememberRow);
     var note = document.createElement('p');
     note.className = 'channel-sheet-copy';
-    note.textContent = 'Keys are sent over the authenticated Link and are never saved by Ratspeak.';
     built.body.appendChild(note);
+    function updateKeyPolicy() {
+        rememberKey.disabled = !keyInput.value;
+        var savedRoom = _channelsDurableRoom(roomInput.value.trim().toLowerCase());
+        if (!keyInput.value && savedRoom && savedRoom.has_stored_join_key) {
+            note.textContent = 'A saved identity-sealed key is available. Leave this blank to use it, or enter a new key to replace it after the hub confirms membership.';
+        } else {
+            note.textContent = 'Keys cross the authenticated Link. Ratspeak saves only identity-sealed ciphertext, and only after the hub confirms membership.';
+        }
+    }
+    keyInput.addEventListener('input', updateKeyPolicy);
+    roomInput.addEventListener('input', updateKeyPolicy);
+    updateKeyPolicy();
     var error = document.createElement('div');
     error.className = 'channel-sheet-error';
     error.setAttribute('aria-live', 'polite');
@@ -1804,10 +1841,21 @@ function channelsOpenJoinSheet(prefillRoom) {
             roomInput.focus();
             return;
         }
+        var key = keyInput.value || '';
+        if (_channelsUtf8Length(key) > 1024) {
+            error.textContent = 'Channel keys can be at most 1024 bytes.';
+            keyInput.focus();
+            return;
+        }
         join.disabled = true;
         join.textContent = 'Joining\u2026';
+        keyInput.value = '';
         RS.invoke('join_channel', {
-            args: { room: room, key: keyInput.value || null }
+            args: {
+                room: room,
+                key: key || null,
+                remember_key: !!key && rememberKey.checked
+            }
         }).then(function(result) {
             channelsActiveRoom = (result && result.room) || room;
             if (result && result.snapshot) channelsApplySnapshot(result.snapshot);

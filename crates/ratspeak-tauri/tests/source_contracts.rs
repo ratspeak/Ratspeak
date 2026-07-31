@@ -100,7 +100,7 @@ fn rust_function_block<'a>(source: &'a str, function_name: &str) -> &'a str {
 }
 
 #[test]
-fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
+fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     let channels_js =
@@ -138,7 +138,11 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(!index.contains("Messages are not saved and disappear when this session ends."));
     assert!(!index.contains("id=\"channel-session-banner\""));
     assert!(channels_js.contains("hub relays and can read channel messages"));
-    assert!(channels_js.contains("Keys are sent over the authenticated Link and are never saved"));
+    assert!(channels_js.contains("Ratspeak saves only identity-sealed ciphertext"));
+    assert!(channels_js.contains("only after the hub confirms membership"));
+    assert!(channels_js.contains("has_stored_join_key"));
+    assert!(channels_js.contains("remember_key: !!key && rememberKey.checked"));
+    assert!(channels_js.contains("keyInput.value = '';"));
     assert!(channels_js.contains("RS.listen('channels_snapshot'"));
     assert!(channels_js.contains("function _channelsSnapshotIsNewer"));
     assert!(channels_js.contains("incoming.generation > existing.generation"));
@@ -218,6 +222,13 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("RECONNECT_STABLE_RESET"));
     assert!(runtime.contains("prepare_auto_rejoin"));
     assert!(runtime.contains("\"Reconnected to hub\""));
+    assert!(runtime.contains("ROOM_SECRET_SEAL_SCHEME"));
+    assert!(runtime.contains(".encrypt(&plaintext, None)"));
+    assert!(runtime.contains("complete_pending_join_secret"));
+    assert!(runtime.contains("SAVED_ROOM_KEY_REJECTED"));
+    assert!(runtime.contains("ROOM_KEY_REQUIRED"));
+    assert!(runtime.contains("pub has_stored_join_key: bool"));
+    assert!(runtime.contains("pub join_key_required: bool"));
     assert!(runtime.contains("db::set_channel_hub_desired"));
     assert!(runtime.contains("db::set_channel_room_desired"));
     assert!(runtime.contains("snapshot.revision = revision.saturating_add(1)"));
@@ -231,6 +242,8 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(commands.contains(".connect_known("));
     assert!(commands.contains("LocalComposerCommand::Join"));
     assert!(commands.contains("LocalComposerCommand::Part"));
+    assert!(commands.contains("pub remember_key: bool"));
+    assert!(commands.contains(".join_with_key_policy("));
     assert!(commands.contains("\"/list\""));
     assert!(
         commands
@@ -274,6 +287,9 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(!channel_schema.contains("member_hash"));
     assert!(channel_schema.contains("desired_connected"));
     assert!(channel_schema.contains("desired_joined"));
+    assert!(channel_schema.contains("join_key_required"));
+    assert!(channel_schema.contains("CREATE TABLE IF NOT EXISTS channel_room_secrets"));
+    assert!(channel_schema.contains("ciphertext           BLOB NOT NULL"));
     assert!(channel_schema.contains("idx_channel_hubs_identity_desired"));
     assert!(channels_js.contains("service_model_version: 1"));
     assert!(channels_js.contains("connection_budget: 1"));

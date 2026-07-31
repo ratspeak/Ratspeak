@@ -122,6 +122,50 @@ async function main() {
         'direct joins must apply the command response through the freshness guard');
     assert(joinSheet.indexOf('channelsLoad(true)') === -1,
         'direct joins must not start the stale multi-query reload');
+    assert(joinSheet.indexOf('remember_key: !!key && rememberKey.checked') !== -1,
+        'join requests must carry the explicit reconnect-key policy');
+    assert(joinSheet.indexOf('keyInput.value = \'\';') !== -1,
+        'the join sheet must clear entered key material before awaiting IPC');
+    assert(joinSheet.indexOf('only after the hub confirms membership') !== -1,
+        'the join sheet must describe confirmation-gated storage truthfully');
+
+    var keyContext = {
+        channelsSnapshot: {
+            hub: { destination_hash: 'hub-a' },
+            hubs: [
+                {
+                    destination_hash: 'hub-a',
+                    durable: {
+                        rooms: [{
+                            name: 'locked',
+                            join_key_required: true,
+                            has_stored_join_key: true
+                        }]
+                    }
+                },
+                {
+                    destination_hash: 'hub-b',
+                    durable: {
+                        rooms: [{
+                            name: 'locked',
+                            join_key_required: true,
+                            has_stored_join_key: false
+                        }]
+                    }
+                }
+            ]
+        }
+    };
+    vm.runInNewContext(
+        sourceRange('_channelsDurableRoom', '_channelsIdentityTone') +
+            '\nthis.durableRoom = _channelsDurableRoom;',
+        keyContext
+    );
+    assert.strictEqual(keyContext.durableRoom('locked').has_stored_join_key, true,
+        'saved-key availability must be selected from the active hub only');
+    keyContext.channelsSnapshot.hub.destination_hash = 'hub-b';
+    assert.strictEqual(keyContext.durableRoom('locked').has_stored_join_key, false,
+        'same-name rooms on another hub must not inherit key availability');
 
     var connect = sourceRange('channelsConnectToHub', '_channelsPhaseLabel');
     assert(connect.indexOf('channelsApplySnapshot(snapshot)') !== -1,

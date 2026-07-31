@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 36;
+const SCHEMA_VERSION: i64 = 37;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -349,9 +349,28 @@ CREATE TABLE IF NOT EXISTS channel_rooms (
     last_joined           REAL NOT NULL DEFAULT 0,
     desired_joined        INTEGER NOT NULL DEFAULT 0
         CHECK (desired_joined IN (0, 1)),
+    join_key_required     INTEGER NOT NULL DEFAULT 0
+        CHECK (join_key_required IN (0, 1)),
     PRIMARY KEY (identity_id, hub_destination_hash, room_name),
     FOREIGN KEY (identity_id, hub_destination_hash)
         REFERENCES channel_hubs(identity_id, destination_hash) ON DELETE CASCADE
+);
+
+-- Recoverable client join keys are encrypted to the owning Reticulum identity
+-- before reaching SQLite. Keep ciphertext separate from ordinary room metadata
+-- so it can never leak through the bookmark API or its Debug/Serialize shapes.
+CREATE TABLE IF NOT EXISTS channel_room_secrets (
+    identity_id          TEXT NOT NULL,
+    hub_destination_hash TEXT NOT NULL,
+    room_name            TEXT NOT NULL,
+    seal_scheme          TEXT NOT NULL,
+    seal_version         INTEGER NOT NULL CHECK (seal_version > 0),
+    ciphertext           BLOB NOT NULL CHECK (length(ciphertext) > 0),
+    updated_at           REAL NOT NULL,
+    PRIMARY KEY (identity_id, hub_destination_hash, room_name),
+    FOREIGN KEY (identity_id, hub_destination_hash, room_name)
+        REFERENCES channel_rooms(identity_id, hub_destination_hash, room_name)
+        ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_channel_hubs_identity_recent
@@ -1453,6 +1472,40 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 37 {
+        migration_step(conn, 37, |conn| {
+            if table_exists(conn, "channel_rooms")? {
+                let columns = get_column_names(conn, "channel_rooms").unwrap_or_default();
+                if !columns.iter().any(|column| column == "join_key_required") {
+                    conn.execute_batch(
+                        "ALTER TABLE channel_rooms
+                         ADD COLUMN join_key_required INTEGER NOT NULL DEFAULT 0
+                         CHECK (join_key_required IN (0, 1));",
+                    )?;
+                }
+            }
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS channel_room_secrets (
+                    identity_id          TEXT NOT NULL,
+                    hub_destination_hash TEXT NOT NULL,
+                    room_name            TEXT NOT NULL,
+                    seal_scheme          TEXT NOT NULL,
+                    seal_version         INTEGER NOT NULL CHECK (seal_version > 0),
+                    ciphertext           BLOB NOT NULL CHECK (length(ciphertext) > 0),
+                    updated_at           REAL NOT NULL,
+                    PRIMARY KEY (identity_id, hub_destination_hash, room_name),
+                    FOREIGN KEY (identity_id, hub_destination_hash, room_name)
+                        REFERENCES channel_rooms(
+                            identity_id, hub_destination_hash, room_name
+                        ) ON DELETE CASCADE
+                 );
+                 UPDATE schema_version SET version = 37;",
+            )?;
+            tracing::info!("Migrated to schema version 37 (sealed Channels join keys)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -1640,6 +1693,7 @@ pub const RESET_TABLES: &[&str] = &[
     "blocked_contacts",
     "identity_activity",
     "pending_blackholes",
+    "channel_room_secrets",
     "channel_rooms",
     "channel_hubs",
     "channel_hub_grants",
@@ -1672,6 +1726,10 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "pending_blackholes",
         "DELETE FROM pending_blackholes WHERE identity_id = ?1",
+    ),
+    (
+        "channel_room_secrets",
+        "DELETE FROM channel_room_secrets WHERE identity_id = ?1",
     ),
     (
         "channel_rooms",
@@ -2775,6 +2833,33 @@ pub struct SavedChannelRoom {
     pub last_joined: f64,
     /// Durable scheduler intent, distinct from hub-confirmed membership.
     pub desired_joined: bool,
+    /// Non-secret recovery hint. A desired protected room without ciphertext
+    /// must wait for user input instead of retrying a keyless JOIN forever.
+    pub join_key_required: bool,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct StoredChannelRoomSecret {
+    pub hub_destination_hash: String,
+    pub room_name: String,
+    pub seal_scheme: String,
+    pub seal_version: u32,
+    pub ciphertext: Vec<u8>,
+    pub updated_at: f64,
+}
+
+impl std::fmt::Debug for StoredChannelRoomSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StoredChannelRoomSecret")
+            .field("hub_destination_hash", &self.hub_destination_hash)
+            .field("room_name", &self.room_name)
+            .field("seal_scheme", &self.seal_scheme)
+            .field("seal_version", &self.seal_version)
+            .field("ciphertext", &"<redacted>")
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 pub fn list_saved_channel_hubs(
@@ -3173,7 +3258,7 @@ pub fn list_saved_channel_rooms(
     let mut statement = conn
         .prepare(
             "SELECT hub_destination_hash, room_name, added_at, last_joined,
-                    desired_joined
+                    desired_joined, join_key_required
              FROM channel_rooms
              WHERE identity_id = ?1 AND hub_destination_hash = ?2
              ORDER BY last_joined DESC, room_name COLLATE NOCASE",
@@ -3187,6 +3272,7 @@ pub fn list_saved_channel_rooms(
                 added_at: row.get(2)?,
                 last_joined: row.get(3)?,
                 desired_joined: row.get::<_, i64>(4)? != 0,
+                join_key_required: row.get::<_, i64>(5)? != 0,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -3205,7 +3291,7 @@ pub fn list_saved_channel_rooms_for_identity(
     let mut statement = conn
         .prepare(
             "SELECT hub_destination_hash, room_name, added_at, last_joined,
-                    desired_joined
+                    desired_joined, join_key_required
              FROM channel_rooms
              WHERE identity_id = ?1
              ORDER BY hub_destination_hash, last_joined DESC,
@@ -3220,6 +3306,7 @@ pub fn list_saved_channel_rooms_for_identity(
                 added_at: row.get(2)?,
                 last_joined: row.get(3)?,
                 desired_joined: row.get::<_, i64>(4)? != 0,
+                join_key_required: row.get::<_, i64>(5)? != 0,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -3286,6 +3373,147 @@ pub fn set_channel_room_desired(
     )
     .map(|_| ())
     .map_err(|error| error.to_string())
+}
+
+pub fn list_channel_room_secrets_for_identity(
+    pool: &DbPool,
+    identity_id: &str,
+) -> Result<Vec<StoredChannelRoomSecret>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT hub_destination_hash, room_name, seal_scheme, seal_version,
+                    ciphertext, updated_at
+             FROM channel_room_secrets
+             WHERE identity_id = ?1
+             ORDER BY hub_destination_hash, room_name COLLATE NOCASE",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![identity_id], |row| {
+            Ok(StoredChannelRoomSecret {
+                hub_destination_hash: row.get(0)?,
+                room_name: row.get(1)?,
+                seal_scheme: row.get(2)?,
+                seal_version: row.get(3)?,
+                ciphertext: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+/// Atomically store identity-sealed ciphertext and the non-secret requirement
+/// hint. Callers must do this only after authenticated JOIN confirmation.
+pub fn save_channel_room_secret(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    seal_scheme: &str,
+    seal_version: u32,
+    ciphertext: &[u8],
+) -> Result<(), String> {
+    if seal_scheme.is_empty() || seal_version == 0 || ciphertext.is_empty() {
+        return Err("invalid sealed channel room secret".into());
+    }
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let now = now_ts();
+    let changed = transaction
+        .execute(
+            "UPDATE channel_rooms SET join_key_required = 1
+             WHERE identity_id = ?1 AND hub_destination_hash = ?2 AND room_name = ?3",
+            params![identity_id, hub_destination_hash, room_name],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed != 1 {
+        return Err("channel room does not exist".into());
+    }
+    transaction
+        .execute(
+            "INSERT INTO channel_room_secrets
+                (identity_id, hub_destination_hash, room_name, seal_scheme,
+                 seal_version, ciphertext, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(identity_id, hub_destination_hash, room_name) DO UPDATE SET
+                seal_scheme = excluded.seal_scheme,
+                seal_version = excluded.seal_version,
+                ciphertext = excluded.ciphertext,
+                updated_at = excluded.updated_at",
+            params![
+                identity_id,
+                hub_destination_hash,
+                room_name,
+                seal_scheme,
+                i64::from(seal_version),
+                ciphertext,
+                now
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+/// Persist one-way knowledge that this room requires a join key. This never
+/// modifies recoverable ciphertext: a mistyped replacement must not destroy a
+/// previously confirmed key.
+pub fn mark_channel_room_key_required(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let changed = conn
+        .execute(
+            "UPDATE channel_rooms SET join_key_required = 1
+             WHERE identity_id = ?1 AND hub_destination_hash = ?2 AND room_name = ?3",
+            params![identity_id, hub_destination_hash, room_name],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("channel room does not exist".into())
+    }
+}
+
+/// Forget recoverable ciphertext while preserving whether reconnect must wait
+/// for a replacement key. Rejection/corruption uses `required = true`.
+pub fn remove_channel_room_secret(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    required: bool,
+) -> Result<bool, String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let removed = transaction
+        .execute(
+            "DELETE FROM channel_room_secrets
+             WHERE identity_id = ?1 AND hub_destination_hash = ?2 AND room_name = ?3",
+            params![identity_id, hub_destination_hash, room_name],
+        )
+        .map_err(|error| error.to_string())?
+        > 0;
+    transaction
+        .execute(
+            "UPDATE channel_rooms SET join_key_required = ?1
+             WHERE identity_id = ?2 AND hub_destination_hash = ?3 AND room_name = ?4",
+            params![
+                required as i64,
+                identity_id,
+                hub_destination_hash,
+                room_name
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(removed)
 }
 
 pub fn remove_channel_room(
@@ -3445,6 +3673,107 @@ mod channel_bookmark_tests {
         assert!(
             list_saved_channel_hubs(&pool, "identity-b").unwrap()[0].desired_connected,
             "the one-hub budget is identity-scoped"
+        );
+    }
+
+    #[test]
+    fn sealed_room_secrets_are_identity_scoped_redacted_and_forgettable() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        save_identity(&pool, "identity-b", "lxmf-b", "B", "B");
+        set_channel_hub_desired(&pool, "identity-a", "aa", "alpha", true).unwrap();
+        set_channel_room_desired(&pool, "identity-a", "aa", "general", true).unwrap();
+        set_channel_hub_desired(&pool, "identity-b", "bb", "bravo", true).unwrap();
+        set_channel_room_desired(&pool, "identity-b", "bb", "general", true).unwrap();
+
+        let ciphertext = b"opaque-ciphertext-that-debug-must-hide";
+        save_channel_room_secret(
+            &pool,
+            "identity-a",
+            "aa",
+            "general",
+            "rns_identity",
+            1,
+            ciphertext,
+        )
+        .unwrap();
+
+        let secrets = list_channel_room_secrets_for_identity(&pool, "identity-a").unwrap();
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].ciphertext, ciphertext);
+        assert_eq!(secrets[0].seal_scheme, "rns_identity");
+        assert_eq!(secrets[0].seal_version, 1);
+        let debug = format!("{:?}", secrets[0]);
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("opaque-ciphertext"));
+        assert!(
+            list_channel_room_secrets_for_identity(&pool, "identity-b")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(list_saved_channel_rooms(&pool, "identity-a", "aa").unwrap()[0].join_key_required);
+        mark_channel_room_key_required(&pool, "identity-a", "aa", "general").unwrap();
+        assert_eq!(
+            list_channel_room_secrets_for_identity(&pool, "identity-a").unwrap()[0].ciphertext,
+            ciphertext,
+            "learning that a key is required must not erase confirmed ciphertext"
+        );
+
+        set_channel_room_desired(&pool, "identity-a", "aa", "invited", true).unwrap();
+        mark_channel_room_key_required(&pool, "identity-a", "aa", "invited").unwrap();
+        let invited = list_saved_channel_rooms(&pool, "identity-a", "aa")
+            .unwrap()
+            .into_iter()
+            .find(|room| room.room_name == "invited")
+            .unwrap();
+        assert!(invited.join_key_required);
+        assert_eq!(
+            list_channel_room_secrets_for_identity(&pool, "identity-a")
+                .unwrap()
+                .len(),
+            1,
+            "key-required knowledge does not invent recoverable key material"
+        );
+
+        assert!(remove_channel_room_secret(&pool, "identity-a", "aa", "general", true).unwrap());
+        assert!(
+            list_channel_room_secrets_for_identity(&pool, "identity-a")
+                .unwrap()
+                .is_empty()
+        );
+        let room = &list_saved_channel_rooms(&pool, "identity-a", "aa").unwrap()[0];
+        assert!(
+            room.desired_joined,
+            "forgetting a key preserves room desire"
+        );
+        assert!(
+            room.join_key_required,
+            "a rejected key must block keyless reconnect"
+        );
+    }
+
+    #[test]
+    fn removing_a_client_room_cascades_its_sealed_secret() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        set_channel_hub_desired(&pool, "identity-a", "aa", "alpha", true).unwrap();
+        set_channel_room_desired(&pool, "identity-a", "aa", "general", true).unwrap();
+        save_channel_room_secret(
+            &pool,
+            "identity-a",
+            "aa",
+            "general",
+            "rns_identity",
+            1,
+            b"ciphertext",
+        )
+        .unwrap();
+
+        assert!(remove_channel_room(&pool, "identity-a", "aa", "general").unwrap());
+        assert!(
+            list_channel_room_secrets_for_identity(&pool, "identity-a")
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -5859,6 +6188,7 @@ mod migration_tests {
             "messages_fts",
             "channel_hubs",
             "channel_rooms",
+            "channel_room_secrets",
             "channel_hub_rooms",
             "channel_hub_grants",
             "channel_hub_klines",
@@ -6306,6 +6636,111 @@ mod migration_tests {
             "past recency is not proof of current user intent"
         );
         assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_from_v36_adds_identity_sealed_room_key_storage() {
+        let pool = empty_pool();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys=ON;
+                 CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (36);
+                 CREATE TABLE identities (
+                    hash TEXT PRIMARY KEY,
+                    created_at REAL NOT NULL,
+                    is_active INTEGER DEFAULT 0
+                 );
+                 INSERT INTO identities (hash, created_at) VALUES ('identity-a', 0);
+                 CREATE TABLE channel_hubs (
+                    identity_id TEXT NOT NULL,
+                    destination_hash TEXT NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
+                    nickname TEXT NOT NULL DEFAULT '',
+                    added_at REAL NOT NULL,
+                    last_connected REAL NOT NULL DEFAULT 0,
+                    desired_connected INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, destination_hash),
+                    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+                 );
+                 CREATE TABLE channel_rooms (
+                    identity_id TEXT NOT NULL,
+                    hub_destination_hash TEXT NOT NULL,
+                    room_name TEXT NOT NULL,
+                    added_at REAL NOT NULL,
+                    last_joined REAL NOT NULL DEFAULT 0,
+                    desired_joined INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, hub_destination_hash, room_name),
+                    FOREIGN KEY (identity_id, hub_destination_hash)
+                        REFERENCES channel_hubs(identity_id, destination_hash) ON DELETE CASCADE
+                 );
+                 INSERT INTO channel_hubs
+                    (identity_id, destination_hash, added_at, desired_connected)
+                    VALUES ('identity-a', 'aa', 1, 1);
+                 INSERT INTO channel_rooms
+                    (identity_id, hub_destination_hash, room_name, added_at,
+                     desired_joined)
+                    VALUES ('identity-a', 'aa', 'general', 1, 1);",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        assert!(table_exists(&conn, "channel_room_secrets").unwrap());
+        assert!(
+            get_column_names(&conn, "channel_rooms")
+                .unwrap()
+                .iter()
+                .any(|column| column == "join_key_required")
+        );
+        drop(conn);
+        let room = &list_saved_channel_rooms(&pool, "identity-a", "aa").unwrap()[0];
+        assert!(room.desired_joined);
+        assert!(
+            !room.join_key_required,
+            "migration must not infer key policy from past membership"
+        );
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrated_and_fresh_sealed_room_key_schemas_match() {
+        let migrated = empty_pool();
+        {
+            let conn = migrated.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (36);
+                 CREATE TABLE channel_rooms (
+                    identity_id TEXT NOT NULL,
+                    hub_destination_hash TEXT NOT NULL,
+                    room_name TEXT NOT NULL,
+                    added_at REAL NOT NULL,
+                    last_joined REAL NOT NULL DEFAULT 0,
+                    desired_joined INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, hub_destination_hash, room_name)
+                 );",
+            )
+            .unwrap();
+        }
+        init_schema(&migrated).unwrap();
+        let fresh = empty_pool();
+        init_schema(&fresh).unwrap();
+
+        for table in ["channel_rooms", "channel_room_secrets"] {
+            let columns = |pool: &DbPool| {
+                let conn = pool.get().unwrap();
+                get_column_names(&conn, table).unwrap()
+            };
+            assert_eq!(
+                columns(&migrated),
+                columns(&fresh),
+                "migrated and fresh `{table}` columns diverged"
+            );
+        }
     }
 
     /// The migrated schema and the fresh schema must agree; the DDL is
