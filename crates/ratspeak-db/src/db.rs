@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 39;
+const SCHEMA_VERSION: i64 = 40;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -101,6 +101,7 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
 
     conn.execute_batch(SCHEMA_SQL)?;
     conn.execute_batch(CHANNEL_HISTORY_SCHEMA_SQL)?;
+    conn.execute_batch(CHANNEL_ROOM_STATE_SCHEMA_SQL)?;
     reconcile_channel_history_usage(&conn)?;
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
@@ -462,6 +463,7 @@ CREATE TABLE IF NOT EXISTS channel_history (
     nickname              TEXT,
     text                  TEXT NOT NULL,
     ours                  INTEGER NOT NULL CHECK (ours IN (0, 1)),
+    mentioned             INTEGER NOT NULL DEFAULT 0 CHECK (mentioned IN (0, 1)),
     UNIQUE (identity_id, hub_destination_hash, room_name, event_id),
     FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
 );
@@ -472,8 +474,27 @@ CREATE INDEX IF NOT EXISTS idx_channel_history_room_sequence
     );
 CREATE INDEX IF NOT EXISTS idx_channel_history_identity_sequence
     ON channel_history(identity_id, sequence DESC);
+CREATE INDEX IF NOT EXISTS idx_channel_history_identity_unread
+    ON channel_history(identity_id, ours, sequence);
 CREATE INDEX IF NOT EXISTS idx_channel_history_recorded_at
     ON channel_history(recorded_at_ms);
+"#;
+
+// Read position and delivery policy survive history retention and bookmark
+// removal. The sequence is deliberately not a foreign key: history rows may be
+// pruned while the monotonic cursor remains valid for later appends.
+const CHANNEL_ROOM_STATE_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS channel_room_state (
+    identity_id          TEXT NOT NULL,
+    hub_destination_hash TEXT NOT NULL,
+    room_name            TEXT NOT NULL,
+    last_read_sequence   INTEGER NOT NULL DEFAULT 0 CHECK (last_read_sequence >= 0),
+    notification_level   TEXT NOT NULL DEFAULT 'mentions'
+        CHECK (notification_level IN ('all', 'mentions', 'mute')),
+    updated_at_ms        INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+    PRIMARY KEY (identity_id, hub_destination_hash, room_name),
+    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+);
 "#;
 
 // Estimated payload usage is materialized per room so the hot append path can
@@ -1676,6 +1697,46 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 40 {
+        migration_step(conn, 40, |conn| {
+            if table_exists(conn, "channel_history")? {
+                let columns = get_column_names(conn, "channel_history").unwrap_or_default();
+                if !columns.iter().any(|column| column == "mentioned") {
+                    conn.execute_batch(
+                        "ALTER TABLE channel_history
+                         ADD COLUMN mentioned INTEGER NOT NULL DEFAULT 0
+                         CHECK (mentioned IN (0, 1));",
+                    )?;
+                }
+            }
+            conn.execute_batch(CHANNEL_ROOM_STATE_SCHEMA_SQL)?;
+            if table_exists(conn, "channel_history")? && table_exists(conn, "identities")? {
+                // Existing transcripts predate durable read tracking. Treat
+                // their current tail as read so an upgrade cannot generate a
+                // retroactive wall of unread rooms or mention alerts.
+                conn.execute_batch(
+                    "INSERT INTO channel_room_state (
+                        identity_id, hub_destination_hash, room_name,
+                        last_read_sequence, notification_level, updated_at_ms
+                     )
+                     SELECT
+                        identity_id, hub_destination_hash, room_name,
+                        MAX(sequence), 'mentions', MAX(recorded_at_ms)
+                     FROM channel_history
+                     GROUP BY identity_id, hub_destination_hash, room_name
+                     ON CONFLICT (
+                        identity_id, hub_destination_hash, room_name
+                     ) DO NOTHING;",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 40;")?;
+            tracing::info!(
+                "Migrated to schema version 40 (durable Channels read and mention state)"
+            );
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -1865,6 +1926,7 @@ pub const RESET_TABLES: &[&str] = &[
     "pending_blackholes",
     "channel_history",
     "channel_history_room_usage",
+    "channel_room_state",
     "channel_room_secrets",
     "channel_rooms",
     "channel_hubs",
@@ -1906,6 +1968,10 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "channel_history_room_usage",
         "DELETE FROM channel_history_room_usage WHERE identity_id = ?1",
+    ),
+    (
+        "channel_room_state",
+        "DELETE FROM channel_room_state WHERE identity_id = ?1",
     ),
     (
         "channel_room_secrets",
@@ -3051,6 +3117,10 @@ impl ChannelHistoryKind {
             _ => None,
         }
     }
+
+    fn allows_mention(self) -> bool {
+        matches!(self, Self::Message | Self::Action)
+    }
 }
 
 /// An accepted transcript observation waiting to enter the local append log.
@@ -3068,6 +3138,9 @@ pub struct NewChannelHistoryEvent {
     pub nickname: Option<String>,
     pub text: String,
     pub ours: bool,
+    /// Computed locally when the event is accepted. Never trust a remote
+    /// sender to classify its own message as a mention.
+    pub mentioned: bool,
 }
 
 // Transcript text and nicknames can be private. Keep them out of routine
@@ -3084,6 +3157,7 @@ impl std::fmt::Debug for NewChannelHistoryEvent {
             .field("source_present", &self.source_hash.is_some())
             .field("text", &"<redacted>")
             .field("ours", &self.ours)
+            .field("mentioned", &self.mentioned)
             .finish()
     }
 }
@@ -3103,6 +3177,7 @@ pub struct ChannelHistoryEvent {
     pub nickname: Option<String>,
     pub text: String,
     pub ours: bool,
+    pub mentioned: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize)]
@@ -3121,6 +3196,72 @@ pub struct ChannelHistoryAppendOutcome {
     pub duplicates: usize,
     pub pruned: usize,
     pub latest_sequence: Option<String>,
+    /// Exact batch positions committed by this transaction. This lets the
+    /// writer emit native notifications only after a new row exists, without
+    /// replaying alerts for deduplicated retries.
+    pub inserted_events: Vec<ChannelHistoryInsertedEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelHistoryInsertedEvent {
+    pub batch_index: usize,
+    pub sequence: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelRoomNotificationLevel {
+    All,
+    #[default]
+    Mentions,
+    Mute,
+}
+
+impl ChannelRoomNotificationLevel {
+    pub fn as_storage(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Mentions => "mentions",
+            Self::Mute => "mute",
+        }
+    }
+
+    fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "mentions" => Some(Self::Mentions),
+            "mute" => Some(Self::Mute),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ChannelRoomReadState {
+    pub hub_destination_hash: String,
+    pub room_name: String,
+    pub last_read_sequence: String,
+    pub notification_level: ChannelRoomNotificationLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ChannelRoomUnread {
+    pub hub_destination_hash: String,
+    pub room_name: String,
+    pub unread_count: u64,
+    pub mention_count: u64,
+    pub notification_level: ChannelRoomNotificationLevel,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ChannelUnreadSummary {
+    pub rooms: Vec<ChannelRoomUnread>,
+    /// All unread retained room traffic, including muted rooms.
+    pub unread_total: u64,
+    /// All unread exact mentions, including muted rooms.
+    pub mention_total: u64,
+    /// Events allowed to request attention by each room's policy.
+    pub attention_total: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -3202,6 +3343,9 @@ pub fn validate_channel_history_event(
     }
     if event.text.len() > CHANNEL_HISTORY_MAX_TEXT_BYTES {
         return Err("Channels history text is too long".into());
+    }
+    if event.mentioned && (event.ours || !event.kind.allows_mention()) {
+        return Err("invalid Channels history mention classification".into());
     }
     Ok(())
 }
@@ -3471,15 +3615,18 @@ fn append_channel_history_events_at(
     let mut conn = pool.get().map_err(|error| error.to_string())?;
     let transaction = conn.transaction().map_err(|error| error.to_string())?;
     let mut inserted = 0usize;
+    let mut inserted_events = Vec::new();
     let mut touched_rooms = std::collections::BTreeSet::new();
-    for event in events {
-        inserted += transaction
+    for (batch_index, event) in events.iter().enumerate() {
+        let inserted_row = transaction
             .execute(
                 "INSERT INTO channel_history
                     (identity_id, hub_destination_hash, room_name, event_id,
                      kind, timestamp_ms, recorded_at_ms, source_hash, nickname,
-                     text, ours)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                     text, ours, mentioned)
+                 VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+                 )
                  ON CONFLICT(
                     identity_id, hub_destination_hash, room_name, event_id
                  ) DO NOTHING",
@@ -3495,6 +3642,31 @@ fn append_channel_history_events_at(
                     event.nickname,
                     event.text,
                     event.ours as i64,
+                    event.mentioned as i64,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        inserted = inserted.saturating_add(inserted_row);
+        if inserted_row > 0 {
+            inserted_events.push(ChannelHistoryInsertedEvent {
+                batch_index,
+                sequence: transaction.last_insert_rowid().to_string(),
+            });
+        }
+        transaction
+            .execute(
+                "INSERT INTO channel_room_state (
+                    identity_id, hub_destination_hash, room_name,
+                    last_read_sequence, notification_level, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, 0, 'mentions', ?4)
+                 ON CONFLICT (
+                    identity_id, hub_destination_hash, room_name
+                 ) DO NOTHING",
+                params![
+                    identity_id,
+                    event.hub_destination_hash,
+                    event.room_name,
+                    recorded_at_ms
                 ],
             )
             .map_err(|error| error.to_string())?;
@@ -3550,6 +3722,7 @@ fn append_channel_history_events_at(
         duplicates: events.len().saturating_sub(inserted),
         pruned,
         latest_sequence,
+        inserted_events,
     })
 }
 
@@ -3583,6 +3756,7 @@ fn channel_history_row(row: &rusqlite::Row<'_>) -> Result<ChannelHistoryEvent, r
         nickname: row.get(8)?,
         text: row.get(9)?,
         ours: row.get::<_, i64>(10)? != 0,
+        mentioned: row.get::<_, i64>(11)? != 0,
     })
 }
 
@@ -3610,7 +3784,7 @@ pub fn list_channel_history(
         .prepare(
             "SELECT sequence, hub_destination_hash, room_name, event_id, kind,
                     timestamp_ms, recorded_at_ms, source_hash, nickname, text,
-                    ours
+                    ours, mentioned
              FROM channel_history
              WHERE identity_id = ?1
                AND hub_destination_hash = ?2
@@ -3674,7 +3848,7 @@ pub fn list_channel_history_after(
         .prepare(
             "SELECT sequence, hub_destination_hash, room_name, event_id, kind,
                     timestamp_ms, recorded_at_ms, source_hash, nickname, text,
-                    ours
+                    ours, mentioned
              FROM channel_history
              WHERE identity_id = ?1
                AND hub_destination_hash = ?2
@@ -3707,6 +3881,253 @@ pub fn list_channel_history_after(
         next_after,
         has_more,
     })
+}
+
+fn channel_room_read_state(
+    hub_destination_hash: &str,
+    room_name: &str,
+    stored: Option<(i64, String)>,
+) -> Result<ChannelRoomReadState, String> {
+    let (last_read_sequence, notification_level) = stored.unwrap_or((
+        0,
+        ChannelRoomNotificationLevel::default().as_storage().into(),
+    ));
+    let notification_level = ChannelRoomNotificationLevel::from_storage(&notification_level)
+        .ok_or_else(|| "invalid stored Channels notification level".to_string())?;
+    Ok(ChannelRoomReadState {
+        hub_destination_hash: hub_destination_hash.into(),
+        room_name: room_name.into(),
+        last_read_sequence: last_read_sequence.to_string(),
+        notification_level,
+    })
+}
+
+fn query_channel_room_read_state(
+    conn: &Connection,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+) -> Result<Option<(i64, String)>, String> {
+    conn.query_row(
+        "SELECT last_read_sequence, notification_level
+         FROM channel_room_state
+         WHERE identity_id = ?1
+           AND hub_destination_hash = ?2
+           AND room_name = ?3",
+        params![identity_id, hub_destination_hash, room_name],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+pub fn get_channel_room_read_state(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+) -> Result<ChannelRoomReadState, String> {
+    validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let stored =
+        query_channel_room_read_state(&conn, identity_id, hub_destination_hash, room_name)?;
+    channel_room_read_state(hub_destination_hash, room_name, stored)
+}
+
+/// Advance one room's read position to a sequence proven to belong to that
+/// exact identity/hub/room scope. Cursors are monotonic and sequence `0` is an
+/// idempotent no-op for an empty room.
+pub fn mark_channel_room_read(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    through: &str,
+) -> Result<ChannelRoomReadState, String> {
+    validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
+    let through = parse_channel_history_after_cursor(through)?;
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let stored =
+        query_channel_room_read_state(&transaction, identity_id, hub_destination_hash, room_name)?;
+    let current = stored.as_ref().map_or(0, |(sequence, _)| *sequence);
+
+    if through > current {
+        let belongs_to_room = transaction
+            .query_row(
+                "SELECT 1
+                 FROM channel_history
+                 WHERE identity_id = ?1
+                   AND hub_destination_hash = ?2
+                   AND room_name = ?3
+                   AND sequence = ?4",
+                params![identity_id, hub_destination_hash, room_name, through],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .is_some();
+        if !belongs_to_room {
+            return Err("Channels read cursor does not belong to this room".into());
+        }
+        transaction
+            .execute(
+                "INSERT INTO channel_room_state (
+                    identity_id, hub_destination_hash, room_name,
+                    last_read_sequence, notification_level, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, 'mentions', ?5)
+                 ON CONFLICT (
+                    identity_id, hub_destination_hash, room_name
+                 ) DO UPDATE SET
+                    last_read_sequence = excluded.last_read_sequence,
+                    updated_at_ms = excluded.updated_at_ms
+                 WHERE excluded.last_read_sequence >
+                    channel_room_state.last_read_sequence",
+                params![
+                    identity_id,
+                    hub_destination_hash,
+                    room_name,
+                    through,
+                    now_unix_ms()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    let stored =
+        query_channel_room_read_state(&transaction, identity_id, hub_destination_hash, room_name)?;
+    let state = channel_room_read_state(hub_destination_hash, room_name, stored)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(state)
+}
+
+pub fn set_channel_room_notification_level(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    notification_level: ChannelRoomNotificationLevel,
+) -> Result<ChannelRoomReadState, String> {
+    validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO channel_room_state (
+                identity_id, hub_destination_hash, room_name,
+                last_read_sequence, notification_level, updated_at_ms
+             ) VALUES (
+                ?1, ?2, ?3,
+                COALESCE((
+                    SELECT MAX(sequence)
+                    FROM channel_history
+                    WHERE identity_id = ?1
+                      AND hub_destination_hash = ?2
+                      AND room_name = ?3
+                ), 0),
+                ?4, ?5
+             )
+             ON CONFLICT (
+                identity_id, hub_destination_hash, room_name
+             ) DO UPDATE SET
+                notification_level = excluded.notification_level,
+                updated_at_ms = excluded.updated_at_ms",
+            params![
+                identity_id,
+                hub_destination_hash,
+                room_name,
+                notification_level.as_storage(),
+                now_unix_ms()
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    let stored =
+        query_channel_room_read_state(&transaction, identity_id, hub_destination_hash, room_name)?;
+    let state = channel_room_read_state(hub_destination_hash, room_name, stored)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(state)
+}
+
+pub fn get_channel_unread_summary(
+    pool: &DbPool,
+    identity_id: &str,
+) -> Result<ChannelUnreadSummary, String> {
+    if !is_canonical_channel_hash(identity_id) {
+        return Err("invalid Channels unread identity".into());
+    }
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT
+                history.hub_destination_hash,
+                history.room_name,
+                COUNT(*) AS unread_count,
+                SUM(history.mentioned) AS mention_count,
+                COALESCE(state.notification_level, 'mentions') AS notification_level
+             FROM channel_history AS history
+             LEFT JOIN channel_room_state AS state
+               ON state.identity_id = history.identity_id
+              AND state.hub_destination_hash = history.hub_destination_hash
+              AND state.room_name = history.room_name
+             WHERE history.identity_id = ?1
+               AND history.ours = 0
+               AND history.kind IN ('message', 'notice', 'action')
+               AND history.sequence > COALESCE(state.last_read_sequence, 0)
+             GROUP BY
+                history.hub_destination_hash,
+                history.room_name,
+                state.notification_level
+             ORDER BY MAX(history.sequence) DESC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![identity_id], |row| {
+            let unread_count = row.get::<_, i64>(2)?;
+            let mention_count = row.get::<_, i64>(3)?;
+            let notification_level = row.get::<_, String>(4)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                unread_count,
+                mention_count,
+                notification_level,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut summary = ChannelUnreadSummary::default();
+    for row in rows {
+        let (hub_destination_hash, room_name, unread_count, mention_count, notification_level) =
+            row.map_err(|error| error.to_string())?;
+        let unread_count = u64::try_from(unread_count)
+            .map_err(|_| "invalid stored Channels unread count".to_string())?;
+        let mention_count = u64::try_from(mention_count)
+            .map_err(|_| "invalid stored Channels mention count".to_string())?;
+        let notification_level = ChannelRoomNotificationLevel::from_storage(&notification_level)
+            .ok_or_else(|| "invalid stored Channels notification level".to_string())?;
+        summary.unread_total = summary.unread_total.saturating_add(unread_count);
+        summary.mention_total = summary.mention_total.saturating_add(mention_count);
+        summary.attention_total =
+            summary
+                .attention_total
+                .saturating_add(match notification_level {
+                    ChannelRoomNotificationLevel::All => unread_count,
+                    ChannelRoomNotificationLevel::Mentions => mention_count,
+                    ChannelRoomNotificationLevel::Mute => 0,
+                });
+        summary.rooms.push(ChannelRoomUnread {
+            hub_destination_hash,
+            room_name,
+            unread_count,
+            mention_count,
+            notification_level,
+        });
+    }
+    Ok(summary)
 }
 
 /// Explicit history deletion is separate from bookmark removal.
@@ -4572,6 +4993,7 @@ mod channel_history_tests {
             nickname: Some("Field Rat".into()),
             text: format!("message {id}"),
             ours: false,
+            mentioned: false,
         }
     }
 
@@ -4725,6 +5147,130 @@ mod channel_history_tests {
             retained.latest_recorded_at_ms,
             Some(u64::try_from(recorded_at_ms).unwrap())
         );
+    }
+
+    #[test]
+    fn unread_mentions_are_sequence_scoped_monotonic_and_policy_aware() {
+        let pool = test_pool();
+        let plain = event(HUB_A, "general", "plain");
+        let mut mention = event(HUB_A, "general", "mention");
+        mention.kind = ChannelHistoryKind::Action;
+        mention.text = "@A checks the signal".into();
+        mention.mentioned = true;
+        let mut notice = event(HUB_A, "general", "notice");
+        notice.kind = ChannelHistoryKind::Notice;
+        let mut presence = event(HUB_A, "general", "join");
+        presence.kind = ChannelHistoryKind::Join;
+        let mut ours = event(HUB_A, "general", "ours");
+        ours.ours = true;
+        ours.source_hash = Some(IDENTITY_A.into());
+
+        let outcome = append_channel_history_events(
+            &pool,
+            IDENTITY_A,
+            &[plain, mention, notice, presence, ours],
+        )
+        .unwrap();
+        assert_eq!(outcome.inserted, 5);
+        assert_eq!(
+            outcome
+                .inserted_events
+                .iter()
+                .map(|inserted| inserted.batch_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+
+        let summary = get_channel_unread_summary(&pool, IDENTITY_A).unwrap();
+        assert_eq!(summary.unread_total, 3);
+        assert_eq!(summary.mention_total, 1);
+        assert_eq!(
+            summary.attention_total, 1,
+            "the default mentions policy should not nag for every room message"
+        );
+        assert_eq!(summary.rooms.len(), 1);
+        assert_eq!(
+            summary.rooms[0].notification_level,
+            ChannelRoomNotificationLevel::Mentions
+        );
+
+        let state = set_channel_room_notification_level(
+            &pool,
+            IDENTITY_A,
+            HUB_A,
+            "general",
+            ChannelRoomNotificationLevel::All,
+        )
+        .unwrap();
+        assert_eq!(state.last_read_sequence, "0");
+        assert_eq!(
+            get_channel_unread_summary(&pool, IDENTITY_A)
+                .unwrap()
+                .attention_total,
+            3
+        );
+
+        let page = list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 10).unwrap();
+        let mention_sequence = page
+            .items
+            .iter()
+            .find(|item| item.event_id == "mention")
+            .unwrap()
+            .sequence
+            .clone();
+        let state =
+            mark_channel_room_read(&pool, IDENTITY_A, HUB_A, "general", &mention_sequence).unwrap();
+        assert_eq!(state.last_read_sequence, mention_sequence);
+        assert_eq!(
+            state.notification_level,
+            ChannelRoomNotificationLevel::All,
+            "advancing read state must preserve delivery policy"
+        );
+        let summary = get_channel_unread_summary(&pool, IDENTITY_A).unwrap();
+        assert_eq!(summary.unread_total, 1);
+        assert_eq!(summary.mention_total, 0);
+
+        let wrong_room = mark_channel_room_read(
+            &pool,
+            IDENTITY_A,
+            HUB_A,
+            "other",
+            &page.items.last().unwrap().sequence,
+        );
+        assert!(
+            wrong_room.is_err(),
+            "a global sequence from another room must never mark this room read"
+        );
+
+        let tail = page.items.last().unwrap().sequence.clone();
+        mark_channel_room_read(&pool, IDENTITY_A, HUB_A, "general", &tail).unwrap();
+        let regressed = mark_channel_room_read(&pool, IDENTITY_A, HUB_A, "general", "1").unwrap();
+        assert_eq!(
+            regressed.last_read_sequence, tail,
+            "read cursors are monotonic"
+        );
+        assert_eq!(
+            get_channel_unread_summary(&pool, IDENTITY_A)
+                .unwrap()
+                .unread_total,
+            0
+        );
+
+        set_channel_room_notification_level(
+            &pool,
+            IDENTITY_A,
+            HUB_A,
+            "general",
+            ChannelRoomNotificationLevel::Mute,
+        )
+        .unwrap();
+        let mut later = event(HUB_A, "general", "later");
+        later.mentioned = true;
+        append_channel_history_events(&pool, IDENTITY_A, &[later]).unwrap();
+        let summary = get_channel_unread_summary(&pool, IDENTITY_A).unwrap();
+        assert_eq!(summary.unread_total, 1);
+        assert_eq!(summary.mention_total, 1);
+        assert_eq!(summary.attention_total, 0);
     }
 
     #[test]
@@ -7637,6 +8183,7 @@ mod migration_tests {
             "channel_room_secrets",
             "channel_history",
             "channel_history_room_usage",
+            "channel_room_state",
             "channel_hub_rooms",
             "channel_hub_grants",
             "channel_hub_klines",
@@ -7660,6 +8207,7 @@ mod migration_tests {
             "idx_channel_rooms_identity_hub",
             "idx_channel_history_room_sequence",
             "idx_channel_history_identity_sequence",
+            "idx_channel_history_identity_unread",
             "idx_channel_history_recorded_at",
         ] {
             let exists: i64 = conn
@@ -8268,6 +8816,75 @@ mod migration_tests {
             .unwrap();
         assert_eq!(usage_rows, 0, "delete trigger should remove empty usage");
         drop(conn);
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_from_v39_marks_existing_history_read_and_adds_mentions() {
+        const IDENTITY: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const HUB: &str = "11111111111111111111111111111111";
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        save_identity(&pool, IDENTITY, "", "A", "A");
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO channel_history (
+                    identity_id, hub_destination_hash, room_name, event_id,
+                    kind, timestamp_ms, recorded_at_ms, source_hash, nickname,
+                    text, ours
+                 ) VALUES (
+                    ?1, ?2, 'general', 'old', 'message', 1, 1, NULL, NULL,
+                    'hello', 0
+                 )",
+                params![IDENTITY, HUB],
+            )
+            .unwrap();
+            conn.execute_batch(
+                "DROP TABLE channel_room_state;
+                 ALTER TABLE channel_history DROP COLUMN mentioned;
+                 UPDATE schema_version SET version = 39;",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+        let columns = get_column_names(&pool.get().unwrap(), "channel_history").unwrap();
+        assert!(columns.iter().any(|column| column == "mentioned"));
+        let state = get_channel_room_read_state(&pool, IDENTITY, HUB, "general").unwrap();
+        assert_ne!(state.last_read_sequence, "0");
+        assert_eq!(
+            state.notification_level,
+            ChannelRoomNotificationLevel::Mentions
+        );
+        assert_eq!(
+            get_channel_unread_summary(&pool, IDENTITY)
+                .unwrap()
+                .unread_total,
+            0,
+            "upgrades must not reinterpret old transcript rows as unread"
+        );
+
+        append_channel_history_events(
+            &pool,
+            IDENTITY,
+            &[NewChannelHistoryEvent {
+                hub_destination_hash: HUB.into(),
+                room_name: "general".into(),
+                event_id: "new".into(),
+                kind: ChannelHistoryKind::Message,
+                timestamp_ms: 2,
+                source_hash: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
+                nickname: Some("B".into()),
+                text: "@A hello".into(),
+                ours: false,
+                mentioned: true,
+            }],
+        )
+        .unwrap();
+        let summary = get_channel_unread_summary(&pool, IDENTITY).unwrap();
+        assert_eq!(summary.unread_total, 1);
+        assert_eq!(summary.mention_total, 1);
         assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
     }
 

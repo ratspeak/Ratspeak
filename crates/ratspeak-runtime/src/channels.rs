@@ -4799,6 +4799,7 @@ fn append_room_item(
         nickname: item.nickname.clone(),
         text: item.text.clone(),
         ours: item.ours,
+        mentioned: false,
     });
     room.transcript.push(item);
     if room.transcript.len() > TRANSCRIPT_LIMIT {
@@ -5798,6 +5799,7 @@ mod tests {
             nickname: Some("Field Rat".into()),
             text: format!("signal {id}"),
             ours: false,
+            mentioned: false,
         }
     }
 
