@@ -18,6 +18,7 @@ use rns_identity::{destination::Destination, identity::Identity};
 use rns_runtime::lifecycle::ShutdownSignal;
 use rns_runtime::link_session::{
     LinkSession, LinkSessionCloseReason, LinkSessionConfig, LinkSessionError, LinkSessionEvent,
+    LinkSessionReceivedResource, LinkSessionResourceOffer,
 };
 use rns_transport::messages::{
     AnnounceRpcEntry, TransportMessage, TransportQuery, TransportQueryResponse,
@@ -33,9 +34,14 @@ use crate::state::{ActivityRequestFence, AppState};
 
 const COMMAND_BUFFER: usize = 64;
 const CONNECT_UPDATE_BUFFER: usize = 32;
+const GREETING_RESOURCE_COMPLETION_BUFFER: usize = 4;
 const CONNECT_PATH_TIMEOUT: Duration = Duration::from_secs(30);
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(15);
 const HUB_GREETING_WINDOW: Duration = Duration::from_secs(30);
+const HUB_GREETING_RESOURCE_MAX_BYTES: usize = 16 * 1024;
+const HUB_GREETING_RESOURCE_TRANSFER_SLACK: usize = 256;
+const HUB_GREETING_RESOURCE_TIMEOUT: Duration = Duration::from_secs(30);
+const HUB_GREETING_NOTICE_MDU_SLACK: usize = 64;
 const JOIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 const PART_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
 const ROOM_TRANSITION_TICK: Duration = Duration::from_secs(1);
@@ -76,7 +82,7 @@ const ROOM_KEY_REQUIRED: &str = "Channel key required. Enter the current key.";
 /// Initial scheduler budget. The hub-keyed model deliberately supports raising
 /// this later without pretending the current runtime holds multiple Links.
 pub const CHANNELS_CONNECTION_BUDGET: usize = 1;
-pub const CHANNELS_SERVICE_MODEL_VERSION: u16 = 2;
+pub const CHANNELS_SERVICE_MODEL_VERSION: u16 = 3;
 
 // Snapshot ordering crosses two asynchronous delivery paths: direct Tauri
 // command responses and live `channels_snapshot` events. A process-local
@@ -198,8 +204,8 @@ impl From<&HubLimits> for ChannelHubLimitsSnapshot {
 pub struct ChannelHubCapabilitiesSnapshot {
     pub actions: bool,
     pub direct_notices: bool,
-    /// Kept visible for compatibility reporting. Ratspeak does not advertise
-    /// or accept the resource-envelope extension in the first Channels beta.
+    /// The hub negotiated bounded Resource envelopes. Ratspeak currently
+    /// accepts only authenticated roomless `motd` guidance under a 16 KiB cap.
     pub resource_envelopes: bool,
     /// The hub can retain a short identity-bound `+i` rejoin grant. This says
     /// nothing about `+k`; a reconnect still needs the room key.
@@ -283,6 +289,38 @@ pub struct ChannelTranscriptItem {
     pub text: String,
     pub ours: bool,
     pub mentioned: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelHubGreetingDelivery {
+    /// One or more roomless NOTICE packets. RRC does not frame a NOTICE burst,
+    /// so this is useful guidance but not proof that every configured byte
+    /// arrived.
+    Notice,
+    /// A bounded Resource whose announced and delivered bytes were validated.
+    Resource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelHubGreetingCompleteness {
+    /// The transfer supplied an exact byte count and completed validation.
+    Complete,
+    /// Packet fallback has no protocol-level final-fragment marker.
+    Unframed,
+}
+
+/// Authenticated Link-scoped hub guidance, deliberately separate from room
+/// transcript and local history. It is neither a room message nor a claim that
+/// the client possesses a formally versioned rules document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelHubGreetingSnapshot {
+    pub text: String,
+    pub received_at_ms: u64,
+    pub source_hash: String,
+    pub delivery: ChannelHubGreetingDelivery,
+    pub completeness: ChannelHubGreetingCompleteness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -464,6 +502,8 @@ pub struct ChannelHubObservedSnapshot {
     pub hub: ChannelHubSnapshot,
     pub rooms: Vec<ChannelObservedRoomSnapshot>,
     pub directory: ChannelRoomDirectorySnapshot,
+    /// Link-scoped authenticated welcome/guidance for this exact hub.
+    pub greeting: Option<ChannelHubGreetingSnapshot>,
     pub last_error: Option<String>,
 }
 
@@ -514,10 +554,9 @@ pub struct ChannelsSnapshot {
     /// Public rooms currently advertised by the authenticated hub. This is
     /// cleared with the Link and is intentionally never persisted.
     pub directory: ChannelRoomDirectorySnapshot,
-    /// The first authenticated roomless hub NOTICE after WELCOME. `rrcd`
-    /// delivers its configured greeting this way, so keep it in hub context
-    /// instead of merging it into every room transcript.
-    pub hub_greeting: Option<ChannelTranscriptItem>,
+    /// Authenticated roomless hub guidance after WELCOME. Resource delivery is
+    /// complete; NOTICE fallback remains explicitly unframed.
+    pub hub_greeting: Option<ChannelHubGreetingSnapshot>,
     pub notices: Vec<ChannelTranscriptItem>,
     pub last_error: Option<String>,
     pub updated_at_ms: u64,
@@ -1766,22 +1805,50 @@ enum RoomSecretAction {
     },
 }
 
+#[derive(Clone)]
+struct HubGreetingResourceExpectation {
+    announcement_id: [u8; 8],
+    size: usize,
+    sha256: Option<[u8; 32]>,
+    encoding: Option<String>,
+    encoded_bytes: u32,
+    created_at: Instant,
+}
+
+struct HubGreetingResourceInFlight {
+    resource_id: [u8; 32],
+    started_at: Instant,
+}
+
+struct HubGreetingResourceCompletion {
+    link_id: [u8; 16],
+    resource_id: [u8; 32],
+    expectation: HubGreetingResourceExpectation,
+    result: Result<LinkSessionReceivedResource, String>,
+}
+
 struct ActiveSession {
     handle: rns_runtime::link_session::LinkSessionHandle,
     events: mpsc::Receiver<LinkSessionEvent>,
+    resource_offers: mpsc::Receiver<LinkSessionResourceOffer>,
+    resource_offers_open: bool,
     connected_at: Instant,
     source: [u8; 16],
     destination_hash: [u8; 16],
     hub_identity: [u8; 16],
     nickname: String,
     supports_action: bool,
+    supports_resources: bool,
     limits: HubLimits,
     rooms: BTreeMap<String, ChannelRoomSnapshot>,
     directory: ChannelRoomDirectorySnapshot,
     directory_request_deadline: Option<Instant>,
     directory_last_requested_at: Option<Instant>,
-    hub_greeting: Option<ChannelTranscriptItem>,
-    hub_greeting_deadline_ms: u64,
+    hub_greeting: Option<ChannelHubGreetingSnapshot>,
+    hub_greeting_deadline: Instant,
+    hub_greeting_notice_may_continue: bool,
+    greeting_resource_expectation: Option<HubGreetingResourceExpectation>,
+    greeting_resource_in_flight: Option<HubGreetingResourceInFlight>,
     notices: VecDeque<ChannelTranscriptItem>,
     seen_ids: HashSet<[u8; 8]>,
     seen_order: VecDeque<[u8; 8]>,
@@ -2216,6 +2283,8 @@ async fn run_manager(input: ChannelsManagerInput) {
     } = input;
     let source = identity.hash;
     let (connect_update_tx, mut connect_update_rx) = mpsc::channel(CONNECT_UPDATE_BUFFER);
+    let (greeting_resource_completion_tx, mut greeting_resource_completion_rx) =
+        mpsc::channel(GREETING_RESOURCE_COMPLETION_BUFFER);
     let mut active: Option<ActiveSession> = None;
     let mut attempt: u64 = 0;
     let mut connect_cancel: Option<oneshot::Sender<()>> = None;
@@ -2913,6 +2982,7 @@ async fn run_manager(input: ChannelsManagerInput) {
             }
             _ = room_transition_tick.tick() => {
                 if let Some(active) = active.as_mut() {
+                    let now = Instant::now();
                     let mut changed = expire_room_transitions(
                         &mut active.rooms,
                         &mut active.room_activity,
@@ -2920,7 +2990,8 @@ async fn run_manager(input: ChannelsManagerInput) {
                         &activity,
                         now_ms(),
                     );
-                    changed |= expire_directory_request(active, Instant::now());
+                    changed |= expire_directory_request(active, now);
+                    expire_hub_greeting_resource_state(active, now);
                     active.auto_rejoining.retain(|room| {
                         active
                             .rooms
@@ -2957,13 +3028,9 @@ async fn run_manager(input: ChannelsManagerInput) {
                     }
                 }
             }
-            event = async {
-                match active.as_mut() {
-                    Some(session) => session.events.recv().await,
-                    None => pending::<Option<LinkSessionEvent>>().await,
-                }
-            } => {
-                match event {
+            active_input = receive_active_session_input(active.as_mut()) => {
+                match active_input {
+                    ActiveSessionInput::Event(event) => match event {
                     Some(event) => {
                         let outcome = handle_link_event(
                             active.as_mut().expect("active branch"),
@@ -3103,6 +3170,29 @@ async fn run_manager(input: ChannelsManagerInput) {
                         });
                         emit_snapshot(&emitter, &snapshot);
                     }
+                    },
+                    ActiveSessionInput::ResourceOffer(Some(offer)) => {
+                        handle_hub_greeting_resource_offer(
+                            active.as_mut().expect("active resource branch"),
+                            offer,
+                            &greeting_resource_completion_tx,
+                        )
+                        .await;
+                    }
+                    ActiveSessionInput::ResourceOffer(None) => {
+                        if let Some(active) = active.as_mut() {
+                            active.resource_offers_open = false;
+                        }
+                    }
+                }
+            }
+            completion = greeting_resource_completion_rx.recv() => {
+                if let Some(completion) = completion
+                    && let Some(active) = active.as_mut()
+                    && apply_hub_greeting_resource_completion(active, &activity, completion)
+                {
+                    sync_session_snapshot(active, &snapshot);
+                    emit_snapshot(&emitter, &snapshot);
                 }
             }
         }
@@ -3834,23 +3924,33 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                 .clone()
                 .or_else(|| announced_name.clone())
                 .unwrap_or_default();
+            let LinkSession {
+                handle,
+                events,
+                resource_offers,
+            } = session;
             let mut live = ActiveSession {
-                handle: session.handle,
-                events: session.events,
+                handle,
+                events,
+                resource_offers,
+                resource_offers_open: true,
                 connected_at: Instant::now(),
                 source,
                 destination_hash,
                 hub_identity,
                 nickname: nickname.clone(),
                 supports_action: capabilities.actions,
+                supports_resources: capabilities.resource_envelopes,
                 limits: welcome.limits.clone(),
                 rooms: BTreeMap::new(),
                 directory: ChannelRoomDirectorySnapshot::default(),
                 directory_request_deadline: None,
                 directory_last_requested_at: None,
                 hub_greeting: None,
-                hub_greeting_deadline_ms: now_ms()
-                    .saturating_add(HUB_GREETING_WINDOW.as_millis() as u64),
+                hub_greeting_deadline: Instant::now() + HUB_GREETING_WINDOW,
+                hub_greeting_notice_may_continue: false,
+                greeting_resource_expectation: None,
+                greeting_resource_in_flight: None,
                 notices: VecDeque::new(),
                 seen_ids: HashSet::new(),
                 seen_order: VecDeque::new(),
@@ -4234,6 +4334,295 @@ enum LinkEventOutcome {
     },
 }
 
+enum ActiveSessionInput {
+    Event(Option<LinkSessionEvent>),
+    ResourceOffer(Option<LinkSessionResourceOffer>),
+}
+
+async fn receive_active_session_input(active: Option<&mut ActiveSession>) -> ActiveSessionInput {
+    let Some(active) = active else {
+        return pending::<ActiveSessionInput>().await;
+    };
+    if !active.resource_offers_open {
+        return ActiveSessionInput::Event(active.events.recv().await);
+    }
+    let events = &mut active.events;
+    let resource_offers = &mut active.resource_offers;
+    // The Link actor emits the application packet before it emits the
+    // advertisement offer. Prefer that packet when both are ready so the
+    // authenticated RESOURCE_ENVELOPE installs the admission expectation
+    // before the transfer asks for a decision.
+    tokio::select! {
+        biased;
+        event = events.recv() => ActiveSessionInput::Event(event),
+        offer = resource_offers.recv() => ActiveSessionInput::ResourceOffer(offer),
+    }
+}
+
+fn accept_hub_greeting_resource_envelope(
+    active: &mut ActiveSession,
+    envelope: &Envelope,
+    encoded_bytes: u32,
+) -> activity::SourceValidation {
+    active.hub_greeting_notice_may_continue = false;
+    if !active.supports_resources
+        || Instant::now() > active.hub_greeting_deadline
+        || active.greeting_resource_in_flight.is_some()
+    {
+        return activity::SourceValidation::Unsupported;
+    }
+    let expectation = match hub_greeting_resource_expectation(envelope, encoded_bytes) {
+        Ok(expectation) => expectation,
+        Err(validation) => return validation,
+    };
+    if active
+        .greeting_resource_expectation
+        .as_ref()
+        .is_some_and(|pending| pending.announcement_id != expectation.announcement_id)
+    {
+        return activity::SourceValidation::Unsupported;
+    }
+    active.greeting_resource_expectation = Some(expectation);
+    activity::SourceValidation::Accepted
+}
+
+fn hub_greeting_resource_expectation(
+    envelope: &Envelope,
+    encoded_bytes: u32,
+) -> Result<HubGreetingResourceExpectation, activity::SourceValidation> {
+    if envelope.room.is_some() {
+        return Err(activity::SourceValidation::Unsupported);
+    }
+    let body = rrc::parse_resource_envelope(envelope).map_err(|error| {
+        tracing::debug!(
+            reason = %error,
+            "ignoring malformed channel hub greeting resource envelope"
+        );
+        activity::SourceValidation::Malformed
+    })?;
+    let size = usize::try_from(body.size).map_err(|_| activity::SourceValidation::Unsupported)?;
+    if body.kind != "motd"
+        || size > HUB_GREETING_RESOURCE_MAX_BYTES
+        || body
+            .encoding
+            .as_deref()
+            .is_some_and(|encoding| !encoding.eq_ignore_ascii_case("utf-8"))
+    {
+        return Err(activity::SourceValidation::Unsupported);
+    }
+    Ok(HubGreetingResourceExpectation {
+        announcement_id: body.id,
+        size,
+        sha256: body.sha256,
+        encoding: body.encoding,
+        encoded_bytes,
+        created_at: Instant::now(),
+    })
+}
+
+fn greeting_resource_offer_matches(
+    active: &ActiveSession,
+    offer: &LinkSessionResourceOffer,
+    expectation: &HubGreetingResourceExpectation,
+) -> bool {
+    let now = Instant::now();
+    offer.link_id() == active.handle.link_id()
+        && active.greeting_resource_in_flight.is_none()
+        && now <= active.hub_greeting_deadline
+        && now.duration_since(expectation.created_at) <= HUB_GREETING_RESOURCE_TIMEOUT
+        && offer.data_size() == expectation.size
+        && offer.transfer_size() > 0
+        && offer.transfer_size()
+            <= expectation
+                .size
+                .saturating_add(HUB_GREETING_RESOURCE_TRANSFER_SLACK)
+        && offer.total_segments() == 1
+        && offer.request_id().is_none()
+        && !offer.is_request()
+        && !offer.is_response()
+}
+
+async fn reject_greeting_resource_offer(offer: LinkSessionResourceOffer, reason: &'static str) {
+    if let Err(error) = offer.reject().await {
+        tracing::debug!(
+            reason,
+            error = %error,
+            "failed to reject channel Resource offer"
+        );
+    }
+}
+
+async fn handle_hub_greeting_resource_offer(
+    active: &mut ActiveSession,
+    offer: LinkSessionResourceOffer,
+    completion_tx: &mpsc::Sender<HubGreetingResourceCompletion>,
+) {
+    let Some(expectation) = active.greeting_resource_expectation.as_ref() else {
+        reject_greeting_resource_offer(offer, "no_authenticated_motd_expectation").await;
+        return;
+    };
+    if !greeting_resource_offer_matches(active, &offer, expectation) {
+        reject_greeting_resource_offer(offer, "motd_offer_failed_admission").await;
+        return;
+    }
+
+    let expectation = active
+        .greeting_resource_expectation
+        .take()
+        .expect("validated greeting resource expectation");
+    let link_id = offer.link_id();
+    let resource_id = offer.resource_id();
+    match offer.accept().await {
+        Ok(resource) => {
+            active.greeting_resource_in_flight = Some(HubGreetingResourceInFlight {
+                resource_id,
+                started_at: Instant::now(),
+            });
+            let completion_tx = completion_tx.clone();
+            tokio::spawn(async move {
+                let result = resource
+                    .concluded()
+                    .await
+                    .map_err(|error| error.to_string());
+                let _ = completion_tx
+                    .send(HubGreetingResourceCompletion {
+                        link_id,
+                        resource_id,
+                        expectation,
+                        result,
+                    })
+                    .await;
+            });
+        }
+        Err(error) => {
+            tracing::debug!(
+                error = %error,
+                "failed to accept authenticated channel hub greeting Resource"
+            );
+            if expectation.created_at.elapsed() <= HUB_GREETING_RESOURCE_TIMEOUT {
+                active.greeting_resource_expectation = Some(expectation);
+            }
+        }
+    }
+}
+
+fn apply_hub_greeting_resource_completion(
+    active: &mut ActiveSession,
+    activity_recorder: &ChannelsActivity,
+    completion: HubGreetingResourceCompletion,
+) -> bool {
+    let Some(in_flight) = active.greeting_resource_in_flight.as_ref() else {
+        return false;
+    };
+    if completion.link_id != active.handle.link_id()
+        || completion.resource_id != in_flight.resource_id
+    {
+        return false;
+    }
+    let timed_out = in_flight.started_at.elapsed() > HUB_GREETING_RESOURCE_TIMEOUT;
+    active.greeting_resource_in_flight = None;
+    if timed_out {
+        return false;
+    }
+    let received = match completion.result {
+        Ok(received) => received,
+        Err(error) => {
+            tracing::debug!(
+                announcement_id = %hex::encode(completion.expectation.announcement_id),
+                reason = %error,
+                "channel hub greeting Resource did not conclude"
+            );
+            return false;
+        }
+    };
+    if received.link_id != completion.link_id
+        || received.resource_id != completion.resource_id
+        || received.data.len() != completion.expectation.size
+        || received.data.is_empty()
+        || received.data.len() > HUB_GREETING_RESOURCE_MAX_BYTES
+        || received.metadata.is_some()
+        || received.total_segments != 1
+        || received.request_id.is_some()
+        || received.is_request
+        || received.is_response
+    {
+        tracing::debug!(
+            announcement_id = %hex::encode(completion.expectation.announcement_id),
+            "channel hub greeting Resource conclusion failed structural validation"
+        );
+        return false;
+    }
+    let digest = rns_crypto::sha::sha256(&received.data);
+    if completion
+        .expectation
+        .sha256
+        .is_some_and(|expected| expected != digest)
+    {
+        tracing::debug!(
+            announcement_id = %hex::encode(completion.expectation.announcement_id),
+            "channel hub greeting Resource digest did not match its envelope"
+        );
+        return false;
+    }
+    if completion
+        .expectation
+        .encoding
+        .as_deref()
+        .is_some_and(|encoding| !encoding.eq_ignore_ascii_case("utf-8"))
+    {
+        return false;
+    }
+    let Ok(text) = String::from_utf8(received.data) else {
+        tracing::debug!(
+            announcement_id = %hex::encode(completion.expectation.announcement_id),
+            "channel hub greeting Resource is not valid UTF-8"
+        );
+        return false;
+    };
+    active.hub_greeting_notice_may_continue = false;
+    active.greeting_resource_expectation = None;
+    active.hub_greeting = Some(ChannelHubGreetingSnapshot {
+        text,
+        received_at_ms: now_ms(),
+        source_hash: hex::encode(active.hub_identity),
+        delivery: ChannelHubGreetingDelivery::Resource,
+        completeness: ChannelHubGreetingCompleteness::Complete,
+    });
+    record_session_spontaneous(
+        activity_recorder,
+        active.activity,
+        activity::ChannelSessionTransition::GreetingObserved {
+            encoded_bytes: completion.expectation.encoded_bytes,
+        },
+    );
+    true
+}
+
+fn expire_hub_greeting_resource_state(active: &mut ActiveSession, now: Instant) {
+    if active
+        .greeting_resource_expectation
+        .as_ref()
+        .is_some_and(|pending| {
+            now > active.hub_greeting_deadline
+                || now.duration_since(pending.created_at) > HUB_GREETING_RESOURCE_TIMEOUT
+        })
+    {
+        active.greeting_resource_expectation = None;
+    }
+    if active
+        .greeting_resource_in_flight
+        .as_ref()
+        .is_some_and(|in_flight| {
+            now.duration_since(in_flight.started_at) > HUB_GREETING_RESOURCE_TIMEOUT
+        })
+    {
+        active.greeting_resource_in_flight = None;
+    }
+    if now > active.hub_greeting_deadline {
+        active.hub_greeting_notice_may_continue = false;
+    }
+}
+
 async fn handle_link_event(
     active: &mut ActiveSession,
     activity_recorder: &ChannelsActivity,
@@ -4315,6 +4704,7 @@ async fn handle_envelope(
             | MessageType::Parted
             | MessageType::Ping
             | MessageType::Error
+            | MessageType::ResourceEnvelope
     ) && envelope.source != active.hub_identity
     {
         activity_recorder.record_spontaneous(move || {
@@ -4349,10 +4739,7 @@ async fn handle_envelope(
         });
         return;
     }
-    if matches!(
-        envelope.message_type,
-        MessageType::ResourceEnvelope | MessageType::Unknown(_)
-    ) {
+    if matches!(envelope.message_type, MessageType::Unknown(_)) {
         activity_recorder.record_spontaneous(move || {
             activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
                 hub: session.hub,
@@ -4365,6 +4752,29 @@ async fn handle_envelope(
             })
         });
         return;
+    }
+    if envelope.message_type == MessageType::ResourceEnvelope {
+        let validation = accept_hub_greeting_resource_envelope(active, &envelope, encoded_bytes);
+        activity_recorder.record_spontaneous(move || {
+            activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
+                hub: session.hub,
+                room,
+                message: Some(message),
+                envelope_kind,
+                encoded_bytes,
+                validation,
+                correlation_id,
+            })
+        });
+        return;
+    }
+    let preserves_notice_burst =
+        matches!(envelope.message_type, MessageType::Ping | MessageType::Pong)
+            || (envelope.message_type == MessageType::Notice
+                && envelope.room.is_none()
+                && envelope.source == active.hub_identity);
+    if !preserves_notice_burst {
+        active.hub_greeting_notice_may_continue = false;
     }
     activity_recorder.record_spontaneous(move || {
         activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
@@ -4402,6 +4812,11 @@ async fn handle_envelope(
                 .get(&rrc::CAP_ACTION)
                 .copied()
                 .unwrap_or(active.supports_action);
+            active.supports_resources = welcome
+                .capabilities
+                .get(&rrc::CAP_RESOURCE_ENVELOPE)
+                .copied()
+                .unwrap_or(active.supports_resources);
             if welcome.limits != HubLimits::default() {
                 active.limits = welcome.limits;
             }
@@ -4426,7 +4841,9 @@ async fn handle_envelope(
         MessageType::Message | MessageType::Notice | MessageType::Action => {
             if envelope.message_type == MessageType::Notice {
                 match apply_room_directory_notice(active, &envelope) {
-                    RoomDirectoryNoticeHandling::AppliedConsumed => {}
+                    RoomDirectoryNoticeHandling::AppliedConsumed => {
+                        active.hub_greeting_notice_may_continue = false;
+                    }
                     RoomDirectoryNoticeHandling::AppliedVisible => {
                         append_content(active, activity_recorder, &envelope, encoded_bytes);
                     }
@@ -5129,17 +5546,45 @@ fn append_content(
             item,
         );
     } else if envelope.message_type == MessageType::Notice {
-        if active.hub_greeting.is_none()
-            && envelope.source == active.hub_identity
-            && now_ms() <= active.hub_greeting_deadline_ms
+        let within_greeting_window = Instant::now() <= active.hub_greeting_deadline;
+        let authenticated_roomless_notice =
+            envelope.source == active.hub_identity && within_greeting_window;
+        let continuing_unframed_greeting = active.hub_greeting_notice_may_continue
+            && active
+                .hub_greeting
+                .as_ref()
+                .is_some_and(|greeting| greeting.delivery == ChannelHubGreetingDelivery::Notice);
+        if authenticated_roomless_notice
+            && active.greeting_resource_in_flight.is_none()
+            && (active.hub_greeting.is_none() || continuing_unframed_greeting)
         {
-            active.hub_greeting = Some(item);
-            record_session_spontaneous(
-                activity_recorder,
-                active.activity,
-                activity::ChannelSessionTransition::GreetingObserved { encoded_bytes },
-            );
+            // A NOTICE fallback has no final-fragment marker. Coalesce only
+            // when the previous packet was close enough to the Link MDU to
+            // plausibly be a reference-hub chunk; otherwise the next NOTICE
+            // remains an ordinary hub notice.
+            let first_fragment = active.hub_greeting.is_none();
+            if first_fragment {
+                active.greeting_resource_expectation = None;
+                active.hub_greeting = Some(ChannelHubGreetingSnapshot {
+                    text: text.to_string(),
+                    received_at_ms: now_ms(),
+                    source_hash: hex::encode(active.hub_identity),
+                    delivery: ChannelHubGreetingDelivery::Notice,
+                    completeness: ChannelHubGreetingCompleteness::Unframed,
+                });
+                record_session_spontaneous(
+                    activity_recorder,
+                    active.activity,
+                    activity::ChannelSessionTransition::GreetingObserved { encoded_bytes },
+                );
+            } else if let Some(greeting) = active.hub_greeting.as_mut() {
+                greeting.text.push_str(text);
+            }
+            active.hub_greeting_notice_may_continue = (encoded_bytes as usize)
+                .saturating_add(HUB_GREETING_NOTICE_MDU_SLACK)
+                >= active.handle.mdu();
         } else {
+            active.hub_greeting_notice_may_continue = false;
             append_bounded(&mut active.notices, item, NOTICE_LIMIT);
         }
     }
@@ -6159,6 +6604,7 @@ fn sync_hub_service_projection(state: &mut ChannelsSnapshot) {
                 })
                 .collect(),
             directory: state.directory.clone(),
+            greeting: state.hub_greeting.clone(),
             last_error: state.last_error.clone(),
         };
         client_hub_mut(state, &observed_hub.destination_hash).observed = Some(observed);
@@ -6333,6 +6779,69 @@ mod tests {
         fn notify(&self, notification: NativeNotification) {
             self.seen.lock().unwrap().push(notification);
         }
+    }
+
+    #[test]
+    fn hub_greeting_resource_envelopes_are_narrowly_admitted() {
+        let mut envelope = Envelope::new(MessageType::ResourceEnvelope, [0x44; 16]);
+        envelope.body = Some(rrc::resource_envelope_body(&rrc::ResourceEnvelopeBody {
+            id: [0x11; 8],
+            kind: "motd".into(),
+            size: 1_024,
+            sha256: Some([0x22; 32]),
+            encoding: Some("UTF-8".into()),
+        }));
+        let admitted = match hub_greeting_resource_expectation(&envelope, 91) {
+            Ok(admitted) => admitted,
+            Err(_) => panic!("valid authenticated motd envelope should be admitted"),
+        };
+        assert_eq!(admitted.announcement_id, [0x11; 8]);
+        assert_eq!(admitted.size, 1_024);
+        assert_eq!(admitted.sha256, Some([0x22; 32]));
+        assert_eq!(admitted.encoded_bytes, 91);
+
+        envelope.room = Some("general".into());
+        assert!(matches!(
+            hub_greeting_resource_expectation(&envelope, 91),
+            Err(activity::SourceValidation::Unsupported)
+        ));
+        envelope.room = None;
+
+        for body in [
+            rrc::ResourceEnvelopeBody {
+                id: [0x11; 8],
+                kind: "notice".into(),
+                size: 1_024,
+                sha256: None,
+                encoding: Some("utf-8".into()),
+            },
+            rrc::ResourceEnvelopeBody {
+                id: [0x11; 8],
+                kind: "motd".into(),
+                size: (HUB_GREETING_RESOURCE_MAX_BYTES as u64) + 1,
+                sha256: None,
+                encoding: Some("utf-8".into()),
+            },
+            rrc::ResourceEnvelopeBody {
+                id: [0x11; 8],
+                kind: "motd".into(),
+                size: 1_024,
+                sha256: None,
+                encoding: Some("gzip".into()),
+            },
+        ] {
+            envelope.body = Some(rrc::resource_envelope_body(&body));
+            assert!(matches!(
+                hub_greeting_resource_expectation(&envelope, 91),
+                Err(activity::SourceValidation::Unsupported)
+            ));
+        }
+
+        envelope.body = Some(Value::Text("not a resource envelope".into()));
+        assert!(matches!(
+            hub_greeting_resource_expectation(&envelope, 91),
+            Err(activity::SourceValidation::Malformed)
+        ));
     }
 
     #[test]
@@ -7057,6 +7566,10 @@ mod tests {
 
     #[tokio::test]
     async fn hosted_hub_and_client_share_one_runtime_through_an_authenticated_link() {
+        let greeting =
+            "Welcome to the local test hub.\nRead the field rules before transmitting.\n"
+                .repeat(16);
+        assert!(greeting.len() > 512);
         let (actor, transport_tx) = TransportActor::new();
         let actor_task = tokio::spawn(actor.run());
         let pool = r2d2::Pool::builder()
@@ -7078,6 +7591,7 @@ mod tests {
             hub_identity,
             ChannelHubConfig {
                 hub_name: "Local test hub".into(),
+                greeting: Some(greeting.clone()),
                 ping_interval_secs: 1,
                 ..ChannelHubConfig::default()
             },
@@ -7106,8 +7620,13 @@ mod tests {
             )
             .await
             .unwrap();
-        let active =
-            wait_snapshot(&manager, |snapshot| snapshot.phase == ChannelsPhase::Active).await;
+        let active = wait_snapshot(&manager, |snapshot| {
+            snapshot.phase == ChannelsPhase::Active
+                && snapshot.hub_greeting.as_ref().is_some_and(|observed| {
+                    observed.delivery == ChannelHubGreetingDelivery::Resource
+                })
+        })
+        .await;
         assert_eq!(
             active.hub.as_ref().and_then(|hub| hub.name.as_deref()),
             Some("Local test hub")
@@ -7121,6 +7640,19 @@ mod tests {
         assert_eq!(
             service_hub.observed.as_ref().map(|observed| observed.phase),
             Some(ChannelsPhase::Active)
+        );
+        let observed_greeting = active.hub_greeting.as_ref().unwrap();
+        assert_eq!(observed_greeting.text, greeting);
+        assert_eq!(
+            observed_greeting.completeness,
+            ChannelHubGreetingCompleteness::Complete
+        );
+        assert_eq!(
+            service_hub
+                .observed
+                .as_ref()
+                .and_then(|observed| observed.greeting.as_ref()),
+            Some(observed_greeting)
         );
 
         // Let the otherwise-idle same-runtime session complete at least one
@@ -8371,12 +8903,29 @@ mod tests {
         ));
         send_server_envelope(&delivery_tx, &mut responder, &greeting).await;
         let greeting_snapshot = wait_snapshot(&manager, |snapshot| {
-            snapshot.hub_greeting.as_ref().is_some_and(|item| {
-                item.text == "Welcome to the test hub. /join general for the main room."
+            snapshot.hub_greeting.as_ref().is_some_and(|greeting| {
+                greeting.text == "Welcome to the test hub. /join general for the main room."
             })
         })
         .await;
         assert!(greeting_snapshot.notices.is_empty());
+        let observed_greeting = greeting_snapshot.hub_greeting.as_ref().unwrap();
+        assert_eq!(
+            observed_greeting.delivery,
+            ChannelHubGreetingDelivery::Notice
+        );
+        assert_eq!(
+            observed_greeting.completeness,
+            ChannelHubGreetingCompleteness::Unframed
+        );
+        assert_eq!(
+            greeting_snapshot
+                .hubs
+                .first()
+                .and_then(|hub| hub.observed.as_ref())
+                .and_then(|observed| observed.greeting.as_ref()),
+            Some(observed_greeting)
+        );
 
         let mut hub_notice = Envelope::new(MessageType::Notice, hub_identity.hash);
         hub_notice.body = Some(Value::Text("Maintenance window at 04:00".into()));

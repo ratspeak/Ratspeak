@@ -283,7 +283,13 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(runtime.contains("parse_rrcd_room_status"));
     assert!(runtime.contains("hub-attested observation of its source"));
     assert!(runtime.contains("room.members_complete = false"));
-    assert!(runtime.contains("pub hub_greeting: Option<ChannelTranscriptItem>"));
+    assert!(runtime.contains("pub struct ChannelHubGreetingSnapshot"));
+    assert!(runtime.contains("pub hub_greeting: Option<ChannelHubGreetingSnapshot>"));
+    assert!(runtime.contains("pub greeting: Option<ChannelHubGreetingSnapshot>"));
+    assert!(runtime.contains("HUB_GREETING_RESOURCE_MAX_BYTES: usize = 16 * 1024"));
+    assert!(runtime.contains("handle_hub_greeting_resource_offer"));
+    assert!(runtime.contains("apply_hub_greeting_resource_completion"));
+    assert!(runtime.contains("offer.total_segments() == 1"));
     assert!(runtime.contains("pub generation: u64"));
     assert!(runtime.contains("pub revision: u64"));
     assert!(runtime.contains("pub const CHANNELS_CONNECTION_BUDGET: usize = 1"));
@@ -406,7 +412,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(db.contains("pub fn mark_channel_room_read"));
     assert!(db.contains("pub fn set_channel_room_notification_level"));
     assert!(db.contains("pub fn get_channel_unread_summary"));
-    assert!(channels_js.contains("service_model_version: 2"));
+    assert!(channels_js.contains("service_model_version: 3"));
     assert!(channels_js.contains("connection_budget: 1"));
     assert!(channels_js.contains("selected_hub_destination: null"));
     assert!(channels_js.contains("durability: {"));

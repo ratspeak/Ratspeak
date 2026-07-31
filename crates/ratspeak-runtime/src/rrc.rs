@@ -143,6 +143,7 @@ impl Envelope {
 
     pub fn hello(source: [u8; 16], nickname: &str, client_version: &str) -> Self {
         let capabilities = integer_map(vec![
+            (CAP_RESOURCE_ENVELOPE, Value::Bool(true)),
             (CAP_ACTION, Value::Bool(true)),
             (CAP_DIRECT_NOTICE, Value::Bool(true)),
         ]);
@@ -610,6 +611,10 @@ mod tests {
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded, hello);
         assert!(encoded.len() < 128);
+        let capabilities = hello_capabilities(&decoded);
+        for capability in [CAP_RESOURCE_ENVELOPE, CAP_ACTION, CAP_DIRECT_NOTICE] {
+            assert_eq!(capabilities.get(&capability), Some(&true));
+        }
     }
 
     #[test]
@@ -822,7 +827,10 @@ mod tests {
         assert_eq!(envelope.nickname.as_deref(), Some("gui rat"));
         // A spec-compliant HELLO still parses its map.
         let ratspeak = Envelope::hello([0x44; 16], "rat", "1.0.0");
-        assert_eq!(hello_capabilities(&ratspeak).get(&CAP_ACTION), Some(&true));
+        let capabilities = hello_capabilities(&ratspeak);
+        assert_eq!(capabilities.get(&CAP_RESOURCE_ENVELOPE), Some(&true));
+        assert_eq!(capabilities.get(&CAP_ACTION), Some(&true));
+        assert_eq!(capabilities.get(&CAP_DIRECT_NOTICE), Some(&true));
     }
 
     #[test]

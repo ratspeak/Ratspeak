@@ -4,7 +4,7 @@
 
 var channelsSnapshot = {
     protocol_version: '0.1.3',
-    service_model_version: 2,
+    service_model_version: 3,
     generation: 0,
     revision: 0,
     connection_budget: 1,
@@ -690,6 +690,7 @@ function channelsApplySnapshot(snapshot) {
     var oldHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
     channelsSnapshot = snapshot;
     if (!Array.isArray(channelsSnapshot.rooms)) channelsSnapshot.rooms = [];
+    if (!Array.isArray(channelsSnapshot.hubs)) channelsSnapshot.hubs = [];
     if (!channelsSnapshot.directory) {
         channelsSnapshot.directory = {
             phase: 'idle',
@@ -704,6 +705,11 @@ function channelsApplySnapshot(snapshot) {
         channelsSnapshot.directory.rooms = [];
     }
     if (!channelsSnapshot.hub_greeting) channelsSnapshot.hub_greeting = null;
+    channelsSnapshot.hubs.forEach(function(hub) {
+        if (hub && hub.observed && !hub.observed.greeting) {
+            hub.observed.greeting = null;
+        }
+    });
     if (!Array.isArray(channelsSnapshot.notices)) channelsSnapshot.notices = [];
     if (!channelsSnapshot.history) {
         channelsSnapshot.history = {
