@@ -107,7 +107,8 @@ assert.strictEqual(
 );
 assert.strictEqual(
     presentationContext.meta({ destination_hash: 'abcd', saved: true, nearby: true }),
-    'short:abcd'
+    'Saved · short:abcd',
+    'saved identity must remain visible even while a hub is also nearby'
 );
 
 assert(indexSource.indexOf('Available hubs') !== -1,

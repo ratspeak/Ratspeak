@@ -129,6 +129,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
             .expect("channels notification route test");
     let share_test = read_source(root.join("dashboard/scripts/test_channels_share.js"))
         .expect("channels share test");
+    let hub_switcher_test =
+        read_source(root.join("dashboard/scripts/test_channels_hub_switcher.js"))
+            .expect("channels hub switcher test");
     let tauri_events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri event bridge");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
@@ -142,6 +145,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(!index.contains("Group conversations"));
     assert!(!index.contains("channels-sidebar-subtitle"));
     assert!(index.contains("Available hubs"));
+    assert!(index.contains("id=\"channel-hub-switcher-btn\""));
+    assert!(index.contains("aria-haspopup=\"dialog\""));
     assert!(index.contains("id=\"channel-owned-hub\""));
     assert!(index.contains("id=\"channel-owned-hub-manage\""));
     assert!(!index.contains("channels-refresh-btn"));
@@ -162,6 +167,22 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("function _channelsBuildHubMark"));
     assert!(channels_js.contains("function _channelsHubDistance"));
     assert!(channels_js.contains("function channelsConnectToHub"));
+    assert!(channels_js.contains("function _channelsHubSwitcherModel"));
+    assert!(channels_js.contains("function _channelsHubConnectMode"));
+    assert!(channels_js.contains("function channelsOpenHubSwitcher"));
+    assert!(channels_js.contains("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)"));
+    assert!(channels_js.contains("Ratspeak keeps one live hub at a time"));
+    assert!(channels_js.contains("Saved channels and local history stay on this device"));
+    assert!(channels_js.contains("list.setAttribute('aria-live', 'polite')"));
+    assert!(channels_js.contains("list.setAttribute('aria-busy', 'true')"));
+    assert!(channels_js.contains("titleElement.textContent = 'Switch channel hub'"));
+    assert!(channels_js.contains("switching: connectMode.kind === 'switch'"));
+    assert!(channels_js.contains("'Could not switch channel hubs.'"));
+    assert!(channels_js.contains("openedEpoch === _channelsHistoryEpoch"));
+    assert!(
+        channels_js.contains("openedGeneration === (Number(channelsSnapshot.generation) || 0)")
+    );
+    assert!(channels_js.contains("dismissHubSwitcher()"));
     assert!(channels_js.contains("channelHubOwnDestinationHash"));
     assert!(!channels_js.contains("hub.nearby ? 'Nearby' : 'Recent'"));
     assert!(channels_js.contains("TextEncoder"));
@@ -175,6 +196,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(!channels_js.contains("function _channelsInitials"));
     assert!(channels_css.contains(".channel-hub-row-mark"));
     assert!(channels_css.contains(".channel-hub-row-distance"));
+    assert!(channels_css.contains(".channel-hub-switcher-btn"));
+    assert!(channels_css.contains(".channel-hub-switcher-list .channel-hub-row.current"));
+    assert!(channels_css.contains(".channel-hub-switch-impact"));
     assert!(channels_js.contains("function _channelsBuildHubNotice"));
     assert!(channels_js.contains("function _channelsBuildHubGreeting"));
     assert!(channels_js.contains("function _channelsGroupPresenceEvents"));
@@ -400,6 +424,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_css.contains(".channel-share-qr-shell"));
     assert!(channels_css.contains(".channel-share-input"));
     assert!(share_test.contains("channel share tests passed"));
+    assert!(hub_switcher_test.contains("channel hub switcher tests passed"));
 }
 
 #[test]

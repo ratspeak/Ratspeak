@@ -11,7 +11,7 @@
          injects pixel values via evaluateJavascript; desktop falls back to 0. -->
     <title>Ratspeak - Dashboard</title>
     <link rel="stylesheet" href="/static/fonts/fonts.css">
-    <link rel="stylesheet" href="/static/style.css?v=1.0.28">
+    <link rel="stylesheet" href="/static/style.css?v=1.0.29">
 </head>
 <body class="checking-setup">
 
@@ -563,11 +563,16 @@
                     </div>
 
                     <div class="channel-hub-strip" id="channel-hub-strip" data-phase="offline">
-                        <span class="channel-live-beacon" aria-hidden="true"></span>
-                        <div class="channel-hub-strip-copy">
-                            <strong id="channel-hub-strip-title">Not connected</strong>
-                            <span id="channel-hub-strip-meta">Choose a hub to begin</span>
-                        </div>
+                        <button class="channel-hub-switcher-btn" id="channel-hub-switcher-btn" type="button" aria-haspopup="dialog" aria-label="Choose a channel hub">
+                            <span class="channel-live-beacon" aria-hidden="true"></span>
+                            <span class="channel-hub-strip-copy">
+                                <strong id="channel-hub-strip-title">Not connected</strong>
+                                <span id="channel-hub-strip-meta">Choose a hub to begin</span>
+                            </span>
+                            <span class="channel-hub-switcher-chevron" aria-hidden="true">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                            </span>
+                        </button>
                         <button class="nr-btn nr-btn-ghost channels-icon-btn channel-hub-menu-btn" id="channel-hub-menu-btn" type="button" title="Hub options" aria-label="Channel hub options" hidden>
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
                         </button>
@@ -1848,7 +1853,7 @@
 <script src="/static/js/vendor/jsQR.js"></script>
 <script src="/static/js/contact_card.js"></script>
 <script src="/static/js/lxmf.js"></script>
-<script src="/static/js/channels.js?v=1.0.33"></script>
+<script src="/static/js/channels.js?v=1.0.34"></script>
 <script src="/static/js/channel_hub.js?v=1.0.29"></script>
 <script src="/static/js/propagation.js"></script>
 <script src="/static/js/settings.js"></script>
