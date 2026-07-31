@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 35;
+const SCHEMA_VERSION: i64 = 36;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -325,9 +325,9 @@ CREATE TABLE IF NOT EXISTS identity_activity (
 );
 CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
 
--- Channels persists connection conveniences, never live room traffic. Room
--- membership and transcripts remain in the runtime and disappear with Link
--- teardown.
+-- Channels persists user intent and connection conveniences, never observed
+-- room membership or traffic. desired_* is the durable scheduler input;
+-- actual Link and JOIN state remains runtime-owned.
 CREATE TABLE IF NOT EXISTS channel_hubs (
     identity_id       TEXT NOT NULL,
     destination_hash  TEXT NOT NULL,
@@ -335,6 +335,8 @@ CREATE TABLE IF NOT EXISTS channel_hubs (
     nickname          TEXT NOT NULL DEFAULT '',
     added_at           REAL NOT NULL,
     last_connected    REAL NOT NULL DEFAULT 0,
+    desired_connected INTEGER NOT NULL DEFAULT 0
+        CHECK (desired_connected IN (0, 1)),
     PRIMARY KEY (identity_id, destination_hash),
     FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
 );
@@ -345,6 +347,8 @@ CREATE TABLE IF NOT EXISTS channel_rooms (
     room_name            TEXT NOT NULL,
     added_at              REAL NOT NULL,
     last_joined           REAL NOT NULL DEFAULT 0,
+    desired_joined        INTEGER NOT NULL DEFAULT 0
+        CHECK (desired_joined IN (0, 1)),
     PRIMARY KEY (identity_id, hub_destination_hash, room_name),
     FOREIGN KEY (identity_id, hub_destination_hash)
         REFERENCES channel_hubs(identity_id, destination_hash) ON DELETE CASCADE
@@ -352,6 +356,10 @@ CREATE TABLE IF NOT EXISTS channel_rooms (
 
 CREATE INDEX IF NOT EXISTS idx_channel_hubs_identity_recent
     ON channel_hubs(identity_id, last_connected DESC);
+-- The first scheduler deliberately budgets one live hub. Enforce that in the
+-- durable layer so concurrent callers or a crash cannot create two winners.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_hubs_identity_desired
+    ON channel_hubs(identity_id) WHERE desired_connected = 1;
 CREATE INDEX IF NOT EXISTS idx_channel_rooms_identity_hub
     ON channel_rooms(identity_id, hub_destination_hash, room_name);
 
@@ -1409,6 +1417,38 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
                 UPDATE schema_version SET version = 35;",
             )?;
             tracing::info!("Migrated to schema version 35 (RRC hub registry)");
+            Ok(())
+        })?;
+    }
+
+    if from_version < 36 {
+        migration_step(conn, 36, |conn| {
+            if table_exists(conn, "channel_hubs")? {
+                let columns = get_column_names(conn, "channel_hubs").unwrap_or_default();
+                if !columns.iter().any(|column| column == "desired_connected") {
+                    conn.execute_batch(
+                        "ALTER TABLE channel_hubs
+                         ADD COLUMN desired_connected INTEGER NOT NULL DEFAULT 0
+                         CHECK (desired_connected IN (0, 1));",
+                    )?;
+                }
+                conn.execute_batch(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_hubs_identity_desired
+                     ON channel_hubs(identity_id) WHERE desired_connected = 1;",
+                )?;
+            }
+            if table_exists(conn, "channel_rooms")? {
+                let columns = get_column_names(conn, "channel_rooms").unwrap_or_default();
+                if !columns.iter().any(|column| column == "desired_joined") {
+                    conn.execute_batch(
+                        "ALTER TABLE channel_rooms
+                         ADD COLUMN desired_joined INTEGER NOT NULL DEFAULT 0
+                         CHECK (desired_joined IN (0, 1));",
+                    )?;
+                }
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 36;")?;
+            tracing::info!("Migrated to schema version 36 (Channels desired state)");
             Ok(())
         })?;
     }
@@ -2723,6 +2763,8 @@ pub struct SavedChannelHub {
     pub nickname: String,
     pub added_at: f64,
     pub last_connected: f64,
+    /// Durable scheduler intent, distinct from an observed live Link.
+    pub desired_connected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -2731,6 +2773,8 @@ pub struct SavedChannelRoom {
     pub room_name: String,
     pub added_at: f64,
     pub last_joined: f64,
+    /// Durable scheduler intent, distinct from hub-confirmed membership.
+    pub desired_joined: bool,
 }
 
 pub fn list_saved_channel_hubs(
@@ -2740,7 +2784,8 @@ pub fn list_saved_channel_hubs(
     let conn = pool.get().map_err(|error| error.to_string())?;
     let mut statement = conn
         .prepare(
-            "SELECT destination_hash, label, nickname, added_at, last_connected
+            "SELECT destination_hash, label, nickname, added_at, last_connected,
+                    desired_connected
              FROM channel_hubs
              WHERE identity_id = ?1
              ORDER BY last_connected DESC, label COLLATE NOCASE, destination_hash",
@@ -2754,6 +2799,7 @@ pub fn list_saved_channel_hubs(
                 nickname: row.get(2)?,
                 added_at: row.get(3)?,
                 last_connected: row.get(4)?,
+                desired_connected: row.get::<_, i64>(5)? != 0,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -2793,6 +2839,41 @@ pub fn save_channel_hub(
     )
     .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// Persist the one-hub scheduler target without conflating it with an
+/// observed connection. Selecting a hub clears the previous winner in the
+/// same transaction; the partial unique index is the final concurrency guard.
+pub fn set_channel_hub_desired(
+    pool: &DbPool,
+    identity_id: &str,
+    destination_hash: &str,
+    nickname: &str,
+    desired: bool,
+) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    if desired {
+        tx.execute(
+            "UPDATE channel_hubs SET desired_connected = 0
+             WHERE identity_id = ?1 AND desired_connected != 0",
+            params![identity_id],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    let now = now_ts();
+    tx.execute(
+        "INSERT INTO channel_hubs
+            (identity_id, destination_hash, label, nickname, added_at,
+             last_connected, desired_connected)
+         VALUES (?1, ?2, '', ?3, ?4, 0, ?5)
+         ON CONFLICT(identity_id, destination_hash) DO UPDATE SET
+            nickname = excluded.nickname,
+            desired_connected = excluded.desired_connected",
+        params![identity_id, destination_hash, nickname, now, desired as i64],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())
 }
 
 /// Rename an identity and retire the superseded name from its saved hub
@@ -3091,7 +3172,8 @@ pub fn list_saved_channel_rooms(
     let conn = pool.get().map_err(|error| error.to_string())?;
     let mut statement = conn
         .prepare(
-            "SELECT hub_destination_hash, room_name, added_at, last_joined
+            "SELECT hub_destination_hash, room_name, added_at, last_joined,
+                    desired_joined
              FROM channel_rooms
              WHERE identity_id = ?1 AND hub_destination_hash = ?2
              ORDER BY last_joined DESC, room_name COLLATE NOCASE",
@@ -3104,6 +3186,40 @@ pub fn list_saved_channel_rooms(
                 room_name: row.get(1)?,
                 added_at: row.get(2)?,
                 last_joined: row.get(3)?,
+                desired_joined: row.get::<_, i64>(4)? != 0,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+/// Load all remembered rooms for one identity in one query. The service-state
+/// snapshot is hub-keyed, so doing one query per saved hub would make startup
+/// cost grow quadratically with a user's community list.
+pub fn list_saved_channel_rooms_for_identity(
+    pool: &DbPool,
+    identity_id: &str,
+) -> Result<Vec<SavedChannelRoom>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT hub_destination_hash, room_name, added_at, last_joined,
+                    desired_joined
+             FROM channel_rooms
+             WHERE identity_id = ?1
+             ORDER BY hub_destination_hash, last_joined DESC,
+                      room_name COLLATE NOCASE",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![identity_id], |row| {
+            Ok(SavedChannelRoom {
+                hub_destination_hash: row.get(0)?,
+                room_name: row.get(1)?,
+                added_at: row.get(2)?,
+                last_joined: row.get(3)?,
+                desired_joined: row.get::<_, i64>(4)? != 0,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -3139,6 +3255,37 @@ pub fn save_channel_room(
     )
     .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// Persist desired room membership independently from the last JOIN observed.
+/// A failed or disconnected session can therefore retain honest user intent
+/// without claiming that the hub currently considers the identity a member.
+pub fn set_channel_room_desired(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    desired: bool,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let now = now_ts();
+    conn.execute(
+        "INSERT INTO channel_rooms
+            (identity_id, hub_destination_hash, room_name, added_at,
+             last_joined, desired_joined)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5)
+         ON CONFLICT(identity_id, hub_destination_hash, room_name) DO UPDATE SET
+            desired_joined = excluded.desired_joined",
+        params![
+            identity_id,
+            hub_destination_hash,
+            room_name,
+            now,
+            desired as i64
+        ],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 pub fn remove_channel_room(
@@ -3216,6 +3363,88 @@ mod channel_bookmark_tests {
             list_saved_channel_rooms(&pool, "identity-a", "00112233445566778899aabbccddeeff")
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn desired_channel_state_is_single_hub_scoped_and_independent_of_recency() {
+        let pool = test_pool();
+        save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        save_identity(&pool, "identity-b", "lxmf-b", "B", "B");
+
+        set_channel_hub_desired(&pool, "identity-a", "aa", "alpha", true).unwrap();
+        set_channel_room_desired(&pool, "identity-a", "aa", "general", true).unwrap();
+        set_channel_room_desired(&pool, "identity-a", "aa", "quiet", false).unwrap();
+
+        let hubs = list_saved_channel_hubs(&pool, "identity-a").unwrap();
+        assert_eq!(hubs.len(), 1);
+        assert!(hubs[0].desired_connected);
+        let rooms = list_saved_channel_rooms_for_identity(&pool, "identity-a").unwrap();
+        assert_eq!(rooms.len(), 2);
+        assert!(
+            rooms
+                .iter()
+                .find(|room| room.room_name == "general")
+                .unwrap()
+                .desired_joined
+        );
+        assert!(
+            !rooms
+                .iter()
+                .find(|room| room.room_name == "quiet")
+                .unwrap()
+                .desired_joined
+        );
+
+        // Selecting another hub atomically replaces the one scheduler winner
+        // but retains the first hub and its room intent for a later switch.
+        set_channel_hub_desired(&pool, "identity-a", "bb", "bravo", true).unwrap();
+        let hubs = list_saved_channel_hubs(&pool, "identity-a").unwrap();
+        assert_eq!(hubs.iter().filter(|hub| hub.desired_connected).count(), 1);
+        assert!(
+            hubs.iter()
+                .find(|hub| hub.destination_hash == "bb")
+                .unwrap()
+                .desired_connected
+        );
+        assert!(
+            !hubs
+                .iter()
+                .find(|hub| hub.destination_hash == "aa")
+                .unwrap()
+                .desired_connected
+        );
+        assert!(
+            list_saved_channel_rooms(&pool, "identity-a", "aa")
+                .unwrap()
+                .iter()
+                .any(|room| room.room_name == "general" && room.desired_joined)
+        );
+
+        // Updating recency and labels is orthogonal to scheduler intent.
+        save_channel_hub(&pool, "identity-a", "bb", "Relay B", "bravo", true).unwrap();
+        save_channel_room(&pool, "identity-a", "bb", "ops", true).unwrap();
+        assert!(
+            list_saved_channel_hubs(&pool, "identity-a")
+                .unwrap()
+                .iter()
+                .find(|hub| hub.destination_hash == "bb")
+                .unwrap()
+                .desired_connected
+        );
+        assert!(
+            !list_saved_channel_rooms(&pool, "identity-a", "bb")
+                .unwrap()
+                .iter()
+                .find(|room| room.room_name == "ops")
+                .unwrap()
+                .desired_joined
+        );
+
+        set_channel_hub_desired(&pool, "identity-b", "cc", "charlie", true).unwrap();
+        assert!(
+            list_saved_channel_hubs(&pool, "identity-b").unwrap()[0].desired_connected,
+            "the one-hub budget is identity-scoped"
         );
     }
 
@@ -6020,6 +6249,63 @@ mod migration_tests {
             })
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_from_v35_adds_channel_desire_without_reclassifying_recents() {
+        let pool = empty_pool();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (35);
+                 CREATE TABLE identities (
+                    hash TEXT PRIMARY KEY,
+                    created_at REAL NOT NULL,
+                    is_active INTEGER DEFAULT 0
+                 );
+                 INSERT INTO identities (hash, created_at) VALUES ('identity-a', 0);
+                 CREATE TABLE channel_hubs (
+                    identity_id TEXT NOT NULL,
+                    destination_hash TEXT NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
+                    nickname TEXT NOT NULL DEFAULT '',
+                    added_at REAL NOT NULL,
+                    last_connected REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, destination_hash),
+                    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+                 );
+                 CREATE TABLE channel_rooms (
+                    identity_id TEXT NOT NULL,
+                    hub_destination_hash TEXT NOT NULL,
+                    room_name TEXT NOT NULL,
+                    added_at REAL NOT NULL,
+                    last_joined REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, hub_destination_hash, room_name),
+                    FOREIGN KEY (identity_id, hub_destination_hash)
+                        REFERENCES channel_hubs(identity_id, destination_hash) ON DELETE CASCADE
+                 );
+                 INSERT INTO channel_hubs
+                    (identity_id, destination_hash, label, nickname, added_at, last_connected)
+                    VALUES ('identity-a', 'aa', 'Relay', 'rat', 1, 2);
+                 INSERT INTO channel_rooms
+                    (identity_id, hub_destination_hash, room_name, added_at, last_joined)
+                    VALUES ('identity-a', 'aa', 'general', 1, 2);",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+
+        let hubs = list_saved_channel_hubs(&pool, "identity-a").unwrap();
+        let rooms = list_saved_channel_rooms(&pool, "identity-a", "aa").unwrap();
+        assert_eq!(hubs.len(), 1);
+        assert_eq!(rooms.len(), 1);
+        assert!(
+            !hubs[0].desired_connected && !rooms[0].desired_joined,
+            "past recency is not proof of current user intent"
+        );
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
     }
 
     /// The migrated schema and the fresh schema must agree; the DDL is

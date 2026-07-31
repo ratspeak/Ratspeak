@@ -3,8 +3,16 @@
 
 var channelsSnapshot = {
     protocol_version: '0.1.3',
+    service_model_version: 1,
     generation: 0,
     revision: 0,
+    connection_budget: 1,
+    selected_hub_destination: null,
+    hubs: [],
+    durability: {
+        phase: 'loading',
+        last_error: null
+    },
     phase: 'unavailable',
     nickname: null,
     hub: null,

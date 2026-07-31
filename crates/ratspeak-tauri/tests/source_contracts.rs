@@ -192,8 +192,9 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(nav_js.contains("if (viewId === 'channels') return 'message';"));
     assert!(!nav_js.contains("MOBILE_TAB_SLOTS = ['peers', 'message', 'channels'"));
 
-    assert!(runtime.contains("Nothing in this"));
-    assert!(runtime.contains("module writes channel traffic to the Ratspeak database."));
+    assert!(runtime.contains("Observed room membership remains session-scoped"));
+    assert!(runtime.contains("Channel traffic is never"));
+    assert!(runtime.contains("written through this service-state path."));
     assert!(runtime.contains("TRANSCRIPT_LIMIT"));
     assert!(runtime.contains("JOIN_CONFIRM_TIMEOUT"));
     assert!(runtime.contains("apply_rrcd_room_status_notice"));
@@ -203,6 +204,14 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(runtime.contains("pub hub_greeting: Option<ChannelTranscriptItem>"));
     assert!(runtime.contains("pub generation: u64"));
     assert!(runtime.contains("pub revision: u64"));
+    assert!(runtime.contains("pub const CHANNELS_CONNECTION_BUDGET: usize = 1"));
+    assert!(runtime.contains("pub service_model_version: u16"));
+    assert!(runtime.contains("pub selected_hub_destination: Option<String>"));
+    assert!(runtime.contains("pub struct ChannelHubDesiredSnapshot"));
+    assert!(runtime.contains("pub struct ChannelHubObservedSnapshot"));
+    assert!(runtime.contains("pub struct ChannelHubDurableSnapshot"));
+    assert!(runtime.contains("db::set_channel_hub_desired"));
+    assert!(runtime.contains("db::set_channel_room_desired"));
     assert!(runtime.contains("snapshot.revision = revision.saturating_add(1)"));
     assert!(runtime.contains("WELCOME source does not match the authenticated hub"));
     assert!(commands.contains("fn parse_local_composer_command"));
@@ -253,6 +262,13 @@ fn channels_are_live_only_and_wired_across_runtime_ipc_and_responsive_ui() {
     assert!(!channel_schema.contains("message_body"));
     assert!(!channel_schema.contains("transcript"));
     assert!(!channel_schema.contains("member_hash"));
+    assert!(channel_schema.contains("desired_connected"));
+    assert!(channel_schema.contains("desired_joined"));
+    assert!(channel_schema.contains("idx_channel_hubs_identity_desired"));
+    assert!(channels_js.contains("service_model_version: 1"));
+    assert!(channels_js.contains("connection_budget: 1"));
+    assert!(channels_js.contains("selected_hub_destination: null"));
+    assert!(channels_js.contains("durability: {"));
 }
 
 /// The hub persists operator policy and nothing else, creates rooms only for

@@ -1,8 +1,8 @@
 //! Live Reticulum Relay Chat sessions.
 //!
-//! Channels are intentionally session-scoped: room membership and transcripts
-//! exist only while the authenticated Reticulum Link is alive. Nothing in this
-//! module writes channel traffic to the Ratspeak database.
+//! Observed room membership remains session-scoped, while user connection and
+//! room intent is durable and explicitly separate. Channel traffic is never
+//! written through this service-state path.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::pending;
@@ -25,6 +25,7 @@ use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::activity::{CorrelationId, producer as activity};
+use crate::db;
 use crate::rrc::{self, Envelope, HubLimits, MessageType, WelcomeInfo};
 use crate::state::{ActivityRequestFence, AppState};
 
@@ -42,6 +43,10 @@ const DEFAULT_MESSAGE_MAX_BYTES: usize = 350;
 const TRANSCRIPT_LIMIT: usize = 300;
 const NOTICE_LIMIT: usize = 100;
 const SEEN_MESSAGE_LIMIT: usize = 2_048;
+/// Initial scheduler budget. The hub-keyed model deliberately supports raising
+/// this later without pretending the current runtime holds multiple Links.
+pub const CHANNELS_CONNECTION_BUDGET: usize = 1;
+pub const CHANNELS_SERVICE_MODEL_VERSION: u16 = 1;
 
 // Snapshot ordering crosses two asynchronous delivery paths: direct Tauri
 // command responses and live `channels_snapshot` events. A process-local
@@ -165,6 +170,9 @@ pub struct ChannelHubCapabilitiesSnapshot {
     /// Kept visible for compatibility reporting. Ratspeak does not advertise
     /// or accept the resource-envelope extension in the first Channels beta.
     pub resource_envelopes: bool,
+    /// The hub can retain a short identity-bound `+i` rejoin grant. This says
+    /// nothing about `+k`; a reconnect still needs the room key.
+    pub rejoin_grace: bool,
 }
 
 impl From<&WelcomeInfo> for ChannelHubCapabilitiesSnapshot {
@@ -183,6 +191,11 @@ impl From<&WelcomeInfo> for ChannelHubCapabilitiesSnapshot {
             resource_envelopes: welcome
                 .capabilities
                 .get(&rrc::CAP_RESOURCE_ENVELOPE)
+                .copied()
+                .unwrap_or(false),
+            rejoin_grace: welcome
+                .capabilities
+                .get(&rrc::CAP_REJOIN_GRACE)
                 .copied()
                 .unwrap_or(false),
         }
@@ -277,14 +290,112 @@ impl ChannelRoomSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelsDurabilityPhase {
+    #[default]
+    Loading,
+    Ready,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelsDurabilitySnapshot {
+    pub phase: ChannelsDurabilityPhase,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelDesiredRoomSnapshot {
+    pub name: String,
+    pub joined: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelHubDesiredSnapshot {
+    /// User intent, not proof that a Link currently exists.
+    pub connected: bool,
+    pub nickname: Option<String>,
+    pub rooms: Vec<ChannelDesiredRoomSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelDurableRoomSnapshot {
+    pub name: String,
+    pub added_at_ms: u64,
+    pub last_joined_at_ms: u64,
+    pub desired_joined: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelHubDurableSnapshot {
+    pub saved: bool,
+    pub label: String,
+    pub nickname: String,
+    pub added_at_ms: u64,
+    pub last_connected_at_ms: u64,
+    pub rooms: Vec<ChannelDurableRoomSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelObservedRoomSnapshot {
+    pub name: String,
+    pub phase: ChannelRoomPhase,
+    pub member_count: usize,
+    pub members_complete: bool,
+    pub registered: Option<bool>,
+    pub modes: Option<String>,
+    pub topic: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelHubObservedSnapshot {
+    /// Network observation, never a desired-state alias.
+    pub phase: ChannelsPhase,
+    pub nickname: Option<String>,
+    pub hub: ChannelHubSnapshot,
+    pub rooms: Vec<ChannelObservedRoomSnapshot>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelClientHubStateSnapshot {
+    pub destination_hash: String,
+    pub desired: ChannelHubDesiredSnapshot,
+    pub observed: Option<ChannelHubObservedSnapshot>,
+    pub durable: ChannelHubDurableSnapshot,
+}
+
+impl ChannelClientHubStateSnapshot {
+    fn new(destination_hash: String) -> Self {
+        Self {
+            destination_hash,
+            desired: ChannelHubDesiredSnapshot::default(),
+            observed: None,
+            durable: ChannelHubDurableSnapshot::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelsSnapshot {
     pub protocol_version: &'static str,
+    pub service_model_version: u16,
     /// Process-local manager lifetime. Higher generations supersede every
     /// snapshot emitted by a retired manager.
     pub generation: u64,
     /// Strictly increasing state version within one manager generation.
     pub revision: u64,
+    /// Hard scheduler ceiling, separate from how many hubs are remembered.
+    pub connection_budget: usize,
+    /// The hub the user wants the scheduler to service. It survives an
+    /// unexpected Link close; explicit disconnect clears it.
+    pub selected_hub_destination: Option<String>,
+    /// Hub-keyed desired/observed/durable service state. The legacy live
+    /// projection below remains during the frontend migration.
+    pub hubs: Vec<ChannelClientHubStateSnapshot>,
+    pub durability: ChannelsDurabilitySnapshot,
     pub phase: ChannelsPhase,
     pub nickname: Option<String>,
     pub hub: Option<ChannelHubSnapshot>,
@@ -302,8 +413,16 @@ impl ChannelsSnapshot {
     pub fn offline() -> Self {
         Self {
             protocol_version: "0.1.3",
+            service_model_version: CHANNELS_SERVICE_MODEL_VERSION,
             generation: 0,
             revision: 0,
+            connection_budget: CHANNELS_CONNECTION_BUDGET,
+            selected_hub_destination: None,
+            hubs: Vec::new(),
+            durability: ChannelsDurabilitySnapshot {
+                phase: ChannelsDurabilityPhase::Ready,
+                last_error: None,
+            },
             phase: ChannelsPhase::Offline,
             nickname: None,
             hub: None,
@@ -327,6 +446,7 @@ impl ChannelsSnapshot {
         Self {
             generation,
             revision: 1,
+            durability: ChannelsDurabilitySnapshot::default(),
             ..Self::offline()
         }
     }
@@ -402,7 +522,10 @@ enum ChannelsCommand {
     /// The local identity was renamed. RRC carries nicknames inline rather
     /// than as a rename verb, so adopting the new name here is enough for the
     /// hub and every room member to see it on the next envelope.
-    IdentityRenamed { previous: String, current: String },
+    IdentityRenamed {
+        previous: String,
+        current: String,
+    },
     Join {
         room: String,
         key: Option<String>,
@@ -420,6 +543,9 @@ enum ChannelsCommand {
         activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<Result<(), ChannelsError>>,
     },
+    RefreshDurable {
+        result_tx: oneshot::Sender<()>,
+    },
     Shutdown {
         activity_fence: Option<ActivityRequestFence>,
         result_tx: oneshot::Sender<()>,
@@ -432,6 +558,113 @@ struct KnownHubTarget {
     identity_hash: [u8; 16],
     announced_name: Option<String>,
     hops: u8,
+}
+
+#[derive(Clone)]
+struct ChannelsStore {
+    pool: db::DbPool,
+    identity_id: String,
+}
+
+struct DurableChannelsState {
+    hubs: Vec<db::SavedChannelHub>,
+    rooms: Vec<db::SavedChannelRoom>,
+}
+
+struct ChannelsManagerInput {
+    transport_tx: mpsc::Sender<TransportMessage>,
+    identity: Identity,
+    emitter: Arc<dyn Emitter>,
+    shutdown: ShutdownSignal,
+    command_rx: mpsc::Receiver<ChannelsCommand>,
+    snapshot: Arc<RwLock<ChannelsSnapshot>>,
+    activity: ChannelsActivity,
+    store: Option<ChannelsStore>,
+}
+
+impl ChannelsStore {
+    fn new(pool: db::DbPool, identity_id: String) -> Self {
+        Self { pool, identity_id }
+    }
+
+    async fn load(&self) -> Result<DurableChannelsState, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| load_durable_channels(&pool, &identity_id))
+            .await
+            .map_err(|_| "Channels state database task panicked".to_string())?
+    }
+
+    async fn set_hub_desired(
+        &self,
+        destination_hash: String,
+        nickname: String,
+        desired: bool,
+    ) -> Result<DurableChannelsState, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::set_channel_hub_desired(
+                &pool,
+                &identity_id,
+                &destination_hash,
+                &nickname,
+                desired,
+            )?;
+            load_durable_channels(&pool, &identity_id)
+        })
+        .await
+        .map_err(|_| "Channels state database task panicked".to_string())?
+    }
+
+    async fn set_room_desired(
+        &self,
+        destination_hash: String,
+        room: String,
+        desired: bool,
+    ) -> Result<DurableChannelsState, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::set_channel_room_desired(&pool, &identity_id, &destination_hash, &room, desired)?;
+            load_durable_channels(&pool, &identity_id)
+        })
+        .await
+        .map_err(|_| "Channels state database task panicked".to_string())?
+    }
+
+    async fn note_connected(
+        &self,
+        destination_hash: String,
+        label: String,
+        nickname: String,
+    ) -> Result<DurableChannelsState, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::save_channel_hub(
+                &pool,
+                &identity_id,
+                &destination_hash,
+                &label,
+                &nickname,
+                true,
+            )?;
+            load_durable_channels(&pool, &identity_id)
+        })
+        .await
+        .map_err(|_| "Channels state database task panicked".to_string())?
+    }
+}
+
+fn load_durable_channels(
+    pool: &db::DbPool,
+    identity_id: &str,
+) -> Result<DurableChannelsState, String> {
+    Ok(DurableChannelsState {
+        hubs: db::list_saved_channel_hubs(pool, identity_id)?,
+        rooms: db::list_saved_channel_rooms_for_identity(pool, identity_id)?,
+    })
 }
 
 #[derive(Clone)]
@@ -453,16 +686,20 @@ impl ChannelsManagerHandle {
         let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::for_manager(
             next_channels_generation(),
         )));
+        let store = state
+            .upgrade()
+            .map(|state| ChannelsStore::new(state.db.clone(), hex::encode(identity.hash)));
         let activity = ChannelsActivity::new(state);
-        tokio::spawn(run_manager(
+        tokio::spawn(run_manager(ChannelsManagerInput {
             transport_tx,
             identity,
             emitter,
             shutdown,
             command_rx,
-            snapshot.clone(),
-            activity.clone(),
-        ));
+            snapshot: snapshot.clone(),
+            activity: activity.clone(),
+            store,
+        }));
         Self {
             command_tx,
             snapshot,
@@ -608,6 +845,21 @@ impl ChannelsManagerHandle {
         result_rx.await.map_err(|_| ChannelsError::Stopped)?
     }
 
+    /// Reconcile bookmark changes made through the existing IPC surface into
+    /// the unified service snapshot. Best-effort callers can ignore a stopped
+    /// manager; a fresh manager reloads the same identity-scoped rows.
+    pub async fn refresh_durable(&self) {
+        let (result_tx, result_rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(ChannelsCommand::RefreshDurable { result_tx })
+            .await
+            .is_ok()
+        {
+            let _ = result_rx.await;
+        }
+    }
+
     /// Adopt a renamed identity for the live session, if it is still using the
     /// superseded name. Best-effort: a stopped manager has nothing to leak.
     pub async fn identity_renamed(&self, previous: &str, current: &str) {
@@ -661,6 +913,7 @@ struct ActiveSession {
     events: mpsc::Receiver<LinkSessionEvent>,
     connected_at: Instant,
     source: [u8; 16],
+    destination_hash: [u8; 16],
     hub_identity: [u8; 16],
     nickname: String,
     supports_action: bool,
@@ -970,17 +1223,20 @@ struct ConnectUpdateContext<'a> {
     activity_recorder: &'a ChannelsActivity,
     pending_connect_activity: &'a mut Option<SessionActivityContext>,
     source: [u8; 16],
+    store: Option<&'a ChannelsStore>,
 }
 
-async fn run_manager(
-    transport_tx: mpsc::Sender<TransportMessage>,
-    identity: Identity,
-    emitter: Arc<dyn Emitter>,
-    shutdown: ShutdownSignal,
-    mut command_rx: mpsc::Receiver<ChannelsCommand>,
-    snapshot: Arc<RwLock<ChannelsSnapshot>>,
-    activity: ChannelsActivity,
-) {
+async fn run_manager(input: ChannelsManagerInput) {
+    let ChannelsManagerInput {
+        transport_tx,
+        identity,
+        emitter,
+        shutdown,
+        mut command_rx,
+        snapshot,
+        activity,
+        store,
+    } = input;
     let source = identity.hash;
     let (connect_update_tx, mut connect_update_rx) = mpsc::channel(CONNECT_UPDATE_BUFFER);
     let mut active: Option<ActiveSession> = None;
@@ -989,6 +1245,25 @@ async fn run_manager(
     let mut pending_connect_activity: Option<SessionActivityContext> = None;
     let mut room_transition_tick = tokio::time::interval(ROOM_TRANSITION_TICK);
     room_transition_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    match &store {
+        Some(store) => match store.load().await {
+            Ok(durable) => {
+                mutate_snapshot(&snapshot, |state| apply_durable_channels(state, durable))
+            }
+            Err(error) => {
+                tracing::warn!(reason = %error, "failed to load durable Channels state");
+                mutate_snapshot(&snapshot, mark_durability_degraded);
+            }
+        },
+        None => mutate_snapshot(&snapshot, |state| {
+            state.durability = ChannelsDurabilitySnapshot {
+                phase: ChannelsDurabilityPhase::Ready,
+                last_error: None,
+            };
+        }),
+    }
+    emit_snapshot(&emitter, &snapshot);
 
     loop {
         tokio::select! {
@@ -1010,7 +1285,7 @@ async fn run_manager(
                     );
                 }
                 close_active(&mut active).await;
-                replace_snapshot(&snapshot, ChannelsSnapshot::offline());
+                mutate_snapshot(&snapshot, clear_observed_snapshot);
                 emit_snapshot(&emitter, &snapshot);
                 break;
             }
@@ -1073,13 +1348,28 @@ async fn run_manager(
                             activity::ChannelSessionTransition::ConnectRequested,
                         );
                         pending_connect_activity = Some(activity_context);
+                        let destination_text = hex::encode(destination_hash);
                         mutate_snapshot(&snapshot, |state| {
-                            *state = ChannelsSnapshot::offline();
+                            clear_observed_snapshot(state);
+                            set_desired_hub(state, &destination_text, &nickname, true);
                             state.phase = ChannelsPhase::Resolving;
                             state.nickname = Some(nickname.clone());
                             state.hub = Some(ChannelHubSnapshot::pending(destination_hash));
                         });
                         emit_snapshot(&emitter, &snapshot);
+                        if let Some(store) = &store {
+                            apply_store_result(
+                                &snapshot,
+                                store
+                                    .set_hub_desired(
+                                        destination_text,
+                                        nickname.clone(),
+                                        true,
+                                    )
+                                    .await,
+                            );
+                            emit_snapshot(&emitter, &snapshot);
+                        }
 
                         let (cancel_tx, cancel_rx) = oneshot::channel();
                         connect_cancel = Some(cancel_tx);
@@ -1123,9 +1413,35 @@ async fn run_manager(
                                 session.closed_transition(activity::ChannelSessionCloseReason::Local),
                             );
                         }
+                        let desired_target = snapshot.read().ok().and_then(|state| {
+                            let destination = state.selected_hub_destination.clone()?;
+                            let nickname = state
+                                .hubs
+                                .iter()
+                                .find(|hub| hub.destination_hash == destination)
+                                .and_then(|hub| hub.desired.nickname.clone())
+                                .unwrap_or_default();
+                            Some((destination, nickname))
+                        });
                         close_active(&mut active).await;
-                        replace_snapshot(&snapshot, ChannelsSnapshot::offline());
+                        mutate_snapshot(&snapshot, |state| {
+                            if let Some((destination, nickname)) = desired_target.as_ref() {
+                                set_desired_hub(state, destination, nickname, false);
+                            }
+                            clear_observed_snapshot(state);
+                        });
                         emit_snapshot(&emitter, &snapshot);
+                        if let (Some(store), Some((destination, nickname))) =
+                            (&store, desired_target)
+                        {
+                            apply_store_result(
+                                &snapshot,
+                                store
+                                    .set_hub_desired(destination, nickname, false)
+                                    .await,
+                            );
+                            emit_snapshot(&emitter, &snapshot);
+                        }
                         let _ = result_tx.send(Ok(()));
                     }
                     ChannelsCommand::Join {
@@ -1143,6 +1459,27 @@ async fn run_manager(
                             key,
                             activity_fence,
                         ).await;
+                        if let Ok(joined_room) = result.as_ref()
+                            && let Some(session) = active.as_ref()
+                        {
+                            let destination = hex::encode(session.destination_hash);
+                            mutate_snapshot(&snapshot, |state| {
+                                set_desired_room(state, &destination, joined_room, true)
+                            });
+                            if let Some(store) = &store {
+                                apply_store_result(
+                                    &snapshot,
+                                    store
+                                        .set_room_desired(
+                                            destination,
+                                            joined_room.clone(),
+                                            true,
+                                        )
+                                        .await,
+                                );
+                            }
+                            emit_snapshot(&emitter, &snapshot);
+                        }
                         let _ = result_tx.send(result);
                     }
                     ChannelsCommand::Part {
@@ -1150,6 +1487,16 @@ async fn run_manager(
                         activity_fence,
                         result_tx,
                     } => {
+                        let desired_room = active.as_ref().and_then(|session| {
+                            rrc::normalize_room(
+                                &room,
+                                session
+                                    .limits
+                                    .max_room_name_bytes
+                                    .unwrap_or(DEFAULT_ROOM_MAX_BYTES),
+                            )
+                            .ok()
+                        });
                         let result = part_room(
                             active.as_mut(),
                             &snapshot,
@@ -1158,6 +1505,24 @@ async fn run_manager(
                             room,
                             activity_fence,
                         ).await;
+                        if result.is_ok()
+                            && let (Some(room), Some(session)) =
+                                (desired_room, active.as_ref())
+                        {
+                            let destination = hex::encode(session.destination_hash);
+                            mutate_snapshot(&snapshot, |state| {
+                                set_desired_room(state, &destination, &room, false)
+                            });
+                            if let Some(store) = &store {
+                                apply_store_result(
+                                    &snapshot,
+                                    store
+                                        .set_room_desired(destination, room, false)
+                                        .await,
+                                );
+                            }
+                            emit_snapshot(&emitter, &snapshot);
+                        }
                         let _ = result_tx.send(result);
                     }
                     ChannelsCommand::Send {
@@ -1172,6 +1537,7 @@ async fn run_manager(
                         let _ = result_tx.send(result);
                     }
                     ChannelsCommand::IdentityRenamed { previous, current } => {
+                        let mut adopted_target = None;
                         if let Some(session) = active.as_mut()
                             && let Some(adopted) = adopt_renamed_nickname(
                                 &session.nickname,
@@ -1184,11 +1550,47 @@ async fn run_manager(
                             )
                         {
                             session.nickname = adopted.clone();
+                            adopted_target = Some((hex::encode(session.destination_hash), adopted.clone()));
                             mutate_snapshot(&snapshot, |snapshot| {
                                 snapshot.nickname = Some(adopted);
                             });
                             emit_snapshot(&emitter, &snapshot);
                         }
+                        if let Some((destination, adopted)) = adopted_target {
+                            mutate_snapshot(&snapshot, |state| {
+                                set_desired_hub(state, &destination, &adopted, true)
+                            });
+                            if let Some(store) = &store {
+                                apply_store_result(
+                                    &snapshot,
+                                    store
+                                        .set_hub_desired(destination, adopted, true)
+                                        .await,
+                                );
+                            }
+                            emit_snapshot(&emitter, &snapshot);
+                        } else {
+                            // The rename transaction may have retired a saved
+                            // default nickname even without a live session.
+                            if let Some(store) = &store {
+                                apply_store_result(&snapshot, store.load().await);
+                                emit_snapshot(&emitter, &snapshot);
+                            }
+                        }
+                    }
+                    ChannelsCommand::RefreshDurable { result_tx } => {
+                        if let Some(store) = &store {
+                            apply_store_result(&snapshot, store.load().await);
+                        } else {
+                            mutate_snapshot(&snapshot, |state| {
+                                state.durability = ChannelsDurabilitySnapshot {
+                                    phase: ChannelsDurabilityPhase::Ready,
+                                    last_error: None,
+                                };
+                            });
+                        }
+                        emit_snapshot(&emitter, &snapshot);
+                        let _ = result_tx.send(());
                     }
                     ChannelsCommand::Shutdown {
                         activity_fence,
@@ -1218,7 +1620,7 @@ async fn run_manager(
                             );
                         }
                         close_active(&mut active).await;
-                        replace_snapshot(&snapshot, ChannelsSnapshot::offline());
+                        mutate_snapshot(&snapshot, clear_observed_snapshot);
                         emit_snapshot(&emitter, &snapshot);
                         let _ = result_tx.send(());
                         break;
@@ -1238,6 +1640,7 @@ async fn run_manager(
                         activity_recorder: &activity,
                         pending_connect_activity: &mut pending_connect_activity,
                         source,
+                        store: store.as_ref(),
                     },
                 ).await;
             }
@@ -1951,6 +2354,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
         activity_recorder,
         pending_connect_activity,
         source,
+        store,
     } = context;
     let update_attempt = match &update {
         ConnectUpdate::SessionActivity { attempt, .. }
@@ -2073,11 +2477,18 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
             } = *connected;
             let capabilities = ChannelHubCapabilitiesSnapshot::from(&welcome);
             let limits_snapshot = ChannelHubLimitsSnapshot::from(&welcome.limits);
+            let destination_text = hex::encode(destination_hash);
+            let durable_label = welcome
+                .hub_name
+                .clone()
+                .or_else(|| announced_name.clone())
+                .unwrap_or_default();
             let mut live = ActiveSession {
                 handle: session.handle,
                 events: session.events,
                 connected_at: Instant::now(),
                 source,
+                destination_hash,
                 hub_identity,
                 nickname: nickname.clone(),
                 supports_action: capabilities.actions,
@@ -2099,13 +2510,13 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                     handle_envelope(&mut live, activity_recorder, envelope, encoded_bytes).await;
             }
             mutate_snapshot(snapshot, |state| {
-                *state = ChannelsSnapshot::offline();
+                clear_observed_snapshot(state);
                 state.phase = ChannelsPhase::Active;
-                state.nickname = Some(nickname);
+                state.nickname = Some(nickname.clone());
                 state.hub = Some(ChannelHubSnapshot {
-                    destination_hash: hex::encode(destination_hash),
+                    destination_hash: destination_text.clone(),
                     identity_hash: Some(hex::encode(hub_identity)),
-                    announced_name,
+                    announced_name: announced_name.clone(),
                     name: welcome.hub_name,
                     version: welcome.hub_version,
                     hops: Some(hops),
@@ -2117,6 +2528,14 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
             });
             sync_session_snapshot(&live, snapshot);
             *active = Some(live);
+            if let Some(store) = store {
+                apply_store_result(
+                    snapshot,
+                    store
+                        .note_connected(destination_text, durable_label, nickname)
+                        .await,
+                );
+            }
         }
     }
     emit_snapshot(emitter, snapshot);
@@ -3356,6 +3775,206 @@ fn sync_session_snapshot(active: &ActiveSession, snapshot: &Arc<RwLock<ChannelsS
     });
 }
 
+fn clear_observed_snapshot(state: &mut ChannelsSnapshot) {
+    state.phase = ChannelsPhase::Offline;
+    state.nickname = None;
+    state.hub = None;
+    state.rooms.clear();
+    state.hub_greeting = None;
+    state.notices.clear();
+    state.last_error = None;
+}
+
+fn client_hub_mut<'a>(
+    state: &'a mut ChannelsSnapshot,
+    destination_hash: &str,
+) -> &'a mut ChannelClientHubStateSnapshot {
+    if let Some(index) = state
+        .hubs
+        .iter()
+        .position(|hub| hub.destination_hash == destination_hash)
+    {
+        return &mut state.hubs[index];
+    }
+    state.hubs.push(ChannelClientHubStateSnapshot::new(
+        destination_hash.to_string(),
+    ));
+    state.hubs.last_mut().expect("hub state was inserted")
+}
+
+fn set_desired_hub(
+    state: &mut ChannelsSnapshot,
+    destination_hash: &str,
+    nickname: &str,
+    connected: bool,
+) {
+    if connected {
+        for hub in &mut state.hubs {
+            hub.desired.connected = false;
+        }
+        state.selected_hub_destination = Some(destination_hash.to_string());
+    } else if state.selected_hub_destination.as_deref() == Some(destination_hash) {
+        state.selected_hub_destination = None;
+    }
+    let hub = client_hub_mut(state, destination_hash);
+    hub.desired.connected = connected;
+    if !nickname.is_empty() {
+        hub.desired.nickname = Some(nickname.to_string());
+    }
+}
+
+fn set_desired_room(
+    state: &mut ChannelsSnapshot,
+    destination_hash: &str,
+    room_name: &str,
+    joined: bool,
+) {
+    let hub = client_hub_mut(state, destination_hash);
+    if let Some(room) = hub
+        .desired
+        .rooms
+        .iter_mut()
+        .find(|room| room.name == room_name)
+    {
+        room.joined = joined;
+    } else {
+        hub.desired.rooms.push(ChannelDesiredRoomSnapshot {
+            name: room_name.to_string(),
+            joined,
+        });
+    }
+    hub.desired
+        .rooms
+        .sort_by(|left, right| left.name.cmp(&right.name));
+}
+
+fn timestamp_ms_from_seconds(seconds: f64) -> u64 {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return 0;
+    }
+    (seconds * 1000.0).min(u64::MAX as f64) as u64
+}
+
+fn apply_durable_channels(state: &mut ChannelsSnapshot, durable: DurableChannelsState) {
+    for hub in &mut state.hubs {
+        hub.durable = ChannelHubDurableSnapshot::default();
+        hub.desired = ChannelHubDesiredSnapshot::default();
+    }
+    state.selected_hub_destination = None;
+
+    for saved in durable.hubs {
+        let destination_hash = saved.destination_hash.clone();
+        let hub = client_hub_mut(state, &destination_hash);
+        hub.durable = ChannelHubDurableSnapshot {
+            saved: true,
+            label: saved.label,
+            nickname: saved.nickname.clone(),
+            added_at_ms: timestamp_ms_from_seconds(saved.added_at),
+            last_connected_at_ms: timestamp_ms_from_seconds(saved.last_connected),
+            rooms: Vec::new(),
+        };
+        hub.desired.connected = saved.desired_connected;
+        hub.desired.nickname = (!saved.nickname.is_empty()).then_some(saved.nickname);
+        if saved.desired_connected {
+            state.selected_hub_destination = Some(destination_hash);
+        }
+    }
+
+    for saved in durable.rooms {
+        let destination_hash = saved.hub_destination_hash;
+        let room_name = saved.room_name;
+        let hub = client_hub_mut(state, &destination_hash);
+        hub.durable.rooms.push(ChannelDurableRoomSnapshot {
+            name: room_name.clone(),
+            added_at_ms: timestamp_ms_from_seconds(saved.added_at),
+            last_joined_at_ms: timestamp_ms_from_seconds(saved.last_joined),
+            desired_joined: saved.desired_joined,
+        });
+        set_desired_room(state, &destination_hash, &room_name, saved.desired_joined);
+    }
+    for hub in &mut state.hubs {
+        hub.durable.rooms.sort_by(|left, right| {
+            right
+                .last_joined_at_ms
+                .cmp(&left.last_joined_at_ms)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+    }
+    state.durability = ChannelsDurabilitySnapshot {
+        phase: ChannelsDurabilityPhase::Ready,
+        last_error: None,
+    };
+}
+
+fn mark_durability_degraded(state: &mut ChannelsSnapshot) {
+    state.durability = ChannelsDurabilitySnapshot {
+        phase: ChannelsDurabilityPhase::Degraded,
+        last_error: Some("Channels preferences could not be saved".to_string()),
+    };
+}
+
+fn apply_store_result(
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+    result: Result<DurableChannelsState, String>,
+) {
+    match result {
+        Ok(durable) => mutate_snapshot(snapshot, |state| apply_durable_channels(state, durable)),
+        Err(error) => {
+            tracing::warn!(reason = %error, "failed to save durable Channels state");
+            mutate_snapshot(snapshot, mark_durability_degraded);
+        }
+    }
+}
+
+fn sync_hub_service_projection(state: &mut ChannelsSnapshot) {
+    for hub in &mut state.hubs {
+        hub.observed = None;
+    }
+    if let Some(observed_hub) = state.hub.clone() {
+        let observed = ChannelHubObservedSnapshot {
+            phase: state.phase,
+            nickname: state.nickname.clone(),
+            hub: observed_hub.clone(),
+            rooms: state
+                .rooms
+                .iter()
+                .map(|room| ChannelObservedRoomSnapshot {
+                    name: room.name.clone(),
+                    phase: room.phase,
+                    member_count: room.members.len(),
+                    members_complete: room.members_complete,
+                    registered: room.registered,
+                    modes: room.modes.clone(),
+                    topic: room.topic.clone(),
+                    last_error: room.last_error.clone(),
+                })
+                .collect(),
+            last_error: state.last_error.clone(),
+        };
+        client_hub_mut(state, &observed_hub.destination_hash).observed = Some(observed);
+    }
+    state.hubs.retain(|hub| {
+        hub.observed.is_some()
+            || hub.durable.saved
+            || hub.desired.connected
+            || !hub.desired.rooms.is_empty()
+    });
+    let selected = state.selected_hub_destination.as_deref();
+    state.hubs.sort_by(|left, right| {
+        let left_selected = selected == Some(left.destination_hash.as_str());
+        let right_selected = selected == Some(right.destination_hash.as_str());
+        right_selected
+            .cmp(&left_selected)
+            .then_with(|| {
+                right
+                    .durable
+                    .last_connected_at_ms
+                    .cmp(&left.durable.last_connected_at_ms)
+            })
+            .then_with(|| left.destination_hash.cmp(&right.destination_hash))
+    });
+}
+
 /// Decide whether a live session should adopt a renamed identity's name.
 ///
 /// A session still carrying the superseded name adopts the new one, so the
@@ -3383,6 +4002,7 @@ fn mutate_snapshot(
         let generation = snapshot.generation;
         let revision = snapshot.revision;
         mutate(&mut snapshot);
+        sync_hub_service_projection(&mut snapshot);
         // Mutations sometimes replace the whole value with `offline()` first;
         // the ordering identity belongs to the manager, never the replacement.
         snapshot.generation = generation;
@@ -3391,11 +4011,13 @@ fn mutate_snapshot(
     }
 }
 
+#[cfg(test)]
 fn replace_snapshot(snapshot: &Arc<RwLock<ChannelsSnapshot>>, replacement: ChannelsSnapshot) {
     if let Ok(mut snapshot) = snapshot.write() {
         let generation = snapshot.generation;
         let revision = snapshot.revision.saturating_add(1);
         *snapshot = replacement;
+        sync_hub_service_projection(&mut snapshot);
         snapshot.generation = generation;
         snapshot.revision = revision;
         snapshot.updated_at_ms = now_ms();
@@ -3533,6 +4155,163 @@ mod tests {
         let value = serde_json::to_value(snapshot).unwrap();
         assert_eq!(value["generation"], 42);
         assert_eq!(value["revision"], 1);
+        assert_eq!(
+            value["service_model_version"],
+            CHANNELS_SERVICE_MODEL_VERSION
+        );
+        assert_eq!(value["connection_budget"], CHANNELS_CONNECTION_BUDGET);
+    }
+
+    #[test]
+    fn hub_service_model_separates_desired_observed_and_durable_state() {
+        let destination = "00112233445566778899aabbccddeeff";
+        let mut snapshot = ChannelsSnapshot::for_manager(42);
+        apply_durable_channels(
+            &mut snapshot,
+            DurableChannelsState {
+                hubs: vec![db::SavedChannelHub {
+                    destination_hash: destination.into(),
+                    label: "Mountain relay".into(),
+                    nickname: "Field Rat".into(),
+                    added_at: 1.0,
+                    last_connected: 2.0,
+                    desired_connected: true,
+                }],
+                rooms: vec![db::SavedChannelRoom {
+                    hub_destination_hash: destination.into(),
+                    room_name: "general".into(),
+                    added_at: 3.0,
+                    last_joined: 4.0,
+                    desired_joined: true,
+                }],
+            },
+        );
+        snapshot.phase = ChannelsPhase::Resolving;
+        snapshot.nickname = Some("Field Rat".into());
+        snapshot.hub = Some(ChannelHubSnapshot::pending(
+            parse_destination_hash(destination).unwrap(),
+        ));
+        sync_hub_service_projection(&mut snapshot);
+
+        assert_eq!(
+            snapshot.selected_hub_destination.as_deref(),
+            Some(destination)
+        );
+        let hub = &snapshot.hubs[0];
+        assert!(hub.desired.connected);
+        assert_eq!(hub.desired.rooms[0].name, "general");
+        assert!(hub.desired.rooms[0].joined);
+        assert!(hub.durable.saved);
+        assert_eq!(hub.durable.label, "Mountain relay");
+        assert_eq!(hub.durable.added_at_ms, 1_000);
+        assert_eq!(
+            hub.observed.as_ref().map(|observed| observed.phase),
+            Some(ChannelsPhase::Resolving)
+        );
+
+        // Losing observation does not rewrite user intent or its durable copy.
+        clear_observed_snapshot(&mut snapshot);
+        sync_hub_service_projection(&mut snapshot);
+        let hub = &snapshot.hubs[0];
+        assert!(hub.observed.is_none());
+        assert!(hub.desired.connected && hub.desired.rooms[0].joined);
+        assert!(hub.durable.saved && hub.durable.rooms[0].desired_joined);
+
+        // An explicit disconnect changes only connection desire; remembered
+        // room intent remains available when the user selects this hub again.
+        set_desired_hub(&mut snapshot, destination, "Field Rat", false);
+        sync_hub_service_projection(&mut snapshot);
+        assert!(snapshot.selected_hub_destination.is_none());
+        assert!(!snapshot.hubs[0].desired.connected);
+        assert!(snapshot.hubs[0].desired.rooms[0].joined);
+    }
+
+    #[test]
+    fn selecting_one_hub_preserves_other_hub_room_intent() {
+        let mut snapshot = ChannelsSnapshot::for_manager(1);
+        set_desired_hub(&mut snapshot, "aa", "alpha", true);
+        set_desired_room(&mut snapshot, "aa", "general", true);
+        set_desired_hub(&mut snapshot, "bb", "bravo", true);
+        sync_hub_service_projection(&mut snapshot);
+
+        assert_eq!(snapshot.connection_budget, 1);
+        assert_eq!(snapshot.selected_hub_destination.as_deref(), Some("bb"));
+        assert_eq!(
+            snapshot
+                .hubs
+                .iter()
+                .filter(|hub| hub.desired.connected)
+                .count(),
+            1
+        );
+        let first = snapshot
+            .hubs
+            .iter()
+            .find(|hub| hub.destination_hash == "aa")
+            .unwrap();
+        assert!(!first.desired.connected);
+        assert!(first.desired.rooms[0].joined);
+    }
+
+    #[tokio::test]
+    async fn channels_store_round_trips_scheduler_state() {
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|connection| connection.execute_batch("PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder().max_size(2).build(manager).unwrap();
+        db::init_schema(&pool).unwrap();
+        db::save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        let store = ChannelsStore::new(pool, "identity-a".into());
+
+        store
+            .set_hub_desired("aa".into(), "alpha".into(), true)
+            .await
+            .unwrap();
+        let durable = store
+            .set_room_desired("aa".into(), "general".into(), true)
+            .await
+            .unwrap();
+        assert!(durable.hubs[0].desired_connected);
+        assert!(durable.rooms[0].desired_joined);
+
+        let durable = store
+            .set_hub_desired("bb".into(), "bravo".into(), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            durable
+                .hubs
+                .iter()
+                .filter(|hub| hub.desired_connected)
+                .count(),
+            1
+        );
+        assert!(
+            durable
+                .rooms
+                .iter()
+                .any(|room| room.room_name == "general" && room.desired_joined)
+        );
+
+        let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::for_manager(1)));
+        apply_store_result(&snapshot, Ok(durable));
+        assert_eq!(
+            snapshot.read().unwrap().selected_hub_destination.as_deref(),
+            Some("bb")
+        );
+        db::remove_channel_hub(&store.pool, "identity-a", "bb").unwrap();
+        apply_store_result(&snapshot, store.load().await);
+        let reconciled = snapshot.read().unwrap();
+        assert!(
+            reconciled.selected_hub_destination.is_none(),
+            "removing durable state must not leave reconnect intent only in memory"
+        );
+        assert!(
+            reconciled
+                .hubs
+                .iter()
+                .all(|hub| hub.destination_hash != "bb"),
+            "a removed unobserved hub must leave the unified service model"
+        );
     }
 
     #[test]
@@ -3618,6 +4397,12 @@ mod tests {
             )
             .await
             .unwrap();
+        let desired = manager.snapshot();
+        assert_eq!(
+            desired.selected_hub_destination.as_deref(),
+            Some(hex::encode(hub_destination).as_str())
+        );
+        assert!(desired.hubs[0].desired.connected);
 
         match timeout_transport(&mut transport_rx).await {
             TransportMessage::RegisterDestination { .. } => {}
@@ -3683,6 +4468,16 @@ mod tests {
             active.hub.as_ref().and_then(|hub| hub.name.as_deref()),
             Some("Local test hub")
         );
+        let service_hub = active
+            .hubs
+            .iter()
+            .find(|hub| hub.destination_hash == destination_hash)
+            .unwrap();
+        assert!(service_hub.desired.connected);
+        assert_eq!(
+            service_hub.observed.as_ref().map(|observed| observed.phase),
+            Some(ChannelsPhase::Active)
+        );
 
         // Let the otherwise-idle same-runtime session complete at least one
         // application PING/PONG cycle before joining. The production report
@@ -3693,6 +4488,18 @@ mod tests {
         assert!(after_idle.revision > active.revision);
 
         manager.join("general", None).await.unwrap();
+        assert!(
+            manager
+                .snapshot()
+                .hubs
+                .iter()
+                .find(|hub| hub.destination_hash == destination_hash)
+                .unwrap()
+                .desired
+                .rooms
+                .iter()
+                .any(|room| room.name == "general" && room.joined)
+        );
         let joined = wait_snapshot(&manager, |snapshot| {
             snapshot
                 .rooms
@@ -3701,6 +4508,24 @@ mod tests {
         })
         .await;
         assert!(joined.rooms[0].members.iter().any(|member| member.is_self));
+
+        manager.disconnect().await.unwrap();
+        let disconnected = manager.snapshot();
+        let service_hub = disconnected
+            .hubs
+            .iter()
+            .find(|hub| hub.destination_hash == destination_hash)
+            .unwrap();
+        assert!(!service_hub.desired.connected);
+        assert!(service_hub.observed.is_none());
+        assert!(
+            service_hub
+                .desired
+                .rooms
+                .iter()
+                .any(|room| room.name == "general" && room.joined),
+            "disconnecting a hub does not mean leaving its rooms"
+        );
 
         manager.shutdown().await;
         assert!(hub.shutdown().await);

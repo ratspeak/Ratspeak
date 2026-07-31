@@ -308,6 +308,7 @@ pub async fn save_channel_hub(
     .await
     .map_err(|_| AppError::internal("save channel hub database task panicked"))?
     .map_err(AppError::database_unavailable)?;
+    refresh_channels_durable(&state).await;
     Ok(json!({ "destination_hash": destination_for_result, "saved": true }))
 }
 
@@ -326,6 +327,7 @@ pub async fn remove_saved_channel_hub(
     .await
     .map_err(|_| AppError::internal("remove channel hub database task panicked"))?
     .map_err(AppError::database_unavailable)?;
+    refresh_channels_durable(&state).await;
     Ok(json!({ "destination_hash": destination_for_result, "removed": removed }))
 }
 
@@ -363,6 +365,7 @@ pub async fn save_channel_room(
     .await
     .map_err(|_| AppError::internal("save channel room database task panicked"))?
     .map_err(AppError::database_unavailable)?;
+    refresh_channels_durable(&state).await;
     Ok(json!({ "room": room_for_result, "saved": true }))
 }
 
@@ -383,7 +386,14 @@ pub async fn remove_saved_channel_room(
     .await
     .map_err(|_| AppError::internal("remove channel room database task panicked"))?
     .map_err(AppError::database_unavailable)?;
+    refresh_channels_durable(&state).await;
     Ok(json!({ "room": room_for_result, "removed": removed }))
+}
+
+async fn refresh_channels_durable(state: &AppState) {
+    if let Some(channels) = state.channels_handle() {
+        channels.refresh_durable().await;
+    }
 }
 
 fn channels_handle(
