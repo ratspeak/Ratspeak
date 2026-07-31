@@ -3006,6 +3006,27 @@ function _channelsPresentSharedTarget(target) {
     _channelsPresentSheet(built, review);
 }
 
+// Native URI handling receives only the typed result of the canonical Rust
+// parser. Keep this entry point preview-only: the sheet can lead the user to a
+// separate connection or join review, but opening a URI performs neither.
+function channelsOpenNativeSharedChannel(target) {
+    if (!target || target.format !== 'ratspeak.channel.v1') return false;
+    if (!/^[0-9a-f]{32}$/.test(String(target.hub_destination_hash || ''))) {
+        return false;
+    }
+    if (typeof target.payload !== 'string' || target.payload.length > 230) {
+        return false;
+    }
+    if (target.room != null && typeof target.room !== 'string') return false;
+    if (Object.prototype.hasOwnProperty.call(target, 'key') ||
+            Object.prototype.hasOwnProperty.call(target, 'join_key')) {
+        return false;
+    }
+    _channelsPresentSharedTarget(target);
+    return true;
+}
+window.channelsOpenNativeSharedChannel = channelsOpenNativeSharedChannel;
+
 function channelsScanSharedChannel() {
     if (!RS.qr || typeof RS.qr.openScanner !== 'function') {
         if (typeof showToast === 'function') {

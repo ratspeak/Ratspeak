@@ -1,3 +1,4 @@
+mod channel_deep_link;
 mod paths;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -639,12 +640,19 @@ pub fn run() {
 
     let linux_webkit_dmabuf_workaround = apply_linux_webkit_rendering_workarounds();
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
+    let builder =
+        tauri::Builder::default().manage(channel_deep_link::NativeChannelShareInbox::default());
 
+    // Tauri requires single-instance to be the first plugin when it forwards
+    // secondary-process deep-link arguments into the primary process.
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
         show_main_window(app);
     }));
+
+    let builder = builder
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init());
 
     // Mobile haptics bridge — navigator.vibrate is a no-op in WKWebView so
     // iOS needs UIImpactFeedbackGenerator via this plugin.
@@ -661,6 +669,7 @@ pub fn run() {
             set_window_decorations,
             save_image_to_photos,
             request_microphone_permission,
+            channel_deep_link::take_native_channel_share,
             ratspeak_tauri::commands::system::api_version,
             ratspeak_tauri::commands::system::api_startup_progress,
             ratspeak_tauri::commands::system::api_setup_status,
@@ -999,6 +1008,7 @@ pub fn run() {
             });
 
             let _window = window.build()?;
+            channel_deep_link::install(app);
 
             #[cfg(all(
                 not(any(target_os = "android", target_os = "ios")),

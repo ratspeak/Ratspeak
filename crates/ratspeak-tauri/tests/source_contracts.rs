@@ -402,6 +402,142 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(share_test.contains("channel share tests passed"));
 }
 
+#[test]
+fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let channels =
+        read_source(root.join("dashboard/static/js/channels.js")).expect("channels frontend");
+    let bridge = read_source(root.join("dashboard/static/js/native_channel_share.js"))
+        .expect("native channel-share bridge");
+    let bridge_test = read_source(root.join("dashboard/scripts/test_channels_native_link.js"))
+        .expect("native channel-share test");
+    let native =
+        read_source(root.join("src-tauri/src/channel_deep_link.rs")).expect("native Rust bridge");
+    let lib = read_source(root.join("src-tauri/src/lib.rs")).expect("Tauri entry point");
+    let cargo = read_source(root.join("src-tauri/Cargo.toml")).expect("Tauri manifest");
+    let base_config: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("src-tauri/tauri.conf.json")).expect("base Tauri config"),
+    )
+    .expect("valid base Tauri config");
+    let android_config: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("src-tauri/tauri.android.conf.json")).expect("Android Tauri config"),
+    )
+    .expect("valid Android Tauri config");
+    let ios_config: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("src-tauri/tauri.ios.conf.json")).expect("iOS Tauri config"),
+    )
+    .expect("valid iOS Tauri config");
+    assert!(base_config["plugins"]["deep-link"].is_null());
+    assert!(android_config["plugins"]["deep-link"].is_null());
+    assert!(ios_config["plugins"]["deep-link"].is_null());
+    for platform in ["linux", "macos", "windows"] {
+        let config: serde_json::Value = serde_json::from_str(
+            &read_source(
+                root.join("src-tauri")
+                    .join(format!("tauri.{platform}.conf.json")),
+            )
+            .expect("desktop Tauri config"),
+        )
+        .expect("valid desktop Tauri config");
+        assert_eq!(
+            config["plugins"]["deep-link"]["desktop"]["schemes"],
+            serde_json::json!(["ratspeak"])
+        );
+        assert!(config["plugins"]["deep-link"]["mobile"].is_null());
+    }
+
+    let android_manifest =
+        read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+            .expect("Android manifest");
+    let ios_info = read_source(root.join("src-tauri/gen/apple/ratspeak_iOS/Info.plist"))
+        .expect("iOS Info.plist");
+    let ios_entitlements =
+        read_source(root.join("src-tauri/gen/apple/ratspeak_iOS/ratspeak_iOS.entitlements"))
+            .expect("iOS entitlements");
+    assert!(android_manifest.contains(r#"android:scheme="ratspeak""#));
+    assert!(android_manifest.contains(r#"android:host="channel""#));
+    assert!(android_manifest.contains("android.intent.category.BROWSABLE"));
+    assert!(ios_info.contains("<key>CFBundleURLTypes</key>"));
+    assert!(ios_info.contains("<string>ratspeak</string>"));
+    assert!(ios_entitlements.contains("Multicast Networking entitlement"));
+    assert!(!ios_entitlements.contains("com.apple.developer.associated-domains"));
+    assert!(cargo.contains(r#"tauri-plugin-deep-link = "2.4.9""#));
+    assert!(
+        cargo.contains(
+            r#"tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }"#
+        )
+    );
+
+    let single_instance = lib
+        .find(".plugin(tauri_plugin_single_instance::init")
+        .expect("single-instance plugin");
+    let deep_link = lib
+        .find(".plugin(tauri_plugin_deep_link::init())")
+        .expect("deep-link plugin");
+    let notification = lib
+        .find(".plugin(tauri_plugin_notification::init())")
+        .expect("notification plugin");
+    assert!(
+        single_instance < deep_link && single_instance < notification,
+        "single-instance must be the first plugin for secondary-process URLs"
+    );
+    assert!(lib.contains("channel_deep_link::NativeChannelShareInbox::default()"));
+    assert!(lib.contains("channel_deep_link::take_native_channel_share"));
+    assert!(lib.contains("channel_deep_link::install(app)"));
+
+    assert!(native.contains("Mutex<Option<ChannelShareTarget>>"));
+    assert!(native.contains("parse_channel_share_target(payload)"));
+    assert!(native.contains("app.emit(NATIVE_CHANNEL_SHARE_AVAILABLE, ())"));
+    assert!(native.contains("app.deep_link().on_open_url"));
+    assert!(native.contains("app.deep_link().get_current()"));
+    assert!(!native.contains("std::fs"));
+    assert!(!native.contains("localStorage"));
+
+    let mut capability_files = Vec::new();
+    collect_files(&root.join("src-tauri/capabilities"), &mut capability_files);
+    let capabilities = capability_files
+        .iter()
+        .map(|path| read_source(path).expect("capability source"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !capabilities.contains("deep-link:"),
+        "the deep-link plugin command API must not be callable from JavaScript"
+    );
+
+    let channels_pos = index
+        .find("/static/js/channels.js")
+        .expect("channels script");
+    let bridge_pos = index
+        .find("/static/js/native_channel_share.js")
+        .expect("native channel-share bridge");
+    let events_pos = index
+        .find("/static/js/tauri_events.js")
+        .expect("general Tauri event bridge");
+    assert!(channels_pos < bridge_pos && bridge_pos < events_pos);
+    assert!(channels.contains("function channelsOpenNativeSharedChannel(target)"));
+    assert!(channels.contains("_channelsPresentSharedTarget(target);"));
+    assert!(channels.contains("hasOwnProperty.call(target, 'key')"));
+    assert!(channels.contains("hasOwnProperty.call(target, 'join_key')"));
+
+    assert!(bridge.contains("RS.invoke('take_native_channel_share')"));
+    assert!(bridge.contains("'native_channel_share_available'"));
+    assert!(bridge.contains("_isSetupActive()"));
+    assert!(bridge.contains(".bottom-sheet.open"));
+    assert!(bridge.contains(".modal-overlay.active"));
+    assert!(bridge.contains(".game-modal-overlay"));
+    assert!(bridge.contains(".block-list-overlay"));
+    assert!(bridge.contains("#rs-image-viewer.open"));
+    assert!(bridge.contains(".action-popover.open"));
+    assert!(bridge.contains("MutationObserver"));
+    assert!(!bridge.contains("deep-link://new-url"));
+    assert!(!bridge.contains("localStorage"));
+    assert!(!bridge.contains("connect_channel_hub"));
+    assert!(!bridge.contains("join_channel"));
+    assert!(bridge_test.contains("native channel link tests passed"));
+}
+
 /// The hub persists operator policy and nothing else, creates rooms only for
 /// the operator, and never stores a join key. Each assertion below stands for
 /// a deliberate divergence from rrcd recorded in the fix registry; losing one

@@ -64,5 +64,17 @@
 		<string>bluetooth-central</string>
 		<string>bluetooth-peripheral</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<!-- Kept static because build-time plugin rewriting can race Xcode signing. -->
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ratspeak</string>
+			</array>
+			<key>CFBundleURLName</key>
+			<string>ratspeak</string>
+		</dict>
+	</array>
 </dict>
 </plist>

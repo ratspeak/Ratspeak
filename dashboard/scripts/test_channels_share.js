@@ -17,6 +17,10 @@ var contactCardSource = fs.readFileSync(
     path.join(__dirname, '..', 'static', 'js', 'contact_card.js'),
     'utf8'
 );
+var nativeShareSource = fs.readFileSync(
+    path.join(__dirname, '..', 'static', 'js', 'native_channel_share.js'),
+    'utf8'
+);
 
 function sourceRange(startName, endName) {
     var start = channelsSource.indexOf('function ' + startName);
@@ -130,8 +134,13 @@ function main() {
         'preview code must not join as a side effect');
     assert(shareFlow.indexOf('localStorage') === -1,
         'imported targets and pending transitions must stay ephemeral');
-    assert(shareFlow.indexOf('join_key') === -1 && shareFlow.indexOf('key:') === -1,
-        'share generation and parsing must not accept a room key field');
+    assert(shareFlow.indexOf('key:') === -1,
+        'share generation and parsing must not construct a room key field');
+    assert(
+        shareFlow.indexOf("hasOwnProperty.call(target, 'key')") !== -1 &&
+        shareFlow.indexOf("hasOwnProperty.call(target, 'join_key')") !== -1,
+        'the native typed boundary must explicitly reject any injected key field'
+    );
 
     assert(connectSheet.indexOf("sharedRoom ? 'Connect and review' : 'Connect'") !== -1);
     assert(connectSheet.indexOf('preserve_pending_share: true') !== -1);
@@ -141,6 +150,62 @@ function main() {
     assert(contactCardSource.indexOf('window.RS.qr = {') !== -1,
         'channel shares must reuse the common QR implementation');
     assert(contactCardSource.indexOf('openScanner: openContactQrScanner') !== -1);
+    assert(nativeShareSource.indexOf("RS.invoke('take_native_channel_share')") !== -1,
+        'native URLs must drain only the app-owned typed inbox');
+    assert(nativeShareSource.indexOf("'native_channel_share_available'") !== -1);
+    assert(nativeShareSource.indexOf('_isSetupActive()') !== -1,
+        'native previews must wait until first-run setup is complete');
+    assert(nativeShareSource.indexOf('.bottom-sheet.open') !== -1,
+        'native previews must not stack over an existing decision sheet');
+    assert(nativeShareSource.indexOf('.modal-overlay.active') !== -1 &&
+        nativeShareSource.indexOf('.game-modal-overlay') !== -1 &&
+        nativeShareSource.indexOf('.block-list-overlay') !== -1 &&
+        nativeShareSource.indexOf('#rs-image-viewer.open') !== -1 &&
+        nativeShareSource.indexOf('.action-popover.open') !== -1,
+        'native previews must wait for non-sheet decision surfaces too');
+    assert(nativeShareSource.indexOf('deep-link://new-url') === -1,
+        'the frontend must not subscribe to the plugin URL event');
+    assert(nativeShareSource.indexOf('localStorage') === -1,
+        'native targets must remain process-memory only');
+    assert(nativeShareSource.indexOf('connect_channel_hub') === -1);
+    assert(nativeShareSource.indexOf('join_channel') === -1);
+
+    var nativeEntry = sourceRange(
+        'channelsOpenNativeSharedChannel',
+        'channelsScanSharedChannel'
+    );
+    var presentedNativeTargets = [];
+    var nativeEntryContext = {
+        window: {},
+        Object: Object,
+        String: String,
+        _channelsPresentSharedTarget: function(target) {
+            presentedNativeTargets.push(target);
+        }
+    };
+    vm.runInNewContext(nativeEntry, nativeEntryContext, {
+        filename: 'channels-native-entry.js'
+    });
+    var validNativeTarget = {
+        format: 'ratspeak.channel.v1',
+        payload: 'ratspeak://channel?v=1&hub=00112233445566778899aabbccddeeff',
+        hub_destination_hash: '00112233445566778899aabbccddeeff',
+        room: null
+    };
+    assert.strictEqual(
+        nativeEntryContext.channelsOpenNativeSharedChannel(validNativeTarget),
+        true
+    );
+    assert.deepStrictEqual(presentedNativeTargets, [validNativeTarget]);
+    assert.strictEqual(
+        nativeEntryContext.channelsOpenNativeSharedChannel(Object.assign(
+            {},
+            validNativeTarget,
+            { key: 'must-never-cross-this-boundary' }
+        )),
+        false
+    );
+    assert.strictEqual(presentedNativeTargets.length, 1);
 
     var exact = applyContext(snapshot(1, 1, 'connecting', 'hub-a'));
     exact.context.channelsPendingShareJoin = {

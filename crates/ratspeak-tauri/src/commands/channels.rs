@@ -105,7 +105,12 @@ fn build_channel_share_target(
     })
 }
 
-fn parse_channel_share_target(payload: &str) -> Result<ChannelShareTarget, String> {
+/// Parse one canonical, key-free Ratspeak channel share target.
+///
+/// This is the shared authority for pasted/QR shares and native deep links.
+/// Native shell integrations must never interpret or persist the raw URL
+/// themselves.
+pub fn parse_channel_share_target(payload: &str) -> Result<ChannelShareTarget, String> {
     if payload != payload.trim() {
         return Err("Channel share is not in canonical form".into());
     }
