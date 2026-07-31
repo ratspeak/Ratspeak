@@ -100,7 +100,7 @@ fn rust_function_block<'a>(source: &'a str, function_name: &str) -> &'a str {
 }
 
 #[test]
-fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
+fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_product() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     let channels_js =
@@ -120,6 +120,8 @@ fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
     let snapshot_order_test =
         read_source(root.join("dashboard/scripts/test_channels_snapshot_order.js"))
             .expect("channels snapshot ordering test");
+    let history_test = read_source(root.join("dashboard/scripts/test_channels_history.js"))
+        .expect("channels history test");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     let tauri_build = read_source(root.join("src-tauri/build.rs")).expect("tauri build script");
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
@@ -168,6 +170,18 @@ fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
     assert!(channels_js.contains("function _channelsBuildHubGreeting"));
     assert!(channels_js.contains("function _channelsGroupPresenceEvents"));
     assert!(channels_js.contains("function _channelsBuildPresenceGroup"));
+    assert!(channels_js.contains("function _channelsLoadHistory"));
+    assert!(channels_js.contains("RS.invoke('api_channel_history'"));
+    assert!(channels_js.contains("before: older ? entry.next_before : null"));
+    assert!(channels_js.contains("function _channelsSyncHistory"));
+    assert!(channels_js.contains("after: after"));
+    assert!(channels_js.contains("function _channelsTimelineEntries"));
+    assert!(channels_js.contains("function channelsSelectHistoryRoom"));
+    assert!(channels_js.contains("api_channel_room_index"));
+    assert!(channels_js.contains("latest_recorded_at_ms"));
+    assert!(channels_js.contains("Local timeline"));
+    assert!(channels_js.contains("Load earlier"));
+    assert!(!channels_js.contains("localStorage.setItem"));
     assert!(channels_js.contains("function _channelsRenderMemberDetail"));
     assert!(channels_js.contains("function _channelsApplyComposerTypingPolicy"));
     assert!(channels_js.contains("function _channelsHandleComposerBeforeInput"));
@@ -190,6 +204,8 @@ fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
     assert!(channels_css.contains(".channel-transition-rail"));
     assert!(channels_css.contains(".channel-hub-greeting"));
     assert!(channels_css.contains(".channel-presence-summary"));
+    assert!(channels_css.contains(".channel-history-rail"));
+    assert!(channels_css.contains(".channel-day-separator"));
     assert!(channels_css.contains(".channel-member-detail-fields"));
     assert!(channels_js.contains("layout.classList.remove('members-open')"));
     assert!(build_css.contains("09-channels.css"));
@@ -200,9 +216,14 @@ fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
     assert!(!nav_js.contains("MOBILE_TAB_SLOTS = ['peers', 'message', 'channels'"));
 
     assert!(runtime.contains("Observed room membership remains session-scoped"));
-    assert!(runtime.contains("Channel traffic is never"));
-    assert!(runtime.contains("written through this service-state path."));
+    assert!(runtime.contains("bounded client-local append log"));
+    assert!(runtime.contains("never routed through the"));
+    assert!(runtime.contains("LXMF conversation store"));
     assert!(runtime.contains("TRANSCRIPT_LIMIT"));
+    assert!(runtime.contains("pub struct ChannelsHistorySnapshot"));
+    assert!(runtime.contains("HISTORY_COMMAND_BUFFER"));
+    assert!(runtime.contains("command_tx.try_send"));
+    assert!(runtime.contains("db::append_channel_history_events"));
     assert!(runtime.contains("JOIN_CONFIRM_TIMEOUT"));
     assert!(runtime.contains("apply_rrcd_room_status_notice"));
     assert!(runtime.contains("parse_rrcd_room_status"));
@@ -259,8 +280,13 @@ fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
     assert!(
         snapshot_order_test.contains("direct joins must not start the stale multi-query reload")
     );
+    assert!(history_test.contains("the opaque 64-bit cursor must remain a string"));
+    assert!(history_test.contains("receive sequence, not peer timestamps"));
+    assert!(history_test.contains("forward catch-up closes the gap"));
+    assert!(history_test.contains("previous identity epoch must be discarded"));
     for command in [
         "api_channels",
+        "api_channel_history",
         "discover_channel_hubs",
         "connect_channel_hub",
         "disconnect_channel_hub",
@@ -269,6 +295,7 @@ fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
         "send_channel_message",
         "api_saved_channel_hubs",
         "api_saved_channel_rooms",
+        "api_channel_room_index",
     ] {
         assert!(commands.contains(&format!("fn {command}")));
         assert!(tauri_lib.contains(command));
@@ -291,6 +318,24 @@ fn channels_keep_traffic_live_only_and_wire_service_state_across_the_product() {
     assert!(channel_schema.contains("CREATE TABLE IF NOT EXISTS channel_room_secrets"));
     assert!(channel_schema.contains("ciphertext           BLOB NOT NULL"));
     assert!(channel_schema.contains("idx_channel_hubs_identity_desired"));
+    assert!(db.contains("CREATE TABLE IF NOT EXISTS channel_history"));
+    assert!(db.contains("recorded_at_ms"));
+    assert!(db.contains("idx_channel_history_room_sequence"));
+    assert!(db.contains("idx_channel_history_identity_sequence"));
+    assert!(db.contains("CHANNEL_HISTORY_MAX_EVENTS_PER_ROOM"));
+    assert!(db.contains("CHANNEL_HISTORY_MAX_EVENTS_PER_IDENTITY"));
+    assert!(db.contains("CHANNEL_HISTORY_MAX_EVENTS_GLOBAL"));
+    assert!(db.contains("CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_PER_ROOM"));
+    assert!(db.contains("CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_PER_IDENTITY"));
+    assert!(db.contains("CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_GLOBAL"));
+    assert!(db.contains("CREATE TABLE IF NOT EXISTS channel_history_room_usage"));
+    assert!(db.contains("channel_history_usage_after_insert"));
+    assert!(db.contains("channel_history_usage_after_delete"));
+    assert!(db.contains("pub struct ChannelHistoryPage"));
+    assert!(db.contains("pub fn list_channel_history_after"));
+    assert!(db.contains("pub next_after: Option<String>"));
+    assert!(db.contains("pub struct ChannelRoomIndexEntry"));
+    assert!(db.contains("pub fn list_channel_room_index"));
     assert!(channels_js.contains("service_model_version: 1"));
     assert!(channels_js.contains("connection_budget: 1"));
     assert!(channels_js.contains("selected_hub_destination: null"));

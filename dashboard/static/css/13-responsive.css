@@ -3695,6 +3695,27 @@
         padding: var(--space-6) var(--space-5);
     }
 
+    .channel-history-rail {
+        gap: var(--space-3);
+        margin-bottom: var(--space-5);
+    }
+
+    .channel-history-banner {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: var(--space-4);
+        margin-bottom: var(--space-6);
+    }
+
+    .channel-history-banner .nr-btn {
+        width: 100%;
+        min-height: 42px;
+    }
+
+    .channel-day-separator {
+        margin: var(--space-7) 0 var(--space-5);
+    }
+
     .channel-welcome-state {
         min-height: 220px;
         padding: var(--space-10) var(--space-8);

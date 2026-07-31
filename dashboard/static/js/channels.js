@@ -1,5 +1,6 @@
-// Channels: live, session-scoped group conversations. This module deliberately
-// never writes transcript or membership data to browser or app storage.
+// Channels: live group conversations with a bounded, identity-scoped timeline.
+// Accepted room activity is persisted only by the native database API: never
+// in browser storage, never as LXMF messages, and never as a hub backlog.
 
 var channelsSnapshot = {
     protocol_version: '0.1.3',
@@ -11,6 +12,12 @@ var channelsSnapshot = {
     hubs: [],
     durability: {
         phase: 'loading',
+        last_error: null
+    },
+    history: {
+        phase: 'unavailable',
+        pending_events: 0,
+        dropped_events: 0,
         last_error: null
     },
     phase: 'unavailable',
@@ -25,7 +32,9 @@ var channelsSnapshot = {
 var channelsDiscoveredHubs = [];
 var channelsSavedHubs = [];
 var channelsSavedRooms = [];
+var channelsRoomIndex = [];
 var channelsActiveRoom = null;
+var channelsHistorySelection = null;
 var channelsPendingHubLabel = '';
 var _channelsLoadedAt = 0;
 var _channelsLastHubRefreshAt = 0;
@@ -44,9 +53,18 @@ var _channelsExpandedPresenceGroups = {};
 var _channelsPresenceGroupSeq = 0;
 var _channelsSelectedMemberKey = null;
 var _channelsMemberReturnFocusKey = null;
+var _channelsHistoryCache = {};
+var _channelsHistoryRequestSeq = 0;
+var _channelsHistoryEpoch = 0;
+var _channelsRoomIndexRequestSeq = 0;
+var _channelsRenderedRoomKey = '';
 var CHANNEL_PRESENCE_GROUP_WINDOW_MS = 5 * 60 * 1000;
 // Brief leave/rejoin churn is one continuous presence when nothing happens between it.
 var CHANNEL_PRESENCE_REJOIN_WINDOW_MS = 15 * 1000;
+var CHANNEL_HISTORY_PAGE_SIZE = 100;
+var CHANNEL_HISTORY_SYNC_PAGE_SIZE = 200;
+var CHANNEL_HISTORY_CACHE_ROOM_LIMIT = 5000;
+var CHANNEL_HISTORY_MAX_SYNC_PAGES = 32;
 
 function _channelsEl(id) {
     return document.getElementById(id);
@@ -138,6 +156,12 @@ function _channelsHubName(hub) {
     return hub.name || hub.announced_name || hub.label || 'Channel hub';
 }
 
+function _channelsTimelineHubName(hub) {
+    var name = _channelsHubName(hub);
+    if (name !== 'Channel hub' || !hub || !hub.destination_hash) return name;
+    return 'Hub ' + _channelsShortHash(hub.destination_hash);
+}
+
 function _channelsOwnedHubReady() {
     return typeof channelHubOverview !== 'undefined' && channelHubOverview &&
         channelHubOverview.status && channelHubOverview.status.running &&
@@ -158,6 +182,7 @@ function channelsConnectToHub(hub) {
         args: { destination_hash: destination, nickname: nickname }
     }).then(function(snapshot) {
         channelsActiveRoom = null;
+        channelsHistorySelection = null;
         channelsApplySnapshot(snapshot);
         if (typeof showToast === 'function') {
             showToast('Connecting to channel hub\u2026', 'toast-blue', 2600);
@@ -186,6 +211,7 @@ function _channelsRoomPhaseLabel(phase) {
         case 'joined': return 'Live';
         case 'parting': return 'Leaving';
         case 'error': return 'Not joined';
+        case 'history': return 'Local history';
         default: return 'Not joined';
     }
 }
@@ -215,6 +241,64 @@ function _channelsRoomByName(name) {
         if (rooms[i].name === name) return rooms[i];
     }
     return null;
+}
+
+function _channelsHistoryKey(hubDestinationHash, roomName) {
+    var hub = String(hubDestinationHash || '').trim().toLowerCase();
+    var room = String(roomName || '').trim().toLowerCase();
+    return hub && room ? hub + '\n' + room : '';
+}
+
+function _channelsHubByDestination(destinationHash) {
+    var target = String(destinationHash || '').toLowerCase();
+    var activeHub = channelsSnapshot.hub;
+    if (activeHub && String(activeHub.destination_hash || '').toLowerCase() === target) {
+        return activeHub;
+    }
+    var saved = _channelsSavedHub(target);
+    if (saved) return saved;
+    for (var i = 0; i < channelsDiscoveredHubs.length; i++) {
+        if (String(channelsDiscoveredHubs[i].destination_hash || '').toLowerCase() === target) {
+            return channelsDiscoveredHubs[i];
+        }
+    }
+    return { destination_hash: target };
+}
+
+function _channelsSelectedRoomView() {
+    if (channelsHistorySelection) {
+        return {
+            name: channelsHistorySelection.room_name,
+            phase: 'history',
+            history_only: true,
+            members: [],
+            transcript: []
+        };
+    }
+    return channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
+}
+
+function _channelsHistoryContext(room) {
+    if (!room) return null;
+    if (room.history_only && channelsHistorySelection) {
+        return {
+            key: _channelsHistoryKey(
+                channelsHistorySelection.hub_destination_hash,
+                channelsHistorySelection.room_name
+            ),
+            hub_destination_hash: channelsHistorySelection.hub_destination_hash,
+            room_name: channelsHistorySelection.room_name,
+            history_only: true
+        };
+    }
+    var hub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
+    if (!hub) return null;
+    return {
+        key: _channelsHistoryKey(hub, room.name),
+        hub_destination_hash: String(hub).toLowerCase(),
+        room_name: room.name,
+        history_only: false
+    };
 }
 
 function _channelsAddLocalRoomEvent(roomName, text) {
@@ -318,6 +402,14 @@ function channelsApplySnapshot(snapshot) {
     if (!Array.isArray(channelsSnapshot.rooms)) channelsSnapshot.rooms = [];
     if (!channelsSnapshot.hub_greeting) channelsSnapshot.hub_greeting = null;
     if (!Array.isArray(channelsSnapshot.notices)) channelsSnapshot.notices = [];
+    if (!channelsSnapshot.history) {
+        channelsSnapshot.history = {
+            phase: 'unavailable',
+            pending_events: 0,
+            dropped_events: 0,
+            last_error: null
+        };
+    }
 
     var newHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
     if (newHub !== oldHub) {
@@ -332,11 +424,19 @@ function channelsApplySnapshot(snapshot) {
         _channelsSavedRoomKeys = {};
         channelsLoadSavedRooms(newHub);
     }
+    if (oldHub && !newHub) channelsRefreshRoomIndex();
 
     if (channelsActiveRoom && !_channelsRoomByName(channelsActiveRoom)) {
         channelsActiveRoom = null;
     }
-    if (!channelsActiveRoom && channelsSnapshot.rooms.length) {
+    if (channelsHistorySelection &&
+            String(channelsHistorySelection.hub_destination_hash).toLowerCase() ===
+                String(newHub || '').toLowerCase() &&
+            _channelsRoomByName(channelsHistorySelection.room_name)) {
+        channelsActiveRoom = channelsHistorySelection.room_name;
+        channelsHistorySelection = null;
+    }
+    if (!channelsActiveRoom && !channelsHistorySelection && channelsSnapshot.rooms.length) {
         channelsActiveRoom = channelsSnapshot.rooms[0].name;
     }
     Object.keys(_channelsLocalRoomEvents).forEach(function(roomName) {
@@ -345,6 +445,14 @@ function channelsApplySnapshot(snapshot) {
 
     _channelsPersistConveniences();
     renderChannels();
+    var selectedRoom = _channelsSelectedRoomView();
+    var selectedHistory = _channelsHistoryContext(selectedRoom);
+    var writer = channelsSnapshot.history || {};
+    if (selectedHistory && selectedRoom && !selectedRoom.history_only &&
+            Number(writer.pending_events) === 0 &&
+            (writer.phase === 'ready' || writer.phase === 'degraded')) {
+        _channelsScheduleHistorySync(selectedHistory);
+    }
     if (typeof channelHubRenderHome === 'function') channelHubRenderHome();
     return true;
 }
@@ -357,15 +465,22 @@ function channelsLoad(force) {
         return Promise.resolve(channelsSnapshot);
     }
 
+    var roomIndexRequest = ++_channelsRoomIndexRequestSeq;
+    var roomIndexEpoch = _channelsHistoryEpoch;
     _channelsLoadPromise = Promise.all([
         RS.invoke('api_channels'),
         RS.invoke('api_saved_channel_hubs').catch(function() { return []; }),
         typeof channelHubLoad === 'function'
             ? channelHubLoad(force).catch(function() { return null; })
-            : Promise.resolve(null)
+            : Promise.resolve(null),
+        RS.invoke('api_channel_room_index').catch(function() { return []; })
     ]).then(function(results) {
         _channelsLoadedAt = Date.now();
         channelsSavedHubs = Array.isArray(results[1]) ? results[1] : [];
+        if (roomIndexRequest === _channelsRoomIndexRequestSeq &&
+                roomIndexEpoch === _channelsHistoryEpoch) {
+            channelsRoomIndex = Array.isArray(results[3]) ? results[3] : [];
+        }
         channelsApplySnapshot(results[0]);
         if (channelsSnapshot.hub && channelsSnapshot.hub.destination_hash) {
             channelsLoadSavedRooms(channelsSnapshot.hub.destination_hash);
@@ -390,6 +505,21 @@ function channelsLoad(force) {
         return result;
     });
     return _channelsLoadPromise;
+}
+
+function channelsRefreshRoomIndex() {
+    var request = ++_channelsRoomIndexRequestSeq;
+    var epoch = _channelsHistoryEpoch;
+    return RS.invoke('api_channel_room_index').then(function(entries) {
+        if (request !== _channelsRoomIndexRequestSeq || epoch !== _channelsHistoryEpoch) {
+            return channelsRoomIndex;
+        }
+        channelsRoomIndex = Array.isArray(entries) ? entries : [];
+        renderChannels();
+        return channelsRoomIndex;
+    }).catch(function() {
+        return channelsRoomIndex;
+    });
 }
 
 function channelsRefreshAvailableHubs() {
@@ -417,12 +547,230 @@ function channelsLoadSavedRooms(destinationHash) {
     }).then(function(rooms) {
         if (_channelsSavedRoomsHub !== destination) return channelsSavedRooms;
         channelsSavedRooms = Array.isArray(rooms) ? rooms : [];
+        var otherHubs = channelsRoomIndex.filter(function(entry) {
+            return entry.hub_destination_hash !== destination;
+        });
+        var localByRoom = {};
+        channelsRoomIndex.forEach(function(entry) {
+            if (entry.hub_destination_hash !== destination || !entry.has_history) return;
+            localByRoom[entry.room_name] = Object.assign({}, entry, { saved: false });
+        });
+        channelsSavedRooms.forEach(function(saved) {
+            var indexed = localByRoom[saved.room_name] || {
+                hub_destination_hash: destination,
+                room_name: saved.room_name,
+                latest_recorded_at_ms: null,
+                has_history: false
+            };
+            indexed.saved = true;
+            indexed.last_joined = saved.last_joined;
+            localByRoom[saved.room_name] = indexed;
+        });
+        channelsRoomIndex = otherHubs.concat(Object.keys(localByRoom).map(function(roomName) {
+            return localByRoom[roomName];
+        }));
         renderChannels();
         return channelsSavedRooms;
     }).catch(function() {
         if (_channelsSavedRoomsHub === destination) channelsSavedRooms = [];
         return [];
     });
+}
+
+function _channelsHistoryEntry(context) {
+    if (!context || !context.key) return null;
+    if (!_channelsHistoryCache[context.key]) {
+        _channelsHistoryCache[context.key] = {
+            items: [],
+            loaded: false,
+            loading: false,
+            error: null,
+            has_more: false,
+            next_before: null,
+            latest_sequence: '0',
+            request_id: 0,
+            syncing: false,
+            sync_id: 0,
+            sync_timer: null
+        };
+    }
+    return _channelsHistoryCache[context.key];
+}
+
+function _channelsNormalizeHistoryItem(item) {
+    item = item || {};
+    return {
+        id: String(item.event_id || item.id || ''),
+        sequence: String(item.sequence || ''),
+        kind: item.kind || 'message',
+        timestamp_ms: Number(item.timestamp_ms) || 0,
+        recorded_at_ms: Number(item.recorded_at_ms) || 0,
+        source_hash: item.source_hash || null,
+        nickname: item.nickname || null,
+        text: String(item.text || ''),
+        ours: !!item.ours
+    };
+}
+
+function _channelsMergeHistoryItems(older, newer) {
+    var seen = {};
+    var merged = [];
+    (older || []).concat(newer || []).forEach(function(item) {
+        var normalized = _channelsNormalizeHistoryItem(item);
+        if (!normalized.id || seen[normalized.id]) return;
+        seen[normalized.id] = true;
+        merged.push(normalized);
+    });
+    if (merged.length > CHANNEL_HISTORY_CACHE_ROOM_LIMIT) {
+        merged.splice(0, merged.length - CHANNEL_HISTORY_CACHE_ROOM_LIMIT);
+    }
+    return merged;
+}
+
+function _channelsCurrentHistoryKey() {
+    var room = _channelsSelectedRoomView();
+    var context = _channelsHistoryContext(room);
+    return context ? context.key : '';
+}
+
+function _channelsLoadHistory(context, older) {
+    var entry = _channelsHistoryEntry(context);
+    if (!entry || entry.loading) return Promise.resolve(entry);
+    if (older && (!entry.loaded || !entry.has_more || !entry.next_before)) {
+        return Promise.resolve(entry);
+    }
+    if (!older && entry.loaded) return Promise.resolve(entry);
+
+    var requestId = ++_channelsHistoryRequestSeq;
+    var requestEpoch = _channelsHistoryEpoch;
+    var transcript = _channelsEl('channel-transcript');
+    var restore = older && transcript && _channelsCurrentHistoryKey() === context.key ? {
+        key: context.key,
+        scroll_height: transcript.scrollHeight,
+        scroll_top: transcript.scrollTop
+    } : null;
+    entry.loading = true;
+    entry.error = null;
+    entry.request_id = requestId;
+
+    return RS.invoke('api_channel_history', {
+        args: {
+            hub_destination_hash: context.hub_destination_hash,
+            room: context.room_name,
+            before: older ? entry.next_before : null,
+            after: null,
+            limit: CHANNEL_HISTORY_PAGE_SIZE
+        }
+    }).then(function(page) {
+        if (requestEpoch !== _channelsHistoryEpoch || entry.request_id !== requestId) {
+            return entry;
+        }
+        page = page || {};
+        var pageItems = Array.isArray(page.items) ? page.items : [];
+        entry.items = older
+            ? _channelsMergeHistoryItems(pageItems, entry.items)
+            : _channelsMergeHistoryItems([], pageItems);
+        entry.loaded = true;
+        entry.has_more = !!page.has_more;
+        entry.next_before = page.next_before == null ? null : String(page.next_before);
+        if (!older) {
+            entry.latest_sequence = page.next_after == null
+                ? '0' : String(page.next_after);
+        }
+        entry.error = null;
+        return entry;
+    }).catch(function(error) {
+        if (requestEpoch === _channelsHistoryEpoch && entry.request_id === requestId) {
+            entry.error = 'Local history could not be loaded.';
+            window.RS.diag('warn', '[Channels] local history query failed:', error);
+        }
+        return entry;
+    }).then(function(result) {
+        if (requestEpoch !== _channelsHistoryEpoch || entry.request_id !== requestId) {
+            return result;
+        }
+        entry.loading = false;
+        if (_channelsCurrentHistoryKey() === context.key) {
+            _channelsRenderRoom(restore);
+        }
+        var writer = channelsSnapshot.history || {};
+        if (!older && Number(writer.pending_events) === 0 &&
+                (writer.phase === 'ready' || writer.phase === 'degraded')) {
+            _channelsScheduleHistorySync(context);
+        }
+        return result;
+    });
+}
+
+function _channelsScheduleHistorySync(context) {
+    var entry = _channelsHistoryEntry(context);
+    if (!entry || !entry.loaded || entry.loading || entry.syncing || entry.sync_timer) return;
+    var epoch = _channelsHistoryEpoch;
+    entry.sync_timer = setTimeout(function() {
+        entry.sync_timer = null;
+        if (epoch === _channelsHistoryEpoch) _channelsSyncHistory(context);
+    }, 80);
+}
+
+function _channelsSyncHistory(context) {
+    var entry = _channelsHistoryEntry(context);
+    if (!entry || !entry.loaded || entry.loading || entry.syncing) {
+        return Promise.resolve(entry);
+    }
+    var epoch = _channelsHistoryEpoch;
+    var syncId = ++_channelsHistoryRequestSeq;
+    var pages = 0;
+    var needsAnotherPass = false;
+    var changed = false;
+    entry.syncing = true;
+    entry.sync_id = syncId;
+
+    function nextPage(after) {
+        return RS.invoke('api_channel_history', {
+            args: {
+                hub_destination_hash: context.hub_destination_hash,
+                room: context.room_name,
+                before: null,
+                after: after,
+                limit: CHANNEL_HISTORY_SYNC_PAGE_SIZE
+            }
+        }).then(function(page) {
+            if (epoch !== _channelsHistoryEpoch || entry.sync_id !== syncId) return entry;
+            page = page || {};
+            var pageItems = Array.isArray(page.items) ? page.items : [];
+            entry.items = _channelsMergeHistoryItems(entry.items, pageItems);
+            var nextAfter = page.next_after == null ? after : String(page.next_after);
+            if (nextAfter !== after) {
+                entry.latest_sequence = nextAfter;
+                changed = true;
+            }
+            pages++;
+            if (page.has_more && nextAfter !== after) {
+                if (pages < CHANNEL_HISTORY_MAX_SYNC_PAGES) return nextPage(nextAfter);
+                needsAnotherPass = true;
+            }
+            return entry;
+        });
+    }
+
+    return nextPage(String(entry.latest_sequence || '0')).catch(function(error) {
+        window.RS.diag('warn', '[Channels] local history catch-up failed:', error);
+        return entry;
+    }).then(function(result) {
+        if (epoch !== _channelsHistoryEpoch || entry.sync_id !== syncId) return result;
+        entry.syncing = false;
+        if (changed && _channelsCurrentHistoryKey() === context.key) _channelsRenderRoom();
+        if (needsAnotherPass) _channelsScheduleHistorySync(context);
+        return result;
+    });
+}
+
+function _channelsEnsureHistory(context) {
+    var entry = _channelsHistoryEntry(context);
+    if (entry && !entry.loaded && !entry.loading && !entry.error) {
+        _channelsLoadHistory(context, false);
+    }
+    return entry;
 }
 
 // Re-read the saved hubs after the backend retires a superseded identity name
@@ -536,7 +884,16 @@ function _channelsRenderList() {
             list.appendChild(_channelsBuildRoomRow(room, false));
         });
         channelsSavedRooms.forEach(function(saved) {
-            if (!liveNames[saved.room_name]) list.appendChild(_channelsBuildRoomRow({ name: saved.room_name }, true));
+            if (!liveNames[saved.room_name]) {
+                var indexed = channelsRoomIndex.find(function(entry) {
+                    return entry.hub_destination_hash === saved.hub_destination_hash &&
+                        entry.room_name === saved.room_name;
+                });
+                list.appendChild(_channelsBuildRoomRow({ name: saved.room_name }, true, {
+                    hub_destination_hash: saved.hub_destination_hash,
+                    has_history: !!(indexed && indexed.has_history)
+                }));
+            }
         });
         if (!list.children.length) {
             list.appendChild(_channelsEmptyList('No channels joined', 'Join a channel', 'join'));
@@ -544,11 +901,19 @@ function _channelsRenderList() {
         return;
     }
 
-    if (label) label.textContent = 'Available hubs';
+    var recentRooms = channelsRoomIndex.slice().sort(function(a, b) {
+        var bRecent = Number(b.latest_recorded_at_ms) || (Number(b.last_joined) || 0) * 1000;
+        var aRecent = Number(a.latest_recorded_at_ms) || (Number(a.last_joined) || 0) * 1000;
+        return bRecent - aRecent;
+    });
+    if (label) label.textContent = recentRooms.length ? 'Browse' : 'Available hubs';
     if (join) join.hidden = true;
     var hubs = _channelsMergedHubs();
+    if (hubs.length && recentRooms.length) {
+        list.appendChild(_channelsListSection('Available hubs'));
+    }
     hubs.forEach(function(hub) { list.appendChild(_channelsBuildHubRow(hub)); });
-    if (!hubs.length) {
+    if (!hubs.length && !recentRooms.length) {
         var ownHubReady = _channelsOwnedHubReady();
         var emptyText = _channelsIsConnecting()
             ? 'Connecting to hub\u2026'
@@ -559,6 +924,25 @@ function _channelsRenderList() {
             ownHubReady ? null : 'connect'
         ));
     }
+    if (recentRooms.length) {
+        list.appendChild(_channelsListSection('On this device'));
+        recentRooms.forEach(function(saved) {
+            list.appendChild(_channelsBuildRoomRow({ name: saved.room_name }, true, {
+                hub_destination_hash: saved.hub_destination_hash,
+                has_history: !!saved.has_history,
+                hub_label: _channelsTimelineHubName(_channelsHubByDestination(
+                    saved.hub_destination_hash
+                ))
+            }));
+        });
+    }
+}
+
+function _channelsListSection(text) {
+    var section = document.createElement('div');
+    section.className = 'channels-list-section';
+    section.textContent = text;
+    return section;
 }
 
 function _channelsEmptyList(text, actionText, action) {
@@ -640,10 +1024,22 @@ function _channelsBuildHubRow(hub) {
     return row;
 }
 
-function _channelsBuildRoomRow(room, savedOnly) {
+function _channelsBuildRoomRow(room, savedOnly, options) {
+    options = options || {};
+    var historyKey = _channelsHistoryKey(options.hub_destination_hash, room.name);
+    var selectedHistoryKey = channelsHistorySelection
+        ? _channelsHistoryKey(
+            channelsHistorySelection.hub_destination_hash,
+            channelsHistorySelection.room_name
+        )
+        : '';
     var row = document.createElement('button');
     row.type = 'button';
-    row.className = 'channel-room-row' + (!savedOnly && room.name === channelsActiveRoom ? ' active' : '');
+    row.className = 'channel-room-row' + (
+        (!savedOnly && room.name === channelsActiveRoom) ||
+        (savedOnly && historyKey && historyKey === selectedHistoryKey)
+            ? ' active' : ''
+    );
     row.dataset.room = room.name;
     if (!savedOnly) row.dataset.phase = room.phase || 'joining';
 
@@ -660,7 +1056,10 @@ function _channelsBuildRoomRow(room, savedOnly) {
     var meta = document.createElement('span');
     meta.className = 'channel-room-row-meta';
     if (savedOnly) {
-        meta.textContent = 'Joined before \u00b7 tap to rejoin';
+        var localState = options.has_history ? 'stored locally' : 'saved locally';
+        meta.textContent = options.hub_label
+            ? options.hub_label + ' \u00b7 ' + localState
+            : localState.charAt(0).toUpperCase() + localState.slice(1) + ' \u00b7 open';
     } else if (room.last_error) {
         meta.textContent = room.last_error;
     } else if (room.phase === 'joined') {
@@ -676,23 +1075,27 @@ function _channelsBuildRoomRow(room, savedOnly) {
     if (savedOnly || room.phase !== 'joined') {
         var status = document.createElement('span');
         status.className = 'channel-row-status' + (!savedOnly && room.phase === 'error' ? ' error' : '');
-        status.textContent = savedOnly ? 'Recent' : _channelsRoomPhaseLabel(room.phase);
+        status.textContent = savedOnly
+            ? (options.has_history ? 'History' : 'Saved')
+            : _channelsRoomPhaseLabel(room.phase);
         row.appendChild(status);
     }
 
     row.addEventListener('click', function() {
-        if (savedOnly) channelsOpenJoinSheet(room.name);
+        if (savedOnly) {
+            channelsSelectHistoryRoom(options.hub_destination_hash, room.name);
+        }
         else channelsSelectRoom(room.name);
     });
     return row;
 }
 
-function _channelsRenderRoom() {
+function _channelsRenderRoom(scrollRestore) {
     var layout = _channelsEl('channels-layout');
     var header = _channelsEl('channel-room-header');
     var compose = _channelsEl('channel-compose');
     var transcript = _channelsEl('channel-transcript');
-    var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
+    var room = _channelsSelectedRoomView();
     if (!header || !transcript || !compose) return;
     if (layout) layout.classList.toggle('has-active-room', !!room);
     if (layout) layout.classList.toggle('room-live', !!room && room.phase === 'joined');
@@ -703,14 +1106,25 @@ function _channelsRenderRoom() {
         compose.hidden = true;
         _channelsRenderRoomEmpty(transcript);
         _channelsRenderMembers(null);
+        _channelsRenderedRoomKey = '';
         return;
     }
+
+    var historyContext = _channelsHistoryContext(room);
+    var historyEntry = _channelsEnsureHistory(historyContext);
+    var renderKey = historyContext
+        ? historyContext.key + (room.history_only ? '|history' : '|live')
+        : 'room|' + room.name;
+    var roomChanged = _channelsRenderedRoomKey !== renderKey;
+    _channelsRenderedRoomKey = renderKey;
 
     header.hidden = false;
     compose.hidden = room.phase !== 'joined';
     if (room.phase !== 'joined' && layout) layout.classList.remove('members-open');
     var membersToggle = _channelsEl('channel-members-toggle');
     if (membersToggle) membersToggle.hidden = room.phase !== 'joined';
+    var roomMenu = _channelsEl('channel-room-menu-btn');
+    if (roomMenu) roomMenu.hidden = !!room.history_only;
     _channelsSetText('channel-room-title', room.name);
     var phase = _channelsEl('channel-room-phase');
     if (phase) {
@@ -725,6 +1139,10 @@ function _channelsRenderRoom() {
         roomMeta = 'Leaving channel';
     } else if (room.phase === 'error') {
         roomMeta = room.last_error || 'Join was not confirmed';
+    } else if (room.history_only && historyContext) {
+        roomMeta = _channelsTimelineHubName(_channelsHubByDestination(
+            historyContext.hub_destination_hash
+        )) + ' \u00b7 stored on this device';
     } else {
         roomMeta = memberCount ? memberCount + (memberCount === 1 ? ' person here' : ' people here') : 'No member list';
         if (room.topic) roomMeta = room.topic + (memberCount ? ' \u00b7 ' + roomMeta : '');
@@ -733,37 +1151,46 @@ function _channelsRenderRoom() {
 
     var wasNearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 90;
     transcript.textContent = '';
-    var items = [];
-    var itemOrder = 0;
-    channelsSnapshot.notices.forEach(function(item) {
-        items.push({ item: item, hubNotice: true, order: itemOrder++ });
-    });
-    (room.transcript || []).forEach(function(item) {
-        items.push({ item: item, hubNotice: _channelsIsHubNotice(item), order: itemOrder++ });
-    });
-    (_channelsLocalRoomEvents[room.name] || []).forEach(function(item) {
-        items.push({ item: item, hubNotice: false, order: itemOrder++ });
-    });
-    items.sort(function(a, b) {
-        var byTime = (a.item.timestamp_ms || 0) - (b.item.timestamp_ms || 0);
-        return byTime || a.order - b.order;
-    });
+    if (!room.history_only) {
+        channelsSnapshot.notices.forEach(function(item) {
+            transcript.appendChild(_channelsBuildHubNotice(item));
+        });
+    }
+    if (historyContext && historyEntry) {
+        transcript.appendChild(_channelsBuildHistoryRail(historyContext, historyEntry));
+    }
+    var items = _channelsTimelineEntries(room, historyEntry);
     var renderedItems = _channelsGroupPresenceEvents(items, room.name);
-    if (room.phase !== 'joined') {
+    if (room.history_only && renderedItems.length) {
+        transcript.appendChild(_channelsBuildHistoryOnlyBanner(historyContext));
+    } else if (room.phase !== 'joined' && !room.history_only) {
         transcript.appendChild(_channelsBuildRoomTransition(room));
     }
-    if (!renderedItems.length && room.phase === 'joined') {
+    if (!renderedItems.length && room.history_only) {
+        transcript.appendChild(_channelsBuildHistoryEmpty(historyContext, historyEntry));
+    } else if (!renderedItems.length && room.phase === 'joined') {
         var waiting = document.createElement('div');
         waiting.className = 'channel-welcome-state';
         var waitingTitle = document.createElement('h3');
         waitingTitle.textContent = 'Ready when you are';
         var waitingCopy = document.createElement('p');
-        waitingCopy.textContent = 'Messages will appear here as people post.';
+        waitingCopy.textContent = historyEntry && historyEntry.loading
+            ? 'Loading this device\u2019s recent activity\u2026'
+            : 'Messages will appear here as people post.';
         waiting.appendChild(waitingTitle);
         waiting.appendChild(waitingCopy);
         transcript.appendChild(waiting);
     } else if (renderedItems.length) {
+        var previousDay = null;
         renderedItems.forEach(function(entry) {
+            var dayItem = entry.presenceGroup && entry.presenceGroup.entries.length
+                ? entry.presenceGroup.entries[0].item
+                : entry.item;
+            var day = _channelsDayKey(dayItem);
+            if (day && day !== previousDay) {
+                transcript.appendChild(_channelsBuildDaySeparator(dayItem));
+                previousDay = day;
+            }
             if (entry.presenceGroup) {
                 transcript.appendChild(_channelsBuildPresenceGroup(entry.presenceGroup));
             } else {
@@ -771,11 +1198,205 @@ function _channelsRenderRoom() {
             }
         });
     }
-    if (wasNearBottom || channelsActiveRoom !== room.name) {
+    if (scrollRestore && scrollRestore.key === (historyContext && historyContext.key)) {
+        requestAnimationFrame(function() {
+            transcript.scrollTop = scrollRestore.scroll_top +
+                Math.max(0, transcript.scrollHeight - scrollRestore.scroll_height);
+        });
+    } else if (wasNearBottom || roomChanged) {
         requestAnimationFrame(function() { transcript.scrollTop = transcript.scrollHeight; });
     }
-    _channelsRenderMembers(room);
+    _channelsRenderMembers(room.history_only ? null : room);
     _channelsUpdateComposer();
+}
+
+function _channelsTimelineEntries(room, historyEntry) {
+    var entries = [];
+    var seen = {};
+    var order = 0;
+    var historyItems = historyEntry && Array.isArray(historyEntry.items)
+        ? historyEntry.items : [];
+    var historyById = {};
+    historyItems.forEach(function(item) {
+        if (item.id) historyById[item.id] = item;
+    });
+
+    function append(item, hubNotice) {
+        if (!item) return;
+        var id = String(item.id || '');
+        if (id && seen[id]) return;
+        if (id) seen[id] = true;
+        entries.push({ item: item, hubNotice: !!hubNotice, order: order++ });
+    }
+
+    if (room.history_only) {
+        historyItems.forEach(function(item) { append(item, false); });
+        return entries;
+    }
+
+    var liveItems = Array.isArray(room.transcript) ? room.transcript : [];
+    var liveIds = {};
+    liveItems.forEach(function(item) {
+        if (item && item.id) liveIds[item.id] = true;
+    });
+    // The native append log is canonical for durable ordering; transcript
+    // items that are no longer inside the bounded live window precede that
+    // window. Matching live items retain their freshest presentation fields
+    // while inheriting the local receive clock used for day boundaries.
+    historyItems.forEach(function(item) {
+        if (!liveIds[item.id]) append(item, false);
+    });
+    liveItems.forEach(function(item) {
+        var stored = item && item.id ? historyById[item.id] : null;
+        var merged = stored ? Object.assign({}, item, {
+            sequence: stored.sequence,
+            recorded_at_ms: stored.recorded_at_ms
+        }) : item;
+        append(merged, _channelsIsHubNotice(merged));
+    });
+    (_channelsLocalRoomEvents[room.name] || []).forEach(function(item) {
+        append(item, false);
+    });
+    return entries;
+}
+
+function _channelsBuildHistoryRail(context, entry) {
+    var rail = document.createElement('div');
+    rail.className = 'channel-history-rail';
+    rail.dataset.phase = entry.error ? 'error' :
+        (channelsSnapshot.history && channelsSnapshot.history.phase) || 'ready';
+    rail.setAttribute('role', entry.error ? 'alert' : 'status');
+
+    var label = document.createElement('span');
+    label.className = 'channel-history-label';
+    label.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 1.5"/></svg>';
+    var text = document.createElement('span');
+    var writer = channelsSnapshot.history || {};
+    if (entry.error) {
+        text.textContent = entry.error;
+    } else if (!entry.loaded && entry.loading) {
+        text.textContent = 'Loading local timeline\u2026';
+    } else if (writer.phase === 'degraded') {
+        text.textContent = writer.last_error || 'Some recent activity could not be saved.';
+    } else if (writer.phase === 'pending' && Number(writer.pending_events) > 0) {
+        text.textContent = 'Saving recent activity on this device\u2026';
+    } else {
+        text.textContent = 'Local timeline';
+    }
+    label.appendChild(text);
+    rail.appendChild(label);
+
+    if (entry.error || entry.has_more) {
+        var action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'channel-history-action';
+        action.disabled = entry.loading;
+        action.textContent = entry.loading
+            ? 'Loading\u2026'
+            : (entry.error ? 'Try again' : 'Load earlier');
+        action.addEventListener('click', function() {
+            action.disabled = true;
+            action.textContent = 'Loading\u2026';
+            _channelsLoadHistory(context, !entry.error);
+        });
+        rail.appendChild(action);
+    }
+    return rail;
+}
+
+function _channelsHistoryActionButton(context) {
+    var activeHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
+    var sameHub = _channelsIsConnected() &&
+        String(activeHub || '').toLowerCase() ===
+            String(context.hub_destination_hash || '').toLowerCase();
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'nr-btn nr-btn-secondary nr-btn-sm';
+    button.textContent = sameHub ? 'Rejoin channel' : 'Connect to hub';
+    button.addEventListener('click', function() {
+        if (sameHub) {
+            channelsOpenJoinSheet(context.room_name);
+        } else {
+            channelsOpenConnectSheet(_channelsHubByDestination(
+                context.hub_destination_hash
+            ));
+        }
+    });
+    return button;
+}
+
+function _channelsBuildHistoryOnlyBanner(context) {
+    var banner = document.createElement('aside');
+    banner.className = 'channel-history-banner';
+    var copy = document.createElement('span');
+    copy.textContent = 'Read-only activity stored on this device.';
+    banner.appendChild(copy);
+    banner.appendChild(_channelsHistoryActionButton(context));
+    return banner;
+}
+
+function _channelsBuildHistoryEmpty(context, entry) {
+    var state = document.createElement('div');
+    state.className = 'channel-welcome-state channel-history-empty';
+    var title = document.createElement('h3');
+    var copy = document.createElement('p');
+    if (entry && entry.loading) {
+        title.textContent = 'Loading local history\u2026';
+        copy.textContent = 'Ratspeak is reading this room\u2019s bounded timeline from this device.';
+    } else if (entry && entry.error) {
+        title.textContent = 'History is temporarily unavailable';
+        copy.textContent = 'The live channel is separate; retry the local timeline when you are ready.';
+    } else {
+        title.textContent = 'No local activity yet';
+        copy.textContent = 'Activity appears here after this identity receives it in the channel.';
+    }
+    state.appendChild(title);
+    state.appendChild(copy);
+    state.appendChild(_channelsHistoryActionButton(context));
+    return state;
+}
+
+function _channelsActivityTime(item) {
+    return Number(item && item.recorded_at_ms) ||
+        Number(item && item.timestamp_ms) || 0;
+}
+
+function _channelsDayKey(item) {
+    var timestamp = _channelsActivityTime(item);
+    if (!timestamp) return '';
+    var date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.getFullYear() + '-' + (date.getMonth() + 1) + '-' + date.getDate();
+}
+
+function _channelsBuildDaySeparator(item) {
+    var timestamp = _channelsActivityTime(item);
+    var date = new Date(timestamp);
+    var today = new Date();
+    var yesterday = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate() - 1
+    );
+    var label;
+    if (_channelsDayKey({ recorded_at_ms: today.getTime() }) === _channelsDayKey(item)) {
+        label = 'Today';
+    } else if (_channelsDayKey({ recorded_at_ms: yesterday.getTime() }) === _channelsDayKey(item)) {
+        label = 'Yesterday';
+    } else {
+        label = date.toLocaleDateString([], {
+            month: 'short',
+            day: 'numeric',
+            year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric'
+        });
+    }
+    var separator = document.createElement('div');
+    separator.className = 'channel-day-separator';
+    separator.setAttribute('role', 'separator');
+    var text = document.createElement('span');
+    text.textContent = label;
+    separator.appendChild(text);
+    return separator;
 }
 
 function _channelsBuildRoomTransition(room) {
@@ -969,8 +1590,8 @@ function _channelsCollapseTransientRejoins(entries) {
             entry.item.kind === 'join') {
             var previousIdentity = _channelsPresenceIdentityKey(previous.item);
             var currentIdentity = _channelsPresenceIdentityKey(entry.item);
-            var elapsed = (Number(entry.item.timestamp_ms) || 0) -
-                (Number(previous.item.timestamp_ms) || 0);
+            var elapsed = _channelsActivityTime(entry.item) -
+                _channelsActivityTime(previous.item);
             if (previousIdentity &&
                 previousIdentity === currentIdentity &&
                 elapsed >= 0 &&
@@ -1011,10 +1632,11 @@ function _channelsGroupPresenceEvents(entries, roomName) {
             return;
         }
         var previous = run.length ? run[run.length - 1].item : null;
-        var timestamp = Number(entry.item.timestamp_ms) || 0;
-        var previousTimestamp = previous ? (Number(previous.timestamp_ms) || 0) : timestamp;
+        var timestamp = _channelsActivityTime(entry.item);
+        var previousTimestamp = previous ? _channelsActivityTime(previous) : timestamp;
         var elapsed = timestamp - previousTimestamp;
         var sameRun = previous &&
+            _channelsDayKey(previous) === _channelsDayKey(entry.item) &&
             elapsed >= 0 &&
             elapsed <= CHANNEL_PRESENCE_GROUP_WINDOW_MS;
         if (previous && !sameRun) flushRun();
@@ -1551,16 +2173,40 @@ function _channelsHandleComposerBeforeInput(event, useMobileDefaults) {
 function channelsSelectRoom(roomName) {
     var room = _channelsRoomByName(roomName);
     if (!room) return;
-    if (channelsActiveRoom !== room.name) {
+    if (channelsActiveRoom !== room.name || channelsHistorySelection) {
         _channelsSelectedMemberKey = null;
         _channelsMemberReturnFocusKey = null;
     }
+    channelsHistorySelection = null;
     channelsActiveRoom = room.name;
     renderChannels();
     if (_channelsCompact() && RS.viewStack) {
         var top = RS.viewStack.top();
         if (!top || top.viewId !== 'channel-detail') {
             RS.viewStack.push('channel-detail', { room: room.name });
+        }
+    }
+}
+
+function channelsSelectHistoryRoom(hubDestinationHash, roomName) {
+    var key = _channelsHistoryKey(hubDestinationHash, roomName);
+    if (!key) return;
+    _channelsSelectedMemberKey = null;
+    _channelsMemberReturnFocusKey = null;
+    channelsActiveRoom = null;
+    channelsHistorySelection = {
+        hub_destination_hash: String(hubDestinationHash).toLowerCase(),
+        room_name: String(roomName).toLowerCase()
+    };
+    channelsCloseMemberPane();
+    renderChannels();
+    if (_channelsCompact() && RS.viewStack) {
+        var top = RS.viewStack.top();
+        if (!top || top.viewId !== 'channel-detail') {
+            RS.viewStack.push('channel-detail', {
+                room: channelsHistorySelection.room_name,
+                history: true
+            });
         }
     }
 }
@@ -1858,6 +2504,7 @@ function channelsOpenJoinSheet(prefillRoom) {
             }
         }).then(function(result) {
             channelsActiveRoom = (result && result.room) || room;
+            channelsHistorySelection = null;
             if (result && result.snapshot) channelsApplySnapshot(result.snapshot);
             built.dismiss();
             channelsSelectRoom(channelsActiveRoom);
@@ -1913,6 +2560,7 @@ function channelsOpenHubOptions() {
         RS.invoke('disconnect_channel_hub').then(function(snapshot) {
             built.dismiss();
             channelsActiveRoom = null;
+            channelsHistorySelection = null;
             channelsApplySnapshot(snapshot);
             if (typeof showToast === 'function') showToast('Channel session ended', 'toast-green', 2200);
         }).catch(function(err) {
@@ -1936,7 +2584,7 @@ function channelsOpenRoomOptions() {
     } else if (room.phase === 'error') {
         copy.textContent = room.last_error || 'The hub did not confirm this join. Try again without reconnecting, or leave this channel.';
     } else {
-        copy.textContent = 'Leaving removes you from this channel and clears its current transcript. The channel remains in Recents for easy rejoining.';
+        copy.textContent = 'Leaving ends live membership. Activity already stored on this device remains in Local history, and the channel stays in Recents for easy rejoining.';
     }
     built.body.appendChild(copy);
     if (room.phase === 'joined' && (room.registered != null || room.topic || room.modes)) {
@@ -2006,6 +2654,7 @@ function _channelsPartRoom(roomName) {
 function channelsDisconnect() {
     return RS.invoke('disconnect_channel_hub').then(function(snapshot) {
         channelsActiveRoom = null;
+        channelsHistorySelection = null;
         channelsApplySnapshot(snapshot);
         return snapshot;
     }).catch(function(error) {
@@ -2020,6 +2669,7 @@ function _channelsHandleComposerResult(result, originRoom) {
     var targetRoom = String(result.room || originRoom || '').trim().toLowerCase();
     if (command === 'join') {
         channelsActiveRoom = targetRoom;
+        channelsHistorySelection = null;
         if (result.already_joined) {
             _channelsAddLocalRoomEvent(targetRoom, 'You\u2019re already in ' + targetRoom + '.');
             channelsSelectRoom(targetRoom);
@@ -2177,7 +2827,9 @@ RS.listen('announce_received', function() {
 RS.listen('lxmf_identity', function() {
     channelsSavedHubs = [];
     channelsSavedRooms = [];
+    channelsRoomIndex = [];
     channelsActiveRoom = null;
+    channelsHistorySelection = null;
     channelsPendingHubLabel = '';
     _channelsLocalRoomEvents = {};
     _channelsExpandedPresenceGroups = {};
@@ -2187,6 +2839,9 @@ RS.listen('lxmf_identity', function() {
     _channelsSaveHubKey = null;
     _channelsSaveHubPromise = null;
     _channelsSavedRoomKeys = {};
+    _channelsHistoryCache = {};
+    _channelsHistoryEpoch++;
+    _channelsRenderedRoomKey = '';
     _channelsLoadedAt = 0;
     _channelsLastHubRefreshAt = 0;
     if (typeof currentView !== 'undefined' && currentView === 'channels') {

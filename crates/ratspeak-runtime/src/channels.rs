@@ -1,13 +1,14 @@
 //! Live Reticulum Relay Chat sessions.
 //!
 //! Observed room membership remains session-scoped, while user connection and
-//! room intent is durable and explicitly separate. Channel traffic is never
-//! written through this service-state path.
+//! room intent is durable and explicitly separate. Accepted transcript items
+//! enter a bounded client-local append log; they are never routed through the
+//! LXMF conversation store or requested as backlog from a constrained hub.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::pending;
 use std::io::Cursor;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -49,6 +50,12 @@ const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5 * 60);
 const RECONNECT_STABLE_RESET: Duration = Duration::from_secs(2 * 60);
 const RECONNECT_JITTER_PERCENT: u32 = 20;
 const AUTO_REJOIN_ROOM_LIMIT: usize = 32;
+// History is auxiliary and must not put authenticated Link processing at the
+// mercy of a stalled local disk. Together with the DB's per-event input limit,
+// this caps queued transcript payload at roughly 8 MiB.
+const HISTORY_COMMAND_BUFFER: usize = 128;
+const HISTORY_RETRY_DELAY: Duration = Duration::from_secs(1);
+const HISTORY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_JOIN_KEY_BYTES: usize = 1_024;
 const MAX_SEALED_ROOM_SECRET_BYTES: usize = 4_096;
 const ROOM_SECRET_SEAL_SCHEME: &str = "rns_identity";
@@ -343,6 +350,28 @@ pub struct ChannelsDurabilitySnapshot {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelsHistoryPhase {
+    #[default]
+    Loading,
+    Ready,
+    Pending,
+    Degraded,
+    Unavailable,
+}
+
+/// Health of the independent local append log. It is deliberately separate
+/// from bookmark durability: a bookmark can save while transcript writes are
+/// retrying, and neither status is proof of live hub membership.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChannelsHistorySnapshot {
+    pub phase: ChannelsHistoryPhase,
+    pub pending_events: usize,
+    pub dropped_events: u64,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChannelDesiredRoomSnapshot {
     pub name: String,
@@ -439,6 +468,7 @@ pub struct ChannelsSnapshot {
     /// projection below remains during the frontend migration.
     pub hubs: Vec<ChannelClientHubStateSnapshot>,
     pub durability: ChannelsDurabilitySnapshot,
+    pub history: ChannelsHistorySnapshot,
     pub phase: ChannelsPhase,
     pub nickname: Option<String>,
     pub hub: Option<ChannelHubSnapshot>,
@@ -466,6 +496,10 @@ impl ChannelsSnapshot {
                 phase: ChannelsDurabilityPhase::Ready,
                 last_error: None,
             },
+            history: ChannelsHistorySnapshot {
+                phase: ChannelsHistoryPhase::Unavailable,
+                ..ChannelsHistorySnapshot::default()
+            },
             phase: ChannelsPhase::Offline,
             nickname: None,
             hub: None,
@@ -490,6 +524,7 @@ impl ChannelsSnapshot {
             generation,
             revision: 1,
             durability: ChannelsDurabilitySnapshot::default(),
+            history: ChannelsHistorySnapshot::default(),
             ..Self::offline()
         }
     }
@@ -761,6 +796,26 @@ impl ChannelsStore {
         .await
         .map_err(|_| "Channels state database task panicked".to_string())?
     }
+
+    async fn append_history(
+        &self,
+        events: Arc<Vec<db::NewChannelHistoryEvent>>,
+    ) -> Result<db::ChannelHistoryAppendOutcome, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::append_channel_history_events(&pool, &identity_id, events.as_slice())
+        })
+        .await
+        .map_err(|_| "Channels history database task panicked".to_string())?
+    }
+
+    async fn prune_history(&self) -> Result<usize, String> {
+        let pool = self.pool.clone();
+        db::spawn_db(pool, move |pool| db::prune_expired_channel_history(&pool))
+            .await
+            .map_err(|_| "Channels history database task panicked".to_string())?
+    }
 }
 
 fn load_durable_channels(
@@ -772,6 +827,273 @@ fn load_durable_channels(
         rooms: db::list_saved_channel_rooms_for_identity(pool, identity_id)?,
         secrets: db::list_channel_room_secrets_for_identity(pool, identity_id)?,
     })
+}
+
+const HISTORY_TEMPORARILY_UNAVAILABLE: &str =
+    "Local channel history is temporarily unavailable. New activity will retry automatically.";
+const HISTORY_EVENTS_DROPPED: &str =
+    "Some recent channel activity could not be saved to local history.";
+
+enum ChannelHistoryCommand {
+    Append(db::NewChannelHistoryEvent),
+    Shutdown { result_tx: oneshot::Sender<()> },
+}
+
+#[derive(Clone)]
+struct ChannelHistoryWriter {
+    command_tx: Option<mpsc::Sender<ChannelHistoryCommand>>,
+    identity_id: String,
+    status: Arc<RwLock<ChannelsHistorySnapshot>>,
+    stopping: Arc<AtomicBool>,
+}
+
+impl ChannelHistoryWriter {
+    fn start(
+        store: Option<ChannelsStore>,
+        snapshot: Arc<RwLock<ChannelsSnapshot>>,
+        emitter: Arc<dyn Emitter>,
+    ) -> Self {
+        let Some(store) = store else {
+            let status = ChannelsHistorySnapshot {
+                phase: ChannelsHistoryPhase::Unavailable,
+                ..ChannelsHistorySnapshot::default()
+            };
+            mutate_snapshot_if_changed(&snapshot, |state| {
+                if state.history == status {
+                    return false;
+                }
+                state.history = status.clone();
+                true
+            });
+            return Self {
+                command_tx: None,
+                identity_id: String::new(),
+                status: Arc::new(RwLock::new(status)),
+                stopping: Arc::new(AtomicBool::new(true)),
+            };
+        };
+        let identity_id = store.identity_id.clone();
+        let status = Arc::new(RwLock::new(ChannelsHistorySnapshot::default()));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let (command_tx, command_rx) = mpsc::channel(HISTORY_COMMAND_BUFFER);
+        tokio::spawn(run_channel_history_writer(
+            store,
+            command_rx,
+            status.clone(),
+            stopping.clone(),
+            snapshot,
+            emitter,
+        ));
+        Self {
+            command_tx: Some(command_tx),
+            identity_id,
+            status,
+            stopping,
+        }
+    }
+
+    /// Move newly accepted transcript items into the bounded writer ingress.
+    /// `try_send` is intentional: a busy local database must never block the
+    /// authenticated Link event loop or grow memory without a ceiling.
+    fn enqueue(&self, events: &mut VecDeque<db::NewChannelHistoryEvent>) -> bool {
+        if events.is_empty() {
+            return false;
+        }
+        let Some(command_tx) = self.command_tx.as_ref() else {
+            events.clear();
+            return false;
+        };
+        // Hold the status lock while commands become visible to the worker.
+        // Otherwise a very fast database write can finish and subtract from
+        // zero before this producer increments `pending_events`, stranding the
+        // projection in Pending forever.
+        let Ok(mut status) = self.status.write() else {
+            events.clear();
+            return false;
+        };
+        let mut pending = 0usize;
+        let mut dropped = 0u64;
+        for event in events.drain(..) {
+            if db::validate_channel_history_event(&self.identity_id, &event).is_err() {
+                dropped = dropped.saturating_add(1);
+                continue;
+            }
+            match command_tx.try_send(ChannelHistoryCommand::Append(event)) {
+                Ok(()) => pending = pending.saturating_add(1),
+                Err(_) => dropped = dropped.saturating_add(1),
+            }
+        }
+        if pending == 0 && dropped == 0 {
+            return false;
+        }
+        status.pending_events = status.pending_events.saturating_add(pending);
+        if dropped > 0 {
+            status.dropped_events = status.dropped_events.saturating_add(dropped);
+            status.phase = ChannelsHistoryPhase::Degraded;
+            status.last_error = Some(HISTORY_EVENTS_DROPPED.into());
+        } else if status.phase != ChannelsHistoryPhase::Degraded {
+            status.phase = ChannelsHistoryPhase::Pending;
+            status.last_error = None;
+        }
+        true
+    }
+
+    fn project(&self, snapshot: &Arc<RwLock<ChannelsSnapshot>>) -> bool {
+        let Some(status) = self.status.read().ok().map(|status| status.clone()) else {
+            return false;
+        };
+        mutate_snapshot_if_changed(snapshot, |state| {
+            if state.history == status {
+                return false;
+            }
+            state.history = status;
+            true
+        })
+    }
+
+    async fn shutdown(&self) {
+        let Some(command_tx) = self.command_tx.as_ref() else {
+            return;
+        };
+        self.stopping.store(true, Ordering::Release);
+        let (result_tx, result_rx) = oneshot::channel();
+        let shutdown = async {
+            command_tx
+                .send(ChannelHistoryCommand::Shutdown { result_tx })
+                .await
+                .map_err(|_| ())?;
+            result_rx.await.map_err(|_| ())
+        };
+        let _ = tokio::time::timeout(HISTORY_SHUTDOWN_TIMEOUT, shutdown).await;
+    }
+}
+
+fn publish_channel_history_status(
+    status: &Arc<RwLock<ChannelsHistorySnapshot>>,
+    snapshot: &Arc<RwLock<ChannelsSnapshot>>,
+    emitter: &Arc<dyn Emitter>,
+) {
+    let Some(status) = status.read().ok().map(|status| status.clone()) else {
+        return;
+    };
+    if mutate_snapshot_if_changed(snapshot, |state| {
+        if state.history == status {
+            return false;
+        }
+        state.history = status;
+        true
+    }) {
+        emit_snapshot(emitter, snapshot);
+    }
+}
+
+fn finish_channel_history_batch(status: &Arc<RwLock<ChannelsHistorySnapshot>>, completed: usize) {
+    let Ok(mut status) = status.write() else {
+        return;
+    };
+    status.pending_events = status.pending_events.saturating_sub(completed);
+    if status.dropped_events > 0 {
+        status.phase = ChannelsHistoryPhase::Degraded;
+        status.last_error = Some(HISTORY_EVENTS_DROPPED.into());
+    } else if status.pending_events > 0 {
+        status.phase = ChannelsHistoryPhase::Pending;
+        status.last_error = None;
+    } else {
+        status.phase = ChannelsHistoryPhase::Ready;
+        status.last_error = None;
+    }
+}
+
+async fn run_channel_history_writer(
+    store: ChannelsStore,
+    mut command_rx: mpsc::Receiver<ChannelHistoryCommand>,
+    status: Arc<RwLock<ChannelsHistorySnapshot>>,
+    stopping: Arc<AtomicBool>,
+    snapshot: Arc<RwLock<ChannelsSnapshot>>,
+    emitter: Arc<dyn Emitter>,
+) {
+    match store.prune_history().await {
+        Ok(_) => finish_channel_history_batch(&status, 0),
+        Err(_) => {
+            if let Ok(mut status) = status.write() {
+                status.phase = ChannelsHistoryPhase::Degraded;
+                status.last_error = Some(HISTORY_TEMPORARILY_UNAVAILABLE.into());
+            }
+        }
+    }
+    publish_channel_history_status(&status, &snapshot, &emitter);
+
+    let mut deferred = None;
+    loop {
+        let command = match deferred.take() {
+            Some(command) => Some(command),
+            None => command_rx.recv().await,
+        };
+        let Some(command) = command else {
+            break;
+        };
+        match command {
+            ChannelHistoryCommand::Append(first) => {
+                let mut batch = Vec::with_capacity(db::CHANNEL_HISTORY_MAX_APPEND_BATCH);
+                batch.push(first);
+                while batch.len() < db::CHANNEL_HISTORY_MAX_APPEND_BATCH {
+                    match command_rx.try_recv() {
+                        Ok(ChannelHistoryCommand::Append(event)) => batch.push(event),
+                        Ok(command) => {
+                            deferred = Some(command);
+                            break;
+                        }
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => break,
+                    }
+                }
+
+                let batch = Arc::new(batch);
+                let batch_len = batch.len();
+                let mut failure_reported = false;
+                loop {
+                    match store.append_history(batch.clone()).await {
+                        Ok(_) => {
+                            if failure_reported {
+                                tracing::info!(
+                                    reason = "write_recovered",
+                                    "local Channels history writes recovered"
+                                );
+                            }
+                            finish_channel_history_batch(&status, batch_len);
+                            publish_channel_history_status(&status, &snapshot, &emitter);
+                            break;
+                        }
+                        Err(_) => {
+                            if stopping.load(Ordering::Acquire) {
+                                return;
+                            }
+                            if !failure_reported {
+                                tracing::warn!(
+                                    reason = "write_failed",
+                                    "local Channels history write will retry"
+                                );
+                                failure_reported = true;
+                            }
+                            if let Ok(mut status) = status.write() {
+                                status.phase = ChannelsHistoryPhase::Degraded;
+                                if status.dropped_events == 0 {
+                                    status.last_error =
+                                        Some(HISTORY_TEMPORARILY_UNAVAILABLE.into());
+                                }
+                            }
+                            publish_channel_history_status(&status, &snapshot, &emitter);
+                            tokio::time::sleep(HISTORY_RETRY_DELAY).await;
+                        }
+                    }
+                }
+            }
+            ChannelHistoryCommand::Shutdown { result_tx } => {
+                let _ = result_tx.send(());
+                break;
+            }
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1180,6 +1502,7 @@ struct ActiveSession {
     auto_rejoining: HashSet<String>,
     pending_join_secrets: BTreeMap<String, PendingJoinSecret>,
     room_secret_actions: VecDeque<RoomSecretAction>,
+    history_events: VecDeque<db::NewChannelHistoryEvent>,
     connect_origin: ConnectOrigin,
     activity: SessionActivityContext,
 }
@@ -1612,6 +1935,7 @@ async fn run_manager(input: ChannelsManagerInput) {
     let mut stored_secrets = StoredRoomSecrets::new();
     let mut room_transition_tick = tokio::time::interval(ROOM_TRANSITION_TICK);
     room_transition_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let history = ChannelHistoryWriter::start(store.clone(), snapshot.clone(), emitter.clone());
 
     match &store {
         Some(store) => apply_store_result(&snapshot, &mut stored_secrets, store.load().await),
@@ -1651,6 +1975,11 @@ async fn run_manager(input: ChannelsManagerInput) {
                         session.closed_transition(activity::ChannelSessionCloseReason::Local),
                     );
                 }
+                if let Some(session) = active.as_mut() {
+                    history.enqueue(&mut session.history_events);
+                    history.project(&snapshot);
+                }
+                history.shutdown().await;
                 close_active(&mut active).await;
                 mutate_snapshot(&snapshot, clear_observed_snapshot);
                 emit_snapshot(&emitter, &snapshot);
@@ -1738,6 +2067,11 @@ async fn run_manager(input: ChannelsManagerInput) {
                             session.closed_transition(activity::ChannelSessionCloseReason::Local),
                         );
                     }
+                    if let Some(session) = active.as_mut() {
+                        history.enqueue(&mut session.history_events);
+                        history.project(&snapshot);
+                    }
+                    history.shutdown().await;
                     close_active(&mut active).await;
                     break;
                 };
@@ -2163,6 +2497,11 @@ async fn run_manager(input: ChannelsManagerInput) {
                                 session.closed_transition(activity::ChannelSessionCloseReason::Local),
                             );
                         }
+                        if let Some(session) = active.as_mut() {
+                            history.enqueue(&mut session.history_events);
+                            history.project(&snapshot);
+                        }
+                        history.shutdown().await;
                         close_active(&mut active).await;
                         mutate_snapshot(&snapshot, clear_observed_snapshot);
                         emit_snapshot(&emitter, &snapshot);
@@ -2310,6 +2649,10 @@ async fn run_manager(input: ChannelsManagerInput) {
                             &activity,
                             event,
                         ).await;
+                        if let Some(session) = active.as_mut() {
+                            history.enqueue(&mut session.history_events);
+                            history.project(&snapshot);
+                        }
                         match outcome {
                             LinkEventOutcome::Keep => {
                                 apply_room_secret_actions(
@@ -3191,6 +3534,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                 auto_rejoining: HashSet::new(),
                 pending_join_secrets: BTreeMap::new(),
                 room_secret_actions: VecDeque::new(),
+                history_events: VecDeque::new(),
                 connect_origin: ConnectOrigin::User,
                 activity,
             };
@@ -3942,7 +4286,12 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
                 joining_self,
             )
         };
-        append_room_item(room, item);
+        append_room_item(
+            &mut active.history_events,
+            active.destination_hash,
+            room,
+            item,
+        );
     }
 }
 
@@ -4035,7 +4384,12 @@ fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope
                     ours: true,
                 }
             };
-            append_room_item(room, item);
+            append_room_item(
+                &mut active.history_events,
+                active.destination_hash,
+                room,
+                item,
+            );
         }
     }
     true
@@ -4104,6 +4458,8 @@ fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
     }
     let nickname = envelope.nickname.clone();
     append_room_item(
+        &mut active.history_events,
+        active.destination_hash,
         room,
         transcript_item(
             envelope,
@@ -4168,7 +4524,12 @@ fn append_content(
                 room.members_complete = false;
             }
         }
-        append_room_item(room, item);
+        append_room_item(
+            &mut active.history_events,
+            active.destination_hash,
+            room,
+            item,
+        );
     } else if envelope.message_type == MessageType::Notice {
         if active.hub_greeting.is_none()
             && envelope.source == active.hub_identity
@@ -4279,7 +4640,12 @@ fn append_error(
             room.phase_started_at_ms = now_ms();
             room.last_error = Some(product_text.to_string());
         }
-        append_room_item(room, item);
+        append_room_item(
+            &mut active.history_events,
+            active.destination_hash,
+            room,
+            item,
+        );
         let operation = active
             .room_activity
             .get_mut(&room_name)
@@ -4408,7 +4774,32 @@ fn transcript_item(
     }
 }
 
-fn append_room_item(room: &mut ChannelRoomSnapshot, item: ChannelTranscriptItem) {
+fn append_room_item(
+    history_events: &mut VecDeque<db::NewChannelHistoryEvent>,
+    destination_hash: [u8; 16],
+    room: &mut ChannelRoomSnapshot,
+    item: ChannelTranscriptItem,
+) {
+    let kind = match item.kind {
+        ChannelItemKind::Message => db::ChannelHistoryKind::Message,
+        ChannelItemKind::Notice => db::ChannelHistoryKind::Notice,
+        ChannelItemKind::Action => db::ChannelHistoryKind::Action,
+        ChannelItemKind::Join => db::ChannelHistoryKind::Join,
+        ChannelItemKind::Part => db::ChannelHistoryKind::Part,
+        ChannelItemKind::Error => db::ChannelHistoryKind::Error,
+        ChannelItemKind::System => db::ChannelHistoryKind::System,
+    };
+    history_events.push_back(db::NewChannelHistoryEvent {
+        hub_destination_hash: hex::encode(destination_hash),
+        room_name: room.name.clone(),
+        event_id: item.id.clone(),
+        kind,
+        timestamp_ms: item.timestamp_ms,
+        source_hash: item.source_hash.clone(),
+        nickname: item.nickname.clone(),
+        text: item.text.clone(),
+        ours: item.ours,
+    });
     room.transcript.push(item);
     if room.transcript.len() > TRANSCRIPT_LIMIT {
         room.transcript
@@ -5392,6 +5783,101 @@ mod tests {
             CHANNELS_SERVICE_MODEL_VERSION
         );
         assert_eq!(value["connection_budget"], CHANNELS_CONNECTION_BUDGET);
+        assert_eq!(value["history"]["phase"], "loading");
+        assert_eq!(value["history"]["pending_events"], 0);
+    }
+
+    fn history_test_event(id: &str) -> db::NewChannelHistoryEvent {
+        db::NewChannelHistoryEvent {
+            hub_destination_hash: "11".repeat(16),
+            room_name: "general".into(),
+            event_id: id.into(),
+            kind: db::ChannelHistoryKind::Message,
+            timestamp_ms: now_ms(),
+            source_hash: Some("22".repeat(16)),
+            nickname: Some("Field Rat".into()),
+            text: format!("signal {id}"),
+            ours: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn history_writer_persists_without_blocking_the_link_actor() {
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|connection| connection.execute_batch("PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder().max_size(2).build(manager).unwrap();
+        db::init_schema(&pool).unwrap();
+        let identity_id = "aa".repeat(16);
+        db::save_identity(&pool, &identity_id, "", "A", "A");
+        let snapshot = Arc::new(RwLock::new(ChannelsSnapshot::for_manager(1)));
+        let writer = ChannelHistoryWriter::start(
+            Some(ChannelsStore::new(pool.clone(), identity_id.clone())),
+            snapshot.clone(),
+            Arc::new(ratspeak_core::NoopEmitter),
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while writer
+                .status
+                .read()
+                .is_ok_and(|status| status.phase != ChannelsHistoryPhase::Ready)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut pending = VecDeque::from([history_test_event("event-1")]);
+        assert!(writer.enqueue(&mut pending));
+        assert!(pending.is_empty());
+        writer.project(&snapshot);
+        assert_eq!(snapshot.read().unwrap().history.pending_events, 1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let done = writer.status.read().is_ok_and(|status| {
+                    status.phase == ChannelsHistoryPhase::Ready && status.pending_events == 0
+                });
+                if done {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let page =
+            db::list_channel_history(&pool, &identity_id, &"11".repeat(16), "general", None, 10)
+                .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].event_id, "event-1");
+        writer.shutdown().await;
+    }
+
+    #[test]
+    fn history_ingress_is_bounded_and_reports_irrecoverable_loss() {
+        let (command_tx, _command_rx) = mpsc::channel(1);
+        let status = Arc::new(RwLock::new(ChannelsHistorySnapshot {
+            phase: ChannelsHistoryPhase::Ready,
+            ..ChannelsHistorySnapshot::default()
+        }));
+        let writer = ChannelHistoryWriter {
+            command_tx: Some(command_tx),
+            identity_id: "aa".repeat(16),
+            status: status.clone(),
+            stopping: Arc::new(AtomicBool::new(false)),
+        };
+        let mut events = VecDeque::from([
+            history_test_event("event-1"),
+            history_test_event("event-2"),
+            history_test_event("event-3"),
+        ]);
+        assert!(writer.enqueue(&mut events));
+        let status = status.read().unwrap();
+        assert_eq!(status.pending_events, 1);
+        assert_eq!(status.dropped_events, 2);
+        assert_eq!(status.phase, ChannelsHistoryPhase::Degraded);
+        assert_eq!(status.last_error.as_deref(), Some(HISTORY_EVENTS_DROPPED));
     }
 
     #[test]
@@ -6031,22 +6517,33 @@ mod tests {
     #[test]
     fn live_transcripts_are_strictly_bounded() {
         let mut room = ChannelRoomSnapshot::joining("field team".into());
+        let mut history = VecDeque::new();
         for index in 0..(TRANSCRIPT_LIMIT + 20) {
-            room.transcript.push(ChannelTranscriptItem {
-                id: index.to_string(),
-                kind: ChannelItemKind::Message,
-                timestamp_ms: index as u64,
-                source_hash: None,
-                nickname: None,
-                text: "signal".into(),
-                ours: false,
-            });
-            if room.transcript.len() > TRANSCRIPT_LIMIT {
-                room.transcript.remove(0);
-            }
+            append_room_item(
+                &mut history,
+                [0x11; 16],
+                &mut room,
+                ChannelTranscriptItem {
+                    id: index.to_string(),
+                    kind: ChannelItemKind::Message,
+                    timestamp_ms: index as u64,
+                    source_hash: None,
+                    nickname: None,
+                    text: "signal".into(),
+                    ours: false,
+                },
+            );
         }
         assert_eq!(room.transcript.len(), TRANSCRIPT_LIMIT);
         assert_eq!(room.transcript.first().unwrap().id, "20");
+        assert_eq!(
+            history.len(),
+            TRANSCRIPT_LIMIT + 20,
+            "accepted items leave the small live window for the bounded writer"
+        );
+        let oldest = history.front().unwrap();
+        assert_eq!(oldest.room_name, "field team");
+        assert_eq!(oldest.hub_destination_hash, "11".repeat(16));
     }
 
     #[test]
@@ -6472,6 +6969,8 @@ mod tests {
                                 && room.has_stored_join_key
                         })
                 })
+                && snapshot.history.phase == ChannelsHistoryPhase::Ready
+                && snapshot.history.pending_events == 0
         })
         .await;
         assert_eq!(confirmed.durability.phase, ChannelsDurabilityPhase::Ready);
@@ -6483,6 +6982,23 @@ mod tests {
                 .windows(join_key.len())
                 .any(|window| window == join_key.as_bytes()),
             "the database must contain only identity-sealed ciphertext"
+        );
+        let history = db::list_channel_history(
+            &state.db,
+            &identity_id,
+            &hub_destination_hex,
+            room,
+            None,
+            10,
+        )
+        .unwrap();
+        assert!(
+            history.items.iter().any(|item| {
+                item.event_id == hex::encode(joined.message_id)
+                    && item.kind == db::ChannelHistoryKind::Join
+                    && item.text == "You joined"
+            }),
+            "the same authenticated JOIN confirmation must enter local history"
         );
 
         let invited_room = "invited";

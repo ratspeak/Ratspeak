@@ -53,16 +53,23 @@ async function main() {
         channelsActiveRoom: null,
         channelsSavedHubs: [],
         channelsSavedRooms: [],
+        channelsRoomIndex: [],
         _channelsLocalRoomEvents: {},
         _channelsExpandedPresenceGroups: {},
         _channelsSelectedMemberKey: null,
         _channelsMemberReturnFocusKey: null,
+        channelsHistorySelection: null,
         _channelsSavedRoomsHub: null,
         _channelsSavedRoomKeys: {},
         _channelsLoadPromise: null,
         _channelsLoadedAt: 0,
         _channelsLastHubRefreshAt: 0,
+        _channelsHistoryEpoch: 0,
+        _channelsRoomIndexRequestSeq: 0,
         _channelsRoomByName: function() { return null; },
+        _channelsSelectedRoomView: function() { return null; },
+        _channelsHistoryContext: function() { return null; },
+        _channelsScheduleHistorySync: function() {},
         _channelsPersistConveniences: function() {},
         renderChannels: function() {},
         channelHubRenderHome: function() {},
@@ -77,6 +84,7 @@ async function main() {
             invoke: function(command) {
                 if (command === 'api_channels') return Promise.resolve(staleJoining);
                 if (command === 'api_saved_channel_hubs') return savedHubs.promise;
+                if (command === 'api_channel_room_index') return Promise.resolve([]);
                 throw new Error('unexpected command: ' + command);
             }
         }

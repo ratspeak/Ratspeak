@@ -1,5 +1,6 @@
-//! Channels IPC commands. Channel traffic is live session state and is never
-//! routed through the LXMF conversation database.
+//! Channels IPC commands. Accepted room transcript items use the bounded local
+//! Channels append log and are never routed through the LXMF conversation
+//! database or treated as hub-hosted backlog.
 
 use std::sync::Arc;
 
@@ -100,12 +101,87 @@ pub struct SaveChannelRoomArgs {
     pub joined: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ChannelHistoryArgs {
+    pub hub_destination_hash: String,
+    pub room: String,
+    #[serde(default)]
+    pub before: Option<String>,
+    #[serde(default)]
+    pub after: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 #[tauri::command]
 pub async fn api_channels(state: State<'_, Arc<AppState>>) -> AppResult<ChannelsSnapshot> {
     Ok(state
         .channels_handle()
         .map(|channels| channels.snapshot())
         .unwrap_or_else(ChannelsSnapshot::unavailable))
+}
+
+#[tauri::command]
+pub async fn api_channel_history(
+    state: State<'_, Arc<AppState>>,
+    args: ChannelHistoryArgs,
+) -> AppResult<crate::db::ChannelHistoryPage> {
+    let identity_id = require_identity(&state)?;
+    let destination_hash = clean_destination_hash(&args.hub_destination_hash)?;
+    let room = ratspeak_runtime::rrc::normalize_room(
+        &args.room,
+        crate::db::CHANNEL_HISTORY_MAX_ROOM_BYTES,
+    )
+    .map_err(|error| AppError::bad_request(error.to_string()))?;
+    if args.before.is_some() && args.after.is_some() {
+        return Err(AppError::bad_request(
+            "Channel history accepts either before or after, not both",
+        ));
+    }
+    crate::db::validate_channel_history_cursor(args.before.as_deref())
+        .map_err(AppError::bad_request)?;
+    if let Some(after) = args.after.as_deref() {
+        crate::db::validate_channel_history_after_cursor(after).map_err(AppError::bad_request)?;
+    }
+    let limit = args
+        .limit
+        .unwrap_or(crate::db::CHANNEL_HISTORY_DEFAULT_PAGE_SIZE);
+    if limit == 0 || limit > crate::db::CHANNEL_HISTORY_MAX_PAGE_SIZE {
+        return Err(AppError::bad_request(format!(
+            "Channel history page size must be between 1 and {}",
+            crate::db::CHANNEL_HISTORY_MAX_PAGE_SIZE
+        )));
+    }
+    let before = args.before;
+    let after = args.after;
+    let prune_expired = before.is_none() && after.is_none();
+    let pool = state.db.clone();
+    crate::db::spawn_db(pool, move |pool| {
+        if prune_expired {
+            crate::db::prune_expired_channel_history(&pool)?;
+        }
+        match after.as_deref() {
+            Some(after) => crate::db::list_channel_history_after(
+                &pool,
+                &identity_id,
+                &destination_hash,
+                &room,
+                after,
+                limit,
+            ),
+            None => crate::db::list_channel_history(
+                &pool,
+                &identity_id,
+                &destination_hash,
+                &room,
+                before.as_deref(),
+                limit,
+            ),
+        }
+    })
+    .await
+    .map_err(|_| AppError::internal("channel history database task panicked"))?
+    .map_err(AppError::database_unavailable)
 }
 
 #[tauri::command]
@@ -353,6 +429,23 @@ pub async fn api_saved_channel_rooms(
     .map_err(AppError::database_unavailable)
 }
 
+/// Return the union of remembered rooms and retained local history for the
+/// offline Channels browser. History outlives bookmarks by design and must not
+/// become unreachable when a user forgets a hub.
+#[tauri::command]
+pub async fn api_channel_room_index(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<crate::db::ChannelRoomIndexEntry>> {
+    let identity_id = require_identity(&state)?;
+    let pool = state.db.clone();
+    crate::db::spawn_db(pool, move |pool| {
+        crate::db::list_channel_room_index(&pool, &identity_id)
+    })
+    .await
+    .map_err(|_| AppError::internal("channel room index database task panicked"))?
+    .map_err(AppError::database_unavailable)
+}
+
 #[tauri::command]
 pub async fn save_channel_room(
     state: State<'_, Arc<AppState>>,
@@ -475,6 +568,39 @@ mod tests {
         }))
         .unwrap();
         assert!(!opted_out.remember_key);
+    }
+
+    #[test]
+    fn channel_history_cursors_remain_opaque_strings() {
+        let defaults: ChannelHistoryArgs = serde_json::from_value(json!({
+            "hub_destination_hash": "00112233445566778899aabbccddeeff",
+            "room": "general"
+        }))
+        .unwrap();
+        assert_eq!(defaults.before, None);
+        assert_eq!(defaults.after, None);
+        assert_eq!(defaults.limit, None);
+
+        let paged: ChannelHistoryArgs = serde_json::from_value(json!({
+            "hub_destination_hash": "00112233445566778899aabbccddeeff",
+            "room": "general",
+            "before": "9007199254740993",
+            "after": null,
+            "limit": 200
+        }))
+        .unwrap();
+        assert_eq!(paged.before.as_deref(), Some("9007199254740993"));
+        assert_eq!(paged.after, None);
+        assert_eq!(paged.limit, Some(200));
+
+        let forward: ChannelHistoryArgs = serde_json::from_value(json!({
+            "hub_destination_hash": "00112233445566778899aabbccddeeff",
+            "room": "general",
+            "after": "0"
+        }))
+        .unwrap();
+        assert_eq!(forward.before, None);
+        assert_eq!(forward.after.as_deref(), Some("0"));
     }
 
     #[test]

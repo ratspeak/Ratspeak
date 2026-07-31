@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 38;
+const SCHEMA_VERSION: i64 = 39;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -101,6 +101,7 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
 
     conn.execute_batch(SCHEMA_SQL)?;
     conn.execute_batch(CHANNEL_HISTORY_SCHEMA_SQL)?;
+    reconcile_channel_history_usage(&conn)?;
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
     if count == 0 {
@@ -474,6 +475,114 @@ CREATE INDEX IF NOT EXISTS idx_channel_history_identity_sequence
 CREATE INDEX IF NOT EXISTS idx_channel_history_recorded_at
     ON channel_history(recorded_at_ms);
 "#;
+
+// Estimated payload usage is materialized per room so the hot append path can
+// enforce byte ceilings without summing thousands of transcript rows after
+// every message. The estimate intentionally includes a fixed allowance for
+// SQLite row/index metadata; it bounds retained content, while SQLite may keep
+// freed pages at its high-water mark for later reuse.
+const CHANNEL_HISTORY_USAGE_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS channel_history_room_usage (
+    identity_id          TEXT NOT NULL,
+    hub_destination_hash TEXT NOT NULL,
+    room_name            TEXT NOT NULL,
+    event_count          INTEGER NOT NULL CHECK (event_count >= 0),
+    payload_bytes        INTEGER NOT NULL CHECK (payload_bytes >= 0),
+    PRIMARY KEY (identity_id, hub_destination_hash, room_name),
+    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+);
+
+CREATE TRIGGER IF NOT EXISTS channel_history_usage_after_insert
+AFTER INSERT ON channel_history
+BEGIN
+    INSERT INTO channel_history_room_usage (
+        identity_id, hub_destination_hash, room_name, event_count, payload_bytes
+    ) VALUES (
+        NEW.identity_id,
+        NEW.hub_destination_hash,
+        NEW.room_name,
+        1,
+        128
+            + length(CAST(NEW.identity_id AS BLOB))
+            + length(CAST(NEW.hub_destination_hash AS BLOB))
+            + length(CAST(NEW.room_name AS BLOB))
+            + length(CAST(NEW.event_id AS BLOB))
+            + length(CAST(NEW.kind AS BLOB))
+            + length(CAST(COALESCE(NEW.source_hash, '') AS BLOB))
+            + length(CAST(COALESCE(NEW.nickname, '') AS BLOB))
+            + length(CAST(NEW.text AS BLOB))
+    )
+    ON CONFLICT (identity_id, hub_destination_hash, room_name)
+    DO UPDATE SET
+        event_count = event_count + 1,
+        payload_bytes = payload_bytes + excluded.payload_bytes;
+END;
+
+CREATE TRIGGER IF NOT EXISTS channel_history_usage_after_delete
+AFTER DELETE ON channel_history
+BEGIN
+    UPDATE channel_history_room_usage
+    SET
+        event_count = event_count - 1,
+        payload_bytes = payload_bytes - (
+            128
+                + length(CAST(OLD.identity_id AS BLOB))
+                + length(CAST(OLD.hub_destination_hash AS BLOB))
+                + length(CAST(OLD.room_name AS BLOB))
+                + length(CAST(OLD.event_id AS BLOB))
+                + length(CAST(OLD.kind AS BLOB))
+                + length(CAST(COALESCE(OLD.source_hash, '') AS BLOB))
+                + length(CAST(COALESCE(OLD.nickname, '') AS BLOB))
+                + length(CAST(OLD.text AS BLOB))
+        )
+    WHERE identity_id = OLD.identity_id
+      AND hub_destination_hash = OLD.hub_destination_hash
+      AND room_name = OLD.room_name;
+
+    DELETE FROM channel_history_room_usage
+    WHERE identity_id = OLD.identity_id
+      AND hub_destination_hash = OLD.hub_destination_hash
+      AND room_name = OLD.room_name
+      AND event_count = 0;
+END;
+"#;
+
+const CHANNEL_HISTORY_USAGE_REBUILD_SQL: &str = r#"
+DELETE FROM channel_history_room_usage;
+INSERT INTO channel_history_room_usage (
+    identity_id, hub_destination_hash, room_name, event_count, payload_bytes
+)
+SELECT
+    identity_id,
+    hub_destination_hash,
+    room_name,
+    COUNT(*),
+    SUM(
+        128
+            + length(CAST(identity_id AS BLOB))
+            + length(CAST(hub_destination_hash AS BLOB))
+            + length(CAST(room_name AS BLOB))
+            + length(CAST(event_id AS BLOB))
+            + length(CAST(kind AS BLOB))
+            + length(CAST(COALESCE(source_hash, '') AS BLOB))
+            + length(CAST(COALESCE(nickname, '') AS BLOB))
+            + length(CAST(text AS BLOB))
+    )
+FROM channel_history
+GROUP BY identity_id, hub_destination_hash, room_name;
+"#;
+
+fn reconcile_channel_history_usage(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(CHANNEL_HISTORY_USAGE_SCHEMA_SQL)?;
+    // Some migration fixtures (and sufficiently old interrupted installs)
+    // reach this step before the base schema has recreated `identities`.
+    // Creating the FK table is valid, but touching it is not until the parent
+    // exists. `init_schema` reconciles again immediately after `SCHEMA_SQL`.
+    if table_exists(conn, "identities")? {
+        conn.execute_batch(CHANNEL_HISTORY_USAGE_REBUILD_SQL)?;
+    }
+    Ok(())
+}
 
 /// Run one schema-version step inside an explicit transaction so a crash
 /// mid-step (especially multi-statement table rebuilds) rolls back atomically
@@ -1558,6 +1667,15 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 39 {
+        migration_step(conn, 39, |conn| {
+            reconcile_channel_history_usage(conn)?;
+            conn.execute_batch("UPDATE schema_version SET version = 39;")?;
+            tracing::info!("Migrated to schema version 39 (Channels history payload budgets)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -1746,6 +1864,7 @@ pub const RESET_TABLES: &[&str] = &[
     "identity_activity",
     "pending_blackholes",
     "channel_history",
+    "channel_history_room_usage",
     "channel_room_secrets",
     "channel_rooms",
     "channel_hubs",
@@ -1783,6 +1902,10 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "channel_history",
         "DELETE FROM channel_history WHERE identity_id = ?1",
+    ),
+    (
+        "channel_history_room_usage",
+        "DELETE FROM channel_history_room_usage WHERE identity_id = ?1",
     ),
     (
         "channel_room_secrets",
@@ -2876,11 +2999,15 @@ mod settings_tests {
 pub const CHANNEL_HISTORY_RETENTION_DAYS: u64 = 90;
 pub const CHANNEL_HISTORY_MAX_EVENTS_PER_ROOM: usize = 5_000;
 pub const CHANNEL_HISTORY_MAX_EVENTS_PER_IDENTITY: usize = 50_000;
+pub const CHANNEL_HISTORY_MAX_EVENTS_GLOBAL: usize = 200_000;
+pub const CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_PER_ROOM: usize = 8 * 1024 * 1024;
+pub const CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_PER_IDENTITY: usize = 64 * 1024 * 1024;
+pub const CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_GLOBAL: usize = 256 * 1024 * 1024;
 pub const CHANNEL_HISTORY_DEFAULT_PAGE_SIZE: usize = 100;
 pub const CHANNEL_HISTORY_MAX_PAGE_SIZE: usize = 200;
 pub const CHANNEL_HISTORY_MAX_APPEND_BATCH: usize = 256;
 
-const CHANNEL_HISTORY_MAX_ROOM_BYTES: usize = 256;
+pub const CHANNEL_HISTORY_MAX_ROOM_BYTES: usize = 256;
 const CHANNEL_HISTORY_MAX_EVENT_ID_BYTES: usize = 128;
 const CHANNEL_HISTORY_MAX_NICKNAME_BYTES: usize = 256;
 const CHANNEL_HISTORY_MAX_TEXT_BYTES: usize = 64 * 1024;
@@ -2982,6 +3109,9 @@ pub struct ChannelHistoryEvent {
 pub struct ChannelHistoryPage {
     pub items: Vec<ChannelHistoryEvent>,
     pub next_before: Option<String>,
+    /// Last sequence in this page. Clients can use it as an exclusive forward
+    /// cursor to catch up without reloading or trusting peer timestamps.
+    pub next_after: Option<String>,
     pub has_more: bool,
 }
 
@@ -2998,12 +3128,20 @@ struct ChannelHistoryRetentionPolicy {
     max_age_ms: i64,
     max_events_per_room: usize,
     max_events_per_identity: usize,
+    max_events_global: usize,
+    max_payload_bytes_per_room: usize,
+    max_payload_bytes_per_identity: usize,
+    max_payload_bytes_global: usize,
 }
 
 const CHANNEL_HISTORY_RETENTION: ChannelHistoryRetentionPolicy = ChannelHistoryRetentionPolicy {
     max_age_ms: CHANNEL_HISTORY_RETENTION_DAYS as i64 * MILLIS_PER_DAY,
     max_events_per_room: CHANNEL_HISTORY_MAX_EVENTS_PER_ROOM,
     max_events_per_identity: CHANNEL_HISTORY_MAX_EVENTS_PER_IDENTITY,
+    max_events_global: CHANNEL_HISTORY_MAX_EVENTS_GLOBAL,
+    max_payload_bytes_per_room: CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_PER_ROOM,
+    max_payload_bytes_per_identity: CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_PER_IDENTITY,
+    max_payload_bytes_global: CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_GLOBAL,
 };
 
 fn is_canonical_channel_hash(value: &str) -> bool {
@@ -3034,7 +3172,7 @@ fn validate_channel_history_scope(
     Ok(())
 }
 
-fn validate_channel_history_event(
+pub fn validate_channel_history_event(
     identity_id: &str,
     event: &NewChannelHistoryEvent,
 ) -> Result<(), String> {
@@ -3088,6 +3226,30 @@ fn parse_channel_history_cursor(before: Option<&str>) -> Result<Option<i64>, Str
     Ok(Some(sequence))
 }
 
+pub fn validate_channel_history_cursor(before: Option<&str>) -> Result<(), String> {
+    parse_channel_history_cursor(before).map(|_| ())
+}
+
+fn parse_channel_history_after_cursor(after: &str) -> Result<i64, String> {
+    if after.is_empty()
+        || (after.starts_with('0') && after != "0")
+        || !after.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("invalid Channels history forward cursor".into());
+    }
+    let sequence = after
+        .parse::<i64>()
+        .map_err(|_| "invalid Channels history forward cursor".to_string())?;
+    if sequence < 0 {
+        return Err("invalid Channels history forward cursor".into());
+    }
+    Ok(sequence)
+}
+
+pub fn validate_channel_history_after_cursor(after: &str) -> Result<(), String> {
+    parse_channel_history_after_cursor(after).map(|_| ())
+}
+
 fn prune_expired_channel_history_at(
     conn: &Connection,
     now_ms: i64,
@@ -3107,6 +3269,159 @@ fn prune_expired_channel_history_at(
 pub fn prune_expired_channel_history(pool: &DbPool) -> Result<usize, String> {
     let conn = pool.get().map_err(|error| error.to_string())?;
     prune_expired_channel_history_at(&conn, now_unix_ms(), CHANNEL_HISTORY_RETENTION.max_age_ms)
+}
+
+#[derive(Clone, Copy)]
+enum ChannelHistoryRetentionScope<'a> {
+    Room {
+        identity_id: &'a str,
+        hub_destination_hash: &'a str,
+        room_name: &'a str,
+    },
+    Identity(&'a str),
+    Global,
+}
+
+fn channel_history_usage(
+    transaction: &rusqlite::Transaction<'_>,
+    scope: ChannelHistoryRetentionScope<'_>,
+) -> Result<(i64, i64), String> {
+    match scope {
+        ChannelHistoryRetentionScope::Room {
+            identity_id,
+            hub_destination_hash,
+            room_name,
+        } => transaction
+            .query_row(
+                "SELECT event_count, payload_bytes
+                 FROM channel_history_room_usage
+                 WHERE identity_id = ?1
+                   AND hub_destination_hash = ?2
+                   AND room_name = ?3",
+                params![identity_id, hub_destination_hash, room_name],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map(|usage| usage.unwrap_or((0, 0)))
+            .map_err(|error| error.to_string()),
+        ChannelHistoryRetentionScope::Identity(identity_id) => transaction
+            .query_row(
+                "SELECT COALESCE(SUM(event_count), 0),
+                        COALESCE(SUM(payload_bytes), 0)
+                 FROM channel_history_room_usage
+                 WHERE identity_id = ?1",
+                params![identity_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| error.to_string()),
+        ChannelHistoryRetentionScope::Global => transaction
+            .query_row(
+                "SELECT COALESCE(SUM(event_count), 0),
+                        COALESCE(SUM(payload_bytes), 0)
+                 FROM channel_history_room_usage",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| error.to_string()),
+    }
+}
+
+fn channel_history_prune_query(
+    scope_clause: &str,
+    excess_count_parameter: usize,
+    excess_bytes_parameter: usize,
+) -> String {
+    format!(
+        "DELETE FROM channel_history
+         WHERE sequence IN (
+            SELECT sequence
+            FROM (
+                SELECT
+                    sequence,
+                    payload_bytes,
+                    ROW_NUMBER() OVER (ORDER BY sequence ASC) AS removal_count,
+                    SUM(payload_bytes) OVER (
+                        ORDER BY sequence ASC
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                    ) AS removed_bytes
+                FROM (
+                    SELECT
+                        sequence,
+                        (
+                            128
+                                + length(CAST(identity_id AS BLOB))
+                                + length(CAST(hub_destination_hash AS BLOB))
+                                + length(CAST(room_name AS BLOB))
+                                + length(CAST(event_id AS BLOB))
+                                + length(CAST(kind AS BLOB))
+                                + length(CAST(COALESCE(source_hash, '') AS BLOB))
+                                + length(CAST(COALESCE(nickname, '') AS BLOB))
+                                + length(CAST(text AS BLOB))
+                        ) AS payload_bytes
+                    FROM channel_history
+                    WHERE {scope_clause}
+                )
+            )
+            WHERE removal_count <= ?{excess_count_parameter}
+               OR removed_bytes - payload_bytes < ?{excess_bytes_parameter}
+         )"
+    )
+}
+
+/// Delete the smallest oldest prefix needed to satisfy both the row and
+/// estimated-payload ceilings for one scope. Usage triggers keep the common
+/// under-budget path O(number of rooms), not O(number of transcript rows).
+fn prune_channel_history_scope(
+    transaction: &rusqlite::Transaction<'_>,
+    scope: ChannelHistoryRetentionScope<'_>,
+    max_events: usize,
+    max_payload_bytes: usize,
+) -> Result<usize, String> {
+    let max_events = i64::try_from(max_events)
+        .map_err(|_| "Channels history event limit is too large".to_string())?;
+    let max_payload_bytes = i64::try_from(max_payload_bytes)
+        .map_err(|_| "Channels history payload limit is too large".to_string())?;
+    let (event_count, payload_bytes) = channel_history_usage(transaction, scope)?;
+    let excess_count = event_count.saturating_sub(max_events);
+    let excess_bytes = payload_bytes.saturating_sub(max_payload_bytes);
+    if excess_count == 0 && excess_bytes == 0 {
+        return Ok(0);
+    }
+
+    match scope {
+        ChannelHistoryRetentionScope::Room {
+            identity_id,
+            hub_destination_hash,
+            room_name,
+        } => transaction
+            .execute(
+                &channel_history_prune_query(
+                    "identity_id = ?1 AND hub_destination_hash = ?2 AND room_name = ?3",
+                    4,
+                    5,
+                ),
+                params![
+                    identity_id,
+                    hub_destination_hash,
+                    room_name,
+                    excess_count,
+                    excess_bytes
+                ],
+            )
+            .map_err(|error| error.to_string()),
+        ChannelHistoryRetentionScope::Identity(identity_id) => transaction
+            .execute(
+                &channel_history_prune_query("identity_id = ?1", 2, 3),
+                params![identity_id, excess_count, excess_bytes],
+            )
+            .map_err(|error| error.to_string()),
+        ChannelHistoryRetentionScope::Global => transaction
+            .execute(
+                &channel_history_prune_query("1 = 1", 1, 2),
+                params![excess_count, excess_bytes],
+            )
+            .map_err(|error| error.to_string()),
+    }
 }
 
 pub fn append_channel_history_events(
@@ -3139,6 +3454,10 @@ fn append_channel_history_events_at(
         || retention.max_age_ms < 0
         || retention.max_events_per_room == 0
         || retention.max_events_per_identity == 0
+        || retention.max_events_global == 0
+        || retention.max_payload_bytes_per_room == 0
+        || retention.max_payload_bytes_per_identity == 0
+        || retention.max_payload_bytes_global == 0
     {
         return Err("invalid Channels history retention policy".into());
     }
@@ -3192,42 +3511,30 @@ fn append_channel_history_events_at(
             params![cutoff],
         )
         .map_err(|error| error.to_string())?;
-    let room_limit = i64::try_from(retention.max_events_per_room)
-        .map_err(|_| "Channels room history limit is too large".to_string())?;
     for (hub_destination_hash, room_name) in touched_rooms {
-        pruned = pruned.saturating_add(
-            transaction
-                .execute(
-                    "DELETE FROM channel_history
-                     WHERE sequence IN (
-                        SELECT sequence FROM channel_history
-                        WHERE identity_id = ?1
-                          AND hub_destination_hash = ?2
-                          AND room_name = ?3
-                        ORDER BY sequence DESC
-                        LIMIT -1 OFFSET ?4
-                     )",
-                    params![identity_id, hub_destination_hash, room_name, room_limit],
-                )
-                .map_err(|error| error.to_string())?,
-        );
+        pruned = pruned.saturating_add(prune_channel_history_scope(
+            &transaction,
+            ChannelHistoryRetentionScope::Room {
+                identity_id,
+                hub_destination_hash,
+                room_name,
+            },
+            retention.max_events_per_room,
+            retention.max_payload_bytes_per_room,
+        )?);
     }
-    let identity_limit = i64::try_from(retention.max_events_per_identity)
-        .map_err(|_| "Channels identity history limit is too large".to_string())?;
-    pruned = pruned.saturating_add(
-        transaction
-            .execute(
-                "DELETE FROM channel_history
-                 WHERE sequence IN (
-                    SELECT sequence FROM channel_history
-                    WHERE identity_id = ?1
-                    ORDER BY sequence DESC
-                    LIMIT -1 OFFSET ?2
-                 )",
-                params![identity_id, identity_limit],
-            )
-            .map_err(|error| error.to_string())?,
-    );
+    pruned = pruned.saturating_add(prune_channel_history_scope(
+        &transaction,
+        ChannelHistoryRetentionScope::Identity(identity_id),
+        retention.max_events_per_identity,
+        retention.max_payload_bytes_per_identity,
+    )?);
+    pruned = pruned.saturating_add(prune_channel_history_scope(
+        &transaction,
+        ChannelHistoryRetentionScope::Global,
+        retention.max_events_global,
+        retention.max_payload_bytes_global,
+    )?);
     let latest_sequence = transaction
         .query_row(
             "SELECT MAX(sequence) FROM channel_history WHERE identity_id = ?1",
@@ -3333,9 +3640,71 @@ pub fn list_channel_history(
     let next_before = has_more
         .then(|| items.first().map(|item| item.sequence.clone()))
         .flatten();
+    let next_after = items.last().map(|item| item.sequence.clone());
     Ok(ChannelHistoryPage {
         items,
         next_before,
+        next_after,
+        has_more,
+    })
+}
+
+/// Catch up from an exclusive append-log cursor in receive order. Cursor `0`
+/// starts at the identity's first retained row, which lets a client that
+/// loaded an empty room avoid a latest-page gap when the first burst arrives.
+pub fn list_channel_history_after(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    after: &str,
+    limit: usize,
+) -> Result<ChannelHistoryPage, String> {
+    validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
+    if limit == 0 || limit > CHANNEL_HISTORY_MAX_PAGE_SIZE {
+        return Err(format!(
+            "Channels history page size must be between 1 and {CHANNEL_HISTORY_MAX_PAGE_SIZE}"
+        ));
+    }
+    let after = parse_channel_history_after_cursor(after)?;
+    let query_limit = i64::try_from(limit.saturating_add(1))
+        .map_err(|_| "Channels history page size is too large".to_string())?;
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT sequence, hub_destination_hash, room_name, event_id, kind,
+                    timestamp_ms, recorded_at_ms, source_hash, nickname, text,
+                    ours
+             FROM channel_history
+             WHERE identity_id = ?1
+               AND hub_destination_hash = ?2
+               AND room_name = ?3
+               AND sequence > ?4
+             ORDER BY sequence ASC
+             LIMIT ?5",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut items = statement
+        .query_map(
+            params![
+                identity_id,
+                hub_destination_hash,
+                room_name,
+                after,
+                query_limit
+            ],
+            channel_history_row,
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    let next_after = items.last().map(|item| item.sequence.clone());
+    Ok(ChannelHistoryPage {
+        items,
+        next_before: None,
+        next_after,
         has_more,
     })
 }
@@ -3394,6 +3763,19 @@ pub struct SavedChannelRoom {
     /// Non-secret recovery hint. A desired protected room without ciphertext
     /// must wait for user input instead of retrying a keyless JOIN forever.
     pub join_key_required: bool,
+}
+
+/// One room visible in the client-local Channels browser. This is the union of
+/// bookmarks and retained history: forgetting a hub must not make its
+/// separately retained transcript unreachable or imply that it was deleted.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ChannelRoomIndexEntry {
+    pub hub_destination_hash: String,
+    pub room_name: String,
+    pub last_joined: f64,
+    pub latest_recorded_at_ms: Option<u64>,
+    pub saved: bool,
+    pub has_history: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -3872,6 +4254,75 @@ pub fn list_saved_channel_rooms_for_identity(
         .map_err(|error| error.to_string())
 }
 
+/// Load the local room browser in one query. Bookmarks and history have
+/// intentionally independent lifetimes, so neither side is allowed to hide
+/// the other.
+pub fn list_channel_room_index(
+    pool: &DbPool,
+    identity_id: &str,
+) -> Result<Vec<ChannelRoomIndexEntry>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "WITH room_index AS (
+                SELECT
+                    hub_destination_hash,
+                    room_name,
+                    last_joined,
+                    NULL AS latest_recorded_at_ms,
+                    1 AS saved,
+                    0 AS has_history
+                FROM channel_rooms
+                WHERE identity_id = ?1
+
+                UNION ALL
+
+                SELECT
+                    hub_destination_hash,
+                    room_name,
+                    0.0 AS last_joined,
+                    MAX(recorded_at_ms) AS latest_recorded_at_ms,
+                    0 AS saved,
+                    1 AS has_history
+                FROM channel_history
+                WHERE identity_id = ?1
+                GROUP BY hub_destination_hash, room_name
+            )
+            SELECT
+                hub_destination_hash,
+                room_name,
+                MAX(last_joined),
+                MAX(latest_recorded_at_ms),
+                MAX(saved),
+                MAX(has_history)
+            FROM room_index
+            GROUP BY hub_destination_hash, room_name
+            ORDER BY
+                COALESCE(
+                    MAX(latest_recorded_at_ms),
+                    CAST(MAX(last_joined) * 1000 AS INTEGER),
+                    0
+                ) DESC,
+                hub_destination_hash,
+                room_name COLLATE NOCASE",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![identity_id], |row| {
+            Ok(ChannelRoomIndexEntry {
+                hub_destination_hash: row.get(0)?,
+                room_name: row.get(1)?,
+                last_joined: row.get(2)?,
+                latest_recorded_at_ms: row.get(3)?,
+                saved: row.get::<_, i64>(4)? != 0,
+                has_history: row.get::<_, i64>(5)? != 0,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
 pub fn save_channel_room(
     pool: &DbPool,
     identity_id: &str,
@@ -4131,6 +4582,17 @@ mod channel_history_tests {
             .collect()
     }
 
+    fn estimated_payload_bytes(identity_id: &str, event: &NewChannelHistoryEvent) -> usize {
+        128 + identity_id.len()
+            + event.hub_destination_hash.len()
+            + event.room_name.len()
+            + event.event_id.len()
+            + event.kind.as_storage().len()
+            + event.source_hash.as_deref().map_or(0, str::len)
+            + event.nickname.as_deref().map_or(0, str::len)
+            + event.text.len()
+    }
+
     #[test]
     fn history_is_deduplicated_identity_scoped_and_cursor_paginated() {
         let pool = test_pool();
@@ -4169,6 +4631,10 @@ mod channel_history_tests {
         let newest = list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 2).unwrap();
         assert_eq!(ids(&newest), vec!["event-4", "event-5"]);
         assert!(newest.has_more);
+        assert_eq!(
+            newest.next_after.as_deref(),
+            newest.items.last().map(|item| item.sequence.as_str())
+        );
         let cursor = newest.next_before.as_deref().unwrap();
         assert!(cursor.bytes().all(|byte| byte.is_ascii_digit()));
 
@@ -4188,6 +4654,29 @@ mod channel_history_tests {
         assert_eq!(ids(&oldest), vec!["event-1"]);
         assert!(!oldest.has_more);
         assert!(oldest.next_before.is_none());
+
+        let forward =
+            list_channel_history_after(&pool, IDENTITY_A, HUB_A, "general", "0", 2).unwrap();
+        assert_eq!(ids(&forward), vec!["event-1", "event-2"]);
+        assert!(forward.has_more);
+        assert!(forward.next_before.is_none());
+        let forward_cursor = forward.next_after.as_deref().unwrap();
+        let forward =
+            list_channel_history_after(&pool, IDENTITY_A, HUB_A, "general", forward_cursor, 2)
+                .unwrap();
+        assert_eq!(ids(&forward), vec!["event-3", "event-4"]);
+        assert!(forward.has_more);
+        let forward = list_channel_history_after(
+            &pool,
+            IDENTITY_A,
+            HUB_A,
+            "general",
+            forward.next_after.as_deref().unwrap(),
+            2,
+        )
+        .unwrap();
+        assert_eq!(ids(&forward), vec!["event-5"]);
+        assert!(!forward.has_more);
 
         // The same event id is independent across identities, hubs, and rooms.
         append_channel_history_events(&pool, IDENTITY_B, &[event(HUB_A, "general", "event-1")])
@@ -4210,6 +4699,13 @@ mod channel_history_tests {
         );
 
         // History is user data in its own right, not a child of a bookmark.
+        let indexed = list_channel_room_index(&pool, IDENTITY_A)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.hub_destination_hash == HUB_A && entry.room_name == "general")
+            .expect("saved history room is indexed");
+        assert!(indexed.saved);
+        assert!(indexed.has_history);
         assert!(remove_channel_hub(&pool, IDENTITY_A, HUB_A).unwrap());
         assert_eq!(
             list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 10)
@@ -4217,6 +4713,17 @@ mod channel_history_tests {
                 .items
                 .len(),
             5
+        );
+        let index = list_channel_room_index(&pool, IDENTITY_A).unwrap();
+        let retained = index
+            .iter()
+            .find(|entry| entry.hub_destination_hash == HUB_A && entry.room_name == "general")
+            .expect("forgotten bookmark history remains discoverable");
+        assert!(!retained.saved);
+        assert!(retained.has_history);
+        assert_eq!(
+            retained.latest_recorded_at_ms,
+            Some(u64::try_from(recorded_at_ms).unwrap())
         );
     }
 
@@ -4227,6 +4734,10 @@ mod channel_history_tests {
             max_age_ms: 100,
             max_events_per_room: 3,
             max_events_per_identity: 5,
+            max_events_global: 100,
+            max_payload_bytes_per_room: 1_000_000,
+            max_payload_bytes_per_identity: 1_000_000,
+            max_payload_bytes_global: 1_000_000,
         };
         let alpha: Vec<_> = (1..=4)
             .map(|index| event(HUB_A, "alpha", &format!("a-{index}")))
@@ -4266,6 +4777,96 @@ mod channel_history_tests {
         assert_eq!(
             ids(&list_channel_history(&pool, IDENTITY_A, HUB_A, "gamma", None, 10).unwrap()),
             vec!["fresh"]
+        );
+    }
+
+    #[test]
+    fn retention_bounds_estimated_payload_per_room_identity_and_install() {
+        let pool = test_pool();
+        let first = event(HUB_A, "alpha", "same-1");
+        let second = event(HUB_A, "alpha", "same-2");
+        let one_event_bytes = estimated_payload_bytes(IDENTITY_A, &first);
+        assert_eq!(
+            one_event_bytes,
+            estimated_payload_bytes(IDENTITY_A, &second)
+        );
+        let room_policy = ChannelHistoryRetentionPolicy {
+            max_age_ms: 10_000,
+            max_events_per_room: 100,
+            max_events_per_identity: 100,
+            max_events_global: 100,
+            max_payload_bytes_per_room: one_event_bytes,
+            max_payload_bytes_per_identity: 1_000_000,
+            max_payload_bytes_global: 1_000_000,
+        };
+        let outcome = append_channel_history_events_at(
+            &pool,
+            IDENTITY_A,
+            &[first, second],
+            1_000,
+            room_policy,
+        )
+        .unwrap();
+        assert_eq!(outcome.pruned, 1);
+        assert_eq!(
+            ids(&list_channel_history(&pool, IDENTITY_A, HUB_A, "alpha", None, 10).unwrap()),
+            vec!["same-2"]
+        );
+
+        clear_channel_history_for_identity(&pool, IDENTITY_A).unwrap();
+        let alpha = event(HUB_A, "alpha", "one-a");
+        let beta = event(HUB_A, "bravo", "one-b");
+        let identity_budget = estimated_payload_bytes(IDENTITY_A, &alpha)
+            .max(estimated_payload_bytes(IDENTITY_A, &beta));
+        let identity_policy = ChannelHistoryRetentionPolicy {
+            max_payload_bytes_per_room: 1_000_000,
+            max_payload_bytes_per_identity: identity_budget,
+            ..room_policy
+        };
+        let outcome = append_channel_history_events_at(
+            &pool,
+            IDENTITY_A,
+            &[alpha, beta],
+            1_100,
+            identity_policy,
+        )
+        .unwrap();
+        assert_eq!(outcome.pruned, 1);
+        assert!(
+            list_channel_history(&pool, IDENTITY_A, HUB_A, "alpha", None, 10)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert_eq!(
+            ids(&list_channel_history(&pool, IDENTITY_A, HUB_A, "bravo", None, 10).unwrap()),
+            vec!["one-b"]
+        );
+
+        clear_channel_history_for_identity(&pool, IDENTITY_A).unwrap();
+        let old = event(HUB_A, "global", "old-one");
+        let new = event(HUB_A, "global", "new-one");
+        let global_budget = estimated_payload_bytes(IDENTITY_A, &old)
+            .max(estimated_payload_bytes(IDENTITY_B, &new));
+        let global_policy = ChannelHistoryRetentionPolicy {
+            max_payload_bytes_per_identity: 1_000_000,
+            max_payload_bytes_global: global_budget,
+            ..identity_policy
+        };
+        append_channel_history_events_at(&pool, IDENTITY_A, &[old], 1_200, global_policy).unwrap();
+        let outcome =
+            append_channel_history_events_at(&pool, IDENTITY_B, &[new], 1_201, global_policy)
+                .unwrap();
+        assert_eq!(outcome.pruned, 1);
+        assert!(
+            list_channel_history(&pool, IDENTITY_A, HUB_A, "global", None, 10)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert_eq!(
+            ids(&list_channel_history(&pool, IDENTITY_B, HUB_A, "global", None, 10).unwrap()),
+            vec!["new-one"]
         );
     }
 
@@ -4320,6 +4921,16 @@ mod channel_history_tests {
             )
             .unwrap();
         assert_eq!(remaining, 0);
+        let remaining_usage: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM channel_history_room_usage WHERE identity_id = ?1",
+                params![IDENTITY_A],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_usage, 0);
     }
 
     #[test]
@@ -4337,6 +4948,13 @@ mod channel_history_tests {
             );
         }
         assert!(list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 0).is_err());
+        for cursor in ["", "00", "01", "-1", "abc", "9223372036854775808"] {
+            assert!(
+                list_channel_history_after(&pool, IDENTITY_A, HUB_A, "general", cursor, 10)
+                    .is_err(),
+                "forward cursor `{cursor}` must be rejected"
+            );
+        }
         assert!(
             list_channel_history(
                 &pool,
@@ -7018,6 +7636,7 @@ mod migration_tests {
             "channel_rooms",
             "channel_room_secrets",
             "channel_history",
+            "channel_history_room_usage",
             "channel_hub_rooms",
             "channel_hub_grants",
             "channel_hub_klines",
@@ -7590,6 +8209,66 @@ mod migration_tests {
         }
         drop(conn);
         assert_eq!(read_schema_version(&migrated), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_from_v38_backfills_history_usage_and_installs_triggers() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        save_identity(&pool, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", "A", "A");
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER channel_history_usage_after_insert;
+                 DROP TRIGGER channel_history_usage_after_delete;
+                 DROP TABLE channel_history_room_usage;
+                 UPDATE schema_version SET version = 38;",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO channel_history (
+                    identity_id, hub_destination_hash, room_name, event_id,
+                    kind, timestamp_ms, recorded_at_ms, source_hash, nickname,
+                    text, ours
+                 ) VALUES (?1, ?2, 'general', 'old', 'message', 1, 1, NULL, NULL, 'hello', 0)",
+                params![
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "11111111111111111111111111111111"
+                ],
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+        let conn = pool.get().unwrap();
+        let (event_count, payload_bytes): (i64, i64) = conn
+            .query_row(
+                "SELECT event_count, payload_bytes
+                 FROM channel_history_room_usage
+                 WHERE identity_id = ?1
+                   AND hub_destination_hash = ?2
+                   AND room_name = 'general'",
+                params![
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "11111111111111111111111111111111"
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(event_count, 1);
+        assert!(payload_bytes > 5);
+        conn.execute("DELETE FROM channel_history WHERE event_id = 'old'", [])
+            .unwrap();
+        let usage_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_history_room_usage",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(usage_rows, 0, "delete trigger should remove empty usage");
+        drop(conn);
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
     }
 
     #[test]

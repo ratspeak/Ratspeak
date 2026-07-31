@@ -12,10 +12,13 @@ var channelsPath = path.join(__dirname, '..', 'static', 'js', 'channels.js');
 var channelsSource = fs.readFileSync(channelsPath, 'utf8');
 var constantsStart = channelsSource.indexOf('var CHANNEL_PRESENCE_GROUP_WINDOW_MS');
 var constantsEnd = channelsSource.indexOf('\n\nfunction _channelsEl', constantsStart);
+var activityStart = channelsSource.indexOf('function _channelsActivityTime');
+var activityEnd = channelsSource.indexOf('\nfunction _channelsBuildDaySeparator', activityStart);
 var functionsStart = channelsSource.indexOf('function _channelsIsPresenceEvent');
 var functionsEnd = channelsSource.indexOf('\nfunction _channelsAppendPresenceCount', functionsStart);
 
 assert(constantsStart !== -1 && constantsEnd !== -1, 'presence constants must exist');
+assert(activityStart !== -1 && activityEnd !== -1, 'activity clock helpers must exist');
 assert(functionsStart !== -1 && functionsEnd !== -1, 'presence helpers must exist');
 
 var context = { window: {}, Number: Number, String: String, Array: Array };
@@ -27,6 +30,8 @@ var exportsSource = '\nwindow.ChannelsPresence = {' +
     '};';
 vm.runInNewContext(
     channelsSource.slice(constantsStart, constantsEnd) +
+        '\n' +
+        channelsSource.slice(activityStart, activityEnd) +
         '\n' +
         channelsSource.slice(functionsStart, functionsEnd) +
         exportsSource,
