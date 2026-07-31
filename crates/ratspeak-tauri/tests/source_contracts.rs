@@ -560,8 +560,11 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(channels_css.contains(".channel-host-admin-sheet"));
     assert!(channels_css.contains(".channel-host-admin-tabs"));
     assert!(channels_css.contains(".channel-host-admin-timeline"));
+    assert!(channels_css.contains(".channel-host-admin-edit-sheet"));
+    assert!(channels_css.contains(".channel-host-admin-editor-section"));
     assert!(channels_css.contains("unicode-bidi: plaintext"));
     assert!(responsive_css.contains(".channel-host-admin-metrics"));
+    assert!(responsive_css.contains(".channel-host-admin-edit-sheet"));
     assert!(channels_css.contains(".channel-host-registry-warning"));
     assert!(channels_css.contains(".channel-host-copy-btn[hidden]"));
     assert!(channels_css.contains(".channel-owned-hub-card"));
@@ -589,14 +592,42 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(admin_manager.contains("nextAdmin.evidence_policy.persistent !== false"));
     assert!(admin_manager.contains("request !== adminRequest"));
     assert!(admin_manager.contains("_channelHubManagerSequence !== sequence"));
+    assert!(admin_manager.contains("_channelHubIdentityGeneration === identityGeneration"));
+    assert!(admin_manager.contains("RS.invoke('channel_hub_admin_mutate', { args: args })"));
+    assert!(admin_manager.contains("mutationError.code === 'registry_unavailable'"));
+    assert!(admin_manager.contains("adminMutationBusy"));
     assert!(!admin_manager.contains("setInterval"));
     assert!(!admin_manager.contains("localStorage"));
+    for action in [
+        "create_channel",
+        "update_channel",
+        "unregister_channel",
+        "set_room_role",
+        "set_room_ban",
+        "set_invitation",
+        "kick",
+        "set_hub_ban",
+    ] {
+        assert!(
+            admin_renderers.contains(&format!("'{action}'")),
+            "Admin Center must project typed `{action}` intents"
+        );
+    }
+    assert!(admin_renderers.contains("secretMutation.join_key = '';"));
+    assert!(admin_renderers.contains("mutation.join_key = '';"));
+    assert!(admin_renderers.contains("autocomplete = 'new-password'"));
+    assert!(admin_renderers.contains("fixedLiveName && keyConfigured"));
+    assert!(admin_renderers.contains("!!modes.join_key_configured"));
+    assert!(admin_renderers.contains("roomInput.value.trim().toLowerCase();"));
+    assert!(admin_renderers.contains("cancel.textContent = 'Close and review'"));
+    assert!(!admin_renderers.contains("action: '/"));
     assert!(hub_ui.contains("Recent context, not a transcript"));
     assert!(hub_ui.contains("Memory-only and incomplete"));
     assert!(hub_ui.contains("var _channelHubIdentityGeneration = 0;"));
     assert!(hub_ui.contains("identityGeneration !== _channelHubIdentityGeneration"));
     assert!(hub_ui.contains("_channelHubIdentityGeneration += 1;"));
     assert!(hub_ui.contains("dismissManager();"));
+    assert!(hub_ui.contains("_channelHubAdminDismissChildren();"));
     assert!(admin_ui_test.contains("channel hub Admin Center tests passed"));
 
     // Configuration reads independently of live state, writes as one SQLite

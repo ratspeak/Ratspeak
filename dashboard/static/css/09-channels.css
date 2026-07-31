@@ -1932,6 +1932,11 @@
         width: 820px;
         max-height: min(820px, 92vh);
     }
+
+    .bottom-sheet.open.channel-host-admin-edit-sheet {
+        width: 560px;
+        max-height: min(780px, 92vh);
+    }
 }
 
 .channel-host-admin-sheet .bottom-sheet-header,
@@ -2037,6 +2042,31 @@
     color: var(--text-muted);
     font-size: var(--text-xs);
     line-height: var(--type-leading-copy);
+}
+
+.channel-host-admin-header-actions,
+.channel-host-admin-inline-actions,
+.channel-host-admin-room-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+.channel-host-admin-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.channel-host-admin-action {
+    min-height: var(--control-height-xs);
+    padding: var(--space-2) var(--space-5);
+    font-size: var(--text-2xs);
+    white-space: nowrap;
+}
+
+.channel-host-admin-action[hidden] {
+    display: none;
 }
 
 .channel-host-admin-refresh {
@@ -2188,6 +2218,11 @@
     unicode-bidi: plaintext;
 }
 
+.channel-host-admin-room-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 .channel-host-admin-badges {
     display: flex;
     flex-wrap: wrap;
@@ -2295,6 +2330,10 @@
     outline-offset: 1px;
 }
 
+.channel-host-admin-inline-actions {
+    margin-left: auto;
+}
+
 .channel-host-admin-access-room {
     border-bottom: 1px solid var(--border-row);
 }
@@ -2328,6 +2367,12 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-7) var(--space-10);
     padding: var(--space-4) var(--space-2) var(--space-7);
+}
+
+.channel-host-admin-access-room-actions {
+    display: flex;
+    grid-column: 1 / -1;
+    justify-content: flex-end;
 }
 
 .channel-host-admin-access-group {
@@ -2641,6 +2686,56 @@
 
 .channel-host-registry-warning[hidden] {
     display: none;
+}
+
+.channel-host-admin-notice[hidden],
+.channel-host-field[hidden] {
+    display: none;
+}
+
+.channel-host-admin-edit-body {
+    gap: var(--space-7);
+}
+
+.channel-host-admin-editor-section {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--border-row);
+}
+
+.channel-host-admin-editor-section > h3 {
+    margin: 0;
+    padding: var(--space-7) 0 var(--space-3);
+    color: var(--text-primary);
+    font-size: var(--text-xs);
+    font-weight: var(--type-weight-semibold);
+}
+
+.channel-host-admin-editor-section .channel-host-toggle-row:last-child {
+    padding-bottom: 0;
+}
+
+.channel-host-admin-topic {
+    min-height: 84px;
+    resize: vertical;
+}
+
+.channel-host-admin-key-select,
+.channel-host-admin-scope-select {
+    width: 100%;
+}
+
+.channel-host-admin-secret {
+    font-family: var(--font-mono);
+}
+
+.channel-host-admin-confirm-copy {
+    overflow-wrap: anywhere;
+    unicode-bidi: plaintext;
+}
+
+.channel-host-admin-footer-danger {
+    margin-right: auto;
 }
 
 .channel-host-section {

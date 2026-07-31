@@ -7,6 +7,7 @@ var _channelHubOverviewPromise = null;
 var _channelHubStatusRenderer = null;
 var _channelHubManagerSequence = 0;
 var _channelHubManagerDismiss = null;
+var _channelHubAdminChildDismisses = [];
 var _channelHubIdentityGeneration = 0;
 var _channelHubHomeBusy = false;
 
@@ -440,18 +441,43 @@ function _channelHubAdminBadge(text, tone) {
     return badge;
 }
 
-function _channelHubAdminHeader(root, titleText, detailText, refreshHandler) {
+function _channelHubAdminButton(labelText, handler, options) {
+    options = options || {};
+    var classes = options.primary
+        ? 'nr-btn nr-btn-primary channel-host-admin-action'
+        : 'nr-btn nr-btn-secondary channel-host-admin-action';
+    if (options.danger) classes = 'nr-btn nr-btn-danger channel-host-admin-action';
+    var button = _channelHubAdminNode('button', classes, labelText);
+    button.type = 'button';
+    button.disabled = !!options.disabled;
+    if (options.title) button.title = options.title;
+    if (handler) button.addEventListener('click', handler);
+    return button;
+}
+
+function _channelHubAdminHeader(root, titleText, detailText, refreshHandler, actionItems) {
     var header = _channelHubAdminNode('div', 'channel-host-admin-panel-header');
     var copy = _channelHubAdminNode('div', 'channel-host-admin-panel-heading');
     copy.appendChild(_channelHubAdminNode('h3', '', titleText));
     if (detailText) copy.appendChild(_channelHubAdminNode('p', '', detailText));
     header.appendChild(copy);
-    if (refreshHandler) {
+    if (refreshHandler || (actionItems && actionItems.length)) {
+        var actions = _channelHubAdminNode('div', 'channel-host-admin-header-actions');
+        (actionItems || []).forEach(function(item) {
+            actions.appendChild(_channelHubAdminButton(
+                item.label,
+                item.handler,
+                item
+            ));
+        });
+        if (refreshHandler) {
         var refresh = _channelHubAdminNode('button', 'nr-btn nr-btn-secondary channel-host-admin-refresh', 'Refresh');
         refresh.type = 'button';
         refresh.setAttribute('aria-label', 'Refresh ' + titleText.toLowerCase());
         refresh.addEventListener('click', refreshHandler);
-        header.appendChild(refresh);
+            actions.appendChild(refresh);
+        }
+        header.appendChild(actions);
     }
     root.appendChild(header);
     return header;
@@ -484,7 +510,7 @@ function _channelHubAdminMetricGrid(items) {
     return grid;
 }
 
-function _channelHubAdminIdentityRow(identityHash, labelText, trailingText) {
+function _channelHubAdminIdentityRow(identityHash, labelText, trailingText, actionItems) {
     var row = _channelHubAdminNode('div', 'channel-host-admin-identity');
     var copy = _channelHubAdminNode('div', 'channel-host-admin-identity-copy');
     if (labelText) copy.appendChild(_channelHubAdminNode('strong', '', labelText));
@@ -493,7 +519,9 @@ function _channelHubAdminIdentityRow(identityHash, labelText, trailingText) {
     copy.appendChild(code);
     row.appendChild(copy);
     if (trailingText) row.appendChild(_channelHubAdminNode('span', 'channel-host-admin-identity-meta', trailingText));
-    if (identityHash) {
+    if (identityHash || (actionItems && actionItems.length)) {
+        var actions = _channelHubAdminNode('div', 'channel-host-admin-inline-actions');
+        if (identityHash) {
         var button = _channelHubAdminNode('button', 'channel-host-admin-copy', 'Copy');
         button.type = 'button';
         button.setAttribute('aria-label', 'Copy identity ' + identityHash);
@@ -504,7 +532,12 @@ function _channelHubAdminIdentityRow(identityHash, labelText, trailingText) {
                 }
             });
         });
-        row.appendChild(button);
+            actions.appendChild(button);
+        }
+        (actionItems || []).forEach(function(item) {
+            actions.appendChild(_channelHubAdminButton(item.label, item.handler, item));
+        });
+        row.appendChild(actions);
     }
     return row;
 }
@@ -572,20 +605,32 @@ function _channelHubRenderAdminOverview(root, admin, refreshHandler) {
     ));
 }
 
-function _channelHubRenderAdminChannels(root, admin, refreshHandler) {
+function _channelHubRenderAdminChannels(root, admin, refreshHandler, actions) {
     root.textContent = '';
     var rooms = Array.isArray(admin.rooms) ? admin.rooms : [];
+    var mutationDisabled = !admin.running || !actions || !!actions.disabled;
     _channelHubAdminHeader(
         root,
         'Channels',
         _channelHubPlural(rooms.length, 'channel') + ' \u00b7 ' +
             _channelHubAdminGeneratedLabel(admin),
-        refreshHandler
+        refreshHandler,
+        actions ? [{
+            label: 'Create channel',
+            primary: true,
+            disabled: mutationDisabled,
+            title: mutationDisabled && !admin.running
+                ? 'Start the hub before creating a channel'
+                : '',
+            handler: actions.createChannel
+        }] : null
     );
     if (!rooms.length) {
         root.appendChild(_channelHubAdminEmpty(
             'No channels yet',
-            admin.running ? 'Creating and managing channels will be enabled in the next milestone.' : 'Start the hub before creating a channel.'
+            admin.running
+                ? 'Create a registered channel to define durable policy and access.'
+                : 'Start the hub before creating a channel.'
         ));
         return;
     }
@@ -593,7 +638,7 @@ function _channelHubRenderAdminChannels(root, admin, refreshHandler) {
         root.appendChild(_channelHubAdminNotice(
             'neutral',
             'Showing saved policy',
-            'Live membership counts return when the hub starts.'
+            'Live membership counts return when the hub starts. Start the hub to change channel policy.'
         ));
     }
     var list = _channelHubAdminNode('div', 'channel-host-admin-list');
@@ -604,10 +649,24 @@ function _channelHubRenderAdminChannels(root, admin, refreshHandler) {
         nameCopy.appendChild(_channelHubAdminNode('strong', '', '#' + room.name));
         nameCopy.appendChild(_channelHubAdminNode('span', '', room.topic || 'No topic set'));
         heading.appendChild(nameCopy);
-        heading.appendChild(_channelHubAdminBadge(
+        var headingActions = _channelHubAdminNode('div', 'channel-host-admin-room-actions');
+        headingActions.appendChild(_channelHubAdminBadge(
             room.registered ? 'Saved' : 'Live only',
             room.registered ? 'online' : 'neutral'
         ));
+        if (actions) {
+            headingActions.appendChild(_channelHubAdminButton(
+                room.registered ? 'Manage' : 'Register',
+                function() { actions.editChannel(room); },
+                {
+                    disabled: mutationDisabled,
+                    title: mutationDisabled && !admin.running
+                        ? 'Start the hub before changing this channel'
+                        : ''
+                }
+            ));
+        }
+        heading.appendChild(headingActions);
         row.appendChild(heading);
         var badges = _channelHubAdminNode('div', 'channel-host-admin-badges');
         _channelHubAdminModeLabels(room).forEach(function(label) {
@@ -633,7 +692,7 @@ function _channelHubRenderAdminChannels(root, admin, refreshHandler) {
     root.appendChild(list);
 }
 
-function _channelHubRenderAdminPeople(root, admin, refreshHandler) {
+function _channelHubRenderAdminPeople(root, admin, refreshHandler, actions) {
     root.textContent = '';
     var people = admin.running && Array.isArray(admin.people) ? admin.people : [];
     _channelHubAdminHeader(
@@ -657,7 +716,12 @@ function _channelHubRenderAdminPeople(root, admin, refreshHandler) {
         row.appendChild(_channelHubAdminIdentityRow(
             person.identity_hash,
             name,
-            _channelHubPlural(Number(person.session_count) || 0, 'session')
+            _channelHubPlural(Number(person.session_count) || 0, 'session'),
+            actions ? [{
+                label: 'Manage access',
+                disabled: !admin.running || !!actions.disabled,
+                handler: function() { actions.managePerson(person); }
+            }] : null
         ));
         var badges = _channelHubAdminNode('div', 'channel-host-admin-badges');
         if (person.server_operator) badges.appendChild(_channelHubAdminBadge('Hub operator', 'accent'));
@@ -686,7 +750,7 @@ function _channelHubRenderAdminPeople(root, admin, refreshHandler) {
     root.appendChild(list);
 }
 
-function _channelHubAdminIdentityGroup(root, titleText, identities, emptyText) {
+function _channelHubAdminIdentityGroup(root, titleText, identities, emptyText, actionFactory) {
     var group = _channelHubAdminNode('section', 'channel-host-admin-section');
     group.appendChild(_channelHubAdminNode('h4', '', titleText));
     if (!identities || !identities.length) {
@@ -694,21 +758,43 @@ function _channelHubAdminIdentityGroup(root, titleText, identities, emptyText) {
     } else {
         var list = _channelHubAdminNode('div', 'channel-host-admin-identity-list');
         identities.forEach(function(identity) {
-            list.appendChild(_channelHubAdminIdentityRow(identity));
+            list.appendChild(_channelHubAdminIdentityRow(
+                identity,
+                '',
+                '',
+                actionFactory ? actionFactory(identity) : null
+            ));
         });
         group.appendChild(list);
     }
     root.appendChild(group);
 }
 
-function _channelHubRenderAdminAccess(root, admin, refreshHandler) {
+function _channelHubRenderAdminAccess(root, admin, refreshHandler, actions) {
     root.textContent = '';
+    var mutationDisabled = !admin.running || !actions || !!actions.disabled;
     _channelHubAdminHeader(
         root,
         'Access',
         'Hub-wide and per-channel authority \u00b7 ' + _channelHubAdminGeneratedLabel(admin),
-        refreshHandler
+        refreshHandler,
+        actions ? [{
+            label: 'Change access',
+            primary: true,
+            disabled: mutationDisabled,
+            title: mutationDisabled && !admin.running
+                ? 'Start the hub before changing access'
+                : '',
+            handler: actions.manageAccess
+        }] : null
     );
+    if (!admin.running) {
+        root.appendChild(_channelHubAdminNotice(
+            'neutral',
+            'Saved access is read-only while stopped',
+            'Start the hub to grant, revoke, invite, kick, or ban an identity.'
+        ));
+    }
     _channelHubAdminIdentityGroup(
         root,
         'Hub operators',
@@ -719,7 +805,19 @@ function _channelHubRenderAdminAccess(root, admin, refreshHandler) {
         root,
         'Hub bans',
         admin.hub_bans || [],
-        'No identities are banned from this hub.'
+        'No identities are banned from this hub.',
+        actions ? function(identity) {
+            return [{
+                label: 'Review',
+                disabled: mutationDisabled,
+                handler: function() {
+                    actions.manageAccess({
+                        targetIdentity: identity,
+                        scope: 'hub'
+                    });
+                }
+            }];
+        } : null
     );
 
     var rooms = Array.isArray(admin.rooms) ? admin.rooms : [];
@@ -736,18 +834,51 @@ function _channelHubRenderAdminAccess(root, admin, refreshHandler) {
         summary.appendChild(_channelHubAdminNode('span', '', _channelHubPlural(accessCount, 'entry', 'entries')));
         detail.appendChild(summary);
         var body = _channelHubAdminNode('div', 'channel-host-admin-access-room-body');
+        if (actions) {
+            var roomActions = _channelHubAdminNode('div', 'channel-host-admin-access-room-actions');
+            roomActions.appendChild(_channelHubAdminButton(
+                room.registered ? 'Change channel access' : 'Manage live member',
+                function() {
+                    actions.manageAccess({ scope: 'room:' + room.name });
+                },
+                {
+                    disabled: mutationDisabled,
+                    title: mutationDisabled && !admin.running
+                        ? 'Start the hub before changing access'
+                        : ''
+                }
+            ));
+            body.appendChild(roomActions);
+        }
         [
             ['Operators', room.operators || []],
             ['Voiced identities', room.voiced || []],
             ['Channel bans', room.bans || []]
-        ].forEach(function(group) {
+        ].forEach(function(group, groupIndex) {
             var block = _channelHubAdminNode('div', 'channel-host-admin-access-group');
             block.appendChild(_channelHubAdminNode('strong', '', group[0]));
             if (!group[1].length) {
                 block.appendChild(_channelHubAdminNode('span', '', 'None'));
             } else {
                 group[1].forEach(function(identity) {
-                    block.appendChild(_channelHubAdminIdentityRow(identity));
+                    block.appendChild(_channelHubAdminIdentityRow(
+                        identity,
+                        '',
+                        '',
+                        actions ? [{
+                            label: 'Review',
+                            disabled: mutationDisabled,
+                            handler: function() {
+                                actions.manageAccess({
+                                    targetIdentity: identity,
+                                    scope: 'room:' + room.name,
+                                    choiceId: groupIndex === 0
+                                        ? 'room_operator'
+                                        : (groupIndex === 1 ? 'room_voice' : 'room_ban')
+                                });
+                            }
+                        }] : null
+                    ));
                 });
             }
             body.appendChild(block);
@@ -762,7 +893,18 @@ function _channelHubRenderAdminAccess(root, admin, refreshHandler) {
                 inviteBlock.appendChild(_channelHubAdminIdentityRow(
                     invitation.identity_hash,
                     '',
-                    expiry ? 'Expires ' + expiry.toLocaleString() : 'Expiry unavailable'
+                    expiry ? 'Expires ' + expiry.toLocaleString() : 'Expiry unavailable',
+                    actions ? [{
+                        label: 'Review',
+                        disabled: mutationDisabled,
+                        handler: function() {
+                            actions.manageAccess({
+                                targetIdentity: invitation.identity_hash,
+                                scope: 'room:' + room.name,
+                                choiceId: 'room_invitation'
+                            });
+                        }
+                    }] : null
                 ));
             });
         }
@@ -892,8 +1034,884 @@ function _channelHubRenderAdminError(root, titleText, error, retryHandler) {
     root.appendChild(failure);
 }
 
+function _channelHubAdminUtf8Length(value) {
+    value = String(value || '');
+    var bytes = 0;
+    for (var index = 0; index < value.length; index++) {
+        var code = value.charCodeAt(index);
+        if (code < 0x80) bytes += 1;
+        else if (code < 0x800) bytes += 2;
+        else if (code >= 0xd800 && code <= 0xdbff &&
+                index + 1 < value.length &&
+                value.charCodeAt(index + 1) >= 0xdc00 &&
+                value.charCodeAt(index + 1) <= 0xdfff) {
+            bytes += 4;
+            index += 1;
+        } else {
+            bytes += 3;
+        }
+    }
+    return bytes;
+}
+
+function _channelHubAdminIdentityValue(value) {
+    var identity = String(value || '').trim().toLowerCase();
+    return /^[0-9a-f]{32}$/.test(identity) ? identity : '';
+}
+
+function _channelHubAdminRoom(admin, roomName) {
+    var rooms = admin && Array.isArray(admin.rooms) ? admin.rooms : [];
+    for (var index = 0; index < rooms.length; index++) {
+        if (String(rooms[index].name) === String(roomName)) return rooms[index];
+    }
+    return null;
+}
+
+function _channelHubAdminPerson(admin, identityHash) {
+    var people = admin && Array.isArray(admin.people) ? admin.people : [];
+    for (var index = 0; index < people.length; index++) {
+        if (String(people[index].identity_hash).toLowerCase() === identityHash) {
+            return people[index];
+        }
+    }
+    return null;
+}
+
+function _channelHubAdminHasIdentity(values, identityHash) {
+    return (values || []).some(function(value) {
+        return String(value).toLowerCase() === identityHash;
+    });
+}
+
+function _channelHubAdminKeyModeOptions(registered, fixedLiveName, keyConfigured) {
+    if (registered && keyConfigured) {
+        return [
+            { value: 'keep', label: 'Keep existing key' },
+            { value: 'set', label: 'Replace key' },
+            { value: 'clear', label: 'Remove key' }
+        ];
+    }
+    if (fixedLiveName && keyConfigured) {
+        return [
+            { value: 'set', label: 'Replace key while registering' },
+            { value: 'clear', label: 'Remove key while registering' }
+        ];
+    }
+    return [
+        {
+            value: 'keep',
+            label: registered ? 'No key' : 'Create without a key'
+        },
+        {
+            value: 'set',
+            label: registered ? 'Set a key' : 'Create with a key'
+        }
+    ];
+}
+
+function _channelHubAdminAccessChoices(admin, targetValue, scope) {
+    var targetIdentity = _channelHubAdminIdentityValue(targetValue);
+    if (!targetIdentity) return [];
+    var serverOperator = _channelHubAdminHasIdentity(
+        admin && admin.server_operators,
+        targetIdentity
+    );
+    var choices = [];
+    if (serverOperator) return choices;
+    if (scope === 'hub') {
+        var hubBanned = _channelHubAdminHasIdentity(admin && admin.hub_bans, targetIdentity);
+        choices.push({
+            id: 'hub_ban',
+            label: hubBanned ? 'Remove hub ban' : 'Ban from hub',
+            detail: hubBanned
+                ? 'Allow this identity to connect to the hub again.'
+                : 'Block this identity and close every current session.',
+            mutation: {
+                action: 'set_hub_ban',
+                target_identity: targetIdentity,
+                banned: !hubBanned
+            },
+            toast: hubBanned ? 'Hub ban removed' : 'Identity banned from hub',
+            confirmation: hubBanned ? null : {
+                title: 'Ban identity from this hub?',
+                message: 'Ban ' + targetIdentity +
+                    '? Every live session for this identity will close, and future hub access will be blocked.',
+                confirmText: 'Ban from hub',
+                danger: true
+            }
+        });
+        return choices;
+    }
+
+    if (String(scope || '').indexOf('room:') !== 0) return choices;
+    var roomName = String(scope).slice(5);
+    var room = _channelHubAdminRoom(admin, roomName);
+    if (!room) return choices;
+    var roomLabel = '#' + roomName;
+    var person = _channelHubAdminPerson(admin, targetIdentity);
+    var inRoom = !!(person && (person.rooms || []).some(function(name) {
+        return String(name) === roomName;
+    }));
+
+    if (room.registered) {
+        if (!serverOperator) {
+            var operator = _channelHubAdminHasIdentity(room.operators, targetIdentity);
+            choices.push({
+                id: 'room_operator',
+                label: operator ? 'Remove channel operator' : 'Grant channel operator',
+                detail: operator
+                    ? 'Remove channel policy and moderation authority.'
+                    : 'Allow this identity to manage channel policy and moderation.',
+                mutation: {
+                    action: 'set_room_role',
+                    room: roomName,
+                    target_identity: targetIdentity,
+                    role: 'operator',
+                    enabled: !operator
+                },
+                toast: operator ? 'Channel operator removed' : 'Channel operator granted',
+                confirmation: {
+                    title: operator ? 'Remove operator authority?' : 'Grant operator authority?',
+                    message: (operator ? 'Remove' : 'Grant') + ' operator authority for ' +
+                        targetIdentity + ' in ' + roomLabel + '?',
+                    confirmText: operator ? 'Remove operator' : 'Grant operator',
+                    danger: operator
+                }
+            });
+        }
+
+        var voiced = _channelHubAdminHasIdentity(room.voiced, targetIdentity);
+        choices.push({
+            id: 'room_voice',
+            label: voiced ? 'Remove voice' : 'Grant voice',
+            detail: voiced
+                ? 'In a moderated channel, this identity will no longer be able to post.'
+                : 'Allow this identity to post while the channel is moderated.',
+            mutation: {
+                action: 'set_room_role',
+                room: roomName,
+                target_identity: targetIdentity,
+                role: 'voice',
+                enabled: !voiced
+            },
+            toast: voiced ? 'Voice removed' : 'Voice granted',
+            confirmation: voiced ? {
+                title: 'Remove voice?',
+                message: 'Remove voice for ' + targetIdentity + ' in ' + roomLabel +
+                    '? If the channel is moderated, they will no longer be able to post.',
+                confirmText: 'Remove voice',
+                danger: true
+            } : null
+        });
+
+        if (!serverOperator) {
+            var roomBanned = _channelHubAdminHasIdentity(room.bans, targetIdentity);
+            choices.push({
+                id: 'room_ban',
+                label: roomBanned ? 'Remove channel ban' : 'Ban from channel',
+                detail: roomBanned
+                    ? 'Allow this identity to join the channel again.'
+                    : 'Remove every current room session and block rejoining.',
+                mutation: {
+                    action: 'set_room_ban',
+                    room: roomName,
+                    target_identity: targetIdentity,
+                    banned: !roomBanned
+                },
+                toast: roomBanned ? 'Channel ban removed' : 'Identity banned from channel',
+                confirmation: roomBanned ? null : {
+                    title: 'Ban identity from this channel?',
+                    message: 'Ban ' + targetIdentity + ' from ' + roomLabel +
+                        '? Every current session will leave the channel, and rejoining will be blocked.',
+                    confirmText: 'Ban from channel',
+                    danger: true
+                }
+            });
+
+            var invited = (room.invitations || []).some(function(invitation) {
+                return String(invitation.identity_hash).toLowerCase() === targetIdentity;
+            });
+            var gated = !!(room.modes &&
+                (room.modes.invite_only || room.modes.join_key_configured));
+            if (invited || gated) {
+                choices.push({
+                    id: 'room_invitation',
+                    label: invited ? 'Revoke invitation' : 'Invite to channel',
+                    detail: invited
+                        ? 'Remove the active invitation and any reconnect lease.'
+                        : (room.modes && room.modes.join_key_configured
+                            ? 'Temporarily allow joining without the channel key.'
+                            : 'Temporarily allow joining this invite-only channel.'),
+                    mutation: {
+                        action: 'set_invitation',
+                        room: roomName,
+                        target_identity: targetIdentity,
+                        invited: !invited
+                    },
+                    toast: invited ? 'Invitation revoked' : 'Invitation created',
+                    confirmation: invited ? {
+                        title: 'Revoke invitation?',
+                        message: 'Revoke the invitation for ' + targetIdentity + ' in ' +
+                            roomLabel + '? Its active reconnect lease will also be removed.',
+                        confirmText: 'Revoke invitation',
+                        danger: true
+                    } : null
+                });
+            }
+        }
+    }
+
+    if (inRoom && !serverOperator) {
+        choices.push({
+            id: 'room_kick',
+            label: 'Remove live member',
+            detail: 'Remove every current session from this channel without creating a ban.',
+            mutation: {
+                action: 'kick',
+                room: roomName,
+                target_identity: targetIdentity
+            },
+            toast: 'Identity removed from channel',
+            confirmation: {
+                title: 'Remove live member?',
+                message: 'Remove every live session for ' + targetIdentity + ' from ' +
+                    roomLabel + '? They may rejoin unless separately banned.',
+                confirmText: 'Remove from channel',
+                danger: true
+            }
+        });
+    }
+    return choices;
+}
+
+function _channelHubAdminDismissChildren() {
+    var dismisses = _channelHubAdminChildDismisses.slice().reverse();
+    _channelHubAdminChildDismisses = [];
+    dismisses.forEach(function(dismiss) { dismiss(); });
+}
+
+function _channelHubAdminBuildChildSheet(options, onClose) {
+    var built = null;
+    built = _rsBuildSheet(options || {}, function(value) {
+        _channelHubAdminChildDismisses = _channelHubAdminChildDismisses.filter(
+            function(dismiss) { return dismiss !== built.dismiss; }
+        );
+        if (onClose) onClose(value);
+    });
+    _channelHubAdminChildDismisses.push(built.dismiss);
+    return built;
+}
+
+function _channelHubAdminConfirm(options) {
+    options = options || {};
+    return new Promise(function(resolve) {
+        var built = _channelHubAdminBuildChildSheet(
+            { title: options.title || 'Confirm change' },
+            function(value) { resolve(!!value); }
+        );
+        var message = _channelHubAdminNode(
+            'p',
+            'channel-sheet-copy channel-host-admin-confirm-copy',
+            options.message || 'Apply this change?'
+        );
+        built.body.appendChild(message);
+        var cancel = _channelHubAdminButton('Cancel', function() {
+            built.dismiss(false);
+        });
+        var confirm = _channelHubAdminButton(
+            options.confirmText || 'Confirm',
+            function() { built.dismiss(true); },
+            { primary: !options.danger, danger: !!options.danger }
+        );
+        built.footer.appendChild(cancel);
+        built.footer.appendChild(confirm);
+        _channelsPresentSheet(built, confirm);
+    });
+}
+
+function _channelHubOpenChannelEditor(admin, existingRoom, mutationHandler) {
+    if (!admin || !admin.running || typeof _rsBuildSheet !== 'function') return;
+    var registered = !!(existingRoom && existingRoom.registered);
+    var creating = !registered;
+    var fixedLiveName = !!(existingRoom && !existingRoom.registered);
+    var modes = existingRoom && existingRoom.modes || {};
+    var keyInput = null;
+    var secretMutation = null;
+    var closed = false;
+    var busy = false;
+    var built = _channelHubAdminBuildChildSheet({
+        title: registered ? 'Manage channel' : (fixedLiveName ? 'Register channel' : 'Create channel')
+    }, function() {
+        closed = true;
+        if (keyInput) keyInput.value = '';
+        // RS.invoke may still be waiting for the native bridge. Keep its
+        // in-flight argument intact until the promise settles below.
+        if (!busy && secretMutation && secretMutation.join_key !== undefined) {
+            secretMutation.join_key = '';
+        }
+        if (!busy) secretMutation = null;
+    });
+    built.sheet.classList.add('channel-host-admin-edit-sheet');
+    built.body.classList.add('channel-host-admin-edit-body');
+
+    built.body.appendChild(_channelHubAdminNode(
+        'p',
+        'channel-sheet-copy',
+        registered
+            ? 'Edit one complete durable policy projection for #' + existingRoom.name + '.'
+            : (fixedLiveName
+                ? 'Turn the current live-only channel into durable policy and access.'
+                : 'Create durable policy without storing conversation history or a roster.')
+    ));
+
+    var roomInput = _channelHubAdminNode('input', 'nr-input-sm');
+    roomInput.type = 'text';
+    roomInput.maxLength = 64;
+    roomInput.autocomplete = 'off';
+    roomInput.setAttribute('autocorrect', 'off');
+    roomInput.setAttribute('autocapitalize', 'none');
+    roomInput.setAttribute('spellcheck', 'false');
+    roomInput.placeholder = 'field-ops';
+    roomInput.value = existingRoom ? String(existingRoom.name || '') : '';
+    roomInput.disabled = registered || fixedLiveName;
+    built.body.appendChild(_channelHubField(
+        'Channel name',
+        roomInput,
+        registered || fixedLiveName
+            ? 'Channel names cannot be renamed.'
+            : 'Shown with # in the channel list · 64 UTF-8 bytes maximum'
+    ));
+
+    var topicInput = _channelHubAdminNode('textarea', 'nr-input-sm channel-host-admin-topic');
+    topicInput.rows = 3;
+    topicInput.maxLength = Number(admin.limits && admin.limits.max_message_body_bytes) || 350;
+    topicInput.placeholder = 'What is this channel for?';
+    topicInput.value = existingRoom ? String(existingRoom.topic || '') : '';
+    built.body.appendChild(_channelHubField(
+        'Topic',
+        topicInput,
+        'Empty clears the topic · ' +
+            (Number(admin.limits && admin.limits.max_message_body_bytes) || 350) +
+            ' UTF-8 bytes maximum'
+    ));
+
+    var policySection = _channelHubAdminNode(
+        'section',
+        'channel-host-admin-editor-section'
+    );
+    policySection.appendChild(_channelHubAdminNode('h3', '', 'Channel policy'));
+    var privateToggle = _channelHubToggle(
+        'Private channel',
+        'Hide existence from people who are neither members nor operators',
+        !!modes.private
+    );
+    var inviteToggle = _channelHubToggle(
+        'Invite only',
+        'Require an active invitation or reconnect lease to join',
+        !!modes.invite_only
+    );
+    var moderatedToggle = _channelHubToggle(
+        'Moderated posting',
+        'Only operators and voiced identities can post',
+        !!modes.moderated
+    );
+    var outsideToggle = _channelHubToggle(
+        'Members post',
+        'Reject room messages from identities that have not joined',
+        !!modes.no_outside_messages
+    );
+    var topicOpsToggle = _channelHubToggle(
+        'Operator topics',
+        'Only channel or hub operators can change the topic',
+        !!modes.topic_operators_only
+    );
+    [
+        privateToggle,
+        inviteToggle,
+        moderatedToggle,
+        outsideToggle,
+        topicOpsToggle
+    ].forEach(function(toggle) {
+        policySection.appendChild(toggle.row);
+    });
+    built.body.appendChild(policySection);
+
+    var keySection = _channelHubAdminNode(
+        'section',
+        'channel-host-admin-editor-section'
+    );
+    keySection.appendChild(_channelHubAdminNode('h3', '', 'Join key'));
+    var keyMode = _channelHubAdminNode('select', 'nr-select channel-host-admin-key-select');
+    function addKeyMode(value, label) {
+        var option = _channelHubAdminNode('option', '', label);
+        option.value = value;
+        keyMode.appendChild(option);
+    }
+    _channelHubAdminKeyModeOptions(
+        registered,
+        fixedLiveName,
+        !!modes.join_key_configured
+    ).forEach(function(option) {
+        addKeyMode(option.value, option.label);
+    });
+    keySection.appendChild(_channelHubField(
+        registered ? 'Key change' : 'Key protection',
+        keyMode,
+        modes.join_key_configured
+            ? 'The existing key cannot be recovered. Replacing it invalidates the old key.'
+            : 'Keys are converted to verify-only salted digests and never recoverable.'
+    ));
+
+    keyInput = _channelHubAdminNode('input', 'nr-input-sm channel-host-admin-secret');
+    keyInput.type = 'password';
+    keyInput.minLength = 8;
+    keyInput.maxLength = 128;
+    keyInput.autocomplete = 'new-password';
+    keyInput.setAttribute('autocorrect', 'off');
+    keyInput.setAttribute('autocapitalize', 'none');
+    keyInput.setAttribute('spellcheck', 'false');
+    var keyField = _channelHubField(
+        registered && modes.join_key_configured ? 'New join key' : 'Join key',
+        keyInput,
+        '8–128 UTF-8 bytes · whitespace is not allowed · cleared after submission'
+    );
+    keyField.hidden = true;
+    keySection.appendChild(keyField);
+    built.body.appendChild(keySection);
+
+    var error = _channelHubAdminNode('div', 'channel-sheet-error channel-host-error');
+    error.setAttribute('aria-live', 'polite');
+    built.body.appendChild(error);
+
+    var unregister = null;
+    if (registered) {
+        unregister = _channelHubAdminButton(
+            'Unregister',
+            function() {
+                _channelHubAdminConfirm({
+                    title: 'Unregister channel?',
+                    message: 'Remove the saved policy and access lists for #' +
+                        existingRoom.name +
+                        '? Current members remain until they leave, but the channel becomes live-only and will disappear when empty.',
+                    confirmText: 'Unregister channel',
+                    danger: true
+                }).then(function(confirmed) {
+                    if (!confirmed || closed) return;
+                    keyInput.value = '';
+                    setBusy(true);
+                    error.textContent = '';
+                    return mutationHandler({
+                        action: 'unregister_channel',
+                        room: existingRoom.name
+                    }, 'Channel unregistered').then(function(nextAdmin) {
+                        if (nextAdmin && !closed) built.dismiss(true);
+                    }).catch(function(mutationError) {
+                        if (!closed) {
+                            error.textContent = (mutationError && mutationError.message) ||
+                                'Could not unregister this channel.';
+                            if (mutationError && mutationError.code === 'registry_unavailable') {
+                                cancel.disabled = false;
+                                cancel.textContent = 'Close and review';
+                                submit.hidden = true;
+                                unregister.disabled = true;
+                            } else {
+                                setBusy(false);
+                            }
+                        }
+                    });
+                });
+            },
+            { danger: true }
+        );
+        unregister.classList.add('channel-host-admin-footer-danger');
+        built.footer.appendChild(unregister);
+    }
+
+    var cancel = _channelHubAdminButton('Cancel', function() { built.dismiss(); });
+    var submit = _channelHubAdminButton(
+        registered ? 'Save channel' : (fixedLiveName ? 'Register channel' : 'Create channel'),
+        submitChannel,
+        { primary: true }
+    );
+    built.footer.appendChild(cancel);
+    built.footer.appendChild(submit);
+
+    var mutableControls = [
+        topicInput,
+        keyMode,
+        keyInput,
+        privateToggle.input,
+        inviteToggle.input,
+        moderatedToggle.input,
+        outsideToggle.input,
+        topicOpsToggle.input
+    ];
+    if (!registered && !fixedLiveName) mutableControls.push(roomInput);
+
+    function setBusy(value) {
+        busy = value;
+        mutableControls.forEach(function(control) { control.disabled = value; });
+        roomInput.disabled = value || registered || fixedLiveName;
+        cancel.disabled = value;
+        submit.disabled = value;
+        if (unregister) unregister.disabled = value;
+        submit.textContent = value
+            ? 'Applying…'
+            : (registered ? 'Save channel' : (fixedLiveName ? 'Register channel' : 'Create channel'));
+    }
+
+    function renderKeyMode() {
+        keyField.hidden = keyMode.value !== 'set';
+        if (keyField.hidden) keyInput.value = '';
+    }
+
+    function roomPolicy() {
+        return {
+            invite_only: !!inviteToggle.input.checked,
+            moderated: !!moderatedToggle.input.checked,
+            no_outside_messages: !!outsideToggle.input.checked,
+            private: !!privateToggle.input.checked,
+            topic_operators_only: !!topicOpsToggle.input.checked
+        };
+    }
+
+    function validateAndBuildMutation() {
+        var roomName = roomInput.value.trim().toLowerCase();
+        if (!roomName) throw new Error('Choose a channel name.');
+        if (_channelHubAdminUtf8Length(roomName) > 64) {
+            throw new Error('Channel name cannot exceed 64 UTF-8 bytes.');
+        }
+        var topic = topicInput.value.trim();
+        var topicLimit = Number(admin.limits && admin.limits.max_message_body_bytes) || 350;
+        if (_channelHubAdminUtf8Length(topic) > topicLimit) {
+            throw new Error('Topic cannot exceed ' + topicLimit + ' UTF-8 bytes.');
+        }
+        if (/[\u0000-\u001f\u007f-\u009f]/.test(topic)) {
+            throw new Error('Topic cannot contain control characters.');
+        }
+        var mutation = {
+            action: registered ? 'update_channel' : 'create_channel',
+            room: roomName,
+            topic: topic,
+            policy: roomPolicy()
+        };
+        if (keyMode.value === 'set') {
+            var key = keyInput.value;
+            var keyBytes = _channelHubAdminUtf8Length(key);
+            if (keyBytes < 8 || keyBytes > 128) {
+                throw new Error('Join key must be 8–128 UTF-8 bytes.');
+            }
+            if (/\s/.test(key) || /[\u0000-\u001f\u007f-\u009f]/.test(key)) {
+                throw new Error('Join key cannot contain whitespace or control characters.');
+            }
+            mutation.join_key = key;
+        } else if (registered && keyMode.value === 'clear') {
+            mutation.clear_join_key = true;
+        }
+        return mutation;
+    }
+
+    function channelConfirmation(mutation) {
+        if (!existingRoom) return null;
+        var consequences = [];
+        [
+            ['private', 'hide the channel from non-members'],
+            ['invite_only', 'require invitations to join'],
+            ['moderated', 'limit posting to operators and voiced identities'],
+            ['no_outside_messages', 'require membership before posting'],
+            ['topic_operators_only', 'limit topic changes to operators']
+        ].forEach(function(entry) {
+            if (!modes[entry[0]] && mutation.policy[entry[0]]) {
+                consequences.push(entry[1]);
+            }
+        });
+        if (mutation.join_key !== undefined) {
+            consequences.push(modes.join_key_configured
+                ? 'replace the join key and invalidate the old key'
+                : 'require a join key');
+        }
+        if (mutation.clear_join_key ||
+                (!registered && modes.join_key_configured && keyMode.value === 'clear')) {
+            consequences.push('remove join-key protection');
+        }
+        if (!consequences.length) return null;
+        return {
+            title: 'Apply access-policy changes?',
+            message: (registered ? 'Update #' : 'Register #') + existingRoom.name + ' to ' +
+                consequences.join(', ') + '?',
+            confirmText: 'Apply changes',
+            danger: true
+        };
+    }
+
+    function clearSubmittedSecret(mutation) {
+        keyInput.value = '';
+        if (mutation && mutation.join_key !== undefined) mutation.join_key = '';
+        if (secretMutation === mutation) secretMutation = null;
+    }
+
+    function submitChannel() {
+        if (busy || closed) return;
+        error.textContent = '';
+        var mutation;
+        try {
+            mutation = validateAndBuildMutation();
+        } catch (validationError) {
+            error.textContent = validationError.message;
+            return;
+        }
+        var confirmation = channelConfirmation(mutation);
+        var confirmed = confirmation
+            ? _channelHubAdminConfirm(confirmation)
+            : Promise.resolve(true);
+        confirmed.then(function(allowed) {
+            if (!allowed || closed) return;
+            setBusy(true);
+            secretMutation = mutation;
+            return mutationHandler(
+                mutation,
+                registered ? 'Channel updated' : 'Channel created'
+            ).then(function(nextAdmin) {
+                clearSubmittedSecret(mutation);
+                if (nextAdmin && !closed) built.dismiss(true);
+                else if (!closed) setBusy(false);
+            }).catch(function(mutationError) {
+                clearSubmittedSecret(mutation);
+                if (!closed) {
+                    error.textContent = (mutationError && mutationError.message) ||
+                        'Could not apply this channel policy.';
+                    if (mutationError && mutationError.code === 'registry_unavailable') {
+                        cancel.disabled = false;
+                        cancel.textContent = 'Close and review';
+                        submit.hidden = true;
+                        if (unregister) unregister.disabled = true;
+                    } else {
+                        setBusy(false);
+                    }
+                }
+            });
+        });
+    }
+
+    keyMode.addEventListener('change', renderKeyMode);
+    renderKeyMode();
+    _channelsPresentSheet(built, registered || fixedLiveName ? topicInput : roomInput);
+}
+
+function _channelHubOpenAccessEditor(admin, options, mutationHandler) {
+    if (!admin || !admin.running || typeof _rsBuildSheet !== 'function') return;
+    options = options || {};
+    var closed = false;
+    var busy = false;
+    var preferredChoice = options.choiceId || '';
+    var built = _channelHubAdminBuildChildSheet(
+        { title: 'Change access' },
+        function() { closed = true; }
+    );
+    built.sheet.classList.add('channel-host-admin-edit-sheet');
+    built.body.classList.add('channel-host-admin-edit-body');
+    built.body.appendChild(_channelHubAdminNode(
+        'p',
+        'channel-sheet-copy',
+        'Choose one explicit authority or moderation change. Complete identity hashes are required.'
+    ));
+
+    var targetInput = _channelHubAdminNode('input', 'nr-input-sm mono');
+    targetInput.type = 'text';
+    targetInput.maxLength = 64;
+    targetInput.autocomplete = 'off';
+    targetInput.setAttribute('autocorrect', 'off');
+    targetInput.setAttribute('autocapitalize', 'none');
+    targetInput.setAttribute('spellcheck', 'false');
+    targetInput.placeholder = '32-character identity hash';
+    targetInput.value = String(options.targetIdentity || '');
+    built.body.appendChild(_channelHubField(
+        'Target identity',
+        targetInput,
+        'Use the complete 32-character hexadecimal identity hash'
+    ));
+
+    var scopeSelect = _channelHubAdminNode(
+        'select',
+        'nr-select channel-host-admin-scope-select'
+    );
+    var hubOption = _channelHubAdminNode('option', '', 'Hub-wide access');
+    hubOption.value = 'hub';
+    scopeSelect.appendChild(hubOption);
+    (admin.rooms || []).forEach(function(room) {
+        var option = _channelHubAdminNode(
+            'option',
+            '',
+            '#' + room.name + (room.registered ? ' · saved' : ' · live only')
+        );
+        option.value = 'room:' + room.name;
+        scopeSelect.appendChild(option);
+    });
+    var desiredScope = String(options.scope || '');
+    if (!desiredScope && options.person && (options.person.rooms || []).length) {
+        desiredScope = 'room:' + options.person.rooms[0];
+    }
+    scopeSelect.value = desiredScope || 'hub';
+    if (!scopeSelect.value) scopeSelect.value = 'hub';
+    built.body.appendChild(_channelHubField(
+        'Scope',
+        scopeSelect,
+        'Saved roles and access require a registered channel; live-only channels support removal only'
+    ));
+
+    var actionSelect = _channelHubAdminNode(
+        'select',
+        'nr-select channel-host-admin-scope-select'
+    );
+    var actionHint = _channelHubAdminNode(
+        'span',
+        'channel-host-field-hint',
+        'Enter a complete identity to see available changes.'
+    );
+    var actionField = _channelHubField('Change', actionSelect);
+    actionField.appendChild(actionHint);
+    built.body.appendChild(actionField);
+
+    var protectedNotice = _channelHubAdminNotice(
+        'warning',
+        'Hub operator protection',
+        'Hub operators cannot be deopped, kicked, or banned. Server-operator authority is configured outside this view.'
+    );
+    protectedNotice.hidden = true;
+    built.body.appendChild(protectedNotice);
+
+    var error = _channelHubAdminNode('div', 'channel-sheet-error channel-host-error');
+    error.setAttribute('aria-live', 'polite');
+    built.body.appendChild(error);
+
+    var cancel = _channelHubAdminButton('Cancel', function() { built.dismiss(); });
+    var submit = _channelHubAdminButton('Apply change', submitAccess, { primary: true });
+    built.footer.appendChild(cancel);
+    built.footer.appendChild(submit);
+
+    function currentChoices() {
+        return _channelHubAdminAccessChoices(
+            admin,
+            targetInput.value,
+            scopeSelect.value
+        );
+    }
+
+    function selectedChoice() {
+        var choiceId = actionSelect.value;
+        var choices = currentChoices();
+        for (var index = 0; index < choices.length; index++) {
+            if (choices[index].id === choiceId) return choices[index];
+        }
+        return null;
+    }
+
+    function renderChoices() {
+        var previous = actionSelect.value || preferredChoice;
+        preferredChoice = '';
+        actionSelect.textContent = '';
+        var identity = _channelHubAdminIdentityValue(targetInput.value);
+        var choices = currentChoices();
+        if (!choices.length) {
+            var unavailable = _channelHubAdminNode(
+                'option',
+                '',
+                identity ? 'No available change for this scope' : 'Enter a complete identity'
+            );
+            unavailable.value = '';
+            unavailable.disabled = true;
+            actionSelect.appendChild(unavailable);
+            actionSelect.value = '';
+        } else {
+            choices.forEach(function(choice) {
+                var option = _channelHubAdminNode('option', '', choice.label);
+                option.value = choice.id;
+                actionSelect.appendChild(option);
+            });
+            var preferredExists = choices.some(function(choice) {
+                return choice.id === previous;
+            });
+            actionSelect.value = preferredExists ? previous : choices[0].id;
+        }
+        var choice = selectedChoice();
+        actionHint.textContent = choice
+            ? choice.detail
+            : (identity
+                ? 'This identity is protected or the selected channel has no applicable durable action.'
+                : 'Enter a complete 32-character hexadecimal identity hash.');
+        var protectedIdentity = identity &&
+            _channelHubAdminHasIdentity(admin.server_operators, identity);
+        protectedNotice.hidden = !protectedIdentity;
+        submit.disabled = busy || !choice;
+        submit.className = choice && choice.confirmation && choice.confirmation.danger
+            ? 'nr-btn nr-btn-danger channel-host-admin-action'
+            : 'nr-btn nr-btn-primary channel-host-admin-action';
+        submit.textContent = busy ? 'Applying…' : (choice ? choice.label : 'Apply change');
+    }
+
+    function setBusy(value) {
+        busy = value;
+        targetInput.disabled = value;
+        scopeSelect.disabled = value;
+        actionSelect.disabled = value;
+        cancel.disabled = value;
+        renderChoices();
+    }
+
+    function submitAccess() {
+        if (busy || closed) return;
+        error.textContent = '';
+        var identity = _channelHubAdminIdentityValue(targetInput.value);
+        if (!identity) {
+            error.textContent = 'Enter a complete 32-character hexadecimal identity hash.';
+            return;
+        }
+        targetInput.value = identity;
+        var choice = selectedChoice();
+        if (!choice) {
+            error.textContent = 'No applicable access change is available.';
+            return;
+        }
+        var confirmed = choice.confirmation
+            ? _channelHubAdminConfirm(choice.confirmation)
+            : Promise.resolve(true);
+        confirmed.then(function(allowed) {
+            if (!allowed || closed) return;
+            setBusy(true);
+            return mutationHandler(choice.mutation, choice.toast).then(function(nextAdmin) {
+                if (nextAdmin && !closed) built.dismiss(true);
+                else if (!closed) setBusy(false);
+            }).catch(function(mutationError) {
+                if (!closed) {
+                    error.textContent = (mutationError && mutationError.message) ||
+                        'Could not apply this access change.';
+                    if (mutationError && mutationError.code === 'registry_unavailable') {
+                        cancel.disabled = false;
+                        cancel.textContent = 'Close and review';
+                        submit.hidden = true;
+                    } else {
+                        setBusy(false);
+                    }
+                }
+            });
+        });
+    }
+
+    targetInput.addEventListener('input', renderChoices);
+    targetInput.addEventListener('change', function() {
+        var identity = _channelHubAdminIdentityValue(targetInput.value);
+        if (identity) targetInput.value = identity;
+        renderChoices();
+    });
+    scopeSelect.addEventListener('change', renderChoices);
+    actionSelect.addEventListener('change', renderChoices);
+    renderChoices();
+    _channelsPresentSheet(built, options.targetIdentity ? actionSelect : targetInput);
+}
+
 function channelHubOpenManager(initialOverview) {
     if (typeof _rsBuildSheet !== 'function') return;
+    _channelHubAdminDismissChildren();
     if (_channelHubManagerDismiss) {
         var previousDismiss = _channelHubManagerDismiss;
         _channelHubManagerDismiss = null;
@@ -912,8 +1930,10 @@ function channelHubOpenManager(initialOverview) {
         return;
     }
 
+    var identityGeneration = _channelHubIdentityGeneration;
     var built = _rsBuildSheet({ title: 'Hub administration' }, function() {
         if (_channelHubManagerSequence !== sequence) return;
+        _channelHubAdminDismissChildren();
         _channelHubStatusRenderer = null;
         _channelHubManagerDismiss = null;
         _channelHubManagerSequence += 1;
@@ -1159,6 +2179,9 @@ function channelHubOpenManager(initialOverview) {
     var activeTab = 'overview';
     var adminSnapshot = null;
     var adminRequest = 0;
+    var adminMutationRequest = 0;
+    var adminMutationBusy = false;
+    var registryMutationWarning = false;
     var adminPanelTitles = {
         overview: 'Overview',
         channels: 'Channels',
@@ -1190,14 +2213,95 @@ function channelHubOpenManager(initialOverview) {
         _channelHubRenderAdminLoading(limitsHost, 'Operating limits');
     }
 
+    function managerCurrent() {
+        return _channelHubManagerSequence === sequence &&
+            _channelHubIdentityGeneration === identityGeneration;
+    }
+
+    function validatedAdminSnapshot(nextAdmin) {
+        if (!nextAdmin || Number(nextAdmin.model_version) !== 1) {
+            throw new Error('This hub admin snapshot uses an unsupported model version.');
+        }
+        if (!nextAdmin.evidence_policy || nextAdmin.evidence_policy.persistent !== false) {
+            throw new Error('This hub admin snapshot does not satisfy the memory-only evidence contract.');
+        }
+        return nextAdmin;
+    }
+
+    function mutationsAvailable() {
+        return managerCurrent() && !busy && !adminMutationBusy &&
+            !!adminSnapshot && !!adminSnapshot.running &&
+            !!(overview.status && overview.status.running);
+    }
+
+    function requireMutationsAvailable() {
+        if (mutationsAvailable()) return true;
+        if (typeof showToast === 'function') {
+            showToast(
+                adminMutationBusy
+                    ? 'Another hub change is still being applied'
+                    : 'Start the hub before changing channel policy or access',
+                'toast-orange',
+                2800
+            );
+        }
+        return false;
+    }
+
+    function openChannelEditor(room) {
+        if (!requireMutationsAvailable()) return;
+        var currentRoom = room ? _channelHubAdminRoom(adminSnapshot, room.name) : null;
+        _channelHubOpenChannelEditor(adminSnapshot, currentRoom, mutateAdmin);
+    }
+
+    function openAccessEditor(options) {
+        if (!requireMutationsAvailable()) return;
+        options = options && (
+            options.targetIdentity || options.scope || options.person
+        ) ? options : {};
+        if (options.person && !options.targetIdentity) {
+            options.targetIdentity = options.person.identity_hash;
+        }
+        _channelHubOpenAccessEditor(adminSnapshot, options, mutateAdmin);
+    }
+
+    function adminActions(nextAdmin) {
+        return {
+            disabled: busy || adminMutationBusy || !nextAdmin.running ||
+                !(overview.status && overview.status.running),
+            createChannel: function() { openChannelEditor(null); },
+            editChannel: openChannelEditor,
+            managePerson: function(person) {
+                openAccessEditor({
+                    person: person,
+                    targetIdentity: person.identity_hash
+                });
+            },
+            manageAccess: openAccessEditor
+        };
+    }
+
     function renderAdmin(nextAdmin) {
         var liveStatus = overview.status || {};
-        registryWarning.hidden = !(liveStatus.registry_degraded || nextAdmin.registry_degraded);
-        _channelHubRenderAdminOverview(panels.overview, nextAdmin, refreshAdmin);
-        _channelHubRenderAdminChannels(panels.channels, nextAdmin, refreshAdmin);
-        _channelHubRenderAdminPeople(panels.people, nextAdmin, refreshAdmin);
-        _channelHubRenderAdminAccess(panels.access, nextAdmin, refreshAdmin);
-        _channelHubRenderAdminActivity(panels.activity, nextAdmin, refreshAdmin);
+        var registryDegraded = !!(liveStatus.registry_degraded ||
+            nextAdmin.registry_degraded ||
+            (nextAdmin.rooms || []).some(function(room) { return !!room.save_pending; }));
+        registryWarning.hidden = !registryDegraded;
+        if (registryDegraded) {
+            registryWarning.textContent = registryMutationWarning
+                ? 'The live hub applied your change, but durable storage is unavailable. Saving will retry automatically; refresh to confirm.'
+                : 'Some channel changes are still waiting to be saved.';
+        } else {
+            registryMutationWarning = false;
+            registryWarning.textContent = 'Some channel changes are still waiting to be saved.';
+        }
+        var refreshHandler = busy || adminMutationBusy ? null : refreshAdmin;
+        var actions = adminActions(nextAdmin);
+        _channelHubRenderAdminOverview(panels.overview, nextAdmin, refreshHandler);
+        _channelHubRenderAdminChannels(panels.channels, nextAdmin, refreshHandler, actions);
+        _channelHubRenderAdminPeople(panels.people, nextAdmin, refreshHandler, actions);
+        _channelHubRenderAdminAccess(panels.access, nextAdmin, refreshHandler, actions);
+        _channelHubRenderAdminActivity(panels.activity, nextAdmin, refreshHandler);
         _channelHubRenderAdminLimits(limitsHost, nextAdmin);
     }
 
@@ -1218,22 +2322,21 @@ function channelHubOpenManager(initialOverview) {
         );
     }
 
-    function loadAdmin() {
+    function loadAdmin(allowDuringMutation) {
+        if (adminMutationBusy && !allowDuringMutation) {
+            return Promise.resolve(adminSnapshot);
+        }
         var request = ++adminRequest;
         if (!adminSnapshot) renderAdminLoading();
         return RS.invoke('api_channel_hub_admin').then(function(nextAdmin) {
-            if (_channelHubManagerSequence !== sequence || request !== adminRequest) return null;
-            if (!nextAdmin || Number(nextAdmin.model_version) !== 1) {
-                throw new Error('This hub admin snapshot uses an unsupported model version.');
-            }
-            if (!nextAdmin.evidence_policy || nextAdmin.evidence_policy.persistent !== false) {
-                throw new Error('This hub admin snapshot does not satisfy the memory-only evidence contract.');
-            }
-            adminSnapshot = nextAdmin;
+            if (_channelHubManagerSequence !== sequence ||
+                    !managerCurrent() || request !== adminRequest) return null;
+            adminSnapshot = validatedAdminSnapshot(nextAdmin);
             renderAdmin(adminSnapshot);
             return adminSnapshot;
         }).catch(function(loadError) {
-            if (_channelHubManagerSequence !== sequence || request !== adminRequest) return null;
+            if (_channelHubManagerSequence !== sequence ||
+                    !managerCurrent() || request !== adminRequest) return null;
             adminSnapshot = null;
             renderAdminError(loadError);
             return null;
@@ -1242,6 +2345,70 @@ function channelHubOpenManager(initialOverview) {
 
     function refreshAdmin() {
         return loadAdmin();
+    }
+
+    function mutateAdmin(args, successText) {
+        if (!mutationsAvailable()) {
+            return Promise.reject(new Error(
+                adminMutationBusy
+                    ? 'Another hub change is still being applied.'
+                    : 'Start the channel hub before making administrative changes.'
+            ));
+        }
+        adminMutationBusy = true;
+        var mutationRequest = ++adminMutationRequest;
+        ++adminRequest;
+        if (adminSnapshot) renderAdmin(adminSnapshot);
+        renderStatus(overview);
+
+        var request = RS.invoke('channel_hub_admin_mutate', { args: args }).then(
+            function(nextAdmin) {
+                if (!managerCurrent() || mutationRequest !== adminMutationRequest) {
+                    return null;
+                }
+                adminSnapshot = validatedAdminSnapshot(nextAdmin);
+                registryMutationWarning = false;
+                renderAdmin(adminSnapshot);
+                if (successText && typeof showToast === 'function') {
+                    showToast(successText, 'toast-green', 2200);
+                }
+                return adminSnapshot;
+            }
+        ).catch(function(mutationError) {
+            if (!managerCurrent() || mutationRequest !== adminMutationRequest) {
+                return null;
+            }
+            if (mutationError && mutationError.code === 'registry_unavailable') {
+                registryMutationWarning = true;
+                registryWarning.hidden = false;
+                registryWarning.textContent =
+                    'The live hub applied your change, but durable storage is unavailable. Saving will retry automatically; refresh to confirm.';
+                var pendingError = new Error(
+                    'The live change was applied, but its durable save is pending. Review the warning and refresh to confirm.'
+                );
+                pendingError.code = 'registry_unavailable';
+                return loadAdmin(true).then(function() {
+                    throw pendingError;
+                });
+            }
+            throw mutationError;
+        });
+
+        return request.then(function(result) {
+            if (managerCurrent() && mutationRequest === adminMutationRequest) {
+                adminMutationBusy = false;
+                if (adminSnapshot) renderAdmin(adminSnapshot);
+                renderStatus(overview);
+            }
+            return result;
+        }, function(mutationError) {
+            if (managerCurrent() && mutationRequest === adminMutationRequest) {
+                adminMutationBusy = false;
+                if (adminSnapshot) renderAdmin(adminSnapshot);
+                renderStatus(overview);
+            }
+            throw mutationError;
+        });
     }
 
     function currentArgs() {
@@ -1256,7 +2423,7 @@ function channelHubOpenManager(initialOverview) {
 
     function renderDirty() {
         var dirty = !_channelHubSettingsEqual(overview.settings, currentArgs());
-        save.disabled = busy || !dirty || !nameInput.value.trim();
+        save.disabled = busy || adminMutationBusy || !dirty || !nameInput.value.trim();
         save.hidden = activeTab !== 'settings';
         impact.hidden = !(dirty && overview.status && overview.status.running);
         greetingCount.textContent = (greetingInput.value.length || 0) + '/512 · Shown once when someone connects';
@@ -1265,10 +2432,12 @@ function channelHubOpenManager(initialOverview) {
     function setBusy(value, label) {
         busy = value;
         controls.forEach(function(control) { control.disabled = value; });
-        stateButton.disabled = value;
+        stateButton.disabled = value || adminMutationBusy;
         close.disabled = value;
-        save.disabled = value || _channelHubSettingsEqual(overview.settings, currentArgs());
+        save.disabled = value || adminMutationBusy ||
+            _channelHubSettingsEqual(overview.settings, currentArgs());
         if (label) stateButton.textContent = label;
+        if (adminSnapshot) renderAdmin(adminSnapshot);
     }
 
     function renderStatus(nextOverview) {
@@ -1285,15 +2454,19 @@ function channelHubOpenManager(initialOverview) {
         stateButton.className = model.action === 'start'
             ? 'nr-btn nr-btn-primary channel-host-state-btn'
             : 'nr-btn nr-btn-secondary channel-host-state-btn';
-        stateButton.disabled = busy;
+        stateButton.disabled = busy || adminMutationBusy;
         var destination = status.destination_hash || overview.destination_hash || '';
         addressValue.textContent = destination;
         address.classList.toggle('is-empty', !destination);
         addressLabel.textContent = destination ? 'Hub address' : 'Hub address appears after the first start';
         copyAddress.hidden = !destination;
         copyAddress.disabled = !destination;
-        registryWarning.hidden = !(status.registry_degraded ||
+        registryWarning.hidden = !(registryMutationWarning || status.registry_degraded ||
             (adminSnapshot && adminSnapshot.registry_degraded));
+        if (registryMutationWarning) {
+            registryWarning.textContent =
+                'The live hub applied your change, but durable storage is unavailable. Saving will retry automatically; refresh to confirm.';
+        }
         renderDirty();
     }
 
@@ -1398,6 +2571,7 @@ RS.listen('lxmf_identity', function() {
     _channelHubOverviewPromise = null;
     _channelHubManagerSequence += 1;
     _channelHubStatusRenderer = null;
+    _channelHubAdminDismissChildren();
     if (_channelHubManagerDismiss) {
         var dismissManager = _channelHubManagerDismiss;
         _channelHubManagerDismiss = null;

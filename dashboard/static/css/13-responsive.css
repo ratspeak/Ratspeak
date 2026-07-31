@@ -3837,6 +3837,11 @@
         max-height: min(92dvh, 920px);
     }
 
+    .bottom-sheet.channel-host-admin-edit-sheet {
+        max-height: min(92vh, 840px);
+        max-height: min(92dvh, 840px);
+    }
+
     .channel-host-admin-sheet .bottom-sheet-header,
     .channel-host-admin-sheet .bottom-sheet-footer {
         padding-right: var(--space-7);
@@ -3868,10 +3873,24 @@
     }
 
     .channel-host-admin-panel-header {
+        align-items: stretch;
+        flex-direction: column;
         gap: var(--space-5);
     }
 
+    .channel-host-admin-header-actions {
+        justify-content: flex-start;
+    }
+
+    .channel-host-admin-header-actions .channel-host-admin-action {
+        flex: 1 1 auto;
+    }
+
     .channel-host-admin-refresh {
+        min-height: var(--control-height-md);
+    }
+
+    .channel-host-admin-action {
         min-height: var(--control-height-md);
     }
 
@@ -3896,6 +3915,15 @@
         align-items: flex-start;
     }
 
+    .channel-host-admin-room-heading {
+        flex-direction: column;
+    }
+
+    .channel-host-admin-room-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+
     .channel-host-admin-identity {
         flex-wrap: wrap;
     }
@@ -3905,9 +3933,23 @@
         width: 100%;
     }
 
+    .channel-host-admin-inline-actions {
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-end;
+    }
+
     .channel-host-admin-access-room-body {
         grid-template-columns: minmax(0, 1fr);
         gap: var(--space-7);
+    }
+
+    .channel-host-admin-access-room-actions {
+        justify-content: stretch;
+    }
+
+    .channel-host-admin-access-room-actions .channel-host-admin-action {
+        width: 100%;
     }
 
     .channel-host-admin-event-heading {
