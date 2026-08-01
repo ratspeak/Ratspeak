@@ -2,15 +2,7 @@
 <resources>
     <!-- Dashboard light theme tokens -->
     <color name="splash_bg">#FFE8E4DF</color>
-    <color name="nav_bar_bg">#FFFAF7F3</color>
-    <color name="ratspeak_accent">#FFD2693B</color>
 
     <!-- Dark theme variants (used by values-night) -->
     <color name="splash_bg_dark">#FF18171A</color>
-    <color name="nav_bar_bg_dark">#FF18171A</color>
-    <color name="ratspeak_accent_dark">#FFE08355</color>
-
-    <!-- System -->
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
 </resources>

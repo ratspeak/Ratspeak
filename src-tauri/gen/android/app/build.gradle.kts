@@ -90,6 +90,17 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    lint {
+        abortOnError = true
+        warningsAsErrors = true
+        // Release pins are updated deliberately, not opportunistically by
+        // lint. Tauri generates launcher variants from one approved artwork.
+        disable += setOf(
+            "AndroidGradlePluginVersion",
+            "GradleDependency",
+            "IconDuplicates"
+        )
+    }
 }
 
 fun patchTauriGeneratedLoggerFile() {
@@ -115,14 +126,21 @@ fun patchTauriGeneratedLoggerFile() {
         throw GradleException("Tauri generated RustWebView.kt is missing")
     }
     val rustWebViewSource = rustWebView.readText()
-    val rustWebViewPatched = rustWebViewSource.replace(
-        "@file:Suppress(\"unused\", \"SetJavaScriptEnabled\")",
-        "@file:Suppress(\"unused\", \"SetJavaScriptEnabled\", \"DEPRECATION\")"
-    )
+    val rustWebViewSuppression =
+        "@file:Suppress(\"unused\", \"SetJavaScriptEnabled\", \"DEPRECATION\", \"ViewConstructor\")"
+    val rustWebViewPatched = rustWebViewSource
+        .replace(
+            "@file:Suppress(\"unused\", \"SetJavaScriptEnabled\")",
+            rustWebViewSuppression
+        )
+        .replace(
+            "@file:Suppress(\"unused\", \"SetJavaScriptEnabled\", \"DEPRECATION\")",
+            rustWebViewSuppression
+        )
     if (rustWebViewPatched != rustWebViewSource) {
         rustWebView.writeText(rustWebViewPatched)
     }
-    if (!rustWebViewPatched.contains("@file:Suppress(\"unused\", \"SetJavaScriptEnabled\", \"DEPRECATION\")")) {
+    if (!rustWebViewPatched.contains(rustWebViewSuppression)) {
         throw GradleException("Tauri RustWebView.kt deprecation warning is not suppressed")
     }
 
@@ -131,6 +149,15 @@ fun patchTauriGeneratedLoggerFile() {
         throw GradleException("Tauri generated RustWebChromeClient.kt is missing")
     }
     val rustWebChromeClientSource = rustWebChromeClient.readText()
+    val rustWebChromeClientBase = rustWebChromeClientSource
+        .replace(
+            "@file:Suppress(\"ObsoleteSdkInt\", \"RedundantOverride\", \"QueryPermissionsNeeded\", \"SimpleDateFormat\")",
+            "@file:Suppress(\"ObsoleteSdkInt\", \"RedundantOverride\", \"QueryPermissionsNeeded\", \"SimpleDateFormat\", \"TrimLambda\")"
+        )
+        .replace(
+            "val msg = String.format(\n        \"File: %s - Line %d - Msg: %s\",",
+            "val msg = String.format(\n        Locale.ROOT,\n        \"File: %s - Line %d - Msg: %s\","
+        )
     val geolocationMarker =
         "    Logger.debug(\"onGeolocationPermissionsShowPrompt: DOING IT HERE FOR ORIGIN: ${'$'}origin\")\n" +
             "    val geoPermissions ="
@@ -144,16 +171,22 @@ fun patchTauriGeneratedLoggerFile() {
             "    }\n" +
             "    val geoPermissions ="
     val rustWebChromeClientPatched =
-        if (rustWebChromeClientSource.contains("onGeolocationPermissionsShowPrompt: coarse permission already granted")) {
-            rustWebChromeClientSource
+        if (rustWebChromeClientBase.contains("onGeolocationPermissionsShowPrompt: coarse permission already granted")) {
+            rustWebChromeClientBase
         } else {
-            rustWebChromeClientSource.replace(geolocationMarker, geolocationPatch)
+            rustWebChromeClientBase.replace(geolocationMarker, geolocationPatch)
         }
     if (rustWebChromeClientPatched != rustWebChromeClientSource) {
         rustWebChromeClient.writeText(rustWebChromeClientPatched)
     }
     if (!rustWebChromeClientPatched.contains("onGeolocationPermissionsShowPrompt: coarse permission already granted")) {
         throw GradleException("Tauri RustWebChromeClient.kt coarse geolocation permission patch is missing")
+    }
+    if (!rustWebChromeClientPatched.contains("\"SimpleDateFormat\", \"TrimLambda\"")) {
+        throw GradleException("Tauri RustWebChromeClient.kt trim semantics warning is not suppressed")
+    }
+    if (!rustWebChromeClientPatched.contains("String.format(\n        Locale.ROOT,")) {
+        throw GradleException("Tauri RustWebChromeClient.kt locale-safe logging patch is missing")
     }
 
     val wryActivity = file("src/main/java/org/ratspeak/android/generated/WryActivity.kt")

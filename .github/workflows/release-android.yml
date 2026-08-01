@@ -129,6 +129,11 @@ jobs:
           unset TAURI_DEV_HOST
           cargo tauri android build --target aarch64 armv7 x86_64 --apk --split-per-abi
 
+      - name: Lint Android release variant
+        shell: bash
+        working-directory: Ratspeak/src-tauri/gen/android
+        run: ./gradlew :app:lintArm64Release --warning-mode all
+
       - name: Build signed Android AAB
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_play }}
         shell: bash

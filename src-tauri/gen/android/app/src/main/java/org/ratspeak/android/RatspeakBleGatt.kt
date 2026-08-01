@@ -1,5 +1,6 @@
 package org.ratspeak.android
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
@@ -14,10 +15,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.InputStream
 import java.io.OutputStream
@@ -332,7 +335,35 @@ class RatspeakBleGatt(private val context: Context) {
     private fun discoverServicesWithLatch(timeoutSec: Long): Boolean {
         servicesLatch = CountDownLatch(1)
         servicesStatus.set(false)
-        handler.post { gatt?.discoverServices() }
+        val posted = handler.post {
+            val activeGatt = gatt
+            if (activeGatt == null) {
+                servicesLatch?.countDown()
+                return@post
+            }
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(TAG, "Service discovery skipped: Bluetooth permission unavailable")
+                servicesLatch?.countDown()
+                return@post
+            }
+            try {
+                if (!activeGatt.discoverServices()) {
+                    servicesLatch?.countDown()
+                }
+            } catch (_: SecurityException) {
+                Log.w(TAG, "Service discovery rejected: Bluetooth permission unavailable")
+                servicesLatch?.countDown()
+            }
+        }
+        if (!posted) {
+            servicesLatch?.countDown()
+        }
         val timedOut = !servicesLatch!!.await(timeoutSec, TimeUnit.SECONDS)
         if (timedOut) {
             Log.w(TAG, "Service discovery timed out after ${timeoutSec}s")
@@ -735,6 +766,23 @@ class RatspeakBleGatt(private val context: Context) {
         }
     }
 
+    private fun bondStateOrNone(gatt: BluetoothGatt): Int {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return BluetoothDevice.BOND_NONE
+        }
+        return try {
+            gatt.device.bondState
+        } catch (_: SecurityException) {
+            BluetoothDevice.BOND_NONE
+        }
+    }
+
     private fun handleCharacteristicChanged(ch: BluetoothGattCharacteristic, data: ByteArray) {
         if (ch.uuid == BleUuids.NUS_TX_CHAR) {
             try { tcpOut?.write(data); tcpOut?.flush() }
@@ -755,7 +803,7 @@ class RatspeakBleGatt(private val context: Context) {
                 BluetoothProfile.STATE_DISCONNECTED -> "DISCONNECTED"
                 else -> "OTHER($newState)"
             }
-            Log.i(TAG, "GATT: status=$status state=$s bondState=${bondStr(gatt.device?.bondState ?: -1)}")
+            Log.i(TAG, "GATT: status=$status state=$s bondState=${bondStr(bondStateOrNone(gatt))}")
             lastGattStatus.set(status)
 
             when (newState) {
@@ -765,7 +813,7 @@ class RatspeakBleGatt(private val context: Context) {
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     connectStatus.set(false)
-                    val bondState = gatt.device?.bondState ?: BluetoothDevice.BOND_NONE
+                    val bondState = bondStateOrNone(gatt)
                     if (bondState != BluetoothDevice.BOND_BONDING) {
                         connectLatch?.countDown()
                     } else {

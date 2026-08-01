@@ -4,6 +4,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
@@ -94,6 +95,7 @@ class RatspeakService : Service() {
     }
 
     private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             CHANNEL_ID, "Ratspeak Background",
             NotificationManager.IMPORTANCE_LOW
@@ -102,6 +104,7 @@ class RatspeakService : Service() {
     }
 
     private fun createMessageNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             MSG_CHANNEL_ID, "Messages",
             NotificationManager.IMPORTANCE_HIGH
@@ -110,6 +113,7 @@ class RatspeakService : Service() {
     }
 
     private fun createCallNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             CALL_CHANNEL_ID, "Calls",
             NotificationManager.IMPORTANCE_HIGH

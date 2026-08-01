@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-@file:Suppress("unused", "SetJavaScriptEnabled", "DEPRECATION")
+@file:Suppress("unused", "SetJavaScriptEnabled", "DEPRECATION", "ViewConstructor")
 
 package org.ratspeak.android
 

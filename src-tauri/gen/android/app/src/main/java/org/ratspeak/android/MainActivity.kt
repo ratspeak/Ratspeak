@@ -47,6 +47,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.toColorInt
+import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -269,7 +271,7 @@ class MainActivity : TauriActivity() {
             android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
             android.content.res.Configuration.UI_MODE_NIGHT_YES
         val bgColor = if (isDarkMode) "#18171a" else "#FAF7F3"
-        window.decorView.setBackgroundColor(android.graphics.Color.parseColor(bgColor))
+        window.decorView.setBackgroundColor(bgColor.toColorInt())
 
         setTransparentSystemBars()
 
@@ -298,7 +300,7 @@ class MainActivity : TauriActivity() {
 
         // Start foreground service
         val serviceIntent = Intent(this, RatspeakService::class.java)
-        startForegroundService(serviceIntent)
+        ContextCompat.startForegroundService(this, serviceIntent)
 
         // Android 13+ gates notifications behind a runtime permission. Without
         // it, NotificationManager.notify() silently drops — including message
@@ -356,7 +358,9 @@ class MainActivity : TauriActivity() {
         // Both bars transparent; WebView CSS renders the safe areas.
         window.statusBarColor = android.graphics.Color.TRANSPARENT
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
-        window.isNavigationBarContrastEnforced = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
     }
 
     override fun onDestroy() {
@@ -888,6 +892,9 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    // A proximity lock follows the explicit call/audio-route lifecycle below.
+    // An arbitrary timeout could wake the screen during a valid long call.
+    @SuppressLint("WakelockTimeout")
     private fun acquireCallProximityWakeLock() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
         if (!powerManager.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) return
@@ -1699,7 +1706,7 @@ class MainActivity : TauriActivity() {
 
         @JavascriptInterface
         fun openExternalUrl(url: String): Boolean {
-            val parsed = try { Uri.parse(url.trim()) } catch (_: Throwable) { return false }
+            val parsed = try { url.trim().toUri() } catch (_: Throwable) { return false }
             val scheme = parsed.scheme?.lowercase() ?: return false
             if (scheme != "http" && scheme != "https") return false
             val intent = Intent(Intent.ACTION_VIEW, parsed).apply {
@@ -2091,11 +2098,12 @@ class MainActivity : TauriActivity() {
                         }
                     }
                     val filter = IntentFilter(USB_PERMISSION_ACTION)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-                    } else {
-                        registerReceiver(receiver, filter)
-                    }
+                    ContextCompat.registerReceiver(
+                        this@MainActivity,
+                        receiver,
+                        filter,
+                        ContextCompat.RECEIVER_NOT_EXPORTED
+                    )
                     usbPermissionReceiver = receiver
                 }
 

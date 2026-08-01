@@ -1837,6 +1837,64 @@ fn android_service_is_not_sticky_without_runtime_ownership() {
 }
 
 #[test]
+fn android_native_release_lint_is_strict_and_api_guarded() {
+    let root = repo_root();
+    let gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
+        .expect("Android app Gradle source");
+    let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+        .expect("Android manifest");
+    let main_activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("Android MainActivity");
+    let service =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt",
+        ))
+        .expect("Android service");
+    let gatt =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBleGatt.kt",
+        ))
+        .expect("Android BLE GATT bridge");
+    let release = read_source(root.join(".github/workflows/release-android.yml"))
+        .expect("Android release workflow");
+
+    assert!(gradle.contains("warningsAsErrors = true"));
+    assert!(gradle.contains("abortOnError = true"));
+    assert!(!gradle.contains("baseline ="));
+    for deliberate_exclusion in [
+        "AndroidGradlePluginVersion",
+        "GradleDependency",
+        "IconDuplicates",
+    ] {
+        assert!(gradle.contains(deliberate_exclusion));
+    }
+    for unsafe_exclusion in ["MissingPermission", "NewApi", "WakelockTimeout"] {
+        assert!(!gradle.contains(unsafe_exclusion));
+    }
+    assert!(release.contains("./gradlew :app:lintArm64Release --warning-mode all"));
+
+    assert!(manifest.contains(r#"android.hardware.touchscreen"#));
+    assert!(manifest.contains(r#"android.hardware.wifi"#));
+    assert!(manifest.contains(r#"android:banner="@mipmap/ic_launcher""#));
+    assert!(manifest.contains(r#"android:roundIcon="@mipmap/ic_launcher_round""#));
+    assert!(main_activity.contains("ContextCompat.startForegroundService(this, serviceIntent)"));
+    assert!(main_activity.contains("ContextCompat.registerReceiver("));
+    assert!(main_activity.contains("ContextCompat.RECEIVER_NOT_EXPORTED"));
+    assert!(main_activity.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q"));
+    assert_eq!(
+        service
+            .matches("if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return")
+            .count(),
+        3
+    );
+    assert!(gatt.contains("Manifest.permission.BLUETOOTH_CONNECT"));
+    assert!(gatt.contains("ContextCompat.checkSelfPermission("));
+    assert!(gatt.contains("catch (_: SecurityException)"));
+}
+
+#[test]
 fn game_event_init_does_not_depend_on_missing_network_watcher() {
     let source =
         read_source(repo_root().join("dashboard/static/js/games_tab.js")).expect("js source");

@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-@file:Suppress("ObsoleteSdkInt", "RedundantOverride", "QueryPermissionsNeeded", "SimpleDateFormat")
+@file:Suppress("ObsoleteSdkInt", "RedundantOverride", "QueryPermissionsNeeded", "SimpleDateFormat", "TrimLambda")
 
 package org.ratspeak.android
 
@@ -445,6 +445,7 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
     val tag: String = Logger.tags("Console")
     if (consoleMessage.message() != null && isValidMsg(consoleMessage.message())) {
       val msg = String.format(
+        Locale.ROOT,
         "File: %s - Line %d - Msg: %s",
         consoleMessage.sourceId(),
         consoleMessage.lineNumber(),
