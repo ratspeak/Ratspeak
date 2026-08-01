@@ -3979,6 +3979,51 @@ fn apple_bluetooth_permission_copy_is_current_and_aligned() {
 }
 
 #[test]
+fn ios_release_assets_use_supported_single_size_appearance_catalog() {
+    let root = repo_root();
+    let catalog_dir = root.join("src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset");
+    let catalog: serde_json::Value = serde_json::from_str(
+        &read_source(catalog_dir.join("Contents.json")).expect("iOS app-icon catalog"),
+    )
+    .expect("valid iOS app-icon catalog JSON");
+    let images = catalog["images"]
+        .as_array()
+        .expect("iOS app-icon image list");
+    assert_eq!(images.len(), 2, "single-size iOS catalog has Any and Dark");
+
+    for image in images {
+        assert_eq!(image["idiom"], "universal");
+        assert_eq!(image["platform"], "ios");
+        assert_eq!(image["size"], "1024x1024");
+    }
+    assert_eq!(images[0]["filename"], "AppIcon-512@2x.png");
+    assert!(images[0]["appearances"].is_null());
+    assert_eq!(images[1]["filename"], "AppIcon-512@2x-dark.png");
+    assert_eq!(images[1]["appearances"][0]["appearance"], "luminosity");
+    assert_eq!(images[1]["appearances"][0]["value"], "dark");
+
+    let mut pngs = fs::read_dir(&catalog_dir)
+        .expect("read iOS app-icon catalog")
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|ext| ext.to_str()) == Some("png"))
+                .then(|| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect::<Vec<_>>();
+    pngs.sort();
+    assert_eq!(
+        pngs,
+        ["AppIcon-512@2x-dark.png", "AppIcon-512@2x.png"],
+        "unreferenced images make actool report unassigned children"
+    );
+
+    let project =
+        read_source(root.join("src-tauri/gen/apple/project.yml")).expect("iOS project model");
+    assert!(project.contains("Keep CFBundleURLTypes in the static Info.plist"));
+}
+
+#[test]
 fn active_call_surface_is_passive_and_shows_elapsed_duration() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");

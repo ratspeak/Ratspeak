@@ -36,6 +36,8 @@ targets:
         buildPhase: resources
         type: folder
       - path: LaunchScreen.storyboard
+    # Keep CFBundleURLTypes in the static Info.plist: build-time plugin
+    # rewriting can race Xcode signing and invalidate an otherwise valid app.
     info:
       path: ratspeak_iOS/Info.plist
       properties:

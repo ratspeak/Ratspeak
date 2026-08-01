@@ -65,7 +65,6 @@
 		<string>bluetooth-peripheral</string>
 	</array>
 	<key>CFBundleURLTypes</key>
-	<!-- Kept static because build-time plugin rewriting can race Xcode signing. -->
 	<array>
 		<dict>
 			<key>CFBundleURLSchemes</key>
