@@ -1893,8 +1893,7 @@
     align-items: center;
     justify-content: center;
     color: var(--text-muted);
-    font-size: var(--text-sm);
-    font-weight: 600;
+    font-family: var(--font-sans);
     cursor: pointer;
     transition: background var(--transition-fast), color var(--transition-fast);
     -webkit-tap-highlight-color: transparent;
@@ -1912,6 +1911,10 @@
     min-width: 54px;
     padding: 0 var(--space-4);
     border-radius: var(--radius-md);
+    font-size: var(--type-state-size);
+    font-weight: var(--type-state-weight);
+    letter-spacing: var(--type-state-tracking);
+    text-transform: uppercase;
     transition: background var(--transition-fast), color var(--transition-fast);
 }
 .settings-radio-option input:checked + span {
@@ -2358,8 +2361,11 @@
     color: var(--text-muted);
     border-radius: var(--radius-md);
     cursor: pointer;
-    font-size: var(--type-row-meta-size);
-    font-weight: var(--type-weight-medium);
+    font-family: var(--font-sans);
+    font-size: var(--type-state-size);
+    font-weight: var(--type-state-weight);
+    letter-spacing: var(--type-state-tracking);
+    text-transform: uppercase;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 .relay-mode-btn:hover { background: var(--hover-subtle); }
@@ -2411,6 +2417,14 @@
                 color var(--transition-fast);
     white-space: nowrap;
     -webkit-tap-highlight-color: transparent;
+}
+
+.settings-state-value {
+    font-family: var(--font-sans);
+    font-size: var(--type-state-size);
+    font-weight: var(--type-state-weight);
+    letter-spacing: var(--type-state-tracking);
+    text-transform: uppercase;
 }
 .selector-badge::after {
     content: "";

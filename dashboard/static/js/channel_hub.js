@@ -15,6 +15,17 @@ function _channelHubPlural(count, singular, plural) {
     return count + ' ' + (count === 1 ? singular : (plural || singular + 's'));
 }
 
+function _channelHubHostingEnabled(overview) {
+    // The Settings preference is the current UI authority. An overview request
+    // that began before the user toggled Off must not resurrect hosting tools.
+    if (typeof window.ratspeakChannelHostingEnabled === 'function') {
+        return window.ratspeakChannelHostingEnabled();
+    }
+    // settings.js loads after this module. Until it establishes the explicit
+    // preference, default closed rather than inheriting legacy overview state.
+    return false;
+}
+
 function _channelHubStatusModel(overview) {
     overview = overview || {};
     var settings = overview.settings || {};
@@ -47,15 +58,6 @@ function _channelHubStatusModel(overview) {
     };
 }
 
-function _channelHubAnnounceLabel(seconds) {
-    var value = Number(seconds) || 0;
-    if (value === 0) return 'When started';
-    if (value < 3600) return 'Every ' + Math.round(value / 60) + ' min';
-    if (value === 3600) return 'Every hour';
-    if (value < 86400) return 'Every ' + Math.round(value / 3600) + ' hours';
-    return 'Every day';
-}
-
 function channelHubOwnDestinationHash() {
     if (!channelHubOverview) return '';
     var status = channelHubOverview.status || {};
@@ -78,7 +80,7 @@ function channelHubRenderHome(overview) {
     overview = overview || channelHubOverview;
     var section = document.getElementById('channel-owned-hub');
     if (!section) return;
-    var visible = _channelHubHasOwnedHub(overview);
+    var visible = _channelHubHostingEnabled(overview) && _channelHubHasOwnedHub(overview);
     section.hidden = !visible;
     if (!visible) return;
 
@@ -93,7 +95,7 @@ function channelHubRenderHome(overview) {
         ' · ' + _channelHubPlural(Number(status.registered_rooms) || 0, 'channel');
     var statusText = model.label;
     if (status.running) {
-        statusText = connected ? 'Connected · ' + counts : (connecting ? 'Connecting… · Hosting' : 'Hosting · ' + counts);
+        statusText = connected ? 'Connected · ' + counts : (connecting ? 'Connecting…' : counts);
     }
 
     var card = document.getElementById('channel-owned-hub-card');
@@ -155,6 +157,9 @@ function _channelHubIcon(kind) {
     if (kind === 'join') {
         return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5a6 6 0 0 1 0-9"/><path d="M15.5 7.5a6 6 0 0 1 0 9"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/></svg>';
     }
+    if (kind === 'link') {
+        return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 13.5a4.5 4.5 0 0 0 6.4.1l2.1-2.1a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4-.1L5 12.5a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/></svg>';
+    }
     return '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 0 0 6.6M15.3 15.3a4.7 4.7 0 0 0 0-6.6"/><path d="M5.3 5.3a9.5 9.5 0 0 0 0 13.4M18.7 18.7a9.5 9.5 0 0 0 0-13.4"/></svg>';
 }
 
@@ -193,43 +198,58 @@ function _channelHubChoice(kind, titleText, detailText, statusText) {
 
 function channelsOpenAddSheet() {
     if (typeof _rsBuildSheet !== 'function') return;
-    channelHubLoad(true).then(function(overview) {
-        if (!overview) return;
-        if (!overview.supported) {
-            channelsOpenConnectSheet();
-            return;
-        }
-        var built = _rsBuildSheet({ title: 'Channels' }, function() {});
+    function present(overview) {
+        overview = overview || { supported: false };
+        var built = _rsBuildSheet({ title: 'Add channels' }, function() {});
         built.sheet.classList.add('channel-hub-launch-sheet');
 
         var intro = document.createElement('p');
         intro.className = 'channel-sheet-copy';
-        intro.textContent = 'Join a conversation or make a place of your own.';
+        intro.textContent = 'Choose how you want to connect.';
         built.body.appendChild(intro);
 
         var join = _channelHubChoice(
             'join',
             'Join a hub',
-            'Find a nearby conversation or enter an address'
+            'Choose a nearby or saved hub, or enter an address'
         );
         join.addEventListener('click', function() {
             built.dismiss();
-            setTimeout(function() { channelsOpenConnectSheet(); }, 220);
+            setTimeout(function() {
+                if (typeof channelsOpenHubSwitcher === 'function') {
+                    channelsOpenHubSwitcher();
+                } else {
+                    channelsOpenConnectSheet();
+                }
+            }, 220);
         });
         built.body.appendChild(join);
 
-        var model = _channelHubStatusModel(overview);
-        var host = _channelHubChoice(
-            'host',
-            overview.created || (overview.settings && overview.settings.enabled) ? 'Manage your hub' : 'Host your own',
-            model.detail,
-            model.label
+        var shared = _channelHubChoice(
+            'link',
+            'Use a link or QR',
+            'Preview a shared hub or channel before connecting'
         );
-        host.addEventListener('click', function() {
+        shared.addEventListener('click', function() {
             built.dismiss();
-            setTimeout(function() { channelHubOpenManager(overview); }, 220);
+            setTimeout(function() { channelsOpenSharedChannel(); }, 220);
         });
-        built.body.appendChild(host);
+        built.body.appendChild(shared);
+
+        if (overview.supported && _channelHubHostingEnabled(overview)) {
+            var model = _channelHubStatusModel(overview);
+            var host = _channelHubChoice(
+                'host',
+                overview.created || (overview.settings && overview.settings.enabled) ? 'Manage your hub' : 'Host a hub',
+                model.detail,
+                model.label
+            );
+            host.addEventListener('click', function() {
+                built.dismiss();
+                setTimeout(function() { channelHubOpenManager(overview); }, 220);
+            });
+            built.body.appendChild(host);
+        }
 
         var cancel = document.createElement('button');
         cancel.type = 'button';
@@ -238,11 +258,12 @@ function channelsOpenAddSheet() {
         cancel.addEventListener('click', function() { built.dismiss(); });
         built.footer.appendChild(cancel);
         _channelsPresentSheet(built, join);
-    }).catch(function(error) {
-        if (typeof showToast === 'function') {
-            showToast((error && error.message) || 'Hub hosting is unavailable', 'toast-orange', 3000);
-        }
-        channelsOpenConnectSheet();
+    }
+
+    channelHubLoad(true).then(function(overview) {
+        present(overview);
+    }).catch(function() {
+        present({ supported: false });
     });
 }
 
@@ -291,13 +312,17 @@ function _channelHubToggle(labelText, detailText, checked) {
     return { row: row, input: input };
 }
 
-function _channelHubConfigArgs(nameInput, greetingInput, announceInput, sendInput, acceptInput) {
+function _channelHubConfigArgs(
+    nameInput,
+    greetingInput,
+    announceInput,
+    recentActivityInput
+) {
     return {
         hub_name: nameInput.value.trim(),
         greeting: greetingInput.value.trim(),
         announce_interval_secs: Number(announceInput.value) || 0,
-        resource_send: !!sendInput.checked,
-        resource_accept: !!acceptInput.checked
+        recent_activity_retention_secs: Number(recentActivityInput.value) || 0
     };
 }
 
@@ -306,8 +331,8 @@ function _channelHubSettingsEqual(settings, args) {
     return String(settings.hub_name || '') === args.hub_name &&
         String(settings.greeting || '') === args.greeting &&
         Number(settings.announce_interval_secs || 0) === args.announce_interval_secs &&
-        !!settings.resource_send_enabled === args.resource_send &&
-        !!settings.resource_accept_enabled === args.resource_accept;
+        Number(settings.recent_activity_retention_secs || 0) ===
+            args.recent_activity_retention_secs;
 }
 
 function _channelHubAdminNode(tagName, className, text) {
@@ -329,13 +354,6 @@ function _channelHubAdminDuration(seconds) {
     if (seconds < 3600) return Math.round(seconds / 60) + ' min';
     if (seconds < 86400) return Math.round(seconds / 3600) + ' hr';
     return Math.round(seconds / 86400) + ' days';
-}
-
-function _channelHubAdminBytes(bytes) {
-    bytes = Math.max(0, Number(bytes) || 0);
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KiB';
-    return Math.round(bytes / (1024 * 1024)) + ' MiB';
 }
 
 function _channelHubAdminDate(timestampMs) {
@@ -551,14 +569,6 @@ function _channelHubRenderAdminOverview(root, admin, refreshHandler) {
             ' \u00b7 ' + _channelHubAdminGeneratedLabel(admin),
         refreshHandler
     );
-    root.appendChild(_channelHubAdminNotice(
-        admin.running ? 'online' : 'neutral',
-        admin.running ? 'Live mesh community' : 'Hub stopped',
-        admin.running
-            ? 'People and recent context exist only while this process is running.'
-            : 'Channel policy and access lists remain available. People and recent context do not.'
-    ));
-
     var people = admin.running && Array.isArray(admin.people) ? admin.people : [];
     var rooms = Array.isArray(admin.rooms) ? admin.rooms : [];
     var sessions = people.reduce(function(total, person) {
@@ -576,33 +586,8 @@ function _channelHubRenderAdminOverview(root, admin, refreshHandler) {
             )
         },
         { value: rooms.length, label: 'Channels', detail: registered + ' registered' },
-        { value: _channelHubAdminDuration(admin.uptime_secs), label: 'Uptime', detail: admin.running ? 'This run' : 'Not running' }
+        { value: _channelHubAdminDuration(admin.uptime_secs), label: 'Uptime', detail: admin.running ? '' : 'Not running' }
     ]));
-
-    var stats = admin.stats || {};
-    var forwarded = (Number(stats.messages_forwarded) || 0) +
-        (Number(stats.notices_forwarded) || 0) +
-        (Number(stats.actions_forwarded) || 0);
-    var refused = (Number(stats.rate_limited) || 0) +
-        (Number(stats.bad_packets) || 0) +
-        (Number(stats.duplicates) || 0) +
-        (Number(stats.resources_rejected) || 0) +
-        (Number(stats.oversize) || 0);
-    var activity = _channelHubAdminNode('section', 'channel-host-admin-section');
-    activity.appendChild(_channelHubAdminNode('h4', '', 'This run'));
-    activity.appendChild(_channelHubAdminMetricGrid([
-        { value: forwarded, label: 'Room relays' },
-        { value: (Number(stats.joins) || 0) + (Number(stats.parts) || 0), label: 'Membership changes' },
-        { value: refused, label: 'Refused or dropped' },
-        { value: Number(stats.resources_received) || 0, label: 'Large notices received' }
-    ]));
-    root.appendChild(activity);
-
-    root.appendChild(_channelHubAdminNotice(
-        'privacy',
-        'Policy is durable. Conversation traffic is not.',
-        'The hub stores registered channel settings and access lists, never transcripts or rosters.'
-    ));
 }
 
 function _channelHubRenderAdminChannels(root, admin, refreshHandler, actions) {
@@ -919,26 +904,29 @@ function _channelHubRenderAdminActivity(root, admin, refreshHandler) {
     root.textContent = '';
     var evidence = Array.isArray(admin.evidence) ? admin.evidence : [];
     var policy = admin.evidence_policy || {};
+    var retention = Number(policy.retention_secs) || 0;
+    var retentionHours = Math.round(retention / 3600);
     _channelHubAdminHeader(
         root,
         'Activity',
-        'Recent context for moderation decisions \u00b7 ' +
+        (retention
+            ? 'Last ' + retentionHours + ' ' + (retentionHours === 1 ? 'hour' : 'hours') +
+                ' \u00b7 Memory only'
+            : 'Off') + ' \u00b7 ' +
             _channelHubAdminGeneratedLabel(admin),
         refreshHandler
     );
-    root.appendChild(_channelHubAdminNotice(
-        'privacy',
-        'Recent context, not a transcript',
-        'Memory-only and incomplete: up to ' + _channelHubAdminDuration(policy.retention_secs) +
-            ', ' + (Number(policy.max_events) || 0) + ' events, ' +
-            _channelHubAdminBytes(policy.max_estimated_bytes) + ' total. ' +
-            'Excerpts are display-sanitized and capped at ' +
-            _channelHubAdminBytes(policy.max_excerpt_bytes) + '.'
-    ));
+    if (!retention) {
+        root.appendChild(_channelHubAdminEmpty(
+            'Recent activity is off',
+            'Enable it in Settings when you need a temporary moderation view.'
+        ));
+        return;
+    }
     if (!admin.running) {
         root.appendChild(_channelHubAdminEmpty(
             'No activity while stopped',
-            'Evidence is never persisted across a hub stop or restart.'
+            'Recent activity clears whenever the hub stops.'
         ));
         return;
     }
@@ -951,8 +939,8 @@ function _channelHubRenderAdminActivity(root, admin, refreshHandler) {
     }
     if (!evidence.length) {
         root.appendChild(_channelHubAdminEmpty(
-            'No recent room activity',
-            'Accepted room messages and moderation changes will appear here for a short time.'
+            'No recent activity',
+            'Nothing to review yet.'
         ));
         return;
     }
@@ -986,29 +974,6 @@ function _channelHubRenderAdminActivity(root, admin, refreshHandler) {
         list.appendChild(item);
     });
     root.appendChild(list);
-}
-
-function _channelHubRenderAdminLimits(root, admin) {
-    root.textContent = '';
-    var limits = admin && admin.limits || {};
-    var section = _channelHubAdminNode('section', 'channel-host-section channel-host-limits');
-    section.appendChild(_channelHubAdminNode('h3', '', 'Operating limits'));
-    section.appendChild(_channelHubAdminMetricGrid([
-        { value: Number(limits.max_registered_rooms) || 0, label: 'Registered channels' },
-        { value: Number(limits.max_rooms_per_session) || 0, label: 'Channels per session' },
-        { value: _channelHubAdminBytes(limits.max_message_body_bytes), label: 'Message body' },
-        { value: (Number(limits.rate_messages_per_minute) || 0) + '/min', label: 'Per-session rate' },
-        { value: _channelHubAdminDuration(limits.invite_timeout_secs), label: 'Invitation lifetime' },
-        { value: _channelHubAdminDuration(limits.rejoin_grace_secs), label: 'Reconnect grace' },
-        { value: _channelHubAdminBytes(limits.max_resource_notice_bytes), label: 'Large room notice' },
-        { value: _channelHubAdminBytes(limits.max_resource_bytes), label: 'Resource ceiling' }
-    ]));
-    section.appendChild(_channelHubAdminNode(
-        'p',
-        'channel-host-admin-muted',
-        'These safety limits are enforced by the hub and are not editable in this release.'
-    ));
-    root.appendChild(section);
 }
 
 function _channelHubRenderAdminLoading(root, titleText) {
@@ -1929,6 +1894,12 @@ function channelHubOpenManager(initialOverview) {
         });
         return;
     }
+    if (!_channelHubHostingEnabled(overview)) {
+        if (typeof showToast === 'function') {
+            showToast('Turn on Channel hosting in Settings first', 'toast-orange', 3200);
+        }
+        return;
+    }
 
     var identityGeneration = _channelHubIdentityGeneration;
     var built = _rsBuildSheet({ title: 'Hub administration' }, function() {
@@ -1974,9 +1945,10 @@ function channelHubOpenManager(initialOverview) {
     addressCopy.className = 'channel-host-address-copy';
     var addressLabel = document.createElement('span');
     addressLabel.textContent = 'Hub address';
+    var addressValueRow = document.createElement('div');
+    addressValueRow.className = 'channel-host-address-value-row';
     var addressValue = document.createElement('code');
     addressCopy.appendChild(addressLabel);
-    addressCopy.appendChild(addressValue);
     var copyAddress = document.createElement('button');
     copyAddress.type = 'button';
     copyAddress.className = 'channel-host-copy-btn';
@@ -1990,8 +1962,10 @@ function channelHubOpenManager(initialOverview) {
             if (typeof showToast === 'function') showToast(ok ? 'Hub address copied' : 'Could not copy', ok ? 'toast-green' : 'toast-orange', 1800);
         });
     });
+    addressValueRow.appendChild(addressValue);
+    addressValueRow.appendChild(copyAddress);
+    addressCopy.appendChild(addressValueRow);
     address.appendChild(addressCopy);
-    address.appendChild(copyAddress);
     built.body.appendChild(address);
 
     var registryWarning = document.createElement('div');
@@ -2059,7 +2033,7 @@ function channelHubOpenManager(initialOverview) {
     _channelHubAdminHeader(
         panels.settings,
         'Settings',
-        'Hub identity, discovery, and resource policy'
+        'Hub profile, discovery, and moderation'
     );
     var profile = document.createElement('section');
     profile.className = 'channel-host-section';
@@ -2101,26 +2075,24 @@ function channelHubOpenManager(initialOverview) {
     var discoveryLabel = document.createElement('label');
     discoveryLabel.textContent = 'Announce this hub';
     var discoveryHint = document.createElement('span');
-    discoveryHint.textContent = 'Help nearby people find it without an address';
+    discoveryHint.textContent = 'At startup and on this schedule, so nearby people can find it';
     discoveryCopy.appendChild(discoveryLabel);
     discoveryCopy.appendChild(discoveryHint);
     var announceInput = document.createElement('select');
     announceInput.className = 'nr-select channel-host-announce-select';
     [
-        [0, 'When started'],
-        [300, 'Every 5 min'],
-        [900, 'Every 15 min'],
-        [1800, 'Every 30 min'],
+        [900, 'Every 15 minutes'],
+        [1800, 'Every 30 minutes'],
         [3600, 'Every hour'],
-        [21600, 'Every 6 hours'],
-        [86400, 'Every day']
+        [43200, 'Every 12 hours'],
+        [86400, 'Every 24 hours']
     ].forEach(function(optionValue) {
         var option = document.createElement('option');
         option.value = String(optionValue[0]);
         option.textContent = optionValue[1];
         announceInput.appendChild(option);
     });
-    announceInput.value = String(Number(settings.announce_interval_secs) || 0);
+    announceInput.value = String(Number(settings.announce_interval_secs) || 900);
     discoveryLabel.htmlFor = 'channel-host-announce-' + sequence;
     announceInput.id = discoveryLabel.htmlFor;
     discoveryRow.appendChild(discoveryCopy);
@@ -2128,31 +2100,42 @@ function channelHubOpenManager(initialOverview) {
     discovery.appendChild(discoveryRow);
     panels.settings.appendChild(discovery);
 
-    var advanced = document.createElement('details');
-    advanced.className = 'channel-host-advanced';
-    var advancedSummary = document.createElement('summary');
-    advancedSummary.textContent = 'Advanced';
-    advanced.appendChild(advancedSummary);
-    var advancedBody = document.createElement('div');
-    advancedBody.className = 'channel-host-advanced-body';
-    var sendToggle = _channelHubToggle(
-        'Large welcome messages',
-        'Deliver longer welcome text when it cannot fit in one packet',
-        settings.resource_send_enabled
-    );
-    var acceptToggle = _channelHubToggle(
-        'Large room notices',
-        'Accept larger notices from people already allowed to post',
-        settings.resource_accept_enabled
-    );
-    advancedBody.appendChild(sendToggle.row);
-    advancedBody.appendChild(acceptToggle.row);
-    advanced.appendChild(advancedBody);
-    panels.settings.appendChild(advanced);
-
-    var limitsHost = document.createElement('div');
-    limitsHost.className = 'channel-host-admin-settings-limits';
-    panels.settings.appendChild(limitsHost);
+    var moderation = document.createElement('section');
+    moderation.className = 'channel-host-section';
+    var moderationTitle = document.createElement('h3');
+    moderationTitle.textContent = 'Moderation';
+    moderation.appendChild(moderationTitle);
+    var recentActivityRow = document.createElement('div');
+    recentActivityRow.className = 'channel-host-discovery-row';
+    var recentActivityCopy = document.createElement('div');
+    recentActivityCopy.className = 'channel-host-discovery-copy';
+    var recentActivityLabel = document.createElement('label');
+    recentActivityLabel.textContent = 'Recent activity';
+    var recentActivityHint = document.createElement('span');
+    recentActivityHint.textContent = 'Temporary moderation context, held only in memory';
+    recentActivityCopy.appendChild(recentActivityLabel);
+    recentActivityCopy.appendChild(recentActivityHint);
+    var recentActivityInput = document.createElement('select');
+    recentActivityInput.className = 'nr-select channel-host-recent-activity-select';
+    [
+        [0, 'OFF'],
+        [3600, '1 hour'],
+        [21600, '6 hours'],
+        [43200, '12 hours'],
+        [86400, '24 hours']
+    ].forEach(function(optionValue) {
+        var option = document.createElement('option');
+        option.value = String(optionValue[0]);
+        option.textContent = optionValue[1];
+        recentActivityInput.appendChild(option);
+    });
+    recentActivityInput.value = String(Number(settings.recent_activity_retention_secs) || 0);
+    recentActivityLabel.htmlFor = 'channel-host-recent-activity-' + sequence;
+    recentActivityInput.id = recentActivityLabel.htmlFor;
+    recentActivityRow.appendChild(recentActivityCopy);
+    recentActivityRow.appendChild(recentActivityInput);
+    moderation.appendChild(recentActivityRow);
+    panels.settings.appendChild(moderation);
 
     var impact = document.createElement('p');
     impact.className = 'channel-host-impact';
@@ -2178,7 +2161,12 @@ function channelHubOpenManager(initialOverview) {
     built.footer.appendChild(close);
     built.footer.appendChild(save);
 
-    var controls = [nameInput, greetingInput, announceInput, sendToggle.input, acceptToggle.input];
+    var controls = [
+        nameInput,
+        greetingInput,
+        announceInput,
+        recentActivityInput
+    ];
     var busy = false;
     var activeTab = 'overview';
     var adminSnapshot = null;
@@ -2214,7 +2202,6 @@ function channelHubOpenManager(initialOverview) {
         Object.keys(adminPanelTitles).forEach(function(tabId) {
             _channelHubRenderAdminLoading(panels[tabId], adminPanelTitles[tabId]);
         });
-        _channelHubRenderAdminLoading(limitsHost, 'Operating limits');
     }
 
     function managerCurrent() {
@@ -2306,7 +2293,6 @@ function channelHubOpenManager(initialOverview) {
         _channelHubRenderAdminPeople(panels.people, nextAdmin, refreshHandler, actions);
         _channelHubRenderAdminAccess(panels.access, nextAdmin, refreshHandler, actions);
         _channelHubRenderAdminActivity(panels.activity, nextAdmin, refreshHandler);
-        _channelHubRenderAdminLimits(limitsHost, nextAdmin);
     }
 
     function renderAdminError(loadError) {
@@ -2318,12 +2304,6 @@ function channelHubOpenManager(initialOverview) {
                 refreshAdmin
             );
         });
-        _channelHubRenderAdminError(
-            limitsHost,
-            'Operating limits',
-            loadError,
-            refreshAdmin
-        );
     }
 
     function loadAdmin(allowDuringMutation) {
@@ -2420,8 +2400,7 @@ function channelHubOpenManager(initialOverview) {
             nameInput,
             greetingInput,
             announceInput,
-            sendToggle.input,
-            acceptToggle.input
+            recentActivityInput
         );
     }
 
@@ -2492,9 +2471,12 @@ function channelHubOpenManager(initialOverview) {
             if (!updated) return null;
             nameInput.value = updated.settings.hub_name || '';
             greetingInput.value = updated.settings.greeting || '';
-            announceInput.value = String(Number(updated.settings.announce_interval_secs) || 0);
-            sendToggle.input.checked = !!updated.settings.resource_send_enabled;
-            acceptToggle.input.checked = !!updated.settings.resource_accept_enabled;
+            announceInput.value = String(
+                Number(updated.settings.announce_interval_secs) || 900
+            );
+            recentActivityInput.value = String(
+                Number(updated.settings.recent_activity_retention_secs) || 0
+            );
             renderDirty();
             return updated;
         });

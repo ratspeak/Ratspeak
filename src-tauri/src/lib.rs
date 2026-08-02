@@ -715,6 +715,7 @@ pub fn run() {
             ratspeak_tauri::commands::channel_hub::channel_hub_admin_mutate,
             ratspeak_tauri::commands::channel_hub::channel_hub_start,
             ratspeak_tauri::commands::channel_hub::channel_hub_stop,
+            ratspeak_tauri::commands::channel_hub::set_channel_hosting_enabled,
             ratspeak_tauri::commands::channel_hub::channel_hub_set_config,
             ratspeak_tauri::commands::messaging::api_conversation,
             ratspeak_tauri::commands::messaging::api_lxmf_conversations,

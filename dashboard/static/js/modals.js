@@ -2753,7 +2753,7 @@ function toggleBlePeer() {
                         { label: '10 minutes', value: '600' },
                         { label: '30 minutes', value: '1800' },
                         { label: '60 minutes', value: '3600' },
-                        { label: 'Always On', value: '0' }
+                        { label: 'Always on', value: '0' }
                     ]
                 }).then(function(duration) {
                     if (duration === null) return;

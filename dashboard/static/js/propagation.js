@@ -315,7 +315,7 @@ function renderHostingSettings() {
 function renderStampSettings() {
     var enforce = !!propagationStatus.enforce_stamps;
     var cost = propagationStatus.required_stamp_cost || 0;
-    var label = enforce && cost > 0 ? ('Cost ' + cost) : 'Off';
+    var label = enforce && cost > 0 ? ('Cost ' + cost) : 'OFF';
     return '<details class="relay-advanced-block relay-details">' +
         '<summary>Message stamp protection</summary>' +
         '<div class="settings-row propagation-settings-row">' +
@@ -333,7 +333,7 @@ function renderStampSettings() {
                 '<span class="settings-row-label">Required work</span>' +
                 '<span class="settings-row-desc">Higher values make spam harder but slow down senders.</span>' +
             '</div>' +
-            '<button class="selector-badge" id="stamp-cost-btn">' + escapeHtml(label) + '</button>' +
+            '<button class="selector-badge' + (label === 'OFF' ? ' settings-state-value' : '') + '" id="stamp-cost-btn">' + escapeHtml(label) + '</button>' +
         '</div>' +
     '</details>';
 }
@@ -403,7 +403,7 @@ function wireUpHandlers(container, mode) {
 }
 
 function stampCostChoice(title, current, includeOff) {
-    var choices = includeOff ? [{ label: 'Off', value: '0', hint: 'Do not require proof-of-work.' }] : [];
+    var choices = includeOff ? [{ label: 'OFF', value: '0', hint: 'Do not require proof-of-work.' }] : [];
     choices = choices.concat([
         { label: 'Cost 8', value: '8', hint: 'Light protection.' },
         { label: 'Cost 12', value: '12', hint: 'Balanced protection.' },
@@ -632,7 +632,7 @@ RS.listen('propagation_update', function(data) {
     if (relayBadge) {
         var modeLabel = propagationStatus.mode || 'auto';
         if (propagationStatus.mode === 'off') {
-            relayBadge.textContent = 'Off';
+            relayBadge.textContent = 'OFF';
             relayBadge.className = 'settings-relay-badge';
         } else if (propagationStatus.connected) {
             relayBadge.textContent = (modeLabel === 'auto' ? 'Auto: ' : '') + 'Ready';

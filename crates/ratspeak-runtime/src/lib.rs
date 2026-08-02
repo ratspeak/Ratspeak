@@ -909,6 +909,17 @@ pub async fn start_channel_hub_service(state: &Arc<AppState>) -> bool {
         tracing::warn!(reason = "unsupported_platform", "channel hub not started");
         return false;
     }
+    let hub_settings = match channel_hub::ChannelHubSettings::load(&state.db) {
+        Ok(settings) => settings,
+        Err(_) => {
+            tracing::warn!(reason = "settings_unavailable", "channel hub not started");
+            return false;
+        }
+    };
+    if !hub_settings.enabled || !channel_hub::channel_hosting_enabled(&state.db) {
+        tracing::info!(reason = "hosting_disabled", "channel hub not started");
+        return false;
+    }
     if let Some(existing) = state.channel_hub_handle() {
         if existing.snapshot().running {
             return true;
@@ -968,13 +979,7 @@ pub async fn start_channel_hub_service(state: &Arc<AppState>) -> bool {
             return false;
         }
     };
-    let config = match channel_hub::ChannelHubSettings::load(&state.db) {
-        Ok(settings) => settings.runtime_config(),
-        Err(_) => {
-            tracing::warn!(reason = "settings_unavailable", "channel hub not started");
-            return false;
-        }
-    };
+    let config = hub_settings.runtime_config();
     match channel_hub::ChannelHubHandle::start(
         transport_tx,
         hub_identity,
@@ -1856,12 +1861,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 ));
                 tracing::info!("Channels runtime initialized");
             }
-            if channel_hub::channel_hub_hosting_supported()
-                && channel_hub::ChannelHubSettings::load(&state.db)
-                    .is_ok_and(|settings| settings.enabled)
-            {
+            if channel_hub::channel_hub_hosting_supported() {
                 let _hub_control = state.channel_hub_control_lock.lock().await;
-                start_channel_hub_service(&state).await;
+                if channel_hub::ChannelHubSettings::load(&state.db).is_ok_and(|settings| {
+                    settings.enabled && channel_hub::channel_hosting_enabled(&state.db)
+                }) {
+                    start_channel_hub_service(&state).await;
+                }
             }
             tracing::info!("RNS runtime initialized");
             #[cfg(feature = "lxst-voice")]

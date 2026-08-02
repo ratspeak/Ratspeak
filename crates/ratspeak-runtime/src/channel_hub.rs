@@ -85,8 +85,11 @@ const RES_KIND_NOTICE: &str = "notice";
 const THROTTLE_REPORT_INTERVAL: Duration = Duration::from_secs(60);
 /// Local operator evidence is deliberately not hub history. It exists only in
 /// the live actor, is returned only by an explicit owner read, and is bounded
-/// independently by age, count, and estimated payload.
-pub const CHANNEL_HUB_EVIDENCE_RETENTION_SECS: u64 = 15 * 60;
+/// independently by age, count, and estimated payload. Core RRC behavior is
+/// the default: no evidence is retained unless the operator opts in.
+pub const CHANNEL_HUB_EVIDENCE_RETENTION_DEFAULT_SECS: u64 = 0;
+pub const CHANNEL_HUB_EVIDENCE_RETENTION_MIN_SECS: u64 = 60 * 60;
+pub const CHANNEL_HUB_EVIDENCE_RETENTION_MAX_SECS: u64 = 24 * 60 * 60;
 pub const CHANNEL_HUB_EVIDENCE_MAX_EVENTS: usize = 128;
 pub const CHANNEL_HUB_EVIDENCE_MAX_BYTES: usize = 64 * 1024;
 pub const CHANNEL_HUB_EVIDENCE_EXCERPT_BYTES: usize = 256;
@@ -94,19 +97,49 @@ pub const CHANNEL_HUB_ADMIN_MODEL_VERSION: u16 = 1;
 const HUB_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const DEFAULT_HUB_NAME: &str = "Ratspeak hub";
+pub const DEFAULT_ANNOUNCE_INTERVAL_SECS: u64 = 15 * 60;
 pub const DEFAULT_PING_INTERVAL_SECS: u64 = 55;
 pub const DEFAULT_PING_TIMEOUT_SECS: u64 = 120;
 /// Short enough to bound access after an unexpected disconnect, long enough
 /// for Reticulum path rediscovery and reconnect backoff on constrained links.
 pub const DEFAULT_REJOIN_GRACE_SECS: u64 = 5 * 60;
-pub const CHANNEL_HUB_SETTING_KEYS: [&str; 6] = [
+/// User-facing capability gate. This is intentionally separate from
+/// `channel_hub_enabled`: the preference reveals hosting tools, while the hub
+/// setting records whether the service itself should be running.
+pub const CHANNEL_HOSTING_ENABLED_KEY: &str = "channel_hosting_enabled";
+/// Marks the default-Off preference contract introduced with the dedicated
+/// Channels setting. Earlier development builds inferred this capability from
+/// `channel_hub_enabled`, which could silently opt an upgraded profile in.
+pub const CHANNEL_HOSTING_PREFERENCE_VERSION_KEY: &str = "channel_hosting_preference_version";
+pub const CHANNEL_HOSTING_PREFERENCE_VERSION: &str = "1";
+pub const CHANNEL_HUB_SETTING_KEYS: [&str; 5] = [
     "channel_hub_enabled",
     "channel_hub_name",
     "channel_hub_greeting",
     "channel_hub_announce_interval",
-    "channel_hub_resource_send",
-    "channel_hub_resource_accept",
+    "channel_hub_recent_activity_retention",
 ];
+
+/// Channel hosting is an explicit opt-in. The version marker lets profiles
+/// created by earlier development builds shed the old implicit opt-in once;
+/// both the capability and requested-running state are reset together so the
+/// UI can never say Off while a hub is scheduled to start.
+pub fn channel_hosting_enabled(pool: &db::DbPool) -> bool {
+    let version = db::get_setting(pool, CHANNEL_HOSTING_PREFERENCE_VERSION_KEY);
+    if version.as_deref() != Some(CHANNEL_HOSTING_PREFERENCE_VERSION) {
+        let defaults = [
+            (CHANNEL_HOSTING_ENABLED_KEY.to_string(), "0".to_string()),
+            ("channel_hub_enabled".to_string(), "0".to_string()),
+            (
+                CHANNEL_HOSTING_PREFERENCE_VERSION_KEY.to_string(),
+                CHANNEL_HOSTING_PREFERENCE_VERSION.to_string(),
+            ),
+        ];
+        let _ = db::try_set_settings(pool, &defaults);
+        return false;
+    }
+    db::get_setting(pool, CHANNEL_HOSTING_ENABLED_KEY).is_some_and(|value| value.trim() == "1")
+}
 
 /// Operator-editable hub settings. This is deliberately separate from the
 /// live snapshot: saved configuration must remain readable while the network
@@ -117,8 +150,7 @@ pub struct ChannelHubSettings {
     pub hub_name: String,
     pub greeting: String,
     pub announce_interval_secs: u64,
-    pub resource_send_enabled: bool,
-    pub resource_accept_enabled: bool,
+    pub recent_activity_retention_secs: u64,
 }
 
 impl Default for ChannelHubSettings {
@@ -127,9 +159,8 @@ impl Default for ChannelHubSettings {
             enabled: false,
             hub_name: DEFAULT_HUB_NAME.to_string(),
             greeting: String::new(),
-            announce_interval_secs: 0,
-            resource_send_enabled: true,
-            resource_accept_enabled: false,
+            announce_interval_secs: DEFAULT_ANNOUNCE_INTERVAL_SECS,
+            recent_activity_retention_secs: CHANNEL_HUB_EVIDENCE_RETENTION_DEFAULT_SECS,
         }
     }
 }
@@ -147,7 +178,7 @@ impl ChannelHubSettings {
         let announce_interval_secs = values
             .get("channel_hub_announce_interval")
             .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value == 0 || (300..=86_400).contains(value))
+            .filter(|value| valid_channel_hub_announce_interval_secs(*value))
             .unwrap_or(defaults.announce_interval_secs);
 
         Ok(Self {
@@ -160,14 +191,11 @@ impl ChannelHubSettings {
                 .map(|value| value.trim().to_string())
                 .unwrap_or_default(),
             announce_interval_secs,
-            resource_send_enabled: values
-                .get("channel_hub_resource_send")
-                .map(|value| value.trim() == "1")
-                .unwrap_or(defaults.resource_send_enabled),
-            resource_accept_enabled: values
-                .get("channel_hub_resource_accept")
-                .map(|value| value.trim() == "1")
-                .unwrap_or(defaults.resource_accept_enabled),
+            recent_activity_retention_secs: values
+                .get("channel_hub_recent_activity_retention")
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| valid_evidence_retention_secs(*value))
+                .unwrap_or(defaults.recent_activity_retention_secs),
         })
     }
 
@@ -184,12 +212,8 @@ impl ChannelHubSettings {
                 self.announce_interval_secs.to_string(),
             ),
             (
-                "channel_hub_resource_send".to_string(),
-                bool_setting(self.resource_send_enabled),
-            ),
-            (
-                "channel_hub_resource_accept".to_string(),
-                bool_setting(self.resource_accept_enabled),
+                "channel_hub_recent_activity_retention".to_string(),
+                self.recent_activity_retention_secs.to_string(),
             ),
         ]
     }
@@ -199,11 +223,21 @@ impl ChannelHubSettings {
             hub_name: self.hub_name.clone(),
             greeting: (!self.greeting.is_empty()).then(|| self.greeting.clone()),
             announce_interval_secs: self.announce_interval_secs,
-            resource_send_enabled: self.resource_send_enabled,
-            resource_accept_enabled: self.resource_accept_enabled,
+            evidence_retention_secs: self.recent_activity_retention_secs,
             ..ChannelHubConfig::default()
         }
     }
+}
+
+pub const fn valid_channel_hub_announce_interval_secs(value: u64) -> bool {
+    matches!(value, 900 | 1_800 | 3_600 | 43_200 | 86_400)
+}
+
+pub const fn valid_evidence_retention_secs(value: u64) -> bool {
+    value == 0
+        || (value >= CHANNEL_HUB_EVIDENCE_RETENTION_MIN_SECS
+            && value <= CHANNEL_HUB_EVIDENCE_RETENTION_MAX_SECS
+            && value.is_multiple_of(60 * 60))
 }
 
 fn bool_setting(enabled: bool) -> String {
@@ -237,6 +271,9 @@ pub struct ChannelHubConfig {
     /// directions carry very different risk, so they are not one flag.
     pub resource_send_enabled: bool,
     pub resource_accept_enabled: bool,
+    /// Memory-only operator context. 0 preserves core RRC's immediate-forget
+    /// behavior; non-zero values are explicit local moderation policy.
+    pub evidence_retention_secs: u64,
     /// Trigger ceiling for the outbound resource path. Both reference clients
     /// expire the expectation 30s after the advertisement, so a payload that
     /// cannot conclude inside that window is better chunked than advertised.
@@ -280,6 +317,7 @@ impl Default for ChannelHubConfig {
             include_member_list: true,
             resource_send_enabled: true,
             resource_accept_enabled: false,
+            evidence_retention_secs: CHANNEL_HUB_EVIDENCE_RETENTION_DEFAULT_SECS,
             max_outbound_resource_bytes: 16 * 1024,
             max_resource_notice_bytes: 4096,
             max_resource_bytes: 256 * 1024,
@@ -1549,7 +1587,13 @@ impl HubCore {
     }
 
     fn prune_evidence(&mut self, now: Instant) {
-        let retention = Duration::from_secs(CHANNEL_HUB_EVIDENCE_RETENTION_SECS);
+        if self.config.evidence_retention_secs == 0 {
+            while !self.evidence.is_empty() {
+                self.evict_oldest_evidence();
+            }
+            return;
+        }
+        let retention = Duration::from_secs(self.config.evidence_retention_secs);
         while self
             .evidence
             .front()
@@ -1573,6 +1617,9 @@ impl HubCore {
         target_identity: Option<[u8; 16]>,
         excerpt: Option<&str>,
     ) {
+        if self.config.evidence_retention_secs == 0 {
+            return;
+        }
         self.prune_evidence(now);
         if self.evidence_sequence == u64::MAX {
             while !self.evidence.is_empty() {
@@ -2012,7 +2059,7 @@ impl HubCore {
             hub_bans,
             stats: admin_stats(&self.stats, self.admission.rejected()),
             limits: admin_limits(&self.config),
-            evidence_policy: admin_evidence_policy(),
+            evidence_policy: admin_evidence_policy(&self.config),
             evidence,
             evidence_evicted: self.evidence_evicted,
         }
@@ -5990,9 +6037,9 @@ fn admin_limits(config: &ChannelHubConfig) -> ChannelHubAdminLimits {
     }
 }
 
-const fn admin_evidence_policy() -> ChannelHubEvidencePolicy {
+const fn admin_evidence_policy(config: &ChannelHubConfig) -> ChannelHubEvidencePolicy {
     ChannelHubEvidencePolicy {
-        retention_secs: CHANNEL_HUB_EVIDENCE_RETENTION_SECS,
+        retention_secs: config.evidence_retention_secs,
         max_events: CHANNEL_HUB_EVIDENCE_MAX_EVENTS,
         max_estimated_bytes: CHANNEL_HUB_EVIDENCE_MAX_BYTES,
         max_excerpt_bytes: CHANNEL_HUB_EVIDENCE_EXCERPT_BYTES,
@@ -6112,7 +6159,7 @@ fn stopped_admin_snapshot(
         hub_bans: hub_bans.into_iter().collect(),
         stats: admin_stats(&empty_stats, 0),
         limits: admin_limits(config),
-        evidence_policy: admin_evidence_policy(),
+        evidence_policy: admin_evidence_policy(config),
         evidence: Vec::new(),
         evidence_evicted: 0,
     }
@@ -6946,19 +6993,69 @@ mod tests {
         assert!(!defaults.enabled);
         assert_eq!(defaults.hub_name, DEFAULT_HUB_NAME);
         assert!(defaults.greeting.is_empty());
-        assert!(defaults.resource_send_enabled);
-        assert!(!defaults.resource_accept_enabled);
+        assert_eq!(
+            defaults.announce_interval_secs,
+            DEFAULT_ANNOUNCE_INTERVAL_SECS
+        );
+        assert_eq!(defaults.recent_activity_retention_secs, 0);
 
         let configured = ChannelHubSettings {
             enabled: true,
             hub_name: "Mountain relay".to_string(),
             greeting: "Welcome".to_string(),
-            announce_interval_secs: 900,
-            resource_send_enabled: false,
-            resource_accept_enabled: true,
+            announce_interval_secs: 43_200,
+            recent_activity_retention_secs: 21_600,
         };
         db::try_set_settings(&pool, &configured.setting_rows()).unwrap();
         assert_eq!(ChannelHubSettings::load(&pool).unwrap(), configured);
+    }
+
+    #[test]
+    fn periodic_announce_choices_are_intentional_and_startup_remains_separate() {
+        for interval in [900, 1_800, 3_600, 43_200, 86_400] {
+            assert!(valid_channel_hub_announce_interval_secs(interval));
+        }
+        for interval in [0, 300, 21_600, 86_401] {
+            assert!(!valid_channel_hub_announce_interval_secs(interval));
+        }
+    }
+
+    #[test]
+    fn hosting_capability_defaults_off_and_resets_legacy_opt_in() {
+        let fresh = settings_pool();
+        assert!(!channel_hosting_enabled(&fresh));
+        assert_eq!(
+            db::get_setting(&fresh, CHANNEL_HOSTING_ENABLED_KEY).as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            db::get_setting(&fresh, CHANNEL_HOSTING_PREFERENCE_VERSION_KEY).as_deref(),
+            Some(CHANNEL_HOSTING_PREFERENCE_VERSION)
+        );
+
+        let legacy = settings_pool();
+        db::try_set_settings(
+            &legacy,
+            &[
+                (CHANNEL_HOSTING_ENABLED_KEY.to_string(), "1".to_string()),
+                ("channel_hub_enabled".to_string(), "1".to_string()),
+            ],
+        )
+        .unwrap();
+        assert!(!channel_hosting_enabled(&legacy));
+        assert_eq!(
+            db::get_setting(&legacy, CHANNEL_HOSTING_ENABLED_KEY).as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            db::get_setting(&legacy, "channel_hub_enabled").as_deref(),
+            Some("0")
+        );
+
+        db::try_set_setting(&legacy, CHANNEL_HOSTING_ENABLED_KEY, "1").unwrap();
+        assert!(channel_hosting_enabled(&legacy));
+        db::try_set_setting(&legacy, CHANNEL_HOSTING_ENABLED_KEY, "0").unwrap();
+        assert!(!channel_hosting_enabled(&legacy));
     }
 
     #[test]
@@ -6992,11 +7089,11 @@ mod tests {
             &[
                 ("channel_hub_enabled".to_string(), "yes".to_string()),
                 ("channel_hub_name".to_string(), "   ".to_string()),
+                ("channel_hub_announce_interval".to_string(), "0".to_string()),
                 (
-                    "channel_hub_announce_interval".to_string(),
-                    "42".to_string(),
+                    "channel_hub_recent_activity_retention".to_string(),
+                    "900".to_string(),
                 ),
-                ("channel_hub_resource_accept".to_string(), "yes".to_string()),
             ],
         )
         .unwrap();
@@ -7004,8 +7101,11 @@ mod tests {
         let settings = ChannelHubSettings::load(&pool).unwrap();
         assert!(!settings.enabled);
         assert_eq!(settings.hub_name, DEFAULT_HUB_NAME);
-        assert_eq!(settings.announce_interval_secs, 0);
-        assert!(!settings.resource_accept_enabled);
+        assert_eq!(
+            settings.announce_interval_secs,
+            DEFAULT_ANNOUNCE_INTERVAL_SECS
+        );
+        assert_eq!(settings.recent_activity_retention_secs, 0);
     }
 
     /// ID_A is always a server operator, mirroring production: `start` seeds
@@ -7559,6 +7659,7 @@ mod tests {
         // ID_A is a server operator, so it is an implicit op everywhere.
         let config = ChannelHubConfig {
             server_operators: vec![ID_A],
+            evidence_retention_secs: 3600,
             ..ChannelHubConfig::default()
         };
         let mut core = core_with(config);
@@ -8145,7 +8246,10 @@ mod tests {
 
     #[test]
     fn evidence_ring_enforces_count_and_retention_caps() {
-        let mut core = core_with(ChannelHubConfig::default());
+        let mut core = core_with(ChannelHubConfig {
+            evidence_retention_secs: 3600,
+            ..ChannelHubConfig::default()
+        });
         let base = Instant::now();
         for index in 0..(CHANNEL_HUB_EVIDENCE_MAX_EVENTS + 7) {
             core.push_evidence(
@@ -8167,7 +8271,7 @@ mod tests {
 
         let after_retention = base
             + Duration::from_secs(
-                CHANNEL_HUB_EVIDENCE_RETENTION_SECS + CHANNEL_HUB_EVIDENCE_MAX_EVENTS as u64 + 7,
+                core.config.evidence_retention_secs + CHANNEL_HUB_EVIDENCE_MAX_EVENTS as u64 + 7,
             );
         let snapshot = core.admin_snapshot_at(after_retention, 1_800_001_000_000, 1_800_001_000.0);
         assert!(snapshot.evidence.is_empty());
@@ -8176,6 +8280,27 @@ mod tests {
             (CHANNEL_HUB_EVIDENCE_MAX_EVENTS + 7) as u64
         );
         assert!(!snapshot.evidence_policy.persistent);
+    }
+
+    #[test]
+    fn evidence_is_disabled_by_default() {
+        let mut core = core_with(ChannelHubConfig::default());
+        core.push_evidence(
+            Instant::now(),
+            1_800_000_000_000,
+            ChannelHubEvidenceKind::Message,
+            None,
+            None,
+            Some("lobby"),
+            Some(ID_A),
+            Some("alpha"),
+            None,
+            Some("not retained"),
+        );
+
+        let snapshot = core.admin_snapshot();
+        assert!(snapshot.evidence.is_empty());
+        assert_eq!(snapshot.evidence_policy.retention_secs, 0);
     }
 
     #[test]

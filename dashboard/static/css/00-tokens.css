@@ -46,6 +46,7 @@
 
     --font-mono:     'JetBrains Mono', 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
     --font-sans:     'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    --font-ui:       -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
 
     --glass-bg:      rgba(250, 247, 243, 0.86);
     --glass-border:  rgba(222, 212, 200, 0.82);
@@ -280,6 +281,12 @@
     --type-badge-size:     var(--text-2xs);
     --type-badge-weight:   var(--type-weight-semibold);
     --type-badge-tracking: var(--tracking-wide);
+
+    /* Compact machine states such as OFF / ON / AUTO. These stay distinct
+       from prose labels and mixed-value selector controls. */
+    --type-state-size:     var(--text-xs);
+    --type-state-weight:   var(--type-weight-semibold);
+    --type-state-tracking: 0.04em;
 
     --radius-3xl:  16px;
     --radius-pill: 20px;

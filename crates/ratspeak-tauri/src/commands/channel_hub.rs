@@ -5,11 +5,15 @@
 use std::sync::Arc;
 
 use ratspeak_runtime::channel_hub::{
-    ChannelHubAdminKeyChange, ChannelHubAdminMutation, ChannelHubAdminRoomPolicy,
-    ChannelHubAdminRoomRole, ChannelHubAdminSecret, ChannelHubAdminSnapshot, ChannelHubSettings,
-    ChannelHubSnapshot, HubStore, channel_hub_hosting_supported,
+    CHANNEL_HOSTING_ENABLED_KEY, CHANNEL_HOSTING_PREFERENCE_VERSION,
+    CHANNEL_HOSTING_PREFERENCE_VERSION_KEY, ChannelHubAdminKeyChange, ChannelHubAdminMutation,
+    ChannelHubAdminRoomPolicy, ChannelHubAdminRoomRole, ChannelHubAdminSecret,
+    ChannelHubAdminSnapshot, ChannelHubSettings, ChannelHubSnapshot, HubStore,
+    channel_hosting_enabled, channel_hub_hosting_supported,
+    valid_channel_hub_announce_interval_secs, valid_evidence_retention_secs,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::State;
 
 use crate::error::{AppError, AppResult};
@@ -119,12 +123,10 @@ pub struct ChannelHubConfigArgs {
     pub greeting: Option<String>,
     #[serde(default)]
     pub announce_interval_secs: Option<u64>,
-    /// Send oversized greetings as a resource, and advertise the capability.
+    /// Memory-only operator context. 0 disables it; otherwise whole hours
+    /// between one and 24 are accepted.
     #[serde(default)]
-    pub resource_send: Option<bool>,
-    /// Accept inbound resource notices. Off by default.
-    #[serde(default)]
-    pub resource_accept: Option<bool>,
+    pub recent_activity_retention_secs: Option<u64>,
 }
 
 /// Stable read model for the desktop hosting surface. Saved settings remain
@@ -132,6 +134,8 @@ pub struct ChannelHubConfigArgs {
 #[derive(Debug, Serialize)]
 pub struct ChannelHubOverview {
     pub supported: bool,
+    /// Explicit opt-in for the operator UI and hosting command surface.
+    pub hosting_enabled: bool,
     /// True once this Ratspeak identity has created a dedicated hub identity.
     pub created: bool,
     /// Stable public address, available even while the hub is stopped.
@@ -172,6 +176,23 @@ async fn load_settings(state: &State<'_, Arc<AppState>>) -> AppResult<ChannelHub
         .map_err(AppError::database_unavailable)
 }
 
+async fn load_hosting_enabled(state: &State<'_, Arc<AppState>>) -> AppResult<bool> {
+    let pool = state.db.clone();
+    crate::db::spawn_db(pool, move |pool| channel_hosting_enabled(&pool))
+        .await
+        .map_err(|_| AppError::internal("channel hosting preference task panicked"))
+}
+
+async fn ensure_hosting_enabled(state: &State<'_, Arc<AppState>>) -> AppResult<()> {
+    if load_hosting_enabled(state).await? {
+        Ok(())
+    } else {
+        Err(AppError::bad_request(
+            "Turn on Channel hosting in Settings first",
+        ))
+    }
+}
+
 async fn persist_settings(
     state: &State<'_, Arc<AppState>>,
     settings: &ChannelHubSettings,
@@ -184,6 +205,19 @@ async fn persist_settings(
     .await
     .map_err(|_| AppError::internal("channel hub settings task panicked"))?
     .map_err(AppError::database_unavailable)
+}
+
+async fn shutdown_channel_hub(state: &State<'_, Arc<AppState>>) -> AppResult<()> {
+    let Some(hub) = state.channel_hub_handle() else {
+        return Ok(());
+    };
+    if !hub.shutdown().await {
+        return Err(AppError::service_unavailable(
+            "Channel hub is still shutting down",
+        ));
+    }
+    state.take_channel_hub();
+    Ok(())
 }
 
 fn active_operator_identity(state: &State<'_, Arc<AppState>>) -> AppResult<(String, [u8; 16])> {
@@ -305,6 +339,7 @@ fn admin_mutation(args: ChannelHubAdminMutationArgs) -> AppResult<ChannelHubAdmi
 async fn overview(
     state: &State<'_, Arc<AppState>>,
     settings: ChannelHubSettings,
+    hosting_enabled: bool,
 ) -> ChannelHubOverview {
     let status = current_snapshot(state).await;
     let identity_id = crate::helpers::active_identity_id(state);
@@ -322,6 +357,7 @@ async fn overview(
     });
     ChannelHubOverview {
         supported: channel_hub_hosting_supported(),
+        hosting_enabled,
         created,
         destination_hash,
         settings,
@@ -344,18 +380,20 @@ fn apply_config_args(
         settings.greeting = sanitize_text(&greeting, MAX_GREETING_CHARS);
     }
     if let Some(interval) = args.announce_interval_secs {
-        if interval != 0 && !(300..=86_400).contains(&interval) {
+        if !valid_channel_hub_announce_interval_secs(interval) {
             return Err(AppError::bad_request(
-                "Announce interval must be 0 or between 5 minutes and 24 hours",
+                "Announce interval must be 15 minutes, 30 minutes, 1 hour, 12 hours, or 24 hours",
             ));
         }
         settings.announce_interval_secs = interval;
     }
-    if let Some(enabled) = args.resource_send {
-        settings.resource_send_enabled = enabled;
-    }
-    if let Some(enabled) = args.resource_accept {
-        settings.resource_accept_enabled = enabled;
+    if let Some(retention) = args.recent_activity_retention_secs {
+        if !valid_evidence_retention_secs(retention) {
+            return Err(AppError::bad_request(
+                "Recent activity must be off or between 1 and 24 whole hours",
+            ));
+        }
+        settings.recent_activity_retention_secs = retention;
     }
     Ok(settings)
 }
@@ -364,7 +402,8 @@ fn apply_config_args(
 pub async fn api_channel_hub(state: State<'_, Arc<AppState>>) -> AppResult<ChannelHubOverview> {
     let _control = state.channel_hub_control_lock.lock().await;
     let settings = load_settings(&state).await?;
-    Ok(overview(&state, settings).await)
+    let hosting_enabled = load_hosting_enabled(&state).await?;
+    Ok(overview(&state, settings, hosting_enabled).await)
 }
 
 #[tauri::command]
@@ -373,13 +412,14 @@ pub async fn api_channel_hub_admin(
 ) -> AppResult<ChannelHubAdminSnapshot> {
     ensure_supported()?;
     let _control = state.channel_hub_control_lock.lock().await;
+    let settings = load_settings(&state).await?;
+    ensure_hosting_enabled(&state).await?;
     let (identity_id, operator_identity) = active_operator_identity(&state)?;
     if let Some(hub) = state.channel_hub_handle() {
         return hub.admin_snapshot().await.map_err(|_| {
             AppError::service_unavailable("Channel hub administration is temporarily unavailable")
         });
     }
-    let settings = load_settings(&state).await?;
     HubStore::new(state.db.clone(), identity_id)
         .admin_snapshot(settings.runtime_config(), operator_identity)
         .await
@@ -394,8 +434,9 @@ pub async fn channel_hub_admin_mutate(
     ensure_supported()?;
     let _control = state.channel_hub_control_lock.lock().await;
     // Convert first so any join key becomes zeroizing input even when the
-    // identity or live actor check below rejects the request.
+    // preference, identity, or live actor checks below reject the request.
     let mutation = admin_mutation(args)?;
+    ensure_hosting_enabled(&state).await?;
     let (_, actor_identity) = active_operator_identity(&state)?;
     let hub = state.channel_hub_handle().ok_or_else(|| {
         AppError::service_unavailable("Start the channel hub before making administrative changes")
@@ -410,6 +451,7 @@ pub async fn channel_hub_start(state: State<'_, Arc<AppState>>) -> AppResult<Cha
     ensure_supported()?;
     let _control = state.channel_hub_control_lock.lock().await;
     let mut settings = load_settings(&state).await?;
+    ensure_hosting_enabled(&state).await?;
     settings.enabled = true;
     persist_settings(&state, &settings).await?;
     let app_state: Arc<AppState> = state.inner().clone();
@@ -418,7 +460,7 @@ pub async fn channel_hub_start(state: State<'_, Arc<AppState>>) -> AppResult<Cha
             "Channel hub requires an active network session",
         ));
     }
-    Ok(overview(&state, settings).await)
+    Ok(overview(&state, settings, true).await)
 }
 
 #[tauri::command]
@@ -426,17 +468,59 @@ pub async fn channel_hub_stop(state: State<'_, Arc<AppState>>) -> AppResult<Chan
     ensure_supported()?;
     let _control = state.channel_hub_control_lock.lock().await;
     let mut settings = load_settings(&state).await?;
+    let hosting_enabled = load_hosting_enabled(&state).await?;
     settings.enabled = false;
     persist_settings(&state, &settings).await?;
-    if let Some(hub) = state.channel_hub_handle() {
-        if !hub.shutdown().await {
-            return Err(AppError::service_unavailable(
-                "Channel hub is still shutting down",
-            ));
-        }
-        state.take_channel_hub();
+    shutdown_channel_hub(&state).await?;
+    Ok(overview(&state, settings, hosting_enabled).await)
+}
+
+/// Master opt-in for hub hosting. Disabling it also stops the live service so
+/// the UI can never hide a hub that is still relaying traffic. Hub identity,
+/// configuration, and channel policy remain available for a later opt-in.
+#[tauri::command]
+pub async fn set_channel_hosting_enabled(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> AppResult<ChannelHubOverview> {
+    if enabled {
+        ensure_supported()?;
     }
-    Ok(overview(&state, settings).await)
+    let _control = state.channel_hub_control_lock.lock().await;
+    let mut settings = load_settings(&state).await?;
+    if !enabled {
+        // Keep the preference On until teardown is acknowledged. The UI must
+        // never claim hosting is Off while a relay actor may still be live.
+        shutdown_channel_hub(&state).await?;
+        settings.enabled = false;
+    }
+
+    let mut values = if enabled {
+        Vec::new()
+    } else {
+        settings.setting_rows()
+    };
+    values.push((
+        CHANNEL_HOSTING_ENABLED_KEY.to_string(),
+        if enabled { "1" } else { "0" }.to_string(),
+    ));
+    values.push((
+        CHANNEL_HOSTING_PREFERENCE_VERSION_KEY.to_string(),
+        CHANNEL_HOSTING_PREFERENCE_VERSION.to_string(),
+    ));
+    let pool = state.db.clone();
+    crate::db::spawn_db(pool, move |pool| {
+        crate::db::try_set_settings(&pool, &values)
+    })
+    .await
+    .map_err(|_| AppError::internal("channel hosting preference task panicked"))?
+    .map_err(AppError::database_unavailable)?;
+
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({ "channel_hosting_enabled": enabled }),
+    );
+    Ok(overview(&state, settings, enabled).await)
 }
 
 #[tauri::command]
@@ -446,7 +530,9 @@ pub async fn channel_hub_set_config(
 ) -> AppResult<ChannelHubOverview> {
     ensure_supported()?;
     let _control = state.channel_hub_control_lock.lock().await;
-    let settings = apply_config_args(load_settings(&state).await?, args)?;
+    let current = load_settings(&state).await?;
+    ensure_hosting_enabled(&state).await?;
+    let settings = apply_config_args(current, args)?;
     persist_settings(&state, &settings).await?;
 
     if let Some(hub) = state.channel_hub_handle() {
@@ -463,7 +549,7 @@ pub async fn channel_hub_set_config(
             ));
         }
     }
-    Ok(overview(&state, settings).await)
+    Ok(overview(&state, settings, true).await)
 }
 
 #[cfg(test)]
@@ -479,8 +565,7 @@ mod tests {
                 hub_name: Some("New name".to_string()),
                 greeting: None,
                 announce_interval_secs: Some(42),
-                resource_send: None,
-                resource_accept: None,
+                recent_activity_retention_secs: None,
             },
         )
         .unwrap_err();
@@ -490,6 +575,18 @@ mod tests {
             original.hub_name,
             ratspeak_runtime::channel_hub::DEFAULT_HUB_NAME
         );
+
+        let error = apply_config_args(
+            original,
+            ChannelHubConfigArgs {
+                hub_name: None,
+                greeting: None,
+                announce_interval_secs: None,
+                recent_activity_retention_secs: Some(900),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "bad_request");
     }
 
     #[test]
@@ -499,17 +596,15 @@ mod tests {
             hub_name: "Existing".to_string(),
             greeting: "Hello".to_string(),
             announce_interval_secs: 900,
-            resource_send_enabled: true,
-            resource_accept_enabled: false,
+            recent_activity_retention_secs: 3600,
         };
         let updated = apply_config_args(
             original,
             ChannelHubConfigArgs {
                 hub_name: Some("  Mountain relay  ".to_string()),
                 greeting: None,
-                announce_interval_secs: None,
-                resource_send: None,
-                resource_accept: Some(true),
+                announce_interval_secs: Some(43_200),
+                recent_activity_retention_secs: Some(21_600),
             },
         )
         .unwrap();
@@ -517,9 +612,8 @@ mod tests {
         assert!(updated.enabled);
         assert_eq!(updated.hub_name, "Mountain relay");
         assert_eq!(updated.greeting, "Hello");
-        assert_eq!(updated.announce_interval_secs, 900);
-        assert!(updated.resource_send_enabled);
-        assert!(updated.resource_accept_enabled);
+        assert_eq!(updated.announce_interval_secs, 43_200);
+        assert_eq!(updated.recent_activity_retention_secs, 21_600);
     }
 
     fn room_policy_args() -> ChannelHubAdminRoomPolicyArgs {

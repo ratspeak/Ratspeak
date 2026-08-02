@@ -166,7 +166,7 @@ function adminSnapshot(overrides) {
             max_resource_bytes: 262144
         },
         evidence_policy: {
-            retention_secs: 900,
+            retention_secs: 3600,
             max_events: 128,
             max_estimated_bytes: 65536,
             max_excerpt_bytes: 256,
@@ -226,7 +226,6 @@ vm.runInNewContext(
         '\nthis.renderPeople = _channelHubRenderAdminPeople;' +
         '\nthis.renderAccess = _channelHubRenderAdminAccess;' +
         '\nthis.renderActivity = _channelHubRenderAdminActivity;' +
-        '\nthis.renderLimits = _channelHubRenderAdminLimits;' +
         '\nthis.identityValue = _channelHubAdminIdentityValue;' +
         '\nthis.utf8Length = _channelHubAdminUtf8Length;' +
         '\nthis.keyModeOptions = _channelHubAdminKeyModeOptions;' +
@@ -284,9 +283,10 @@ var activityData = adminSnapshot({
 var activityRoot = new FakeElement('section');
 context.renderActivity(activityRoot, activityData, function() {});
 var activityText = textTree(activityRoot);
-assert(activityText.indexOf('Recent context, not a transcript') !== -1);
-assert(activityText.indexOf('Memory-only and incomplete') !== -1);
-assert(activityText.indexOf('display-sanitized and capped at 256 B') !== -1);
+assert(activityText.indexOf('Last 1 hour') !== -1);
+assert(activityText.indexOf('Memory only') !== -1);
+assert(activityText.indexOf('Recent context, not a transcript') === -1);
+assert(activityText.indexOf('display-sanitized') === -1);
 assert(activityText.indexOf(malicious) !== -1,
     'hostile-looking evidence must remain visible as literal text');
 assert.strictEqual(descendants(activityRoot).filter(function(node) {
@@ -300,14 +300,31 @@ context.renderActivity(stoppedActivity, adminSnapshot({
     evidence: []
 }), function() {});
 assert(textTree(stoppedActivity).indexOf('No activity while stopped') !== -1);
-assert(textTree(stoppedActivity).indexOf('never persisted') !== -1);
+assert(textTree(stoppedActivity).indexOf('clears whenever the hub stops') !== -1);
+
+var disabledActivity = new FakeElement('section');
+context.renderActivity(disabledActivity, adminSnapshot({
+    evidence_policy: {
+        retention_secs: 0,
+        max_events: 128,
+        max_estimated_bytes: 65536,
+        max_excerpt_bytes: 256,
+        persistent: false
+    },
+    evidence: []
+}), function() {});
+assert(textTree(disabledActivity).indexOf('Recent activity is off') !== -1);
+assert(textTree(disabledActivity).indexOf('Enable it in Settings') !== -1);
 
 var overviewRoot = new FakeElement('section');
 context.renderOverview(overviewRoot, adminSnapshot(), function() {});
 var overviewText = textTree(overviewRoot);
 assert(overviewText.indexOf('Unique identities') !== -1);
 assert(overviewText.indexOf('Live sessions') !== -1);
-assert(overviewText.indexOf('Policy is durable. Conversation traffic is not.') !== -1);
+assert(overviewText.indexOf('This run') === -1);
+assert(overviewText.indexOf('Room relays') === -1);
+assert(overviewText.indexOf('Policy is durable. Conversation traffic is not.') === -1);
+assert(overviewText.indexOf('Hub stopped') === -1);
 
 var channelsRoot = new FakeElement('section');
 context.renderChannels(channelsRoot, adminSnapshot(), function() {});
@@ -528,13 +545,6 @@ assert.deepStrictEqual(
     ['room_kick'],
     'live-only channels expose only the actor-owned live kick'
 );
-
-var limitsRoot = new FakeElement('section');
-context.renderLimits(limitsRoot, adminSnapshot());
-var limitsText = textTree(limitsRoot);
-assert(limitsText.indexOf('Operating limits') !== -1);
-assert(limitsText.indexOf('256 KiB') !== -1);
-assert(limitsText.indexOf('not editable in this release') !== -1);
 
 var managerSource = sourceRange('channelHubOpenManager', 'channelHubOpenOwnHub');
 assert(managerSource.indexOf("RS.invoke('api_channel_hub_admin')") !== -1);

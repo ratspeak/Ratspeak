@@ -5017,11 +5017,14 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     if room.phase == ChannelRoomPhase::Parting {
         return;
     }
+    let room_was_joined = room.phase == ChannelRoomPhase::Joined;
     let identities = rrc::member_identities(envelope);
     let identity_count = identities.len();
     let includes_self = identities.contains(&active.source);
-    let joining_self = room.phase == ChannelRoomPhase::Joining || includes_self;
-    if room.phase == ChannelRoomPhase::Error && !joining_self {
+    let single_identity_hash = (identity_count == 1).then(|| hex::encode(identities[0]));
+    let confirming_self = room.phase == ChannelRoomPhase::Joining
+        || (room.phase == ChannelRoomPhase::Error && includes_self);
+    if room.phase == ChannelRoomPhase::Error && !confirming_self {
         return;
     }
     room.phase = ChannelRoomPhase::Joined;
@@ -5029,7 +5032,7 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     room.last_error = None;
 
     if !identities.is_empty() {
-        if joining_self || includes_self {
+        if confirming_self || includes_self {
             room.members.clear();
         }
         let single_member_nickname = (identities.len() == 1)
@@ -5047,8 +5050,8 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
                 identity == active.source,
             );
         }
-        room.members_complete = joining_self || includes_self;
-    } else if joining_self {
+        room.members_complete = confirming_self || includes_self;
+    } else if confirming_self {
         upsert_member(
             &mut room.members,
             Some(active.source),
@@ -5060,31 +5063,41 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
         upsert_member(&mut room.members, None, Some(nickname), false);
     }
 
-    let nickname = if joining_self {
+    let nickname = if confirming_self {
         Some(active.nickname.clone())
     } else {
         envelope.nickname.clone()
     };
-    let join_already_visible = joining_self && self_join_transition_visible(room);
+    let join_already_visible = confirming_self && self_join_transition_visible(room);
     // A multi-identity JOINED that does not include us is a roster fragment,
     // never a join event: hubs split large rosters across packets, and
     // treating a continuation as an arrival invents "A member joined" lines.
-    let is_join_event = joining_self || identity_count == 1;
-    if !join_already_visible && is_join_event {
-        let item = if reconnecting_room && joining_self {
-            reconnected_transcript_item(envelope)
+    let nickname_only_join = room_was_joined
+        && identity_count == 0
+        && envelope
+            .nickname
+            .as_ref()
+            .is_some_and(|nick| !nick.is_empty());
+    let is_join_event =
+        confirming_self || (identity_count == 1 && !includes_self) || nickname_only_join;
+    if !join_already_visible && is_join_event && !(reconnecting_room && confirming_self) {
+        let mut item = transcript_item(
+            envelope,
+            ChannelItemKind::Join,
+            nickname.clone(),
+            if confirming_self {
+                "You joined".into()
+            } else {
+                format!("{} joined", nickname.unwrap_or_else(|| "A member".into()))
+            },
+            confirming_self,
+        );
+        item.source_hash = if confirming_self {
+            Some(hex::encode(active.source))
+        } else if identity_count == 1 {
+            single_identity_hash
         } else {
-            transcript_item(
-                envelope,
-                ChannelItemKind::Join,
-                nickname.clone(),
-                if joining_self {
-                    "You joined".into()
-                } else {
-                    format!("{} joined", nickname.unwrap_or_else(|| "A member".into()))
-                },
-                joining_self,
-            )
+            None
         };
         append_room_item(
             &mut active.history_events,
@@ -5336,20 +5349,16 @@ fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope
             Some(active.nickname.clone()),
             true,
         );
-        if !self_join_transition_visible(room) {
-            let item = if reconnecting_room {
-                reconnected_transcript_item(envelope)
-            } else {
-                ChannelTranscriptItem {
-                    id: format!("{}-joined", hex::encode(envelope.message_id)),
-                    kind: ChannelItemKind::Join,
-                    timestamp_ms: envelope.timestamp_ms,
-                    source_hash: Some(hex::encode(active.source)),
-                    nickname: Some(active.nickname.clone()),
-                    text: "You joined".into(),
-                    ours: true,
-                    mentioned: false,
-                }
+        if !reconnecting_room && !self_join_transition_visible(room) {
+            let item = ChannelTranscriptItem {
+                id: format!("{}-joined", hex::encode(envelope.message_id)),
+                kind: ChannelItemKind::Join,
+                timestamp_ms: envelope.timestamp_ms,
+                source_hash: Some(hex::encode(active.source)),
+                nickname: Some(active.nickname.clone()),
+                text: "You joined".into(),
+                ours: true,
+                mentioned: false,
             };
             append_room_item(
                 &mut active.history_events,
@@ -5363,24 +5372,9 @@ fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope
 }
 
 fn self_join_transition_visible(room: &ChannelRoomSnapshot) -> bool {
-    room.transcript.iter().any(|item| {
-        item.ours
-            && (item.kind == ChannelItemKind::Join
-                || (item.kind == ChannelItemKind::System && item.text == "Reconnected to hub"))
-    })
-}
-
-fn reconnected_transcript_item(envelope: &Envelope) -> ChannelTranscriptItem {
-    ChannelTranscriptItem {
-        id: format!("{}-reconnected", hex::encode(envelope.message_id)),
-        kind: ChannelItemKind::System,
-        timestamp_ms: envelope.timestamp_ms,
-        source_hash: None,
-        nickname: None,
-        text: "Reconnected to hub".into(),
-        ours: true,
-        mentioned: false,
-    }
+    room.transcript
+        .iter()
+        .any(|item| item.ours && item.kind == ChannelItemKind::Join)
 }
 
 fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
@@ -5425,17 +5419,19 @@ fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
         room.members.remove(index);
     }
     let nickname = envelope.nickname.clone();
+    let mut item = transcript_item(
+        envelope,
+        ChannelItemKind::Part,
+        nickname.clone(),
+        format!("{} left", nickname.unwrap_or_else(|| "A member".into())),
+        false,
+    );
+    item.source_hash = (identities.len() == 1).then(|| hex::encode(identities[0]));
     append_room_item(
         &mut active.history_events,
         active.destination_hash,
         room,
-        transcript_item(
-            envelope,
-            ChannelItemKind::Part,
-            nickname.clone(),
-            format!("{} left", nickname.unwrap_or_else(|| "A member".into())),
-            false,
-        ),
+        item,
     );
 }
 
@@ -8315,17 +8311,18 @@ mod tests {
             snapshot.hubs[0].recovery.phase == ChannelRecoveryPhase::Idle
                 && ["field", "general"].iter().all(|room_name| {
                     snapshot.rooms.iter().any(|room| {
-                        room.name == *room_name
-                            && room.phase == ChannelRoomPhase::Joined
-                            && room.transcript.iter().any(|item| {
-                                item.kind == ChannelItemKind::System
-                                    && item.text == "Reconnected to hub"
-                            })
+                        room.name == *room_name && room.phase == ChannelRoomPhase::Joined
                     })
                 })
         })
         .await;
         assert_eq!(recovered.hubs[0].recovery.phase, ChannelRecoveryPhase::Idle);
+        assert!(
+            recovered
+                .rooms
+                .iter()
+                .all(|room| room.transcript.is_empty())
+        );
 
         manager.disconnect().await.unwrap();
         manager.shutdown().await;
@@ -9091,6 +9088,85 @@ mod tests {
                 .iter()
                 .all(|item| !item.text.starts_with("room general: registered;"))
         );
+
+        // A nickname-only or one-member JOINED/PARTED fanout is human room
+        // activity, not a roster refresh. Preserve it in the bounded
+        // transcript so clients can render membership changes with messages.
+        let mut member_joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        member_joined.room = Some("general".into());
+        member_joined.nickname = Some("v6z".into());
+        send_server_envelope(&delivery_tx, &mut responder, &member_joined).await;
+        let member_visible = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.members
+                    .iter()
+                    .any(|member| member.nickname.as_deref() == Some("v6z"))
+                    && room.transcript.iter().any(|item| {
+                        item.kind == ChannelItemKind::Join
+                            && !item.ours
+                            && item.nickname.as_deref() == Some("v6z")
+                            && item.source_hash.is_none()
+                            && item.text == "v6z joined"
+                    })
+            })
+        })
+        .await;
+        assert_eq!(member_visible.rooms[0].members.len(), 2);
+
+        let mut member_parted = Envelope::new(MessageType::Parted, hub_identity.hash);
+        member_parted.room = Some("general".into());
+        member_parted.nickname = Some("v6z".into());
+        send_server_envelope(&delivery_tx, &mut responder, &member_parted).await;
+        let member_left = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                !room
+                    .members
+                    .iter()
+                    .any(|member| member.nickname.as_deref() == Some("v6z"))
+                    && room.transcript.iter().any(|item| {
+                        item.kind == ChannelItemKind::Part
+                            && item.nickname.as_deref() == Some("v6z")
+                            && item.source_hash.is_none()
+                            && item.text == "v6z left"
+                    })
+            })
+        })
+        .await;
+        assert_eq!(member_left.rooms[0].members.len(), 1);
+
+        let identified_member = [0x45; 16];
+        let identified_hash = hex::encode(identified_member);
+        let mut identified_joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        identified_joined.room = Some("general".into());
+        identified_joined.nickname = Some("Ada".into());
+        identified_joined.body = Some(Value::Array(vec![Value::Bytes(identified_member.to_vec())]));
+        send_server_envelope(&delivery_tx, &mut responder, &identified_joined).await;
+        wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.transcript.iter().any(|item| {
+                    item.kind == ChannelItemKind::Join
+                        && item.nickname.as_deref() == Some("Ada")
+                        && item.source_hash.as_deref() == Some(identified_hash.as_str())
+                })
+            })
+        })
+        .await;
+
+        let mut identified_parted = Envelope::new(MessageType::Parted, hub_identity.hash);
+        identified_parted.room = Some("general".into());
+        identified_parted.nickname = Some("Ada".into());
+        identified_parted.body = Some(Value::Array(vec![Value::Bytes(identified_member.to_vec())]));
+        send_server_envelope(&delivery_tx, &mut responder, &identified_parted).await;
+        wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.transcript.iter().any(|item| {
+                    item.kind == ChannelItemKind::Part
+                        && item.nickname.as_deref() == Some("Ada")
+                        && item.source_hash.as_deref() == Some(identified_hash.as_str())
+                })
+            })
+        })
+        .await;
 
         // A room message is live evidence that its hub-reported source is
         // present even when the optional JOINED roster was not delivered.

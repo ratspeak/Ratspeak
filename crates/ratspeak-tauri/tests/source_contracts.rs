@@ -149,13 +149,14 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(index.contains("Available hubs"));
     assert!(index.contains("id=\"channel-hub-switcher-btn\""));
     assert!(index.contains("aria-haspopup=\"dialog\""));
+    assert!(!index.contains("channel-live-beacon"));
     assert!(index.contains("id=\"channel-owned-hub\""));
     assert!(index.contains("id=\"channel-owned-hub-manage\""));
     assert!(!index.contains("channels-refresh-btn"));
     assert!(index.contains("id=\"channel-members-back\""));
     assert!(!index.contains("Messages are not saved and disappear when this session ends."));
     assert!(!index.contains("id=\"channel-session-banner\""));
-    assert!(channels_js.contains("hub relays and can read channel messages"));
+    assert!(!channels_js.contains("hub relays and can read channel messages"));
     assert!(channels_js.contains("Ratspeak saves only identity-sealed ciphertext"));
     assert!(channels_js.contains("only after the hub confirms membership"));
     assert!(channels_js.contains("has_stored_join_key"));
@@ -173,11 +174,12 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("function _channelsHubConnectMode"));
     assert!(channels_js.contains("function channelsOpenHubSwitcher"));
     assert!(channels_js.contains("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)"));
-    assert!(channels_js.contains("Ratspeak keeps one live hub at a time"));
-    assert!(channels_js.contains("Saved channels and local history stay on this device"));
+    assert!(channels_js.contains("One hub can be live at a time"));
+    assert!(channels_js.contains("history stays on this device"));
     assert!(channels_js.contains("list.setAttribute('aria-live', 'polite')"));
     assert!(channels_js.contains("list.setAttribute('aria-busy', 'true')"));
-    assert!(channels_js.contains("titleElement.textContent = 'Switch channel hub'"));
+    assert!(channels_js.contains("? 'Switch hub'"));
+    assert!(channels_js.contains(": 'Choose a hub'"));
     assert!(channels_js.contains("switching: connectMode.kind === 'switch'"));
     assert!(channels_js.contains("'Could not switch channel hubs.'"));
     assert!(channels_js.contains("openedEpoch === _channelsHistoryEpoch"));
@@ -199,8 +201,11 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_css.contains(".channel-hub-row-mark"));
     assert!(channels_css.contains(".channel-hub-row-distance"));
     assert!(channels_css.contains(".channel-hub-switcher-btn"));
+    assert!(channels_css.contains("@keyframes channelHubSignalLap"));
+    assert!(channels_css.contains(".channel-hub-strip.link-arrived::before"));
     assert!(channels_css.contains(".channel-hub-switcher-list .channel-hub-row.current"));
     assert!(channels_css.contains(".channel-hub-switch-impact"));
+    assert!(!channels_css.contains(".channel-connection-trust"));
     assert!(channels_js.contains("function _channelsBuildHubNotice"));
     assert!(channels_js.contains("function _channelsBuildHubGreeting"));
     assert!(channels_js.contains("function _channelsGroupPresenceEvents"));
@@ -222,7 +227,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("function channelsOpenNotificationRoute"));
     assert!(channels_js.contains("api_channel_room_index"));
     assert!(channels_js.contains("latest_recorded_at_ms"));
-    assert!(channels_js.contains("Local timeline"));
+    assert!(!channels_js.contains("Local timeline"));
     assert!(channels_js.contains("Load earlier"));
     assert!(!channels_js.contains("localStorage.setItem"));
     assert!(channels_js.contains("function _channelsRenderMemberDetail"));
@@ -249,6 +254,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_css.contains(".channel-hub-profile-capabilities"));
     assert!(channels_css.contains(".channel-hub-greeting-delivery"));
     assert!(channels_css.contains(".channel-presence-summary"));
+    assert!(!channels_css.contains(".channel-presence-event::before"));
+    assert!(!channels_css.contains(".channel-presence-summary::before"));
     assert!(channels_css.contains(".channel-history-rail"));
     assert!(channels_css.contains(".channel-day-separator"));
     assert!(channels_css.contains(".channel-member-detail-fields"));
@@ -306,7 +313,10 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(runtime.contains("RECONNECT_MAX_DELAY"));
     assert!(runtime.contains("RECONNECT_STABLE_RESET"));
     assert!(runtime.contains("prepare_auto_rejoin"));
-    assert!(runtime.contains("\"Reconnected to hub\""));
+    assert!(!runtime.contains("\"Reconnected to hub\""));
+    assert!(runtime.contains("nickname_only_join"));
+    assert!(channels_js.contains("function _channelsIsConnectionLifecycleItem"));
+    assert!(channels_js.contains("item.text === 'Reconnected to hub'"));
     assert!(runtime.contains("ROOM_SECRET_SEAL_SCHEME"));
     assert!(runtime.contains(".encrypt(&plaintext, None)"));
     assert!(runtime.contains("complete_pending_join_secret"));
@@ -695,6 +705,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         "channel_hub::channel_hub_admin_mutate",
         "channel_hub::channel_hub_start",
         "channel_hub::channel_hub_stop",
+        "channel_hub::set_channel_hosting_enabled",
         "channel_hub::channel_hub_set_config",
     ] {
         assert!(
@@ -709,13 +720,14 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub.contains("target_os = \"android\", target_os = \"ios\""));
     assert_eq!(
         commands.matches("ensure_supported()?;").count(),
-        5,
+        6,
         "every hosting-specific hub command must reject mobile hosting"
     );
     assert!(runtime.contains("channel_hub_hosting_supported()"));
 
-    // Desktop hosting is discoverable from the existing Channels add action,
-    // but stays separate from client session state and obeys backend support.
+    // Desktop hosting becomes discoverable from the Channels add action after
+    // explicit Settings opt-in, stays separate from client session state, and
+    // obeys backend support.
     assert!(index.contains("/static/js/channel_hub.js"));
     assert!(hub_ui.contains("if (!overview || !overview.supported)"));
     assert!(hub_ui.contains("RS.invoke('api_channel_hub')"));
@@ -725,6 +737,10 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub_ui.contains("RS.invoke('channel_hub_set_config'"));
     assert!(hub_ui.contains("RS.listen('channel_hub_snapshot'"));
     assert!(hub_ui.contains("function channelHubRenderHome"));
+    assert!(hub_ui.contains("overview.supported && _channelHubHostingEnabled(overview)"));
+    assert!(
+        hub_ui.contains("_channelHubHostingEnabled(overview) && _channelHubHasOwnedHub(overview)")
+    );
     assert!(hub_ui.contains("function channelHubOpenOwnHub"));
     assert!(hub_ui.contains("overview.created"));
     assert!(hub_ui.contains("Some channel changes are still waiting to be saved."));
@@ -793,8 +809,32 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(admin_renderers.contains("roomInput.value.trim().toLowerCase();"));
     assert!(admin_renderers.contains("cancel.textContent = 'Close and review'"));
     assert!(!admin_renderers.contains("action: '/"));
-    assert!(hub_ui.contains("Recent context, not a transcript"));
-    assert!(hub_ui.contains("Memory-only and incomplete"));
+    assert!(!hub_ui.contains("Recent context, not a transcript"));
+    assert!(!hub_ui.contains("Memory-only and incomplete"));
+    assert!(!hub_ui.contains("Policy is durable. Conversation traffic is not."));
+    assert!(hub_ui.contains("Recent activity is off"));
+    assert!(hub_ui.contains("recent_activity_retention_secs"));
+    assert!(hub_ui.contains("[86400, '24 hours']"));
+    assert!(hub_ui.contains("At startup and on this schedule, so nearby people can find it"));
+    for interval in [
+        "[900, 'Every 15 minutes']",
+        "[1800, 'Every 30 minutes']",
+        "[3600, 'Every hour']",
+        "[43200, 'Every 12 hours']",
+        "[86400, 'Every 24 hours']",
+    ] {
+        assert!(hub_ui.contains(interval));
+    }
+    for removed in [
+        "Operating limits",
+        "Large welcome messages",
+        "Large room notices",
+        "[0, 'When started']",
+        "[300, 'Every 5 min']",
+        "[21600, 'Every 6 hours']",
+    ] {
+        assert!(!hub_ui.contains(removed));
+    }
     assert!(hub_ui.contains("var _channelHubIdentityGeneration = 0;"));
     assert!(hub_ui.contains("identityGeneration !== _channelHubIdentityGeneration"));
     assert!(hub_ui.contains("_channelHubIdentityGeneration += 1;"));
@@ -809,6 +849,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(commands.contains("pub destination_hash: Option<String>"));
     assert!(runtime.contains("channel_hub::hub_identity_path"));
     assert!(commands.contains("ChannelHubSettings::load"));
+    assert!(commands.contains("valid_channel_hub_announce_interval_secs"));
     assert!(commands.contains("try_set_settings"));
     assert!(commands.contains("hub.status()"));
     assert!(commands.contains("hub.admin_snapshot()"));
@@ -823,6 +864,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         "pub async fn channel_hub_admin_mutate",
         "pub async fn channel_hub_start",
         "pub async fn channel_hub_stop",
+        "pub async fn set_channel_hosting_enabled",
         "pub async fn channel_hub_set_config",
     ] {
         let body = commands
@@ -836,7 +878,8 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     // memory, and kept off the content-free Activity/event path.
     assert!(hub.contains("HubCommand::AdminSnapshot"));
     assert!(hub.contains("result_tx.send(core.admin_snapshot())"));
-    assert!(hub.contains("CHANNEL_HUB_EVIDENCE_RETENTION_SECS"));
+    assert!(hub.contains("CHANNEL_HUB_EVIDENCE_RETENTION_DEFAULT_SECS: u64 = 0"));
+    assert!(hub.contains("valid_evidence_retention_secs"));
     assert!(hub.contains("CHANNEL_HUB_EVIDENCE_MAX_EVENTS"));
     assert!(hub.contains("CHANNEL_HUB_EVIDENCE_MAX_BYTES"));
     assert!(hub.contains("persistent: false"));
@@ -3258,6 +3301,101 @@ fn developer_mode_persists_in_sqlite_not_only_localstorage() {
 }
 
 #[test]
+fn channel_hosting_is_an_explicit_durable_settings_capability() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let settings_js =
+        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let hub_ui =
+        read_source(root.join("dashboard/static/js/channel_hub.js")).expect("channel hub frontend");
+    let channels_css =
+        read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
+    let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channel_hub.rs"))
+        .expect("channel hub commands");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let runtime_hub = read_source(root.join("crates/ratspeak-runtime/src/channel_hub.rs"))
+        .expect("channel hub runtime");
+    let runtime =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lifecycle");
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("src-tauri lib");
+
+    let general_nav = index
+        .find(r#"data-settings-panel="panel-settings-general""#)
+        .expect("General settings navigation");
+    let channels_nav = index
+        .find(r#"data-settings-panel="panel-settings-channels""#)
+        .expect("Channels settings navigation");
+    let identity_nav = index
+        .find(r#"data-settings-panel="panel-settings-identity""#)
+        .expect("Identity settings navigation");
+    assert!(general_nav < channels_nav && channels_nav < identity_nav);
+    assert!(index.contains(r#"id="panel-settings-channels""#));
+    assert!(index.contains(r#"<html lang="en" data-channel-hosting="off">"#));
+    assert!(index.contains(r#"role="radiogroup" aria-label="Channel hosting""#));
+    assert!(index.contains(r#"id="settings-channel-hosting-desc" aria-live="polite""#));
+    assert!(index.contains(
+        r#"type="radio" name="settings-channel-hosting" id="settings-channel-hosting-off" value="off" checked"#
+    ));
+    assert!(index.contains(
+        r#"type="radio" name="settings-channel-hosting" id="settings-channel-hosting-on" value="on""#
+    ));
+
+    assert!(settings_js.contains("function initChannelHostingToggle()"));
+    assert!(settings_js.contains("RS.invoke('set_channel_hosting_enabled'"));
+    assert!(settings_js.contains("adoptChannelHostingFromBackend(data.channel_hosting_enabled)"));
+    assert!(settings_js.contains("var _settingsChannelHostingRequested = null;"));
+    assert!(settings_js.contains("Stopping your hub and hiding hosting controls…"));
+    assert!(settings_js.contains("document.documentElement.dataset.channelHosting"));
+    assert!(settings_js.contains("channelHubRenderHome(channelHubOverview)"));
+    assert!(channels_css.contains(r#"html[data-channel-hosting="off"] .channel-owned-hub"#));
+    let hosting_toggle = settings_js
+        .split("function setChannelHostingEnabled(enabled)")
+        .nth(1)
+        .and_then(|tail| tail.split("function initChannelHostingToggle").next())
+        .expect("channel hosting toggle");
+    assert!(!hosting_toggle.contains("_settingsChannelHostingEnabled = !!enabled;"));
+    assert!(hosting_toggle.contains("RS.invoke('api_channel_hub')"));
+    assert!(!settings_js.contains("ratspeak-channel-hosting"));
+    assert!(hub_ui.contains("overview.supported && _channelHubHostingEnabled(overview)"));
+    assert!(
+        hub_ui.contains("_channelHubHostingEnabled(overview) && _channelHubHasOwnedHub(overview)")
+    );
+
+    assert!(commands.contains("pub async fn set_channel_hosting_enabled"));
+    assert!(commands.contains("CHANNEL_HOSTING_ENABLED_KEY"));
+    assert!(commands.contains("CHANNEL_HOSTING_PREFERENCE_VERSION_KEY"));
+    assert!(commands.contains("settings.enabled = false;"));
+    assert!(commands.contains("hub.shutdown().await"));
+    let preference_command = commands
+        .split("pub async fn set_channel_hosting_enabled")
+        .nth(1)
+        .and_then(|tail| tail.split("#[tauri::command]").next())
+        .expect("channel hosting preference command");
+    let teardown = preference_command
+        .find("shutdown_channel_hub(&state).await?")
+        .expect("preference Off waits for hub teardown");
+    let persist = preference_command
+        .find("crate::db::try_set_settings")
+        .expect("preference persistence");
+    assert!(teardown < persist);
+    assert!(commands.contains("ensure_hosting_enabled(&state"));
+    assert!(interfaces.contains(r#""channel_hosting_enabled": channel_hosting_enabled"#));
+    assert!(
+        runtime_hub
+            .contains("pub const CHANNEL_HOSTING_ENABLED_KEY: &str = \"channel_hosting_enabled\";")
+    );
+    assert!(runtime_hub.contains("pub const CHANNEL_HOSTING_PREFERENCE_VERSION_KEY: &str ="));
+    assert!(runtime_hub.contains("channel_hub_enabled\".to_string(), \"0\".to_string()"));
+    assert!(!runtime_hub.contains("legacy_hub_enabled"));
+    assert!(runtime.contains("channel_hub::channel_hosting_enabled("));
+    assert!(runtime.contains("reason = \"hosting_disabled\""));
+    assert!(
+        tauri_lib.contains("ratspeak_tauri::commands::channel_hub::set_channel_hosting_enabled")
+    );
+}
+
+#[test]
 fn interface_pause_resume_is_config_backed_and_visible() {
     let root = repo_root();
 
@@ -4349,8 +4487,42 @@ fn settings_system_panel_has_developer_mode_and_reset_group() {
     assert!(views_css.contains(".settings-radio-option input:checked + span"));
     assert!(
         responsive_css
-            .contains(".settings-radio-option span { min-height: 38px; min-width: 58px; }")
+            .contains(".settings-radio-option span { min-height: 40px; min-width: 58px; }")
     );
+}
+
+#[test]
+fn settings_machine_states_share_uppercase_outfit_typography() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let tokens = read_source(root.join("dashboard/static/css/00-tokens.css")).expect("type tokens");
+    let views = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let propagation =
+        read_source(root.join("dashboard/static/js/propagation.js")).expect("propagation js");
+    let modals = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+
+    assert!(tokens.contains("--type-state-size:     var(--text-xs);"));
+    assert!(tokens.contains("--type-state-weight:   var(--type-weight-semibold);"));
+    assert!(tokens.contains("--type-state-tracking: 0.04em;"));
+    assert!(views.contains(".settings-radio-option span {"));
+    assert!(views.contains("font-family: var(--font-sans);"));
+    assert!(views.contains("font-size: var(--type-state-size);"));
+    assert!(views.contains("text-transform: uppercase;"));
+    assert!(views.contains(".settings-state-value {"));
+    assert!(views.contains(".relay-mode-btn {"));
+
+    assert!(
+        index.contains(
+            r#"class="selector-badge settings-state-value" id="transport-mode-select">OFF"#
+        )
+    );
+    assert!(index.contains(r#"id="hw-lock-timeout-select">OFF</button>"#));
+    assert!(settings.contains("if (!secs || secs <= 0) return 'OFF';"));
+    assert!(settings.contains("{ label: 'OFF', value: '0'"));
+    assert!(propagation.contains("? ('Cost ' + cost) : 'OFF'"));
+    assert!(propagation.contains("relayBadge.textContent = 'OFF';"));
+    assert!(modals.contains("{ label: 'Always on', value: '0' }"));
 }
 
 #[test]

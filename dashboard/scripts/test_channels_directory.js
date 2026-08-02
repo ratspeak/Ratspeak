@@ -245,7 +245,8 @@ async function main() {
         Array: Array
     };
     vm.runInNewContext(
-        sourceFunction('_channelsRenderList', '_channelsListSection') + '\n' +
+        sourceFunction('_channelsRoomDisplayName', '_channelsTimelineHubName') + '\n' +
+            sourceFunction('_channelsRenderList', '_channelsListSection') + '\n' +
             sourceFunction('_channelsListSection', '_channelsEmptyList') + '\n' +
             sourceFunction('_channelsBuildDirectoryRoomRow', '_channelsBuildRoomRow'),
         renderContext,

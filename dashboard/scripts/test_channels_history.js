@@ -167,7 +167,11 @@ async function main() {
             history: { phase: 'ready' }
         },
         _channelsLocalRoomEvents: { general: [] },
-        _channelsIsHubNotice: function() { return false; }
+        _channelsIsHubNotice: function() { return false; },
+        _channelsIsConnectionLifecycleItem: function(item) {
+            return !!item && item.kind === 'system' &&
+                item.text === 'Reconnected to hub';
+        }
     };
     vm.runInNewContext(
         sourceRange('_channelsTimelineEntries', '_channelsBuildHistoryRail'),
@@ -198,6 +202,15 @@ async function main() {
                 nickname: 'Pending',
                 text: 'pending',
                 ours: false
+            },
+            {
+                id: 'legacy-reconnect',
+                kind: 'system',
+                timestamp_ms: 3,
+                source_hash: null,
+                nickname: null,
+                text: 'Reconnected to hub',
+                ours: true
             }
         ]
     }, {
@@ -209,7 +222,7 @@ async function main() {
     assert.deepStrictEqual(
         Array.from(merged, function(entryValue) { return entryValue.item.id; }),
         ['older', 'current', 'pending'],
-        'receive sequence, not peer timestamps, determines the merged timeline'
+        'receive sequence, not peer timestamps, orders human activity and hides legacy Link lifecycle rows'
     );
     assert.strictEqual(merged[1].item.recorded_at_ms, 11_000,
         'a live overlap inherits its trusted local receive time');
@@ -220,6 +233,8 @@ async function main() {
         'the offline room browser must use the bookmark/history union');
     assert(channelsSource.indexOf('latest_recorded_at_ms') !== -1,
         'retained history must stay discoverable and sort by local receive time');
+    assert(channelsSource.indexOf('Local timeline') === -1,
+        'a healthy local history store must not occupy a persistent transcript rail');
     assert(channelsSource.indexOf('api_saved_channel_room_index') === -1,
         'a bookmark-only index would hide history after forgetting a hub');
     console.log('channel history tests passed');

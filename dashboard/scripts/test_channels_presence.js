@@ -10,7 +10,7 @@ var vm = require('vm');
 
 var channelsPath = path.join(__dirname, '..', 'static', 'js', 'channels.js');
 var channelsSource = fs.readFileSync(channelsPath, 'utf8');
-var constantsStart = channelsSource.indexOf('var CHANNEL_PRESENCE_GROUP_WINDOW_MS');
+var constantsStart = channelsSource.indexOf('var CHANNEL_PRESENCE_REJOIN_WINDOW_MS');
 var constantsEnd = channelsSource.indexOf('\n\nfunction _channelsEl', constantsStart);
 var activityStart = channelsSource.indexOf('function _channelsActivityTime');
 var activityEnd = channelsSource.indexOf('\nfunction _channelsBuildDaySeparator', activityStart);
@@ -40,6 +40,32 @@ vm.runInNewContext(
 );
 
 var presence = context.window.ChannelsPresence;
+var rosterStart = channelsSource.indexOf('function _channelsRosterMemberKey');
+var rosterEnd = channelsSource.indexOf('\nfunction _channelsSavedHub', rosterStart);
+assert(rosterStart !== -1 && rosterEnd !== -1, 'roster reconciliation helpers must exist');
+var rosterEvents = [];
+var rosterContext = {
+    window: {},
+    _channelsRosterBaselines: {},
+    channelsSnapshot: { rooms: [] },
+    _channelsHistoryKey: function(hub, room) { return hub + '|' + room; },
+    _channelsMemberName: function(member) {
+        return member.nickname || member.identity_hash || 'Channel member';
+    },
+    _channelsPresenceIdentityKey: function(item) {
+        if (item.source_hash) return 'source:' + String(item.source_hash).toLowerCase();
+        return item.nickname ? 'nickname:' + String(item.nickname).toLowerCase() : '';
+    },
+    _channelsAddLocalRoomItem: function(room, item) {
+        rosterEvents.push({ room: room, item: item });
+    }
+};
+vm.runInNewContext(
+    channelsSource.slice(rosterStart, rosterEnd) +
+        '\nwindow.reconcile = _channelsReconcileRosterPresence;',
+    rosterContext,
+    { filename: 'channels-roster-presence.js' }
+);
 var tests = [];
 
 function test(name, fn) {
@@ -156,6 +182,49 @@ test('mixed uninterrupted presence activity becomes one truthful summary', funct
     assert.strictEqual(summary.text, '6 people joined and 3 left');
 });
 
+test('membership activity stays grouped until a message even when events are minutes apart', function() {
+    var entries = [
+        event('join', 1_000, null, 'DhC'),
+        event('part', 23_000, null, 'DhC'),
+        event('join', 387_000, null, 'Brongus')
+    ];
+    var result = presence.group(entries, 'lobby');
+    assert.strictEqual(result.length, 1);
+    assert.ok(result[0].presenceGroup);
+    assert.strictEqual(result[0].presenceGroup.entries.length, 3);
+
+    var summary = presence.summary(result[0].presenceGroup);
+    assert.strictEqual(summary.joined.length, 2);
+    assert.strictEqual(summary.left.length, 1);
+    assert.strictEqual(summary.text, '2 people joined and 1 left');
+});
+
+test('members discovered in the entry roster are described as here, not newly joined', function() {
+    var entries = [
+        event('present', 1000, 'present-1', 'v6z'),
+        event('present', 2000, 'present-2', 'Ada')
+    ];
+    var result = presence.group(entries, 'general');
+    assert.strictEqual(result.length, 1);
+    assert.ok(result[0].presenceGroup);
+    var summary = presence.summary(result[0].presenceGroup);
+    assert.strictEqual(summary.present.length, 2);
+    assert.strictEqual(summary.text, '2 people here');
+});
+
+test('entry roster context does not merge with later join activity', function() {
+    var entries = [
+        event('present', 1000, 'present-1', 'v6z'),
+        event('join', 2000, 'join-1', 'Ada')
+    ];
+    var result = presence.group(entries, 'general');
+    assert.strictEqual(result.length, 2);
+    assert.strictEqual(presence.summary(result[0].presenceGroup || {
+        entries: [result[0]]
+    }).text, '1 person here');
+    assert.strictEqual(result[1].item.kind, 'join');
+});
+
 test('a message ends a mixed presence group', function() {
     var entries = [
         event('join', 1000, 'join-1', 'Ada'),
@@ -182,9 +251,66 @@ test('count hover text prefers names and retains a full hash fallback', function
     );
 });
 
+test('roster reconciliation supplies honest context and only fills missing deltas', function() {
+    function member(identity, nickname, isSelf) {
+        return { identity_hash: identity, nickname: nickname, is_self: !!isSelf };
+    }
+    var bob = member('self', 'Bob', true);
+    var v6z = member('v6z-id', 'v6z', false);
+    var ada = member('ada-id', 'Ada', false);
+    var grace = member('grace-id', 'Grace', false);
+    var linus = member('linus-id', 'Linus', false);
+    var room = {
+        name: 'lobby',
+        phase: 'joined',
+        members: [bob, v6z],
+        transcript: []
+    };
+    rosterContext.channelsSnapshot.rooms = [room];
+    rosterContext.window.reconcile('hub');
+    assert.strictEqual(rosterEvents.length, 1);
+    assert.strictEqual(rosterEvents[0].item.kind, 'present');
+    assert.strictEqual(rosterEvents[0].item.text, 'v6z is here');
+
+    room.members = [bob, v6z, ada];
+    room.transcript = [{
+        id: 'joined-ada',
+        kind: 'join',
+        source_hash: 'hub-id',
+        nickname: 'Ada'
+    }];
+    rosterContext.window.reconcile('hub');
+    assert.strictEqual(rosterEvents.length, 1,
+        'a native join event must not be duplicated by roster inference');
+
+    room.members = [bob, v6z, ada, grace];
+    rosterContext.window.reconcile('hub');
+    assert.strictEqual(rosterEvents[1].item.text, 'Grace joined');
+
+    room.members = [bob, v6z, ada, grace, linus];
+    room.transcript.push({
+        id: 'message-linus',
+        kind: 'message',
+        source_hash: 'linus-id',
+        nickname: 'Linus'
+    });
+    rosterContext.window.reconcile('hub');
+    assert.strictEqual(rosterEvents.length, 2,
+        'a member first observed through a message must not get a fabricated join');
+
+    room.members = [bob, v6z, ada, linus];
+    rosterContext.window.reconcile('hub');
+    assert.strictEqual(rosterEvents[2].item.text, 'Grace left');
+});
+
 tests.forEach(function(entry) {
     entry.fn();
     process.stdout.write('\u2713 ' + entry.name + '\n');
 });
+
+assert(channelsSource.indexOf('function _channelsIsConnectionLifecycleItem') !== -1,
+    'legacy reconnect markers must be recognized outside the human timeline');
+assert(channelsSource.indexOf("item.text === 'Reconnected to hub'") !== -1,
+    'legacy reconnect copy must remain presentation-filtered');
 
 process.stdout.write('\n' + tests.length + ' Channels presence tests passed.\n');

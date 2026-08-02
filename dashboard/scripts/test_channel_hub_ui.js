@@ -17,11 +17,15 @@ function sourceRange(firstName, lastName) {
     return source.slice(start, end);
 }
 
-var statusContext = {};
+var statusContext = {
+    window: {
+        ratspeakChannelHostingEnabled: function() { return true; }
+    }
+};
 vm.runInNewContext(
     sourceRange('_channelHubPlural', '_channelHubApplyOverview') +
         '\nthis.statusModel = _channelHubStatusModel;' +
-        '\nthis.announceLabel = _channelHubAnnounceLabel;',
+        '\nthis.hostingEnabled = _channelHubHostingEnabled;',
     statusContext,
     { filename: 'channel-hub-status.js' }
 );
@@ -56,11 +60,22 @@ assert.strictEqual(stopped.label, 'Not running');
 assert.strictEqual(stopped.detail, 'Create a place for your community');
 assert.strictEqual(stopped.action, 'start');
 
-assert.strictEqual(statusContext.announceLabel(0), 'When started');
-assert.strictEqual(statusContext.announceLabel(900), 'Every 15 min');
-assert.strictEqual(statusContext.announceLabel(3600), 'Every hour');
-assert.strictEqual(statusContext.announceLabel(21600), 'Every 6 hours');
-assert.strictEqual(statusContext.announceLabel(86400), 'Every day');
+assert.strictEqual(statusContext.hostingEnabled({ hosting_enabled: false }), true);
+assert.strictEqual(statusContext.hostingEnabled({ hosting_enabled: true }), true);
+assert.strictEqual(statusContext.hostingEnabled({}), true);
+statusContext.window.ratspeakChannelHostingEnabled = undefined;
+assert.strictEqual(statusContext.hostingEnabled({ hosting_enabled: true }), false,
+    'hosting defaults closed until Settings establishes an explicit preference');
+statusContext.window.ratspeakChannelHostingEnabled = function() { return false; };
+assert.strictEqual(statusContext.hostingEnabled({ hosting_enabled: true }), false,
+    'a stale overview must not resurrect hosting after Settings is Off');
+
+assert(source.indexOf(
+    'var visible = _channelHubHostingEnabled(overview) && _channelHubHasOwnedHub(overview);'
+) !== -1);
+assert(source.indexOf(
+    'if (overview.supported && _channelHubHostingEnabled(overview))'
+) !== -1);
 
 var configContext = {};
 vm.runInNewContext(
@@ -75,29 +90,42 @@ var args = configContext.configArgs(
     { value: '  Mountain hub  ' },
     { value: ' Welcome ' },
     { value: '900' },
-    { checked: true },
-    { checked: false }
+    { value: '21600' }
 );
 assert.deepStrictEqual(JSON.parse(JSON.stringify(args)), {
     hub_name: 'Mountain hub',
     greeting: 'Welcome',
     announce_interval_secs: 900,
-    resource_send: true,
-    resource_accept: false
+    recent_activity_retention_secs: 21600
 });
 assert.strictEqual(configContext.settingsEqual({
     hub_name: 'Mountain hub',
     greeting: 'Welcome',
     announce_interval_secs: 900,
-    resource_send_enabled: true,
-    resource_accept_enabled: false
+    recent_activity_retention_secs: 21600
 }, args), true);
 assert.strictEqual(configContext.settingsEqual({
     hub_name: 'Mountain hub',
     greeting: 'Different',
     announce_interval_secs: 900,
-    resource_send_enabled: true,
-    resource_accept_enabled: false
+    recent_activity_retention_secs: 21600
 }, args), false);
+
+[
+    "[900, 'Every 15 minutes']",
+    "[1800, 'Every 30 minutes']",
+    "[3600, 'Every hour']",
+    "[43200, 'Every 12 hours']",
+    "[86400, 'Every 24 hours']"
+].forEach(function(option) {
+    assert(source.indexOf(option) !== -1, 'missing announce choice ' + option);
+});
+assert(source.indexOf("[0, 'When started']") === -1);
+assert(source.indexOf("[300, 'Every 5 min']") === -1);
+assert(source.indexOf("[21600, 'Every 6 hours']") === -1);
+assert(source.indexOf('At startup and on this schedule, so nearby people can find it') !== -1);
+assert(source.indexOf('Large welcome messages') === -1);
+assert(source.indexOf('Large room notices') === -1);
+assert(source.indexOf('Operating limits') === -1);
 
 console.log('channel hub UI tests passed');

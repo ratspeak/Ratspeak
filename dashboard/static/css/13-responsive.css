@@ -691,7 +691,7 @@
     .theme-toggle-btn { min-width: 44px; min-height: 44px; }
     .selector-badge { min-height: 44px; padding: var(--space-4) var(--space-6); }
     .settings-row { min-height: 48px; }
-    .settings-radio-option span { min-height: 38px; min-width: 58px; }
+    .settings-radio-option span { min-height: 40px; min-width: 58px; }
 
     input[type="text"], input[type="number"], textarea, select, .modal-input {
         min-height: 44px;

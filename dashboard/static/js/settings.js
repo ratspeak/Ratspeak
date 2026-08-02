@@ -3,6 +3,7 @@ function openSettings() {
     initSettingsSectionNav();
     showSettingsMobileSectionIndex({ restoreFocus: false });
     initHapticsToggle();
+    initChannelHostingToggle();
     initDeveloperModeToggle();
     initWindowDecorationsToggle();
     syncSettingsIdentityActions();
@@ -19,8 +20,120 @@ var _settingsUpdateCheckInFlight = false;
 var _settingsDeveloperModeBound = false;
 var _settingsDeveloperModeStorageKey = 'ratspeak-developer-mode-enabled';
 var _settingsDeveloperModeEnabled = readDeveloperModePreference();
+var _settingsChannelHostingBound = false;
+var _settingsChannelHostingBusy = false;
+var _settingsChannelHostingEnabled = false;
+var _settingsChannelHostingRequested = null;
+var _settingsChannelHostingSupported = null;
 var RATSPEAK_RELEASE_LATEST_URL = 'https://api.github.com/repos/ratspeak/Ratspeak/releases/latest';
 var RATSPEAK_RELEASES_URL = 'https://github.com/ratspeak/Ratspeak/releases';
+
+window.ratspeakChannelHostingEnabled = function() {
+    return !!_settingsChannelHostingEnabled;
+};
+
+function syncChannelHostingRadioState() {
+    var off = document.getElementById('settings-channel-hosting-off');
+    var on = document.getElementById('settings-channel-hosting-on');
+    var desc = document.getElementById('settings-channel-hosting-desc');
+    var group = on && on.closest('.settings-radio-group');
+    var displayedEnabled = _settingsChannelHostingRequested === null
+        ? _settingsChannelHostingEnabled
+        : _settingsChannelHostingRequested;
+    if (document.documentElement) {
+        document.documentElement.dataset.channelHosting = displayedEnabled ? 'on' : 'off';
+    }
+    if (off) {
+        off.checked = !displayedEnabled;
+        off.disabled = _settingsChannelHostingBusy;
+    }
+    if (on) {
+        on.checked = displayedEnabled;
+        on.disabled = _settingsChannelHostingBusy || _settingsChannelHostingSupported === false;
+    }
+    if (group) group.setAttribute('aria-busy', _settingsChannelHostingBusy ? 'true' : 'false');
+    if (desc) {
+        if (_settingsChannelHostingBusy) {
+            desc.textContent = _settingsChannelHostingRequested
+                ? 'Enabling hosting controls…'
+                : 'Stopping your hub and hiding hosting controls…';
+        } else {
+            desc.textContent = _settingsChannelHostingSupported === false
+                ? 'Channel hosting is available in the desktop app.'
+                : 'Show hub controls in Channels and allow this device to host.';
+        }
+    }
+}
+
+function adoptChannelHostingFromBackend(enabled, supported) {
+    _settingsChannelHostingEnabled = !!enabled;
+    if (supported !== undefined) _settingsChannelHostingSupported = !!supported;
+    if (typeof channelHubOverview !== 'undefined' && channelHubOverview) {
+        channelHubOverview.hosting_enabled = _settingsChannelHostingEnabled;
+    }
+    syncChannelHostingRadioState();
+    if (typeof channelHubRenderHome === 'function') channelHubRenderHome(channelHubOverview);
+}
+
+function setChannelHostingEnabled(enabled) {
+    if (_settingsChannelHostingBusy) return;
+    if (enabled && _settingsChannelHostingSupported === false) return;
+    _settingsChannelHostingRequested = !!enabled;
+    _settingsChannelHostingBusy = true;
+    syncChannelHostingRadioState();
+
+    RS.invoke('set_channel_hosting_enabled', { enabled: !!enabled }).then(function(overview) {
+        if (overview && typeof _channelHubApplyOverview === 'function') {
+            _channelHubApplyOverview(overview);
+        }
+        adoptChannelHostingFromBackend(
+            overview && overview.hosting_enabled !== undefined
+                ? overview.hosting_enabled
+                : enabled,
+            overview ? overview.supported : undefined
+        );
+    }).catch(function(error) {
+        if (typeof showToast === 'function') {
+            showToast((error && error.message) || 'Could not update channel hosting', 'toast-red', 3200);
+        }
+        return Promise.all([
+            RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {}),
+            RS.invoke('api_channel_hub').then(function(overview) {
+                if (!overview) return;
+                if (typeof _channelHubApplyOverview === 'function') {
+                    _channelHubApplyOverview(overview);
+                }
+                adoptChannelHostingFromBackend(overview.hosting_enabled, overview.supported);
+            }).catch(function() {})
+        ]);
+    }).then(function() {
+        _settingsChannelHostingRequested = null;
+        _settingsChannelHostingBusy = false;
+        syncChannelHostingRadioState();
+    });
+}
+
+function initChannelHostingToggle() {
+    var off = document.getElementById('settings-channel-hosting-off');
+    var on = document.getElementById('settings-channel-hosting-on');
+    if (!off || !on) return;
+    syncChannelHostingRadioState();
+    if (!_settingsChannelHostingBound) {
+        _settingsChannelHostingBound = true;
+        off.addEventListener('change', function() {
+            if (off.checked) setChannelHostingEnabled(false);
+        });
+        on.addEventListener('change', function() {
+            if (on.checked) setChannelHostingEnabled(true);
+        });
+    }
+    if (typeof channelHubLoad === 'function') {
+        channelHubLoad(false).then(function(overview) {
+            if (!overview) return;
+            adoptChannelHostingFromBackend(overview.hosting_enabled, overview.supported);
+        }).catch(function() {});
+    }
+}
 
 function readDeveloperModePreference() {
     try {
@@ -1302,6 +1415,7 @@ function applyAppSettingsPayload(data) {
         var t = parseInt(data.hardware_session_timeout, 10);
         hwBadge.textContent = _hwLockLabel(t);
         hwBadge.setAttribute('data-value', t);
+        hwBadge.classList.toggle('settings-state-value', !t || t <= 0);
     }
     if (data.developer_mode !== undefined) {
         adoptDeveloperModeFromBackend(data.developer_mode);
@@ -1309,10 +1423,13 @@ function applyAppSettingsPayload(data) {
     if (data.window_decorations !== undefined) {
         adoptWindowDecorationsFromBackend(data.window_decorations);
     }
+    if (data.channel_hosting_enabled !== undefined) {
+        adoptChannelHostingFromBackend(data.channel_hosting_enabled);
+    }
 }
 
 function _hwLockLabel(secs) {
-    if (!secs || secs <= 0) return 'Off';
+    if (!secs || secs <= 0) return 'OFF';
     if (secs % 3600 === 0) { var h = secs / 3600; return h + (h === 1 ? ' hour' : ' hours'); }
     if (secs % 60 === 0) return (secs / 60) + ' min';
     return secs + 's';
@@ -1336,7 +1453,7 @@ function _initHwLockSetting() {
             title: 'Hardware Key Auto-Lock',
             message: 'Lock your hardware identity after this much idle time. You’ll re-enter the PIN to resume.',
             choices: [
-                { label: 'Off', value: '0', hint: 'Only locks when you quit Ratspeak.' },
+                { label: 'OFF', value: '0', hint: 'Only locks when you quit Ratspeak.' },
                 { label: '5 minutes', value: '300', hint: 'Tightest; frequent PIN prompts.' },
                 { label: '15 minutes', value: '900' },
                 { label: '30 minutes', value: '1800' },
@@ -1347,6 +1464,7 @@ function _initHwLockSetting() {
             var secs = parseInt(val, 10);
             badge.textContent = _hwLockLabel(secs);
             badge.setAttribute('data-value', secs);
+            badge.classList.toggle('settings-state-value', !secs || secs <= 0);
             RS.invoke('set_hardware_lock_timeout', { seconds: secs }).catch(function(err) {
                 showToast((err && err.message) || 'Failed to update auto-lock', 'toast-red', 8000);
             });
