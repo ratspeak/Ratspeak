@@ -397,6 +397,40 @@ impl BoundedLogWriter {
             }
         }
     }
+
+    fn truncate_active(&mut self, len: u64) -> io::Result<()> {
+        if let Some(mut active) = self.active.take() {
+            if let Err(error) = active.flush() {
+                self.active = Some(active);
+                return Err(error);
+            }
+            drop(active);
+        }
+
+        let active_path = log_path(&self.log_dir, 0);
+        let truncate_result = open_verified_regular(&active_path, false, false)
+            .and_then(|active| active.set_len(len));
+
+        match open_verified_regular(&active_path, true, true) {
+            Ok(active) => {
+                let active_len = match active.metadata() {
+                    Ok(metadata) => metadata.len(),
+                    Err(error) => {
+                        self.active = Some(active);
+                        return Err(error);
+                    }
+                };
+                self.active_len = active_len;
+                self.active = Some(active);
+                truncate_result
+            }
+            Err(reopen_error) => {
+                self.active_len = 0;
+                self.active = None;
+                Err(reopen_error)
+            }
+        }
+    }
 }
 
 impl Write for BoundedLogWriter {
@@ -417,11 +451,7 @@ impl Write for BoundedLogWriter {
             .metadata()?
             .len();
         if self.active_len > self.limits.max_file_bytes {
-            self.active
-                .as_mut()
-                .expect("active diagnostic file checked above")
-                .set_len(self.limits.max_file_bytes)?;
-            self.active_len = self.limits.max_file_bytes;
+            self.truncate_active(self.limits.max_file_bytes)?;
         }
 
         if self.active_len > 0
@@ -569,7 +599,7 @@ where
         )),
     }?;
 
-    let path_metadata = validate_regular_target(path)?.ok_or_else(|| {
+    let _path_metadata = validate_regular_target(path)?.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
             "diagnostic log target disappeared while opening",
@@ -586,7 +616,8 @@ where
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if path_metadata.dev() != file_metadata.dev() || path_metadata.ino() != file_metadata.ino()
+        if _path_metadata.dev() != file_metadata.dev()
+            || _path_metadata.ino() != file_metadata.ino()
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
