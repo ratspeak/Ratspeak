@@ -66,6 +66,7 @@ var _channelsSendPending = false;
 var _channelsFieldSeq = 0;
 var _channelsLocalRoomEvents = {};
 var _channelsLocalEventSeq = 0;
+var _channelsLiveItemSeenAt = {};
 var _channelsRosterBaselines = {};
 var _channelsExpandedPresenceGroups = {};
 var _channelsPresenceGroupSeq = 0;
@@ -78,7 +79,7 @@ var _channelsRoomIndexRequestSeq = 0;
 var _channelsUnreadRequestSeq = 0;
 var _channelsRenderedRoomKey = '';
 var _channelsHubSwitcherDismiss = null;
-// Brief leave/rejoin churn is one continuous presence when nothing happens between it.
+// Brief leave/rejoin churn is one continuous presence when no message separates it.
 var CHANNEL_PRESENCE_REJOIN_WINDOW_MS = 15 * 1000;
 var CHANNEL_HISTORY_PAGE_SIZE = 100;
 var CHANNEL_HISTORY_SYNC_PAGE_SIZE = 200;
@@ -504,10 +505,12 @@ function _channelsAddLocalRoomItem(roomName, item) {
     var room = String(roomName || '').trim().toLowerCase();
     if (!room || !item || !String(item.text || '').trim()) return;
     var events = _channelsLocalRoomEvents[room] || [];
+    var recordedAt = Date.now();
     events.push(Object.assign({
         id: 'local-channel-' + (++_channelsLocalEventSeq),
         kind: 'system',
-        timestamp_ms: Date.now(),
+        timestamp_ms: recordedAt,
+        recorded_at_ms: recordedAt,
         source_hash: null,
         nickname: null,
         text: '',
@@ -520,6 +523,27 @@ function _channelsAddLocalRoomItem(roomName, item) {
 
 function _channelsAddLocalRoomEvent(roomName, text) {
     _channelsAddLocalRoomItem(roomName, { text: text });
+}
+
+function _channelsLiveItemKey(roomName, itemId) {
+    var room = String(roomName || '').trim().toLowerCase();
+    var id = String(itemId || '').trim();
+    return room && id ? room + '\n' + id : '';
+}
+
+// Transcript timestamps belong to remote peers and are presentation data, not
+// a trustworthy ordering clock. Remember when this client first observes each
+// live item so roster-derived presence can be merged without moving messages.
+function _channelsObserveLiveItems(rooms) {
+    var observedAt = Date.now();
+    var retained = {};
+    (Array.isArray(rooms) ? rooms : []).forEach(function(room) {
+        (room && Array.isArray(room.transcript) ? room.transcript : []).forEach(function(item) {
+            var key = _channelsLiveItemKey(room.name, item && item.id);
+            if (key) retained[key] = _channelsLiveItemSeenAt[key] || observedAt;
+        });
+    });
+    _channelsLiveItemSeenAt = retained;
 }
 
 function _channelsRosterMemberKey(member) {
@@ -965,6 +989,7 @@ function channelsApplySnapshot(snapshot) {
     }
     if (hubContextChanged || managerContextChanged) {
         _channelsLocalRoomEvents = {};
+        _channelsLiveItemSeenAt = {};
         _channelsRosterBaselines = {};
         _channelsExpandedPresenceGroups = {};
         _channelsSelectedMemberKey = null;
@@ -991,6 +1016,7 @@ function channelsApplySnapshot(snapshot) {
     if (!channelsActiveRoom && !channelsHistorySelection && channelsSnapshot.rooms.length) {
         channelsActiveRoom = channelsSnapshot.rooms[0].name;
     }
+    _channelsObserveLiveItems(channelsSnapshot.rooms);
     _channelsReconcileRosterPresence(newContextHub);
 
     _channelsPersistConveniences();
@@ -2091,7 +2117,7 @@ function _channelsTimelineEntries(room, historyEntry) {
 
     if (room.history_only) {
         historyItems.forEach(function(item) { append(item, false); });
-        return entries;
+        return _channelsOrderTimelineEntries(entries);
     }
 
     var liveItems = Array.isArray(room.transcript) ? room.transcript : [];
@@ -2108,17 +2134,22 @@ function _channelsTimelineEntries(room, historyEntry) {
     });
     liveItems.forEach(function(item) {
         var stored = item && item.id ? historyById[item.id] : null;
+        var observedAt = _channelsLiveItemSeenAt[
+            _channelsLiveItemKey(room.name, item && item.id)
+        ];
         var merged = stored ? Object.assign({}, item, {
             sequence: stored.sequence,
-            recorded_at_ms: stored.recorded_at_ms,
+            recorded_at_ms: stored.recorded_at_ms || observedAt || 0,
             mentioned: !!(item.mentioned || stored.mentioned)
-        }) : item;
+        }) : Object.assign({}, item, {
+            recorded_at_ms: observedAt || 0
+        });
         append(merged, _channelsIsHubNotice(merged));
     });
     (_channelsLocalRoomEvents[room.name] || []).forEach(function(item) {
         append(item, false);
     });
-    return entries;
+    return _channelsOrderTimelineEntries(entries);
 }
 
 function _channelsBuildHistoryRail(context, entry) {
@@ -2493,6 +2524,26 @@ function _channelsIsPresenceEvent(entry) {
         entry.item.kind === 'present';
 }
 
+// Native history is already append-ordered, but roster-derived presence lives
+// in a small frontend buffer. Merge both by their local receive clock so a new
+// message can never push an older inferred leave below itself on rerender.
+function _channelsOrderTimelineEntries(entries) {
+    return (entries || []).map(function(entry, index) {
+        return {
+            entry: entry,
+            index: index,
+            // Only the local receive clock participates in ordering. A missing
+            // value stays in canonical append order after recorded entries.
+            time: Number(entry && entry.item && entry.item.recorded_at_ms) ||
+                Number.MAX_SAFE_INTEGER
+        };
+    }).sort(function(left, right) {
+        return left.time - right.time || left.index - right.index;
+    }).map(function(ordered) {
+        return ordered.entry;
+    });
+}
+
 function _channelsPresenceIdentityKey(item) {
     var sourceHash = String(item && item.source_hash || '').trim().toLowerCase();
     if (sourceHash) return 'source:' + sourceHash;
@@ -2503,21 +2554,22 @@ function _channelsPresenceIdentityKey(item) {
 function _channelsCollapseTransientRejoins(entries) {
     var reconciled = [];
     entries.forEach(function(entry) {
-        var previous = reconciled.length ? reconciled[reconciled.length - 1] : null;
-        if (_channelsIsPresenceEvent(previous) &&
-            _channelsIsPresenceEvent(entry) &&
-            previous.item.kind === 'part' &&
-            entry.item.kind === 'join') {
-            var previousIdentity = _channelsPresenceIdentityKey(previous.item);
+        if (_channelsIsPresenceEvent(entry) && entry.item.kind === 'join') {
             var currentIdentity = _channelsPresenceIdentityKey(entry.item);
-            var elapsed = _channelsActivityTime(entry.item) -
-                _channelsActivityTime(previous.item);
-            if (previousIdentity &&
-                previousIdentity === currentIdentity &&
-                elapsed >= 0 &&
-                elapsed <= CHANNEL_PRESENCE_REJOIN_WINDOW_MS) {
-                reconciled.pop();
-                return;
+            for (var index = reconciled.length - 1; index >= 0; index--) {
+                var previous = reconciled[index];
+                if (!_channelsIsPresenceEvent(previous)) break;
+                if (_channelsPresenceIdentityKey(previous.item) !== currentIdentity) continue;
+                if (previous.item.kind === 'part') {
+                    var elapsed = _channelsActivityTime(entry.item) -
+                        _channelsActivityTime(previous.item);
+                    if (currentIdentity && elapsed >= 0 &&
+                            elapsed <= CHANNEL_PRESENCE_REJOIN_WINDOW_MS) {
+                        reconciled.splice(index, 1);
+                        return;
+                    }
+                }
+                break;
             }
         }
         reconciled.push(entry);
@@ -2562,11 +2614,37 @@ function _channelsGroupPresenceEvents(entries, roomName) {
     return rendered;
 }
 
+function _channelsPresenceGroupRows(group) {
+    var rows = [];
+    var byIdentityAndKind = {};
+    (group.entries || []).forEach(function(entry, index) {
+        var item = entry.item || {};
+        var identity = _channelsPresenceIdentityKey(item);
+        var fallback = item.id || item.timestamp_ms || entry.order || index;
+        var key = item.kind + '|' + (identity || 'event:' + fallback);
+        var existing = byIdentityAndKind[key];
+        if (!existing) {
+            existing = Object.assign({}, entry, {
+                item: Object.assign({}, item),
+                occurrences: 1,
+                first_timestamp_ms: _channelsActivityTime(item)
+            });
+            byIdentityAndKind[key] = existing;
+            rows.push(existing);
+            return;
+        }
+        existing.occurrences += 1;
+        existing.item = Object.assign({}, existing.item, item);
+    });
+    return rows;
+}
+
 function _channelsPresenceGroupSummary(group) {
     var joined = [];
     var left = [];
     var present = [];
-    group.entries.forEach(function(entry) {
+    var rows = _channelsPresenceGroupRows(group);
+    rows.forEach(function(entry) {
         if (entry.item.kind === 'part') left.push(entry);
         else if (entry.item.kind === 'present') present.push(entry);
         else joined.push(entry);
@@ -2585,7 +2663,7 @@ function _channelsPresenceGroupSummary(group) {
     } else {
         text = joined.length + ' ' + joinedNoun + ' joined';
     }
-    return { joined: joined, left: left, present: present, text: text };
+    return { joined: joined, left: left, present: present, rows: rows, text: text };
 }
 
 function _channelsPresenceName(item) {
@@ -2663,9 +2741,10 @@ function _channelsBuildPresenceGroup(group) {
     list.className = 'channel-presence-list';
     list.setAttribute('role', 'list');
     list.hidden = !expanded;
-    group.entries.forEach(function(entry) {
+    summary.rows.forEach(function(entry) {
         var item = entry.item;
         var nameText = _channelsPresenceName(item);
+        var occurrences = Number(entry.occurrences) || 1;
         var row = document.createElement('div');
         row.className = 'channel-presence-item';
         row.setAttribute('role', 'listitem');
@@ -2675,12 +2754,18 @@ function _channelsBuildPresenceGroup(group) {
         marker.setAttribute('aria-hidden', 'true');
         var copy = document.createElement('span');
         copy.className = 'channel-presence-item-copy';
-        copy.textContent = nameText + (item.kind === 'part' ? ' left' :
-            (item.kind === 'present' ? ' is here' : ' joined'));
+        var action = item.kind === 'part' ? ' left' :
+            (item.kind === 'present' ? ' is here' : ' joined');
+        copy.textContent = nameText + action +
+            (occurrences > 1 ? ' ' + occurrences + ' times' : '');
         var time = document.createElement('time');
         time.className = 'channel-event-time';
-        time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
-        time.textContent = _channelsFormatTime(item.timestamp_ms);
+        var activityTime = _channelsActivityTime(item);
+        time.dateTime = new Date(activityTime || Date.now()).toISOString();
+        time.textContent = _channelsFormatTime(activityTime);
+        if (occurrences > 1) {
+            time.title = 'Most recent of ' + occurrences + ' events';
+        }
         row.appendChild(marker);
         row.appendChild(copy);
         row.appendChild(time);

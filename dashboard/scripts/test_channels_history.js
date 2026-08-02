@@ -166,7 +166,9 @@ async function main() {
             notices: [],
             history: { phase: 'ready' }
         },
+        _channelsLiveItemSeenAt: { 'general\npending': 12_000 },
         _channelsLocalRoomEvents: { general: [] },
+        _channelsLiveItemKey: function(room, id) { return room + '\n' + id; },
         _channelsIsHubNotice: function() { return false; },
         _channelsIsConnectionLifecycleItem: function(item) {
             return !!item && item.kind === 'system' &&
@@ -174,7 +176,9 @@ async function main() {
         }
     };
     vm.runInNewContext(
-        sourceRange('_channelsTimelineEntries', '_channelsBuildHistoryRail'),
+        sourceRange('_channelsTimelineEntries', '_channelsBuildHistoryRail') +
+            '\n' + sourceRange('_channelsOrderTimelineEntries',
+                '_channelsPresenceIdentityKey'),
         timelineContext,
         { filename: 'channels-history-merge.js' }
     );

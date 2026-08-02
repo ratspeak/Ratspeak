@@ -25,6 +25,8 @@ var context = { window: {}, Number: Number, String: String, Array: Array };
 var exportsSource = '\nwindow.ChannelsPresence = {' +
     'collapse: _channelsCollapseTransientRejoins,' +
     'group: _channelsGroupPresenceEvents,' +
+    'order: _channelsOrderTimelineEntries,' +
+    'rows: _channelsPresenceGroupRows,' +
     'summary: _channelsPresenceGroupSummary,' +
     'tooltip: _channelsPresenceTooltip' +
     '};';
@@ -81,6 +83,7 @@ function event(kind, timestamp, sourceHash, nickname, options) {
             id: options.id || kind + '-' + timestamp + '-' + (sourceHash || nickname || 'member'),
             kind: kind,
             timestamp_ms: timestamp,
+            recorded_at_ms: options.recordedAt || timestamp,
             source_hash: sourceHash || null,
             nickname: nickname || null,
             ours: !!options.ours,
@@ -96,6 +99,17 @@ test('a quick adjacent leave and rejoin from the same identity cancel out', func
     ];
     assert.strictEqual(presence.collapse(entries).length, 0);
     assert.strictEqual(presence.group(entries, 'general').length, 0);
+});
+
+test('a quick rejoin still cancels when other membership activity is interleaved', function() {
+    var entries = [
+        event('part', 1000, 'aabbcc', 'Ada'),
+        event('join', 4000, 'ddeeff', 'Grace'),
+        event('join', 9000, 'aabbcc', 'Ada')
+    ];
+    var result = presence.collapse(entries);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].item.nickname, 'Grace');
 });
 
 test('an intervening channel event preserves both presence events', function() {
@@ -238,6 +252,44 @@ test('a message ends a mixed presence group', function() {
     assert.ok(result[0].presenceGroup);
     assert.strictEqual(result[1].item.kind, 'message');
     assert.ok(result[2].presenceGroup);
+});
+
+test('local leave activity is ordered before a message observed later', function() {
+    var entries = [
+        event('join', 1000, 'join-1', 'Ada'),
+        event('join', 2000, 'join-2', 'Grace'),
+        event('message', 5000, 'speaker', 'Linus'),
+        event('part', 3000, 'part-1', 'Margaret')
+    ];
+    var ordered = presence.order(entries);
+    assert.deepStrictEqual(
+        Array.from(ordered, function(entry) { return entry.item.kind; }),
+        ['join', 'join', 'part', 'message']
+    );
+    var rendered = presence.group(ordered, 'general');
+    assert.strictEqual(rendered.length, 2);
+    assert.strictEqual(
+        presence.summary(rendered[0].presenceGroup).text,
+        '2 people joined and 1 left'
+    );
+    assert.strictEqual(rendered[1].item.kind, 'message');
+});
+
+test('reconnect churn counts unique people and expands to one row per action', function() {
+    var entries = [
+        event('join', 1000, 'aabbcc', 'Ada'),
+        event('join', 2000, 'aabbcc', 'Ada'),
+        event('join', 3000, 'aabbcc', 'Ada'),
+        event('join', 4000, 'ddeeff', 'Grace'),
+        event('part', 5000, 'aabbcc', 'Ada')
+    ];
+    var result = presence.group(entries, 'general');
+    var summary = presence.summary(result[0].presenceGroup);
+    assert.strictEqual(summary.text, '2 people joined and 1 left');
+    assert.strictEqual(summary.rows.length, 3);
+    assert.strictEqual(summary.joined[0].occurrences, 3);
+    assert.strictEqual(summary.joined[0].item.timestamp_ms, 3000,
+        'the compact row keeps the most recent occurrence for its timestamp');
 });
 
 test('count hover text prefers names and retains a full hash fallback', function() {
