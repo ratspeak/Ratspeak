@@ -730,6 +730,7 @@ mod tests {
             .unwrap();
         external.write_all(b"-external-growth").unwrap();
         external.flush().unwrap();
+        drop(external);
 
         writer.write_all(b"next").unwrap();
         writer.flush().unwrap();
