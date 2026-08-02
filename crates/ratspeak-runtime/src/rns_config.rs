@@ -738,7 +738,14 @@ pub fn remove_interface_checked(config_dir: &Path, name: &str) -> RemoveInterfac
     let content = match std::fs::read_to_string(config_dir.join("config")) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return RemoveInterfaceOutcome::NotFound;
+            return match std::fs::metadata(config_dir) {
+                Ok(metadata) if !metadata.is_dir() => RemoveInterfaceOutcome::WriteFailed,
+                Ok(_) => RemoveInterfaceOutcome::NotFound,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    RemoveInterfaceOutcome::NotFound
+                }
+                Err(_) => RemoveInterfaceOutcome::WriteFailed,
+            };
         }
         Err(_) => return RemoveInterfaceOutcome::WriteFailed,
     };

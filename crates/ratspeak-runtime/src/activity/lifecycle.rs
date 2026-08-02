@@ -956,26 +956,44 @@ mod tests {
     }
 
     struct FixedClock {
-        calls: AtomicUsize,
+        current_thread_probe: Mutex<(Option<std::thread::ThreadId>, usize)>,
         time: ObservationTime,
     }
 
     impl FixedClock {
         fn new(unix_ms: u64, elapsed_ms: u64) -> Self {
             Self {
-                calls: AtomicUsize::new(0),
+                current_thread_probe: Mutex::new((None, 0)),
                 time: ObservationTime::new(unix_ms, elapsed_ms),
             }
         }
 
-        fn calls(&self) -> usize {
-            self.calls.load(Ordering::Relaxed)
+        fn begin_current_thread_probe(&self) {
+            *self
+                .current_thread_probe
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                (Some(std::thread::current().id()), 0);
+        }
+
+        fn current_thread_calls(&self) -> usize {
+            self.current_thread_probe
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .1
         }
     }
 
     impl ActivityClock for FixedClock {
         fn observe(&self) -> ObservationTime {
-            self.calls.fetch_add(1, Ordering::Relaxed);
+            let current_thread = std::thread::current().id();
+            let mut probe = self
+                .current_thread_probe
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if probe.0.as_ref() == Some(&current_thread) {
+                probe.1 += 1;
+            }
             self.time
         }
     }
@@ -1048,7 +1066,7 @@ mod tests {
         wait_until(|| recorder.status().worker_state() == ActivityWorkerState::Running).await;
 
         let evaluated = AtomicBool::new(false);
-        let before_off = clock.calls();
+        clock.begin_current_thread_probe();
         assert_eq!(
             recorder.record_event(|| {
                 evaluated.store(true, Ordering::Relaxed);
@@ -1057,7 +1075,7 @@ mod tests {
             ActivityRecordOutcome::CaptureOff
         );
         assert!(!evaluated.load(Ordering::Relaxed));
-        assert_eq!(clock.calls(), before_off);
+        assert_eq!(clock.current_thread_calls(), 0);
 
         let off_origin_evaluated = AtomicBool::new(false);
         assert_eq!(
@@ -1071,7 +1089,7 @@ mod tests {
             ActivityRecordOutcome::CaptureOff
         );
         assert!(!off_origin_evaluated.load(Ordering::Relaxed));
-        assert_eq!(clock.calls(), before_off);
+        assert_eq!(clock.current_thread_calls(), 0);
 
         let session = recorder
             .start()
@@ -1081,7 +1099,7 @@ mod tests {
             .unwrap()
             .to_string();
         let stale_event_built = AtomicBool::new(false);
-        let before_stale = clock.calls();
+        clock.begin_current_thread_probe();
         assert_eq!(
             recorder.record_event_fenced(
                 || false,
@@ -1093,9 +1111,9 @@ mod tests {
             ActivityRecordOutcome::StaleGeneration
         );
         assert!(!stale_event_built.load(Ordering::Relaxed));
-        assert_eq!(clock.calls(), before_stale);
+        assert_eq!(clock.current_thread_calls(), 0);
 
-        let before_filtered = clock.calls();
+        clock.begin_current_thread_probe();
         assert_eq!(
             recorder.record_event(|| {
                 Ok(producer::rns_path_observed(producer::RnsPathDiscovered {
@@ -1108,14 +1126,16 @@ mod tests {
             }),
             ActivityRecordOutcome::ProfileFiltered
         );
-        assert_eq!(clock.calls(), before_filtered);
+        assert_eq!(clock.current_thread_calls(), 0);
 
+        clock.begin_current_thread_probe();
         assert_eq!(
             recorder.record_event(|| {
                 Ok(producer::app_runtime(producer::AppRuntimeTransition::Ready))
             }),
             ActivityRecordOutcome::Accepted
         );
+        assert_eq!(clock.current_thread_calls(), 1);
         wait_until(|| recorder.status().latest().is_some_and(|latest| latest >= 2)).await;
         let ActivityReplayResultV1::Page { page } =
             recorder.replay(session, None, 50, 64 * 1024).await.unwrap()
