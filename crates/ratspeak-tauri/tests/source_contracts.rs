@@ -4204,7 +4204,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.25");
+    assert_eq!(version_file.trim(), "1.0.26");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -4290,13 +4290,50 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000029"#));
+    assert!(tauri_conf.contains(r#""versionCode": 1000030"#));
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
     assert!(android_gradle.contains("fun ratspeakDisplayVersionName()"));
     assert!(android_gradle.contains("../../../VERSION"));
     assert!(android_gradle.contains("versionName = ratspeakDisplayVersionName()"));
+}
+
+#[test]
+fn release_workflows_pin_v1_0_26_and_stage_tag_builds_as_prereleases() {
+    let root = repo_root();
+    let dependency_refs = [
+        "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26",
+        "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26",
+        "RATSPEAK_RSLXST_REF: ratspeak-v1.0.26",
+        "RATSPEAK_LRGP_REF: ratspeak-v1.0.26",
+    ];
+
+    for workflow_path in [
+        ".github/workflows/release-android.yml",
+        ".github/workflows/release-desktop.yml",
+        ".github/workflows/release-macos.yml",
+        ".github/workflows/release-windows.yml",
+    ] {
+        let workflow = read_source(root.join(workflow_path)).expect("release workflow");
+        for dependency_ref in dependency_refs {
+            assert!(
+                workflow.contains(dependency_ref),
+                "{workflow_path} must pin {dependency_ref}"
+            );
+        }
+        assert!(workflow.contains("default: true\n        type: boolean"));
+        assert!(
+            workflow
+                .contains("prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}")
+        );
+    }
+
+    let ios =
+        read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");
+    for dependency_ref in dependency_refs {
+        assert!(ios.contains(dependency_ref));
+    }
 }
 
 #[test]

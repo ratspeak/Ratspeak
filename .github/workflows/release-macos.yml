@@ -15,6 +15,11 @@ on:
         description: "Release tag to publish when manually dispatching."
         required: false
         type: string
+      prerelease:
+        description: "Mark the GitHub Release as a prerelease."
+        required: true
+        default: true
+        type: boolean
       notarize:
         description: "Sign and notarize with Developer ID credentials"
         required: true
@@ -25,10 +30,10 @@ permissions:
   contents: write
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.25
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.25
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.25
-  RATSPEAK_LRGP_REF: ratspeak-v1.0.25
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26
+  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26
+  RATSPEAK_RSLXST_REF: ratspeak-v1.0.26
+  RATSPEAK_LRGP_REF: ratspeak-v1.0.26
 
 jobs:
   build:
@@ -255,13 +260,13 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          prerelease: ${{ contains(github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name, '-') }}
+          prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}
           body: |
-            - Protocol refresh: byte-exact parity with Reticulum 1.3.8 and LXMF 1.0.1
-            - Fix unbounded announce-cache growth on long-running nodes (Android storage)
-            - Standardized reply and reaction interop with other LXMF clients
-            - Linux: WebView rendering fixes and a window-decorations setting
-            - Interface settings edits preserve manually configured keys and modes
+            - Early Channels beta: connect to, discover, share, and join live RRC hubs with local history, unread counts, and mentions
+            - Opt-in hub hosting with graphical room, access, moderation, and discovery controls
+            - More resilient authenticated reconnect and rejoin behavior with lossless Reticulum, LXMF, and LXST link delivery
+            - Privacy-bounded Activity diagnostics with clearer network and interface lifecycle reporting
+            - Desktop and mobile polish, including stricter Android release linting and modernized iOS app icons
           files: |
             Ratspeak/dist/macos/*
             Ratspeak/checksums-macos.txt
