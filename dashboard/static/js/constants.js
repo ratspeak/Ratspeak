@@ -78,8 +78,17 @@ RS.sheetShell = {
         var overlay = document.createElement('div');
         overlay.className = 'bottom-sheet-overlay' + (opts.overlayClass ? ' ' + opts.overlayClass : '');
         var sheet = document.createElement('div');
-        sheet.className = opts.sheetClass || 'bottom-sheet';
-        return { overlay: overlay, sheet: sheet };
+        // Marker class is intentionally style-free. Native Back can find
+        // custom shells (for example the centered QR scanner) without forcing
+        // the visual rules of .bottom-sheet onto them.
+        sheet.className = 'rs-sheet-shell ' + (opts.sheetClass || 'bottom-sheet');
+        var shell = { overlay: overlay, sheet: sheet };
+        // Native Back needs one common escape hatch for sheets that are built
+        // at runtime. Rich dialogs replace this with their state-aware close.
+        sheet._ratspeakDismiss = function() {
+            RS.sheetShell.dismiss(shell);
+        };
+        return shell;
     },
     present: function(shell) {
         document.body.appendChild(shell.overlay);

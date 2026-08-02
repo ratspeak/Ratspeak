@@ -252,8 +252,14 @@ function _channelsIdentityTone(value) {
     return String((hash >>> 0) % 6);
 }
 
+function _channelsDisplayDate(timestampMs) {
+    var value = Number(timestampMs);
+    var date = new Date(value || Date.now());
+    return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
 function _channelsFormatTime(timestampMs) {
-    var date = new Date(Number(timestampMs) || Date.now());
+    var date = _channelsDisplayDate(timestampMs);
     return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
@@ -628,21 +634,34 @@ function _channelsReconcileRosterPresence(hubDestinationHash) {
                 var member = currentMembers[memberKey];
                 if (!_channelsRosterHasFreshEvent(
                         room, previous.event_ids, null, member)) {
-                    _channelsAddRosterPresence(room.name, 'join', member);
+                    // A partial roster can grow as ordinary room traffic or
+                    // continuation packets reveal people who were already
+                    // there. Describe that as context, not a fabricated join.
+                    _channelsAddRosterPresence(
+                        room.name,
+                        room.members_complete && previous.members_complete ? 'join' : 'present',
+                        member
+                    );
                 }
             });
-            Object.keys(previous.members).forEach(function(memberKey) {
-                if (currentMembers[memberKey]) return;
-                var member = previous.members[memberKey];
-                if (!_channelsRosterHasFreshEvent(
-                        room, previous.event_ids, 'part', member)) {
-                    _channelsAddRosterPresence(room.name, 'part', member);
-                }
-            });
+            // Absence is meaningful only in a complete roster. The member
+            // pane labels partial lists explicitly, so using one to invent a
+            // leave would make the timeline more certain than the protocol.
+            if (room.members_complete) {
+                Object.keys(previous.members).forEach(function(memberKey) {
+                    if (currentMembers[memberKey]) return;
+                    var member = previous.members[memberKey];
+                    if (!_channelsRosterHasFreshEvent(
+                            room, previous.event_ids, 'part', member)) {
+                        _channelsAddRosterPresence(room.name, 'part', member);
+                    }
+                });
+            }
         }
         _channelsRosterBaselines[key] = {
             members: currentMembers,
-            event_ids: currentEventIds
+            event_ids: currentEventIds,
+            members_complete: !!room.members_complete
         };
     });
 }
@@ -2485,7 +2504,7 @@ function _channelsBuildHubNotice(item) {
     label.textContent = 'Hub';
     var time = document.createElement('time');
     time.className = 'channel-event-time';
-    time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
+    time.dateTime = _channelsDisplayDate(item.timestamp_ms).toISOString();
     time.textContent = _channelsFormatTime(item.timestamp_ms);
     var meta = document.createElement('span');
     meta.className = 'channel-event-meta';
@@ -2554,23 +2573,40 @@ function _channelsPresenceIdentityKey(item) {
 function _channelsCollapseTransientRejoins(entries) {
     var reconciled = [];
     entries.forEach(function(entry) {
-        if (_channelsIsPresenceEvent(entry) && entry.item.kind === 'join') {
-            var currentIdentity = _channelsPresenceIdentityKey(entry.item);
-            for (var index = reconciled.length - 1; index >= 0; index--) {
-                var previous = reconciled[index];
-                if (!_channelsIsPresenceEvent(previous)) break;
-                if (_channelsPresenceIdentityKey(previous.item) !== currentIdentity) continue;
-                if (previous.item.kind === 'part') {
-                    var elapsed = _channelsActivityTime(entry.item) -
-                        _channelsActivityTime(previous.item);
-                    if (currentIdentity && elapsed >= 0 &&
-                            elapsed <= CHANNEL_PRESENCE_REJOIN_WINDOW_MS) {
-                        reconciled.splice(index, 1);
-                        return;
-                    }
+        if (!_channelsIsPresenceEvent(entry)) {
+            reconciled.push(entry);
+            return;
+        }
+        var currentIdentity = _channelsPresenceIdentityKey(entry.item);
+        if (!currentIdentity) {
+            reconciled.push(entry);
+            return;
+        }
+        for (var index = reconciled.length - 1; index >= 0; index--) {
+            var previous = reconciled[index];
+            if (!_channelsIsPresenceEvent(previous)) break;
+            if (_channelsPresenceIdentityKey(previous.item) !== currentIdentity) continue;
+
+            var currentKind = entry.item.kind;
+            var previousKind = previous.item.kind;
+            var currentMeansPresent = currentKind === 'join' || currentKind === 'present';
+            var previousMeansPresent = previousKind === 'join' || previousKind === 'present';
+
+            // JOINED is also used for roster/recovery fanout. Without an
+            // observed PARTED, another present-state notice is not a second
+            // arrival and must never become "joined 2 times" in the UI.
+            if (currentMeansPresent && previousMeansPresent) return;
+            if (currentKind === previousKind) return;
+
+            if (currentKind === 'join' && previousKind === 'part') {
+                var elapsed = _channelsActivityTime(entry.item) -
+                    _channelsActivityTime(previous.item);
+                if (elapsed >= 0 && elapsed <= CHANNEL_PRESENCE_REJOIN_WINDOW_MS) {
+                    reconciled.splice(index, 1);
+                    return;
                 }
-                break;
             }
+            break;
         }
         reconciled.push(entry);
     });
@@ -2615,40 +2651,30 @@ function _channelsGroupPresenceEvents(entries, roomName) {
 }
 
 function _channelsPresenceGroupRows(group) {
-    var rows = [];
-    var byIdentityAndKind = {};
-    (group.entries || []).forEach(function(entry, index) {
+    return _channelsCollapseTransientRejoins(group.entries || []);
+}
+
+function _channelsUniquePresenceRows(rows, kind) {
+    var unique = [];
+    var seen = {};
+    rows.forEach(function(entry, index) {
         var item = entry.item || {};
+        if (item.kind !== kind) return;
         var identity = _channelsPresenceIdentityKey(item);
         var fallback = item.id || item.timestamp_ms || entry.order || index;
-        var key = item.kind + '|' + (identity || 'event:' + fallback);
-        var existing = byIdentityAndKind[key];
-        if (!existing) {
-            existing = Object.assign({}, entry, {
-                item: Object.assign({}, item),
-                occurrences: 1,
-                first_timestamp_ms: _channelsActivityTime(item)
-            });
-            byIdentityAndKind[key] = existing;
-            rows.push(existing);
-            return;
-        }
-        existing.occurrences += 1;
-        existing.item = Object.assign({}, existing.item, item);
+        var key = identity || 'event:' + fallback;
+        if (seen[key]) return;
+        seen[key] = true;
+        unique.push(entry);
     });
-    return rows;
+    return unique;
 }
 
 function _channelsPresenceGroupSummary(group) {
-    var joined = [];
-    var left = [];
-    var present = [];
     var rows = _channelsPresenceGroupRows(group);
-    rows.forEach(function(entry) {
-        if (entry.item.kind === 'part') left.push(entry);
-        else if (entry.item.kind === 'present') present.push(entry);
-        else joined.push(entry);
-    });
+    var joined = _channelsUniquePresenceRows(rows, 'join');
+    var left = _channelsUniquePresenceRows(rows, 'part');
+    var present = _channelsUniquePresenceRows(rows, 'present');
 
     var joinedNoun = joined.length === 1 ? 'person' : 'people';
     var leftNoun = left.length === 1 ? 'person' : 'people';
@@ -2744,29 +2770,19 @@ function _channelsBuildPresenceGroup(group) {
     summary.rows.forEach(function(entry) {
         var item = entry.item;
         var nameText = _channelsPresenceName(item);
-        var occurrences = Number(entry.occurrences) || 1;
         var row = document.createElement('div');
         row.className = 'channel-presence-item';
         row.setAttribute('role', 'listitem');
-        row.dataset.tone = _channelsIdentityTone(item.source_hash || nameText);
-        var marker = document.createElement('span');
-        marker.className = 'channel-identity-marker';
-        marker.setAttribute('aria-hidden', 'true');
         var copy = document.createElement('span');
         copy.className = 'channel-presence-item-copy';
         var action = item.kind === 'part' ? ' left' :
             (item.kind === 'present' ? ' is here' : ' joined');
-        copy.textContent = nameText + action +
-            (occurrences > 1 ? ' ' + occurrences + ' times' : '');
+        copy.textContent = nameText + action;
         var time = document.createElement('time');
         time.className = 'channel-event-time';
         var activityTime = _channelsActivityTime(item);
-        time.dateTime = new Date(activityTime || Date.now()).toISOString();
+        time.dateTime = _channelsDisplayDate(activityTime).toISOString();
         time.textContent = _channelsFormatTime(activityTime);
-        if (occurrences > 1) {
-            time.title = 'Most recent of ' + occurrences + ' events';
-        }
-        row.appendChild(marker);
         row.appendChild(copy);
         row.appendChild(time);
         list.appendChild(row);
@@ -2788,13 +2804,6 @@ function _channelsBuildPresenceGroup(group) {
 function _channelsBuildPresenceEvent(item) {
     var event = document.createElement('div');
     event.className = 'channel-presence-event';
-    event.dataset.tone = _channelsIdentityTone(
-        item.source_hash || item.nickname || item.text
-    );
-
-    var marker = document.createElement('span');
-    marker.className = 'channel-identity-marker';
-    marker.setAttribute('aria-hidden', 'true');
     var copy = document.createElement('span');
     copy.className = 'channel-presence-event-copy';
     var name = document.createElement('strong');
@@ -2807,10 +2816,9 @@ function _channelsBuildPresenceEvent(item) {
 
     var time = document.createElement('time');
     time.className = 'channel-event-time';
-    time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
+    time.dateTime = _channelsDisplayDate(item.timestamp_ms).toISOString();
     time.textContent = _channelsFormatTime(item.timestamp_ms);
 
-    event.appendChild(marker);
     event.appendChild(copy);
     event.appendChild(time);
     return event;
@@ -2853,7 +2861,7 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     }
     var time = document.createElement('time');
     time.className = 'channel-event-time';
-    time.dateTime = new Date(Number(item.timestamp_ms) || Date.now()).toISOString();
+    time.dateTime = _channelsDisplayDate(item.timestamp_ms).toISOString();
     time.textContent = _channelsFormatTime(item.timestamp_ms);
     var meta = document.createElement('span');
     meta.className = 'channel-event-meta';
@@ -2961,7 +2969,7 @@ function _channelsMemberDetailField(labelText, value, copyLabel) {
     return row;
 }
 
-function _channelsRenderMemberDetail(room, member, list, note) {
+function _channelsRenderMemberDetail(room, member, list, info) {
     var pane = _channelsEl('channel-members-pane');
     var back = _channelsEl('channel-members-back');
     var details = _channelsMemberDetails(member);
@@ -2970,7 +2978,11 @@ function _channelsRenderMemberDetail(room, member, list, note) {
     if (back) back.hidden = false;
     _channelsSetText('channel-members-label', 'People here');
     _channelsSetText('channel-members-count', channelName);
-    if (note) note.hidden = true;
+    if (info) {
+        info.hidden = true;
+        info.classList.remove('open');
+        info.setAttribute('aria-expanded', 'false');
+    }
     list.classList.add('showing-detail');
 
     var hero = document.createElement('div');
@@ -3085,7 +3097,7 @@ function _channelsShowMemberList() {
 
 function _channelsRenderMembers(room) {
     var list = _channelsEl('channel-members-list');
-    var note = _channelsEl('channel-members-note');
+    var info = _channelsEl('channel-members-info');
     var pane = _channelsEl('channel-members-pane');
     var back = _channelsEl('channel-members-back');
     if (!list) return;
@@ -3093,7 +3105,11 @@ function _channelsRenderMembers(room) {
     list.classList.remove('showing-detail');
     if (pane) pane.classList.remove('showing-detail');
     if (back) back.hidden = true;
-    if (note) note.hidden = false;
+    if (info) {
+        info.hidden = true;
+        info.classList.remove('open');
+        info.setAttribute('aria-expanded', 'false');
+    }
     var members = room && Array.isArray(room.members) ? room.members : [];
     var selectedMember = _channelsSelectedMemberKey
         ? _channelsMemberByKey(members, _channelsSelectedMemberKey)
@@ -3103,28 +3119,20 @@ function _channelsRenderMembers(room) {
         _channelsMemberReturnFocusKey = null;
     }
     if (room && selectedMember) {
-        _channelsRenderMemberDetail(room, selectedMember, list, note);
+        _channelsRenderMemberDetail(room, selectedMember, list, info);
         return;
     }
 
     _channelsSetText('channel-members-label', 'People here');
     _channelsSetText('channel-members-count', members.length + ' visible');
     if (room && room.phase !== 'joined') {
-        if (note) {
-            note.textContent = 'Available after joining';
-            note.title = 'Member details appear after the hub confirms your join.';
-        }
         var waiting = document.createElement('div');
         waiting.className = 'channel-members-empty';
         waiting.textContent = 'Waiting for channel membership.';
         list.appendChild(waiting);
         return;
     }
-    if (note) {
-        note.hidden = !!(room && room.members_complete);
-        note.textContent = 'Partial list';
-        note.title = 'The hub may provide only part of the member list.';
-    }
+    if (info) info.hidden = !room || !!room.members_complete;
     if (!members.length) {
         var empty = document.createElement('div');
         empty.className = 'channel-members-empty';
@@ -3322,6 +3330,17 @@ function channelsCloseMemberPane() {
     _channelsRenderMembers(channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null);
     var layout = _channelsEl('channels-layout');
     if (layout) layout.classList.remove('members-open');
+}
+
+function channelsHandleMemberPaneBack() {
+    var layout = _channelsEl('channels-layout');
+    if (!layout || !layout.classList.contains('members-open')) return false;
+    if (_channelsSelectedMemberKey) {
+        _channelsShowMemberList();
+    } else {
+        channelsCloseMemberPane();
+    }
+    return true;
 }
 
 function _channelsSafeShareFileName(roomName) {
@@ -5195,6 +5214,25 @@ function _channelsBindUI() {
     if (membersBack) membersBack.addEventListener('click', _channelsShowMemberList);
     var membersScrim = _channelsEl('channel-members-scrim');
     if (membersScrim) membersScrim.addEventListener('click', channelsCloseMemberPane);
+    var membersInfo = _channelsEl('channel-members-info');
+    if (membersInfo) {
+        membersInfo.addEventListener('click', function(event) {
+            event.stopPropagation();
+            var open = !membersInfo.classList.contains('open');
+            membersInfo.classList.toggle('open', open);
+            membersInfo.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+        membersInfo.addEventListener('keydown', function(event) {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            membersInfo.classList.remove('open');
+            membersInfo.setAttribute('aria-expanded', 'false');
+        });
+        document.addEventListener('click', function() {
+            membersInfo.classList.remove('open');
+            membersInfo.setAttribute('aria-expanded', 'false');
+        });
+    }
     var membersPane = _channelsEl('channel-members-pane');
     if (membersPane) membersPane.addEventListener('keydown', function(event) {
         if (event.key === 'Escape' && _channelsSelectedMemberKey) {

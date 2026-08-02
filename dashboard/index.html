@@ -11,7 +11,7 @@
          injects pixel values via evaluateJavascript; desktop falls back to 0. -->
     <title>Ratspeak - Dashboard</title>
     <link rel="stylesheet" href="/static/fonts/fonts.css">
-    <link rel="stylesheet" href="/static/style.css?v=1.0.37">
+    <link rel="stylesheet" href="/static/style.css?v=1.0.38">
 </head>
 <body class="checking-setup">
 
@@ -659,14 +659,18 @@
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
                         </button>
                         <div class="channel-members-heading">
-                            <span class="channels-section-label" id="channel-members-label">People here</span>
+                            <span class="channel-members-label-row">
+                                <span class="channels-section-label" id="channel-members-label">People here</span>
+                                <button class="channel-members-info" id="channel-members-info" type="button" aria-label="The hub may provide only part of the member list." aria-expanded="false" data-tooltip="The hub may provide only part of the member list." hidden>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="11" x2="12" y2="16"></line><circle cx="12" cy="8" r="0.7" fill="currentColor" stroke="none"></circle></svg>
+                                </button>
+                            </span>
                             <strong id="channel-members-count">0 visible</strong>
                         </div>
                         <button class="nr-btn nr-btn-ghost channels-icon-btn channel-members-close" id="channel-members-close" type="button" aria-label="Close member list">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                         </button>
                     </div>
-                    <div class="channel-members-note" id="channel-members-note" title="The hub may provide only part of the member list.">Partial list</div>
                     <div class="channel-members-list" id="channel-members-list"></div>
                 </aside>
             </div>
@@ -1854,10 +1858,10 @@
      of their module-level functions; tauri_events.js last (wires everything above).
      Reordering breaks fresh boots silently. -->
 <script src="/static/js/state.js"></script>
-<script src="/static/js/constants.js"></script>
+<script src="/static/js/constants.js?v=1.0.2"></script>
 <script src="/static/js/no_pinch.js"></script>
 <script src="/static/js/setup.js"></script>
-<script src="/static/js/nav.js"></script>
+<script src="/static/js/nav.js?v=1.0.3"></script>
 <script src="/static/js/gestures.js"></script>
 <script src="/static/js/view_stack.js"></script>
 
@@ -1865,7 +1869,7 @@
 <script src="/static/js/connections.js"></script>
 <script src="/static/js/peers.js"></script>
 <script src="/static/js/toasts.js"></script>
-<script src="/static/js/dialogs.js"></script>
+<script src="/static/js/dialogs.js?v=1.0.2"></script>
 <script src="/static/js/action_popover.js"></script>
 <script src="/static/js/ui_shared.js"></script>
 <script src="/static/js/events.js"></script>
@@ -1876,9 +1880,9 @@
 <script src="/static/js/emoji_picker.js"></script>
 <script src="/static/js/voice_ringtones.js"></script>
 <script src="/static/js/vendor/jsQR.js"></script>
-<script src="/static/js/contact_card.js"></script>
+<script src="/static/js/contact_card.js?v=1.0.1"></script>
 <script src="/static/js/lxmf.js"></script>
-<script src="/static/js/channels.js?v=1.0.40"></script>
+<script src="/static/js/channels.js?v=1.0.43"></script>
 <script src="/static/js/channel_hub.js?v=1.0.36"></script>
 <script src="/static/js/propagation.js?v=1.0.1"></script>
 <script src="/static/js/settings.js?v=1.0.3"></script>

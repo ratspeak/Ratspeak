@@ -3679,7 +3679,9 @@
 
     .channel-room-header {
         min-height: calc(56px + var(--sat));
-        padding: calc(var(--space-3) + var(--sat)) var(--space-4) var(--space-3);
+        padding: calc(var(--space-3) + var(--sat))
+            calc(var(--space-4) + var(--sar)) var(--space-3)
+            calc(var(--space-4) + var(--sal));
     }
 
     .channel-room-header .mobile-back-btn {
@@ -3692,7 +3694,8 @@
     }
 
     .channel-transcript {
-        padding: var(--space-6) var(--space-5);
+        padding: var(--space-6) calc(var(--space-5) + var(--sar))
+            var(--space-6) calc(var(--space-5) + var(--sal));
     }
 
     .channel-history-rail {
@@ -3773,7 +3776,8 @@
     }
 
     .channel-compose {
-        padding: var(--space-4) var(--space-5) max(var(--space-4), var(--sab));
+        padding: var(--space-4) calc(var(--space-5) + var(--sar))
+            max(var(--space-4), var(--sab)) calc(var(--space-5) + var(--sal));
     }
 
     .channel-compose .nr-input {
@@ -3798,6 +3802,25 @@
         box-shadow: var(--sheet-shadow);
         transform: translateY(105%);
         transition: transform var(--transition-base);
+    }
+
+    .channel-members-list {
+        padding: var(--space-4) calc(var(--space-4) + var(--sar))
+            max(var(--space-4), var(--sab)) calc(var(--space-4) + var(--sal));
+        scroll-padding-bottom: max(var(--space-4), var(--sab));
+    }
+
+    .channel-members-header {
+        padding-right: calc(var(--space-7) + var(--sar));
+        padding-left: calc(var(--space-7) + var(--sal));
+    }
+
+    .channel-members-info {
+        width: var(--touch-target);
+        height: var(--touch-target);
+        flex-basis: var(--touch-target);
+        margin: -15px;
+        cursor: pointer;
     }
 
     .channels-layout.room-live.members-open .channel-members-pane {

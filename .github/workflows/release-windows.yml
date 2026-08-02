@@ -166,8 +166,7 @@ jobs:
             Sort-Object Name |
             ForEach-Object {
               $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
-              $path = $_.FullName.Replace((Get-Location).Path + [System.IO.Path]::DirectorySeparatorChar, "").Replace("\", "/")
-              "$hash  $path"
+              "$hash  $($_.Name)"
             }
 
           if (-not $lines) {
@@ -193,11 +192,11 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}
           body: |
-            - Early Channels beta: connect to, discover, share, and join live RRC hubs with local history, unread counts, and mentions
+            - Public Channels beta: connect, discover, share, and join live RRC hubs with local history, unread counts, mentions, and presence
+            - Bidirectional RRC messages and actions with authenticated reconnect/rejoin and safer malformed-peer handling
             - Opt-in hub hosting with graphical room, access, moderation, and discovery controls
-            - More resilient authenticated reconnect and rejoin behavior with lossless Reticulum, LXMF, and LXST link delivery
-            - Privacy-bounded Activity diagnostics with clearer network and interface lifecycle reporting
-            - Desktop and mobile polish, including stricter Android release linting and modernized iOS app icons
+            - Mobile Channels polish for keyboard resizing, safe areas, Back navigation, sheets, and partial member lists
+            - Privacy-bounded Activity diagnostics plus broader Reticulum, LXMF, and LXST reliability fixes
           files: |
             Ratspeak/dist/windows/*
             Ratspeak/checksums-windows.txt

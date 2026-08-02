@@ -247,6 +247,12 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(responsive_css.contains("calc(56px + var(--sat))"));
     assert!(responsive_css.contains("body.view-channel-detail .main-content"));
     assert!(responsive_css.contains(".channels-layout.room-live.members-open"));
+    assert!(responsive_css.contains("max(var(--space-4), var(--sab))"));
+    assert!(responsive_css.contains("calc(var(--space-4) + var(--sar))"));
+    assert!(responsive_css.contains("calc(var(--space-4) + var(--sal))"));
+    assert!(responsive_css.contains("calc(var(--space-5) + var(--sar))"));
+    assert!(responsive_css.contains("calc(var(--space-5) + var(--sal))"));
+    assert!(responsive_css.contains("width: var(--touch-target);"));
     assert!(channels_css.contains(".channel-members-scrim"));
     assert!(channels_css.contains(".channels-layout:not(.room-live)"));
     assert!(channels_css.contains(".channel-transition-rail"));
@@ -271,6 +277,14 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(nav_js.contains("function setMessageUnreadSource"));
     assert!(nav_js.contains("var _messageUnreadSources = { direct: 0, channels: 0 };"));
     assert!(!nav_js.contains("MOBILE_TAB_SLOTS = ['peers', 'message', 'channels'"));
+    let keyboard_detection = nav_js
+        .split("function initKeyboardDetection()")
+        .nth(1)
+        .and_then(|tail| tail.split("function initTextareaAutoGrow()").next())
+        .expect("keyboard detection function");
+    assert!(keyboard_detection.contains("'view-chat-detail'"));
+    assert!(keyboard_detection.contains("'view-channel-detail'"));
+    assert!(keyboard_detection.contains("keyboardOpen && inConversationDetail"));
     assert!(tauri_events.contains("function _decodeChannelNotificationRoute"));
     assert!(tauri_events.contains("window.channelsOpenNotificationRoute"));
 
@@ -3305,6 +3319,7 @@ fn channel_hosting_is_an_explicit_durable_settings_capability() {
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("navigation js");
     let hub_ui =
         read_source(root.join("dashboard/static/js/channel_hub.js")).expect("channel hub frontend");
     let channels_css =
@@ -3347,6 +3362,12 @@ fn channel_hosting_is_an_explicit_durable_settings_capability() {
     assert!(settings_js.contains("Stopping your hub and hiding hosting controls…"));
     assert!(settings_js.contains("document.documentElement.dataset.channelHosting"));
     assert!(settings_js.contains("channelHubRenderHome(channelHubOverview)"));
+    let settings_lifecycle = nav_js
+        .split("settings: function()")
+        .nth(1)
+        .and_then(|tail| tail.split("identity: function()").next())
+        .expect("Settings view lifecycle");
+    assert!(settings_lifecycle.contains("initChannelHostingToggle()"));
     assert!(channels_css.contains(r#"html[data-channel-hosting="off"] .channel-owned-hub"#));
     let hosting_toggle = settings_js
         .split("function setChannelHostingEnabled(enabled)")
@@ -4203,7 +4224,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.26");
+    assert_eq!(version_file.trim(), "1.0.26b");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -4289,7 +4310,7 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000030"#));
+    assert!(tauri_conf.contains(r#""versionCode": 1000031"#));
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
@@ -4327,6 +4348,23 @@ fn release_workflows_pin_v1_0_26_and_stage_tag_builds_as_prereleases() {
                 .contains("prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}")
         );
     }
+
+    for workflow_path in [
+        ".github/workflows/release-android.yml",
+        ".github/workflows/release-desktop.yml",
+        ".github/workflows/release-macos.yml",
+    ] {
+        let workflow = read_source(root.join(workflow_path)).expect("release workflow");
+        assert!(workflow.contains(r#""$(basename "$artifact")""#));
+    }
+    let windows =
+        read_source(root.join(".github/workflows/release-windows.yml")).expect("Windows release");
+    assert!(windows.contains(r#""$hash  $($_.Name)""#));
+    assert!(!windows.contains("$hash  $path"));
+    let linux =
+        read_source(root.join(".github/workflows/release-desktop.yml")).expect("Linux release");
+    assert!(linux.contains(r#"test -n "$rpm""#));
+    assert!(linux.contains(r#"test "$artifact_count" = "4""#));
 
     let ios =
         read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");

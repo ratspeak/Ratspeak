@@ -3237,6 +3237,7 @@ impl HubCore {
     }
 
     fn roster_identities(&self, room: &HubRoom) -> Vec<[u8; 16]> {
+        let mut seen = BTreeSet::new();
         room.members
             .iter()
             .filter_map(|member| {
@@ -3244,6 +3245,7 @@ impl HubCore {
                     .get(member)
                     .and_then(|session| session.identity)
             })
+            .filter(|identity| seen.insert(*identity))
             .collect()
     }
 
@@ -4119,6 +4121,10 @@ impl HubCore {
             out.push(self.hub_error(link_id, "banned from room", Some(&room_name)));
             return;
         }
+        let identity_already_present = self
+            .rooms
+            .get(&room_name)
+            .is_some_and(|room| self.identity_in_room(room, identity));
 
         let (existing_members, consumed_invite) = {
             let room = self.rooms.get_mut(&room_name).expect("room exists");
@@ -4151,15 +4157,17 @@ impl HubCore {
             .config
             .include_member_list
             .then(|| rrc::member_list(&[identity]));
-        for member in existing_members {
-            let mut joined = rrc::Envelope::new(rrc::MessageType::Joined, self.hub_hash);
-            joined.room = Some(room_name.clone());
-            joined.body = fanout_body.clone();
-            joined.nickname = joiner_nick.clone();
-            out.push(HubSend::Envelope {
-                link_id: member,
-                envelope: joined,
-            });
+        if !identity_already_present {
+            for member in existing_members {
+                let mut joined = rrc::Envelope::new(rrc::MessageType::Joined, self.hub_hash);
+                joined.room = Some(room_name.clone());
+                joined.body = fanout_body.clone();
+                joined.nickname = joiner_nick.clone();
+                out.push(HubSend::Envelope {
+                    link_id: member,
+                    envelope: joined,
+                });
+            }
         }
 
         if self.config.include_member_list {
@@ -4192,16 +4200,18 @@ impl HubCore {
             room: token,
             members,
         });
-        let nickname = self
-            .sessions
-            .get(&link_id)
-            .and_then(|session| session.nickname.clone());
-        self.note_room_evidence(
-            ChannelHubEvidenceKind::Join,
-            identity,
-            nickname.as_deref(),
-            &room_name,
-        );
+        if !identity_already_present {
+            let nickname = self
+                .sessions
+                .get(&link_id)
+                .and_then(|session| session.nickname.clone());
+            self.note_room_evidence(
+                ChannelHubEvidenceKind::Join,
+                identity,
+                nickname.as_deref(),
+                &room_name,
+            );
+        }
     }
 
     /// Send the joiner its roster, split across packets when a large room
@@ -4358,11 +4368,12 @@ impl HubCore {
 
     /// MSG/NOTICE/ACTION relay: slash interception first, then the reference
     /// gate order, then in-place source/room/nick rewrite and member fan-out
-    /// (sender included, envelope id and timestamp preserved).
+    /// (sender included, envelope id and display-safe timestamp preserved).
     fn on_relay(&mut self, link_id: [u8; 16], mut envelope: rrc::Envelope, out: &mut Vec<HubSend>) {
         let Some(identity) = self.session_identity(link_id) else {
             return;
         };
+        envelope.timestamp_ms = rrc::sanitize_display_timestamp_ms(envelope.timestamp_ms, now_ms());
         let is_action = envelope.message_type == rrc::MessageType::Action;
         if !is_action
             && let Some(text) = rrc::text_body(&envelope)
@@ -7484,6 +7495,45 @@ mod tests {
     }
 
     #[test]
+    fn another_link_for_the_same_identity_does_not_fan_out_a_second_join() {
+        let mut core = core_with(ChannelHubConfig::default());
+        let link_a2 = [0x03; 16];
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        welcomed_session(&mut core, link_a2, ID_A, "alpha");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+
+        let mut part = rrc::Envelope::new(rrc::MessageType::Part, ID_A);
+        part.room = Some("lobby".to_string());
+        let mut parted = Vec::new();
+        core.on_envelope(LINK_A, part, &mut parted);
+
+        let first = join(&mut core, LINK_A, ID_A, "lobby");
+        assert_eq!(
+            sends_to(&first, LINK_B)
+                .iter()
+                .filter(|envelope| envelope.message_type == rrc::MessageType::Joined)
+                .count(),
+            1
+        );
+
+        let second = join(&mut core, link_a2, ID_A, "lobby");
+        assert!(
+            sends_to(&second, LINK_B).is_empty(),
+            "an identity already present through another link is not a new person"
+        );
+        let roster = sends_to(&second, link_a2);
+        let mut identities = rrc::member_identities(roster[0]);
+        identities.sort();
+        assert_eq!(
+            identities,
+            vec![ID_A, ID_B],
+            "rosters count people, not links"
+        );
+    }
+
+    #[test]
     fn part_suppresses_fanout_while_identity_remains_on_another_link() {
         let mut core = core_with(ChannelHubConfig::default());
         let link_a2 = [0x03; 16];
@@ -7542,6 +7592,30 @@ mod tests {
             assert_eq!(forwarded.message_id, original_id);
             assert_eq!(forwarded.nickname.as_deref(), Some("beta"));
         }
+    }
+
+    #[test]
+    fn relay_sanitizes_an_undisplayable_timestamp_for_every_recipient() {
+        let mut core = core_with(ChannelHubConfig::default());
+        welcomed_session(&mut core, LINK_A, ID_A, "alpha");
+        welcomed_session(&mut core, LINK_B, ID_B, "beta");
+        join(&mut core, LINK_A, ID_A, "lobby");
+        join(&mut core, LINK_B, ID_B, "lobby");
+
+        let mut message = rrc::Envelope::new(rrc::MessageType::Message, ID_B);
+        message.room = Some("lobby".to_string());
+        message.body = Some(Value::Text("time check".to_string()));
+        message.timestamp_ms = u64::MAX;
+        let original_id = message.message_id;
+        let mut out = Vec::new();
+        core.on_envelope(LINK_B, message, &mut out);
+
+        let recipient = sends_to(&out, LINK_A)[0];
+        let echo = sends_to(&out, LINK_B)[0];
+        assert_eq!(recipient.message_id, original_id);
+        assert_eq!(echo.message_id, original_id);
+        assert_eq!(recipient.timestamp_ms, echo.timestamp_ms);
+        assert!(recipient.timestamp_ms <= rrc::MAX_DISPLAY_TIMESTAMP_MS);
     }
 
     #[test]

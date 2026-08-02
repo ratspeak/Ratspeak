@@ -722,6 +722,10 @@ z`,
             closeSheet(built.overlay, built.sheet);
         }
 
+        // Native Android Back must take the same path as the visible close
+        // controls so an active camera stream is stopped before removal.
+        built.sheet._ratspeakDismiss = closeAll;
+
         function setFallbackReady(ready) {
             if (!cameraWrap) return;
             cameraWrap.classList.toggle('fallback-ready', !!ready);

@@ -85,8 +85,20 @@ if (window.matchMedia) {
     });
 }
 
+function _mobileBlockingOverlayOpen() {
+    return !!document.querySelector(
+        '.bottom-sheet.open, .bottom-sheet-overlay.active, ' +
+        '.modal-overlay.active, .game-modal-overlay, .block-list-overlay, ' +
+        '#rs-image-viewer.open, .action-popover.open, ' +
+        '[class*="-scrim"].active, .channels-layout.members-open'
+    );
+}
+
 function _isMobileNavigationBlocked() {
-    return isMobile() && Date.now() < _mobileNavigationBlockedUntil;
+    return isMobile() && (
+        Date.now() < _mobileNavigationBlockedUntil ||
+        _mobileBlockingOverlayOpen()
+    );
 }
 
 function blockMobileNavigation(ms) {
@@ -435,6 +447,12 @@ var VIEW_LIFECYCLE = {
         if (typeof initThemeToggle === 'function') initThemeToggle();
         if (typeof initHapticsToggle === 'function') initHapticsToggle();
         if (typeof initSettingsSectionNav === 'function') initSettingsSectionNav();
+        // Settings is opened through switchView(), not openSettings(). Bind
+        // backend-backed controls from the real navigation lifecycle so a
+        // native radio change cannot look selected without being persisted.
+        if (typeof initChannelHostingToggle === 'function') initChannelHostingToggle();
+        if (typeof initDeveloperModeToggle === 'function') initDeveloperModeToggle();
+        if (typeof initWindowDecorationsToggle === 'function') initWindowDecorationsToggle();
     },
 
     identity: function() {
@@ -503,6 +521,14 @@ function _fireViewLifecycle(viewId) {
 }
 
 function _closeOpenBottomSheet() {
+    var openSheets = document.querySelectorAll('.rs-sheet-shell.open, .bottom-sheet.open');
+    if (openSheets.length) {
+        var topSheet = openSheets[openSheets.length - 1];
+        if (typeof topSheet._ratspeakDismiss === 'function') {
+            topSheet._ratspeakDismiss();
+            return true;
+        }
+    }
     var sheet = document.getElementById('bottom-sheet');
     if (!sheet || !sheet.classList.contains('open')) return false;
     sheet.classList.remove('open');
@@ -540,6 +566,7 @@ function _handleAppBackNavigation(opts) {
         (window.RS && typeof RS.closeImageViewer === 'function' && RS.closeImageViewer()) ||
         (window.RS && typeof RS.closeMessageActionMenu === 'function' && RS.closeMessageActionMenu()) ||
         _closeOpenBottomSheet() ||
+        (typeof channelsHandleMemberPaneBack === 'function' && channelsHandleMemberPaneBack()) ||
         _closeOpenFabPicker() ||
         _closeOpenContactSheet()
     ) {
@@ -1104,12 +1131,15 @@ function initKeyboardDetection() {
         // fall back to comparing against the tallest viewport we've seen.
         var heightDrop = _maxViewportHeight > 0 ? (_maxViewportHeight - currentHeight) : 0;
         var keyboardOpen = kbHeight > 150 || heightDrop > 150;
-        var inChat = document.body.classList.contains('view-chat-detail');
+        var inConversationDetail =
+            document.body.classList.contains('view-chat-detail') ||
+            document.body.classList.contains('view-channel-detail');
 
         if (isMobile()) {
-            if (keyboardOpen && inChat) {
+            if (keyboardOpen && inConversationDetail) {
                 // WKWebView pushes content behind the notch on focus; clamp
-                // --app-height and pin scrollTop to keep the chat header visible.
+                // --app-height and pin scrollTop to keep the conversation
+                // header and composer inside the visual viewport.
                 document.documentElement.style.setProperty('--app-height', currentHeight + 'px');
                 if (window.scrollY > 0 || document.documentElement.scrollTop > 0) {
                     window.scrollTo(0, 0);
@@ -1146,8 +1176,11 @@ function initKeyboardDetection() {
     window.visualViewport.addEventListener('scroll', function() {
         // Pin scroll while chat keyboard is open; WKWebView otherwise scrolls
         // the header behind the notch as the viewport pans.
-        var inChat = document.body.classList.contains('view-chat-detail');
-        if (document.documentElement.classList.contains('keyboard-open') && inChat) {
+        var inConversationDetail =
+            document.body.classList.contains('view-chat-detail') ||
+            document.body.classList.contains('view-channel-detail');
+        if (document.documentElement.classList.contains('keyboard-open') &&
+                inConversationDetail) {
             if (window.scrollY > 0 || document.documentElement.scrollTop > 0) {
                 window.scrollTo(0, 0);
             }
@@ -1268,6 +1301,7 @@ function initDrillDownSwipeBack() {
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_DRILLBACK_PX,
         hapticAt: { commit: 'selection' },
         skipIf: function(e) {
+            if (_isMobileNavigationBlocked()) return true;
             if (_navTransitioning) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
             if (_settingsDetailSwipeActive()) return true;

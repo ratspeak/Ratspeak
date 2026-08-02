@@ -10,6 +10,12 @@ var vm = require('vm');
 
 var channelsPath = path.join(__dirname, '..', 'static', 'js', 'channels.js');
 var channelsSource = fs.readFileSync(channelsPath, 'utf8');
+var dashboardRoot = path.join(__dirname, '..');
+var indexSource = fs.readFileSync(path.join(dashboardRoot, 'index.html'), 'utf8');
+var channelsCss = fs.readFileSync(
+    path.join(dashboardRoot, 'static', 'css', '09-channels.css'),
+    'utf8'
+);
 var constantsStart = channelsSource.indexOf('var CHANNEL_PRESENCE_REJOIN_WINDOW_MS');
 var constantsEnd = channelsSource.indexOf('\n\nfunction _channelsEl', constantsStart);
 var activityStart = channelsSource.indexOf('function _channelsActivityTime');
@@ -162,6 +168,34 @@ test('our own join confirmation remains visible', function() {
     assert.strictEqual(presence.collapse(entries).length, 2);
 });
 
+test('duplicate present-state notices do not invent another arrival', function() {
+    var duplicateJoins = [
+        event('join', 1000, 'aabbcc', 'Ada'),
+        event('join', 2000, 'aabbcc', 'Ada'),
+        event('join', 3000, 'aabbcc', 'Ada')
+    ];
+    var presentThenJoin = [
+        event('present', 1000, 'aabbcc', 'Ada'),
+        event('join', 2000, 'aabbcc', 'Ada')
+    ];
+    assert.strictEqual(presence.collapse(duplicateJoins).length, 1);
+    assert.strictEqual(presence.collapse(duplicateJoins)[0].item.timestamp_ms, 1000);
+    assert.strictEqual(presence.collapse(presentThenJoin).length, 1);
+    assert.strictEqual(presence.collapse(presentThenJoin)[0].item.kind, 'present');
+    var rendered = presence.group(duplicateJoins, 'general');
+    assert.strictEqual(rendered.length, 1);
+    assert.strictEqual(rendered[0].item.kind, 'join',
+        'one truthful transition should render directly, without a disclosure group');
+});
+
+test('duplicate leave notices do not invent repeated departures', function() {
+    var entries = [
+        event('part', 1000, 'aabbcc', 'Ada'),
+        event('part', 2000, 'aabbcc', 'Ada')
+    ];
+    assert.strictEqual(presence.collapse(entries).length, 1);
+});
+
 test('existing consecutive presence grouping still applies after cleanup', function() {
     var entries = [
         event('part', 1000, 'aabbcc', 'Ada'),
@@ -275,7 +309,7 @@ test('local leave activity is ordered before a message observed later', function
     assert.strictEqual(rendered[1].item.kind, 'message');
 });
 
-test('reconnect churn counts unique people and expands to one row per action', function() {
+test('reconnect churn counts unique people and removes duplicate transitions', function() {
     var entries = [
         event('join', 1000, 'aabbcc', 'Ada'),
         event('join', 2000, 'aabbcc', 'Ada'),
@@ -287,9 +321,25 @@ test('reconnect churn counts unique people and expands to one row per action', f
     var summary = presence.summary(result[0].presenceGroup);
     assert.strictEqual(summary.text, '2 people joined and 1 left');
     assert.strictEqual(summary.rows.length, 3);
-    assert.strictEqual(summary.joined[0].occurrences, 3);
-    assert.strictEqual(summary.joined[0].item.timestamp_ms, 3000,
-        'the compact row keeps the most recent occurrence for its timestamp');
+    assert.strictEqual(summary.joined[0].item.timestamp_ms, 1000,
+        'the first observed transition remains the truthful activity time');
+    assert.strictEqual(summary.joined[0].occurrences, undefined,
+        'presence rows must never render a contradictory times counter');
+});
+
+test('an observed leave separates two real joins without inflating people count', function() {
+    var entries = [
+        event('join', 1000, 'aabbcc', 'Ada'),
+        event('part', 20_000, 'aabbcc', 'Ada'),
+        event('join', 40_000, 'aabbcc', 'Ada')
+    ];
+    var result = presence.group(entries, 'general');
+    var summary = presence.summary(result[0].presenceGroup);
+    assert.strictEqual(summary.text, '1 person joined and 1 left');
+    assert.deepStrictEqual(
+        Array.from(summary.rows, function(entry) { return entry.item.kind; }),
+        ['join', 'part', 'join']
+    );
 });
 
 test('count hover text prefers names and retains a full hash fallback', function() {
@@ -315,6 +365,7 @@ test('roster reconciliation supplies honest context and only fills missing delta
     var room = {
         name: 'lobby',
         phase: 'joined',
+        members_complete: false,
         members: [bob, v6z],
         transcript: []
     };
@@ -337,7 +388,7 @@ test('roster reconciliation supplies honest context and only fills missing delta
 
     room.members = [bob, v6z, ada, grace];
     rosterContext.window.reconcile('hub');
-    assert.strictEqual(rosterEvents[1].item.text, 'Grace joined');
+    assert.strictEqual(rosterEvents[1].item.text, 'Grace is here');
 
     room.members = [bob, v6z, ada, grace, linus];
     room.transcript.push({
@@ -352,7 +403,19 @@ test('roster reconciliation supplies honest context and only fills missing delta
 
     room.members = [bob, v6z, ada, linus];
     rosterContext.window.reconcile('hub');
-    assert.strictEqual(rosterEvents[2].item.text, 'Grace left');
+    assert.strictEqual(rosterEvents.length, 2,
+        'absence from a partial roster must not fabricate a leave');
+
+    room.members_complete = true;
+    room.members = [bob, v6z, ada, linus, grace];
+    rosterContext.window.reconcile('hub');
+    assert.strictEqual(rosterEvents[2].item.text, 'Grace is here',
+        'the first complete roster establishes context before deltas');
+
+    room.members = [bob, v6z, ada, linus];
+    rosterContext.window.reconcile('hub');
+    assert.strictEqual(rosterEvents[3].item.text, 'Grace left',
+        'absence from a complete roster is a supported departure');
 });
 
 tests.forEach(function(entry) {
@@ -364,5 +427,37 @@ assert(channelsSource.indexOf('function _channelsIsConnectionLifecycleItem') !==
     'legacy reconnect markers must be recognized outside the human timeline');
 assert(channelsSource.indexOf("item.text === 'Reconnected to hub'") !== -1,
     'legacy reconnect copy must remain presentation-filtered');
+
+var presenceUiStart = channelsSource.indexOf('function _channelsBuildPresenceGroup');
+var presenceUiEnd = channelsSource.indexOf('\nfunction _channelsBuildTranscriptItem', presenceUiStart);
+var presenceUiSource = channelsSource.slice(presenceUiStart, presenceUiEnd);
+assert(presenceUiStart !== -1 && presenceUiEnd !== -1,
+    'presence UI builders must exist');
+assert(!presenceUiSource.includes('channel-identity-marker'),
+    'membership activity must not add decorative identity dots');
+assert(!presenceUiSource.includes('occurrences'),
+    'membership activity must not display contradictory repetition counters');
+assert(indexSource.includes('<button class="channel-members-info" id="channel-members-info"'),
+    'partial-roster help belongs beside the People here label');
+assert(!indexSource.includes('id="channel-members-note"'),
+    'partial-roster help must not consume a separate member-pane row');
+assert(!channelsSource.includes("_channelsSetText('channel-members-note'"),
+    'member rendering must not restore the removed partial-list row');
+assert(channelsCss.includes('.channel-members-info::after'),
+    'the compact roster affordance must own its tooltip');
+assert(channelsCss.includes('.channel-members-info.open::after'),
+    'a touch-controlled open state must reveal the roster explanation');
+assert(indexSource.includes('aria-label="The hub may provide only part of the member list."') &&
+        indexSource.includes('aria-expanded="false"'),
+    'the roster explanation must be available to assistive technology');
+var memberTooltipCss = channelsCss
+    .split('.channel-members-info::after')[1]
+    .split('}')[0];
+assert(memberTooltipCss.includes('left: 50%') &&
+        memberTooltipCss.includes('transform: translateX(-50%)') &&
+        memberTooltipCss.includes('box-sizing: border-box'),
+    'the roster tooltip must center its bounded box instead of clipping at the pane edge');
+assert(!channelsCss.includes('.channel-members-note'),
+    'the removed partial-list row must not retain styling');
 
 process.stdout.write('\n' + tests.length + ' Channels presence tests passed.\n');

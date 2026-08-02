@@ -4682,7 +4682,7 @@ async fn handle_link_event(
 async fn handle_envelope(
     active: &mut ActiveSession,
     activity_recorder: &ChannelsActivity,
-    envelope: Envelope,
+    mut envelope: Envelope,
     encoded_bytes: u32,
 ) {
     let message = active.message_token(envelope.message_id);
@@ -4718,6 +4718,7 @@ async fn handle_envelope(
         );
         return;
     }
+    envelope.timestamp_ms = rrc::sanitize_display_timestamp_ms(envelope.timestamp_ms, now_ms());
     if !active.remember(envelope.message_id) {
         activity_recorder.record_spontaneous(move || {
             activity::channels_envelope_received(activity::ChannelsEnvelopeActivity {
@@ -5022,8 +5023,16 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     let identity_count = identities.len();
     let includes_self = identities.contains(&active.source);
     let single_identity_hash = (identity_count == 1).then(|| hex::encode(identities[0]));
+    let mut single_member_inserted = false;
+    let mut nickname_member_inserted = false;
     let confirming_self = room.phase == ChannelRoomPhase::Joining
         || (room.phase == ChannelRoomPhase::Error && includes_self);
+    // rrcd tracks room membership by Link, not by identity. When another Link
+    // joins with our identity, the existing Link receives JOINED [self] as an
+    // ordinary fanout. Treat that packet as an idempotent delta; it is not an
+    // authoritative roster and must not erase members already visible here.
+    let same_identity_delta = room_was_joined && identity_count == 1 && includes_self;
+    let replaces_roster = (confirming_self || includes_self) && !same_identity_delta;
     if room.phase == ChannelRoomPhase::Error && !confirming_self {
         return;
     }
@@ -5032,14 +5041,14 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     room.last_error = None;
 
     if !identities.is_empty() {
-        if confirming_self || includes_self {
+        if replaces_roster {
             room.members.clear();
         }
         let single_member_nickname = (identities.len() == 1)
             .then(|| envelope.nickname.clone())
             .flatten();
         for identity in identities {
-            upsert_member(
+            let inserted = upsert_member(
                 &mut room.members,
                 Some(identity),
                 if identity == active.source {
@@ -5049,8 +5058,19 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
                 },
                 identity == active.source,
             );
+            if identity_count == 1 {
+                single_member_inserted = inserted;
+            }
         }
-        room.members_complete = confirming_self || includes_self;
+        if replaces_roster {
+            room.members_complete = true;
+        } else if identity_count > 1 {
+            // A continuation chunk proves only that these members are here;
+            // until a full roster includes us, keep the completeness claim
+            // conservative. A one-member fanout is a complete delta and does
+            // not invalidate a roster that was already complete.
+            room.members_complete = false;
+        }
     } else if confirming_self {
         upsert_member(
             &mut room.members,
@@ -5060,7 +5080,7 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
         );
         room.members_complete = false;
     } else if let Some(nickname) = envelope.nickname.clone() {
-        upsert_member(&mut room.members, None, Some(nickname), false);
+        nickname_member_inserted = upsert_member(&mut room.members, None, Some(nickname), false);
     }
 
     let nickname = if confirming_self {
@@ -5074,12 +5094,14 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     // treating a continuation as an arrival invents "A member joined" lines.
     let nickname_only_join = room_was_joined
         && identity_count == 0
+        && nickname_member_inserted
         && envelope
             .nickname
             .as_ref()
             .is_some_and(|nick| !nick.is_empty());
-    let is_join_event =
-        confirming_self || (identity_count == 1 && !includes_self) || nickname_only_join;
+    let is_join_event = confirming_self
+        || (identity_count == 1 && !includes_self && single_member_inserted)
+        || nickname_only_join;
     if !join_already_visible && is_join_event && !(reconnecting_room && confirming_self) {
         let mut item = transcript_item(
             envelope,
@@ -8675,22 +8697,25 @@ mod tests {
     #[tokio::test]
     async fn authenticated_session_runs_welcome_room_message_ping_and_part() {
         let client_identity = Identity::new();
+        let identity_id = hex::encode(client_identity.hash);
+        let state = channels_test_state(&client_identity);
         let hub_identity = Identity::new();
         let hub_signing = hub_identity.get_signing_key().unwrap();
         let hub_public = hub_identity.get_public_key();
         let hub_destination =
             Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
+        let hub_destination_hex = hex::encode(hub_destination);
         let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(128);
         let manager = ChannelsManagerHandle::start(
             transport_tx,
             client_identity.clone(),
             Arc::new(ratspeak_core::NoopEmitter),
             ShutdownSignal::new(),
-            Weak::new(),
+            Arc::downgrade(&state),
         );
 
         manager
-            .connect(&hex::encode(hub_destination), "Field Rat")
+            .connect(&hub_destination_hex, "Field Rat")
             .await
             .unwrap();
 
@@ -9141,7 +9166,7 @@ mod tests {
         identified_joined.nickname = Some("Ada".into());
         identified_joined.body = Some(Value::Array(vec![Value::Bytes(identified_member.to_vec())]));
         send_server_envelope(&delivery_tx, &mut responder, &identified_joined).await;
-        wait_snapshot(&manager, |snapshot| {
+        let identified_visible = wait_snapshot(&manager, |snapshot| {
             snapshot.rooms.first().is_some_and(|room| {
                 room.transcript.iter().any(|item| {
                     item.kind == ChannelItemKind::Join
@@ -9151,6 +9176,92 @@ mod tests {
             })
         })
         .await;
+
+        // rrcd keys room membership by Link. A second Link using this same
+        // identity makes the existing Link receive JOINED [self]. That is an
+        // idempotent fanout, not an authoritative one-member roster.
+        let partial_members_before = identified_visible.rooms[0].members.clone();
+        let partial_join_count = identified_visible.rooms[0]
+            .transcript
+            .iter()
+            .filter(|item| item.kind == ChannelItemKind::Join)
+            .count();
+        let mut same_identity_joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        same_identity_joined.room = Some("general".into());
+        same_identity_joined.nickname = Some("Other device".into());
+        same_identity_joined.body = Some(Value::Array(vec![Value::Bytes(
+            client_identity.hash.to_vec(),
+        )]));
+        send_server_envelope(&delivery_tx, &mut responder, &same_identity_joined).await;
+        let mut partial_barrier = Envelope::new(MessageType::Notice, hub_identity.hash);
+        partial_barrier.room = Some("general".into());
+        partial_barrier.body = Some(Value::Text("partial roster barrier".into()));
+        let partial_barrier_id = hex::encode(partial_barrier.message_id);
+        send_server_envelope(&delivery_tx, &mut responder, &partial_barrier).await;
+        let partial_after_same_identity = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.transcript
+                    .iter()
+                    .any(|item| item.id == partial_barrier_id)
+            })
+        })
+        .await;
+        assert_eq!(
+            partial_after_same_identity.rooms[0].members,
+            partial_members_before
+        );
+        assert!(!partial_after_same_identity.rooms[0].members_complete);
+        assert_eq!(
+            partial_after_same_identity.rooms[0]
+                .members
+                .iter()
+                .filter(|member| member.is_self)
+                .count(),
+            1
+        );
+        assert_eq!(
+            partial_after_same_identity.rooms[0]
+                .members
+                .iter()
+                .find(|member| member.is_self)
+                .and_then(|member| member.nickname.as_deref()),
+            Some("Field Rat")
+        );
+        assert_eq!(
+            partial_after_same_identity.rooms[0]
+                .transcript
+                .iter()
+                .filter(|item| item.kind == ChannelItemKind::Join)
+                .count(),
+            partial_join_count
+        );
+
+        let mut duplicate_joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        duplicate_joined.room = Some("general".into());
+        duplicate_joined.nickname = Some("Ada refreshed".into());
+        duplicate_joined.body = Some(Value::Array(vec![Value::Bytes(identified_member.to_vec())]));
+        send_server_envelope(&delivery_tx, &mut responder, &duplicate_joined).await;
+        let duplicate_observed = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.members.iter().any(|member| {
+                    member.identity_hash.as_deref() == Some(identified_hash.as_str())
+                        && member.nickname.as_deref() == Some("Ada refreshed")
+                })
+            })
+        })
+        .await;
+        assert_eq!(
+            duplicate_observed.rooms[0]
+                .transcript
+                .iter()
+                .filter(|item| {
+                    item.kind == ChannelItemKind::Join
+                        && item.source_hash.as_deref() == Some(identified_hash.as_str())
+                })
+                .count(),
+            1,
+            "repeated JOINED for an already visible member is not a second arrival"
+        );
 
         let mut identified_parted = Envelope::new(MessageType::Parted, hub_identity.hash);
         identified_parted.room = Some("general".into());
@@ -9181,7 +9292,8 @@ mod tests {
             "Observer",
             "checking in",
         );
-        observed_message.timestamp_ms = now_ms();
+        observed_message.timestamp_ms = u64::MAX;
+        let observed_message_id = hex::encode(observed_message.message_id);
         send_server_envelope(&delivery_tx, &mut responder, &observed_message).await;
         let observed = wait_snapshot(&manager, |snapshot| {
             snapshot.rooms.first().is_some_and(|room| {
@@ -9193,14 +9305,19 @@ mod tests {
         })
         .await;
         assert!(!observed.rooms[0].members_complete);
+        assert!(observed.rooms[0].transcript.iter().any(|item| {
+            item.id == observed_message_id && item.timestamp_ms <= rrc::MAX_DISPLAY_TIMESTAMP_MS
+        }));
 
-        let observed_action = Envelope::room_text(
+        let mut observed_action = Envelope::room_text(
             MessageType::Action,
             observed_identity,
             "general",
             "Observer",
             "waves",
         );
+        observed_action.timestamp_ms = u64::MAX;
+        let observed_action_id = hex::encode(observed_action.message_id);
         send_server_envelope(&delivery_tx, &mut responder, &observed_action).await;
         let updated_observation = wait_snapshot(&manager, |snapshot| {
             snapshot.rooms.first().is_some_and(|room| {
@@ -9220,6 +9337,46 @@ mod tests {
                 .count(),
             1
         );
+        assert!(updated_observation.rooms[0].transcript.iter().any(|item| {
+            item.id == observed_action_id && item.timestamp_ms <= rrc::MAX_DISPLAY_TIMESTAMP_MS
+        }));
+
+        let persisted = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let page = db::list_channel_history(
+                    &state.db,
+                    &identity_id,
+                    &hub_destination_hex,
+                    "general",
+                    None,
+                    64,
+                )
+                .unwrap();
+                if [observed_message_id.as_str(), observed_action_id.as_str()]
+                    .iter()
+                    .all(|event_id| page.items.iter().any(|item| item.event_id == *event_id))
+                {
+                    break page;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("remote message and action history timed out");
+        for event_id in [&observed_message_id, &observed_action_id] {
+            let item = persisted
+                .items
+                .iter()
+                .find(|item| item.event_id == *event_id)
+                .expect("sanitized remote event persisted");
+            assert!(item.timestamp_ms <= rrc::MAX_DISPLAY_TIMESTAMP_MS);
+        }
+        let history_ready = wait_snapshot(&manager, |snapshot| {
+            snapshot.history.phase == ChannelsHistoryPhase::Ready
+                && snapshot.history.pending_events == 0
+        })
+        .await;
+        assert_eq!(history_ready.history.dropped_events, 0);
 
         let mut observed_parted = Envelope::new(MessageType::Parted, hub_identity.hash);
         observed_parted.room = Some("general".into());
@@ -9260,6 +9417,62 @@ mod tests {
                 .filter(|item| item.kind == ChannelItemKind::Join && item.ours)
                 .count(),
             1
+        );
+
+        let complete_members_before = completed_roster.rooms[0].members.clone();
+        let complete_join_count = completed_roster.rooms[0]
+            .transcript
+            .iter()
+            .filter(|item| item.kind == ChannelItemKind::Join)
+            .count();
+        let mut same_identity_joined = Envelope::new(MessageType::Joined, hub_identity.hash);
+        same_identity_joined.room = Some("general".into());
+        same_identity_joined.nickname = Some("Other device".into());
+        same_identity_joined.body = Some(Value::Array(vec![Value::Bytes(
+            client_identity.hash.to_vec(),
+        )]));
+        send_server_envelope(&delivery_tx, &mut responder, &same_identity_joined).await;
+        let mut complete_barrier = Envelope::new(MessageType::Notice, hub_identity.hash);
+        complete_barrier.room = Some("general".into());
+        complete_barrier.body = Some(Value::Text("complete roster barrier".into()));
+        let complete_barrier_id = hex::encode(complete_barrier.message_id);
+        send_server_envelope(&delivery_tx, &mut responder, &complete_barrier).await;
+        let complete_after_same_identity = wait_snapshot(&manager, |snapshot| {
+            snapshot.rooms.first().is_some_and(|room| {
+                room.transcript
+                    .iter()
+                    .any(|item| item.id == complete_barrier_id)
+            })
+        })
+        .await;
+        assert_eq!(
+            complete_after_same_identity.rooms[0].members,
+            complete_members_before
+        );
+        assert!(complete_after_same_identity.rooms[0].members_complete);
+        assert_eq!(
+            complete_after_same_identity.rooms[0]
+                .members
+                .iter()
+                .filter(|member| member.is_self)
+                .count(),
+            1
+        );
+        assert_eq!(
+            complete_after_same_identity.rooms[0]
+                .members
+                .iter()
+                .find(|member| member.is_self)
+                .and_then(|member| member.nickname.as_deref()),
+            Some("Field Rat")
+        );
+        assert_eq!(
+            complete_after_same_identity.rooms[0]
+                .transcript
+                .iter()
+                .filter(|item| item.kind == ChannelItemKind::Join)
+                .count(),
+            complete_join_count
         );
 
         manager.part("general").await.unwrap();
