@@ -64,11 +64,11 @@ function channelHubOwnDestinationHash() {
     return String(status.destination_hash || channelHubOverview.destination_hash || '').toLowerCase();
 }
 
-function _channelHubHasOwnedHub(overview) {
-    if (!overview || !overview.supported) return false;
-    return !!(overview.created ||
-        (overview.settings && overview.settings.enabled) ||
-        (overview.status && overview.status.running));
+function _channelHubHomeVisible(overview) {
+    // Enabling the Settings capability must reveal the first-run entry point,
+    // not only hubs that have already been configured. The card itself opens
+    // setup when no hub exists yet and becomes the live hub card afterward.
+    return !!(overview && overview.supported && _channelHubHostingEnabled(overview));
 }
 
 function _channelHubCurrentDestination() {
@@ -80,7 +80,7 @@ function channelHubRenderHome(overview) {
     overview = overview || channelHubOverview;
     var section = document.getElementById('channel-owned-hub');
     if (!section) return;
-    var visible = _channelHubHostingEnabled(overview) && _channelHubHasOwnedHub(overview);
+    var visible = _channelHubHomeVisible(overview);
     section.hidden = !visible;
     if (!visible) return;
 

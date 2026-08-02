@@ -25,7 +25,8 @@ var statusContext = {
 vm.runInNewContext(
     sourceRange('_channelHubPlural', '_channelHubApplyOverview') +
         '\nthis.statusModel = _channelHubStatusModel;' +
-        '\nthis.hostingEnabled = _channelHubHostingEnabled;',
+        '\nthis.hostingEnabled = _channelHubHostingEnabled;' +
+        '\nthis.homeVisible = _channelHubHomeVisible;',
     statusContext,
     { filename: 'channel-hub-status.js' }
 );
@@ -63,15 +64,21 @@ assert.strictEqual(stopped.action, 'start');
 assert.strictEqual(statusContext.hostingEnabled({ hosting_enabled: false }), true);
 assert.strictEqual(statusContext.hostingEnabled({ hosting_enabled: true }), true);
 assert.strictEqual(statusContext.hostingEnabled({}), true);
+assert.strictEqual(statusContext.homeVisible({ supported: true, created: false }), true,
+    'Settings ON must reveal first-run hub setup before a hub exists');
+assert.strictEqual(statusContext.homeVisible({ supported: false, created: true }), false,
+    'hosting controls stay hidden on unsupported platforms');
 statusContext.window.ratspeakChannelHostingEnabled = undefined;
 assert.strictEqual(statusContext.hostingEnabled({ hosting_enabled: true }), false,
     'hosting defaults closed until Settings establishes an explicit preference');
 statusContext.window.ratspeakChannelHostingEnabled = function() { return false; };
 assert.strictEqual(statusContext.hostingEnabled({ hosting_enabled: true }), false,
     'a stale overview must not resurrect hosting after Settings is Off');
+assert.strictEqual(statusContext.homeVisible({ supported: true, created: true }), false,
+    'Settings OFF must hide an existing hub card');
 
 assert(source.indexOf(
-    'var visible = _channelHubHostingEnabled(overview) && _channelHubHasOwnedHub(overview);'
+    'var visible = _channelHubHomeVisible(overview);'
 ) !== -1);
 assert(source.indexOf(
     'if (overview.supported && _channelHubHostingEnabled(overview))'

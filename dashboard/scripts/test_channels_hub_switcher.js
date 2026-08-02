@@ -273,6 +273,10 @@ assert(channelHubSource.indexOf(
     'if (overview.supported && _channelHubHostingEnabled(overview))'
 ) !== -1,
     'hosting requires Settings opt-in, but Add channels must remain available everywhere');
+assert(channelHubSource.indexOf(
+    'return !!(overview && overview.supported && _channelHubHostingEnabled(overview));'
+) !== -1,
+    'Settings ON must reveal the first-run hosting card before a hub exists');
 
 assert(cssSource.indexOf('.channel-hub-switcher-btn') !== -1);
 assert(cssSource.indexOf('.channel-live-beacon') === -1);

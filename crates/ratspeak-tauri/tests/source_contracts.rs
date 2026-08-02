@@ -729,7 +729,6 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     // explicit Settings opt-in, stays separate from client session state, and
     // obeys backend support.
     assert!(index.contains("/static/js/channel_hub.js"));
-    assert!(hub_ui.contains("if (!overview || !overview.supported)"));
     assert!(hub_ui.contains("RS.invoke('api_channel_hub')"));
     assert!(hub_ui.contains("RS.invoke('api_channel_hub_admin')"));
     assert!(hub_ui.contains("RS.invoke('channel_hub_start')"));
@@ -738,9 +737,9 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub_ui.contains("RS.listen('channel_hub_snapshot'"));
     assert!(hub_ui.contains("function channelHubRenderHome"));
     assert!(hub_ui.contains("overview.supported && _channelHubHostingEnabled(overview)"));
-    assert!(
-        hub_ui.contains("_channelHubHostingEnabled(overview) && _channelHubHasOwnedHub(overview)")
-    );
+    assert!(hub_ui.contains(
+        "return !!(overview && overview.supported && _channelHubHostingEnabled(overview));"
+    ));
     assert!(hub_ui.contains("function channelHubOpenOwnHub"));
     assert!(hub_ui.contains("overview.created"));
     assert!(hub_ui.contains("Some channel changes are still waiting to be saved."));
@@ -3358,9 +3357,9 @@ fn channel_hosting_is_an_explicit_durable_settings_capability() {
     assert!(hosting_toggle.contains("RS.invoke('api_channel_hub')"));
     assert!(!settings_js.contains("ratspeak-channel-hosting"));
     assert!(hub_ui.contains("overview.supported && _channelHubHostingEnabled(overview)"));
-    assert!(
-        hub_ui.contains("_channelHubHostingEnabled(overview) && _channelHubHasOwnedHub(overview)")
-    );
+    assert!(hub_ui.contains(
+        "return !!(overview && overview.supported && _channelHubHostingEnabled(overview));"
+    ));
 
     assert!(commands.contains("pub async fn set_channel_hosting_enabled"));
     assert!(commands.contains("CHANNEL_HOSTING_ENABLED_KEY"));
