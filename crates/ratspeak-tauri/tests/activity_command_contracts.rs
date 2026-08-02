@@ -47,16 +47,14 @@ fn typed_activity_commands_are_unconditionally_registered() {
         );
     }
 
-    let mut contiguous =
-        String::from("            ratspeak_tauri::commands::network::api_hub_interfaces,\n");
+    let registry = app.lines().map(str::trim).collect::<Vec<_>>().join("\n");
+    let mut contiguous = String::from("ratspeak_tauri::commands::network::api_hub_interfaces,\n");
     for command in command_names {
-        contiguous.push_str(&format!(
-            "            ratspeak_tauri::commands::activity::{command},\n"
-        ));
+        contiguous.push_str(&format!("ratspeak_tauri::commands::activity::{command},\n"));
     }
-    contiguous.push_str("            ratspeak_tauri::commands::channels::api_channels,");
+    contiguous.push_str("ratspeak_tauri::commands::channels::api_channels,");
     assert!(
-        app.contains(&contiguous),
+        registry.contains(&contiguous),
         "Activity commands must remain an unconditional registry block"
     );
     assert!(!app.contains("commands::network::enable_network_log,"));
