@@ -102,6 +102,8 @@ assert.strictEqual((html.match(/name="settings-text-scale"/g) || []).length, 5);
 assert(html.includes('class="settings-type-presets"'));
 assert(html.includes('aria-labelledby="settings-text-scale-label"'));
 assert(html.includes('aria-describedby="settings-text-scale-desc"'));
+assert(!/<legend\b[^>]*>\s*Text size\s*<\/legend>/.test(html),
+    'the visible settings label must be the preset group\'s only text-size heading');
 assert(!html.includes('no_pinch.js'), 'browser zoom must remain available');
 assert(html.includes('lxmf-compose message-composer'));
 assert(html.includes('channel-compose message-composer'));

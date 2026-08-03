@@ -1883,17 +1883,23 @@
 .settings-text-scale-row {
     align-items: stretch;
     flex-direction: column;
+    flex-wrap: nowrap;
     gap: var(--space-5);
 }
 .settings-text-scale-row .settings-row-info {
     max-width: none;
+    min-width: 0;
+    flex: 0 0 auto;
 }
 .settings-type-presets {
     width: min(100%, 680px);
     min-width: 0;
+    min-inline-size: 0;
     margin: 0;
     padding: 0;
     border: 0;
+    align-self: flex-start;
+    flex: 0 0 auto;
     display: grid;
     grid-template-columns: repeat(5, minmax(64px, 112px));
     gap: var(--space-4);
@@ -1967,6 +1973,14 @@ html[data-text-scale-tier="large"] .settings-row {
 html[data-text-scale-tier="large"] .settings-row-info {
     min-width: min(100%, 250px);
     flex: 1 1 250px;
+}
+html[data-text-scale-tier="large"] .settings-text-scale-row {
+    align-items: stretch;
+    flex-wrap: nowrap;
+}
+html[data-text-scale-tier="large"] .settings-text-scale-row .settings-row-info {
+    min-width: 0;
+    flex: 0 0 auto;
 }
 html[data-text-scale-tier="large"] .settings-row-actions {
     flex: 1 1 280px;

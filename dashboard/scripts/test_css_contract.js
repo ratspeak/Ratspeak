@@ -103,5 +103,7 @@ assert(/\.settings-type-presets\s*\{[\s\S]*?repeat\(5,/.test(sources[11].text),
 assert(/data-scale="100"[\s\S]*?--type-preview-size:\s*18px/.test(sources[11].text) &&
     /data-scale="140"[\s\S]*?--type-preview-size:\s*34px/.test(sources[11].text),
     'text-size specimens must make the preset progression visually distinct');
+assert(/data-text-scale-tier="large"\] \.settings-text-scale-row \.settings-row-info\s*\{[^}]*flex:\s*0 0 auto/s.test(sources[11].text),
+    'the 130% tier must not stretch the text-size introduction away from its presets');
 
 console.log('CSS contract tests passed');
