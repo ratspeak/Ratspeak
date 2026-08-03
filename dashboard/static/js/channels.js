@@ -1260,6 +1260,7 @@ function _channelsNormalizeHistoryItem(item) {
         timestamp_ms: Number(item.timestamp_ms) || 0,
         recorded_at_ms: Number(item.recorded_at_ms) || 0,
         source_hash: item.source_hash || null,
+        source_lxmf_hash: item.source_lxmf_hash || null,
         nickname: item.nickname || null,
         text: String(item.text || ''),
         ours: !!item.ours,
@@ -2842,16 +2843,19 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     event.className = 'channel-event ' + kind +
         (item.ours ? ' ours' : '') + (mentioned ? ' mentioned' : '');
     var authorText = item.nickname || (item.ours ? (channelsSnapshot.nickname || 'You') : _channelsShortHash(item.source_hash)) || 'Hub';
-    event.dataset.tone = item.ours ? 'self' : _channelsIdentityTone(item.source_hash || authorText);
+
+    var avatar = document.createElement('span');
+    avatar.className = 'channel-event-avatar';
+    _channelsPopulateIdentityAvatar(
+        avatar,
+        _channelsIdentityAvatarSeed(item.source_hash, item.source_lxmf_hash, !!item.ours),
+        32
+    );
 
     var author = document.createElement('span');
     author.className = 'channel-event-author';
-    var marker = document.createElement('i');
-    marker.className = 'channel-identity-marker';
-    marker.setAttribute('aria-hidden', 'true');
     var authorLabel = document.createElement('span');
     authorLabel.textContent = item.ours ? authorText + ' (you)' : authorText;
-    author.appendChild(marker);
     author.appendChild(authorLabel);
     if (mentioned) {
         var mentionMarker = document.createElement('span');
@@ -2872,6 +2876,7 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     body.className = 'channel-event-text';
     body.textContent = kind === 'action' ? authorText + ' ' + (item.text || '') : (item.text || '');
 
+    event.appendChild(avatar);
     event.appendChild(author);
     event.appendChild(meta);
     event.appendChild(body);
@@ -2911,6 +2916,42 @@ function _channelsPeerLxmfAddress(peer) {
     return services.indexOf('lxmf.delivery') !== -1 ? peer.hash : '';
 }
 
+function _channelsIdentityAvatarSeed(identityHash, lxmfHash, isSelf) {
+    var target = String(identityHash || '').trim().toLowerCase();
+    var canonical = String(lxmfHash || '').trim().toLowerCase();
+    if (canonical) return canonical;
+    if (isSelf) {
+        var active = typeof activeIdentity === 'function' ? activeIdentity() : null;
+        var activeIdentityHash = String(active && (active.hash || active.identity_hash) || '')
+            .trim().toLowerCase();
+        if (active && (!target || !activeIdentityHash || activeIdentityHash === target)) {
+            var activeLxmf = String(active.lxmf_hash || '').trim().toLowerCase();
+            if (activeLxmf) return activeLxmf;
+        }
+        var live = typeof lxmfIdentity !== 'undefined' ? lxmfIdentity : null;
+        var liveIdentityHash = String(live && live.identity_hash || '').trim().toLowerCase();
+        if (live && (!target || !liveIdentityHash || liveIdentityHash === target)) {
+            var liveLxmf = String(live.lxmf_hash || live.hash || '').trim().toLowerCase();
+            if (liveLxmf) return liveLxmf;
+        }
+    } else if (target) {
+        var peerLxmf = _channelsPeerLxmfAddress(_channelsPeerForIdentity(target));
+        if (peerLxmf) return String(peerLxmf).trim().toLowerCase();
+    }
+    return '';
+}
+
+function _channelsPopulateIdentityAvatar(element, seed, size) {
+    element.setAttribute('aria-hidden', 'true');
+    if (typeof identityAvatar === 'function') {
+        element.innerHTML = identityAvatar(seed, size);
+        return;
+    }
+    var fallback = document.createElement('span');
+    fallback.className = 'channel-avatar-fallback';
+    element.appendChild(fallback);
+}
+
 function _channelsMemberDetails(member) {
     var identityHash = String(member.identity_hash || '').toLowerCase();
     var peer = member.is_self ? null : _channelsPeerForIdentity(identityHash);
@@ -2919,8 +2960,8 @@ function _channelsMemberDetails(member) {
     var liveSelf = member.is_self && typeof lxmfIdentity !== 'undefined' ? lxmfIdentity : null;
     var liveSelfMatches = liveSelf && (!identityHash || String(liveSelf.identity_hash || '').toLowerCase() === identityHash);
     var lxmfAddress = member.is_self
-        ? String((activeMatches ? active.lxmf_hash : '') || (liveSelfMatches ? liveSelf.hash : '') || '')
-        : _channelsPeerLxmfAddress(peer);
+        ? String(member.lxmf_hash || (activeMatches ? active.lxmf_hash : '') || (liveSelfMatches ? liveSelf.hash : '') || '')
+        : String(member.lxmf_hash || _channelsPeerLxmfAddress(peer) || '');
     var knownName = member.is_self
         ? String((activeMatches ? (active.display_name || active.nickname) : '') || (liveSelfMatches ? liveSelf.display_name : '') || '')
         : String(peer && peer.display_name || '');
@@ -2989,13 +3030,11 @@ function _channelsRenderMemberDetail(room, member, list, info) {
     hero.className = 'channel-member-detail-hero';
     var avatar = document.createElement('div');
     avatar.className = 'channel-member-detail-avatar';
-    if (typeof identityAvatar === 'function') {
-        avatar.innerHTML = identityAvatar(details.lxmfAddress || details.identityHash || channelName, 52);
-    } else {
-        var fallback = document.createElement('span');
-        fallback.className = 'channel-identity-marker';
-        avatar.appendChild(fallback);
-    }
+    _channelsPopulateIdentityAvatar(
+        avatar,
+        details.lxmfAddress || '',
+        52
+    );
     var heroCopy = document.createElement('div');
     heroCopy.className = 'channel-member-detail-hero-copy';
     var name = document.createElement('strong');
@@ -3147,11 +3186,14 @@ function _channelsRenderMembers(room) {
         row.type = 'button';
         row.className = 'channel-member-row';
         row.dataset.memberKey = memberKey;
-        row.dataset.tone = member.is_self ? 'self' : _channelsIdentityTone(member.identity_hash || member.nickname);
         row.setAttribute('aria-label', 'View details for ' + nameText);
-        var marker = document.createElement('span');
-        marker.className = 'channel-identity-marker';
-        marker.setAttribute('aria-hidden', 'true');
+        var avatar = document.createElement('span');
+        avatar.className = 'channel-member-avatar';
+        _channelsPopulateIdentityAvatar(
+            avatar,
+            _channelsIdentityAvatarSeed(member.identity_hash, member.lxmf_hash, !!member.is_self),
+            40
+        );
         var copy = document.createElement('span');
         copy.className = 'channel-member-copy';
         var name = document.createElement('span');
@@ -3168,7 +3210,7 @@ function _channelsRenderMembers(room) {
         disclosure.className = 'channel-member-disclosure';
         disclosure.setAttribute('aria-hidden', 'true');
         disclosure.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
-        row.appendChild(marker);
+        row.appendChild(avatar);
         row.appendChild(copy);
         row.appendChild(disclosure);
         row.addEventListener('click', function() {

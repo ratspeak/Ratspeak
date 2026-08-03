@@ -295,7 +295,7 @@ pub async fn api_channel_history(
     let after = args.after;
     let prune_expired = before.is_none() && after.is_none();
     let pool = state.db.clone();
-    crate::db::spawn_db(pool, move |pool| {
+    let mut page = crate::db::spawn_db(pool, move |pool| {
         if prune_expired {
             crate::db::prune_expired_channel_history(&pool)?;
         }
@@ -320,7 +320,14 @@ pub async fn api_channel_history(
     })
     .await
     .map_err(|_| AppError::internal("channel history database task panicked"))?
-    .map_err(AppError::database_unavailable)
+    .map_err(AppError::database_unavailable)?;
+    for item in &mut page.items {
+        item.source_lxmf_hash = item
+            .source_hash
+            .as_deref()
+            .and_then(ratspeak_runtime::channels::lxmf_destination_hash_from_identity_hex);
+    }
+    Ok(page)
 }
 
 #[tauri::command]

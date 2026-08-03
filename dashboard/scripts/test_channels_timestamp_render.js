@@ -49,6 +49,11 @@ var context = {
     _channelsBuildHubNotice: function() { throw new Error('not a hub notice'); },
     _channelsBuildPresenceEvent: function() { throw new Error('not presence'); },
     _channelsBuildQuoteButton: function() { return null; },
+    _channelsIdentityAvatarSeed: function(sourceHash, lxmfHash) { return lxmfHash || sourceHash; },
+    _channelsPopulateIdentityAvatar: function(avatar, seed, size) {
+        avatar.avatarSeed = seed;
+        avatar.avatarSize = size;
+    },
     _channelsIdentityTone: function() { return '0'; },
     _channelsShortHash: function() { return 'peer'; }
 };
@@ -64,14 +69,19 @@ var rendered = context._channelsBuildTranscriptItem({
     kind: 'message',
     timestamp_ms: '18446744073709551615',
     source_hash: '11'.repeat(16),
+    source_lxmf_hash: '22'.repeat(16),
     nickname: 'Remote rat',
     text: 'still renders',
     ours: false
 }, false);
-var meta = rendered.children[1];
+var avatar = rendered.children[0];
+var meta = rendered.children[2];
 var time = meta.children[0];
 assert.doesNotThrow(function() { new Date(time.dateTime).toISOString(); });
 assert.notStrictEqual(time.dateTime, 'Invalid Date');
-assert.strictEqual(rendered.children[2].textContent, 'still renders');
+assert.strictEqual(avatar.className, 'channel-event-avatar');
+assert.strictEqual(avatar.avatarSeed, '22'.repeat(16));
+assert.strictEqual(avatar.avatarSize, 32);
+assert.strictEqual(rendered.children[3].textContent, 'still renders');
 
 process.stdout.write('Channels timestamp rendering tests passed.\n');

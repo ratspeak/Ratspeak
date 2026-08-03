@@ -295,7 +295,7 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}
           body: |
-            - Public Channels beta: connect, discover, share, and join live RRC hubs with local history, unread counts, mentions, and presence
+            - Public Channels beta: connect, discover, share, and join live RRC hubs with local history, unread counts, mentions, presence, and identity avatars
             - Bidirectional RRC messages and actions with authenticated reconnect/rejoin and safer malformed-peer handling
             - Opt-in hub hosting with graphical room, access, moderation, and discovery controls
             - Mobile Channels polish for keyboard resizing, safe areas, Back navigation, sheets, and partial member lists

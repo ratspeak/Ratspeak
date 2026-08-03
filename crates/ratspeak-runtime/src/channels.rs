@@ -53,6 +53,7 @@ const DIRECTORY_MAX_TOPIC_BYTES: usize = 512;
 const DEFAULT_NICK_MAX_BYTES: usize = 32;
 const DEFAULT_ROOM_MAX_BYTES: usize = 64;
 const DEFAULT_MESSAGE_MAX_BYTES: usize = 350;
+const LXMF_DELIVERY_ASPECT: &str = "lxmf.delivery";
 const TRANSCRIPT_LIMIT: usize = 300;
 const NOTICE_LIMIT: usize = 100;
 const SEEN_MESSAGE_LIMIT: usize = 2_048;
@@ -93,6 +94,21 @@ static NEXT_CHANNELS_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn next_channels_generation() -> u64 {
     NEXT_CHANNELS_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+fn lxmf_destination_hash(identity_hash: [u8; 16]) -> String {
+    hex::encode(Destination::hash_from_name_and_identity(
+        LXMF_DELIVERY_ASPECT,
+        Some(&identity_hash),
+    ))
+}
+
+/// Derive the canonical LXMF delivery destination used by Ratspeak avatars
+/// from a Reticulum identity hash supplied by an authenticated RRC Link.
+pub fn lxmf_destination_hash_from_identity_hex(identity_hash: &str) -> Option<String> {
+    let bytes = hex::decode(identity_hash).ok()?;
+    let identity_hash: [u8; 16] = bytes.try_into().ok()?;
+    Some(lxmf_destination_hash(identity_hash))
 }
 
 /// Fenced Activity recorder shared with the hub service: both sides of
@@ -275,6 +291,8 @@ pub struct ChannelMemberSnapshot {
     /// Stable Reticulum identity hash from a hub roster or the reported source
     /// of observed room content. Some hubs omit both, leaving only a nickname.
     pub identity_hash: Option<String>,
+    /// Canonical `lxmf.delivery` destination derived from `identity_hash`.
+    pub lxmf_hash: Option<String>,
     pub nickname: Option<String>,
     pub is_self: bool,
 }
@@ -285,6 +303,8 @@ pub struct ChannelTranscriptItem {
     pub kind: ChannelItemKind,
     pub timestamp_ms: u64,
     pub source_hash: Option<String>,
+    /// Canonical `lxmf.delivery` destination derived from `source_hash`.
+    pub source_lxmf_hash: Option<String>,
     pub nickname: Option<String>,
     pub text: String,
     pub ours: bool,
@@ -5023,6 +5043,7 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
     let identity_count = identities.len();
     let includes_self = identities.contains(&active.source);
     let single_identity_hash = (identity_count == 1).then(|| hex::encode(identities[0]));
+    let single_lxmf_hash = (identity_count == 1).then(|| lxmf_destination_hash(identities[0]));
     let mut single_member_inserted = false;
     let mut nickname_member_inserted = false;
     let confirming_self = room.phase == ChannelRoomPhase::Joining
@@ -5118,6 +5139,13 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
             Some(hex::encode(active.source))
         } else if identity_count == 1 {
             single_identity_hash
+        } else {
+            None
+        };
+        item.source_lxmf_hash = if confirming_self {
+            Some(lxmf_destination_hash(active.source))
+        } else if identity_count == 1 {
+            single_lxmf_hash
         } else {
             None
         };
@@ -5377,6 +5405,7 @@ fn apply_rrcd_room_status_notice(active: &mut ActiveSession, envelope: &Envelope
                 kind: ChannelItemKind::Join,
                 timestamp_ms: envelope.timestamp_ms,
                 source_hash: Some(hex::encode(active.source)),
+                source_lxmf_hash: Some(lxmf_destination_hash(active.source)),
                 nickname: Some(active.nickname.clone()),
                 text: "You joined".into(),
                 ours: true,
@@ -5449,6 +5478,7 @@ fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
         false,
     );
     item.source_hash = (identities.len() == 1).then(|| hex::encode(identities[0]));
+    item.source_lxmf_hash = (identities.len() == 1).then(|| lxmf_destination_hash(identities[0]));
     append_room_item(
         &mut active.history_events,
         active.destination_hash,
@@ -5822,6 +5852,7 @@ fn transcript_item(
         kind,
         timestamp_ms: envelope.timestamp_ms,
         source_hash: Some(hex::encode(envelope.source)),
+        source_lxmf_hash: Some(lxmf_destination_hash(envelope.source)),
         nickname,
         text,
         ours,
@@ -5877,6 +5908,7 @@ fn upsert_member(
     is_self: bool,
 ) -> bool {
     let identity_hash = identity.map(hex::encode);
+    let lxmf_hash = identity.map(lxmf_destination_hash);
     let existing_index = identity_hash
         .as_deref()
         .and_then(|hash| {
@@ -5895,6 +5927,9 @@ fn upsert_member(
         if existing.identity_hash.is_none() {
             existing.identity_hash = identity_hash;
         }
+        if existing.lxmf_hash.is_none() {
+            existing.lxmf_hash = lxmf_hash;
+        }
         if nickname.is_some() {
             existing.nickname = nickname;
         }
@@ -5903,6 +5938,7 @@ fn upsert_member(
     } else {
         members.push(ChannelMemberSnapshot {
             identity_hash,
+            lxmf_hash,
             nickname,
             is_self,
         });
@@ -7980,6 +8016,7 @@ mod tests {
                     kind: ChannelItemKind::Message,
                     timestamp_ms: index as u64,
                     source_hash: None,
+                    source_lxmf_hash: None,
                     nickname: None,
                     text: "signal".into(),
                     ours: false,
@@ -8003,6 +8040,7 @@ mod tests {
     fn observed_member_upsert_promotes_nickname_only_rows_without_duplicates() {
         let mut members = vec![ChannelMemberSnapshot {
             identity_hash: None,
+            lxmf_hash: None,
             nickname: Some("Field Rat".into()),
             is_self: false,
         }];
@@ -8020,6 +8058,16 @@ mod tests {
             members[0].identity_hash.as_deref(),
             Some(identity_hash.as_str())
         );
+        let expected_lxmf_hash = lxmf_destination_hash(identity);
+        assert_eq!(
+            members[0].lxmf_hash.as_deref(),
+            Some(expected_lxmf_hash.as_str())
+        );
+        assert_eq!(
+            lxmf_destination_hash_from_identity_hex(&identity_hash).as_deref(),
+            Some(expected_lxmf_hash.as_str())
+        );
+        assert!(lxmf_destination_hash_from_identity_hex("not-an-identity").is_none());
 
         assert!(!upsert_member(
             &mut members,

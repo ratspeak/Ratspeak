@@ -3174,6 +3174,9 @@ pub struct ChannelHistoryEvent {
     pub timestamp_ms: u64,
     pub recorded_at_ms: u64,
     pub source_hash: Option<String>,
+    /// Presentation-only LXMF destination derived by the command layer. It is
+    /// intentionally not duplicated in the local history table.
+    pub source_lxmf_hash: Option<String>,
     pub nickname: Option<String>,
     pub text: String,
     pub ours: bool,
@@ -3753,6 +3756,7 @@ fn channel_history_row(row: &rusqlite::Row<'_>) -> Result<ChannelHistoryEvent, r
         timestamp_ms,
         recorded_at_ms,
         source_hash: row.get(7)?,
+        source_lxmf_hash: None,
         nickname: row.get(8)?,
         text: row.get(9)?,
         ours: row.get::<_, i64>(10)? != 0,
