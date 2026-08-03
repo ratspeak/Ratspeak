@@ -11,7 +11,7 @@
          injects pixel values via evaluateJavascript; desktop falls back to 0. -->
     <title>Ratspeak - Dashboard</title>
     <link rel="stylesheet" href="/static/fonts/fonts.css">
-    <link rel="stylesheet" href="/static/style.css?v=1.0.39">
+    <link rel="stylesheet" href="/static/style.css?v=1.0.26b">
 </head>
 <body class="checking-setup">
 
@@ -119,15 +119,16 @@
     </nav>
 
     <nav class="bottom-bar" id="bottom-bar" role="navigation" aria-label="Main navigation">
-        <a class="bottom-bar-item active" data-view="peers" role="button" tabindex="0" aria-label="Peers">
+        <a class="bottom-bar-item active" data-view="peers" role="button" tabindex="0" aria-label="Peers" aria-current="page">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
         </a>
         <a class="bottom-bar-item" data-view="message" role="button" tabindex="0" aria-label="Messages">
             <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span class="bottom-bar-badge" id="bb-unread" style="display:none;" aria-hidden="true"></span>
         </a>
-        <a class="bottom-bar-item" data-view="contacts" role="button" tabindex="0" aria-label="Contacts">
-            <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <a class="bottom-bar-item" data-view="channels" role="button" tabindex="0" aria-label="Channels">
+            <svg viewBox="0 0 24 24"><path d="M8 16H5l-3 3V7a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3Z"/><path d="M8 19h7l4 3v-3h1a2 2 0 0 0 2-2v-7a3 3 0 0 0-3-3"/></svg>
+            <span class="bottom-bar-badge" id="bb-channels-unread" style="display:none;" aria-hidden="true"></span>
         </a>
         <a class="bottom-bar-item bottom-bar-hamburger" id="bottom-bar-hamburger" role="button" tabindex="0" aria-label="More options">
             <svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
@@ -169,6 +170,10 @@
     <div class="bottom-sheet bottom-sheet--mobile-only" id="bottom-sheet">
         <div class="bottom-sheet-handle"></div>
         <div class="bottom-sheet-items">
+            <a class="bottom-sheet-item" data-view="contacts">
+                <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                Contacts
+            </a>
             <a class="bottom-sheet-item" data-view="identity">
                 <svg viewBox="0 0 24 24"><path d="M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8A6.5 6.5 0 1 0 9.4 10.6z"/><circle cx="16.5" cy="7.5" r="1.5"/></svg>
                 Identity
@@ -417,10 +422,6 @@
             <div id="lxmf-mode-panel" class="lxmf-container" style="display:flex;">
                 <div class="lxmf-layout">
                     <div class="lxmf-sidebar">
-                        <div class="message-mode-switch" role="tablist" aria-label="Messaging mode">
-                            <button class="message-mode-option active" type="button" data-message-mode="direct" role="tab" aria-selected="true">Direct <span class="message-mode-badge" data-message-mode-badge="direct" hidden></span></button>
-                            <button class="message-mode-option" type="button" data-message-mode="channels" role="tab" aria-selected="false">Channels <span class="message-mode-badge" data-message-mode-badge="channels" hidden></span></button>
-                        </div>
                         <div class="msg-profile-strip" id="msg-profile-strip">
                             <div class="msg-profile-avatar" id="msg-profile-avatar"></div>
                             <div class="msg-profile-info">
@@ -550,29 +551,21 @@
         <div class="view" id="view-channels">
             <div class="channels-layout" id="channels-layout">
                 <aside class="channels-sidebar" aria-label="Channel rooms">
-                    <div class="message-mode-switch" role="tablist" aria-label="Messaging mode">
-                        <button class="message-mode-option" type="button" data-message-mode="direct" role="tab" aria-selected="false">Direct <span class="message-mode-badge" data-message-mode-badge="direct" hidden></span></button>
-                        <button class="message-mode-option active" type="button" data-message-mode="channels" role="tab" aria-selected="true">Channels <span class="message-mode-badge" data-message-mode-badge="channels" hidden></span></button>
-                    </div>
-
                     <div class="channels-sidebar-header">
                         <h2>Channels</h2>
-                        <button class="nr-btn nr-btn-ghost channels-icon-btn" id="channels-connect-btn" type="button" title="Add channels" aria-label="Add channels">
+                        <button class="nr-btn nr-btn-ghost channels-icon-btn" id="channels-connect-btn" type="button" title="Manage Hub" aria-label="Manage Hub">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         </button>
                     </div>
 
                     <div class="channel-hub-strip" id="channel-hub-strip" data-phase="offline">
-                        <button class="channel-hub-switcher-btn" id="channel-hub-switcher-btn" type="button" aria-haspopup="dialog" aria-label="Choose a channel hub">
+                        <button class="channel-hub-summary" id="channel-hub-summary" type="button" title="Hub options" aria-label="Channel hub options" aria-haspopup="menu" data-channel-action="hub-actions">
                             <span class="channel-hub-strip-copy">
                                 <strong id="channel-hub-strip-title">Not connected</strong>
                                 <span id="channel-hub-strip-meta">Choose a hub to begin</span>
                             </span>
-                            <span class="channel-hub-switcher-chevron" aria-hidden="true">
-                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                            </span>
                         </button>
-                        <button class="nr-btn nr-btn-ghost channels-icon-btn channel-hub-menu-btn" id="channel-hub-menu-btn" type="button" title="Hub options" aria-label="Channel hub options" hidden>
+                        <button class="nr-btn nr-btn-ghost channels-icon-btn channel-hub-menu-btn" id="channel-hub-menu-btn" type="button" title="Manage Hub" aria-label="Manage Hub" aria-haspopup="dialog" hidden>
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
                         </button>
                     </div>
@@ -599,7 +592,7 @@
 
                     <div class="channels-list-toolbar">
                         <span class="channels-section-label" id="channels-list-label">Available hubs</span>
-                        <button class="nr-btn nr-btn-ghost nr-btn-sm channels-text-btn" id="channels-join-btn" type="button" aria-label="Join a channel" hidden>Add</button>
+                        <button class="nr-btn nr-btn-ghost nr-btn-sm channels-text-btn" id="channels-join-btn" type="button" aria-label="Join a channel" hidden>Join</button>
                     </div>
                     <div class="channels-list" id="channels-list" aria-live="polite">
                         <div class="channels-list-empty">
@@ -644,9 +637,9 @@
                     </div>
 
                     <div class="channel-compose" id="channel-compose" hidden>
-                        <textarea id="channel-message-input" class="nr-input" rows="1" placeholder="Message channel..." aria-label="Channel message" title="Enter to send, Shift+Enter for a new line"></textarea>
-                        <span class="channel-char-count" id="channel-char-count" aria-live="polite"></span>
-                        <button class="nr-btn nr-btn-primary channel-send-btn" id="channel-send-btn" type="button" aria-label="Send channel message">
+                        <textarea id="channel-message-input" class="nr-input" rows="1" placeholder="Message..." aria-label="Channel message" title="Enter to send, Shift+Enter for a new line"></textarea>
+                        <span class="channel-char-count" id="channel-char-count" aria-live="polite" hidden></span>
+                        <button class="channel-send-btn" id="channel-send-btn" type="button" aria-label="Send channel message">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
                         </button>
                     </div>
@@ -655,13 +648,14 @@
                 <button class="channel-members-scrim" id="channel-members-scrim" type="button" aria-label="Close channel members"></button>
                 <aside class="channel-members-pane" id="channel-members-pane" aria-label="Channel members">
                     <div class="channel-members-header">
-                        <button class="nr-btn nr-btn-ghost channels-icon-btn channel-members-back" id="channel-members-back" type="button" aria-label="Back to people here" hidden>
+                        <button class="channel-members-back" id="channel-members-back" type="button" aria-label="Back to people here" hidden>
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                            <span>People</span>
                         </button>
                         <div class="channel-members-heading">
                             <span class="channel-members-label-row">
                                 <span class="channels-section-label" id="channel-members-label">People here</span>
-                                <button class="channel-members-info" id="channel-members-info" type="button" aria-label="The hub may provide only part of the member list." aria-expanded="false" data-tooltip="The hub may provide only part of the member list." hidden>
+                                <button class="channel-members-info" id="channel-members-info" type="button" aria-label="About channel visibility" aria-expanded="false" data-tooltip="Visible people are reported by the hub and may be incomplete. Seen here remembers recent activity and peers already known to this device." hidden>
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="11" x2="12" y2="16"></line><circle cx="12" cy="8" r="0.7" fill="currentColor" stroke="none"></circle></svg>
                                 </button>
                             </span>
@@ -1861,7 +1855,7 @@
 <script src="/static/js/constants.js?v=1.0.2"></script>
 <script src="/static/js/no_pinch.js"></script>
 <script src="/static/js/setup.js"></script>
-<script src="/static/js/nav.js?v=1.0.3"></script>
+<script src="/static/js/nav.js?v=1.0.26b"></script>
 <script src="/static/js/gestures.js"></script>
 <script src="/static/js/view_stack.js"></script>
 
@@ -1871,7 +1865,7 @@
 <script src="/static/js/toasts.js"></script>
 <script src="/static/js/dialogs.js?v=1.0.2"></script>
 <script src="/static/js/action_popover.js"></script>
-<script src="/static/js/ui_shared.js"></script>
+<script src="/static/js/ui_shared.js?v=1.0.26b"></script>
 <script src="/static/js/events.js"></script>
 <script src="/static/js/activity.js"></script>
 <script src="/static/js/health.js"></script>
@@ -1881,9 +1875,9 @@
 <script src="/static/js/voice_ringtones.js"></script>
 <script src="/static/js/vendor/jsQR.js"></script>
 <script src="/static/js/contact_card.js?v=1.0.1"></script>
-<script src="/static/js/lxmf.js"></script>
-<script src="/static/js/channels.js?v=1.0.44"></script>
-<script src="/static/js/channel_hub.js?v=1.0.36"></script>
+<script src="/static/js/lxmf.js?v=1.0.26b"></script>
+<script src="/static/js/channels.js?v=1.0.26b"></script>
+<script src="/static/js/channel_hub.js?v=1.0.26b"></script>
 <script src="/static/js/propagation.js?v=1.0.1"></script>
 <script src="/static/js/settings.js?v=1.0.3"></script>
 <script src="/static/js/identity.js"></script>

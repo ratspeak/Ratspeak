@@ -166,15 +166,19 @@ var hubStrip = {
         remove: function(name) { hubStripClasses.delete(name); }
     }
 };
-var hubSwitcher = {
-    attributes: {},
-    setAttribute: function(name, value) { this.attributes[name] = value; },
-    title: ''
-};
 var hubMenu = { hidden: true };
+var hubSummary = {
+    title: '',
+    attributes: {},
+    setAttribute: function(name, value) { this.attributes[name] = String(value); }
+};
 var hubStripText = {};
 var animationFrames = [];
+var intervals = [];
+var clearedIntervals = [];
 var stripContext = {
+    CHANNEL_HUB_PULSE_INTERVAL_MS: 60 * 1000,
+    _channelsHubPulseTimer: null,
     channelsSnapshot: {
         phase: 'active',
         nickname: 'Bob',
@@ -183,7 +187,7 @@ var stripContext = {
     },
     _channelsEl: function(id) {
         if (id === 'channel-hub-strip') return hubStrip;
-        if (id === 'channel-hub-switcher-btn') return hubSwitcher;
+        if (id === 'channel-hub-summary') return hubSummary;
         if (id === 'channel-hub-menu-btn') return hubMenu;
         return null;
     },
@@ -191,43 +195,76 @@ var stripContext = {
     _channelsPhaseLabel: function(phase) { return phase; },
     _channelsHubName: function(hub) { return hub.name; },
     _channelsIsConnecting: function() { return false; },
+    _channelsViewVisible: function() { return true; },
     _channelsShortHash: function(hash) { return hash.slice(0, 8); },
-    requestAnimationFrame: function(callback) { animationFrames.push(callback); }
+    requestAnimationFrame: function(callback) { animationFrames.push(callback); },
+    setInterval: function(callback, delay) {
+        intervals.push({ callback: callback, delay: delay });
+        return intervals.length;
+    },
+    clearInterval: function(id) { clearedIntervals.push(id); },
+    window: {
+        matchMedia: function() { return { matches: false }; }
+    }
 };
 vm.runInNewContext(
-    sourceRange('_channelsRenderHubStrip', '_channelsRenderList'),
+    sourceRange('_channelsHubPulseEnabled', '_channelsRenderList'),
     stripContext,
     { filename: 'channels-hub-strip.js' }
 );
 
 stripContext._channelsRenderHubStrip();
 assert.strictEqual(hubStrip.dataset.phase, 'active');
+assert.strictEqual(hubSummary.title, 'Hub options');
+assert.strictEqual(
+    hubSummary.attributes['aria-label'],
+    'Hub options. MichMesh.hub. Connected as Bob'
+);
+assert.strictEqual(hubSummary.attributes['aria-haspopup'], 'menu');
+assert.strictEqual(hubMenu.hidden, false,
+    'Manage Hub must remain available from the ellipsis in every connection state');
 assert.strictEqual(animationFrames.length, 1,
     'entering active queues one signal lap');
 animationFrames.shift()();
 assert(hubStripClasses.has('link-arrived'));
-assert.strictEqual(
-    hubSwitcher.attributes['aria-label'],
-    'Current channel hub: MichMesh.hub. Connected as Bob. Choose another hub'
-);
-
+assert.strictEqual(intervals.length, 1,
+    'active connectivity schedules one quiet periodic signal');
+assert.strictEqual(intervals[0].delay, 60 * 1000,
+    'the connected perimeter rests for a full minute between signals');
 stripContext._channelsRenderHubStrip();
 assert.strictEqual(animationFrames.length, 0,
     'routine active snapshots must not replay the signal lap');
+assert.strictEqual(intervals.length, 1,
+    'routine snapshots must not multiply connectivity timers');
+hubStripClasses.delete('link-arrived');
+intervals[0].callback();
+assert.strictEqual(animationFrames.length, 1,
+    'the minute signal queues one lightweight perimeter animation');
+animationFrames.shift()();
+assert(hubStripClasses.has('link-arrived'));
 stripContext.channelsSnapshot.phase = 'stale';
 stripContext._channelsRenderHubStrip();
 assert(!hubStripClasses.has('link-arrived'),
     'leaving active clears any pending trace state');
+assert.deepStrictEqual(clearedIntervals, [1],
+    'leaving active cancels the periodic signal timer');
 
-var stripPosition = indexSource.indexOf('id="channel-hub-switcher-btn"');
+var stripPosition = indexSource.indexOf('id="channel-hub-summary"');
 var listPosition = indexSource.indexOf('id="channels-list"');
 assert(stripPosition !== -1 && stripPosition < listPosition,
-    'the hub selector must remain visibly above the selected hub channel list');
-assert(indexSource.indexOf('aria-haspopup="dialog"') !== -1);
+    'the hub summary must remain visibly above the selected hub channel list');
+assert(indexSource.indexOf('channel-hub-switcher-chevron') === -1,
+    'the full hub card replaces a separate switcher chevron');
+assert(indexSource.indexOf('channel-hub-add-btn') === -1,
+    'mobile must not retain a redundant hub-card plus button');
+assert(indexSource.indexOf('data-channel-action="hub-actions"') !== -1,
+    'the hub summary must open actions for the current hub');
+assert(indexSource.indexOf('id="channel-hub-menu-btn" type="button" title="Manage Hub"') !== -1,
+    'the ellipsis must own hub selection and connection management');
 assert(indexSource.indexOf('channel-live-beacon') === -1,
     'the connected perimeter replaces the redundant status dot');
 assert(channelsSource.indexOf('function channelsOpenHubSwitcher()') !== -1);
-assert(channelsSource.indexOf("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)") !== -1);
+assert(channelsSource.indexOf("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)") === -1);
 assert(channelsSource.indexOf('One hub can be live at a time.') !== -1);
 assert(channelsSource.indexOf('history stays on this device.') !== -1);
 assert(channelsSource.indexOf("list.setAttribute('aria-live', 'polite')") !== -1);
@@ -257,7 +294,7 @@ assert(switcherSource.indexOf('Scan') === -1,
 assert(connectSource.indexOf('Available hubs') === -1,
     'connection review must not repeat the hub picker');
 assert(connectSource.indexOf('Open a shared channel') === -1,
-    'link acquisition belongs in Add channels, not connection review');
+    'link acquisition belongs in Manage Hub, not connection review');
 assert(connectSource.indexOf('Encrypted in transit') === -1,
     'connection review must not repeat transport trust copy');
 assert(connectSource.indexOf('Ends live rooms') === -1,
@@ -267,20 +304,22 @@ assert(connectSource.indexOf('channel-connection-trust') === -1,
 assert(connectSource.indexOf("initialMode.kind === 'current'") !== -1 &&
     connectSource.indexOf('channelsOpenHubOptions();') !== -1,
     'reviewing the current hub must lead to hub actions instead of a disabled dead end');
-assert(channelHubSource.indexOf("title: 'Add channels'") !== -1);
+assert(channelHubSource.indexOf("title: 'Manage Hub'") !== -1);
 assert(channelHubSource.indexOf("'Use a link or QR'") !== -1);
 assert(channelHubSource.indexOf(
     'if (overview.supported && _channelHubHostingEnabled(overview))'
 ) !== -1,
-    'hosting requires Settings opt-in, but Add channels must remain available everywhere');
+    'hosting requires Settings opt-in, but Manage Hub must remain available everywhere');
 assert(channelHubSource.indexOf(
     'return !!(overview && overview.supported && _channelHubHostingEnabled(overview));'
 ) !== -1,
     'Settings ON must reveal the first-run hosting card before a hub exists');
 
-assert(cssSource.indexOf('.channel-hub-switcher-btn') !== -1);
+assert(cssSource.indexOf('.channel-hub-summary') !== -1);
 assert(cssSource.indexOf('.channel-live-beacon') === -1);
 assert(cssSource.indexOf('@keyframes channelHubSignalLap') !== -1);
+assert(cssSource.indexOf('animation: channelHubSignalLap 2.25s linear') !== -1,
+    'the connected trace must read as a deliberate lap rather than a fast flicker');
 assert(cssSource.indexOf('@media (prefers-reduced-motion: reduce)') !== -1);
 assert(channelsSource.indexOf("previousPhase !== 'active'") !== -1,
     'the signal lap must run only on a transition into the active state');

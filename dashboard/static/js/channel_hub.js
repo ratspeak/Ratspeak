@@ -200,7 +200,7 @@ function channelsOpenAddSheet() {
     if (typeof _rsBuildSheet !== 'function') return;
     function present(overview) {
         overview = overview || { supported: false };
-        var built = _rsBuildSheet({ title: 'Add channels' }, function() {});
+        var built = _rsBuildSheet({ title: 'Manage Hub' }, function() {});
         built.sheet.classList.add('channel-hub-launch-sheet');
 
         var intro = document.createElement('p');

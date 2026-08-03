@@ -15,12 +15,7 @@ var _cacheMax = 30;
 var _imageBlobUrlCache = {};
 var _imageBlobUrlLru = [];
 var _imageBlobUrlMax = 64;
-var _lxmfSendInputWasFocused = null;
-var _lxmfSendInputFocusCapturedAt = 0;
-var _lxmfMessageScrollTop = 0;
-var _lxmfLastUserScrollUpAt = 0;
-var _lxmfProgrammaticScrollUntil = 0;
-var _lxmfScrollSettleToken = 0;
+var _lxmfMessageScrollStates = new WeakMap();
 var _messageLongPressDetachFns = [];
 var _pendingAttachmentToken = 0;
 var _pendingLxmfCancelByClientId = {};
@@ -998,6 +993,21 @@ function normalizeContactList(data) {
     return contacts;
 }
 
+function _lxmfMessageScrollStateFor(container) {
+    var state = _lxmfMessageScrollStates.get(container);
+    if (!state) {
+        state = {
+            scrollTop: container ? container.scrollTop : 0,
+            lastUserScrollUpAt: 0,
+            programmaticScrollUntil: 0,
+            settleToken: 0,
+            followLatest: _lxmfMessagesNearBottom(container)
+        };
+        _lxmfMessageScrollStates.set(container, state);
+    }
+    return state;
+}
+
 function _lxmfMessageBottomGap(container) {
     if (!container) return 0;
     return Math.max(0, container.scrollHeight - container.clientHeight - container.scrollTop);
@@ -1011,35 +1021,45 @@ function _lxmfMessagesNearBottom(container) {
 function _wireLxmfMessageScroll(container) {
     if (!container || container._lxmfScrollAttached) return;
     container._lxmfScrollAttached = true;
-    _lxmfMessageScrollTop = container.scrollTop;
+    var state = _lxmfMessageScrollStateFor(container);
+    state.scrollTop = container.scrollTop;
+    state.followLatest = _lxmfMessagesNearBottom(container);
     container.addEventListener('scroll', function() {
         var now = Date.now();
         var currentTop = container.scrollTop;
-        if (now >= _lxmfProgrammaticScrollUntil && currentTop < _lxmfMessageScrollTop - 2) {
-            _lxmfLastUserScrollUpAt = now;
+        if (now >= state.programmaticScrollUntil && currentTop < state.scrollTop - 2) {
+            state.lastUserScrollUpAt = now;
+            state.followLatest = false;
         }
         if (_lxmfMessagesNearBottom(container)) {
-            _lxmfLastUserScrollUpAt = 0;
+            state.lastUserScrollUpAt = 0;
+            state.followLatest = true;
         }
-        _lxmfMessageScrollTop = currentTop;
+        state.scrollTop = currentTop;
     }, { passive: true });
     container.addEventListener('wheel', function(e) {
-        if (e.deltaY < -1) _lxmfLastUserScrollUpAt = Date.now();
+        if (e.deltaY < -1) {
+            state.lastUserScrollUpAt = Date.now();
+            state.followLatest = false;
+        }
     }, { passive: true });
 }
 
 function _setLxmfMessageScrollTop(container, top) {
     if (!container) return;
-    _lxmfProgrammaticScrollUntil = Date.now() + 150;
+    var state = _lxmfMessageScrollStateFor(container);
+    state.programmaticScrollUntil = Date.now() + 150;
     container.scrollTop = top;
-    _lxmfMessageScrollTop = container.scrollTop;
+    state.scrollTop = container.scrollTop;
 }
 
 function _scheduleLxmfScrollToBottom(container) {
     if (!container) return;
-    var token = ++_lxmfScrollSettleToken;
+    var state = _lxmfMessageScrollStateFor(container);
+    state.followLatest = true;
+    var token = ++state.settleToken;
     function pin() {
-        if (token !== _lxmfScrollSettleToken || !container.isConnected) return;
+        if (token !== state.settleToken || !container.isConnected) return;
         _setLxmfMessageScrollTop(container, container.scrollHeight);
     }
     pin();
@@ -1064,29 +1084,45 @@ function _compensateImageLoadScroll(container, img, before) {
 }
 
 function _captureLxmfMessageScrollState(container) {
+    var controller = container ? _lxmfMessageScrollStateFor(container) : null;
+    var nearBottom = _lxmfMessagesNearBottom(container);
+    if (controller && nearBottom) {
+        controller.followLatest = true;
+        controller.lastUserScrollUpAt = 0;
+    }
     return {
         scrollTop: container ? container.scrollTop : 0,
         scrollHeight: container ? container.scrollHeight : 0,
-        nearBottom: _lxmfMessagesNearBottom(container),
+        nearBottom: nearBottom,
+        followLatest: controller ? controller.followLatest && nearBottom : nearBottom,
     };
 }
 
 function _restoreLxmfMessageScroll(container, state) {
     if (!container || !state) return;
-    _lxmfScrollSettleToken++;
+    var controller = _lxmfMessageScrollStateFor(container);
+    controller.settleToken++;
+    controller.followLatest = !!state.followLatest;
     var maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
     _setLxmfMessageScrollTop(container, Math.min(maxScroll, Math.max(0, state.scrollTop)));
 }
 
-function _userIsActivelyScrollingMessagesUp() {
-    return _lxmfLastUserScrollUpAt && Date.now() - _lxmfLastUserScrollUpAt < 900;
+function _lxmfShouldFollowLatest(container) {
+    if (!container) return true;
+    var state = _lxmfMessageScrollStateFor(container);
+    if (_lxmfMessagesNearBottom(container)) {
+        state.followLatest = true;
+        state.lastUserScrollUpAt = 0;
+    }
+    return state.followLatest;
 }
 
 function _applyLxmfMessageScrollAfterRender(container, state, options) {
     options = options || {};
+    var shouldFollow = !!(state && state.followLatest && state.nearBottom);
     var shouldPin = !!options.forceScrollBottom ||
-        (!!options.stickToBottom && !_userIsActivelyScrollingMessagesUp()) ||
-        (!options.preserveScroll && state && state.nearBottom && !_userIsActivelyScrollingMessagesUp());
+        (!!options.stickToBottom && shouldFollow) ||
+        (!options.preserveScroll && shouldFollow);
 
     if (shouldPin) {
         _scheduleLxmfScrollToBottom(container);
@@ -1095,6 +1131,19 @@ function _applyLxmfMessageScrollAfterRender(container, state, options) {
     }
     return shouldPin;
 }
+
+// Direct Messages owns the established follow-latest policy. Export those
+// exact functions so Channels and keyboard viewport handling reuse it instead
+// of maintaining another scroll state machine.
+RS.chatScroll = RS.chatScroll || {};
+RS.chatScroll.wire = _wireLxmfMessageScroll;
+RS.chatScroll.capture = _captureLxmfMessageScrollState;
+RS.chatScroll.applyAfterRender = _applyLxmfMessageScrollAfterRender;
+RS.chatScroll.pinToBottom = _scheduleLxmfScrollToBottom;
+RS.chatScroll.restore = _restoreLxmfMessageScroll;
+RS.chatScroll.setTop = _setLxmfMessageScrollTop;
+RS.chatScroll.nearBottom = _lxmfMessagesNearBottom;
+RS.chatScroll.isFollowing = _lxmfShouldFollowLatest;
 
 function _watchLxmfImagesForBottomPin(container, shouldPin) {
     if (!container) return;
@@ -1105,7 +1154,7 @@ function _watchLxmfImagesForBottomPin(container, shouldPin) {
             imgTop: img.getBoundingClientRect().top
         };
         img.addEventListener('load', function() {
-            if (shouldPin && !_userIsActivelyScrollingMessagesUp()) {
+            if (shouldPin && _lxmfShouldFollowLatest(container)) {
                 _scheduleLxmfScrollToBottom(container);
                 return;
             }
@@ -3167,29 +3216,20 @@ function generateMsgId() {
 
 function _captureLxmfSendFocusState() {
     var input = document.getElementById('lxmf-input');
-    _lxmfSendInputWasFocused = !!(input && document.activeElement === input);
-    _lxmfSendInputFocusCapturedAt = Date.now();
+    if (RS.composer) RS.composer.captureFocus(input);
 }
 
 function _consumeLxmfSendFocusState(input) {
-    var isFocusedNow = !!(input && document.activeElement === input);
-    if (_lxmfSendInputWasFocused !== null && Date.now() - _lxmfSendInputFocusCapturedAt < 8000) {
-        var shouldRestoreFocus = _lxmfSendInputWasFocused || isFocusedNow;
-        _lxmfSendInputWasFocused = null;
-        _lxmfSendInputFocusCapturedAt = 0;
-        return shouldRestoreFocus;
-    }
-    _lxmfSendInputWasFocused = null;
-    _lxmfSendInputFocusCapturedAt = 0;
-    return isFocusedNow;
+    return RS.composer ? RS.composer.consumeFocus(input) : document.activeElement === input;
 }
 
 function _focusLxmfComposerInput(input) {
-    try {
-        input.focus({ preventScroll: true });
-    } catch (_) {
-        input.focus();
+    if (RS.composer) {
+        RS.composer.focusWithoutScroll(input);
+        return;
     }
+    try { input.focus({ preventScroll: true }); }
+    catch (_) { input.focus(); }
 }
 
 function _isLxmfComposerFocused() {

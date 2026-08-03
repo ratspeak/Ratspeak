@@ -193,25 +193,14 @@ async function main() {
     var elements = {
         'nav-unread-dot': { style: {} },
         'nav-channels-unread': { style: {} },
-        'bb-unread': { style: {} }
+        'bb-unread': { style: {} },
+        'bb-channels-unread': { style: {} }
     };
-    var badges = [
-        {
-            dataset: { messageModeBadge: 'direct' },
-            hidden: true,
-            setAttribute: function(name, value) { this[name] = value; }
-        },
-        {
-            dataset: { messageModeBadge: 'channels' },
-            hidden: true,
-            setAttribute: function(name, value) { this[name] = value; }
-        }
-    ];
     var navContext = {
         _messageUnreadSources: { direct: 0, channels: 0 },
         document: {
             getElementById: function(id) { return elements[id] || null; },
-            querySelectorAll: function() { return badges; }
+            querySelectorAll: function() { return []; }
         },
         window: {}
     };
@@ -229,10 +218,10 @@ async function main() {
     navContext.setMessageUnreadSource('direct', 0);
     assert.strictEqual(elements['nav-unread-dot'].style.display, 'none');
     assert.strictEqual(elements['nav-channels-unread'].style.display, '');
-    assert.strictEqual(elements['bb-unread'].style.display, '',
-        'the shared mobile Messages badge must retain Channels attention');
-    assert.strictEqual(badges[0].hidden, true);
-    assert.strictEqual(badges[1].textContent, '2');
+    assert.strictEqual(elements['bb-unread'].style.display, 'none',
+        'clearing Direct attention must clear only the mobile Messages badge');
+    assert.strictEqual(elements['bb-channels-unread'].style.display, '',
+        'the dedicated mobile Channels badge must retain Channels attention');
 
     console.log('channel unread and read-state tests passed');
 }

@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 40;
+const SCHEMA_VERSION: i64 = 41;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -102,6 +102,7 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
     conn.execute_batch(SCHEMA_SQL)?;
     conn.execute_batch(CHANNEL_HISTORY_SCHEMA_SQL)?;
     conn.execute_batch(CHANNEL_ROOM_STATE_SCHEMA_SQL)?;
+    conn.execute_batch(CHANNEL_PARTICIPANT_OBSERVATION_SCHEMA_SQL)?;
     reconcile_channel_history_usage(&conn)?;
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
@@ -336,6 +337,8 @@ CREATE TABLE IF NOT EXISTS identity_activity (
     lxmf_compression_support TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
+CREATE INDEX IF NOT EXISTS idx_identity_activity_identity_hash
+    ON identity_activity(identity_hash) WHERE identity_hash <> '';
 
 -- Channels service-state persists user intent and connection conveniences.
 -- desired_* is the durable scheduler input; actual Link and JOIN state remains
@@ -495,6 +498,34 @@ CREATE TABLE IF NOT EXISTS channel_room_state (
     PRIMARY KEY (identity_id, hub_destination_hash, room_name),
     FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
 );
+"#;
+
+// Identity-bearing roster observations are kept separately from transcript
+// rows. A hub can supply a member in its initial roster without emitting an
+// individual JOIN event; retaining that identity ensures a canonical avatar
+// that was already shown cannot regress to an anonymous placeholder after an
+// app restart. Explicit history clearing removes these rows too, while their
+// age follows the configurable known-identity cache lifetime.
+const CHANNEL_PARTICIPANT_OBSERVATION_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS channel_participant_observations (
+    identity_id              TEXT NOT NULL,
+    hub_destination_hash     TEXT NOT NULL,
+    room_name                TEXT NOT NULL,
+    participant_identity_hash TEXT NOT NULL,
+    nickname                 TEXT,
+    last_observed_at_ms      INTEGER NOT NULL CHECK (last_observed_at_ms >= 0),
+    PRIMARY KEY (
+        identity_id, hub_destination_hash, room_name, participant_identity_hash
+    ),
+    FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_participant_observations_room_recent
+    ON channel_participant_observations(
+        identity_id, hub_destination_hash, room_name, last_observed_at_ms DESC
+    );
+CREATE INDEX IF NOT EXISTS idx_channel_participant_observations_age
+    ON channel_participant_observations(last_observed_at_ms);
 "#;
 
 // Estimated payload usage is materialized per room so the hot append path can
@@ -1737,6 +1768,17 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 41 {
+        migration_step(conn, 41, |conn| {
+            conn.execute_batch(CHANNEL_PARTICIPANT_OBSERVATION_SCHEMA_SQL)?;
+            conn.execute_batch("UPDATE schema_version SET version = 41;")?;
+            tracing::info!(
+                "Migrated to schema version 41 (durable Channels participant identities)"
+            );
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -1927,6 +1969,7 @@ pub const RESET_TABLES: &[&str] = &[
     "channel_history",
     "channel_history_room_usage",
     "channel_room_state",
+    "channel_participant_observations",
     "channel_room_secrets",
     "channel_rooms",
     "channel_hubs",
@@ -1972,6 +2015,10 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "channel_room_state",
         "DELETE FROM channel_room_state WHERE identity_id = ?1",
+    ),
+    (
+        "channel_participant_observations",
+        "DELETE FROM channel_participant_observations WHERE identity_id = ?1",
     ),
     (
         "channel_room_secrets",
@@ -3071,6 +3118,10 @@ pub const CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_PER_IDENTITY: usize = 64 * 1024 * 10
 pub const CHANNEL_HISTORY_MAX_PAYLOAD_BYTES_GLOBAL: usize = 256 * 1024 * 1024;
 pub const CHANNEL_HISTORY_DEFAULT_PAGE_SIZE: usize = 100;
 pub const CHANNEL_HISTORY_MAX_PAGE_SIZE: usize = 200;
+pub const CHANNEL_PARTICIPANT_MAX_RESULTS: usize = 200;
+pub const CHANNEL_PARTICIPANT_MAX_TRANSIENT_PER_ROOM: usize = 100;
+pub const CHANNEL_PARTICIPANT_HARD_MAX_PER_ROOM: usize = 500;
+pub const CHANNEL_PARTICIPANT_MAX_OBSERVATION_BATCH: usize = 256;
 pub const CHANNEL_HISTORY_MAX_APPEND_BATCH: usize = 256;
 
 pub const CHANNEL_HISTORY_MAX_ROOM_BYTES: usize = 256;
@@ -3143,6 +3194,29 @@ pub struct NewChannelHistoryEvent {
     pub mentioned: bool,
 }
 
+/// A cryptographically identified room participant observed through the
+/// authenticated hub Link. This is durable identity metadata, not a claim
+/// that the participant is currently online.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NewChannelParticipantObservation {
+    pub hub_destination_hash: String,
+    pub room_name: String,
+    pub identity_hash: String,
+    pub nickname: Option<String>,
+}
+
+impl std::fmt::Debug for NewChannelParticipantObservation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NewChannelParticipantObservation")
+            .field("hub_destination_hash", &self.hub_destination_hash)
+            .field("room_name", &self.room_name)
+            .field("identity_hash", &self.identity_hash)
+            .field("nickname_present", &self.nickname.is_some())
+            .finish()
+    }
+}
+
 // Transcript text and nicknames can be private. Keep them out of routine
 // diagnostics even if a caller logs a failed batch.
 impl std::fmt::Debug for NewChannelHistoryEvent {
@@ -3191,6 +3265,26 @@ pub struct ChannelHistoryPage {
     /// cursor to catch up without reloading or trusting peer timestamps.
     pub next_after: Option<String>,
     pub has_more: bool,
+}
+
+/// One non-local participant observed in retained room history.
+///
+/// This is deliberately not an online-presence claim. It powers a local
+/// "Seen here" affordance when a peer is absent from the current hub roster.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ChannelParticipantSummary {
+    pub identity_hash: Option<String>,
+    /// Presentation-only LXMF destination derived by the command layer.
+    pub lxmf_hash: Option<String>,
+    pub nickname: Option<String>,
+    /// Local receipt time of the newest retained event for this participant.
+    pub last_seen_at_ms: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ChannelParticipantPage {
+    pub participants: Vec<ChannelParticipantSummary>,
+    pub omitted_count: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -3353,6 +3447,30 @@ pub fn validate_channel_history_event(
     Ok(())
 }
 
+pub fn validate_channel_participant_observation(
+    identity_id: &str,
+    observation: &NewChannelParticipantObservation,
+) -> Result<(), String> {
+    validate_channel_history_scope(
+        identity_id,
+        &observation.hub_destination_hash,
+        &observation.room_name,
+    )?;
+    if !is_canonical_channel_hash(&observation.identity_hash)
+        || observation.identity_hash == identity_id
+    {
+        return Err("invalid Channels participant identity".into());
+    }
+    if observation.nickname.as_deref().is_some_and(|nickname| {
+        nickname.is_empty()
+            || nickname.trim() != nickname
+            || nickname.len() > CHANNEL_HISTORY_MAX_NICKNAME_BYTES
+    }) {
+        return Err("invalid Channels participant nickname".into());
+    }
+    Ok(())
+}
+
 fn parse_channel_history_cursor(before: Option<&str>) -> Result<Option<i64>, String> {
     let Some(before) = before else {
         return Ok(None);
@@ -3410,12 +3528,54 @@ fn prune_expired_channel_history_at(
     .map_err(|error| error.to_string())
 }
 
+fn prune_expired_channel_participant_observations_at(
+    conn: &Connection,
+    now_ms: i64,
+    max_age_ms: i64,
+) -> Result<usize, String> {
+    let cutoff = now_ms.saturating_sub(max_age_ms);
+    conn.execute(
+        "DELETE FROM channel_participant_observations
+         WHERE last_observed_at_ms < ?1
+           AND NOT EXISTS (
+               SELECT 1
+               FROM identity_activity
+               WHERE identity_activity.identity_hash =
+                     channel_participant_observations.participant_identity_hash
+           )",
+        params![cutoff],
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn channel_participant_retention_ms(pool: &DbPool) -> Option<i64> {
+    get_prune_days(pool).map(|days| i64::from(days).saturating_mul(MILLIS_PER_DAY))
+}
+
+fn channel_participant_cutoff_ms(pool: &DbPool, now_ms: i64) -> Option<i64> {
+    channel_participant_retention_ms(pool).map(|max_age_ms| now_ms.saturating_sub(max_age_ms))
+}
+
 /// Remove age-expired rows across every identity. The runtime invokes this at
 /// startup; append also performs the same pass so dormant identities are
 /// eventually cleaned without server participation.
 pub fn prune_expired_channel_history(pool: &DbPool) -> Result<usize, String> {
+    // Channel participants are identity metadata, so follow the same
+    // user-configurable lifetime as the known-identity cache (14 days by
+    // default). Read the setting before holding a pooled connection: test and
+    // embedded pools may intentionally have a single connection.
+    let participant_max_age_ms = channel_participant_retention_ms(pool);
     let conn = pool.get().map_err(|error| error.to_string())?;
-    prune_expired_channel_history_at(&conn, now_unix_ms(), CHANNEL_HISTORY_RETENTION.max_age_ms)
+    let now_ms = now_unix_ms();
+    let history =
+        prune_expired_channel_history_at(&conn, now_ms, CHANNEL_HISTORY_RETENTION.max_age_ms)?;
+    let participants = match participant_max_age_ms {
+        Some(max_age_ms) => {
+            prune_expired_channel_participant_observations_at(&conn, now_ms, max_age_ms)?
+        }
+        None => 0,
+    };
+    Ok(history.saturating_add(participants))
 }
 
 #[derive(Clone, Copy)]
@@ -3729,6 +3889,161 @@ fn append_channel_history_events_at(
     })
 }
 
+/// Remember canonical participant identities independently of transcript
+/// events. Initial RRC rosters may contain identities without generating an
+/// individual JOIN row, so this bounded projection preserves an avatar the UI
+/// has already been able to derive.
+pub fn remember_channel_participants(
+    pool: &DbPool,
+    identity_id: &str,
+    observations: &[NewChannelParticipantObservation],
+) -> Result<usize, String> {
+    remember_channel_participants_at(pool, identity_id, observations, now_unix_ms())
+}
+
+fn remember_channel_participants_at(
+    pool: &DbPool,
+    identity_id: &str,
+    observations: &[NewChannelParticipantObservation],
+    observed_at_ms: i64,
+) -> Result<usize, String> {
+    if observations.len() > CHANNEL_PARTICIPANT_MAX_OBSERVATION_BATCH {
+        return Err(format!(
+            "Channels participant batch exceeds {CHANNEL_PARTICIPANT_MAX_OBSERVATION_BATCH} observations"
+        ));
+    }
+    if observed_at_ms < 0 {
+        return Err("invalid Channels participant observation time".into());
+    }
+    if observations.is_empty() {
+        return Ok(0);
+    }
+    for observation in observations {
+        validate_channel_participant_observation(identity_id, observation)?;
+    }
+
+    let participant_cutoff_ms = channel_participant_cutoff_ms(pool, observed_at_ms);
+
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let mut touched_rooms = std::collections::BTreeSet::new();
+    let mut remembered = 0usize;
+    for observation in observations {
+        remembered = remembered.saturating_add(
+            transaction
+                .execute(
+                    "INSERT INTO channel_participant_observations (
+                        identity_id, hub_destination_hash, room_name,
+                        participant_identity_hash, nickname, last_observed_at_ms
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT (
+                        identity_id, hub_destination_hash, room_name,
+                        participant_identity_hash
+                     ) DO UPDATE SET
+                        nickname = CASE
+                            WHEN excluded.last_observed_at_ms >=
+                                 channel_participant_observations.last_observed_at_ms
+                             AND excluded.nickname IS NOT NULL
+                             AND trim(excluded.nickname) <> ''
+                            THEN excluded.nickname
+                            ELSE channel_participant_observations.nickname
+                        END,
+                        last_observed_at_ms = MAX(
+                            channel_participant_observations.last_observed_at_ms,
+                            excluded.last_observed_at_ms
+                        )",
+                    params![
+                        identity_id,
+                        observation.hub_destination_hash,
+                        observation.room_name,
+                        observation.identity_hash,
+                        observation.nickname,
+                        observed_at_ms,
+                    ],
+                )
+                .map_err(|error| error.to_string())?,
+        );
+        touched_rooms.insert((
+            observation.hub_destination_hash.as_str(),
+            observation.room_name.as_str(),
+        ));
+    }
+
+    if let Some(cutoff) = participant_cutoff_ms {
+        transaction
+            .execute(
+                "DELETE FROM channel_participant_observations
+                 WHERE last_observed_at_ms < ?1
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM identity_activity
+                       WHERE identity_activity.identity_hash =
+                             channel_participant_observations.participant_identity_hash
+                   )",
+                params![cutoff],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    let transient_limit = i64::try_from(CHANNEL_PARTICIPANT_MAX_TRANSIENT_PER_ROOM)
+        .map_err(|_| "Channels transient participant limit is too large".to_string())?;
+    let hard_limit = i64::try_from(CHANNEL_PARTICIPANT_HARD_MAX_PER_ROOM)
+        .map_err(|_| "Channels participant hard limit is too large".to_string())?;
+    for (hub_destination_hash, room_name) in touched_rooms {
+        // Keep a bounded recent tail for channel-only sightings. Identities
+        // still present in Ratspeak's normal peer graph are exempt so a saved
+        // contact or conversation does not lose its room association merely
+        // because a busy hub has supplied 100 newer names.
+        transaction
+            .execute(
+                "DELETE FROM channel_participant_observations
+                 WHERE rowid IN (
+                    SELECT rowid
+                    FROM channel_participant_observations AS candidate
+                    WHERE candidate.identity_id = ?1
+                      AND candidate.hub_destination_hash = ?2
+                      AND candidate.room_name = ?3
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM identity_activity
+                          WHERE identity_activity.identity_hash =
+                                candidate.participant_identity_hash
+                      )
+                    ORDER BY last_observed_at_ms DESC,
+                             participant_identity_hash DESC
+                    LIMIT -1 OFFSET ?4
+                 )",
+                params![
+                    identity_id,
+                    hub_destination_hash,
+                    room_name,
+                    transient_limit
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        // Even protected user data needs a defensive per-room ceiling against
+        // a hostile or badly behaved hub. This is intentionally far above the
+        // transient allowance and only evicts the oldest association.
+        transaction
+            .execute(
+                "DELETE FROM channel_participant_observations
+                 WHERE rowid IN (
+                    SELECT rowid
+                    FROM channel_participant_observations
+                    WHERE identity_id = ?1
+                      AND hub_destination_hash = ?2
+                      AND room_name = ?3
+                    ORDER BY last_observed_at_ms DESC,
+                             participant_identity_hash DESC
+                    LIMIT -1 OFFSET ?4
+                 )",
+                params![identity_id, hub_destination_hash, room_name, hard_limit],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(remembered)
+}
+
 fn channel_history_row(row: &rusqlite::Row<'_>) -> Result<ChannelHistoryEvent, rusqlite::Error> {
     let sequence = row.get::<_, i64>(0)?;
     let kind = row.get::<_, String>(4)?;
@@ -3824,6 +4139,180 @@ pub fn list_channel_history(
         next_before,
         next_after,
         has_more,
+    })
+}
+
+/// Return the newest retained observation for each non-local participant in
+/// one room. Identified peers group by identity hash across nickname changes;
+/// nickname-only RRC observations group conservatively by exact nickname.
+pub fn list_channel_participants(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+) -> Result<ChannelParticipantPage, String> {
+    list_channel_participants_at(
+        pool,
+        identity_id,
+        hub_destination_hash,
+        room_name,
+        now_unix_ms(),
+    )
+}
+
+fn list_channel_participants_at(
+    pool: &DbPool,
+    identity_id: &str,
+    hub_destination_hash: &str,
+    room_name: &str,
+    now_ms: i64,
+) -> Result<ChannelParticipantPage, String> {
+    validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
+    if now_ms < 0 {
+        return Err("invalid Channels participant query time".into());
+    }
+    let participant_cutoff_ms = channel_participant_cutoff_ms(pool, now_ms);
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "WITH observations AS (
+                 SELECT sequence AS observation_order, source_hash, nickname,
+                        recorded_at_ms, 0 AS source_rank,
+                        CASE
+                            WHEN source_hash IS NOT NULL THEN 'identity:' || source_hash
+                            ELSE 'nickname:' || nickname
+                        END AS participant_key
+                 FROM channel_history
+                 WHERE identity_id = ?1
+                   AND hub_destination_hash = ?2
+                   AND room_name = ?3
+                   AND ours = 0
+                   AND (source_hash IS NULL OR source_hash <> ?1)
+                   AND (
+                       ?4 IS NULL OR recorded_at_ms >= ?4 OR
+                       (
+                           source_hash IS NOT NULL AND EXISTS (
+                               SELECT 1
+                               FROM identity_activity
+                               WHERE identity_activity.identity_hash =
+                                     channel_history.source_hash
+                           )
+                       )
+                   )
+                   AND kind IN ('message', 'action', 'join', 'part')
+                   AND (
+                       source_hash IS NOT NULL OR
+                       (nickname IS NOT NULL AND trim(nickname) <> '')
+                   )
+                 UNION ALL
+                 SELECT 0 AS observation_order,
+                        participant_identity_hash AS source_hash,
+                        nickname,
+                        last_observed_at_ms AS recorded_at_ms,
+                        1 AS source_rank,
+                        'identity:' || participant_identity_hash AS participant_key
+                 FROM channel_participant_observations
+                 WHERE identity_id = ?1
+                   AND hub_destination_hash = ?2
+                   AND room_name = ?3
+                   AND participant_identity_hash <> ?1
+                   AND (
+                       ?4 IS NULL OR last_observed_at_ms >= ?4 OR
+                       EXISTS (
+                           SELECT 1
+                           FROM identity_activity
+                           WHERE identity_activity.identity_hash =
+                                 channel_participant_observations.participant_identity_hash
+                       )
+                   )
+             ), ranked AS (
+                 SELECT observation_order, source_hash, nickname,
+                        recorded_at_ms, source_rank, participant_key,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY participant_key
+                            ORDER BY recorded_at_ms DESC, source_rank DESC,
+                                     observation_order DESC
+                        ) AS participant_rank
+                 FROM observations
+             )
+             SELECT ranked.source_hash,
+                    COALESCE(
+                        (
+                            SELECT named.nickname
+                            FROM observations AS named
+                            WHERE named.participant_key = ranked.participant_key
+                              AND named.nickname IS NOT NULL
+                              AND trim(named.nickname) <> ''
+                            ORDER BY named.recorded_at_ms DESC,
+                                     named.source_rank DESC,
+                                     named.observation_order DESC
+                            LIMIT 1
+                        ),
+                        ranked.nickname
+                    ) AS nickname,
+                    ranked.recorded_at_ms,
+                    (
+                        SELECT COUNT(*) FROM ranked AS counted
+                        WHERE counted.participant_rank = 1
+                    ) AS participant_count
+             FROM ranked
+             WHERE ranked.participant_rank = 1
+             ORDER BY ranked.recorded_at_ms DESC, ranked.observation_order DESC,
+                      ranked.participant_key ASC
+             LIMIT ?5",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut total_count = 0usize;
+    let mut participants = statement
+        .query_map(
+            params![
+                identity_id,
+                hub_destination_hash,
+                room_name,
+                participant_cutoff_ms,
+                i64::try_from(CHANNEL_PARTICIPANT_MAX_RESULTS)
+                    .map_err(|_| "Channels participant limit is too large".to_string())?
+            ],
+            |row| {
+                let last_seen_at_ms = u64::try_from(row.get::<_, i64>(2)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?;
+                let participant_count =
+                    usize::try_from(row.get::<_, i64>(3)?).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Integer,
+                            Box::new(error),
+                        )
+                    })?;
+                Ok((
+                    ChannelParticipantSummary {
+                        identity_hash: row.get(0)?,
+                        lxmf_hash: None,
+                        nickname: row.get(1)?,
+                        last_seen_at_ms,
+                    },
+                    participant_count,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let participants = participants
+        .drain(..)
+        .map(|(participant, count)| {
+            total_count = count;
+            participant
+        })
+        .collect::<Vec<_>>();
+    Ok(ChannelParticipantPage {
+        omitted_count: total_count.saturating_sub(participants.len()),
+        participants,
     })
 }
 
@@ -4143,13 +4632,28 @@ pub fn clear_channel_room_history(
     room_name: &str,
 ) -> Result<usize, String> {
     validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
-    let conn = pool.get().map_err(|error| error.to_string())?;
-    conn.execute(
-        "DELETE FROM channel_history
-         WHERE identity_id = ?1 AND hub_destination_hash = ?2 AND room_name = ?3",
-        params![identity_id, hub_destination_hash, room_name],
-    )
-    .map_err(|error| error.to_string())
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM channel_participant_observations
+             WHERE identity_id = ?1
+               AND hub_destination_hash = ?2
+               AND room_name = ?3",
+            params![identity_id, hub_destination_hash, room_name],
+        )
+        .map_err(|error| error.to_string())?;
+    let deleted = transaction
+        .execute(
+            "DELETE FROM channel_history
+             WHERE identity_id = ?1
+               AND hub_destination_hash = ?2
+               AND room_name = ?3",
+            params![identity_id, hub_destination_hash, room_name],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(deleted)
 }
 
 pub fn clear_channel_history_for_identity(
@@ -4159,12 +4663,22 @@ pub fn clear_channel_history_for_identity(
     if !is_canonical_channel_hash(identity_id) {
         return Err("invalid Channels history identity".into());
     }
-    let conn = pool.get().map_err(|error| error.to_string())?;
-    conn.execute(
-        "DELETE FROM channel_history WHERE identity_id = ?1",
-        params![identity_id],
-    )
-    .map_err(|error| error.to_string())
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM channel_participant_observations WHERE identity_id = ?1",
+            params![identity_id],
+        )
+        .map_err(|error| error.to_string())?;
+    let deleted = transaction
+        .execute(
+            "DELETE FROM channel_history WHERE identity_id = ?1",
+            params![identity_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(deleted)
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -5151,6 +5665,275 @@ mod channel_history_tests {
         assert_eq!(
             retained.latest_recorded_at_ms,
             Some(u64::try_from(recorded_at_ms).unwrap())
+        );
+    }
+
+    #[test]
+    fn participant_summaries_are_room_scoped_durable_and_not_presence_claims() {
+        let pool = test_pool();
+        let mut identified_join = event(HUB_A, "general", "identified-join");
+        identified_join.kind = ChannelHistoryKind::Join;
+        identified_join.nickname = Some("Ada".into());
+
+        let mut nickname_join = event(HUB_A, "general", "nickname-join");
+        nickname_join.kind = ChannelHistoryKind::Join;
+        nickname_join.source_hash = None;
+        nickname_join.nickname = Some("Guest".into());
+
+        let mut nickname_part = event(HUB_A, "general", "nickname-part");
+        nickname_part.kind = ChannelHistoryKind::Part;
+        nickname_part.source_hash = None;
+        nickname_part.nickname = Some("Guest".into());
+
+        let mut identified_part = event(HUB_A, "general", "identified-part");
+        identified_part.kind = ChannelHistoryKind::Part;
+        identified_part.nickname = Some("Ada renamed".into());
+
+        let mut ours = event(HUB_A, "general", "ours");
+        ours.source_hash = Some(IDENTITY_A.into());
+        ours.nickname = Some("A".into());
+        ours.ours = true;
+
+        let mut notice = event(HUB_A, "general", "notice");
+        notice.kind = ChannelHistoryKind::Notice;
+        notice.nickname = Some("Relay".into());
+
+        append_channel_history_events_at(
+            &pool,
+            IDENTITY_A,
+            &[
+                identified_join,
+                nickname_join,
+                nickname_part,
+                identified_part,
+                ours,
+                notice,
+            ],
+            1_700_000_123_456,
+            CHANNEL_HISTORY_RETENTION,
+        )
+        .unwrap();
+        append_channel_history_events_at(
+            &pool,
+            IDENTITY_A,
+            &[event(HUB_A, "other", "other-room")],
+            1_700_000_123_456,
+            CHANNEL_HISTORY_RETENTION,
+        )
+        .unwrap();
+
+        let page =
+            list_channel_participants_at(&pool, IDENTITY_A, HUB_A, "general", 1_700_000_123_456)
+                .unwrap();
+        assert_eq!(page.omitted_count, 0);
+        let participants = page.participants;
+        assert_eq!(participants.len(), 2);
+        assert_eq!(participants[0].identity_hash.as_deref(), Some(IDENTITY_B));
+        assert_eq!(participants[0].nickname.as_deref(), Some("Ada renamed"));
+        assert_eq!(participants[0].last_seen_at_ms, 1_700_000_123_456);
+        assert_eq!(participants[1].identity_hash, None);
+        assert_eq!(participants[1].nickname.as_deref(), Some("Guest"));
+        assert!(participants.iter().all(|participant| {
+            participant.nickname.as_deref() != Some("A")
+                && participant.nickname.as_deref() != Some("Relay")
+        }));
+
+        let crowd = (0..=CHANNEL_PARTICIPANT_MAX_RESULTS)
+            .map(|index| {
+                let mut participant = event(HUB_A, "crowd", &format!("crowd-{index}"));
+                participant.source_hash = None;
+                participant.nickname = Some(format!("Guest {index}"));
+                participant
+            })
+            .collect::<Vec<_>>();
+        append_channel_history_events_at(
+            &pool,
+            IDENTITY_A,
+            &crowd,
+            1_700_000_123_457,
+            CHANNEL_HISTORY_RETENTION,
+        )
+        .unwrap();
+        let crowd_page =
+            list_channel_participants_at(&pool, IDENTITY_A, HUB_A, "crowd", 1_700_000_123_457)
+                .unwrap();
+        assert_eq!(
+            crowd_page.participants.len(),
+            CHANNEL_PARTICIPANT_MAX_RESULTS
+        );
+        assert_eq!(crowd_page.omitted_count, 1);
+        assert_eq!(
+            crowd_page.participants[0].nickname.as_deref(),
+            Some("Guest 200")
+        );
+    }
+
+    #[test]
+    fn roster_observations_preserve_identified_participants_without_transcript_rows() {
+        let pool = test_pool();
+        let observation = NewChannelParticipantObservation {
+            hub_destination_hash: HUB_A.into(),
+            room_name: "quiet".into(),
+            identity_hash: IDENTITY_B.into(),
+            nickname: Some("Ada".into()),
+        };
+        assert_eq!(
+            remember_channel_participants_at(
+                &pool,
+                IDENTITY_A,
+                std::slice::from_ref(&observation),
+                2_000,
+            )
+            .unwrap(),
+            1
+        );
+        assert!(
+            list_channel_history(&pool, IDENTITY_A, HUB_A, "quiet", None, 10)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+
+        // An older identity-only observation must not erase a nickname that
+        // was already associated with the canonical identity.
+        let mut identity_only = observation.clone();
+        identity_only.nickname = None;
+        remember_channel_participants_at(&pool, IDENTITY_A, &[identity_only], 1_000).unwrap();
+        let page = list_channel_participants_at(&pool, IDENTITY_A, HUB_A, "quiet", 3_000).unwrap();
+        assert_eq!(page.participants.len(), 1);
+        assert_eq!(
+            page.participants[0].identity_hash.as_deref(),
+            Some(IDENTITY_B)
+        );
+        assert_eq!(page.participants[0].nickname.as_deref(), Some("Ada"));
+        assert_eq!(page.participants[0].last_seen_at_ms, 2_000);
+
+        // The durable projection keeps a bounded channel-only tail while a
+        // peer still known elsewhere is exempt from that transient allowance.
+        assert_eq!(
+            touch_identity_activity_for_service(
+                &pool,
+                &[(
+                    "dddddddddddddddddddddddddddddddd".into(),
+                    3.0,
+                    Some("Ada".into()),
+                    None,
+                )],
+                Some(IDENTITY_B),
+                PEER_SERVICE_LXMF_DELIVERY,
+            ),
+            1
+        );
+        let known_peer = NewChannelParticipantObservation {
+            hub_destination_hash: HUB_A.into(),
+            room_name: "observed-crowd".into(),
+            identity_hash: IDENTITY_B.into(),
+            nickname: Some("Ada".into()),
+        };
+        remember_channel_participants_at(&pool, IDENTITY_A, &[known_peer], 2_500).unwrap();
+        let crowd = (0..=CHANNEL_PARTICIPANT_MAX_RESULTS)
+            .map(|index| NewChannelParticipantObservation {
+                hub_destination_hash: HUB_A.into(),
+                room_name: "observed-crowd".into(),
+                identity_hash: format!("{index:032x}"),
+                nickname: Some(format!("Peer {index}")),
+            })
+            .collect::<Vec<_>>();
+        remember_channel_participants_at(&pool, IDENTITY_A, &crowd, 3_000).unwrap();
+        let retained: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM channel_participant_observations
+                 WHERE identity_id = ?1
+                   AND hub_destination_hash = ?2
+                   AND room_name = 'observed-crowd'",
+                params![IDENTITY_A, HUB_A],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            retained,
+            i64::try_from(CHANNEL_PARTICIPANT_MAX_TRANSIENT_PER_ROOM + 1).unwrap()
+        );
+
+        assert_eq!(
+            clear_channel_room_history(&pool, IDENTITY_A, HUB_A, "quiet").unwrap(),
+            0
+        );
+        assert!(
+            list_channel_participants_at(&pool, IDENTITY_A, HUB_A, "quiet", 3_000)
+                .unwrap()
+                .participants
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn participant_summaries_follow_the_known_identity_retention_setting() {
+        let pool = test_pool();
+        let day_ms = MILLIS_PER_DAY;
+        let observed_at_ms = 20 * day_ms;
+        let query_at_ms = observed_at_ms + 15 * day_ms;
+        let mut historical = event(HUB_A, "retention", "historical-peer");
+        historical.nickname = Some("Ada".into());
+        append_channel_history_events_at(
+            &pool,
+            IDENTITY_A,
+            &[historical],
+            observed_at_ms,
+            CHANNEL_HISTORY_RETENTION,
+        )
+        .unwrap();
+        let roster_only = NewChannelParticipantObservation {
+            hub_destination_hash: HUB_A.into(),
+            room_name: "retention".into(),
+            identity_hash: "cccccccccccccccccccccccccccccccc".into(),
+            nickname: Some("Grace".into()),
+        };
+        remember_channel_participants_at(&pool, IDENTITY_A, &[roster_only], observed_at_ms)
+            .unwrap();
+
+        assert!(
+            list_channel_participants_at(&pool, IDENTITY_A, HUB_A, "retention", query_at_ms,)
+                .unwrap()
+                .participants
+                .is_empty(),
+            "the default 14-day known-identity lifetime also bounds Seen here"
+        );
+
+        assert_eq!(
+            touch_identity_activity_for_service(
+                &pool,
+                &[(
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into(),
+                    query_at_ms as f64 / 1_000.0,
+                    Some("Ada".into()),
+                    None,
+                )],
+                Some(IDENTITY_B),
+                PEER_SERVICE_LXMF_DELIVERY,
+            ),
+            1
+        );
+        let protected =
+            list_channel_participants_at(&pool, IDENTITY_A, HUB_A, "retention", query_at_ms)
+                .unwrap();
+        assert_eq!(protected.participants.len(), 1);
+        assert_eq!(
+            protected.participants[0].identity_hash.as_deref(),
+            Some(IDENTITY_B),
+            "a peer still known elsewhere keeps its channel association"
+        );
+
+        set_setting(&pool, "known_identities_prune_days", "0");
+        assert_eq!(
+            list_channel_participants_at(&pool, IDENTITY_A, HUB_A, "retention", query_at_ms,)
+                .unwrap()
+                .participants
+                .len(),
+            2,
+            "disabling identity-age pruning still leaves the per-room cap in force"
         );
     }
 
@@ -8191,6 +8974,7 @@ mod migration_tests {
             "channel_history",
             "channel_history_room_usage",
             "channel_room_state",
+            "channel_participant_observations",
             "channel_hub_rooms",
             "channel_hub_grants",
             "channel_hub_klines",
@@ -8216,6 +9000,9 @@ mod migration_tests {
             "idx_channel_history_identity_sequence",
             "idx_channel_history_identity_unread",
             "idx_channel_history_recorded_at",
+            "idx_channel_participant_observations_room_recent",
+            "idx_channel_participant_observations_age",
+            "idx_identity_activity_identity_hash",
         ] {
             let exists: i64 = conn
                 .query_row(

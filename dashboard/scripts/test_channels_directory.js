@@ -253,6 +253,16 @@ async function main() {
         { filename: 'channels-directory-render.js' }
     );
     renderContext._channelsRenderList();
+    assert.strictEqual(elements['channels-list-label'].textContent, 'Active');
+    assert.strictEqual(elements['channels-join-btn'].textContent, 'Join');
+
+    var listSections = elements['channels-list'].children.filter(function(element) {
+        return element.className.indexOf('channels-list-section') === 0;
+    }).map(function(element) {
+        return element.children[0].textContent;
+    });
+    assert.strictEqual(listSections.join('|'), 'History|Discover',
+        'disconnected rooms must be separated from the Joined list');
 
     var all = descendants(elements['channels-list']);
     var directoryRows = all.filter(function(element) {
@@ -275,6 +285,26 @@ async function main() {
     assert(textTree(elements['channels-list']).indexOf(
         'The hub kept its response within one constrained packet'
     ) !== -1, 'hub-declared truncation must stay visible');
+
+    renderContext.channelsSnapshot.directory.rooms = [
+        { name: 'general', topic: 'Already joined' },
+        { name: 'saved', topic: 'Already saved' }
+    ];
+    renderContext.channelsSnapshot.directory.complete = true;
+    renderContext.channelsSnapshot.directory.omitted_count = 0;
+    renderContext._channelsRenderList();
+    assert(textTree(elements['channels-list']).indexOf(
+        'No discoverable channels found.'
+    ) !== -1, 'an empty discovery result must use concise neutral copy');
+
+    renderContext.channelsSnapshot.rooms = [];
+    renderContext._channelsRenderList();
+    assert(textTree(elements['channels-list']).indexOf(
+        'No currently active channels'
+    ) !== -1, 'a connected hub with no joined rooms must show a quiet Active placeholder');
+    assert(elements['channels-list'].children.some(function(element) {
+        return element.className === 'channel-active-empty';
+    }), 'the Active placeholder must remain visually distinct from directory status cards');
 
     assert(navSource.indexOf('channelsRefreshDirectory(false);') !== -1,
         'entering the Channels view must request an idle or stale directory');

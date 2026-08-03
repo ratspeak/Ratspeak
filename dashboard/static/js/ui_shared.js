@@ -1,6 +1,87 @@
 (function() {
     window.RS = window.RS || {};
     RS.ui = RS.ui || {};
+    RS.composer = RS.composer || {};
+
+    // Shared soft-keyboard continuity for every chat composer. Pointer-down on
+    // a send control must not blur the textarea, otherwise Android closes and
+    // reopens the IME around the asynchronous command response.
+    var composerFocusState = new WeakMap();
+
+    RS.composer.captureFocus = function(input) {
+        if (!input) return;
+        composerFocusState.set(input, {
+            wasFocused: document.activeElement === input,
+            capturedAt: Date.now()
+        });
+    };
+
+    RS.composer.consumeFocus = function(input) {
+        if (!input) return false;
+        var focusedNow = document.activeElement === input;
+        var state = composerFocusState.get(input);
+        composerFocusState.delete(input);
+        if (state && Date.now() - state.capturedAt < 8000) {
+            return state.wasFocused || focusedNow;
+        }
+        return focusedNow;
+    };
+
+    RS.composer.focusWithoutScroll = function(input) {
+        if (!input || document.activeElement === input) return;
+        try { input.focus({ preventScroll: true }); }
+        catch (_) { input.focus(); }
+    };
+
+    RS.composer.bindTapToSend = function(button, input, onSend) {
+        if (!button || !input || typeof onSend !== 'function' || button._rsStableSendBound) return;
+        button._rsStableSendBound = true;
+        var startX = 0;
+        var startY = 0;
+        var moved = false;
+        var suppressClickUntil = 0;
+        var moveCancelSq = 12 * 12;
+
+        button.addEventListener('touchstart', function(event) {
+            event.preventDefault();
+            RS.composer.captureFocus(input);
+            var touch = event.touches && event.touches[0];
+            if (touch) {
+                startX = touch.clientX;
+                startY = touch.clientY;
+            }
+            moved = false;
+        }, { passive: false });
+
+        button.addEventListener('touchmove', function(event) {
+            var touch = event.touches && event.touches[0];
+            if (!touch) return;
+            var dx = touch.clientX - startX;
+            var dy = touch.clientY - startY;
+            if (dx * dx + dy * dy > moveCancelSq) moved = true;
+        }, { passive: true });
+
+        button.addEventListener('touchend', function(event) {
+            event.preventDefault();
+            suppressClickUntil = Date.now() + 500;
+            if (!moved) onSend();
+        });
+
+        button.addEventListener('touchcancel', function() { moved = true; });
+        button.addEventListener('mousedown', function(event) {
+            event.preventDefault();
+            RS.composer.captureFocus(input);
+        });
+        button.addEventListener('click', function(event) {
+            if (Date.now() < suppressClickUntil) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+            }
+            RS.composer.captureFocus(input);
+            onSend();
+        });
+    };
 
     var transportLabels = { auto: 'AUTO', on: 'ON', off: 'OFF' };
     var transportChoices = [

@@ -10,12 +10,33 @@ var vm = require('vm');
 
 var channelsPath = path.join(__dirname, '..', 'static', 'js', 'channels.js');
 var channelsSource = fs.readFileSync(channelsPath, 'utf8');
+var lxmfPath = path.join(__dirname, '..', 'static', 'js', 'lxmf.js');
+var lxmfSource = fs.readFileSync(lxmfPath, 'utf8');
+
+function sourceFunctionFrom(source, name, nextName) {
+    var start = source.indexOf('function ' + name);
+    var end = source.indexOf('\nfunction ' + nextName, start);
+    assert(start !== -1 && end !== -1, name + ' must exist');
+    return source.slice(start, end);
+}
 
 function sourceFunction(name, nextName) {
-    var start = channelsSource.indexOf('function ' + name);
-    var end = channelsSource.indexOf('\nfunction ' + nextName, start);
-    assert(start !== -1 && end !== -1, name + ' must exist');
-    return channelsSource.slice(start, end);
+    return sourceFunctionFrom(channelsSource, name, nextName);
+}
+
+function namedFunctionSource(source, name) {
+    var start = source.indexOf('function ' + name + '(');
+    assert.notStrictEqual(start, -1, name + ' must exist');
+    var brace = source.indexOf('{', start);
+    var depth = 0;
+    for (var index = brace; index < source.length; index++) {
+        if (source[index] === '{') depth += 1;
+        if (source[index] === '}') {
+            depth -= 1;
+            if (depth === 0) return source.slice(start, index + 1);
+        }
+    }
+    throw new Error('unterminated function ' + name);
 }
 
 var policySource = sourceFunction(
@@ -24,6 +45,88 @@ var policySource = sourceFunction(
 );
 var insertionSource = sourceFunction('_channelsCanCompose', '_channelsDurableRoom');
 var sendSource = sourceFunction('channelsSendMessage', '_channelsBindUI');
+var renderRoomSource = sourceFunction('_channelsRenderRoom', '_channelsTimelineEntries');
+
+assert(!channelsSource.includes('_channelsTranscriptPinToken'),
+    'Channels must not maintain a parallel transcript-follow state machine');
+assert(renderRoomSource.includes('RS.chatScroll.capture(transcript)'));
+assert(renderRoomSource.includes('RS.chatScroll.applyAfterRender(transcript, scrollState'));
+assert(sendSource.includes("RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'))"),
+    'sending with the keyboard open must reuse the Direct Messages scroll controller');
+
+var scrollFunctions = [
+    '_lxmfMessageScrollStateFor',
+    '_lxmfMessageBottomGap',
+    '_lxmfMessagesNearBottom',
+    '_wireLxmfMessageScroll',
+    '_setLxmfMessageScrollTop',
+    '_scheduleLxmfScrollToBottom',
+    '_captureLxmfMessageScrollState',
+    '_restoreLxmfMessageScroll',
+    '_lxmfShouldFollowLatest',
+    '_applyLxmfMessageScrollAfterRender'
+].map(function(name) { return namedFunctionSource(lxmfSource, name); }).join('\n');
+var now = 1000;
+var scrollHandlers = {};
+var scrollPolicyContext = {
+    Date: { now: function() { return now; } },
+    WeakMap: WeakMap,
+    requestAnimationFrame: function() { return 1; },
+    setTimeout: function() { return 1; }
+};
+vm.createContext(scrollPolicyContext);
+vm.runInContext(
+    'var _lxmfMessageScrollStates = new WeakMap();\n' + scrollFunctions +
+    '\nthis.wire = _wireLxmfMessageScroll;' +
+    '\nthis.capture = _captureLxmfMessageScrollState;' +
+    '\nthis.applyAfterRender = _applyLxmfMessageScrollAfterRender;',
+    scrollPolicyContext,
+    { filename: 'shared-chat-scroll-policy.js' }
+);
+var scrollTop = 600;
+var transcript = {
+    scrollHeight: 1000,
+    clientHeight: 400,
+    isConnected: true,
+    addEventListener: function(name, handler) { scrollHandlers[name] = handler; }
+};
+Object.defineProperty(transcript, 'scrollTop', {
+    get: function() { return scrollTop; },
+    set: function(value) {
+        scrollTop = Math.max(0, Math.min(Number(value) || 0,
+            transcript.scrollHeight - transcript.clientHeight));
+    }
+});
+scrollPolicyContext.wire(transcript);
+var followState = scrollPolicyContext.capture(transcript);
+transcript.scrollHeight = 1200;
+assert.strictEqual(scrollPolicyContext.applyAfterRender(
+    transcript, followState, { stickToBottom: true }
+), true);
+assert.strictEqual(transcript.scrollTop, 800,
+    'new traffic follows the recent edge while the reader is already there');
+
+now = 1200;
+transcript.scrollTop = 300;
+scrollHandlers.scroll();
+var readingState = scrollPolicyContext.capture(transcript);
+transcript.scrollHeight = 1300;
+assert.strictEqual(scrollPolicyContext.applyAfterRender(
+    transcript, readingState, { stickToBottom: true }
+), false);
+assert.strictEqual(transcript.scrollTop, 300,
+    'fast incoming traffic must preserve a deliberate history position');
+
+now = 1400;
+transcript.scrollTop = 900;
+scrollHandlers.scroll();
+var resumedState = scrollPolicyContext.capture(transcript);
+transcript.scrollHeight = 1400;
+assert.strictEqual(scrollPolicyContext.applyAfterRender(
+    transcript, resumedState, { stickToBottom: true }
+), true);
+assert.strictEqual(transcript.scrollTop, 1000,
+    'returning to the recent edge must automatically resume live following');
 
 function fakeInput(attributes) {
     var values = Object.assign({}, attributes || {});
@@ -157,7 +260,15 @@ var sendContext = {
     _channelsMessageLimit: function() { return 4096; },
     _channelsUpdateComposer: function() {},
     _channelsHandleComposerResult: function() { return Promise.resolve(); },
+    document: {
+        activeElement: composerInput,
+        documentElement: { classList: { contains: function() { return false; } } }
+    },
     RS: {
+        composer: {
+            consumeFocus: function() { return true; },
+            focusWithoutScroll: function() {}
+        },
         invoke: function(_name, payload) {
             sentPayload = payload;
             return Promise.resolve({ accepted: true });

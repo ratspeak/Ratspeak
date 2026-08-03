@@ -691,6 +691,7 @@ pub fn run() {
             ratspeak_tauri::commands::activity::activity_safe_copy,
             ratspeak_tauri::commands::channels::api_channels,
             ratspeak_tauri::commands::channels::api_channel_history,
+            ratspeak_tauri::commands::channels::api_channel_participants,
             ratspeak_tauri::commands::channels::api_channel_unread,
             ratspeak_tauri::commands::channels::mark_channel_room_read,
             ratspeak_tauri::commands::channels::set_channel_room_notification_level,

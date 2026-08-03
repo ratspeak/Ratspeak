@@ -233,6 +233,12 @@ pub struct ChannelHistoryArgs {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ChannelParticipantsArgs {
+    pub hub_destination_hash: String,
+    pub room: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MarkChannelRoomReadArgs {
     pub hub_destination_hash: String,
     pub room: String,
@@ -324,6 +330,34 @@ pub async fn api_channel_history(
     for item in &mut page.items {
         item.source_lxmf_hash = item
             .source_hash
+            .as_deref()
+            .and_then(ratspeak_runtime::channels::lxmf_destination_hash_from_identity_hex);
+    }
+    Ok(page)
+}
+
+#[tauri::command]
+pub async fn api_channel_participants(
+    state: State<'_, Arc<AppState>>,
+    args: ChannelParticipantsArgs,
+) -> AppResult<crate::db::ChannelParticipantPage> {
+    let identity_id = require_identity(&state)?;
+    let destination_hash = clean_destination_hash(&args.hub_destination_hash)?;
+    let room = ratspeak_runtime::rrc::normalize_room(
+        &args.room,
+        crate::db::CHANNEL_HISTORY_MAX_ROOM_BYTES,
+    )
+    .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let pool = state.db.clone();
+    let mut page = crate::db::spawn_db(pool, move |pool| {
+        crate::db::list_channel_participants(&pool, &identity_id, &destination_hash, &room)
+    })
+    .await
+    .map_err(|_| AppError::internal("channel participant database task panicked"))?
+    .map_err(AppError::database_unavailable)?;
+    for participant in &mut page.participants {
+        participant.lxmf_hash = participant
+            .identity_hash
             .as_deref()
             .and_then(ratspeak_runtime::channels::lxmf_destination_hash_from_identity_hex);
     }

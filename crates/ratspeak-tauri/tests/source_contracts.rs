@@ -147,8 +147,11 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(!index.contains("Group conversations"));
     assert!(!index.contains("channels-sidebar-subtitle"));
     assert!(index.contains("Available hubs"));
-    assert!(index.contains("id=\"channel-hub-switcher-btn\""));
-    assert!(index.contains("aria-haspopup=\"dialog\""));
+    assert!(index.contains("id=\"channel-hub-summary\""));
+    assert!(index.contains("data-channel-action=\"hub-actions\""));
+    assert!(index.contains("id=\"channel-hub-menu-btn\" type=\"button\" title=\"Manage Hub\""));
+    assert!(!index.contains("channel-hub-add-btn"));
+    assert!(!index.contains("channel-hub-switcher-chevron"));
     assert!(!index.contains("channel-live-beacon"));
     assert!(index.contains("id=\"channel-owned-hub\""));
     assert!(index.contains("id=\"channel-owned-hub-manage\""));
@@ -173,7 +176,12 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("function _channelsHubSwitcherModel"));
     assert!(channels_js.contains("function _channelsHubConnectMode"));
     assert!(channels_js.contains("function channelsOpenHubSwitcher"));
-    assert!(channels_js.contains("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)"));
+    assert!(channels_js.contains("action === 'add' || action === 'manage-hub'"));
+    assert!(channels_js.contains("action === 'hub-actions'"));
+    assert!(channels_js.contains("channelsOpenHubOptions(actionEl)"));
+    assert!(
+        !channels_js.contains("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)")
+    );
     assert!(channels_js.contains("One hub can be live at a time"));
     assert!(channels_js.contains("history stays on this device"));
     assert!(channels_js.contains("list.setAttribute('aria-live', 'polite')"));
@@ -200,7 +208,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(!channels_js.contains("function _channelsInitials"));
     assert!(channels_css.contains(".channel-hub-row-mark"));
     assert!(channels_css.contains(".channel-hub-row-distance"));
-    assert!(channels_css.contains(".channel-hub-switcher-btn"));
+    assert!(channels_css.contains(".channel-hub-summary"));
+    assert!(channels_css.contains(".channel-directory-section .channels-list-section-action"));
     assert!(channels_css.contains("@keyframes channelHubSignalLap"));
     assert!(channels_css.contains(".channel-hub-strip.link-arrived::before"));
     assert!(channels_css.contains(".channel-hub-switcher-list .channel-hub-row.current"));
@@ -208,14 +217,24 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(!channels_css.contains(".channel-connection-trust"));
     assert!(channels_js.contains("function _channelsBuildHubNotice"));
     assert!(channels_js.contains("function _channelsBuildHubGreeting"));
-    assert!(channels_js.contains("function _channelsGroupPresenceEvents"));
-    assert!(channels_js.contains("function _channelsBuildPresenceGroup"));
+    assert!(channels_js.contains("function _channelsIsRemotePresenceItem"));
+    assert!(channels_js.contains("if (_channelsIsRemotePresenceItem(item)) return;"));
+    assert!(channels_js.contains("function _channelsGroupConsecutiveMessages"));
     assert!(channels_js.contains("function _channelsLoadHistory"));
     assert!(channels_js.contains("RS.invoke('api_channel_history'"));
+    assert!(channels_js.contains("RS.invoke('api_channel_participants'"));
+    assert!(channels_js.contains("function _channelsMemberRosterModel"));
+    assert!(channels_js.contains("'Recently visible'"));
+    assert!(channels_js.contains("'Seen here'"));
+    assert!(!channels_js.contains("'Offline'"));
     assert!(channels_js.contains("before: older ? entry.next_before : null"));
     assert!(channels_js.contains("function _channelsSyncHistory"));
     assert!(channels_js.contains("after: after"));
     assert!(channels_js.contains("function _channelsTimelineEntries"));
+    assert!(channels_js.contains("meta.textContent = 'Disconnected';"));
+    assert!(channels_js.contains("_channelsListSection('History'"));
+    assert!(channels_js.contains("_channelsActiveEmpty('No currently active channels')"));
+    assert!(channels_css.contains(".channel-active-empty"));
     assert!(channels_js.contains("function channelsSelectHistoryRoom"));
     assert!(channels_js.contains("function channelsApplyUnread"));
     assert!(channels_js.contains("RS.invoke('api_channel_unread')"));
@@ -244,7 +263,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("result.local_command"));
     assert!(responsive_css.contains(".channels-layout.view-channel-detail"));
     assert!(responsive_css.contains("body.view-channel-detail .bottom-bar"));
-    assert!(responsive_css.contains("calc(56px + var(--sat))"));
+    assert!(responsive_css.contains("calc(64px + var(--sat))"));
     assert!(responsive_css.contains("body.view-channel-detail .main-content"));
     assert!(responsive_css.contains(".channels-layout.room-live.members-open"));
     assert!(responsive_css.contains("max(var(--space-4), var(--sab))"));
@@ -253,15 +272,24 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(responsive_css.contains("calc(var(--space-5) + var(--sar))"));
     assert!(responsive_css.contains("calc(var(--space-5) + var(--sal))"));
     assert!(responsive_css.contains("width: var(--touch-target);"));
+    assert!(responsive_css.contains(
+        ".channel-room-row-title,\n    .channel-hub-row-title {\n        font-size: var(--mobile-list-title-size);"
+    ));
+    assert!(responsive_css.contains(
+        ".channel-event-text {\n        color: var(--text-primary);\n        font-size: 16px;"
+    ));
+    assert!(responsive_css.contains(".channel-system-event {\n        margin: var(--space-6) 0;"));
     assert!(channels_css.contains(".channel-members-scrim"));
     assert!(channels_css.contains(".channels-layout:not(.room-live)"));
     assert!(channels_css.contains(".channel-transition-rail"));
     assert!(channels_css.contains(".channel-hub-greeting"));
     assert!(channels_css.contains(".channel-hub-profile-capabilities"));
     assert!(channels_css.contains(".channel-hub-greeting-delivery"));
-    assert!(channels_css.contains(".channel-presence-summary"));
-    assert!(!channels_css.contains(".channel-presence-event::before"));
-    assert!(!channels_css.contains(".channel-presence-summary::before"));
+    assert!(channels_css.contains(".channel-event.message-group-start"));
+    assert!(channels_css.contains(".channel-event.message-group-middle"));
+    assert!(channels_css.contains(".channel-event.message-group-end"));
+    assert!(!channels_css.contains(".channel-presence-event"));
+    assert!(!channels_css.contains(".channel-presence-summary"));
     assert!(channels_css.contains(".channel-history-rail"));
     assert!(channels_css.contains(".channel-day-separator"));
     assert!(channels_css.contains(".channel-member-detail-fields"));
@@ -272,11 +300,24 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(build_css.contains("09-channels.css"));
     assert!(tauri_build.contains(r#""09-channels.css""#));
 
-    assert!(nav_js.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];"));
-    assert!(nav_js.contains("if (viewId === 'channels') return 'message';"));
+    assert!(nav_js.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];"));
+    assert!(
+        nav_js
+            .contains("var MORE_VIEWS = ['contacts', 'identity', 'network', 'games', 'settings'];")
+    );
+    assert!(!nav_js.contains("if (viewId === 'channels') return 'message';"));
     assert!(nav_js.contains("function setMessageUnreadSource"));
     assert!(nav_js.contains("var _messageUnreadSources = { direct: 0, channels: 0 };"));
-    assert!(!nav_js.contains("MOBILE_TAB_SLOTS = ['peers', 'message', 'channels'"));
+    assert!(
+        index.contains(
+            "data-view=\"channels\" role=\"button\" tabindex=\"0\" aria-label=\"Channels\""
+        )
+    );
+    assert!(index.contains("id=\"bb-channels-unread\""));
+    assert!(index.contains("class=\"bottom-sheet-item\" data-view=\"contacts\""));
+    assert!(!index.contains("data-message-mode="));
+    assert!(nav_js.contains("item.setAttribute('aria-current', 'page')"));
+    assert!(nav_js.contains("'Channels' + (_messageUnreadSources.channels > 0"));
     let keyboard_detection = nav_js
         .split("function initKeyboardDetection()")
         .nth(1)
@@ -373,12 +414,13 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(history_test.contains("forward catch-up closes the gap"));
     assert!(history_test.contains("previous identity epoch must be discarded"));
     assert!(unread_test.contains("background rooms must never be marked read"));
-    assert!(unread_test.contains("shared mobile Messages badge"));
+    assert!(unread_test.contains("dedicated mobile Channels badge"));
     assert!(notification_route_test.contains("invalid UTF-8 must never reach navigation"));
     assert!(notification_route_test.contains("must never reconnect or carry a room key"));
     for command in [
         "api_channels",
         "api_channel_history",
+        "api_channel_participants",
         "api_channel_unread",
         "mark_channel_room_read",
         "set_channel_room_notification_level",
@@ -3677,6 +3719,10 @@ fn empty_ghost_conversations_are_removed_when_leaving_chat_detail() {
 fn message_composer_send_preserves_preexisting_focus_state() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let channels = read_source(root.join("dashboard/static/js/channels.js")).expect("channels js");
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let ui_shared =
+        read_source(root.join("dashboard/static/js/ui_shared.js")).expect("shared ui js");
     let start = lxmf
         .find("function sendLxmfMessage(")
         .expect("send function");
@@ -3705,6 +3751,24 @@ fn message_composer_send_preserves_preexisting_focus_state() {
         !send_function.contains("input.focus();"),
         "send must not unconditionally focus the composer after a button send"
     );
+    assert!(ui_shared.contains("RS.composer.captureFocus = function(input)"));
+    assert!(ui_shared.contains("RS.composer.consumeFocus = function(input)"));
+    assert!(ui_shared.contains("RS.composer.focusWithoutScroll = function(input)"));
+    assert!(ui_shared.contains("RS.composer.bindTapToSend = function(button, input, onSend)"));
+    assert!(channels.contains("RS.composer.bindTapToSend(send, input, channelsSendMessage)"));
+    assert!(channels.contains("var shouldRestoreComposerFocus = RS.composer"));
+    assert!(channels.contains("RS.composer.consumeFocus(input)"));
+    assert!(
+        !channels
+            .split("function channelsSendMessage()")
+            .nth(1)
+            .and_then(|tail| tail.split("function _channelsBindUI()").next())
+            .expect("channel send function")
+            .contains("input.focus();")
+    );
+    assert!(channels.contains("!event.isComposing && !isMobile()"));
+    assert!(nav.contains("el.id === 'lxmf-input' || el.id === 'channel-message-input'"));
+    assert!(nav.contains("document.getElementById('channel-transcript')"));
 
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
@@ -3722,8 +3786,10 @@ fn message_composer_send_preserves_preexisting_focus_state() {
 
 #[test]
 fn conversation_view_scrolls_to_recent_messages_without_yanking_history() {
-    let lxmf = read_source(repo_root().join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    let nav = read_source(repo_root().join("dashboard/static/js/nav.js")).expect("nav js");
+    let root = repo_root();
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let channels = read_source(root.join("dashboard/static/js/channels.js")).expect("channels js");
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
 
     assert!(lxmf.contains("function _wireLxmfMessageScroll(container)"));
     assert!(lxmf.contains("function _captureLxmfMessageScrollState(container)"));
@@ -3732,6 +3798,14 @@ fn conversation_view_scrolls_to_recent_messages_without_yanking_history() {
         lxmf.contains("function _applyLxmfMessageScrollAfterRender(container, state, options)")
     );
     assert!(lxmf.contains("function _watchLxmfImagesForBottomPin(container, shouldPin)"));
+    assert!(lxmf.contains("var _lxmfMessageScrollStates = new WeakMap();"));
+    assert!(lxmf.contains("state.followLatest = false;"));
+    assert!(lxmf.contains("state.followLatest = true;"));
+    assert!(lxmf.contains("RS.chatScroll.applyAfterRender = _applyLxmfMessageScrollAfterRender;"));
+    assert!(channels.contains("RS.chatScroll.wire(transcript)"));
+    assert!(channels.contains("RS.chatScroll.capture(transcript)"));
+    assert!(channels.contains("RS.chatScroll.applyAfterRender(transcript, scrollState"));
+    assert!(!channels.contains("_channelsTranscriptPinToken"));
     assert!(lxmf.contains("container.querySelectorAll('img').forEach(function(img)"));
     assert!(lxmf.contains("img.addEventListener('load', function()"));
     assert!(lxmf.contains("renderConversation({ forceScrollBottom: true });"));
@@ -3742,6 +3816,8 @@ fn conversation_view_scrolls_to_recent_messages_without_yanking_history() {
     );
     assert!(nav.contains("function _chatMessagesNearBottomForKeyboard()"));
     assert!(nav.contains("function _pinChatMessagesToBottomForKeyboard()"));
+    assert!(nav.contains("RS.chatScroll.nearBottom(msgContainer)"));
+    assert!(nav.contains("RS.chatScroll.pinToBottom(msgContainer)"));
     assert!(nav.contains("_waitingForKeyboard = _chatMessagesNearBottomForKeyboard();"));
     assert!(nav.contains(
         "document.documentElement.classList.contains('keyboard-open') && _chatMessagesNearBottomForKeyboard()"
@@ -5209,7 +5285,10 @@ fn mobile_contacts_tab_keeps_desktop_header_out_of_search_flow() {
 #[test]
 fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
     let nav = read_source(repo_root().join("dashboard/static/js/nav.js")).expect("nav js");
-    assert!(nav.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];"));
+    assert!(nav.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];"));
+    assert!(
+        nav.contains("var MORE_VIEWS = ['contacts', 'identity', 'network', 'games', 'settings'];")
+    );
     assert!(nav.contains("function _mobileTabSlot(viewId)"));
     assert!(nav.contains("function _viewForMobileTabSlot(slot)"));
     assert!(nav.contains("function blockMobileNavigation(ms)"));

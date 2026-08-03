@@ -47,8 +47,8 @@ var context = {
     _channelsCanCompose: function() { return false; },
     _channelsIsHubNotice: function() { return false; },
     _channelsBuildHubNotice: function() { throw new Error('not a hub notice'); },
-    _channelsBuildPresenceEvent: function() { throw new Error('not presence'); },
     _channelsBuildQuoteButton: function() { return null; },
+    _channelsBindTouchReplyAction: function() {},
     _channelsIdentityAvatarSeed: function(sourceHash, lxmfHash) { return lxmfHash || sourceHash; },
     _channelsPopulateIdentityAvatar: function(avatar, seed, size) {
         avatar.avatarSeed = seed;

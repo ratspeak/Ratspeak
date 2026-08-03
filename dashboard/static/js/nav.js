@@ -1,9 +1,9 @@
 var currentView = 'dashboard';
 var _messageUnreadSources = { direct: 0, channels: 0 };
 
-// Direct LXMF and Channels share the mobile Messages slot but have distinct
-// desktop destinations. Keep one source-aware badge reducer so asynchronous
-// listeners cannot hide each other's attention state.
+// Direct LXMF and Channels have distinct destinations and attention indicators.
+// Keep one source-aware reducer so asynchronous listeners cannot hide the
+// other surface's state.
 function setMessageUnreadSource(source, count) {
     if (source !== 'direct' && source !== 'channels') return;
     count = Number(count);
@@ -17,25 +17,37 @@ function setMessageUnreadSource(source, count) {
     if (channelsDot) channelsDot.style.display = _messageUnreadSources.channels > 0 ? '' : 'none';
     var bottomDot = document.getElementById('bb-unread');
     if (bottomDot) {
-        bottomDot.style.display =
-            (_messageUnreadSources.direct + _messageUnreadSources.channels) > 0 ? '' : 'none';
+        bottomDot.style.display = _messageUnreadSources.direct > 0 ? '' : 'none';
+        if (bottomDot.parentElement) {
+            bottomDot.parentElement.setAttribute(
+                'aria-label',
+                'Messages' + (_messageUnreadSources.direct > 0
+                    ? ', ' + _messageUnreadSources.direct + ' unread'
+                    : '')
+            );
+        }
     }
-    document.querySelectorAll('[data-message-mode-badge]').forEach(function(badge) {
-        var badgeSource = badge.dataset.messageModeBadge;
-        var value = _messageUnreadSources[badgeSource] || 0;
-        badge.textContent = value > 99 ? '99+' : String(value);
-        badge.hidden = value === 0;
-        badge.setAttribute('aria-label', value + ' unread');
-    });
+    var bottomChannelsDot = document.getElementById('bb-channels-unread');
+    if (bottomChannelsDot) {
+        bottomChannelsDot.style.display = _messageUnreadSources.channels > 0 ? '' : 'none';
+        if (bottomChannelsDot.parentElement) {
+            bottomChannelsDot.parentElement.setAttribute(
+                'aria-label',
+                'Channels' + (_messageUnreadSources.channels > 0
+                    ? ', ' + _messageUnreadSources.channels + ' unread'
+                    : '')
+            );
+        }
+    }
 }
 window.setMessageUnreadSource = setMessageUnreadSource;
 var VIEWS = ['dashboard', 'message', 'channels', 'contacts', 'identity', 'peers', 'network', 'games', 'settings'];
 
 // Tab-bar destinations use replaceState; MORE_VIEWS live under the hamburger.
 var TAB_VIEWS = ['peers', 'message', 'channels', 'contacts', 'identity', 'network', 'games', 'settings'];
-var PRIMARY_TAB_VIEWS = ['peers', 'message', 'channels', 'contacts'];
-var MORE_VIEWS = ['identity', 'network', 'games', 'settings'];
-var MOBILE_TAB_SLOTS = ['peers', 'message', 'contacts', 'more'];
+var PRIMARY_TAB_VIEWS = ['peers', 'message', 'channels'];
+var MORE_VIEWS = ['contacts', 'identity', 'network', 'games', 'settings'];
+var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];
 var DEFAULT_MORE_VIEW = 'identity';
 var _lastMoreView = DEFAULT_MORE_VIEW;
 var _lastPrimaryView = 'peers';
@@ -47,7 +59,6 @@ try {
 } catch(e) {}
 
 function _mobileTabSlot(viewId) {
-    if (viewId === 'channels') return 'message';
     return MORE_VIEWS.indexOf(viewId) !== -1 ? 'more' : viewId;
 }
 
@@ -332,14 +343,18 @@ function switchView(viewId, opts) {
         try { localStorage.setItem('ratspeak_more_view', viewId); } catch(e) {}
     }
     _rememberPrimaryView(viewId);
+    var mobileSlot = _mobileTabSlot(viewId);
     document.querySelectorAll('.bottom-bar-item').forEach(function(item) {
-        item.classList.remove('active');
-        if (item.dataset.view === _mobileTabSlot(viewId)) item.classList.add('active');
+        var selected = item.dataset.view === mobileSlot;
+        item.classList.toggle('active', selected);
+        if (selected) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
     });
     var hamburger = document.getElementById('bottom-bar-hamburger');
     if (hamburger) {
-        if (isMoreView) hamburger.classList.add('active');
-        else hamburger.classList.remove('active');
+        hamburger.classList.toggle('active', isMoreView);
+        if (isMoreView) hamburger.setAttribute('aria-current', 'page');
+        else hamburger.removeAttribute('aria-current');
     }
     document.querySelectorAll('.bottom-sheet-item').forEach(function(item) {
         item.classList.remove('active');
@@ -1100,15 +1115,22 @@ var _keyboardStableTimer = null;
 var _maxViewportHeight = 0;
 
 function _chatMessagesNearBottomForKeyboard() {
-    var msgContainer = document.getElementById('lxmf-messages');
+    var msgContainer = document.body.classList.contains('view-channel-detail')
+        ? document.getElementById('channel-transcript')
+        : document.getElementById('lxmf-messages');
     if (!msgContainer) return true;
+    if (window.RS && RS.chatScroll) return RS.chatScroll.nearBottom(msgContainer);
     var bottomGap = Math.max(0, msgContainer.scrollHeight - msgContainer.clientHeight - msgContainer.scrollTop);
     return bottomGap <= 160;
 }
 
 function _pinChatMessagesToBottomForKeyboard() {
-    var msgContainer = document.getElementById('lxmf-messages');
-    if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
+    var msgContainer = document.body.classList.contains('view-channel-detail')
+        ? document.getElementById('channel-transcript')
+        : document.getElementById('lxmf-messages');
+    if (!msgContainer) return;
+    if (window.RS && RS.chatScroll) RS.chatScroll.pinToBottom(msgContainer);
+    else msgContainer.scrollTop = msgContainer.scrollHeight;
 }
 
 function initKeyboardDetection() {
@@ -1217,7 +1239,7 @@ function initKeyboardDetection() {
             return;
         }
 
-        if (el.id === 'lxmf-input') {
+        if (el.id === 'lxmf-input' || el.id === 'channel-message-input') {
             _waitingForKeyboard = _chatMessagesNearBottomForKeyboard();
             return;
         }
@@ -1236,7 +1258,7 @@ function initKeyboardDetection() {
 
     document.addEventListener('focusout', function(e) {
         var el = e.target;
-        if (el.id === 'lxmf-input') {
+        if (el.id === 'lxmf-input' || el.id === 'channel-message-input') {
             _waitingForKeyboard = false;
             clearTimeout(_keyboardStableTimer);
         }

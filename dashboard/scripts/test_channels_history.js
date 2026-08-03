@@ -54,17 +54,24 @@ async function main() {
         CHANNEL_HISTORY_MAX_SYNC_PAGES: 32,
         _channelsHistoryCache: {},
         _channelsHistoryRequestSeq: 0,
+        _channelsParticipantRequestSeq: 0,
         _channelsHistoryEpoch: 0,
+        channelsActiveRoom: null,
         document: { visibilityState: 'hidden' },
         _channelsEl: function() { return transcript; },
         _channelsCurrentHistoryKey: function() { return 'hub-a\ngeneral'; },
         _channelsRenderRoom: function(restore) { renders.push(restore); },
+        _channelsRenderMembers: function() {},
+        _channelsRoomByName: function() { return null; },
         channelsSnapshot: {
             history: { phase: 'unavailable', pending_events: 0 }
         },
         window: { RS: { diag: function() {} } },
         RS: {
             invoke: function(command, payload) {
+                if (command === 'api_channel_participants') {
+                    return Promise.resolve({ participants: [], omitted_count: 0 });
+                }
                 assert.strictEqual(command, 'api_channel_history');
                 calls.push(payload.args);
                 return Promise.resolve(pages.shift());
@@ -177,8 +184,10 @@ async function main() {
     };
     vm.runInNewContext(
         sourceRange('_channelsTimelineEntries', '_channelsBuildHistoryRail') +
+            '\n' + sourceRange('_channelsIsRemotePresenceItem',
+                '_channelsOrderTimelineEntries') +
             '\n' + sourceRange('_channelsOrderTimelineEntries',
-                '_channelsPresenceIdentityKey'),
+                '_channelsMessageAuthorKey'),
         timelineContext,
         { filename: 'channels-history-merge.js' }
     );

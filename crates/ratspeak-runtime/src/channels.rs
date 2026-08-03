@@ -66,6 +66,7 @@ const AUTO_REJOIN_ROOM_LIMIT: usize = 32;
 // mercy of a stalled local disk. Together with the DB's per-event input limit,
 // this caps queued transcript payload at roughly 8 MiB.
 const HISTORY_COMMAND_BUFFER: usize = 128;
+const PARTICIPANT_OBSERVATION_QUEUE_LIMIT: usize = 256;
 const HISTORY_RETRY_DELAY: Duration = Duration::from_secs(1);
 const HISTORY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const HISTORY_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -920,6 +921,19 @@ impl ChannelsStore {
         .map_err(|_| "Channels history database task panicked".to_string())?
     }
 
+    async fn remember_participants(
+        &self,
+        observations: Arc<Vec<db::NewChannelParticipantObservation>>,
+    ) -> Result<usize, String> {
+        let pool = self.pool.clone();
+        let identity_id = self.identity_id.clone();
+        db::spawn_db(pool, move |pool| {
+            db::remember_channel_participants(&pool, &identity_id, observations.as_slice())
+        })
+        .await
+        .map_err(|_| "Channels participant database task panicked".to_string())?
+    }
+
     async fn prune_history(&self) -> Result<usize, String> {
         let pool = self.pool.clone();
         db::spawn_db(pool, move |pool| db::prune_expired_channel_history(&pool))
@@ -956,6 +970,7 @@ const HISTORY_EVENTS_DROPPED: &str =
 
 enum ChannelHistoryCommand {
     Append(db::NewChannelHistoryEvent),
+    Observe(db::NewChannelParticipantObservation),
     Barrier { result_tx: oneshot::Sender<()> },
     Shutdown { result_tx: oneshot::Sender<()> },
 }
@@ -1076,6 +1091,46 @@ impl ChannelHistoryWriter {
         true
     }
 
+    /// Queue canonical participant identities without treating them as
+    /// transcript activity. If the bounded writer is momentarily full, keep
+    /// the unsent observation in the equally bounded session queue so a later
+    /// event-loop pass can retry it.
+    fn enqueue_participants(
+        &self,
+        observations: &mut VecDeque<db::NewChannelParticipantObservation>,
+    ) -> bool {
+        if observations.is_empty() {
+            return false;
+        }
+        let Some(command_tx) = self.command_tx.as_ref() else {
+            observations.clear();
+            return false;
+        };
+        let mut queued = false;
+        while let Some(observation) = observations.pop_front() {
+            if db::validate_channel_participant_observation(&self.identity_id, &observation)
+                .is_err()
+            {
+                continue;
+            }
+            match command_tx.try_send(ChannelHistoryCommand::Observe(observation)) {
+                Ok(()) => queued = true,
+                Err(mpsc::error::TrySendError::Full(ChannelHistoryCommand::Observe(
+                    observation,
+                ))) => {
+                    observations.push_front(observation);
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    observations.clear();
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => unreachable!(),
+            }
+        }
+        queued
+    }
+
     fn project(&self, snapshot: &Arc<RwLock<ChannelsSnapshot>>) -> bool {
         let Some(status) = self.status.read().ok().map(|status| status.clone()) else {
             return false;
@@ -1120,6 +1175,12 @@ impl ChannelHistoryWriter {
         };
         let _ = tokio::time::timeout(HISTORY_SHUTDOWN_TIMEOUT, shutdown).await;
     }
+}
+
+fn enqueue_session_persistence(writer: &ChannelHistoryWriter, session: &mut ActiveSession) -> bool {
+    let history_changed = writer.enqueue(&mut session.history_events);
+    writer.enqueue_participants(&mut session.participant_observations);
+    history_changed
 }
 
 fn publish_channel_history_status(
@@ -1398,6 +1459,50 @@ async fn run_channel_history_writer(
                                 }
                             }
                             publish_channel_history_status(&status, &snapshot, &emitter);
+                            tokio::time::sleep(HISTORY_RETRY_DELAY).await;
+                        }
+                    }
+                }
+            }
+            ChannelHistoryCommand::Observe(first) => {
+                let mut batch = Vec::with_capacity(db::CHANNEL_PARTICIPANT_MAX_OBSERVATION_BATCH);
+                batch.push(first);
+                while batch.len() < db::CHANNEL_PARTICIPANT_MAX_OBSERVATION_BATCH {
+                    match command_rx.try_recv() {
+                        Ok(ChannelHistoryCommand::Observe(observation)) => batch.push(observation),
+                        Ok(command) => {
+                            deferred = Some(command);
+                            break;
+                        }
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => break,
+                    }
+                }
+
+                let batch = Arc::new(batch);
+                let mut failure_reported = false;
+                loop {
+                    match store.remember_participants(batch.clone()).await {
+                        Ok(_) => {
+                            if failure_reported {
+                                tracing::info!(
+                                    reason = "participant_write_recovered",
+                                    "local Channels participant writes recovered"
+                                );
+                            }
+                            break;
+                        }
+                        Err(_) => {
+                            if stopping.load(Ordering::Acquire) {
+                                return;
+                            }
+                            if !failure_reported {
+                                tracing::warn!(
+                                    reason = "participant_write_failed",
+                                    "local Channels participant write will retry"
+                                );
+                                failure_reported = true;
+                            }
                             tokio::time::sleep(HISTORY_RETRY_DELAY).await;
                         }
                     }
@@ -1880,6 +1985,7 @@ struct ActiveSession {
     pending_join_secrets: BTreeMap<String, PendingJoinSecret>,
     room_secret_actions: VecDeque<RoomSecretAction>,
     history_events: VecDeque<db::NewChannelHistoryEvent>,
+    participant_observations: VecDeque<db::NewChannelParticipantObservation>,
     connect_origin: ConnectOrigin,
     activity: SessionActivityContext,
 }
@@ -2360,7 +2466,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                     );
                 }
                 if let Some(session) = active.as_mut() {
-                    history.enqueue(&mut session.history_events);
+                    enqueue_session_persistence(&history, session);
                     history.project(&snapshot);
                 }
                 history.shutdown().await;
@@ -2452,7 +2558,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                         );
                     }
                     if let Some(session) = active.as_mut() {
-                        history.enqueue(&mut session.history_events);
+                        enqueue_session_persistence(&history, session);
                         history.project(&snapshot);
                     }
                     history.shutdown().await;
@@ -2872,7 +2978,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                     }
                     ChannelsCommand::FlushHistory { result_tx } => {
                         if let Some(session) = active.as_mut()
-                            && history.enqueue(&mut session.history_events)
+                            && enqueue_session_persistence(&history, session)
                         {
                             history.project(&snapshot);
                             emit_snapshot(&emitter, &snapshot);
@@ -2907,7 +3013,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                             );
                         }
                         if let Some(session) = active.as_mut() {
-                            history.enqueue(&mut session.history_events);
+                            enqueue_session_persistence(&history, session);
                             history.project(&snapshot);
                         }
                         history.shutdown().await;
@@ -3042,6 +3148,9 @@ async fn run_manager(input: ChannelsManagerInput) {
                             ChannelRecoveryPhase::Idle,
                         );
                     }
+                    if enqueue_session_persistence(&history, active) {
+                        changed |= history.project(&snapshot);
+                    }
                     if changed {
                         sync_session_snapshot(active, &snapshot);
                         emit_snapshot(&emitter, &snapshot);
@@ -3058,7 +3167,7 @@ async fn run_manager(input: ChannelsManagerInput) {
                             event,
                         ).await;
                         if let Some(session) = active.as_mut() {
-                            history.enqueue(&mut session.history_events);
+                            enqueue_session_persistence(&history, session);
                             history.project(&snapshot);
                         }
                         match outcome {
@@ -3982,6 +4091,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                 pending_join_secrets: BTreeMap::new(),
                 room_secret_actions: VecDeque::new(),
                 history_events: VecDeque::new(),
+                participant_observations: VecDeque::new(),
                 connect_origin: ConnectOrigin::User,
                 activity,
             };
@@ -5069,15 +5179,25 @@ fn apply_joined(active: &mut ActiveSession, envelope: &Envelope) {
             .then(|| envelope.nickname.clone())
             .flatten();
         for identity in identities {
+            let member_nickname = if identity == active.source {
+                Some(active.nickname.clone())
+            } else {
+                single_member_nickname.clone()
+            };
             let inserted = upsert_member(
                 &mut room.members,
                 Some(identity),
-                if identity == active.source {
-                    Some(active.nickname.clone())
-                } else {
-                    single_member_nickname.clone()
-                },
+                member_nickname.clone(),
                 identity == active.source,
+            );
+            queue_participant_observation(
+                &mut active.participant_observations,
+                active.destination_hash,
+                active.source,
+                active.hub_identity,
+                &room_name,
+                identity,
+                member_nickname,
             );
             if identity_count == 1 {
                 single_member_inserted = inserted;
@@ -5453,6 +5573,20 @@ fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
         return;
     };
     let identities = rrc::member_identities(envelope);
+    let observed_nickname = (identities.len() == 1)
+        .then(|| envelope.nickname.clone())
+        .flatten();
+    for identity in identities.iter().copied() {
+        queue_participant_observation(
+            &mut active.participant_observations,
+            active.destination_hash,
+            active.source,
+            active.hub_identity,
+            &room_name,
+            identity,
+            observed_nickname.clone(),
+        );
+    }
     if !identities.is_empty() {
         room.members.retain(|member| {
             member
@@ -5573,8 +5707,17 @@ fn append_content(
             let inserted = upsert_member(
                 &mut room.members,
                 Some(envelope.source),
-                nickname,
+                nickname.clone(),
                 envelope.source == active.source,
+            );
+            queue_participant_observation(
+                &mut active.participant_observations,
+                active.destination_hash,
+                active.source,
+                active.hub_identity,
+                room_name,
+                envelope.source,
+                nickname,
             );
             if inserted {
                 room.members_complete = false;
@@ -5899,6 +6042,46 @@ fn append_bounded<T>(items: &mut VecDeque<T>, item: T, limit: usize) {
     while items.len() > limit {
         items.pop_front();
     }
+}
+
+fn queue_participant_observation(
+    observations: &mut VecDeque<db::NewChannelParticipantObservation>,
+    destination_hash: [u8; 16],
+    local_identity: [u8; 16],
+    hub_identity: [u8; 16],
+    room_name: &str,
+    participant_identity: [u8; 16],
+    nickname: Option<String>,
+) {
+    if participant_identity == local_identity || participant_identity == hub_identity {
+        return;
+    }
+    let hub_destination_hash = hex::encode(destination_hash);
+    let identity_hash = hex::encode(participant_identity);
+    let nickname = nickname.and_then(|nickname| {
+        let nickname = nickname.trim();
+        (!nickname.is_empty()).then(|| nickname.to_string())
+    });
+    if let Some(existing) = observations.iter_mut().find(|observation| {
+        observation.hub_destination_hash == hub_destination_hash
+            && observation.room_name == room_name
+            && observation.identity_hash == identity_hash
+    }) {
+        if nickname.is_some() {
+            existing.nickname = nickname;
+        }
+        return;
+    }
+    append_bounded(
+        observations,
+        db::NewChannelParticipantObservation {
+            hub_destination_hash,
+            room_name: room_name.to_string(),
+            identity_hash,
+            nickname,
+        },
+        PARTICIPANT_OBSERVATION_QUEUE_LIMIT,
+    );
 }
 
 fn upsert_member(
@@ -9465,6 +9648,17 @@ mod tests {
                 .filter(|item| item.kind == ChannelItemKind::Join && item.ours)
                 .count(),
             1
+        );
+        manager.flush_history().await.unwrap();
+        let roster_only_hash = hex::encode([0x42; 16]);
+        let remembered =
+            db::list_channel_participants(&state.db, &identity_id, &hub_destination_hex, "general")
+                .unwrap();
+        assert!(
+            remembered.participants.iter().any(|participant| {
+                participant.identity_hash.as_deref() == Some(roster_only_hash.as_str())
+            }),
+            "an identified roster member remains available even without an individual JOIN transcript row"
         );
 
         let complete_members_before = completed_roster.rooms[0].members.clone();

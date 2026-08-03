@@ -67,20 +67,23 @@ var _channelsFieldSeq = 0;
 var _channelsLocalRoomEvents = {};
 var _channelsLocalEventSeq = 0;
 var _channelsLiveItemSeenAt = {};
-var _channelsRosterBaselines = {};
-var _channelsExpandedPresenceGroups = {};
-var _channelsPresenceGroupSeq = 0;
 var _channelsSelectedMemberKey = null;
 var _channelsMemberReturnFocusKey = null;
 var _channelsHistoryCache = {};
 var _channelsHistoryRequestSeq = 0;
+var _channelsParticipantRequestSeq = 0;
 var _channelsHistoryEpoch = 0;
 var _channelsRoomIndexRequestSeq = 0;
 var _channelsUnreadRequestSeq = 0;
 var _channelsRenderedRoomKey = '';
 var _channelsHubSwitcherDismiss = null;
-// Brief leave/rejoin churn is one continuous presence when no message separates it.
-var CHANNEL_PRESENCE_REJOIN_WINDOW_MS = 15 * 1000;
+var _channelsMemberDetailDismiss = null;
+var _channelsHubPulseTimer = null;
+var _channelsObservedMembersByRoom = {};
+var _channelsMemberContinuityTimer = null;
+var CHANNEL_HUB_PULSE_INTERVAL_MS = 60 * 1000;
+var CHANNEL_MEMBER_CONTINUITY_MS = 60 * 1000;
+var CHANNEL_MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
 var CHANNEL_HISTORY_PAGE_SIZE = 100;
 var CHANNEL_HISTORY_SYNC_PAGE_SIZE = 200;
 var CHANNEL_HISTORY_CACHE_ROOM_LIMIT = 5000;
@@ -195,9 +198,10 @@ function _channelsInsertComposerText(value) {
         input.setSelectionRange(cursor, cursor);
     }
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 132) + 'px';
+    input.style.height = Math.min(input.scrollHeight, 124) + 'px';
     _channelsUpdateComposer();
-    input.focus();
+    if (typeof RS !== 'undefined' && RS.composer) RS.composer.focusWithoutScroll(input);
+    else input.focus();
     return true;
 }
 
@@ -552,120 +556,6 @@ function _channelsObserveLiveItems(rooms) {
     _channelsLiveItemSeenAt = retained;
 }
 
-function _channelsRosterMemberKey(member) {
-    var identity = String(member && member.identity_hash || '').trim().toLowerCase();
-    if (identity) return 'source:' + identity;
-    var nickname = String(member && member.nickname || '').trim().toLowerCase();
-    return nickname ? 'nickname:' + nickname : '';
-}
-
-function _channelsRosterMemberMap(room) {
-    var members = {};
-    (room && Array.isArray(room.members) ? room.members : []).forEach(function(member) {
-        var key = _channelsRosterMemberKey(member);
-        if (key) members[key] = member;
-    });
-    return members;
-}
-
-function _channelsRosterEventIds(room) {
-    var ids = {};
-    (room && Array.isArray(room.transcript) ? room.transcript : []).forEach(function(item) {
-        if (!item || !item.id) return;
-        ids[String(item.id)] = true;
-    });
-    return ids;
-}
-
-function _channelsRosterHasFreshEvent(room, previousIds, kind, member) {
-    var memberIdentity = String(member && member.identity_hash || '').trim().toLowerCase();
-    var memberNickname = String(member && member.nickname || '').trim().toLowerCase();
-    if (!memberIdentity && !memberNickname) return false;
-    var transcript = room && Array.isArray(room.transcript) ? room.transcript : [];
-    return transcript.some(function(item) {
-        if (!item || (kind && item.kind !== kind) || !item.id ||
-                previousIds[String(item.id)]) {
-            return false;
-        }
-        var itemIdentity = String(item.source_hash || '').trim().toLowerCase();
-        var itemNickname = String(item.nickname || '').trim().toLowerCase();
-        return !!(memberIdentity && itemIdentity && memberIdentity === itemIdentity) ||
-            !!(memberNickname && itemNickname && memberNickname === itemNickname);
-    });
-}
-
-function _channelsAddRosterPresence(roomName, kind, member) {
-    if (!member || member.is_self) return;
-    var name = _channelsMemberName(member);
-    var action = kind === 'part' ? ' left' : (kind === 'present' ? ' is here' : ' joined');
-    _channelsAddLocalRoomItem(roomName, {
-        kind: kind,
-        source_hash: member.identity_hash || null,
-        nickname: member.nickname || null,
-        text: name + action,
-        ours: false
-    });
-}
-
-// JOINED is both a membership fanout and, on entry/recovery, a roster. Keep a
-// session-local baseline so a roster-only hub still produces human presence
-// changes without pretending that members discovered on entry just joined.
-function _channelsReconcileRosterPresence(hubDestinationHash) {
-    var hub = String(hubDestinationHash || '').trim().toLowerCase();
-    if (!hub) return;
-    (Array.isArray(channelsSnapshot.rooms) ? channelsSnapshot.rooms : []).forEach(function(room) {
-        if (!room || room.phase !== 'joined') return;
-        var key = _channelsHistoryKey(hub, room.name);
-        var currentMembers = _channelsRosterMemberMap(room);
-        var currentEventIds = _channelsRosterEventIds(room);
-        var previous = _channelsRosterBaselines[key];
-        if (!previous) {
-            Object.keys(currentMembers).forEach(function(memberKey) {
-                var member = currentMembers[memberKey];
-                var transcriptAlreadyExplainsPresence =
-                    _channelsRosterHasFreshEvent(room, {}, null, member);
-                if (!transcriptAlreadyExplainsPresence) {
-                    _channelsAddRosterPresence(room.name, 'present', member);
-                }
-            });
-        } else {
-            Object.keys(currentMembers).forEach(function(memberKey) {
-                if (previous.members[memberKey]) return;
-                var member = currentMembers[memberKey];
-                if (!_channelsRosterHasFreshEvent(
-                        room, previous.event_ids, null, member)) {
-                    // A partial roster can grow as ordinary room traffic or
-                    // continuation packets reveal people who were already
-                    // there. Describe that as context, not a fabricated join.
-                    _channelsAddRosterPresence(
-                        room.name,
-                        room.members_complete && previous.members_complete ? 'join' : 'present',
-                        member
-                    );
-                }
-            });
-            // Absence is meaningful only in a complete roster. The member
-            // pane labels partial lists explicitly, so using one to invent a
-            // leave would make the timeline more certain than the protocol.
-            if (room.members_complete) {
-                Object.keys(previous.members).forEach(function(memberKey) {
-                    if (currentMembers[memberKey]) return;
-                    var member = previous.members[memberKey];
-                    if (!_channelsRosterHasFreshEvent(
-                            room, previous.event_ids, 'part', member)) {
-                        _channelsAddRosterPresence(room.name, 'part', member);
-                    }
-                });
-            }
-        }
-        _channelsRosterBaselines[key] = {
-            members: currentMembers,
-            event_ids: currentEventIds,
-            members_complete: !!room.members_complete
-        };
-    });
-}
-
 function _channelsSavedHub(destinationHash) {
     for (var i = 0; i < channelsSavedHubs.length; i++) {
         if (channelsSavedHubs[i].destination_hash === destinationHash) return channelsSavedHubs[i];
@@ -948,11 +838,22 @@ function _channelsSnapshotIsNewer(snapshot, current) {
 
 function channelsApplySnapshot(snapshot) {
     if (!_channelsSnapshotIsNewer(snapshot, channelsSnapshot)) return false;
+    var oldPhase = channelsSnapshot.phase;
+    var oldRooms = Array.isArray(channelsSnapshot.rooms) ? channelsSnapshot.rooms : [];
     var oldHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
     var oldGeneration = Number(channelsSnapshot.generation) || 0;
     var oldContextHub = String(
         channelsSnapshot.selected_hub_destination || oldHub || ''
     ).toLowerCase();
+    var incomingHub = snapshot && snapshot.hub && snapshot.hub.destination_hash;
+    var incomingContextHub = String(
+        snapshot && (snapshot.selected_hub_destination || incomingHub) || ''
+    ).toLowerCase();
+    if (snapshot && snapshot.phase === 'reconnecting' &&
+            (oldPhase === 'active' || oldPhase === 'stale') &&
+            oldContextHub && incomingContextHub === oldContextHub) {
+        _channelsBeginMemberContinuity(oldContextHub, oldRooms);
+    }
     channelsSnapshot = snapshot;
     if (!Array.isArray(channelsSnapshot.rooms)) channelsSnapshot.rooms = [];
     if (!Array.isArray(channelsSnapshot.hubs)) channelsSnapshot.hubs = [];
@@ -1009,10 +910,9 @@ function channelsApplySnapshot(snapshot) {
     if (hubContextChanged || managerContextChanged) {
         _channelsLocalRoomEvents = {};
         _channelsLiveItemSeenAt = {};
-        _channelsRosterBaselines = {};
-        _channelsExpandedPresenceGroups = {};
         _channelsSelectedMemberKey = null;
         _channelsMemberReturnFocusKey = null;
+        _channelsResetMemberObservations();
     }
     if (newHub && newHub !== oldHub) {
         channelsSavedRooms = [];
@@ -1036,7 +936,7 @@ function channelsApplySnapshot(snapshot) {
         channelsActiveRoom = channelsSnapshot.rooms[0].name;
     }
     _channelsObserveLiveItems(channelsSnapshot.rooms);
-    _channelsReconcileRosterPresence(newContextHub);
+    _channelsObserveRoomMembers(newContextHub, channelsSnapshot.rooms);
 
     _channelsPersistConveniences();
     renderChannels();
@@ -1245,7 +1145,14 @@ function _channelsHistoryEntry(context) {
             sync_timer: null,
             marking: false,
             mark_requested: false,
-            marked_sequence: '0'
+            marked_sequence: '0',
+            participants: [],
+            participants_loaded: false,
+            participants_loading: false,
+            participants_error: null,
+            participants_omitted: 0,
+            participants_request_id: 0,
+            participants_refresh_requested: false
         };
     }
     return _channelsHistoryCache[context.key];
@@ -1266,6 +1173,88 @@ function _channelsNormalizeHistoryItem(item) {
         ours: !!item.ours,
         mentioned: !!item.mentioned
     };
+}
+
+function _channelsNormalizeParticipant(item) {
+    item = item || {};
+    var identityHash = String(item.identity_hash || '').trim().toLowerCase();
+    var lxmfHash = String(item.lxmf_hash || '').trim().toLowerCase();
+    var nickname = String(item.nickname || '').trim();
+    if (!/^[0-9a-f]{32}$/.test(identityHash)) identityHash = '';
+    if (!/^[0-9a-f]{32}$/.test(lxmfHash)) lxmfHash = '';
+    if (/[\u0000-\u001f\u007f]/.test(nickname)) nickname = '';
+    if (!identityHash && !nickname) return null;
+    return {
+        identity_hash: identityHash || null,
+        lxmf_hash: lxmfHash || null,
+        nickname: nickname || null,
+        last_seen_at_ms: Number(item.last_seen_at_ms) || 0,
+        is_self: false,
+        _seen: true
+    };
+}
+
+function _channelsLoadParticipants(context, force) {
+    var entry = _channelsHistoryEntry(context);
+    if (!entry) return Promise.resolve(entry);
+    if (entry.participants_loading) {
+        if (force) entry.participants_refresh_requested = true;
+        return Promise.resolve(entry);
+    }
+    if (!force && (entry.participants_loaded || entry.participants_error)) {
+        return Promise.resolve(entry);
+    }
+    var requestId = ++_channelsParticipantRequestSeq;
+    var requestEpoch = _channelsHistoryEpoch;
+    entry.participants_loading = true;
+    entry.participants_refresh_requested = false;
+    entry.participants_error = null;
+    entry.participants_request_id = requestId;
+    return RS.invoke('api_channel_participants', {
+        args: {
+            hub_destination_hash: context.hub_destination_hash,
+            room: context.room_name
+        }
+    }).then(function(page) {
+        if (requestEpoch !== _channelsHistoryEpoch ||
+                entry.participants_request_id !== requestId) return entry;
+        page = page || {};
+        entry.participants = (Array.isArray(page.participants) ? page.participants : [])
+            .map(_channelsNormalizeParticipant)
+            .filter(Boolean);
+        entry.participants_omitted = Math.max(0, Number(page.omitted_count) || 0);
+        entry.participants_loaded = true;
+        entry.participants_error = null;
+        return entry;
+    }).catch(function(error) {
+        if (requestEpoch === _channelsHistoryEpoch &&
+                entry.participants_request_id === requestId) {
+            entry.participants_error = 'Seen participants could not be loaded.';
+            window.RS.diag('warn', '[Channels] participant summary query failed:', error);
+        }
+        return entry;
+    }).then(function(result) {
+        if (requestEpoch !== _channelsHistoryEpoch ||
+                entry.participants_request_id !== requestId) return result;
+        entry.participants_loading = false;
+        var refreshRequested = entry.participants_refresh_requested;
+        entry.participants_refresh_requested = false;
+        if (_channelsCurrentHistoryKey() === context.key) {
+            var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
+            _channelsRenderMembers(room);
+        }
+        if (refreshRequested) return _channelsLoadParticipants(context, true);
+        return result;
+    });
+}
+
+function _channelsEnsureParticipants(context) {
+    var entry = _channelsHistoryEntry(context);
+    if (entry && !entry.participants_loaded && !entry.participants_loading &&
+            !entry.participants_error) {
+        _channelsLoadParticipants(context, false);
+    }
+    return entry;
 }
 
 function _channelsMergeHistoryItems(older, newer) {
@@ -1418,7 +1407,10 @@ function _channelsSyncHistory(context) {
     }).then(function(result) {
         if (epoch !== _channelsHistoryEpoch || entry.sync_id !== syncId) return result;
         entry.syncing = false;
-        if (changed && _channelsCurrentHistoryKey() === context.key) _channelsRenderRoom();
+        if (changed) {
+            _channelsLoadParticipants(context, true);
+            if (_channelsCurrentHistoryKey() === context.key) _channelsRenderRoom();
+        }
         if (needsAnotherPass) {
             _channelsScheduleHistorySync(context);
         } else {
@@ -1563,12 +1555,45 @@ function renderChannels() {
     _channelsRenderHubStrip();
     _channelsRenderList();
     _channelsRenderRoom();
-    _channelsUpdateMobileMode();
+}
+
+function _channelsHubPulseEnabled() {
+    return !(typeof window !== 'undefined' && window.matchMedia &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+function _channelsPlayHubSignal(strip) {
+    if (!strip || !_channelsHubPulseEnabled()) return;
+    strip.classList.remove('link-arrived');
+    requestAnimationFrame(function() {
+        if (strip.dataset.phase === 'active') strip.classList.add('link-arrived');
+    });
+}
+
+function _channelsStopHubPulse(strip) {
+    if (_channelsHubPulseTimer != null) {
+        clearInterval(_channelsHubPulseTimer);
+        _channelsHubPulseTimer = null;
+    }
+    if (strip) strip.classList.remove('link-arrived');
+}
+
+function _channelsSyncHubPulse(strip, phase) {
+    if (phase !== 'active' || !_channelsHubPulseEnabled()) {
+        _channelsStopHubPulse(strip);
+        return;
+    }
+    if (_channelsHubPulseTimer != null) return;
+    _channelsHubPulseTimer = setInterval(function() {
+        if (channelsSnapshot.phase === 'active' && _channelsViewVisible()) {
+            _channelsPlayHubSignal(strip);
+        }
+    }, CHANNEL_HUB_PULSE_INTERVAL_MS);
 }
 
 function _channelsRenderHubStrip() {
     var strip = _channelsEl('channel-hub-strip');
-    var switcher = _channelsEl('channel-hub-switcher-btn');
+    var summary = _channelsEl('channel-hub-summary');
     var menu = _channelsEl('channel-hub-menu-btn');
     if (!strip) return;
 
@@ -1576,14 +1601,10 @@ function _channelsRenderHubStrip() {
     var nextPhase = channelsSnapshot.phase || 'unavailable';
     strip.dataset.phase = nextPhase;
     if (nextPhase === 'active' && previousPhase !== 'active') {
-        strip.classList.remove('link-arrived');
-        requestAnimationFrame(function() {
-            if (strip.dataset.phase === 'active') strip.classList.add('link-arrived');
-        });
-    } else if (nextPhase !== 'active') {
-        strip.classList.remove('link-arrived');
+        _channelsPlayHubSignal(strip);
     }
-    if (menu) menu.hidden = channelsSnapshot.phase === 'offline' || channelsSnapshot.phase === 'unavailable';
+    _channelsSyncHubPulse(strip, nextPhase);
+    if (menu) menu.hidden = false;
 
     var hub = channelsSnapshot.hub;
     var title = _channelsPhaseLabel(channelsSnapshot.phase);
@@ -1604,15 +1625,11 @@ function _channelsRenderHubStrip() {
     }
     _channelsSetText('channel-hub-strip-title', title);
     _channelsSetText('channel-hub-strip-meta', meta);
-    if (switcher) {
-        var currentName = hub ? _channelsHubName(hub) : '';
-        switcher.setAttribute(
-            'aria-label',
-            currentName
-                ? 'Current channel hub: ' + currentName + '. ' + meta + '. Choose another hub'
-                : 'Choose a channel hub'
-        );
-        switcher.title = currentName ? 'Switch channel hub' : 'Choose a channel hub';
+    if (summary) {
+        var summaryAction = hub ? 'Hub options' : 'Manage Hub';
+        summary.title = summaryAction;
+        summary.setAttribute('aria-haspopup', hub ? 'menu' : 'dialog');
+        summary.setAttribute('aria-label', summaryAction + '. ' + title + '. ' + meta);
     }
 }
 
@@ -1624,11 +1641,11 @@ function _channelsRenderList() {
     list.textContent = '';
 
     if (_channelsIsConnected()) {
-        if (label) label.textContent = 'Joined';
+        if (label) label.textContent = 'Active';
         if (join) {
             join.hidden = false;
-            join.textContent = 'Add';
-            join.setAttribute('aria-label', 'Join a channel');
+            join.textContent = 'Join';
+            join.setAttribute('aria-label', 'Join a channel on this hub');
         }
         var liveNames = {};
         channelsSnapshot.rooms.forEach(function(room) {
@@ -1640,6 +1657,14 @@ function _channelsRenderList() {
         channelsSnapshot.rooms.forEach(function(room) {
             list.appendChild(_channelsBuildRoomRow(room, false));
         });
+        if (!channelsSnapshot.rooms.length) {
+            list.appendChild(_channelsActiveEmpty('No currently active channels'));
+        }
+        if (savedOnlyRooms.length) {
+            list.appendChild(_channelsListSection('History', {
+                className: 'channel-history-section'
+            }));
+        }
         savedOnlyRooms.forEach(function(saved) {
             var indexed = channelsRoomIndex.find(function(entry) {
                 return entry.hub_destination_hash === saved.hub_destination_hash &&
@@ -1683,11 +1708,7 @@ function _channelsRenderList() {
                 'Refresh to ask this hub'
             ));
         } else if (!availableRooms.length) {
-            list.appendChild(_channelsDirectoryStatus(
-                directoryRooms.length
-                    ? 'All advertised channels are already in your list'
-                    : 'No public channels advertised'
-            ));
+            list.appendChild(_channelsDirectoryStatus('No discoverable channels found.'));
         }
         if (directory.complete === false && Number(directory.omitted_count) > 0) {
             var omitted = Number(directory.omitted_count);
@@ -1761,6 +1782,13 @@ function _channelsListSection(text, options) {
         section.appendChild(action);
     }
     return section;
+}
+
+function _channelsActiveEmpty(text) {
+    var empty = document.createElement('div');
+    empty.className = 'channel-active-empty';
+    empty.textContent = text;
+    return empty;
 }
 
 function _channelsDirectoryStatus(text, detail, tone) {
@@ -1921,7 +1949,7 @@ function _channelsBuildRoomRow(room, savedOnly, options) {
         : '';
     var row = document.createElement('button');
     row.type = 'button';
-    row.className = 'channel-room-row' + (
+    row.className = 'channel-room-row' + (savedOnly ? ' channel-room-row-history' : '') + (
         (!savedOnly && room.name === channelsActiveRoom) ||
         (savedOnly && historyKey && historyKey === selectedHistoryKey)
             ? ' active' : ''
@@ -1942,10 +1970,13 @@ function _channelsBuildRoomRow(room, savedOnly, options) {
     var meta = document.createElement('span');
     meta.className = 'channel-room-row-meta';
     if (savedOnly) {
-        var localState = options.has_history ? 'stored locally' : 'saved locally';
-        meta.textContent = options.hub_label
-            ? options.hub_label + ' \u00b7 ' + localState
-            : localState.charAt(0).toUpperCase() + localState.slice(1) + ' \u00b7 open';
+        if (options.has_history) {
+            meta.textContent = 'Disconnected';
+        } else {
+            meta.textContent = options.hub_label
+                ? options.hub_label + ' \u00b7 saved locally'
+                : 'Saved locally \u00b7 open';
+        }
     } else if (room.last_error) {
         meta.textContent = room.last_error;
     } else if (room.phase === 'joined') {
@@ -1975,12 +2006,10 @@ function _channelsBuildRoomRow(room, savedOnly, options) {
         row.appendChild(unreadBadge);
     }
 
-    if (savedOnly || room.phase !== 'joined') {
+    if ((!savedOnly && room.phase !== 'joined') || (savedOnly && !options.has_history)) {
         var status = document.createElement('span');
         status.className = 'channel-row-status' + (!savedOnly && room.phase === 'error' ? ' error' : '');
-        status.textContent = savedOnly
-            ? (options.has_history ? 'History' : 'Saved')
-            : _channelsRoomPhaseLabel(room.phase);
+        status.textContent = savedOnly ? 'Saved' : _channelsRoomPhaseLabel(room.phase);
         row.appendChild(status);
     }
 
@@ -2000,6 +2029,7 @@ function _channelsRenderRoom(scrollRestore) {
     var transcript = _channelsEl('channel-transcript');
     var room = _channelsSelectedRoomView();
     if (!header || !transcript || !compose) return;
+    if (RS.chatScroll) RS.chatScroll.wire(transcript);
     if (layout) layout.classList.toggle('has-active-room', !!room);
     if (layout) layout.classList.toggle('room-live', !!room && room.phase === 'joined');
 
@@ -2015,6 +2045,7 @@ function _channelsRenderRoom(scrollRestore) {
 
     var historyContext = _channelsHistoryContext(room);
     var historyEntry = _channelsEnsureHistory(historyContext);
+    _channelsEnsureParticipants(historyContext);
     var renderKey = historyContext
         ? historyContext.key + (room.history_only ? '|history' : '|live')
         : 'room|' + room.name;
@@ -2053,7 +2084,9 @@ function _channelsRenderRoom(scrollRestore) {
     }
     _channelsSetText('channel-room-meta', roomMeta);
 
-    var wasNearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 90;
+    var scrollState = RS.chatScroll
+        ? RS.chatScroll.capture(transcript)
+        : { scrollTop: transcript.scrollTop, nearBottom: true, followLatest: true };
     transcript.textContent = '';
     if (!room.history_only) {
         channelsSnapshot.notices.forEach(function(item) {
@@ -2065,7 +2098,7 @@ function _channelsRenderRoom(scrollRestore) {
         if (historyRail) transcript.appendChild(historyRail);
     }
     var items = _channelsTimelineEntries(room, historyEntry);
-    var renderedItems = _channelsGroupPresenceEvents(items, room.name);
+    var renderedItems = _channelsGroupConsecutiveMessages(items);
     if (room.history_only && renderedItems.length) {
         transcript.appendChild(_channelsBuildHistoryOnlyBanner(historyContext));
     } else if (room.phase !== 'joined' && !room.history_only) {
@@ -2088,28 +2121,31 @@ function _channelsRenderRoom(scrollRestore) {
     } else if (renderedItems.length) {
         var previousDay = null;
         renderedItems.forEach(function(entry) {
-            var dayItem = entry.presenceGroup && entry.presenceGroup.entries.length
-                ? entry.presenceGroup.entries[0].item
-                : entry.item;
-            var day = _channelsDayKey(dayItem);
+            var day = _channelsDayKey(entry.item);
             if (day && day !== previousDay) {
-                transcript.appendChild(_channelsBuildDaySeparator(dayItem));
+                transcript.appendChild(_channelsBuildDaySeparator(entry.item));
                 previousDay = day;
             }
-            if (entry.presenceGroup) {
-                transcript.appendChild(_channelsBuildPresenceGroup(entry.presenceGroup));
-            } else {
-                transcript.appendChild(_channelsBuildTranscriptItem(entry.item, entry.hubNotice));
-            }
+            transcript.appendChild(_channelsBuildTranscriptItem(
+                entry.item,
+                entry.hubNotice,
+                entry.messageGroup
+            ));
         });
     }
     if (scrollRestore && scrollRestore.key === (historyContext && historyContext.key)) {
-        requestAnimationFrame(function() {
-            transcript.scrollTop = scrollRestore.scroll_top +
-                Math.max(0, transcript.scrollHeight - scrollRestore.scroll_height);
+        var restoredTop = scrollRestore.scroll_top +
+            Math.max(0, transcript.scrollHeight - scrollRestore.scroll_height);
+        if (RS.chatScroll) RS.chatScroll.setTop(transcript, restoredTop);
+        else transcript.scrollTop = restoredTop;
+    } else if (RS.chatScroll) {
+        RS.chatScroll.applyAfterRender(transcript, scrollState, {
+            forceScrollBottom: roomChanged
         });
-    } else if (wasNearBottom || roomChanged) {
-        requestAnimationFrame(function() { transcript.scrollTop = transcript.scrollHeight; });
+    } else if (scrollState.nearBottom || roomChanged) {
+        transcript.scrollTop = transcript.scrollHeight;
+    } else {
+        transcript.scrollTop = scrollState.scrollTop;
     }
     _channelsRenderMembers(room.history_only ? null : room);
     _channelsUpdateComposer();
@@ -2129,6 +2165,12 @@ function _channelsTimelineEntries(room, historyEntry) {
     function append(item, hubNotice) {
         if (!item) return;
         if (_channelsIsConnectionLifecycleItem(item)) return;
+        // RRC membership is best-effort and many hubs omit member lists or
+        // cannot prove every disconnect. Keep JOINED/PARTED as native state
+        // evidence for the people pane without presenting an asymmetric
+        // activity feed as conversation. Our own join remains a useful local
+        // session boundary.
+        if (_channelsIsRemotePresenceItem(item)) return;
         var id = String(item.id || '');
         if (id && seen[id]) return;
         if (id) seen[id] = true;
@@ -2538,15 +2580,36 @@ function _channelsBuildQuoteButton(item, authorText) {
     return button;
 }
 
-function _channelsIsPresenceEvent(entry) {
-    if (!entry || entry.hubNotice || !entry.item || entry.item.ours) return false;
-    return entry.item.kind === 'join' || entry.item.kind === 'part' ||
-        entry.item.kind === 'present';
+function _channelsBindTouchReplyAction(event, item, authorText) {
+    if (!event || !window.RS || !RS.gestures ||
+            typeof RS.gestures.attachLongPress !== 'function') return;
+    RS.gestures.attachLongPress(event, {
+        duration: 500,
+        moveCancelPx: 12,
+        hapticStages: [{ at: 0.55, level: 'light' }],
+        preventDefaultOnStart: true,
+        onFire: function() {
+            if (typeof actionPopover !== 'function') {
+                _channelsInsertQuote(item, authorText);
+                return;
+            }
+            actionPopover(event, [{
+                label: 'Quote in reply',
+                icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"></polyline><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path></svg>',
+                onSelect: function() { _channelsInsertQuote(item, authorText); }
+            }]);
+        }
+    });
 }
 
-// Native history is already append-ordered, but roster-derived presence lives
-// in a small frontend buffer. Merge both by their local receive clock so a new
-// message can never push an older inferred leave below itself on rerender.
+function _channelsIsRemotePresenceItem(item) {
+    if (!item || item.ours) return false;
+    return item.kind === 'join' || item.kind === 'part' || item.kind === 'present';
+}
+
+// Native history is already append-ordered. Merge the bounded live window and
+// local-only feedback by their trusted local receive clock so a rerender can
+// never move an older event below a newer message.
 function _channelsOrderTimelineEntries(entries) {
     return (entries || []).map(function(entry, index) {
         return {
@@ -2564,272 +2627,41 @@ function _channelsOrderTimelineEntries(entries) {
     });
 }
 
-function _channelsPresenceIdentityKey(item) {
-    var sourceHash = String(item && item.source_hash || '').trim().toLowerCase();
+function _channelsMessageAuthorKey(entry) {
+    if (!entry || entry.hubNotice || !entry.item ||
+            (entry.item.kind || 'message') !== 'message') return '';
+    if (entry.item.ours) return 'self';
+    var sourceHash = String(entry.item.source_hash || '').trim().toLowerCase();
     if (sourceHash) return 'source:' + sourceHash;
-    var nickname = String(item && item.nickname || '').trim().toLowerCase();
+    var nickname = String(entry.item.nickname || '').trim().toLowerCase();
     return nickname ? 'nickname:' + nickname : '';
 }
 
-function _channelsCollapseTransientRejoins(entries) {
-    var reconciled = [];
-    entries.forEach(function(entry) {
-        if (!_channelsIsPresenceEvent(entry)) {
-            reconciled.push(entry);
-            return;
-        }
-        var currentIdentity = _channelsPresenceIdentityKey(entry.item);
-        if (!currentIdentity) {
-            reconciled.push(entry);
-            return;
-        }
-        for (var index = reconciled.length - 1; index >= 0; index--) {
-            var previous = reconciled[index];
-            if (!_channelsIsPresenceEvent(previous)) break;
-            if (_channelsPresenceIdentityKey(previous.item) !== currentIdentity) continue;
+function _channelsMessagesBelongTogether(previous, current) {
+    var previousAuthor = _channelsMessageAuthorKey(previous);
+    if (!previousAuthor || previousAuthor !== _channelsMessageAuthorKey(current)) return false;
+    if (!!previous.item.mentioned !== !!current.item.mentioned) return false;
+    if (_channelsDayKey(previous.item) !== _channelsDayKey(current.item)) return false;
+    var elapsed = _channelsActivityTime(current.item) - _channelsActivityTime(previous.item);
+    return elapsed >= 0 && elapsed <= CHANNEL_MESSAGE_GROUP_WINDOW_MS;
+}
 
-            var currentKind = entry.item.kind;
-            var previousKind = previous.item.kind;
-            var currentMeansPresent = currentKind === 'join' || currentKind === 'present';
-            var previousMeansPresent = previousKind === 'join' || previousKind === 'present';
-
-            // JOINED is also used for roster/recovery fanout. Without an
-            // observed PARTED, another present-state notice is not a second
-            // arrival and must never become "joined 2 times" in the UI.
-            if (currentMeansPresent && previousMeansPresent) return;
-            if (currentKind === previousKind) return;
-
-            if (currentKind === 'join' && previousKind === 'part') {
-                var elapsed = _channelsActivityTime(entry.item) -
-                    _channelsActivityTime(previous.item);
-                if (elapsed >= 0 && elapsed <= CHANNEL_PRESENCE_REJOIN_WINDOW_MS) {
-                    reconciled.splice(index, 1);
-                    return;
-                }
-            }
-            break;
-        }
-        reconciled.push(entry);
+function _channelsGroupConsecutiveMessages(entries) {
+    return (entries || []).map(function(entry, index, allEntries) {
+        var joinsPrevious = index > 0 &&
+            _channelsMessagesBelongTogether(allEntries[index - 1], entry);
+        var joinsNext = index + 1 < allEntries.length &&
+            _channelsMessagesBelongTogether(entry, allEntries[index + 1]);
+        var messageGroup = 'single';
+        if (!joinsPrevious && joinsNext) messageGroup = 'start';
+        else if (joinsPrevious && joinsNext) messageGroup = 'middle';
+        else if (joinsPrevious) messageGroup = 'end';
+        return Object.assign({}, entry, { messageGroup: messageGroup });
     });
-    return reconciled;
 }
 
-function _channelsGroupPresenceEvents(entries, roomName) {
-    var rendered = [];
-    var run = [];
-
-    function flushRun() {
-        if (!run.length) return;
-        if (run.length === 1) {
-            rendered.push(run[0]);
-        } else {
-            var first = run[0].item;
-            rendered.push({
-                presenceGroup: {
-                    key: roomName + '|presence|' + (first.id || first.timestamp_ms || run[0].order),
-                    entries: run.slice()
-                }
-            });
-        }
-        run = [];
-    }
-
-    _channelsCollapseTransientRejoins(entries).forEach(function(entry) {
-        if (!_channelsIsPresenceEvent(entry)) {
-            flushRun();
-            rendered.push(entry);
-            return;
-        }
-        var previous = run.length ? run[run.length - 1].item : null;
-        var sameRun = previous &&
-            _channelsDayKey(previous) === _channelsDayKey(entry.item) &&
-            (previous.kind === 'present') === (entry.item.kind === 'present');
-        if (previous && !sameRun) flushRun();
-        run.push(entry);
-    });
-    flushRun();
-    return rendered;
-}
-
-function _channelsPresenceGroupRows(group) {
-    return _channelsCollapseTransientRejoins(group.entries || []);
-}
-
-function _channelsUniquePresenceRows(rows, kind) {
-    var unique = [];
-    var seen = {};
-    rows.forEach(function(entry, index) {
-        var item = entry.item || {};
-        if (item.kind !== kind) return;
-        var identity = _channelsPresenceIdentityKey(item);
-        var fallback = item.id || item.timestamp_ms || entry.order || index;
-        var key = identity || 'event:' + fallback;
-        if (seen[key]) return;
-        seen[key] = true;
-        unique.push(entry);
-    });
-    return unique;
-}
-
-function _channelsPresenceGroupSummary(group) {
-    var rows = _channelsPresenceGroupRows(group);
-    var joined = _channelsUniquePresenceRows(rows, 'join');
-    var left = _channelsUniquePresenceRows(rows, 'part');
-    var present = _channelsUniquePresenceRows(rows, 'present');
-
-    var joinedNoun = joined.length === 1 ? 'person' : 'people';
-    var leftNoun = left.length === 1 ? 'person' : 'people';
-    var presentNoun = present.length === 1 ? 'person' : 'people';
-    var text;
-    if (present.length) {
-        text = present.length + ' ' + presentNoun + ' here';
-    } else if (joined.length && left.length) {
-        text = joined.length + ' ' + joinedNoun + ' joined and ' + left.length + ' left';
-    } else if (left.length) {
-        text = left.length + ' ' + leftNoun + ' left';
-    } else {
-        text = joined.length + ' ' + joinedNoun + ' joined';
-    }
-    return { joined: joined, left: left, present: present, rows: rows, text: text };
-}
-
-function _channelsPresenceName(item) {
-    if (item.nickname) return item.nickname;
-    if (item.source_hash) return _channelsShortHash(item.source_hash);
-    var text = String(item.text || '');
-    var suffix = item.kind === 'part' ? ' left' :
-        (item.kind === 'present' ? ' is here' : ' joined');
-    return text.slice(-suffix.length) === suffix ? text.slice(0, -suffix.length) : 'A member';
-}
-
-function _channelsPresenceTooltip(entries) {
-    var names = entries.map(function(entry) {
-        var item = entry.item;
-        return item.nickname || item.source_hash || _channelsPresenceName(item);
-    });
-    var visible = names.slice(0, 8);
-    var tooltip = visible.join(', ');
-    if (names.length > visible.length) {
-        tooltip += ' and ' + (names.length - visible.length) + ' more';
-    }
-    return tooltip;
-}
-
-function _channelsAppendPresenceCount(label, entries, kind, includeNoun) {
-    var count = entries.length;
-    var noun = count === 1 ? 'person' : 'people';
-    var action = kind === 'part' ? 'left' : (kind === 'present' ? 'here' : 'joined');
-    var countLabel = count + ' ' + noun + ' ' + action;
-    var countElement = document.createElement('span');
-    countElement.className = 'channel-presence-count';
-    countElement.textContent = String(count);
-    countElement.title = _channelsPresenceTooltip(entries);
-    countElement.setAttribute('aria-label', countLabel + ': ' + countElement.title);
-    label.appendChild(countElement);
-    label.appendChild(document.createTextNode(includeNoun ? ' ' + noun + ' ' + action : ' ' + action));
-}
-
-function _channelsBuildPresenceGroup(group) {
-    var expanded = !!_channelsExpandedPresenceGroups[group.key];
-    var summary = _channelsPresenceGroupSummary(group);
-    var wrapper = document.createElement('div');
-    wrapper.className = 'channel-presence-group' + (expanded ? ' expanded' : '');
-
-    var toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'channel-presence-summary';
-    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    var listId = 'channel-presence-group-' + (++_channelsPresenceGroupSeq);
-    toggle.setAttribute('aria-controls', listId);
-    toggle.setAttribute('aria-label', summary.text + '. Show names');
-
-    var label = document.createElement('span');
-    label.className = 'channel-presence-label';
-    if (summary.present.length) {
-        _channelsAppendPresenceCount(label, summary.present, 'present', true);
-    } else if (summary.joined.length && summary.left.length) {
-        _channelsAppendPresenceCount(label, summary.joined, 'join', true);
-        label.appendChild(document.createTextNode(' and '));
-        _channelsAppendPresenceCount(label, summary.left, 'part', false);
-    } else if (summary.left.length) {
-        _channelsAppendPresenceCount(label, summary.left, 'part', true);
-    } else {
-        _channelsAppendPresenceCount(label, summary.joined, 'join', true);
-    }
-    var chevron = document.createElement('span');
-    chevron.className = 'channel-presence-chevron';
-    chevron.setAttribute('aria-hidden', 'true');
-    chevron.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
-    toggle.appendChild(label);
-    toggle.appendChild(chevron);
-
-    var list = document.createElement('div');
-    list.id = listId;
-    list.className = 'channel-presence-list';
-    list.setAttribute('role', 'list');
-    list.hidden = !expanded;
-    summary.rows.forEach(function(entry) {
-        var item = entry.item;
-        var nameText = _channelsPresenceName(item);
-        var row = document.createElement('div');
-        row.className = 'channel-presence-item';
-        row.setAttribute('role', 'listitem');
-        var copy = document.createElement('span');
-        copy.className = 'channel-presence-item-copy';
-        var action = item.kind === 'part' ? ' left' :
-            (item.kind === 'present' ? ' is here' : ' joined');
-        copy.textContent = nameText + action;
-        var time = document.createElement('time');
-        time.className = 'channel-event-time';
-        var activityTime = _channelsActivityTime(item);
-        time.dateTime = _channelsDisplayDate(activityTime).toISOString();
-        time.textContent = _channelsFormatTime(activityTime);
-        row.appendChild(copy);
-        row.appendChild(time);
-        list.appendChild(row);
-    });
-
-    toggle.addEventListener('click', function() {
-        expanded = !expanded;
-        _channelsExpandedPresenceGroups[group.key] = expanded;
-        toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-        toggle.setAttribute('aria-label', summary.text + (expanded ? '. Hide names' : '. Show names'));
-        wrapper.classList.toggle('expanded', expanded);
-        list.hidden = !expanded;
-    });
-    wrapper.appendChild(toggle);
-    wrapper.appendChild(list);
-    return wrapper;
-}
-
-function _channelsBuildPresenceEvent(item) {
-    var event = document.createElement('div');
-    event.className = 'channel-presence-event';
-    var copy = document.createElement('span');
-    copy.className = 'channel-presence-event-copy';
-    var name = document.createElement('strong');
-    name.textContent = _channelsPresenceName(item);
-    var action = document.createElement('span');
-    action.textContent = item.kind === 'part' ? ' left' :
-        (item.kind === 'present' ? ' is here' : ' joined');
-    copy.appendChild(name);
-    copy.appendChild(action);
-
-    var time = document.createElement('time');
-    time.className = 'channel-event-time';
-    time.dateTime = _channelsDisplayDate(item.timestamp_ms).toISOString();
-    time.textContent = _channelsFormatTime(item.timestamp_ms);
-
-    event.appendChild(copy);
-    event.appendChild(time);
-    return event;
-}
-
-function _channelsBuildTranscriptItem(item, hubNotice) {
+function _channelsBuildTranscriptItem(item, hubNotice, messageGroup) {
     var kind = item.kind || 'message';
-    if ((kind === 'join' || kind === 'part' || kind === 'present') && !item.ours) {
-        return _channelsBuildPresenceEvent(item);
-    }
     if (kind === 'join' || kind === 'part' || kind === 'error' || kind === 'system') {
         var system = document.createElement('div');
         system.className = 'channel-system-event' + (kind === 'error' ? ' error' : '');
@@ -2841,7 +2673,10 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     var event = document.createElement('article');
     var mentioned = !!item.mentioned && !item.ours;
     event.className = 'channel-event ' + kind +
-        (item.ours ? ' ours' : '') + (mentioned ? ' mentioned' : '');
+        (item.ours ? ' ours' : '') + (mentioned ? ' mentioned' : '') +
+        (messageGroup && messageGroup !== 'single'
+            ? ' message-group-' + messageGroup
+            : '');
     var authorText = item.nickname || (item.ours ? (channelsSnapshot.nickname || 'You') : _channelsShortHash(item.source_hash)) || 'Hub';
 
     var avatar = document.createElement('span');
@@ -2849,7 +2684,8 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     _channelsPopulateIdentityAvatar(
         avatar,
         _channelsIdentityAvatarSeed(item.source_hash, item.source_lxmf_hash, !!item.ours),
-        32
+        32,
+        authorText
     );
 
     var author = document.createElement('span');
@@ -2880,6 +2716,7 @@ function _channelsBuildTranscriptItem(item, hubNotice) {
     event.appendChild(author);
     event.appendChild(meta);
     event.appendChild(body);
+    _channelsBindTouchReplyAction(event, item, authorText);
     return event;
 }
 
@@ -2898,6 +2735,181 @@ function _channelsMemberByKey(members, key) {
         if (_channelsMemberKey(members[i]) === key) return members[i];
     }
     return null;
+}
+
+function _channelsObservedRoom(hubDestinationHash, roomName) {
+    var key = _channelsHistoryKey(hubDestinationHash, roomName);
+    if (!key) return null;
+    if (!_channelsObservedMembersByRoom[key]) {
+        _channelsObservedMembersByRoom[key] = { members: {} };
+    }
+    return _channelsObservedMembersByRoom[key];
+}
+
+function _channelsResetMemberObservations() {
+    _channelsObservedMembersByRoom = {};
+    if (_channelsMemberContinuityTimer != null) {
+        clearTimeout(_channelsMemberContinuityTimer);
+        _channelsMemberContinuityTimer = null;
+    }
+}
+
+function _channelsScheduleMemberContinuity() {
+    if (_channelsMemberContinuityTimer != null) {
+        clearTimeout(_channelsMemberContinuityTimer);
+        _channelsMemberContinuityTimer = null;
+    }
+    var now = Date.now();
+    var earliest = 0;
+    Object.keys(_channelsObservedMembersByRoom).forEach(function(roomKey) {
+        var observed = _channelsObservedMembersByRoom[roomKey];
+        Object.keys(observed.members).forEach(function(memberKey) {
+            var deadline = Number(observed.members[memberKey].continuity_until_ms) || 0;
+            if (deadline > now && (!earliest || deadline < earliest)) earliest = deadline;
+        });
+    });
+    if (!earliest) return;
+    _channelsMemberContinuityTimer = setTimeout(function() {
+        _channelsMemberContinuityTimer = null;
+        var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
+        if (room) _channelsRenderMembers(room);
+        _channelsScheduleMemberContinuity();
+    }, Math.max(1, earliest - now + 20));
+}
+
+function _channelsBeginMemberContinuity(hubDestinationHash, rooms) {
+    var deadline = Date.now() + CHANNEL_MEMBER_CONTINUITY_MS;
+    (Array.isArray(rooms) ? rooms : []).forEach(function(room) {
+        if (!room || room.phase !== 'joined') return;
+        var observed = _channelsObservedRoom(hubDestinationHash, room.name);
+        if (!observed) return;
+        (Array.isArray(room.members) ? room.members : []).forEach(function(member) {
+            if (!member || member.is_self) return;
+            var key = _channelsMemberKey(member);
+            var record = observed.members[key] || {};
+            record.member = Object.assign({}, member, { is_self: false });
+            record.last_visible_at_ms = Date.now();
+            record.continuity_until_ms = deadline;
+            observed.members[key] = record;
+        });
+    });
+    _channelsScheduleMemberContinuity();
+}
+
+function _channelsObserveRoomMembers(hubDestinationHash, rooms) {
+    (Array.isArray(rooms) ? rooms : []).forEach(function(room) {
+        if (!room || room.phase !== 'joined') return;
+        var observed = _channelsObservedRoom(hubDestinationHash, room.name);
+        if (!observed) return;
+        (Array.isArray(room.transcript) ? room.transcript : []).forEach(function(item) {
+            if (!item || item.kind !== 'part' || item.ours) return;
+            var key = _channelsMemberKey({
+                identity_hash: item.source_hash,
+                nickname: item.nickname
+            });
+            if (observed.members[key]) {
+                observed.members[key].continuity_until_ms = 0;
+            }
+        });
+        (Array.isArray(room.members) ? room.members : []).forEach(function(member) {
+            if (!member || member.is_self) return;
+            var key = _channelsMemberKey(member);
+            var record = observed.members[key] || {};
+            record.member = Object.assign({}, member, { is_self: false });
+            record.last_visible_at_ms = Date.now();
+            record.continuity_until_ms = 0;
+            observed.members[key] = record;
+        });
+    });
+}
+
+function _channelsMemberRosterModel(room) {
+    var context = _channelsHistoryContext(room);
+    var nativeMembers = room && Array.isArray(room.members) ? room.members : [];
+    var visible = nativeMembers.slice();
+    var visibleKeys = {};
+    var visibleNames = {};
+    visible.forEach(function(member) {
+        visibleKeys[_channelsMemberKey(member)] = true;
+        var name = String(member.nickname || '').trim().toLowerCase();
+        if (name) visibleNames[name] = true;
+    });
+
+    var continuity = [];
+    var now = Date.now();
+    var observed = context ? _channelsObservedMembersByRoom[context.key] : null;
+    if (observed) {
+        Object.keys(observed.members).forEach(function(key) {
+            var record = observed.members[key];
+            if (visibleKeys[key] || !record.member || record.member.is_self) return;
+            var deadline = Number(record.continuity_until_ms) || 0;
+            if (deadline <= now || room.members_complete) {
+                record.continuity_until_ms = 0;
+                return;
+            }
+            var member = Object.assign({}, record.member, {
+                _continuity: true,
+                last_seen_at_ms: Number(record.last_visible_at_ms) || 0
+            });
+            continuity.push(member);
+            visibleKeys[key] = true;
+            var name = String(member.nickname || '').trim().toLowerCase();
+            if (name) visibleNames[name] = true;
+        });
+    }
+
+    var seenByKey = {};
+    var historyEntry = context ? _channelsHistoryEntry(context) : null;
+    var retained = historyEntry && Array.isArray(historyEntry.participants)
+        ? historyEntry.participants : [];
+    var identifiedSeenNames = {};
+    retained.forEach(function(member) {
+        var name = String(member.nickname || '').trim().toLowerCase();
+        if (member.identity_hash && name) identifiedSeenNames[name] = true;
+    });
+    retained.forEach(function(member) {
+        var key = _channelsMemberKey(member);
+        var name = String(member.nickname || '').trim().toLowerCase();
+        if (visibleKeys[key] || (name && visibleNames[name])) return;
+        // An unresolved nickname event cannot add trustworthy identity detail.
+        // Prefer an identified observation with the exact same display name
+        // instead of presenting an apparent duplicate person after reload.
+        if (!member.identity_hash && name && identifiedSeenNames[name]) return;
+        seenByKey[key] = Object.assign({}, member, { _seen: true });
+    });
+    if (observed) {
+        Object.keys(observed.members).forEach(function(key) {
+            var record = observed.members[key];
+            if (visibleKeys[key] || !record.member || record.member.is_self) return;
+            var name = String(record.member.nickname || '').trim().toLowerCase();
+            if (name && visibleNames[name]) return;
+            if (!record.member.identity_hash && name && identifiedSeenNames[name]) return;
+            if (record.member.identity_hash && name) {
+                identifiedSeenNames[name] = true;
+                delete seenByKey['nickname:' + name];
+            }
+            var existing = seenByKey[key];
+            if (!existing || Number(record.last_visible_at_ms) > Number(existing.last_seen_at_ms)) {
+                seenByKey[key] = Object.assign({}, record.member, {
+                    _seen: true,
+                    last_seen_at_ms: Number(record.last_visible_at_ms) || 0
+                });
+            }
+        });
+    }
+    var seen = Object.keys(seenByKey).map(function(key) { return seenByKey[key]; });
+    seen.sort(function(a, b) {
+        return Number(b.last_seen_at_ms || 0) - Number(a.last_seen_at_ms || 0);
+    });
+    continuity.sort(function(a, b) {
+        return Number(b.last_seen_at_ms || 0) - Number(a.last_seen_at_ms || 0);
+    });
+    return {
+        visible: visible,
+        continuity: continuity,
+        seen: seen,
+        omitted: historyEntry ? Number(historyEntry.participants_omitted) || 0 : 0
+    };
 }
 
 function _channelsPeerForIdentity(identityHash) {
@@ -2941,14 +2953,20 @@ function _channelsIdentityAvatarSeed(identityHash, lxmfHash, isSelf) {
     return '';
 }
 
-function _channelsPopulateIdentityAvatar(element, seed, size) {
+function _channelsAvatarFallbackLabel(value) {
+    var label = String(value || '').trim();
+    return label ? Array.from(label)[0].toUpperCase() : '';
+}
+
+function _channelsPopulateIdentityAvatar(element, seed, size, fallbackLabel) {
     element.setAttribute('aria-hidden', 'true');
-    if (typeof identityAvatar === 'function') {
+    if (seed && typeof identityAvatar === 'function') {
         element.innerHTML = identityAvatar(seed, size);
         return;
     }
     var fallback = document.createElement('span');
     fallback.className = 'channel-avatar-fallback';
+    fallback.textContent = _channelsAvatarFallbackLabel(fallbackLabel);
     element.appendChild(fallback);
 }
 
@@ -3010,21 +3028,14 @@ function _channelsMemberDetailField(labelText, value, copyLabel) {
     return row;
 }
 
-function _channelsRenderMemberDetail(room, member, list, info) {
-    var pane = _channelsEl('channel-members-pane');
-    var back = _channelsEl('channel-members-back');
+function _channelsAppendMemberDetail(room, member, container, options) {
+    options = options || {};
     var details = _channelsMemberDetails(member);
     var channelName = _channelsMemberName(member);
-    if (pane) pane.classList.add('showing-detail');
-    if (back) back.hidden = false;
-    _channelsSetText('channel-members-label', 'People here');
-    _channelsSetText('channel-members-count', channelName);
-    if (info) {
-        info.hidden = true;
-        info.classList.remove('open');
-        info.setAttribute('aria-expanded', 'false');
-    }
-    list.classList.add('showing-detail');
+    var avatarSize = Number(options.avatarSize) || 52;
+    var closeDetail = typeof options.close === 'function'
+        ? options.close
+        : channelsCloseMemberPane;
 
     var hero = document.createElement('div');
     hero.className = 'channel-member-detail-hero';
@@ -3033,14 +3044,18 @@ function _channelsRenderMemberDetail(room, member, list, info) {
     _channelsPopulateIdentityAvatar(
         avatar,
         details.lxmfAddress || '',
-        52
+        avatarSize,
+        channelName
     );
     var heroCopy = document.createElement('div');
     heroCopy.className = 'channel-member-detail-hero-copy';
     var name = document.createElement('strong');
     name.textContent = channelName;
     var presence = document.createElement('span');
-    presence.textContent = 'Visible in ' + room.name;
+    presence.textContent = (member._seen
+        ? 'Seen in '
+        : (member._continuity ? 'Recently visible in ' : 'Visible in ')) +
+        _channelsRoomDisplayName(room.name);
     heroCopy.appendChild(name);
     heroCopy.appendChild(presence);
     if (member.is_self) {
@@ -3051,7 +3066,7 @@ function _channelsRenderMemberDetail(room, member, list, info) {
     }
     hero.appendChild(avatar);
     hero.appendChild(heroCopy);
-    list.appendChild(hero);
+    container.appendChild(hero);
 
     var fields = document.createElement('div');
     fields.className = 'channel-room-details channel-member-detail-fields';
@@ -3080,18 +3095,20 @@ function _channelsRenderMemberDetail(room, member, list, info) {
     if (details.peer) {
         fields.appendChild(_channelsMemberDetailField('Saved contact', details.peer.is_contact ? 'Yes' : 'No'));
     }
-    list.appendChild(fields);
+    container.appendChild(fields);
 
     if (!details.identityHash || !details.lxmfAddress) {
         var hint = document.createElement('p');
         hint.className = 'channel-member-detail-note';
         hint.textContent = !details.identityHash
-            ? 'This hub has supplied only a channel nickname for this person.'
+            ? 'This hub supplied only a channel nickname, so an LXMF address and identity avatar are unavailable.'
             : 'No known LXMF address for this identity yet.';
-        list.appendChild(hint);
+        container.appendChild(hint);
     }
 
+    var hasActions = false;
     if (!member.is_self) {
+        hasActions = true;
         var actions = document.createElement('div');
         actions.className = 'channel-member-detail-actions entity-action-grid';
         var mention = document.createElement('button');
@@ -3100,7 +3117,7 @@ function _channelsRenderMemberDetail(room, member, list, info) {
         mention.disabled = !_channelsCanCompose();
         mention.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.9 7.9"></path></svg><span>Mention</span>';
         mention.addEventListener('click', function() {
-            if (_channelsInsertMemberMention(member)) channelsCloseMemberPane();
+            if (_channelsInsertMemberMention(member)) closeDetail();
         });
         actions.appendChild(mention);
         if (details.lxmfAddress && typeof openConversationWith === 'function') {
@@ -3109,13 +3126,66 @@ function _channelsRenderMemberDetail(room, member, list, info) {
             message.className = 'nr-btn entity-action-btn';
             message.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg><span>Message</span>';
             message.addEventListener('click', function() {
-                channelsCloseMemberPane();
+                closeDetail();
                 openConversationWith(details.lxmfAddress);
             });
             actions.appendChild(message);
         }
-        list.appendChild(actions);
+        (options.actionsContainer || container).appendChild(actions);
     }
+    return { hasActions: hasActions };
+}
+
+function _channelsFocusMemberRow(memberKey) {
+    if (!memberKey) return;
+    requestAnimationFrame(function() {
+        var rows = document.querySelectorAll('.channel-member-row');
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].dataset.memberKey === memberKey) {
+                rows[i].focus();
+                break;
+            }
+        }
+    });
+}
+
+function _channelsOpenMemberDetailSheet(room, member, memberKey) {
+    if (typeof _rsBuildSheet !== 'function') return;
+    if (_channelsMemberDetailDismiss) _channelsMemberDetailDismiss();
+    _channelsMemberReturnFocusKey = memberKey;
+    var built = _rsBuildSheet({ title: 'Member details' }, function() {
+        if (_channelsMemberDetailDismiss === built.dismiss) {
+            _channelsMemberDetailDismiss = null;
+        }
+        _channelsFocusMemberRow(memberKey);
+    });
+    built.sheet.classList.add('channel-member-profile-sheet');
+    built.sheet.setAttribute('aria-label', 'Member details for ' + _channelsMemberName(member));
+    built.body.classList.add('channel-member-profile-body');
+    var result = _channelsAppendMemberDetail(room, member, built.body, {
+        avatarSize: 64,
+        actionsContainer: built.footer,
+        close: built.dismiss
+    });
+    built.footer.hidden = !result.hasActions;
+    _channelsMemberDetailDismiss = built.dismiss;
+    _channelsPresentSheet(built);
+}
+
+function _channelsRenderMemberDetail(room, member, list, info) {
+    var pane = _channelsEl('channel-members-pane');
+    var back = _channelsEl('channel-members-back');
+    if (pane) pane.classList.add('showing-detail');
+    if (back) back.hidden = false;
+    if (info) {
+        info.hidden = true;
+        info.classList.remove('open');
+        info.setAttribute('aria-expanded', 'false');
+    }
+    list.classList.add('showing-detail');
+    _channelsAppendMemberDetail(room, member, list, {
+        close: channelsCloseMemberPane
+    });
 }
 
 function _channelsShowMemberList() {
@@ -3123,14 +3193,80 @@ function _channelsShowMemberList() {
     _channelsSelectedMemberKey = null;
     _channelsMemberReturnFocusKey = null;
     _channelsRenderMembers(channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null);
-    if (focusKey) requestAnimationFrame(function() {
-        var rows = document.querySelectorAll('.channel-member-row');
-        for (var i = 0; i < rows.length; i++) {
-            if (rows[i].dataset.memberKey === focusKey) {
-                rows[i].focus();
-                break;
-            }
+    _channelsFocusMemberRow(focusKey);
+}
+
+function _channelsBuildMemberRow(room, member) {
+    var memberKey = _channelsMemberKey(member);
+    var nameText = _channelsMemberName(member);
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'channel-member-row';
+    if (member._continuity) row.classList.add('reconfirming');
+    else if (member._seen) row.classList.add('seen');
+    row.dataset.memberKey = memberKey;
+    var stateLabel = member._continuity
+        ? ', recently visible'
+        : (member._seen ? ', seen here before' : '');
+    row.setAttribute('aria-label', 'View details for ' + nameText + stateLabel);
+    var avatar = document.createElement('span');
+    avatar.className = 'channel-member-avatar';
+    _channelsPopulateIdentityAvatar(
+        avatar,
+        _channelsIdentityAvatarSeed(member.identity_hash, member.lxmf_hash, !!member.is_self),
+        40,
+        nameText
+    );
+    var copy = document.createElement('span');
+    copy.className = 'channel-member-copy';
+    var name = document.createElement('span');
+    name.className = 'channel-member-name';
+    name.textContent = nameText;
+    copy.appendChild(name);
+    if (member.is_self) {
+        var you = document.createElement('span');
+        you.className = 'channel-member-you';
+        you.textContent = 'You';
+        copy.appendChild(you);
+    }
+    var disclosure = document.createElement('span');
+    disclosure.className = 'channel-member-disclosure';
+    disclosure.setAttribute('aria-hidden', 'true');
+    disclosure.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+    row.appendChild(avatar);
+    row.appendChild(copy);
+    row.appendChild(disclosure);
+    row.addEventListener('click', function() {
+        if (_channelsCompact()) {
+            _channelsOpenMemberDetailSheet(room, member, memberKey);
+            return;
         }
+        _channelsSelectedMemberKey = memberKey;
+        _channelsMemberReturnFocusKey = memberKey;
+        _channelsRenderMembers(room);
+        requestAnimationFrame(function() {
+            var backButton = _channelsEl('channel-members-back');
+            if (backButton) backButton.focus();
+        });
+        if (typeof PeersCache !== 'undefined' && PeersCache &&
+                typeof PeersCache.isInitialized === 'function' && !PeersCache.isInitialized() &&
+                typeof PeersCache.init === 'function') {
+            PeersCache.init().then(function() {
+                if (_channelsSelectedMemberKey === memberKey) _channelsRenderMembers(room);
+            }).catch(function() {});
+        }
+    });
+    return row;
+}
+
+function _channelsAppendMemberGroup(list, label, members, room) {
+    if (!members.length) return;
+    var heading = document.createElement('div');
+    heading.className = 'channel-member-group-label';
+    heading.textContent = label;
+    list.appendChild(heading);
+    members.forEach(function(member) {
+        list.appendChild(_channelsBuildMemberRow(room, member));
     });
 }
 
@@ -3149,7 +3285,8 @@ function _channelsRenderMembers(room) {
         info.classList.remove('open');
         info.setAttribute('aria-expanded', 'false');
     }
-    var members = room && Array.isArray(room.members) ? room.members : [];
+    var model = _channelsMemberRosterModel(room);
+    var members = model.visible.concat(model.continuity, model.seen);
     var selectedMember = _channelsSelectedMemberKey
         ? _channelsMemberByKey(members, _channelsSelectedMemberKey)
         : null;
@@ -3163,7 +3300,7 @@ function _channelsRenderMembers(room) {
     }
 
     _channelsSetText('channel-members-label', 'People here');
-    _channelsSetText('channel-members-count', members.length + ' visible');
+    _channelsSetText('channel-members-count', model.visible.length + ' visible');
     if (room && room.phase !== 'joined') {
         var waiting = document.createElement('div');
         waiting.className = 'channel-members-empty';
@@ -3171,7 +3308,7 @@ function _channelsRenderMembers(room) {
         list.appendChild(waiting);
         return;
     }
-    if (info) info.hidden = !room || !!room.members_complete;
+    if (info) info.hidden = !room;
     if (!members.length) {
         var empty = document.createElement('div');
         empty.className = 'channel-members-empty';
@@ -3179,67 +3316,17 @@ function _channelsRenderMembers(room) {
         list.appendChild(empty);
         return;
     }
-    members.forEach(function(member) {
-        var memberKey = _channelsMemberKey(member);
-        var nameText = _channelsMemberName(member);
-        var row = document.createElement('button');
-        row.type = 'button';
-        row.className = 'channel-member-row';
-        row.dataset.memberKey = memberKey;
-        row.setAttribute('aria-label', 'View details for ' + nameText);
-        var avatar = document.createElement('span');
-        avatar.className = 'channel-member-avatar';
-        _channelsPopulateIdentityAvatar(
-            avatar,
-            _channelsIdentityAvatarSeed(member.identity_hash, member.lxmf_hash, !!member.is_self),
-            40
-        );
-        var copy = document.createElement('span');
-        copy.className = 'channel-member-copy';
-        var name = document.createElement('span');
-        name.className = 'channel-member-name';
-        name.textContent = nameText;
-        copy.appendChild(name);
-        if (member.is_self) {
-            var you = document.createElement('span');
-            you.className = 'channel-member-you';
-            you.textContent = 'You';
-            copy.appendChild(you);
-        }
-        var disclosure = document.createElement('span');
-        disclosure.className = 'channel-member-disclosure';
-        disclosure.setAttribute('aria-hidden', 'true');
-        disclosure.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
-        row.appendChild(avatar);
-        row.appendChild(copy);
-        row.appendChild(disclosure);
-        row.addEventListener('click', function() {
-            _channelsSelectedMemberKey = memberKey;
-            _channelsMemberReturnFocusKey = memberKey;
-            _channelsRenderMembers(room);
-            requestAnimationFrame(function() {
-                var backButton = _channelsEl('channel-members-back');
-                if (backButton) backButton.focus();
-            });
-            if (typeof PeersCache !== 'undefined' && PeersCache &&
-                    typeof PeersCache.isInitialized === 'function' && !PeersCache.isInitialized() &&
-                    typeof PeersCache.init === 'function') {
-                PeersCache.init().then(function() {
-                    if (_channelsSelectedMemberKey === memberKey) _channelsRenderMembers(room);
-                }).catch(function() {});
-            }
-        });
-        list.appendChild(row);
+    model.visible.forEach(function(member) {
+        list.appendChild(_channelsBuildMemberRow(room, member));
     });
-}
-
-function _channelsUpdateMobileMode() {
-    document.querySelectorAll('[data-message-mode]').forEach(function(button) {
-        var active = (currentView === 'channels' && button.dataset.messageMode === 'channels') ||
-            (currentView === 'message' && button.dataset.messageMode === 'direct');
-        button.classList.toggle('active', active);
-        button.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
+    _channelsAppendMemberGroup(list, 'Recently visible', model.continuity, room);
+    _channelsAppendMemberGroup(list, 'Seen here', model.seen, room);
+    if (model.omitted > 0) {
+        var omitted = document.createElement('div');
+        omitted.className = 'channel-member-history-omitted';
+        omitted.textContent = '+' + model.omitted + ' more in local history';
+        list.appendChild(omitted);
+    }
 }
 
 function _channelsUpdateComposer() {
@@ -3250,11 +3337,12 @@ function _channelsUpdateComposer() {
     var limit = _channelsMessageLimit();
     var used = _channelsUtf8Length(_channelsMessageBody(input.value));
     count.textContent = used >= Math.floor(limit * 0.75) ? used + '/' + limit : '';
+    count.hidden = !count.textContent;
     count.classList.toggle('near-limit', used >= Math.floor(limit * 0.75) && used <= limit);
     count.classList.toggle('over-limit', used > limit);
     var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
     send.disabled = _channelsSendPending || !room || room.phase !== 'joined' || channelsSnapshot.phase !== 'active' || !input.value.trim() || used > limit;
-    input.placeholder = channelsSnapshot.phase === 'stale' ? 'Connection recovering\u2026' : 'Message channel\u2026';
+    input.placeholder = channelsSnapshot.phase === 'stale' ? 'Connection recovering\u2026' : 'Message...';
     input.disabled = !room || room.phase !== 'joined' || channelsSnapshot.phase !== 'active';
 }
 
@@ -3367,6 +3455,11 @@ function _onChannelDetailExit() {
 }
 
 function channelsCloseMemberPane() {
+    if (_channelsMemberDetailDismiss) {
+        var dismissDetail = _channelsMemberDetailDismiss;
+        _channelsMemberDetailDismiss = null;
+        dismissDetail();
+    }
     _channelsSelectedMemberKey = null;
     _channelsMemberReturnFocusKey = null;
     _channelsRenderMembers(channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null);
@@ -4532,7 +4625,7 @@ function channelsOpenHubOptions(eventOrTrigger) {
     if (!channelsSnapshot.hub) return;
     var trigger = eventOrTrigger && eventOrTrigger.currentTarget
         ? eventOrTrigger.currentTarget
-        : null;
+        : (eventOrTrigger && eventOrTrigger.nodeType === 1 ? eventOrTrigger : null);
     if (!trigger || !RS.ui || typeof RS.ui.openActionMenu !== 'function') {
         channelsOpenHubDetails();
         return;
@@ -5179,35 +5272,59 @@ function channelsSendMessage() {
         if (typeof showToast === 'function') showToast('Channel message exceeds the hub limit', 'toast-red', 3000);
         return;
     }
+    var shouldRestoreComposerFocus = RS.composer
+        ? RS.composer.consumeFocus(input)
+        : document.activeElement === input;
     _channelsSendPending = true;
     _channelsUpdateComposer();
-    RS.invoke('send_channel_message', {
+    var request = RS.invoke('send_channel_message', {
         args: { room: room.name, text: text }
-    }).then(function(result) {
-        input.value = '';
-        input.style.height = '';
+    });
+
+    // Match Direct Messages: finish the local composer interaction before the
+    // asynchronous command result so Android's IME never closes and reopens.
+    input.value = '';
+    input.style.height = '';
+    input.scrollTop = 0;
+    if (shouldRestoreComposerFocus && RS.composer) {
+        RS.composer.focusWithoutScroll(input);
+    }
+    _channelsUpdateComposer();
+    if (document.documentElement.classList.contains('keyboard-open') && RS.chatScroll) {
+        RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
+    }
+
+    request.then(function(result) {
         return _channelsHandleComposerResult(result, room.name);
     }).catch(function(error) {
+        if (!input.value) {
+            input.value = text;
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 124) + 'px';
+            if (document.documentElement.classList.contains('keyboard-open') && RS.chatScroll) {
+                RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
+            }
+        }
         if (typeof showToast === 'function') showToast((error && error.message) || 'Could not send channel message', 'toast-red', 3500);
     }).then(function() {
         _channelsSendPending = false;
         _channelsUpdateComposer();
-        input.focus();
     });
 }
 
 function _channelsBindUI() {
-    document.querySelectorAll('[data-message-mode]').forEach(function(button) {
-        button.addEventListener('click', function() {
-            var target = button.dataset.messageMode === 'channels' ? 'channels' : 'message';
-            if (typeof switchView === 'function') switchView(target);
-        });
-    });
     document.addEventListener('click', function(event) {
         var actionEl = event.target.closest && event.target.closest('[data-channel-action]');
         if (!actionEl) return;
         var action = actionEl.dataset.channelAction;
-        if (action === 'connect') channelsOpenHubSwitcher();
+        if (action === 'add' || action === 'manage-hub') {
+            if (typeof channelsOpenAddSheet === 'function') channelsOpenAddSheet();
+            else channelsOpenConnectSheet();
+        } else if (action === 'hub-actions') {
+            if (channelsSnapshot.hub) channelsOpenHubOptions(actionEl);
+            else if (typeof channelsOpenAddSheet === 'function') channelsOpenAddSheet();
+            else channelsOpenConnectSheet();
+        } else if (action === 'connect') channelsOpenHubSwitcher();
         else if (action === 'open-owned-hub' && typeof channelHubOpenOwnHub === 'function') channelHubOpenOwnHub();
         else if (action === 'join') channelsOpenJoinSheet();
         else if (action === 'hub-info') channelsOpenHubOptions();
@@ -5229,8 +5346,6 @@ function _channelsBindUI() {
     });
     var join = _channelsEl('channels-join-btn');
     if (join) join.addEventListener('click', function() { channelsOpenJoinSheet(); });
-    var hubSwitcher = _channelsEl('channel-hub-switcher-btn');
-    if (hubSwitcher) hubSwitcher.addEventListener('click', channelsOpenHubSwitcher);
     var hubStrip = _channelsEl('channel-hub-strip');
     if (hubStrip) hubStrip.addEventListener('animationend', function(event) {
         if (event.animationName === 'channelHubSignalLap') {
@@ -5238,7 +5353,10 @@ function _channelsBindUI() {
         }
     });
     var hubMenu = _channelsEl('channel-hub-menu-btn');
-    if (hubMenu) hubMenu.addEventListener('click', channelsOpenHubOptions);
+    if (hubMenu) hubMenu.addEventListener('click', function() {
+        if (typeof channelsOpenAddSheet === 'function') channelsOpenAddSheet();
+        else channelsOpenConnectSheet();
+    });
     var roomMenu = _channelsEl('channel-room-menu-btn');
     if (roomMenu) roomMenu.addEventListener('click', channelsOpenRoomOptions);
     var back = _channelsEl('channel-room-back-btn');
@@ -5285,25 +5403,43 @@ function _channelsBindUI() {
     });
     var input = _channelsEl('channel-message-input');
     if (input) {
+        var channelGrowRaf = null;
         var useMobileTypingDefaults = _channelsUsesNativeMobileTyping();
         _channelsApplyComposerTypingPolicy(input, useMobileTypingDefaults);
         input.addEventListener('beforeinput', function(event) {
             _channelsHandleComposerBeforeInput(event, useMobileTypingDefaults);
         });
         input.addEventListener('input', function() {
+            var previousHeight = input.style.height;
             input.style.height = 'auto';
-            input.style.height = Math.min(input.scrollHeight, 132) + 'px';
+            input.style.height = Math.min(input.scrollHeight, 124) + 'px';
             _channelsUpdateComposer();
+            if (previousHeight !== input.style.height &&
+                    document.documentElement.classList.contains('keyboard-open') &&
+                    typeof _chatMessagesNearBottomForKeyboard === 'function' &&
+                    _chatMessagesNearBottomForKeyboard()) {
+                if (channelGrowRaf) cancelAnimationFrame(channelGrowRaf);
+                channelGrowRaf = requestAnimationFrame(function() {
+                    channelGrowRaf = null;
+                    if (RS.chatScroll) {
+                        RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
+                    }
+                });
+            }
         });
         input.addEventListener('keydown', function(event) {
-            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !isMobile()) {
                 event.preventDefault();
                 channelsSendMessage();
             }
         });
     }
     var send = _channelsEl('channel-send-btn');
-    if (send) send.addEventListener('click', channelsSendMessage);
+    if (send && input && RS.composer) {
+        RS.composer.bindTapToSend(send, input, channelsSendMessage);
+    } else if (send) {
+        send.addEventListener('click', channelsSendMessage);
+    }
     // Hydrate global attention even when the Channels view has not been opened;
     // the writer's startup event can precede WebView listener registration.
     channelsRefreshUnread();
@@ -5359,7 +5495,6 @@ RS.listen('lxmf_identity', function() {
     channelsHistorySelection = null;
     channelsPendingHubLabel = '';
     _channelsLocalRoomEvents = {};
-    _channelsExpandedPresenceGroups = {};
     _channelsSelectedMemberKey = null;
     _channelsMemberReturnFocusKey = null;
     _channelsSavedRoomsHub = null;
@@ -5367,7 +5502,9 @@ RS.listen('lxmf_identity', function() {
     _channelsSaveHubPromise = null;
     _channelsSavedRoomKeys = {};
     _channelsHistoryCache = {};
+    _channelsParticipantRequestSeq++;
     _channelsHistoryEpoch++;
+    _channelsResetMemberObservations();
     _channelsRenderedRoomKey = '';
     _channelsLoadedAt = 0;
     _channelsLastHubRefreshAt = 0;

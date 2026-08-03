@@ -64,6 +64,7 @@ vm.createContext(context);
 vm.runInContext(
     functionSource('_channelsNormalizeHistoryItem') + '\n' +
     functionSource('_channelsIdentityAvatarSeed') + '\n' +
+    functionSource('_channelsAvatarFallbackLabel') + '\n' +
     functionSource('_channelsPopulateIdentityAvatar'),
     context
 );
@@ -128,10 +129,12 @@ var fallback = {
     setAttribute: function(name, value) { this.attributes[name] = value; },
     appendChild: function(child) { this.children.push(child); }
 };
-context._channelsPopulateIdentityAvatar(fallback, '', 40);
+context._channelsPopulateIdentityAvatar(fallback, '', 40, 'Ada');
 assert.strictEqual(fallback.children.length, 1);
 assert.strictEqual(fallback.children[0].className, 'channel-avatar-fallback');
-assert.strictEqual(fallback.children[0].textContent, '');
+assert.strictEqual(fallback.children[0].textContent, 'A');
+assert.strictEqual(fallback.innerHTML, '',
+    'a nickname must never be fed into the hash-derived avatar generator');
 
 var transcriptStart = channelsSource.indexOf('function _channelsBuildTranscriptItem');
 var transcriptEnd = channelsSource.indexOf('\nfunction _channelsMemberName', transcriptStart);
@@ -141,28 +144,127 @@ assert(transcriptSource.includes('_channelsIdentityAvatarSeed(item.source_hash, 
 assert(!transcriptSource.includes('channel-identity-marker'));
 assert(!transcriptSource.includes('event.dataset.tone'));
 
-var memberStart = channelsSource.indexOf('function _channelsRenderMembers');
-var memberEnd = channelsSource.indexOf('\nfunction _channelsUpdateMobileMode', memberStart);
+var memberStart = channelsSource.indexOf('function _channelsBuildMemberRow');
+var memberEnd = channelsSource.indexOf('\nfunction _channelsUpdateComposer', memberStart);
 var memberSource = channelsSource.slice(memberStart, memberEnd);
 assert(memberSource.includes("avatar.className = 'channel-member-avatar'"));
 assert(memberSource.includes('_channelsIdentityAvatarSeed(member.identity_hash, member.lxmf_hash, !!member.is_self'));
 assert(!memberSource.includes('channel-identity-marker'));
 assert(!memberSource.includes('row.dataset.tone'));
+assert(memberSource.includes("_channelsAppendMemberGroup(list, 'Recently visible'"));
+assert(memberSource.includes("_channelsAppendMemberGroup(list, 'Seen here'"));
+assert(memberSource.includes("model.visible.length + ' visible'"),
+    'historical people must never inflate the live visible count');
 
-var detailStart = channelsSource.indexOf('function _channelsRenderMemberDetail');
-var detailEnd = channelsSource.indexOf('\nfunction _channelsShowMemberList', detailStart);
+var rosterNow = 5_000;
+var returnerHash = 'cc'.repeat(16);
+var exitedHash = 'dd'.repeat(16);
+var historyOnlyHash = 'ee'.repeat(16);
+var rosterEntry = {
+    participants: [
+        { identity_hash: knownRemote, nickname: 'Ada', last_seen_at_ms: 4_900, _seen: true },
+        { identity_hash: returnerHash, nickname: 'Returner', last_seen_at_ms: 4_000, _seen: true },
+        { identity_hash: exitedHash, nickname: 'Exited', last_seen_at_ms: 3_000, _seen: true },
+        { identity_hash: null, nickname: 'Guest', last_seen_at_ms: 4_600, _seen: true },
+        { identity_hash: historyOnlyHash, nickname: 'Dana', last_seen_at_ms: 4_500, _seen: true },
+        { identity_hash: null, nickname: 'Dana', last_seen_at_ms: 4_400, _seen: true }
+    ],
+    participants_omitted: 3
+};
+var observedRoom = { members: {} };
+observedRoom.members['identity:' + returnerHash] = {
+    member: { identity_hash: returnerHash, nickname: 'Returner', is_self: false },
+    last_visible_at_ms: 4_800,
+    continuity_until_ms: 6_000
+};
+observedRoom.members['identity:' + exitedHash] = {
+    member: { identity_hash: exitedHash, nickname: 'Exited', is_self: false },
+    last_visible_at_ms: 4_700,
+    continuity_until_ms: 0
+};
+var rosterContext = {
+    Array: Array,
+    Date: { now: function() { return rosterNow; } },
+    Number: Number,
+    Object: Object,
+    String: String,
+    _channelsObservedMembersByRoom: { room: observedRoom },
+    _channelsHistoryContext: function() { return { key: 'room' }; },
+    _channelsHistoryEntry: function() { return rosterEntry; }
+};
+vm.createContext(rosterContext);
+vm.runInContext(
+    functionSource('_channelsMemberKey') + '\n' +
+    functionSource('_channelsMemberRosterModel'),
+    rosterContext
+);
+var rosterRoom = {
+    members_complete: false,
+    members: [
+        { identity_hash: active.hash, nickname: 'Bob', is_self: true },
+        { identity_hash: knownRemote, nickname: 'Ada', is_self: false }
+    ]
+};
+var roster = rosterContext._channelsMemberRosterModel(rosterRoom);
+assert.strictEqual(roster.visible.length, 2);
+assert.deepStrictEqual(Array.from(roster.continuity, function(member) { return member.nickname; }),
+    ['Returner'], 'a short reconnect should keep prior live peers near-normal while reconfirming');
+assert.deepStrictEqual(Array.from(roster.seen, function(member) { return member.nickname; }),
+    ['Exited', 'Guest', 'Dana'],
+    'seen history must prefer an identified peer over an unresolved duplicate nickname');
+assert.strictEqual(roster.omitted, 3);
+rosterRoom.members_complete = true;
+var completeRoster = rosterContext._channelsMemberRosterModel(rosterRoom);
+assert.strictEqual(completeRoster.continuity.length, 0,
+    'a complete hub roster should resolve reconnect uncertainty immediately');
+assert.strictEqual(completeRoster.seen[0].nickname, 'Returner');
+assert(!completeRoster.seen.some(function(member) { return member.is_self; }),
+    'the local identity must never be duplicated in Seen here');
+
+var applySnapshotSource = functionSource('channelsApplySnapshot');
+assert(applySnapshotSource.includes("snapshot.phase === 'reconnecting'") &&
+        applySnapshotSource.includes("oldPhase === 'active' || oldPhase === 'stale'"),
+    'continuity starts only when a live same-hub session enters recovery');
+assert(channelsSource.includes('var CHANNEL_MEMBER_CONTINUITY_MS = 60 * 1000;'));
+
+var detailStart = channelsSource.indexOf('function _channelsAppendMemberDetail');
+var detailEnd = channelsSource.indexOf('\nfunction _channelsFocusMemberRow', detailStart);
 var detailSource = channelsSource.slice(detailStart, detailEnd);
 assert(detailSource.includes("details.lxmfAddress || ''"));
 assert(!detailSource.includes('details.lxmfAddress || details.identityHash'));
+assert(channelsSource.includes("built.sheet.classList.add('channel-member-profile-sheet')"));
+assert(channelsSource.includes("title: 'Member details'"));
+assert(channelsSource.includes('avatarSize: 64'));
+assert(channelsSource.includes('if (_channelsCompact()) {'));
 
 assert(channelsCss.includes('grid-template-areas:'));
 assert(channelsCss.includes('"avatar author meta"'));
 assert(channelsCss.includes('.channel-event-avatar'));
 assert(channelsCss.includes('.channel-member-avatar'));
+assert(channelsCss.includes('.channel-member-row.reconfirming'));
+assert(channelsCss.includes('.channel-member-row.seen'));
+assert(channelsCss.includes('.channel-member-group-label'));
+assert(channelsCss.includes('.channel-avatar-fallback'));
 assert(!channelsCss.includes('.channel-identity-marker'));
 assert(!channelsCss.includes('.channel-event[data-tone='));
 assert(!channelsCss.includes('.channel-member-row[data-tone='));
-assert(indexSource.includes('/static/style.css?v=1.0.39'));
-assert(indexSource.includes('/static/js/channels.js?v=1.0.44'));
+assert(channelsCss.includes('.channel-members-pane.showing-detail .channel-members-heading'));
+assert(channelsCss.includes('.channel-member-profile-sheet .bottom-sheet-body'));
+assert(indexSource.includes('<span>People</span>'));
+assert(indexSource.includes('id="channel-message-input" class="nr-input" rows="1" placeholder="Message..."'));
+assert(indexSource.includes('class="channel-send-btn" id="channel-send-btn"'));
+assert(!indexSource.includes('nr-btn nr-btn-primary channel-send-btn'));
+assert(channelsSource.includes("'Message...'"));
+assert(!channelsSource.includes('Message channel'));
+assert(channelsCss.includes('.channel-compose .nr-input'));
+assert(channelsCss.includes('border-radius: var(--radius-pill);'));
+assert(channelsCss.includes('.channel-send-btn::before'));
+assert(channelsCss.includes('border-radius: var(--radius-full);'));
+assert(indexSource.includes('/static/style.css?v=1.0.26b'));
+assert(indexSource.includes('/static/js/nav.js?v=1.0.26b'));
+assert(indexSource.includes('/static/js/ui_shared.js?v=1.0.26b'));
+assert(indexSource.includes('/static/js/lxmf.js?v=1.0.26b'));
+assert(indexSource.includes('/static/js/channels.js?v=1.0.26b'));
+assert(indexSource.includes('/static/js/channel_hub.js?v=1.0.26b'));
 
 process.stdout.write('Channels avatar tests passed.\n');

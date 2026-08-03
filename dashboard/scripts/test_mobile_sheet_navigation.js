@@ -12,6 +12,23 @@ var channelsSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'c
 var dialogsSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'dialogs.js'), 'utf8');
 var constantsSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'constants.js'), 'utf8');
 var contactCardSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'contact_card.js'), 'utf8');
+var indexSource = fs.readFileSync(path.join(dashboardRoot, 'index.html'), 'utf8');
+var channelsCss = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '09-channels.css'), 'utf8');
+var responsiveCss = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '13-responsive.css'), 'utf8');
+
+assert(navSource.includes("var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];"),
+    'mobile swipes must traverse the four visible bottom-bar destinations');
+assert(navSource.includes("var MORE_VIEWS = ['contacts', 'identity', 'network', 'games', 'settings'];"),
+    'Contacts must route through More after Channels takes its bottom-bar slot');
+assert(!navSource.includes("if (viewId === 'channels') return 'message';"),
+    'Channels must own its selected state instead of aliasing Direct Messages');
+assert(!indexSource.includes('channel-hub-add-btn'),
+    'mobile should use the hub card itself instead of a redundant add control');
+assert(indexSource.includes('id="channel-hub-summary" type="button"'));
+assert(indexSource.includes('data-channel-action="hub-actions"'));
+assert(indexSource.includes('id="channel-hub-menu-btn" type="button" title="Manage Hub"'));
+assert(responsiveCss.includes('.channels-sidebar-header {\n        display: none;'),
+    'mobile Channels should begin with the hub card instead of a redundant title');
 
 function functionSource(source, name) {
     var start = source.indexOf('function ' + name + '(');
