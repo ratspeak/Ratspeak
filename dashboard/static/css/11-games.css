@@ -54,34 +54,6 @@
     border-bottom-color: var(--button-border);
 }
 
-.game-modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.75);
-    backdrop-filter: blur(12px) saturate(120%);
-    -webkit-backdrop-filter: blur(12px) saturate(120%);
-    z-index: var(--z-overlay);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    animation: modalFadeIn 0.2s ease-out;
-}
-.game-modal {
-    background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--surface-game-gradient) 100%);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-pill);
-    width: 440px;
-    max-width: 95vw;
-    max-height: 90vh;
-    overflow-y: auto;
-    box-shadow:
-        0 32px 80px rgba(0, 0, 0, 0.6),
-        inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    display: flex;
-    flex-direction: column;
-    animation: modalSlideIn 0.25s ease-out;
-}
-
 .game-modal-header {
     display: flex;
     align-items: center;
@@ -149,8 +121,8 @@
     color: var(--accent);
     font-weight: 700;
 }
-.game-modal-status.you-lost { color: var(--status-error); font-weight: 600; }
-.game-modal-status.draw { color: var(--status-warning); font-weight: 600; }
+.game-modal-status.you-lost { color: var(--status-error-fg); font-weight: 600; }
+.game-modal-status.draw { color: var(--status-warning-fg); font-weight: 600; }
 .game-modal-status.declined { color: var(--text-muted); font-style: italic; font-weight: 400; }
 
 .game-modal-board {
@@ -201,7 +173,7 @@
     box-shadow: 0 4px 12px rgba(var(--accent-rgb), 0.12);
 }
 .game-ctrl-btn.danger {
-    color: var(--status-error);
+    color: var(--status-error-fg);
     border-color: rgba(var(--status-error-rgb), 0.2);
 }
 .game-ctrl-btn.danger:hover {
@@ -370,7 +342,7 @@
     background: rgba(var(--status-warning-rgb), 0.1);
     border: 1px solid rgba(var(--status-warning-rgb), 0.3);
     border-radius: var(--radius-lg);
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
     cursor: pointer;
     transition: all var(--transition-fast);
 }
@@ -399,7 +371,7 @@
     margin: var(--space-4) var(--space-10);
     font-size: var(--text-sm);
     font-weight: 600;
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
     animation: drawOfferAppear 0.3s ease-out;
 }
 @keyframes drawOfferAppear {
@@ -413,7 +385,7 @@
     background: rgba(var(--status-warning-rgb), 0.15);
     border: 1px solid rgba(var(--status-warning-rgb), 0.35);
     border-radius: var(--radius-md);
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
     cursor: pointer;
     transition: all var(--transition-fast);
 }
@@ -502,7 +474,7 @@
 .chess-error {
     padding: var(--space-16);
     text-align: center;
-    color: var(--status-error);
+    color: var(--status-error-fg);
     font-size: var(--text-base);
     font-weight: 500;
 }
@@ -670,7 +642,7 @@
     box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.1);
 }
 .games-session-row.game-row-chess .games-session-icon {
-    color: var(--ble-accent);
+    color: var(--ble-accent-fg);
     background: rgba(var(--ble-accent-rgb), 0.10);
     box-shadow: inset 0 0 0 1px rgba(var(--ble-accent-rgb), 0.16);
 }
@@ -714,11 +686,11 @@
 }
 .games-session-status.status-your-turn { color: var(--accent); }
 .games-session-status.status-their-turn { color: var(--text-muted); }
-.games-session-status.status-challenge { color: var(--status-warning); }
+.games-session-status.status-challenge { color: var(--status-warning-fg); }
 .games-session-status.status-waiting { color: var(--text-muted); }
-.games-session-status.status-won { color: var(--status-online); }
-.games-session-status.status-lost { color: var(--status-error); }
-.games-session-status.status-draw { color: var(--status-warning); }
+.games-session-status.status-won { color: var(--status-online-fg); }
+.games-session-status.status-lost { color: var(--status-error-fg); }
+.games-session-status.status-draw { color: var(--status-warning-fg); }
 .games-session-status.status-muted { color: var(--text-muted); }
 .games-session-time {
     font-size: var(--type-row-meta-size);
@@ -750,7 +722,7 @@
     height: 15px;
 }
 .games-session-delete:hover {
-    color: var(--status-error);
+    color: var(--status-error-fg);
     background: var(--hover-subtle);
     border-color: var(--border-control);
 }
@@ -804,7 +776,7 @@
     flex-shrink: 0;
 }
 .games-theme-chess .games-detail-icon {
-    color: var(--ble-accent);
+    color: var(--ble-accent-fg);
     background: rgba(var(--ble-accent-rgb), 0.12);
 }
 .games-detail-copy {
@@ -863,23 +835,19 @@
     background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.10), rgba(var(--ble-accent-rgb), 0.055));
     animation: turnPulseStatus 2s ease-in-out infinite;
 }
-@keyframes turnPulseStatus {
-    0%, 100% { background: rgba(var(--accent-rgb), 0.04); }
-    50% { background: rgba(var(--accent-rgb), 0.10); }
-}
 .games-detail-status.status-their-turn { color: var(--text-muted); }
-.games-detail-status.status-challenge { color: var(--status-warning); }
+.games-detail-status.status-challenge { color: var(--status-warning-fg); }
 .games-detail-status.status-waiting { color: var(--text-muted); }
 .games-detail-status.status-won {
-    color: var(--status-online);
+    color: var(--status-online-fg);
     background: rgba(var(--status-online-rgb), 0.08);
 }
 .games-detail-status.status-lost {
-    color: var(--status-error);
+    color: var(--status-error-fg);
     background: rgba(var(--status-error-rgb), 0.07);
 }
 .games-detail-status.status-draw {
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
     background: rgba(var(--status-warning-rgb), 0.08);
 }
 .games-detail-status.status-muted { color: var(--text-muted); }
@@ -1131,8 +1099,8 @@
 .ttt-marker-svg { width: 60%; height: 60%; }
 .ttt-cell.marker-x { color: var(--accent); }
 .ttt-cell.marker-x .ttt-marker-svg { color: var(--accent); }
-.ttt-cell.marker-o { color: var(--ble-accent); }
-.ttt-cell.marker-o .ttt-marker-svg { color: var(--ble-accent); }
+.ttt-cell.marker-o { color: var(--ble-accent-fg); }
+.ttt-cell.marker-o .ttt-marker-svg { color: var(--ble-accent-fg); }
 .ttt-cell.clickable {
     cursor: pointer;
 }
@@ -1152,7 +1120,7 @@
     content: '\25CB';
     font-size: 28px;
     font-weight: 700;
-    color: var(--ble-accent);
+    color: var(--ble-accent-fg);
     opacity: 0.2;
     line-height: 1;
 }
@@ -1271,7 +1239,7 @@
 }
 
 .status-challenge {
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
 }
 
 @keyframes statusDotPulse {
@@ -1299,7 +1267,7 @@
 
 .ttt-cell.win-cell {
     animation: tttWinBurst 0.8s ease-in-out infinite alternate;
-    font-weight: 800;
+    font-weight: var(--type-weight-bold);
 }
 @keyframes tttWinBurst {
     0% { transform: scale(1); background: rgba(var(--accent-rgb), 0.10); }
@@ -1325,10 +1293,10 @@
     from { opacity: 0; }
     to { opacity: 1; }
 }
-.ttt-game-over-text { font-size: var(--text-2xl); font-weight: 800; letter-spacing: 0; color: var(--text-primary); }
-.ttt-game-over-overlay.won .ttt-game-over-text { color: var(--status-online); }
-.ttt-game-over-overlay.lost .ttt-game-over-text { color: var(--status-error); }
-.ttt-game-over-overlay.draw .ttt-game-over-text { color: var(--status-warning); }
+.ttt-game-over-text { font-size: var(--text-2xl); font-weight: var(--type-weight-bold); letter-spacing: 0; color: var(--text-primary); }
+.ttt-game-over-overlay.won .ttt-game-over-text { color: var(--status-online-fg); }
+.ttt-game-over-overlay.lost .ttt-game-over-text { color: var(--status-error-fg); }
+.ttt-game-over-overlay.draw .ttt-game-over-text { color: var(--status-warning-fg); }
 
 .chess-board-wrap {
     position: relative;
@@ -1542,7 +1510,7 @@
 }
 .chess-game-over-text {
     font-size: var(--text-2xl);
-    font-weight: 800;
+    font-weight: var(--type-weight-bold);
     letter-spacing: 0;
     color: var(--text-primary);
 }
@@ -1551,9 +1519,9 @@
     color: var(--text-secondary);
     font-weight: 500;
 }
-.game-over-overlay.won .chess-game-over-text  { color: var(--status-online); }
-.game-over-overlay.lost .chess-game-over-text { color: var(--status-error); }
-.game-over-overlay.draw .chess-game-over-text { color: var(--status-warning); }
+.game-over-overlay.won .chess-game-over-text  { color: var(--status-online-fg); }
+.game-over-overlay.lost .chess-game-over-text { color: var(--status-error-fg); }
+.game-over-overlay.draw .chess-game-over-text { color: var(--status-warning-fg); }
 
 @media (max-width: 480px) {
     .chess-captured-piece { width: 15px; height: 15px; }

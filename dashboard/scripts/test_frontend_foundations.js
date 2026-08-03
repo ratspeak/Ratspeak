@@ -1,0 +1,156 @@
+#!/usr/bin/env node
+'use strict';
+
+var assert = require('assert');
+var fs = require('fs');
+var path = require('path');
+var vm = require('vm');
+
+var dashboardRoot = path.join(__dirname, '..');
+function read(relative) {
+    return fs.readFileSync(path.join(dashboardRoot, relative), 'utf8');
+}
+function functionSource(source, name) {
+    var start = source.indexOf('function ' + name + '(');
+    assert.notStrictEqual(start, -1, name + ' must exist');
+    var brace = source.indexOf('{', start);
+    var depth = 0;
+    for (var index = brace; index < source.length; index++) {
+        if (source[index] === '{') depth++;
+        if (source[index] === '}') {
+            depth--;
+            if (depth === 0) return source.slice(start, index + 1);
+        }
+    }
+    throw new Error('unterminated function ' + name);
+}
+
+var stateSource = read('static/js/state.js');
+var breakpointContext = {
+    window: { innerWidth: 768, RS: { config: { MOBILE_BREAKPOINT: 768, MOBILE_TOUCH_BREAKPOINT: 1024 } } },
+    navigator: { maxTouchPoints: 0 }
+};
+vm.createContext(breakpointContext);
+vm.runInContext(
+    functionSource(stateSource, 'isCompactLayout') + '\n' +
+    functionSource(stateSource, 'isTouchDevice') + '\n' +
+    functionSource(stateSource, 'isMobile'),
+    breakpointContext
+);
+assert.strictEqual(breakpointContext.isCompactLayout(), true);
+breakpointContext.window.innerWidth = 769;
+assert.strictEqual(breakpointContext.isCompactLayout(), false);
+breakpointContext.navigator.maxTouchPoints = 1;
+breakpointContext.window.innerWidth = 1024;
+assert.strictEqual(breakpointContext.isMobile(), true);
+breakpointContext.window.innerWidth = 1025;
+assert.strictEqual(breakpointContext.isMobile(), false);
+
+var storage = {};
+var root = { style: {}, dataset: {} };
+function CustomEvent(name, options) { this.type = name; this.detail = options.detail; }
+var scaleContext = {
+    Number: Number,
+    Math: Math,
+    CustomEvent: CustomEvent,
+    localStorage: {
+        getItem: function(key) { return storage[key] || null; },
+        setItem: function(key, value) { storage[key] = value; },
+        removeItem: function(key) { delete storage[key]; }
+    },
+    document: { documentElement: root },
+    window: { CustomEvent: CustomEvent, dispatchEvent: function(event) { this.lastEvent = event; } }
+};
+scaleContext.window.window = scaleContext.window;
+scaleContext.window.document = scaleContext.document;
+scaleContext.window.localStorage = scaleContext.localStorage;
+vm.createContext(scaleContext);
+vm.runInContext(read('static/js/text_scale.js'), scaleContext);
+assert.strictEqual(scaleContext.window.RS.textScale.get(), 100);
+assert.strictEqual(scaleContext.window.RS.textScale.commit(147), 150);
+assert.strictEqual(root.style.fontSize, '150%');
+assert.strictEqual(root.dataset.textScaleTier, 'large');
+assert.strictEqual(storage['rs-text-scale-percent'], '150');
+assert.strictEqual(scaleContext.window.RS.textScale.commit(200), 200);
+assert.strictEqual(root.dataset.textScaleTier, 'xlarge');
+assert.strictEqual(scaleContext.window.RS.textScale.reset(), 100);
+assert.strictEqual(storage['rs-text-scale-percent'], undefined);
+
+var html = read('index.html');
+var ids = Array.from(html.matchAll(/\sid="([^"]+)"/g), function(match) { return match[1]; });
+var duplicateIds = Array.from(new Set(ids.filter(function(id, index) {
+    return ids.indexOf(id) !== index;
+})));
+assert.deepStrictEqual(duplicateIds, [], 'dashboard markup must not contain duplicate ids');
+var ariaReferences = Array.from(html.matchAll(/\saria-(?:labelledby|describedby)="([^"]+)"/g))
+    .reduce(function(references, match) {
+        return references.concat(match[1].trim().split(/\s+/));
+    }, []);
+assert.deepStrictEqual(Array.from(new Set(ariaReferences.filter(function(id) {
+    return ids.indexOf(id) === -1;
+}))), [], 'ARIA references must resolve to dashboard elements');
+var labelTargets = Array.from(html.matchAll(/<label\b[^>]*\sfor="([^"]+)"/g), function(match) {
+    return match[1];
+});
+assert.deepStrictEqual(Array.from(new Set(labelTargets.filter(function(id) {
+    return ids.indexOf(id) === -1;
+}))), [], 'label for attributes must resolve to dashboard controls');
+assert(html.includes('id="settings-text-scale"'));
+assert(html.includes('min="100" max="200" step="10"'));
+assert(html.includes('aria-describedby="settings-text-scale-desc"'));
+assert(!html.includes('aria-describedby="settings-text-scale-desc settings-text-scale-value"'));
+assert(!html.includes('no_pinch.js'), 'browser zoom must remain available');
+assert(html.includes('lxmf-compose message-composer'));
+assert(html.includes('channel-compose message-composer'));
+assert(html.includes('message-composer-input'));
+assert(html.includes('message-send-btn'));
+assert(!/<a class="bottom-sheet-item"/.test(html), 'mobile navigation rows must be buttons');
+assert(!/<a class="bottom-bar-item"/.test(html), 'mobile primary navigation must use semantic buttons');
+
+var revisionMatches = Array.from(html.matchAll(/\/(?:static\/(?!js\/vendor)[^"?]+)\?v=([^"&]+)/g));
+assert(revisionMatches.length > 20, 'first-party asset revisions must be explicit');
+var revisions = new Set(revisionMatches.map(function(match) { return match[1]; }));
+assert.deepStrictEqual(Array.from(revisions), ['ui-20260803'],
+    'first-party CSS, fonts, and JS must share one build-level asset revision');
+
+var nav = read('static/js/nav.js');
+assert(nav.includes("document.querySelectorAll('#bottom-sheet .bottom-sheet-item[data-view]')"));
+assert(nav.includes('sheet._ratspeakDismiss = close;'));
+assert(nav.includes('var initialView = _resolveInitialView();'));
+assert(nav.includes('switchView(initialView);'));
+var routeContext = {
+    VIEWS: ['dashboard', 'peers', 'message', 'channels', 'network', 'settings'],
+    VIEW_ALIASES: { eventlog: 'network', propagation: 'network' },
+    window: { location: { hash: '#eventlog' } },
+    localStorage: { getItem: function() { return 'propagation'; } },
+    isCompactLayout: function() { return true; },
+    String: String
+};
+vm.createContext(routeContext);
+vm.runInContext(
+    functionSource(nav, '_normalizeViewId') + '\n' +
+    functionSource(nav, '_resolveInitialView'),
+    routeContext
+);
+assert.strictEqual(routeContext._resolveInitialView(), 'network',
+    'a normalized explicit hash wins on compact layouts');
+routeContext.window.location.hash = '#unknown';
+assert.strictEqual(routeContext._resolveInitialView(), 'peers',
+    'compact layouts use Peers when no valid deep link exists');
+routeContext.isCompactLayout = function() { return false; };
+assert.strictEqual(routeContext._resolveInitialView(), 'network',
+    'wide layouts normalize the saved route before falling back');
+var shared = read('static/js/ui_shared.js');
+assert(shared.includes('modal._ratspeakDismiss = function()'));
+assert(shared.includes('RS.composer.resize = function'));
+assert(shared.includes('RS.text.utf8Length = function'));
+var lxmf = read('static/js/lxmf.js');
+assert(lxmf.includes("e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isMobile()"));
+assert(!read('static/js/peers.js').includes('displayName.substring(0, 40)'));
+assert(!read('static/js/connections.js').includes('displayName.substring(0, 40)'));
+assert(stateSource.includes("return '<button class=\"hash-copy\" type=\"button\""),
+    'compact hashes must remain keyboard-operable copy buttons');
+assert(read('static/js/peers.js').includes('<button class="peers-detail-hash"'),
+    'peer detail hashes must use a semantic copy control');
+
+console.log('Frontend foundation tests passed');

@@ -235,4 +235,4 @@
     transition: all var(--transition-fast);
 }
 .panel-header-btn:hover { border-color: var(--accent); color: var(--accent); }
-.panel-header-btn-danger:hover { border-color: var(--status-error); color: var(--status-error); }
+.panel-header-btn-danger:hover { border-color: var(--status-error); color: var(--status-error-fg); }

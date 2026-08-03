@@ -1000,6 +1000,9 @@ function _channelHubRenderAdminError(root, titleText, error, retryHandler) {
 }
 
 function _channelHubAdminUtf8Length(value) {
+    if (typeof RS !== 'undefined' && RS.text && typeof RS.text.utf8Length === 'function') {
+        return RS.text.utf8Length(value);
+    }
     value = String(value || '');
     var bytes = 0;
     for (var index = 0; index < value.length; index++) {

@@ -44,7 +44,7 @@ function ratspeakProfileStatusText(recordOrHash) {
 }
 
 function ratspeakDisplayNameHtml(displayName, recordOrHash) {
-    var nameHtml = escapeHtml(String(displayName || ''));
+    var nameHtml = '<bdi dir="auto">' + escapeHtml(String(displayName || '')) + '</bdi>';
     if (!ratspeakSupportsFeaturesFor(recordOrHash)) return nameHtml;
     return '<span class="ratspeak-name-label"><span class="ratspeak-name-text">' + nameHtml + '</span>' +
         ratspeakNameBadgeHtml(recordOrHash) + '</span>';

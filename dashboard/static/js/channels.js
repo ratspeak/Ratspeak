@@ -95,7 +95,7 @@ function _channelsEl(id) {
 }
 
 function _channelsCompact() {
-    return !!(window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
+    return typeof isCompactLayout === 'function' && isCompactLayout();
 }
 
 function _channelsIsConnected() {
@@ -131,12 +131,18 @@ function _channelsShortHash(value) {
 }
 
 function _channelsUtf8Length(value) {
+    if (typeof RS !== 'undefined' && RS.text && typeof RS.text.utf8Length === 'function') {
+        return RS.text.utf8Length(value);
+    }
     var text = String(value || '');
     if (window.TextEncoder) return new TextEncoder().encode(text).length;
     return unescape(encodeURIComponent(text)).length;
 }
 
 function _channelsUtf8Truncate(value, maxBytes) {
+    if (typeof RS !== 'undefined' && RS.text && typeof RS.text.truncateUtf8 === 'function') {
+        return RS.text.truncateUtf8(value, maxBytes);
+    }
     var result = '';
     var used = 0;
     Array.from(String(value || '')).some(function(character) {
@@ -197,8 +203,12 @@ function _channelsInsertComposerText(value) {
     if (typeof input.setSelectionRange === 'function') {
         input.setSelectionRange(cursor, cursor);
     }
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 124) + 'px';
+    if (typeof RS !== 'undefined' && RS.composer && typeof RS.composer.resize === 'function') {
+        RS.composer.resize(input);
+    } else {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 124) + 'px';
+    }
     _channelsUpdateComposer();
     if (typeof RS !== 'undefined' && RS.composer) RS.composer.focusWithoutScroll(input);
     else input.focus();
@@ -5283,9 +5293,12 @@ function channelsSendMessage() {
 
     // Match Direct Messages: finish the local composer interaction before the
     // asynchronous command result so Android's IME never closes and reopens.
-    input.value = '';
-    input.style.height = '';
-    input.scrollTop = 0;
+    if (typeof RS !== 'undefined' && RS.composer && typeof RS.composer.reset === 'function') RS.composer.reset(input);
+    else {
+        input.value = '';
+        input.style.height = '';
+        input.scrollTop = 0;
+    }
     if (shouldRestoreComposerFocus && RS.composer) {
         RS.composer.focusWithoutScroll(input);
     }
@@ -5299,8 +5312,11 @@ function channelsSendMessage() {
     }).catch(function(error) {
         if (!input.value) {
             input.value = text;
-            input.style.height = 'auto';
-            input.style.height = Math.min(input.scrollHeight, 124) + 'px';
+            if (typeof RS !== 'undefined' && RS.composer && typeof RS.composer.resize === 'function') RS.composer.resize(input);
+            else {
+                input.style.height = 'auto';
+                input.style.height = Math.min(input.scrollHeight, 124) + 'px';
+            }
             if (document.documentElement.classList.contains('keyboard-open') && RS.chatScroll) {
                 RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
             }
@@ -5411,8 +5427,11 @@ function _channelsBindUI() {
         });
         input.addEventListener('input', function() {
             var previousHeight = input.style.height;
-            input.style.height = 'auto';
-            input.style.height = Math.min(input.scrollHeight, 124) + 'px';
+            if (typeof RS !== 'undefined' && RS.composer && typeof RS.composer.resize === 'function') RS.composer.resize(input);
+            else {
+                input.style.height = 'auto';
+                input.style.height = Math.min(input.scrollHeight, 124) + 'px';
+            }
             _channelsUpdateComposer();
             if (previousHeight !== input.style.height &&
                     document.documentElement.classList.contains('keyboard-open') &&

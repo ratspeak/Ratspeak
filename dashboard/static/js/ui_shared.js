@@ -2,6 +2,7 @@
     window.RS = window.RS || {};
     RS.ui = RS.ui || {};
     RS.composer = RS.composer || {};
+    RS.text = RS.text || {};
 
     // Shared soft-keyboard continuity for every chat composer. Pointer-down on
     // a send control must not blur the textarea, otherwise Android closes and
@@ -31,6 +32,39 @@
         if (!input || document.activeElement === input) return;
         try { input.focus({ preventScroll: true }); }
         catch (_) { input.focus(); }
+    };
+
+    RS.composer.resize = function(input, maxHeight) {
+        if (!input) return '';
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, maxHeight || 124) + 'px';
+        return input.style.height;
+    };
+
+    RS.composer.reset = function(input) {
+        if (!input) return;
+        input.value = '';
+        input.style.height = '';
+        input.scrollTop = 0;
+    };
+
+    RS.text.utf8Length = function(value) {
+        var text = String(value == null ? '' : value);
+        if (window.TextEncoder) return new TextEncoder().encode(text).length;
+        return unescape(encodeURIComponent(text)).length;
+    };
+
+    RS.text.truncateUtf8 = function(value, maxBytes) {
+        var result = '';
+        var used = 0;
+        Array.from(String(value == null ? '' : value)).some(function(character) {
+            var bytes = RS.text.utf8Length(character);
+            if (used + bytes > maxBytes) return true;
+            result += character;
+            used += bytes;
+            return false;
+        });
+        return result;
     };
 
     RS.composer.bindTapToSend = function(button, input, onSend) {
@@ -80,6 +114,16 @@
             }
             RS.composer.captureFocus(input);
             onSend();
+        });
+    };
+
+    RS.ui.bindKeyboardActivation = function(element) {
+        if (!element || element._ratspeakKeyboardActivationBound) return;
+        element._ratspeakKeyboardActivationBound = true;
+        element.addEventListener('keydown', function(event) {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            element.click();
         });
     };
 
@@ -168,7 +212,23 @@
         if (!modal) return null;
         modal.classList.add('open');
         if (overlay) overlay.classList.add('active');
-        if (typeof _trapFocus === 'function') _trapFocus(modal);
+        // Feature close callbacks may clear pending edits or secrets. Never
+        // replace them with the generic visual close used by simple sheets.
+        if (typeof modal._ratspeakDismiss !== 'function') {
+            modal._ratspeakDismiss = function() {
+                RS.ui.closeExistingSheet(modal, overlay);
+            };
+        }
+        if (!modal._ratspeakEscapeHandler) {
+            modal._ratspeakEscapeHandler = function(event) {
+                if (event.key === 'Escape' && modal.classList.contains('open')) {
+                    event.preventDefault();
+                    modal._ratspeakDismiss();
+                }
+            };
+            document.addEventListener('keydown', modal._ratspeakEscapeHandler);
+        }
+        if (typeof _trapFocus === 'function' && !modal._focusTrapHandler) _trapFocus(modal);
         return modal;
     };
 
@@ -176,6 +236,10 @@
         var modal = elementRef(modalId);
         var overlay = elementRef(overlayId);
         if (!modal) return;
+        if (modal._ratspeakEscapeHandler) {
+            document.removeEventListener('keydown', modal._ratspeakEscapeHandler);
+            modal._ratspeakEscapeHandler = null;
+        }
         if (typeof _releaseFocus === 'function') _releaseFocus(modal);
         modal.classList.remove('open');
         if (overlay) overlay.classList.remove('active');
@@ -281,7 +345,7 @@
     RS.ui.openActionMenu = function(trigger, items, opts) {
         opts = opts || {};
         if (!trigger || !items || !items.length) return Promise.resolve(null);
-        if (typeof isMobile === 'function' && isMobile() && typeof rsChoice === 'function' && opts.mobileSheet !== false) {
+        if (typeof isCompactLayout === 'function' && isCompactLayout() && typeof rsChoice === 'function' && opts.mobileSheet !== false) {
             var choices = items.filter(function(item) { return !item.separator && !item.disabled; }).map(function(item, idx) {
                 return {
                     label: item.label,

@@ -1,6 +1,7 @@
 // Gesture primitives: attachSwipe, attachLongPress, attachDragDismiss,
 // attachPullToRefresh, attachRipple. Thresholds from RS.gestures.* (constants.js);
-// haptics route through nav.js::haptic(). Pinch-zoom blocking is in no_pinch.js.
+// Haptics route through nav.js::haptic(). Browser zoom remains available as
+// an accessibility fallback alongside Ratspeak's independent text scaling.
 
 var RS = window.RS || {};
 RS.gestures = RS.gestures || {};

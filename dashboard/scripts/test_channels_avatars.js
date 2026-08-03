@@ -15,6 +15,10 @@ var channelsCss = fs.readFileSync(
     path.join(dashboardRoot, 'static', 'css', '09-channels.css'),
     'utf8'
 );
+var componentsCss = fs.readFileSync(
+    path.join(dashboardRoot, 'static', 'css', '07-components.css'),
+    'utf8'
+);
 var indexSource = fs.readFileSync(path.join(dashboardRoot, 'index.html'), 'utf8');
 
 function functionSource(name) {
@@ -251,20 +255,20 @@ assert(!channelsCss.includes('.channel-member-row[data-tone='));
 assert(channelsCss.includes('.channel-members-pane.showing-detail .channel-members-heading'));
 assert(channelsCss.includes('.channel-member-profile-sheet .bottom-sheet-body'));
 assert(indexSource.includes('<span>People</span>'));
-assert(indexSource.includes('id="channel-message-input" class="nr-input" rows="1" placeholder="Message..."'));
-assert(indexSource.includes('class="channel-send-btn" id="channel-send-btn"'));
+assert(indexSource.includes('id="channel-message-input" class="nr-input message-composer-input" rows="1" placeholder="Message..."'));
+assert(indexSource.includes('class="channel-send-btn message-send-btn" id="channel-send-btn"'));
 assert(!indexSource.includes('nr-btn nr-btn-primary channel-send-btn'));
 assert(channelsSource.includes("'Message...'"));
 assert(!channelsSource.includes('Message channel'));
-assert(channelsCss.includes('.channel-compose .nr-input'));
-assert(channelsCss.includes('border-radius: var(--radius-pill);'));
-assert(channelsCss.includes('.channel-send-btn::before'));
-assert(channelsCss.includes('border-radius: var(--radius-full);'));
-assert(indexSource.includes('/static/style.css?v=1.0.26c'));
-assert(indexSource.includes('/static/js/nav.js?v=1.0.26c'));
-assert(indexSource.includes('/static/js/ui_shared.js?v=1.0.26c'));
-assert(indexSource.includes('/static/js/lxmf.js?v=1.0.26c'));
-assert(indexSource.includes('/static/js/channels.js?v=1.0.26c'));
-assert(indexSource.includes('/static/js/channel_hub.js?v=1.0.26c'));
+assert(componentsCss.includes('.message-composer-input'));
+assert(componentsCss.includes('border-radius: var(--radius-pill);'));
+assert(componentsCss.includes('.message-send-btn::before'));
+assert(componentsCss.includes('border-radius: var(--radius-full);'));
+assert(indexSource.includes('/static/style.css?v=ui-20260803'));
+assert(indexSource.includes('/static/js/nav.js?v=ui-20260803'));
+assert(indexSource.includes('/static/js/ui_shared.js?v=ui-20260803'));
+assert(indexSource.includes('/static/js/lxmf.js?v=ui-20260803'));
+assert(indexSource.includes('/static/js/channels.js?v=ui-20260803'));
+assert(indexSource.includes('/static/js/channel_hub.js?v=ui-20260803'));
 
 process.stdout.write('Channels avatar tests passed.\n');

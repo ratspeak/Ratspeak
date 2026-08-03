@@ -83,6 +83,21 @@ var VIEW_ALIASES = {
     'propagation': 'network'
 };
 
+function _normalizeViewId(viewId) {
+    var normalized = String(viewId || '').replace(/^#/, '');
+    if (VIEW_ALIASES[normalized]) normalized = VIEW_ALIASES[normalized];
+    return VIEWS.indexOf(normalized) !== -1 ? normalized : null;
+}
+
+function _resolveInitialView() {
+    var hashView = _normalizeViewId(window.location.hash);
+    if (hashView) return hashView;
+    if (typeof isCompactLayout === 'function' && isCompactLayout()) return 'peers';
+    var saved = null;
+    try { saved = localStorage.getItem('ratspeak_view'); } catch(e) {}
+    return _normalizeViewId(saved) || 'dashboard';
+}
+
 var _navTransitioning = false;
 var _navInitialLoad = true;
 var _mobileNavigationBlockedUntil = 0;
@@ -251,7 +266,7 @@ function _focusView(viewEl) {
 }
 
 function _animateViewSwitch(oldView, newView, transitionType) {
-    if (!oldView || !newView || oldView === newView || !isMobile()) {
+    if (!oldView || !newView || oldView === newView || !isCompactLayout()) {
         if (oldView) { oldView.classList.remove('active'); _cleanTransitionClasses(oldView); }
         if (newView) { newView.classList.add('active'); }
         return;
@@ -292,8 +307,7 @@ function _animateViewSwitch(oldView, newView, transitionType) {
 }
 
 function switchView(viewId, opts) {
-    if (VIEW_ALIASES && VIEW_ALIASES[viewId]) viewId = VIEW_ALIASES[viewId];
-    if (VIEWS.indexOf(viewId) === -1) viewId = 'dashboard';
+    viewId = _normalizeViewId(viewId) || 'dashboard';
     if (viewId === currentView && !_navInitialLoad) return;
     if (_navTransitioning) return;
 
@@ -303,7 +317,7 @@ function switchView(viewId, opts) {
     var newEl = document.getElementById('view-' + viewId);
 
     var transitionType = 'fade';
-    if (!_navInitialLoad && isMobile()) {
+    if (!_navInitialLoad && isCompactLayout()) {
         if (opts.transition) {
             transitionType = opts.transition;
         } else if (opts.back) {
@@ -356,7 +370,7 @@ function switchView(viewId, opts) {
         if (isMoreView) hamburger.setAttribute('aria-current', 'page');
         else hamburger.removeAttribute('aria-current');
     }
-    document.querySelectorAll('.bottom-sheet-item').forEach(function(item) {
+    document.querySelectorAll('#bottom-sheet .bottom-sheet-item[data-view]').forEach(function(item) {
         item.classList.remove('active');
         if (item.dataset.view === viewId) item.classList.add('active');
     });
@@ -605,7 +619,7 @@ function _handleAppBackNavigation(opts) {
         return true;
     }
 
-    if (isMobile() && MORE_VIEWS.indexOf(currentView) !== -1) {
+    if (isCompactLayout() && MORE_VIEWS.indexOf(currentView) !== -1) {
         if (fromPopState && state && PRIMARY_TAB_VIEWS.indexOf(state.view) !== -1) {
             switchView(state.view, { skipHistory: true, back: true });
         } else {
@@ -1052,15 +1066,14 @@ function initBottomSheet() {
     if (!trigger || !sheet || !overlay) return;
 
     function openSheet() {
-        sheet.classList.add('open');
-        overlay.classList.add('active');
+        RS.ui.openExistingSheet(sheet, overlay);
         // Push state so OS back closes the sheet before navigating.
         history.pushState({ view: currentView, sheet: true }, '', '#' + currentView);
     }
     function closeSheet() {
-        sheet.classList.remove('open');
-        overlay.classList.remove('active');
+        RS.ui.closeExistingSheet(sheet, overlay);
     }
+    sheet._ratspeakDismiss = closeSheet;
 
     trigger.addEventListener('click', function(e) {
         e.preventDefault();
@@ -1098,6 +1111,7 @@ function initSheetSwipeDismiss(sheetId, overlayId, closeFn) {
     if (!sheet) return;
     var overlay = overlayId ? document.getElementById(overlayId) : null;
     var close = closeFn || function() {};
+    sheet._ratspeakDismiss = close;
     if (overlay && !overlay._sheetDismissWired) {
         overlay.addEventListener('click', close);
         overlay._sheetDismissWired = true;
@@ -1272,8 +1286,7 @@ function initTextareaAutoGrow() {
     var _growRaf = null;
     textarea.addEventListener('input', function() {
         var ta = this;
-        ta.style.height = 'auto';
-        ta.style.height = Math.min(ta.scrollHeight, 124) + 'px';
+        if (RS.composer && typeof RS.composer.resize === 'function') RS.composer.resize(ta);
         // rAF so scroll happens after the browser applies the new height.
         if (document.documentElement.classList.contains('keyboard-open') && _chatMessagesNearBottomForKeyboard()) {
             if (_growRaf) cancelAnimationFrame(_growRaf);
@@ -1292,7 +1305,7 @@ function _settingsDetailSwipeActive() {
 }
 
 function initDrillDownSwipeBack() {
-    if (!isMobile()) return;
+    if (!isTouchDevice()) return;
 
     function _animateOutAndPop() {
         var viewEl = document.getElementById('view-' + currentView);
@@ -1323,6 +1336,7 @@ function initDrillDownSwipeBack() {
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_DRILLBACK_PX,
         hapticAt: { commit: 'selection' },
         skipIf: function(e) {
+            if (!isCompactLayout()) return true;
             if (_isMobileNavigationBlocked()) return true;
             if (_navTransitioning) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
@@ -1356,7 +1370,7 @@ function initDrillDownSwipeBack() {
 }
 
 function initSettingsDetailSwipeBack() {
-    if (!isMobile()) return;
+    if (!isTouchDevice()) return;
 
     function _settingsDetailPane() {
         return document.querySelector('#view-settings .settings-detail-pane');
@@ -1375,6 +1389,7 @@ function initSettingsDetailSwipeBack() {
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_DRILLBACK_PX,
         hapticAt: { commit: 'selection' },
         skipIf: function(e) {
+            if (!isCompactLayout()) return true;
             if (_navTransitioning) return true;
             if (!_settingsDetailSwipeActive()) return true;
             if (e.target.closest('button, a, input, select, textarea, .selector-badge, .theme-toggle, .prop-toggle')) return true;
@@ -1425,6 +1440,7 @@ function initEdgeSwipeOpenSidebar() {
         edgeZone: RS.gestures.EDGE_ZONE_PX,
         dwellMs: RS.gestures.SWIPE_DWELL_SIDEBAR_OPEN_MS,
         skipIf: function() {
+            if (isCompactLayout()) return true;
             if (typeof _isSetupActive === 'function' && _isSetupActive()) return true;
             return sidebar.classList.contains('open');
         },
@@ -1437,13 +1453,14 @@ function initEdgeSwipeOpenSidebar() {
 }
 
 function initTabSwipe() {
-    if (!isMobile()) return;
+    if (!isTouchDevice()) return;
 
     RS.gestures.attachSwipe(document, {
         direction: 'horizontal',
         edgeMargin: RS.gestures.EDGE_MARGIN_TAB_SWIPE_PX,
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_PX,
         skipIf: function(e) {
+            if (!isCompactLayout()) return true;
             if (typeof _isSetupActive === 'function' && _isSetupActive()) return true;
             if (_isMobileNavigationBlocked()) return true;
             if (_navTransitioning) return true;
@@ -1616,6 +1633,7 @@ function bindFirstRunAnnounceListener() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    var initialView = _resolveInitialView();
     document.querySelectorAll('.nav-item').forEach(function(item) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
@@ -1631,7 +1649,6 @@ document.addEventListener('DOMContentLoaded', function() {
     initSidebarSwipe();
     initKeyboardDetection();
     initTextareaAutoGrow();
-    _initHistoryNavigation();
     RS.gestures.attachRipple(document, {
         selectors: RS.gestures.RIPPLE_SELECTORS,
         hapticOnTap: 'light'
@@ -1668,25 +1685,13 @@ document.addEventListener('DOMContentLoaded', function() {
     // Delay so initial layout settles; actual display waits for an online interface.
     scheduleFirstRunTooltip(2000);
 
-    if (typeof needsSetup !== 'undefined' && needsSetup) return;
-
-    // Mobile lands on peers; desktop: hash -> last-saved view -> dashboard.
-    if (isMobile()) {
-        switchView('peers');
-    } else {
-        var hash = window.location.hash.replace('#', '');
-        if (hash && VIEWS.indexOf(hash) !== -1) {
-            switchView(hash);
-        } else {
-            var saved = null;
-            try { saved = localStorage.getItem('ratspeak_view'); } catch(e) {}
-            if (saved && VIEWS.indexOf(saved) !== -1) {
-                switchView(saved);
-            } else {
-                switchView('dashboard');
-            }
-        }
+    if (typeof needsSetup !== 'undefined' && needsSetup) {
+        _initHistoryNavigation();
+        return;
     }
+
+    switchView(initialView);
+    _initHistoryNavigation();
 
     _navInitialLoad = false;
 });

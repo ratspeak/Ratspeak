@@ -1,5 +1,17 @@
+function isCompactLayout() {
+    var breakpoint = window.RS && window.RS.config ? window.RS.config.MOBILE_BREAKPOINT : 768;
+    return window.innerWidth <= breakpoint;
+}
+
+function isTouchDevice() {
+    return window.__RATSPEAK_MOBILE__ === true || navigator.maxTouchPoints > 0;
+}
+
+// Legacy interaction predicate. Layout decisions should use
+// isCompactLayout(); gesture and soft-keyboard decisions use isMobile().
 function isMobile() {
-    return navigator.maxTouchPoints > 0 && window.innerWidth <= 1024;
+    var breakpoint = window.RS && window.RS.config ? window.RS.config.MOBILE_TOUCH_BREAKPOINT : 1024;
+    return isTouchDevice() && window.innerWidth <= breakpoint;
 }
 
 // Tauri injects __RATSPEAK_MOBILE__ / __RATSPEAK_DESKTOP__ globals.
@@ -754,9 +766,10 @@ function copyableHash(fullHash, displayLength) {
     if (displayLength && fullHash.length > displayLength) {
         displayText = shortHash(fullHash, displayLength, 4);
     }
-    return '<span class="hash-copy" data-full="' + escapeHtml(fullHash) +
-        '" title="Click to copy: ' + escapeHtml(fullHash) + '">' +
-        escapeHtml(displayText) + '</span>';
+    return '<button class="hash-copy" type="button" dir="ltr" data-full="' + escapeHtml(fullHash) +
+        '" aria-label="Copy address ' + escapeHtml(fullHash) +
+        '" title="Copy ' + escapeHtml(fullHash) + '">' +
+        escapeHtml(displayText) + '</button>';
 }
 
 function debounce(fn, delay) {
@@ -807,6 +820,8 @@ document.addEventListener('click', function(e) {
             target.classList.add('copied');
             setTimeout(function() { target.classList.remove('copied'); }, 850);
         } else {
+            target.textContent = fullHash;
+            target.title = 'Address selected for manual copy';
             var range = document.createRange();
             range.selectNodeContents(target);
             var sel = window.getSelection();

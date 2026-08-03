@@ -67,7 +67,7 @@
     function _isViewingSession(sessionId) {
         if (!sessionId || _selectedSessionId !== sessionId) return false;
         if (typeof currentView === 'undefined' || currentView !== 'games') return false;
-        if (typeof isMobile === 'function' && isMobile()) {
+        if (typeof isCompactLayout === 'function' && isCompactLayout()) {
             if (typeof RS === 'undefined' || !RS.viewStack || typeof RS.viewStack.top !== 'function') {
                 return false;
             }
@@ -401,7 +401,7 @@
         delete _celebratedWins[sessionId];
         if (_selectedSessionId === sessionId) {
             _selectedSessionId = null;
-            if (window.innerWidth <= 768 &&
+            if (isCompactLayout() &&
                 RS.viewStack.top() && RS.viewStack.top().viewId === 'game-detail') {
                 RS.viewStack.pop();
             }
@@ -419,7 +419,7 @@
         renderDetail();
         updateGamesBadge();
 
-        if (window.innerWidth <= 768) {
+        if (isCompactLayout()) {
             RS.viewStack.push('game-detail', { meta: { sessionId: sessionId } });
             history.pushState({ view: 'games', detail: true }, '', '#games');
         }

@@ -10,6 +10,8 @@ var dashboardRoot = path.join(__dirname, '..');
 var navSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'nav.js'), 'utf8');
 var channelsSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'channels.js'), 'utf8');
 var dialogsSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'dialogs.js'), 'utf8');
+var gamesSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'games_tab.js'), 'utf8');
+var sharedSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'ui_shared.js'), 'utf8');
 var constantsSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'constants.js'), 'utf8');
 var contactCardSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'contact_card.js'), 'utf8');
 var indexSource = fs.readFileSync(path.join(dashboardRoot, 'index.html'), 'utf8');
@@ -96,12 +98,63 @@ assert.strictEqual(persistent.classList.contains('open'), false,
     'the persistent More sheet keeps its existing native Back behavior');
 assert.strictEqual(persistentOverlay.classList.contains('active'), false);
 
+var sharedListeners = {};
+var sharedDismissals = 0;
+var focusTraps = 0;
+var focusReleases = 0;
+var sharedModal = {
+    classList: classList(),
+    _ratspeakDismiss: function() { sharedDismissals += 1; }
+};
+var sharedOverlay = { classList: classList() };
+var sharedContext = {
+    window: { RS: {} },
+    document: {
+        activeElement: null,
+        getElementById: function() { return null; },
+        addEventListener: function(name, handler) { sharedListeners[name] = handler; },
+        removeEventListener: function(name, handler) {
+            if (sharedListeners[name] === handler) delete sharedListeners[name];
+        },
+        createElement: function() { return {}; }
+    },
+    navigator: {},
+    _trapFocus: function(modal) { focusTraps += 1; modal._focusTrapHandler = function() {}; },
+    _releaseFocus: function(modal) { focusReleases += 1; delete modal._focusTrapHandler; },
+    WeakMap: WeakMap,
+    Date: Date,
+    Math: Math,
+    Array: Array,
+    String: String,
+    Promise: Promise,
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
+    unescape: unescape,
+    encodeURIComponent: encodeURIComponent
+};
+sharedContext.RS = sharedContext.window.RS;
+vm.createContext(sharedContext);
+vm.runInContext(sharedSource, sharedContext);
+var originalDismiss = sharedModal._ratspeakDismiss;
+sharedContext.RS.ui.openExistingSheet(sharedModal, sharedOverlay);
+assert.strictEqual(sharedModal._ratspeakDismiss, originalDismiss,
+    'opening a shared sheet must preserve feature-specific cleanup');
+assert.strictEqual(focusTraps, 1, 'shared sheets establish one focus lifecycle');
+assert.strictEqual(typeof sharedListeners.keydown, 'function');
+sharedListeners.keydown({ key: 'Escape', preventDefault: function() {} });
+assert.strictEqual(sharedDismissals, 1, 'Escape routes through feature-specific cleanup');
+sharedContext.RS.ui.closeExistingSheet(sharedModal, sharedOverlay);
+assert.strictEqual(focusReleases, 1);
+assert.strictEqual(sharedListeners.keydown, undefined, 'closing removes the Escape listener');
+
 var drillSwipe = functionSource(navSource, 'initDrillDownSwipeBack');
 var tabSwipe = functionSource(navSource, 'initTabSwipe');
 assert(drillSwipe.includes('if (_isMobileNavigationBlocked()) return true;'),
     'edge-swipe Back must not navigate beneath an open sheet');
 assert(tabSwipe.includes('if (_isMobileNavigationBlocked()) return true;'),
     'tab swipes must not navigate beneath an open sheet');
+assert(drillSwipe.includes('if (!isCompactLayout()) return true;'));
+assert(tabSwipe.includes('if (!isCompactLayout()) return true;'));
 assert(navSource.includes("'.bottom-sheet.open, .bottom-sheet-overlay.active, '"));
 assert(navSource.includes('.channels-layout.members-open'));
 assert(constantsSource.includes('sheet._ratspeakDismiss = function()'),
@@ -176,5 +229,23 @@ var backHandler = functionSource(navSource, '_handleAppBackNavigation');
 assert(backHandler.indexOf('channelsHandleMemberPaneBack()') <
         backHandler.indexOf('RS.viewStack.depth()'),
     'member-sheet Back handling must run before room navigation');
+
+var gameViewContext = {
+    _selectedSessionId: 'game-1',
+    currentView: 'games',
+    isCompactLayout: function() { return false; },
+    RS: { viewStack: { top: function() { return null; } } }
+};
+vm.createContext(gameViewContext);
+vm.runInContext(functionSource(gamesSource, '_isViewingSession'), gameViewContext);
+assert.strictEqual(gameViewContext._isViewingSession('game-1'), true,
+    'touch-tablet desktop layouts consider their selected game visible');
+gameViewContext.isCompactLayout = function() { return true; };
+assert.strictEqual(gameViewContext._isViewingSession('game-1'), false,
+    'compact layouts require the game detail stack entry');
+gameViewContext.RS.viewStack.top = function() {
+    return { viewId: 'game-detail', meta: { sessionId: 'game-1' } };
+};
+assert.strictEqual(gameViewContext._isViewingSession('game-1'), true);
 
 process.stdout.write('Mobile sheet navigation tests passed.\n');

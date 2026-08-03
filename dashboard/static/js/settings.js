@@ -894,6 +894,9 @@ function profileStatusFromPayload(data) {
 
 function profileStatusByteLength(value) {
     value = value || '';
+    if (typeof RS !== 'undefined' && RS.text && typeof RS.text.utf8Length === 'function') {
+        return RS.text.utf8Length(value);
+    }
     if (window.TextEncoder) return new TextEncoder().encode(value).length;
     return new Blob([value]).size;
 }
@@ -902,6 +905,9 @@ function trimProfileStatusToByteLimit(value, limit) {
     value = String(value || '');
     limit = limit || PROFILE_STATUS_MAX_BYTES;
     if (profileStatusByteLength(value) <= limit) return value;
+    if (typeof RS !== 'undefined' && RS.text && typeof RS.text.truncateUtf8 === 'function') {
+        return RS.text.truncateUtf8(value, limit);
+    }
 
     var out = '';
     var bytes = 0;
@@ -1505,7 +1511,9 @@ RS.listen('app_settings_updated', applyAppSettingsPayload);
     var _notifRow = document.getElementById('settings-row-notifications');
     var _notifToggle = document.getElementById('desktop-notifications-toggle');
     if (!_notifRow || !_notifToggle) return;
-    var _isMobile = (typeof isMobile === 'function') ? isMobile() : !!window.__RATSPEAK_MOBILE__;
+    var _isMobile = typeof isTauriMobile === 'function'
+        ? isTauriMobile()
+        : !!window.__RATSPEAK_MOBILE__;
     if (_isMobile) return;
     _notifRow.style.display = '';
     RS.invoke('api_notification_settings').then(function(data) {
@@ -1833,6 +1841,8 @@ function confirmDangerAction(action, onClose) {
 
 var _themeToggleInitialized = false;
 var _hapticsToggleInitialized = false;
+var _textScaleInitialized = false;
+var _textScalePreviewFrame = null;
 
 function initThemeToggle() {
     var toggle = document.getElementById('theme-toggle');
@@ -1876,9 +1886,54 @@ function initHapticsToggle() {
     }
 }
 
+function initTextScaleControl() {
+    var input = document.getElementById('settings-text-scale');
+    var output = document.getElementById('settings-text-scale-value');
+    var reset = document.getElementById('settings-text-scale-reset');
+    if (!input || !output || !reset || !RS.textScale) return;
+
+    function sync(value) {
+        var percent = RS.textScale.normalize(value);
+        input.value = String(percent);
+        input.setAttribute('aria-valuetext', percent + ' percent');
+        output.value = percent + '%';
+        output.textContent = percent + '%';
+        reset.disabled = percent === RS.textScale.MIN;
+    }
+
+    sync(RS.textScale.get());
+    if (_textScaleInitialized) return;
+    _textScaleInitialized = true;
+
+    input.addEventListener('input', function() {
+        var next = input.value;
+        sync(next);
+        if (_textScalePreviewFrame) cancelAnimationFrame(_textScalePreviewFrame);
+        _textScalePreviewFrame = requestAnimationFrame(function() {
+            _textScalePreviewFrame = null;
+            RS.textScale.preview(next);
+        });
+    });
+    input.addEventListener('change', function() {
+        if (_textScalePreviewFrame) {
+            cancelAnimationFrame(_textScalePreviewFrame);
+            _textScalePreviewFrame = null;
+        }
+        sync(RS.textScale.commit(input.value));
+    });
+    reset.addEventListener('click', function() {
+        sync(RS.textScale.reset());
+        input.focus({ preventScroll: true });
+    });
+    window.addEventListener('ratspeak-text-scale-changed', function(event) {
+        if (event.detail) sync(event.detail.percent);
+    });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     initThemeToggle();
     initHapticsToggle();
+    initTextScaleControl();
     initSettingsSectionNav();
     renderSettingsVersion();
 });

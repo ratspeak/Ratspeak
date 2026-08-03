@@ -672,9 +672,7 @@ function _resolveBlePeerLabel(peer) {
         if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.get === 'function') {
             var entry = PeersCache.get(idHash);
             if (entry && entry.display_name && entry.display_name !== '' && entry.display_name !== idHash) {
-                var name = entry.display_name;
-                if (name.length > 40) name = name.substring(0, 40) + '\u2026';
-                return { label: name, title: idHash };
+                return { label: entry.display_name, title: idHash };
             }
         }
         return { label: typeof shortHash === 'function' ? shortHash(idHash, 8, 4) : idHash.substring(0, 12) + '\u2026', title: idHash };
@@ -1158,16 +1156,14 @@ function showInterfaceActionSheet(ifaceType, ifaceName) {
         itemsEl.appendChild(btn);
     });
 
-    overlay.classList.add('active');
-    sheet.classList.add('open');
+    RS.ui.openExistingSheet(sheet, overlay);
     overlay.onclick = function() { closeInterfaceActionSheet(); };
 }
 
 function closeInterfaceActionSheet() {
     var overlay = document.getElementById('iface-action-overlay');
     var sheet = document.getElementById('iface-action-sheet');
-    if (overlay) overlay.classList.remove('active');
-    if (sheet) sheet.classList.remove('open');
+    if (sheet) RS.ui.closeExistingSheet(sheet, overlay);
 }
 
 function toggleConnSection(headerEl) {

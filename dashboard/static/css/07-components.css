@@ -145,7 +145,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    padding: 0 var(--space-7);
+    padding: var(--space-2) var(--space-7);
     font-size: var(--type-section-label-size);
     font-weight: var(--type-section-label-weight);
     color: var(--text-muted);
@@ -153,12 +153,21 @@
     letter-spacing: var(--type-section-label-tracking);
     cursor: pointer;
     user-select: none;
-    border-bottom: 1px solid var(--border-row);
+    border-bottom: none;
+    border-radius: var(--radius-md);
+    margin: var(--space-1) 0;
+    background: var(--surface-panel-muted);
     transition: background var(--transition-fast);
 }
 
 .conn-group-header:hover {
     background: var(--surface-row-hover);
+}
+.conn-group-header:focus-visible,
+.conn-row:focus-visible,
+.peers-row:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
 }
 
 .conn-group-chevron {
@@ -253,7 +262,7 @@
     align-items: center;
     justify-content: center;
     min-height: var(--chip-height);
-    font-size: 8px;
+    font-size: var(--type-badge-size);
     font-weight: 600;
     color: var(--chip-color);
     background: var(--chip-bg);
@@ -292,9 +301,9 @@
     text-align: right;
 }
 
-.conn-age.age-fresh { color: var(--status-online); }
-.conn-age.age-stale { color: var(--status-warning); }
-.conn-age.age-old   { color: var(--status-error); }
+.conn-age.age-fresh { color: var(--status-online-fg); }
+.conn-age.age-stale { color: var(--status-warning-fg); }
+.conn-age.age-old   { color: var(--status-error-fg); }
 .conn-age.age-none  { color: var(--text-muted); }
 
 
@@ -519,7 +528,7 @@
 
 .toolbar-toggle:hover {
     border-color: var(--status-warning);
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
 }
 
 .toolbar-toggle.active {
@@ -542,12 +551,12 @@
 
 .toggle-indicator.on {
     background: rgba(var(--status-warning-rgb), 0.15);
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
 }
 
 .toggle-indicator.ble-peer-on {
     background: var(--status-purple-bg);
-    color: var(--status-purple);
+    color: var(--status-purple-fg);
 }
 
 .toolbar-toggle.needs-install .toggle-label::after {
@@ -753,7 +762,7 @@
 }
 
 .toast-result .toast-stat-val.green { color: var(--accent); }
-.toast-result .toast-stat-val.blue  { color: var(--status-info); }
+.toast-result .toast-stat-val.blue  { color: var(--status-info-fg); }
 
 .toast-result .toast-route {
     width: 100%;
@@ -770,13 +779,13 @@
     padding: var(--space-3) var(--space-5);
     border-radius: var(--radius-md);
     background: var(--status-info-bg);
-    color: var(--status-info);
+    color: var(--status-info-fg);
     border-left: 3px solid var(--status-info);
 }
 
 .add-node-status.error {
     background: var(--status-error-bg);
-    color: var(--status-error);
+    color: var(--status-error-fg);
     border-left-color: var(--status-error);
 }
 
@@ -805,11 +814,12 @@
     box-shadow: var(--shadow-popover);
 }
 .tooltip-trigger:hover::after,
-.tooltip-trigger:focus::after {
+.tooltip-trigger:focus-visible::after {
     opacity: 1;
 }
-.tooltip-trigger:focus {
-    outline: none;
+.tooltip-trigger:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
 }
 
 
@@ -890,11 +900,11 @@
 }
 .interface-card-status.down {
     background: rgba(var(--status-error-rgb), 0.12);
-    color: var(--status-error);
+    color: var(--status-error-fg);
 }
 .interface-card-status.degraded {
     background: rgba(var(--status-warning-rgb), 0.12);
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
 }
 
 .interface-card-stats {
@@ -953,11 +963,11 @@
 }
 
 .lora-stat-warn {
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
     background: var(--status-warning-bg);
 }
 .lora-stat-good {
-    color: var(--status-info);
+    color: var(--status-info-fg);
     background: var(--status-info-bg);
 }
 .lora-guidance {
@@ -991,7 +1001,7 @@
 }
 
 .announce-hash {
-    color: var(--status-info);
+    color: var(--status-info-fg);
     font-size: var(--text-2xs);
     min-width: 100px;
 }
@@ -1001,7 +1011,7 @@
     flex: 1;
 }
 .announce-hops {
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
     font-size: var(--text-2xs);
 }
 .announce-time {
@@ -1063,10 +1073,6 @@
     animation: spin 0.8s linear infinite;
 }
 
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
 .empty-state {
     display: flex;
     flex-direction: column;
@@ -1108,7 +1114,7 @@
     border: 1px solid var(--status-error-border);
     border-radius: var(--radius-lg);
     padding: var(--space-6) var(--space-8);
-    color: var(--status-error);
+    color: var(--status-error-fg);
     font-size: var(--text-sm);
 }
 .error-state-title {
@@ -1138,8 +1144,9 @@
     pointer-events: auto;
 }
 
-.hash-copy { cursor: pointer; font-family: var(--font-mono); transition: color var(--transition-base); display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.hash-copy { cursor: pointer; font-family: var(--font-mono); font-size: inherit; line-height: inherit; color: inherit; background: transparent; border: 0; padding: 0; transition: color var(--transition-base); display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; unicode-bidi: isolate; }
 .hash-copy:hover { text-decoration: underline dotted; color: var(--accent); }
+.hash-copy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-xs); }
 
 .mt-0  { margin-top: 0; }
 .mt-2  { margin-top: var(--space-2); }
@@ -1174,9 +1181,9 @@
 .text-accent          { color: var(--accent); }
 .text-link            { color: var(--text-link); }
 .text-link:hover      { color: var(--text-link-hover); }
-.text-status-online   { color: var(--status-online); }
-.text-status-warning  { color: var(--status-warning); }
-.text-status-error    { color: var(--status-error); }
+.text-status-online   { color: var(--status-online-fg); }
+.text-status-warning  { color: var(--status-warning-fg); }
+.text-status-error    { color: var(--status-error-fg); }
 
 .font-mono { font-family: var(--font-mono); }
 .font-600  { font-weight: 600; }
@@ -1199,8 +1206,89 @@
 
 .inline-hint    { color: var(--text-muted); font-size: var(--type-hint-size); line-height: var(--type-leading-body); }
 .inline-hint-sm { color: var(--text-muted); font-size: var(--type-hint-sm-size); line-height: var(--type-leading-copy); }
-.inline-error   { color: var(--status-error); font-size: var(--text-xs); }
-.inline-warning { color: var(--status-warning); font-size: var(--type-hint-size); }
+.inline-error   { color: var(--status-error-fg); font-size: var(--text-xs); }
+.inline-warning { color: var(--status-warning-fg); font-size: var(--type-hint-size); }
+
+/* Shared messaging mechanics. Direct Messages and Channels keep their own
+   surrounding chrome and capabilities, while the text field and send action
+   now follow one sizing, focus, and interaction contract. */
+.message-composer {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-3);
+}
+.message-composer-input {
+    flex: 1;
+    min-width: 0;
+    min-height: 40px;
+    max-height: 124px;
+    padding: var(--space-5) var(--space-8);
+    border: 1px solid var(--input-border);
+    border-radius: var(--radius-pill);
+    background: var(--input-bg);
+    color: var(--input-text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.4;
+    resize: none;
+    overflow-y: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    appearance: none;
+    -webkit-appearance: none;
+    transition: border-color var(--transition-base), box-shadow var(--transition-base), background var(--transition-base);
+}
+.message-composer-input::-webkit-scrollbar {
+    display: none;
+}
+.message-composer-input::placeholder {
+    color: var(--input-placeholder);
+}
+.message-composer-input:focus {
+    outline: none;
+    border-color: var(--focus-ring);
+    box-shadow: 0 0 0 2px var(--focus-ring-bg);
+}
+.message-send-btn {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    flex: 0 0 40px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-full);
+    background: var(--accent);
+    color: var(--on-accent);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--transition-fast), opacity var(--transition-fast), transform var(--transition-fast);
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+.message-send-btn::before {
+    content: '';
+    position: absolute;
+    inset: -6px;
+}
+.message-send-btn:hover,
+.message-send-btn:active {
+    background: var(--accent-dim);
+}
+.message-send-btn:active {
+    transform: scale(0.94);
+}
+.message-send-btn:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 3px;
+}
 
 .qc-delete-btn {
     padding: var(--space-2) var(--space-3);
@@ -1274,45 +1362,6 @@ kbd {
     background: var(--surface-row-selected);
     border-left: 3px solid var(--accent);
     padding-left: var(--space-5);
-}
-
-.conn-group-header {
-    padding: var(--space-2) var(--space-7);
-    border-radius: var(--radius-md);
-    margin: var(--space-1) 0;
-    border-bottom: none;
-    background: var(--surface-panel-muted);
-}
-
-.conn-group-header:hover {
-    background: var(--surface-row-hover);
-}
-
-.log-container {
-    min-height: 180px;
-}
-
-.log-entry {
-    padding: var(--space-1) var(--space-4);
-    border-radius: var(--radius-sm);
-    border-bottom: none;
-    margin: 1px 0;
-}
-
-.log-entry:nth-child(even) {
-    background: var(--surface-row-hover);
-}
-
-.log-entry:hover {
-    background: var(--surface-row-active);
-}
-
-.log-badge {
-    font-size: var(--type-badge-size);
-    padding: var(--space-1) var(--space-4);
-    border-radius: var(--radius-xs);
-    letter-spacing: var(--type-badge-tracking);
-    min-width: 50px;
 }
 
 .log-empty-state svg {

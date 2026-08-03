@@ -7,12 +7,72 @@ var selectedConnection = null;
 var _scrollTop = 0;
 var _rowHeight = 28;
 var _bufferRows = 10;
+var _connectionRowMetricKey = '';
+var _connectionMetricsBound = false;
+var _connectionMetricFrame = null;
+var _connectionPendingScrollAnchor = null;
 
 // Lower value = higher sort priority.
 var STATUS_ORDER = { direct: 0, reachable: 0, stale: 1, offline: 2, unreachable: 3, unknown: 4 };
 
 function _connsView() {
     return (typeof PeersCache !== 'undefined' && PeersCache) ? PeersCache.enriched() : [];
+}
+
+function _measureConnectionRowHeight(scrollContainer) {
+    var rootSize = window.getComputedStyle
+        ? getComputedStyle(document.documentElement).fontSize
+        : '16px';
+    var width = Math.max(320, scrollContainer.clientWidth || 0);
+    var key = rootSize + '|' + width;
+    if (_connectionRowMetricKey === key) return _rowHeight;
+
+    function probe(className, content) {
+        var el = document.createElement('div');
+        el.className = className;
+        el.setAttribute('aria-hidden', 'true');
+        el.style.position = 'absolute';
+        el.style.visibility = 'hidden';
+        el.style.pointerEvents = 'none';
+        el.style.width = width + 'px';
+        el.style.height = 'auto';
+        el.style.inset = '0 auto auto -10000px';
+        el.innerHTML = content;
+        document.body.appendChild(el);
+        var height = Math.ceil(el.getBoundingClientRect().height);
+        el.remove();
+        return height;
+    }
+
+    var rowHeight = probe('conn-row',
+        '<span class="conn-status-dot status-reachable"></span>' +
+        '<span class="conn-name">Measured peer name</span>' +
+        '<span class="conn-row-meta"><span class="conn-hop-badge">2 hops</span>' +
+        '<span class="conn-age">just now</span><span class="conn-via">direct</span></span>');
+    var headerHeight = probe('conn-group-header',
+        '<span class="conn-group-chevron">&#9660;</span>' +
+        '<span class="conn-group-label">Recent</span><span class="conn-group-count">(12)</span>');
+    _rowHeight = Math.max(28, rowHeight, headerHeight);
+    _connectionRowMetricKey = key;
+    return _rowHeight;
+}
+
+function _invalidateConnectionRowMetric() {
+    if (!_connectionPendingScrollAnchor && _rowHeight > 0) {
+        _connectionPendingScrollAnchor = {
+            index: Math.floor(_scrollTop / _rowHeight),
+            ratio: (_scrollTop % _rowHeight) / _rowHeight
+        };
+    }
+    _connectionRowMetricKey = '';
+    if (_connectionMetricFrame !== null) return;
+    var render = function() {
+        _connectionMetricFrame = null;
+        renderConnectionsTable(_connsView());
+    };
+    _connectionMetricFrame = window.requestAnimationFrame
+        ? window.requestAnimationFrame(render)
+        : setTimeout(render, 16);
 }
 
 function initConnections() {
@@ -73,6 +133,15 @@ function initConnections() {
             '<svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>' +
             '<span class="empty-state-primary">Loading peers...</span>' +
             '</div>';
+    }
+
+    if (!_connectionMetricsBound) {
+        _connectionMetricsBound = true;
+        window.addEventListener('ratspeak-text-scale-changed', _invalidateConnectionRowMetric);
+        window.addEventListener('resize', _invalidateConnectionRowMetric, { passive: true });
+        if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(_invalidateConnectionRowMetric).catch(function() {});
+        }
     }
 }
 
@@ -209,14 +278,15 @@ function renderConnectionsTable(contacts, scrollOnly) {
     var flatItems = RS.buildPeerGroupItems(filtered, collapsedGroups, hasRealDisplayName);
 
     // Mobile uses native scroll; scroll events are no-ops there.
-    if (window.innerWidth <= 768) {
+    if (isCompactLayout()) {
+        _connectionPendingScrollAnchor = null;
         if (scrollOnly) return;
         var mobileHtml = '';
         flatItems.forEach(function(item) {
             if (item.type === 'header') {
                 var isCollapsed = collapsedGroups[item.group];
                 var chevron = isCollapsed ? '&#9654;' : '&#9660;';
-                mobileHtml += '<div class="conn-group-header" data-group="' + item.group + '">' +
+                mobileHtml += '<div class="conn-group-header" role="button" tabindex="0" aria-expanded="' + (!isCollapsed) + '" data-group="' + item.group + '">' +
                     '<span class="conn-group-chevron">' + chevron + '</span>' +
                     '<span class="conn-group-label">' + item.label + '</span>' +
                     '<span class="conn-group-count">(' + item.count + ')</span>' +
@@ -225,13 +295,12 @@ function renderConnectionsTable(contacts, scrollOnly) {
                 var c = item.data;
                 var isSelected = selectedConnection === c.hash;
                 var displayName = c.display_name || (typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : c.hash);
-                if (displayName.length > 40) displayName = displayName.substring(0, 40) + '\u2026';
                 var statusClass = 'status-' + c.status;
                 var ageText = formatPathAge(c.path_age);
                 var ageClass = getAgeColorClass(c.path_age);
                 var hopText = c.hops !== null && c.hops !== undefined ? c.hops + (c.hops === 1 ? ' hop' : ' hops') : '\u2014';
                 var viaText = formatVia(c.via);
-                mobileHtml += '<div class="conn-row' + (isSelected ? ' selected' : '') + '" data-hash="' + escapeHtml(c.hash) + '">' +
+                mobileHtml += '<div class="conn-row' + (isSelected ? ' selected' : '') + '" role="button" tabindex="0" aria-label="Open ' + escapeHtml(displayName) + ', address ' + escapeHtml(c.hash) + '" data-hash="' + escapeHtml(c.hash) + '">' +
                     '<span class="conn-status-dot ' + statusClass + '"></span>' +
                     '<span class="conn-name">' + ratspeakDisplayNameHtml(displayName, c) + '</span>' +
                     '<span class="conn-row-meta">' +
@@ -251,13 +320,22 @@ function renderConnectionsTable(contacts, scrollOnly) {
                 collapsedGroups[group] = !collapsedGroups[group];
                 renderConnectionsTable(_connsView());
             });
+            if (RS.ui && typeof RS.ui.bindKeyboardActivation === 'function') RS.ui.bindKeyboardActivation(hdr);
         });
         container.querySelectorAll('.conn-row').forEach(function(row) {
             row.addEventListener('click', function() {
                 showConnectionDetailSheet(this.dataset.hash);
             });
+            if (RS.ui && typeof RS.ui.bindKeyboardActivation === 'function') RS.ui.bindKeyboardActivation(row);
         });
         return;
+    }
+
+    _measureConnectionRowHeight(scrollContainer);
+    if (_connectionPendingScrollAnchor) {
+        _scrollTop = (_connectionPendingScrollAnchor.index + _connectionPendingScrollAnchor.ratio) * _rowHeight;
+        scrollContainer.scrollTop = _scrollTop;
+        _connectionPendingScrollAnchor = null;
     }
 
     var viewportHeight = scrollContainer.clientHeight;
@@ -280,7 +358,7 @@ function renderConnectionsTable(contacts, scrollOnly) {
         if (item.type === 'header') {
             var isCollapsed = collapsedGroups[item.group];
             var chevron = isCollapsed ? '&#9654;' : '&#9660;';
-            html += '<div class="conn-group-header" data-group="' + item.group + '" style="height:' + _rowHeight + 'px">' +
+            html += '<div class="conn-group-header" role="button" tabindex="0" aria-expanded="' + (!isCollapsed) + '" data-group="' + item.group + '" style="height:' + _rowHeight + 'px">' +
                 '<span class="conn-group-chevron">' + chevron + '</span>' +
                 '<span class="conn-group-label">' + item.label + '</span>' +
                 '<span class="conn-group-count">(' + item.count + ')</span>' +
@@ -289,14 +367,13 @@ function renderConnectionsTable(contacts, scrollOnly) {
             var c = item.data;
             var isSelected = selectedConnection === c.hash;
             var displayName = c.display_name || (typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : c.hash);
-            if (displayName.length > 40) displayName = displayName.substring(0, 40) + '\u2026';
             var statusClass = 'status-' + c.status;
             var ageText = formatPathAge(c.path_age);
             var ageClass = getAgeColorClass(c.path_age);
             var hopText = c.hops !== null && c.hops !== undefined ? c.hops + (c.hops === 1 ? ' hop' : ' hops') : '\u2014';
             var viaText = formatVia(c.via);
 
-            html += '<div class="conn-row' + (isSelected ? ' selected' : '') + '" data-hash="' + escapeHtml(c.hash) + '" style="height:' + _rowHeight + 'px">' +
+            html += '<div class="conn-row' + (isSelected ? ' selected' : '') + '" role="button" tabindex="0" aria-label="Open ' + escapeHtml(displayName) + ', address ' + escapeHtml(c.hash) + '" data-hash="' + escapeHtml(c.hash) + '" style="height:' + _rowHeight + 'px">' +
                 '<span class="conn-status-dot ' + statusClass + '"></span>' +
                 '<span class="conn-name">' + ratspeakDisplayNameHtml(displayName, c) + '</span>' +
                 '<span class="conn-row-meta">' +
@@ -322,13 +399,14 @@ function renderConnectionsTable(contacts, scrollOnly) {
             collapsedGroups[group] = !collapsedGroups[group];
             renderConnectionsTable(_connsView());
         });
+        if (RS.ui && typeof RS.ui.bindKeyboardActivation === 'function') RS.ui.bindKeyboardActivation(hdr);
     });
 
     // Mobile opens the bottom sheet; desktop toggles the inline detail strip.
     container.querySelectorAll('.conn-row').forEach(function(row) {
         row.addEventListener('click', function() {
             var hash = this.dataset.hash;
-            if (window.innerWidth <= 768) {
+            if (isCompactLayout()) {
                 showConnectionDetailSheet(hash);
             } else {
                 selectedConnection = selectedConnection === hash ? null : hash;
@@ -336,6 +414,7 @@ function renderConnectionsTable(contacts, scrollOnly) {
                 renderDetailStrip(hash);
             }
         });
+        if (RS.ui && typeof RS.ui.bindKeyboardActivation === 'function') RS.ui.bindKeyboardActivation(row);
     });
 
 }
@@ -726,15 +805,9 @@ function showConnectionDetailSheet(hash, options) {
     }
     wireConnectionDetailExpansion(sheet);
 
-    overlay.classList.add('active');
-    sheet.classList.add('open');
+    RS.ui.openExistingSheet(sheet, overlay);
 
     overlay.onclick = function() { closeConnectionDetailSheet(); };
-
-    sheet._escHandler = function(e) {
-        if (e.key === 'Escape') closeConnectionDetailSheet();
-    };
-    document.addEventListener('keydown', sheet._escHandler);
 }
 
 function expandConnectionDetailSheet() {
@@ -776,15 +849,10 @@ function closeConnectionDetailSheet() {
     var overlay = document.getElementById('conn-detail-sheet-overlay');
     var sheet = document.getElementById('conn-detail-sheet');
     if (typeof closeActionPopover === 'function') closeActionPopover();
-    if (overlay) overlay.classList.remove('active');
     if (sheet) {
-        sheet.classList.remove('open');
+        RS.ui.closeExistingSheet(sheet, overlay);
         sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded', 'conn-detail-sheet--compact', 'conn-detail-sheet--with-add');
         sheet._progressiveExpansionEnabled = false;
-        if (sheet._escHandler) {
-            document.removeEventListener('keydown', sheet._escHandler);
-            sheet._escHandler = null;
-        }
     }
 }
 
@@ -798,8 +866,7 @@ function openSortSheet() {
         options[i].classList.toggle('active', options[i].getAttribute('data-sort') === connectionSort.field);
     }
 
-    overlay.classList.add('active');
-    sheet.classList.add('open');
+    RS.ui.openExistingSheet(sheet, overlay);
 
     for (var j = 0; j < options.length; j++) {
         options[j].onclick = function() {
@@ -817,6 +884,5 @@ function openSortSheet() {
 function closeSortSheet() {
     var overlay = document.getElementById('conn-sort-sheet-overlay');
     var sheet = document.getElementById('conn-sort-sheet');
-    if (overlay) overlay.classList.remove('active');
-    if (sheet) sheet.classList.remove('open');
+    if (sheet) RS.ui.closeExistingSheet(sheet, overlay);
 }

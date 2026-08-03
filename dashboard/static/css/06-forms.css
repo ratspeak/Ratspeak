@@ -244,7 +244,7 @@
 }
 
 .byte-counter.over-limit {
-    color: var(--status-error);
+    color: var(--status-error-fg);
     font-weight: 600;
 }
 
@@ -255,7 +255,7 @@
     gap: var(--space-3);
     min-height: var(--control-height-md);
     background: var(--status-error-bg);
-    color: var(--status-error);
+    color: var(--status-error-fg);
     border: 1px solid var(--status-error-border);
     border-radius: var(--radius-lg);
     padding: var(--space-2) var(--space-6);
@@ -280,7 +280,7 @@
     justify-content: center;
     min-height: var(--control-height-xs);
     background: var(--status-error-bg);
-    color: var(--status-error);
+    color: var(--status-error-fg);
     border: 1px solid var(--status-error-border);
     border-radius: var(--radius-md);
     padding: var(--space-2) var(--space-4);
@@ -398,7 +398,7 @@
     color: var(--text-primary);
 }
 .system-subsection--nuclear .system-subsection-title {
-    color: var(--status-error);
+    color: var(--status-error-fg);
 }
 .system-subsection-desc {
     font-size: var(--type-hint-size);
@@ -422,7 +422,7 @@
     stroke: rgba(var(--status-error-rgb), 0.55);
 }
 .system-subsection--nuclear .system-subsection-chevron {
-    stroke: var(--status-error);
+    stroke: var(--status-error-fg);
 }
 
 .system-subsection-body {
@@ -488,7 +488,7 @@
 }
 .system-action-btn--danger {
     border-color: rgba(var(--status-error-rgb), 0.35);
-    color: var(--status-error);
+    color: var(--status-error-fg);
 }
 .system-action-btn--danger .system-action-hint {
     color: rgba(var(--status-error-rgb), 0.75);
@@ -558,7 +558,7 @@
 .transport-badge {
     font-size: var(--type-badge-size);
     background: var(--status-info-bg);
-    color: var(--status-info);
+    color: var(--status-info-fg);
     border-radius: var(--radius-sm);
     padding: 1px var(--space-2);
     font-weight: var(--type-badge-weight);
@@ -619,7 +619,8 @@
 .view-grid-settings input[type="number"],
 .view-grid-settings select,
 .view-grid-settings .modal-input {
-    height: 34px;
+    min-height: 34px;
+    height: auto;
     padding: var(--space-3) var(--space-5);
     border-radius: var(--radius-md);
     font-size: var(--text-sm);

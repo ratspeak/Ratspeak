@@ -2,17 +2,16 @@
 
 #view-channels {
     padding: 0;
-    background: var(--surface-elevation-1);
+    background: var(--surface-workspace);
 }
 
 .channels-layout {
-    --font-sans: 'Outfit', var(--font-ui);
     display: grid;
     grid-template-columns: minmax(248px, 286px) minmax(360px, 1fr) 224px;
     height: 100%;
     min-height: 0;
     overflow: hidden;
-    font-family: var(--font-ui);
+    font-family: var(--font-sans);
 }
 
 .channels-sidebar,
@@ -41,7 +40,7 @@
     margin: 0;
     color: var(--text-primary);
     font-size: var(--text-lg);
-    font-family: 'Outfit', var(--font-ui);
+    font-family: var(--font-sans);
     font-weight: var(--type-weight-semibold);
     line-height: var(--type-leading-tight);
 }
@@ -203,7 +202,7 @@
     overflow: hidden;
     color: var(--text-primary);
     font-size: var(--text-sm);
-    font-family: 'Outfit', var(--font-ui);
+    font-family: var(--font-sans);
     font-weight: var(--type-weight-semibold);
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -722,17 +721,17 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-row-status.joined {
     background: var(--status-online-bg);
-    color: var(--status-online);
+    color: var(--status-online-fg);
 }
 
 .channel-row-status.error {
     background: var(--status-error-bg);
-    color: var(--status-error);
+    color: var(--status-error-fg);
 }
 
 .channel-row-status.recovering {
     background: var(--status-warning-bg);
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
 }
 
 .channel-row-add {
@@ -832,7 +831,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     overflow: hidden;
     margin: 0;
     color: var(--text-primary);
-    font-family: 'Outfit', var(--font-ui);
+    font-family: var(--font-sans);
     font-size: var(--text-base);
     font-weight: var(--type-weight-semibold);
     text-overflow: ellipsis;
@@ -855,14 +854,14 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     padding: 0 var(--space-3);
     border-radius: var(--chip-radius);
     background: var(--status-warning-bg);
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
     font-size: var(--text-2xs);
     font-weight: var(--type-weight-semibold);
 }
 
 .channel-room-phase[data-phase="joined"] {
     background: var(--status-online-bg);
-    color: var(--status-online);
+    color: var(--status-online-fg);
 }
 
 .channel-room-phase[data-phase="history"] {
@@ -872,7 +871,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-room-phase[data-phase="error"] {
     background: var(--status-error-bg);
-    color: var(--status-error);
+    color: var(--status-error-fg);
 }
 
 .channel-room-phase[data-phase="parting"] {
@@ -926,7 +925,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-history-rail[data-phase="degraded"],
 .channel-history-rail[data-phase="error"] {
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
 }
 
 .channel-history-action {
@@ -1139,7 +1138,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-transition-step.current {
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
     font-weight: var(--type-weight-semibold);
 }
 
@@ -1149,7 +1148,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-transition-step.failed {
-    color: var(--status-error);
+    color: var(--status-error-fg);
     font-weight: var(--type-weight-semibold);
 }
 
@@ -1280,7 +1279,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     background: var(--surface-control);
     box-shadow: inset 0 0 0 1px var(--border-surface-soft);
     color: var(--text-muted);
-    font-family: 'Outfit', var(--font-ui);
+    font-family: var(--font-sans);
     font-size: var(--text-xs);
     font-weight: var(--type-weight-semibold);
     line-height: 1;
@@ -1325,7 +1324,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     border-radius: var(--radius-full);
     background: var(--accent-bg-strong);
     color: var(--accent);
-    font-size: 9px;
+    font-size: var(--type-badge-size);
     font-weight: var(--type-weight-semibold);
     letter-spacing: 0.04em;
     line-height: 18px;
@@ -1479,7 +1478,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-hub-greeting[data-delivery="resource"][data-completeness="complete"]
     .channel-hub-greeting-delivery {
-    color: var(--status-online);
+    color: var(--status-online-fg);
 }
 
 .channel-system-event {
@@ -1494,7 +1493,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-system-event.error {
-    color: var(--status-error);
+    color: var(--status-error-fg);
 }
 
 @media (hover: none) {
@@ -1528,43 +1527,9 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-compose {
-    position: relative;
-    display: flex;
-    align-items: flex-end;
-    gap: var(--space-3);
     padding: var(--space-5) var(--space-7) max(var(--space-5), env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--border-row);
     background: var(--surface-panel);
-}
-
-.channel-compose .nr-input {
-    flex: 1;
-    min-width: 0;
-    min-height: 40px;
-    max-height: 160px;
-    padding: var(--space-5) var(--space-8);
-    border-radius: var(--radius-pill);
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
-    line-height: 1.4;
-    resize: none;
-    overflow-y: auto;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-    appearance: none;
-    -webkit-appearance: none;
-    background: var(--input-bg);
-    border: 1px solid var(--input-border);
-    transition: border-color var(--transition-base), box-shadow var(--transition-base);
-}
-
-.channel-compose .nr-input::-webkit-scrollbar {
-    display: none;
-}
-
-.channel-compose .nr-input:focus {
-    border-color: var(--focus-ring);
-    box-shadow: 0 0 0 2px var(--focus-ring-bg);
 }
 
 .channel-char-count {
@@ -1579,49 +1544,11 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-char-count.near-limit {
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
 }
 
 .channel-char-count.over-limit {
-    color: var(--status-error);
-}
-
-.channel-send-btn {
-    position: relative;
-    width: 40px;
-    height: 40px;
-    flex: 0 0 40px;
-    min-width: 40px;
-    min-height: 40px;
-    padding: 0;
-    border: none;
-    border-radius: var(--radius-full);
-    background: var(--accent);
-    color: var(--on-accent);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background var(--transition-fast), opacity var(--transition-fast), transform var(--transition-fast);
-    touch-action: manipulation;
-    -webkit-user-select: none;
-    user-select: none;
-    -webkit-touch-callout: none;
-    -webkit-tap-highlight-color: transparent;
-}
-
-.channel-send-btn::before {
-    content: '';
-    position: absolute;
-    inset: -6px;
-}
-
-.channel-send-btn:hover,
-.channel-send-btn:active {
-    background: var(--accent-dim);
-}
-
-.channel-send-btn:active {
-    transform: scale(0.94);
+    color: var(--status-error-fg);
 }
 
 .channel-members-pane {
@@ -2068,7 +1995,6 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 .channel-host-admin-sheet,
 .channel-host-admin-edit-sheet,
 .channel-member-profile-sheet {
-    --font-sans: 'Outfit', var(--font-ui);
     font-family: var(--font-sans);
 }
 
@@ -2085,7 +2011,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 .channel-host-admin-edit-sheet .bottom-sheet-title,
 .channel-member-profile-sheet .bottom-sheet-title {
     color: var(--text-primary);
-    font-family: 'Outfit', var(--font-ui);
+    font-family: var(--font-sans);
     font-size: var(--text-lg);
     font-weight: var(--type-weight-semibold);
 }
@@ -2238,7 +2164,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     justify-content: center;
     border-radius: 50%;
     background: var(--status-online-bg);
-    color: var(--status-online);
+    color: var(--status-online-fg);
     font-size: var(--text-xs);
     font-weight: var(--type-weight-semibold);
 }
@@ -2370,7 +2296,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-connection-summary-copy strong {
     color: var(--text-primary);
-    font-family: 'Outfit', var(--font-ui);
+    font-family: var(--font-sans);
     font-size: var(--text-base);
     font-weight: var(--type-weight-semibold);
 }
@@ -2447,7 +2373,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-join-preview strong {
     color: var(--text-primary);
-    font-family: 'Outfit', var(--font-ui);
+    font-family: var(--font-sans);
     font-size: var(--text-lg);
     font-weight: var(--type-weight-semibold);
 }
@@ -2794,7 +2720,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-sheet-error {
-    color: var(--status-error);
+    color: var(--status-error-fg);
     font-size: var(--text-xs);
 }
 
@@ -3226,12 +3152,12 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-host-admin-badge[data-tone="online"] {
     background: var(--status-online-bg-strong);
-    color: var(--status-online);
+    color: var(--status-online-fg);
 }
 
 .channel-host-admin-badge[data-tone="warning"] {
     background: var(--status-warning-bg);
-    color: var(--status-warning);
+    color: var(--status-warning-fg);
 }
 
 .channel-host-admin-badge[data-tone="accent"] {

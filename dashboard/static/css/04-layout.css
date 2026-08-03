@@ -243,7 +243,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-5);
-    height: 46px;
+    min-height: 46px;
     padding: 0 var(--space-7);
     margin: 0 var(--space-5);
     border-radius: var(--radius-lg-plus);
@@ -388,7 +388,10 @@
 .sidebar-identity:focus-visible {
     background: var(--hover-subtle);
     color: var(--text-secondary);
-    outline: none;
+}
+.sidebar-identity:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
 }
 .sidebar-identity-icon {
     flex-shrink: 0;

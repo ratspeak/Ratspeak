@@ -1365,6 +1365,9 @@ function _optimisticDeliveryMethod(method) {
 }
 
 function _utf8ByteLength(value) {
+    if (typeof RS !== 'undefined' && RS.text && typeof RS.text.utf8Length === 'function') {
+        return RS.text.utf8Length(value);
+    }
     return new Blob([value || '']).size;
 }
 
@@ -2248,7 +2251,7 @@ function _renderConversationsFromCache(convos) {
                 this.classList.add('active');
                 _loadConversation(hash);
                 loadConversations();
-                if (window.innerWidth <= 768) {
+                if (isCompactLayout()) {
                     RS.viewStack.push('chat-detail', { meta: { contactHash: hash } });
                     history.pushState({ view: 'message', detail: true }, '', '#message');
                 }
@@ -3106,7 +3109,7 @@ function renderConversation(options) {
             if (!targetId) return;
             var targetEl = container.querySelector('[data-msg-id="' + targetId + '"]');
             if (targetEl) {
-                var scrollBlock = (window.innerWidth <= 768) ? 'nearest' : 'center';
+                var scrollBlock = isCompactLayout() ? 'nearest' : 'center';
                 setTimeout(function() {
                     targetEl.scrollIntoView({ behavior: 'smooth', block: scrollBlock });
                 }, 100);
@@ -3915,7 +3918,7 @@ function _positionMsgContextMenu(menu, x, y, bubble) {
     var margin = 10;
     var rect = bubble ? bubble.getBoundingClientRect() : null;
     var menuRect = menu.getBoundingClientRect();
-    var isMobileWidth = window.innerWidth <= 768;
+    var isMobileWidth = isCompactLayout();
     var left = x;
     var top = y;
 
@@ -4565,7 +4568,7 @@ function openConversationWith(hash) {
     _ensureGhostRow(hash);
     var input = document.getElementById('lxmf-input');
     if (input) input.focus();
-    if (window.innerWidth <= 768) {
+    if (isCompactLayout()) {
         RS.viewStack.push('chat-detail', { meta: { contactHash: hash } });
         history.pushState({ view: 'message', detail: true }, '', '#message');
     }
@@ -4647,13 +4650,13 @@ function openFabContactPicker() {
         sorted.forEach(function(c) {
             var name = c.display_name || 'Anonymous';
             var avatarHtml = '<span style="width:32px;height:32px;flex-shrink:0;display:flex;">' + identityAvatar(c.hash, 32) + '</span>';
-            html += '<div class="fab-picker-row" data-hash="' + escapeHtml(c.hash) + '">' +
+            html += '<button class="fab-picker-row" type="button" data-hash="' + escapeHtml(c.hash) + '">' +
                 avatarHtml +
                 '<div>' +
                     '<div class="fab-picker-name">' + ratspeakDisplayNameHtml(name, c) + '</div>' +
                     '<div class="fab-picker-hash">' + escapeHtml(typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : c.hash.substring(0, 12) + '…') + '</div>' +
                 '</div>' +
-            '</div>';
+            '</button>';
         });
         listEl.innerHTML = html;
         listEl.querySelectorAll('.fab-picker-row').forEach(function(row) {
@@ -4664,8 +4667,7 @@ function openFabContactPicker() {
         });
     }
 
-    overlay.classList.add('active');
-    sheet.classList.add('open');
+    RS.ui.openExistingSheet(sheet, overlay);
     overlay.onclick = function() { closeFabContactPicker(); };
     history.pushState({ view: currentView, fabPicker: true }, '', '#' + currentView);
 }
@@ -4673,8 +4675,7 @@ function openFabContactPicker() {
 function closeFabContactPicker() {
     var sheet = document.getElementById('fab-contact-picker-sheet');
     var overlay = document.getElementById('fab-contact-picker-overlay');
-    if (sheet) sheet.classList.remove('open');
-    if (overlay) overlay.classList.remove('active');
+    if (sheet) RS.ui.closeExistingSheet(sheet, overlay);
 }
 
 (function() {
@@ -5164,7 +5165,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (textarea) {
         textarea.removeAttribute('maxlength');
         textarea.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey && !isMobile()) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isMobile()) {
                 e.preventDefault();
                 sendLxmfMessage('auto');
             }

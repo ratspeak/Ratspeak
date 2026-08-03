@@ -276,7 +276,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
         ".channel-room-row-title,\n    .channel-hub-row-title {\n        font-size: var(--mobile-list-title-size);"
     ));
     assert!(responsive_css.contains(
-        ".channel-event-text {\n        color: var(--text-primary);\n        font-size: 16px;"
+        ".channel-event-text {\n        color: var(--text-primary);\n        font-size: 1rem;"
     ));
     assert!(responsive_css.contains(".channel-system-event {\n        margin: var(--space-6) 0;"));
     assert!(channels_css.contains(".channel-members-scrim"));
@@ -310,11 +310,13 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(nav_js.contains("var _messageUnreadSources = { direct: 0, channels: 0 };"));
     assert!(
         index.contains(
-            "data-view=\"channels\" role=\"button\" tabindex=\"0\" aria-label=\"Channels\""
+            "<button class=\"bottom-bar-item\" type=\"button\" data-view=\"channels\" aria-label=\"Channels\">"
         )
     );
     assert!(index.contains("id=\"bb-channels-unread\""));
-    assert!(index.contains("class=\"bottom-sheet-item\" data-view=\"contacts\""));
+    assert!(index.contains(
+        "<button class=\"bottom-sheet-item\" type=\"button\" data-view=\"contacts\">"
+    ));
     assert!(!index.contains("data-message-mode="));
     assert!(nav_js.contains("item.setAttribute('aria-current', 'page')"));
     assert!(nav_js.contains("'Channels' + (_messageUnreadSources.channels > 0"));
@@ -1672,10 +1674,14 @@ fn frontend_shared_helpers_are_adopted() {
         }
     }
 
-    // Portable CSS minify (BSD `sed -i ''` silently no-ops on GNU sed).
+    // The shell and Cargo builders must concatenate the same ordered modules
+    // without a one-sided minification/rewrite pass.
     let build_css = read_source(root.join("dashboard/build-css.sh")).expect("build-css.sh");
-    assert!(!build_css.contains("sed -i ''"));
-    assert!(build_css.contains("perl -0777 -pi"));
+    assert!(build_css.contains("MODULES=("));
+    assert!(build_css.contains("for module in \"${MODULES[@]}\"; do"));
+    assert!(build_css.contains("printf '\\n' >> \"$OUT\""));
+    assert!(!build_css.contains("perl -0777 -pi"));
+    assert!(!build_css.contains("sed -i"));
 
     // Peer-controlled data URL is escaped at the image render site.
     let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
@@ -3770,12 +3776,13 @@ fn message_composer_send_preserves_preexisting_focus_state() {
     assert!(nav.contains("el.id === 'lxmf-input' || el.id === 'channel-message-input'"));
     assert!(nav.contains("document.getElementById('channel-transcript')"));
 
-    let messaging_css =
-        read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
-    assert!(messaging_css.contains("overflow-y: auto;"));
-    assert!(messaging_css.contains("scrollbar-width: none;"));
-    assert!(messaging_css.contains("-webkit-appearance: none;"));
-    assert!(messaging_css.contains(".lxmf-compose textarea::-webkit-scrollbar"));
+    let components_css =
+        read_source(root.join("dashboard/static/css/07-components.css")).expect("css");
+    assert!(components_css.contains(".message-composer-input {"));
+    assert!(components_css.contains("overflow-y: auto;"));
+    assert!(components_css.contains("scrollbar-width: none;"));
+    assert!(components_css.contains("-webkit-appearance: none;"));
+    assert!(components_css.contains(".message-composer-input::-webkit-scrollbar"));
 
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("css");
@@ -4569,7 +4576,7 @@ fn mobile_settings_use_section_drilldown_instead_of_stacked_panels() {
     assert!(
         responsive_css.contains(".settings-detail-mode .settings-panel.settings-panel-selected")
     );
-    assert!(responsive_css.contains(".settings-row-label {\n        font-size: 16px;"));
+    assert!(responsive_css.contains(".settings-row-label {\n        font-size: 1rem;"));
 }
 
 #[test]
@@ -4683,9 +4690,9 @@ fn mobile_primary_lists_share_readable_row_scale() {
 
     assert!(responsive_css.contains("--mobile-list-avatar-size: 44px;"));
     assert!(responsive_css.contains("--mobile-list-min-height: 58px;"));
-    assert!(responsive_css.contains("--mobile-list-title-size: 16px;"));
-    assert!(responsive_css.contains("--mobile-list-detail-size: 14px;"));
-    assert!(responsive_css.contains("--mobile-list-meta-size: 13px;"));
+    assert!(responsive_css.contains("--mobile-list-title-size: 1rem;"));
+    assert!(responsive_css.contains("--mobile-list-detail-size: 0.875rem;"));
+    assert!(responsive_css.contains("--mobile-list-meta-size: 0.8125rem;"));
     assert!(responsive_css.contains(
         ".conv-row,\n    .contacts-row,\n    .identity-list-item,\n    .games-session-row"
     ));
@@ -4721,7 +4728,7 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains(".dashboard-peers-scroll,"));
     assert!(responsive_css.contains(".peers-list-scroll::-webkit-scrollbar,"));
     assert!(responsive_css.contains(".dashboard-peers-scroll::-webkit-scrollbar,"));
-    assert!(responsive_css.contains(".conn-group-header {\n        font-size: 13px;"));
+    assert!(responsive_css.contains(".conn-group-header {\n        font-size: var(--text-sm);"));
     assert!(responsive_css.contains(".system-action-label,"));
     assert!(responsive_css.contains(".system-subsection-title,"));
     assert!(responsive_css.contains(".relay-card-header,"));
@@ -4842,11 +4849,15 @@ fn contact_detail_sheet_centers_identity_and_separates_primary_actions() {
 fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     let root = repo_root();
     let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
-    assert!(peers.contains("var mobileRows = window.innerWidth <= 768;"));
-    assert!(peers.contains("var baseRowHeight = mobileRows ? 58 : 36;"));
-    assert!(peers.contains("var statusRowHeight = mobileRows ? 68 : 48;"));
+    assert!(peers.contains("var mobileRows = isCompactLayout();"));
+    assert!(peers.contains("function _measurePeerRowHeights(compact, scrollContainer)"));
+    assert!(peers.contains("var minimumBase = compact ? 58 : 36;"));
+    assert!(peers.contains("var minimumStatus = compact ? 68 : 48;"));
+    assert!(peers.contains("var baseRowHeight = measuredRows.base;"));
+    assert!(peers.contains("var statusRowHeight = measuredRows.status;"));
     assert!(peers.contains("_peersRowHeight = baseRowHeight;"));
-    assert!(peers.contains("var avatarSize = window.innerWidth <= 768 ? 44 : 28;"));
+    assert!(peers.contains("var avatarSize = isCompactLayout() ? 44 : 28;"));
+    assert!(peers.contains("window.addEventListener('ratspeak-text-scale-changed'"));
     assert!(peers.contains("showConnectionDetailSheet(hash, { progressive: true });"));
 
     let connections =

@@ -14,6 +14,8 @@ var _peersSearchTimer = null;
 var _peersDataStale = true;
 var _peersLastGen = -1;
 var _peersAutoRefreshTimer = null;
+var _peersMeasuredRows = { key: '', base: 36, status: 48 };
+var _peersPendingScrollAnchor = null;
 var PEERS_AUTO_REFRESH_MS = 5000;
 // Bumped on PeersCache change or path_table delta — both alter render output.
 var _peersCacheGen = 0;
@@ -109,6 +111,72 @@ function _peerIndexAtScrollTop(metrics, scrollTop) {
         }
     }
     return result;
+}
+
+function _measurePeerRowHeights(compact, scrollContainer) {
+    var rootSize = window.getComputedStyle
+        ? getComputedStyle(document.documentElement).fontSize
+        : '16px';
+    var width = Math.max(240, scrollContainer.clientWidth || 0);
+    var key = (compact ? 'compact' : 'wide') + '|' + rootSize + '|' + width;
+    if (_peersMeasuredRows.key === key) return _peersMeasuredRows;
+
+    function row(withStatus) {
+        var probe = document.createElement('div');
+        probe.className = 'peers-row' + (withStatus ? ' has-profile-status' : '');
+        probe.setAttribute('aria-hidden', 'true');
+        probe.style.position = 'absolute';
+        probe.style.visibility = 'hidden';
+        probe.style.pointerEvents = 'none';
+        probe.style.width = width + 'px';
+        probe.style.height = 'auto';
+        probe.style.inset = '0 auto auto -10000px';
+        probe.innerHTML = '<span class="conn-status-dot status-reachable"></span>' +
+            '<div class="peers-row-avatar"></div>' +
+            '<span class="peers-row-main"><span class="peers-row-name">Measured peer name</span>' +
+            (withStatus ? '<span class="peers-row-status">A representative profile status</span>' : '') +
+            '</span><span class="peers-row-meta"></span>';
+        document.body.appendChild(probe);
+        var height = Math.ceil(probe.getBoundingClientRect().height);
+        probe.remove();
+        return height;
+    }
+
+    var minimumBase = compact ? 58 : 36;
+    var minimumStatus = compact ? 68 : 48;
+    _peersMeasuredRows = {
+        key: key,
+        base: Math.max(minimumBase, row(false)),
+        status: Math.max(minimumStatus, row(true))
+    };
+    return _peersMeasuredRows;
+}
+
+function _capturePeerScrollAnchor() {
+    if (_peersPendingScrollAnchor) return;
+    var scrollContainer = document.getElementById('peers-list-scroll');
+    var body = document.getElementById('peers-list-body');
+    if (!scrollContainer || !body) return;
+    var scrollTop = scrollContainer.scrollTop;
+    var rendered = body.querySelectorAll('[data-peer-index]');
+    for (var index = 0; index < rendered.length; index++) {
+        var row = rendered[index];
+        var height = Math.max(1, row.offsetHeight || 0);
+        if (row.offsetTop + height > scrollTop) {
+            _peersPendingScrollAnchor = {
+                index: Number(row.dataset.peerIndex),
+                ratio: Math.max(0, Math.min(1, (scrollTop - row.offsetTop) / height))
+            };
+            return;
+        }
+    }
+}
+
+function _invalidatePeerRowMetrics() {
+    _capturePeerScrollAnchor();
+    _peersMeasuredRows.key = '';
+    _peersLastDirtyKey = '';
+    scheduleRenderPeersList();
 }
 
 function scheduleRenderPeersList(scrollOnly) {
@@ -234,7 +302,7 @@ function initPeersView() {
                 var row = e.target.closest('.peers-row');
                 if (row) {
                     var hash = row.dataset.hash;
-                    if (window.innerWidth <= 768) {
+                    if (isCompactLayout()) {
                         showPeersDetailSheet(hash);
                     } else {
                         if (peersSelectedHash === hash) {
@@ -249,6 +317,19 @@ function initPeersView() {
                     }
                 }
             });
+            container.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                var target = e.target.closest('.conn-group-header, .peers-row');
+                if (!target) return;
+                e.preventDefault();
+                target.click();
+            });
+        }
+
+        window.addEventListener('ratspeak-text-scale-changed', _invalidatePeerRowMetrics);
+        window.addEventListener('resize', _invalidatePeerRowMetrics, { passive: true });
+        if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(_invalidatePeerRowMetrics).catch(function() {});
         }
 
         resetPeersAutoRefresh();
@@ -266,13 +347,14 @@ function renderPeersList(scrollOnly) {
     var scrollContainer = document.getElementById('peers-list-scroll');
     if (!container || !scrollContainer) return;
     if (typeof PeersCache === 'undefined' || !PeersCache) return;
-    var mobileRows = window.innerWidth <= 768;
-    var baseRowHeight = mobileRows ? 58 : 36;
-    var statusRowHeight = mobileRows ? 68 : 48;
+    var mobileRows = isCompactLayout();
+    var measuredRows = _measurePeerRowHeights(mobileRows, scrollContainer);
+    var baseRowHeight = measuredRows.base;
+    var statusRowHeight = measuredRows.status;
     _peersRowHeight = baseRowHeight;
 
     if (!scrollOnly) {
-        var dirtyKey = peersSearch + '|' + peersSort + '|' + JSON.stringify(peersCollapsedGroups) + '|' + peersSelectedHash + '|' + _peersCacheGen;
+        var dirtyKey = peersSearch + '|' + peersSort + '|' + JSON.stringify(peersCollapsedGroups) + '|' + peersSelectedHash + '|' + _peersCacheGen + '|' + measuredRows.key;
         if (dirtyKey === _peersLastDirtyKey) return;
         _peersLastDirtyKey = dirtyKey;
         _peersLastGen = _peersCacheGen;
@@ -338,6 +420,15 @@ function renderPeersList(scrollOnly) {
     // preserve total scroll height. Avoids rebuilding ~1.6k rows per poll on mobile.
     var viewportHeight = scrollContainer.clientHeight;
     var metrics = _peerListMetrics(flatItems, baseRowHeight, statusRowHeight);
+    if (_peersPendingScrollAnchor) {
+        var anchorIndex = Math.max(0, Math.min(flatItems.length - 1, _peersPendingScrollAnchor.index));
+        if (flatItems.length > 0) {
+            _peersScrollTop = metrics.offsets[anchorIndex] +
+                metrics.heights[anchorIndex] * _peersPendingScrollAnchor.ratio;
+            scrollContainer.scrollTop = _peersScrollTop;
+        }
+        _peersPendingScrollAnchor = null;
+    }
     if (viewportHeight < 50) viewportHeight = Math.max(metrics.total, 500);
     var totalHeight = metrics.total;
 
@@ -366,7 +457,7 @@ function buildPeersHTML(flatItems, start, end, rowHeights) {
         if (item.type === 'header') {
             var isCollapsed = peersCollapsedGroups[item.group];
             var chevron = isCollapsed ? '&#9654;' : '&#9660;';
-            html += '<div class="conn-group-header" data-group="' + item.group + '" style="height:' + rowHeight + 'px;flex-shrink:0">' +
+            html += '<div class="conn-group-header" role="button" tabindex="0" aria-expanded="' + (!isCollapsed) + '" data-group="' + item.group + '" data-peer-index="' + i + '" style="height:' + rowHeight + 'px;flex-shrink:0">' +
                 '<span class="conn-group-chevron">' + chevron + '</span>' +
                 '<span class="conn-group-label">' + item.label + '</span>' +
                 '<span class="conn-group-count">(' + item.count + ')</span>' +
@@ -375,11 +466,10 @@ function buildPeersHTML(flatItems, start, end, rowHeights) {
             var c = item.data;
             var isSelected = peersSelectedHash === c.hash;
             var displayName = c.display_name || (typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : c.hash);
-            if (displayName.length > 40) displayName = displayName.substring(0, 40) + '\u2026';
             var hasName = c.display_name && c.display_name !== '' && c.display_name !== c.hash;
             var nameClass = 'peers-row-name' + (hasName ? '' : ' is-hash');
             var statusClass = 'status-' + c.status;
-            var avatarSize = window.innerWidth <= 768 ? 44 : 28;
+            var avatarSize = isCompactLayout() ? 44 : 28;
             var av = (typeof identityAvatar === 'function') ? identityAvatar(c.hash, avatarSize) : '';
             var ifaceLabel = c.iface_is_live ? ifaceShortLabel(c.iface) : '';
             var ifaceBadge = ifaceLabel
@@ -391,7 +481,7 @@ function buildPeersHTML(flatItems, start, end, rowHeights) {
                 ? '<span class="peers-row-status" title="' + escapeHtml(profileStatus) + '">' + escapeHtml(profileStatus) + '</span>'
                 : '';
 
-            html += '<div class="peers-row' + (isSelected ? ' selected' : '') + (profileStatus ? ' has-profile-status' : '') + '" data-hash="' + escapeHtml(c.hash) + '" style="height:' + rowHeight + 'px;flex-shrink:0">' +
+            html += '<div class="peers-row' + (isSelected ? ' selected' : '') + (profileStatus ? ' has-profile-status' : '') + '" role="button" tabindex="0" aria-label="Open ' + escapeHtml(displayName) + ', address ' + escapeHtml(c.hash) + '" data-hash="' + escapeHtml(c.hash) + '" data-peer-index="' + i + '" style="height:' + rowHeight + 'px;flex-shrink:0">' +
                 '<span class="conn-status-dot ' + statusClass + '"></span>' +
                 '<div class="peers-row-avatar">' + av + '</div>' +
                 '<span class="peers-row-main">' +
@@ -437,7 +527,7 @@ function renderPeersDetailPanel(hash) {
     var html = '<div class="peers-detail-header">' +
         '<div class="peers-detail-avatar">' + av + '</div>' +
         '<div class="peers-detail-name">' + ratspeakDisplayNameHtml(displayName, peer) + '</div>' +
-        '<div class="peers-detail-hash" id="peers-detail-hash-copy" title="Click to copy">' + escapeHtml(hash) + '</div>' +
+        '<button class="peers-detail-hash" id="peers-detail-hash-copy" type="button" dir="ltr" aria-label="Copy identity hash ' + escapeHtml(hash) + '" title="Copy identity hash">' + escapeHtml(hash) + '</button>' +
         '<div class="peers-detail-status"><span class="conn-status-dot ' + statusDotClass + '"></span> ' + statusLabel + '</div>' +
     '</div>';
 

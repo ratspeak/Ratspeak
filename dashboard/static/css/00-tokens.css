@@ -37,6 +37,14 @@
     --status-info:   #3A76F0;
     --status-purple: #8B5CF6;
     --ble-accent:    #0E9AA7;
+    /* Status fills can stay vivid; status text needs stronger light-theme
+       contrast. Use the -fg aliases for text and icon strokes. */
+    --status-online-fg: #1F6F43;
+    --status-error-fg:  #B4232C;
+    --status-warning-fg:#765A00;
+    --status-info-fg:   #245FC4;
+    --status-purple-fg: #6E46C7;
+    --ble-accent-fg:    #08717B;
     --status-online-rgb:  46, 139, 87;
     --status-error-rgb:   207, 34, 46;
     --status-warning-rgb: 212, 167, 44;
@@ -194,13 +202,15 @@
     --modal-width-md: 380px;
     --modal-width-lg: 400px;
 
-    --text-2xs: 11px;
-    --text-xs:  12px;
-    --text-sm:  13px;
-    --text-base:15px;
-    --text-lg:  17px;
-    --text-xl:  18px;
-    --text-2xl: 24px;
+    /* Text scales with the root size; geometry and touch targets stay px. */
+    --text-2xs: 0.6875rem;
+    --text-xs:  0.75rem;
+    --text-sm:  0.8125rem;
+    --text-base:0.9375rem;
+    --text-lg:  1.0625rem;
+    --text-xl:  1.125rem;
+    --text-2xl: 1.5rem;
+    --text-3xl: 1.75rem;
 
     /* iOS env() reports real insets (contentInsetAdjustmentBehavior=.never);
        Android injects --sat/--sab via evaluateJavascript; desktop falls back to 0. */
@@ -309,8 +319,8 @@
 
 @media (min-width: 769px) {
     :root {
-        --text-2xs: 12px; --text-xs: 13px; --text-sm: 14px; --text-base: 15px;
-        --text-lg: 17px; --text-xl: 18px; --text-2xl: 24px;
+        --text-2xs: 0.75rem; --text-xs: 0.8125rem; --text-sm: 0.875rem; --text-base: 0.9375rem;
+        --text-lg: 1.0625rem; --text-xl: 1.125rem; --text-2xl: 1.5rem; --text-3xl: 1.75rem;
     }
 }
 
@@ -353,6 +363,12 @@
     --status-info:   #5b93f5;
     --status-purple: #a78bfa;
     --ble-accent:    #22D3EE;
+    --status-online-fg: var(--status-online);
+    --status-error-fg:  var(--status-error);
+    --status-warning-fg:var(--status-warning);
+    --status-info-fg:   var(--status-info);
+    --status-purple-fg: var(--status-purple);
+    --ble-accent-fg:    var(--ble-accent);
     --status-online-rgb:  74, 222, 128;
     --status-error-rgb:   229, 83, 75;
     --status-warning-rgb: 224, 184, 62;
@@ -522,6 +538,12 @@
         --status-info:   #5b93f5;
         --status-purple: #a78bfa;
         --ble-accent:    #22D3EE;
+        --status-online-fg: var(--status-online);
+        --status-error-fg:  var(--status-error);
+        --status-warning-fg:var(--status-warning);
+        --status-info-fg:   var(--status-info);
+        --status-purple-fg: var(--status-purple);
+        --ble-accent-fg:    var(--ble-accent);
         --status-online-rgb:  74, 222, 128;
         --status-error-rgb:   229, 83, 75;
         --status-warning-rgb: 224, 184, 62;

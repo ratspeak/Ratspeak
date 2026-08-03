@@ -4,14 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual">
     <meta name="theme-color" content="#FAF7F3">
-    <script src="/static/js/theme.js"></script>
+    <script src="/static/js/theme.js?v=ui-20260803"></script>
+    <script src="/static/js/text_scale.js?v=ui-20260803"></script>
     <!-- Safe-area insets (--sat/--sab/--sal/--sar) are defined in 00-tokens.css
          via env(safe-area-inset-*). iOS feeds env() through viewport-fit=cover +
          WKWebView contentInsetAdjustmentBehavior=.never; Android MainActivity
          injects pixel values via evaluateJavascript; desktop falls back to 0. -->
     <title>Ratspeak - Dashboard</title>
-    <link rel="stylesheet" href="/static/fonts/fonts.css">
-    <link rel="stylesheet" href="/static/style.css?v=1.0.26c">
+    <link rel="stylesheet" href="/static/fonts/fonts.css?v=ui-20260803">
+    <link rel="stylesheet" href="/static/style.css?v=ui-20260803">
 </head>
 <body class="checking-setup">
 
@@ -119,21 +120,21 @@
     </nav>
 
     <nav class="bottom-bar" id="bottom-bar" role="navigation" aria-label="Main navigation">
-        <a class="bottom-bar-item active" data-view="peers" role="button" tabindex="0" aria-label="Peers" aria-current="page">
+        <button class="bottom-bar-item active" type="button" data-view="peers" aria-label="Peers" aria-current="page">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-        </a>
-        <a class="bottom-bar-item" data-view="message" role="button" tabindex="0" aria-label="Messages">
+        </button>
+        <button class="bottom-bar-item" type="button" data-view="message" aria-label="Messages">
             <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span class="bottom-bar-badge" id="bb-unread" style="display:none;" aria-hidden="true"></span>
-        </a>
-        <a class="bottom-bar-item" data-view="channels" role="button" tabindex="0" aria-label="Channels">
+        </button>
+        <button class="bottom-bar-item" type="button" data-view="channels" aria-label="Channels">
             <svg viewBox="0 0 24 24"><path d="M8 16H5l-3 3V7a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3Z"/><path d="M8 19h7l4 3v-3h1a2 2 0 0 0 2-2v-7a3 3 0 0 0-3-3"/></svg>
             <span class="bottom-bar-badge" id="bb-channels-unread" style="display:none;" aria-hidden="true"></span>
-        </a>
-        <a class="bottom-bar-item bottom-bar-hamburger" id="bottom-bar-hamburger" role="button" tabindex="0" aria-label="More options">
+        </button>
+        <button class="bottom-bar-item bottom-bar-hamburger" id="bottom-bar-hamburger" type="button" aria-label="More options">
             <svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
             <span class="bottom-bar-badge" id="bb-more-unread" style="display:none;" aria-hidden="true"></span>
-        </a>
+        </button>
     </nav>
 
     <div class="lxst-call-strip lxst-call-global" id="lxst-call-global" hidden aria-live="polite">
@@ -167,64 +168,64 @@
     </div>
 
     <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="bottom-sheet-overlay"></div>
-    <div class="bottom-sheet bottom-sheet--mobile-only" id="bottom-sheet">
+    <div class="bottom-sheet bottom-sheet--mobile-only" id="bottom-sheet" role="dialog" aria-modal="true" aria-label="More navigation">
         <div class="bottom-sheet-handle"></div>
         <div class="bottom-sheet-items">
-            <a class="bottom-sheet-item" data-view="contacts">
+            <button class="bottom-sheet-item" type="button" data-view="contacts">
                 <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                 Contacts
-            </a>
-            <a class="bottom-sheet-item" data-view="identity">
+            </button>
+            <button class="bottom-sheet-item" type="button" data-view="identity">
                 <svg viewBox="0 0 24 24"><path d="M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8A6.5 6.5 0 1 0 9.4 10.6z"/><circle cx="16.5" cy="7.5" r="1.5"/></svg>
                 Identity
-            </a>
-            <a class="bottom-sheet-item" data-view="games">
+            </button>
+            <button class="bottom-sheet-item" type="button" data-view="games">
                 <svg viewBox="0 0 24 24"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></svg>
                 Games
                 <span class="bottom-sheet-badge" id="bs-games-unread" style="display:none;"></span>
-            </a>
-            <a class="bottom-sheet-item" data-view="network">
+            </button>
+            <button class="bottom-sheet-item" type="button" data-view="network">
                 <svg viewBox="0 0 24 24"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="16" y="2" width="6" height="6" rx="1"/><rect x="9" y="16" width="6" height="6" rx="1"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/></svg>
                 Network
-            </a>
+            </button>
             <div class="bottom-sheet-divider"></div>
-            <a class="bottom-sheet-item" data-view="settings">
+            <button class="bottom-sheet-item" type="button" data-view="settings">
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 Settings
-            </a>
+            </button>
         </div>
     </div>
 
     <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="conn-detail-sheet-overlay"></div>
-    <div class="bottom-sheet bottom-sheet--mobile-only conn-detail-sheet" id="conn-detail-sheet">
+    <div class="bottom-sheet bottom-sheet--mobile-only conn-detail-sheet" id="conn-detail-sheet" role="dialog" aria-modal="true" aria-label="Peer details">
         <div class="bottom-sheet-handle"></div>
         <div id="conn-detail-sheet-content"></div>
     </div>
 
     <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="conn-sort-sheet-overlay"></div>
-    <div class="bottom-sheet bottom-sheet--mobile-only" id="conn-sort-sheet">
+    <div class="bottom-sheet bottom-sheet--mobile-only" id="conn-sort-sheet" role="dialog" aria-modal="true" aria-labelledby="conn-sort-sheet-title">
         <div class="bottom-sheet-handle"></div>
-        <div class="bottom-sheet-title">Sort Peers</div>
+        <div class="bottom-sheet-title" id="conn-sort-sheet-title">Sort Peers</div>
         <div class="bottom-sheet-items">
-            <div class="conn-sort-option bottom-sheet-item active" data-sort="name">Name</div>
-            <div class="conn-sort-option bottom-sheet-item" data-sort="status">Status</div>
-            <div class="conn-sort-option bottom-sheet-item" data-sort="hops">Hops</div>
-            <div class="conn-sort-option bottom-sheet-item" data-sort="last_seen">Last Seen</div>
+            <button class="conn-sort-option bottom-sheet-item active" type="button" data-sort="name">Name</button>
+            <button class="conn-sort-option bottom-sheet-item" type="button" data-sort="status">Status</button>
+            <button class="conn-sort-option bottom-sheet-item" type="button" data-sort="hops">Hops</button>
+            <button class="conn-sort-option bottom-sheet-item" type="button" data-sort="last_seen">Last Seen</button>
         </div>
     </div>
 
     <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="iface-action-overlay"></div>
-    <div class="bottom-sheet bottom-sheet--mobile-only" id="iface-action-sheet">
+    <div class="bottom-sheet bottom-sheet--mobile-only" id="iface-action-sheet" role="dialog" aria-modal="true" aria-labelledby="iface-action-title">
         <div class="bottom-sheet-handle"></div>
         <div class="bottom-sheet-title" id="iface-action-title"></div>
         <div class="bottom-sheet-items" id="iface-action-items"></div>
     </div>
 
     <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="fab-contact-picker-overlay"></div>
-    <div class="bottom-sheet bottom-sheet--mobile-only fab-contact-picker-sheet" id="fab-contact-picker-sheet">
+    <div class="bottom-sheet bottom-sheet--mobile-only fab-contact-picker-sheet" id="fab-contact-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="fab-contact-picker-title">
         <div class="bottom-sheet-handle"></div>
         <div class="fab-contact-picker-header">
-            <span class="fab-contact-picker-title">Start Conversation</span>
+            <span class="fab-contact-picker-title" id="fab-contact-picker-title">Start Conversation</span>
         </div>
         <div class="fab-contact-picker-list" id="fab-contact-picker-list"></div>
     </div>
@@ -529,7 +530,7 @@
                             </div>
                             <button class="reply-preview-close" aria-label="Cancel reply">&times;</button>
                         </div>
-                        <div class="lxmf-compose" id="lxmf-compose-bar" style="display:none;">
+                        <div class="lxmf-compose message-composer" id="lxmf-compose-bar" style="display:none;">
                             <input type="file" id="lxmf-file-input" style="display:none;">
                             <input type="file" id="lxmf-photos-input" accept="image/*,video/*" style="display:none;">
                             <input type="file" id="lxmf-camera-input" accept="image/*" capture="environment" style="display:none;">
@@ -537,9 +538,9 @@
                             <button class="lxmf-compose-attach-btn" id="attach-file-btn" title="Attach" aria-label="Attach emoji or file">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                             </button>
-                            <textarea id="lxmf-input" class="nr-input" placeholder="Message..." aria-label="Message input" rows="1" title="Enter to send, Shift+Enter for new line"></textarea>
+                            <textarea id="lxmf-input" class="nr-input message-composer-input" placeholder="Message..." aria-label="Message input" rows="1" title="Enter to send, Shift+Enter for new line"></textarea>
                             <span class="lxmf-char-count" id="lxmf-char-count" aria-live="polite" style="display:none;"></span>
-                            <button class="lxmf-send-btn" id="send-msg-btn" aria-label="Send message">
+                            <button class="lxmf-send-btn message-send-btn" id="send-msg-btn" aria-label="Send message">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
                             </button>
                         </div>
@@ -636,10 +637,10 @@
                         </div>
                     </div>
 
-                    <div class="channel-compose" id="channel-compose" hidden>
-                        <textarea id="channel-message-input" class="nr-input" rows="1" placeholder="Message..." aria-label="Channel message" title="Enter to send, Shift+Enter for a new line"></textarea>
+                    <div class="channel-compose message-composer" id="channel-compose" hidden>
+                        <textarea id="channel-message-input" class="nr-input message-composer-input" rows="1" placeholder="Message..." aria-label="Channel message" title="Enter to send, Shift+Enter for a new line"></textarea>
                         <span class="channel-char-count" id="channel-char-count" aria-live="polite" hidden></span>
-                        <button class="channel-send-btn" id="channel-send-btn" type="button" aria-label="Send channel message">
+                        <button class="channel-send-btn message-send-btn" id="channel-send-btn" type="button" aria-label="Send channel message">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
                         </button>
                     </div>
@@ -925,7 +926,7 @@
         </div>
 
         <div class="bottom-sheet-overlay" id="identity-modal-overlay"></div>
-        <div class="bottom-sheet" id="identity-modal" role="dialog" aria-labelledby="identity-modal-title">
+        <div class="bottom-sheet" id="identity-modal" role="dialog" aria-modal="true" aria-labelledby="identity-modal-title">
             <div class="bottom-sheet-handle"></div>
             <div class="bottom-sheet-header">
                 <div class="bottom-sheet-title" id="identity-modal-title">Identity</div>
@@ -1200,6 +1201,17 @@
                                     <button class="theme-toggle-btn" data-theme="dark" aria-label="Dark theme">
                                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
                                     </button>
+                                </div>
+                            </div>
+                            <div class="settings-row settings-text-scale-row">
+                                <div class="settings-row-info">
+                                    <label class="settings-row-label" for="settings-text-scale">Text size</label>
+                                    <span class="settings-row-desc" id="settings-text-scale-desc">Scale text without changing controls or touch targets</span>
+                                </div>
+                                <div class="settings-text-scale-controls">
+                                    <input id="settings-text-scale" class="settings-text-scale-input" type="range" min="100" max="200" step="10" value="100" aria-describedby="settings-text-scale-desc">
+                                    <output id="settings-text-scale-value" class="settings-text-scale-value" for="settings-text-scale">100%</output>
+                                    <button id="settings-text-scale-reset" class="settings-text-scale-reset" type="button">Reset</button>
                                 </div>
                             </div>
                             <div class="settings-row">
@@ -1479,7 +1491,7 @@
 </div>
 
 <div class="bottom-sheet-overlay" id="node-modal-overlay"></div>
-<div class="bottom-sheet" id="node-modal" role="dialog" aria-labelledby="modal-title">
+<div class="bottom-sheet" id="node-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="bottom-sheet-handle"></div>
     <div class="bottom-sheet-header">
         <div class="bottom-sheet-title" id="modal-title">Hub Info</div>
@@ -1527,7 +1539,7 @@
 </div>
 
 <div class="bottom-sheet-overlay" id="connect-modal-overlay"></div>
-<div class="bottom-sheet connect-sheet" id="connect-modal">
+<div class="bottom-sheet connect-sheet" id="connect-modal" role="dialog" aria-modal="true" aria-label="Connect to network">
     <div class="bottom-sheet-handle"></div>
     <div class="bottom-sheet-header">
         <div class="bottom-sheet-title">Connect to Network</div>
@@ -1592,7 +1604,7 @@
 </div>
 
 <div class="bottom-sheet-overlay" id="host-modal-overlay"></div>
-<div class="bottom-sheet" id="host-modal">
+<div class="bottom-sheet" id="host-modal" role="dialog" aria-modal="true" aria-label="Host network">
     <div class="bottom-sheet-handle"></div>
     <div class="bottom-sheet-header">
         <div class="bottom-sheet-title">Host Network</div>
@@ -1636,7 +1648,7 @@
 </div>
 
 <div class="bottom-sheet-overlay" id="backbone-host-modal-overlay"></div>
-<div class="bottom-sheet" id="backbone-host-modal">
+<div class="bottom-sheet" id="backbone-host-modal" role="dialog" aria-modal="true" aria-label="Host Backbone server">
     <div class="bottom-sheet-handle"></div>
     <div class="bottom-sheet-header">
         <div class="bottom-sheet-title">Host Backbone Server</div>
@@ -1680,7 +1692,7 @@
 </div>
 
 <div class="bottom-sheet-overlay" id="rnode-modal-overlay"></div>
-<div class="bottom-sheet" id="rnode-modal" role="dialog" aria-labelledby="rnode-modal-title">
+<div class="bottom-sheet" id="rnode-modal" role="dialog" aria-modal="true" aria-labelledby="rnode-modal-title">
     <div class="bottom-sheet-handle"></div>
     <div class="bottom-sheet-header">
         <div class="bottom-sheet-title" id="rnode-modal-title">Add LoRa Device</div>
@@ -1851,40 +1863,39 @@
 <!-- Synchronous load order matters: state/constants/setup/nav before any caller
      of their module-level functions; tauri_events.js last (wires everything above).
      Reordering breaks fresh boots silently. -->
-<script src="/static/js/state.js"></script>
-<script src="/static/js/constants.js?v=1.0.2"></script>
-<script src="/static/js/no_pinch.js"></script>
-<script src="/static/js/setup.js"></script>
-<script src="/static/js/nav.js?v=1.0.26c"></script>
-<script src="/static/js/gestures.js"></script>
-<script src="/static/js/view_stack.js"></script>
+<script src="/static/js/state.js?v=ui-20260803"></script>
+<script src="/static/js/constants.js?v=ui-20260803"></script>
+<script src="/static/js/setup.js?v=ui-20260803"></script>
+<script src="/static/js/nav.js?v=ui-20260803"></script>
+<script src="/static/js/gestures.js?v=ui-20260803"></script>
+<script src="/static/js/view_stack.js?v=ui-20260803"></script>
 
-<script src="/static/js/peers_cache.js"></script>
-<script src="/static/js/connections.js"></script>
-<script src="/static/js/peers.js"></script>
-<script src="/static/js/toasts.js"></script>
-<script src="/static/js/dialogs.js?v=1.0.2"></script>
-<script src="/static/js/action_popover.js"></script>
-<script src="/static/js/ui_shared.js?v=1.0.26c"></script>
-<script src="/static/js/events.js"></script>
-<script src="/static/js/activity.js"></script>
-<script src="/static/js/health.js"></script>
-<script src="/static/js/modals.js?v=1.0.1"></script>
-<script src="/static/js/emoji_data.js"></script>
-<script src="/static/js/emoji_picker.js"></script>
-<script src="/static/js/voice_ringtones.js"></script>
+<script src="/static/js/peers_cache.js?v=ui-20260803"></script>
+<script src="/static/js/connections.js?v=ui-20260803"></script>
+<script src="/static/js/peers.js?v=ui-20260803"></script>
+<script src="/static/js/toasts.js?v=ui-20260803"></script>
+<script src="/static/js/dialogs.js?v=ui-20260803"></script>
+<script src="/static/js/action_popover.js?v=ui-20260803"></script>
+<script src="/static/js/ui_shared.js?v=ui-20260803"></script>
+<script src="/static/js/events.js?v=ui-20260803"></script>
+<script src="/static/js/activity.js?v=ui-20260803"></script>
+<script src="/static/js/health.js?v=ui-20260803"></script>
+<script src="/static/js/modals.js?v=ui-20260803"></script>
+<script src="/static/js/emoji_data.js?v=ui-20260803"></script>
+<script src="/static/js/emoji_picker.js?v=ui-20260803"></script>
+<script src="/static/js/voice_ringtones.js?v=ui-20260803"></script>
 <script src="/static/js/vendor/jsQR.js"></script>
-<script src="/static/js/contact_card.js?v=1.0.1"></script>
-<script src="/static/js/lxmf.js?v=1.0.26c"></script>
-<script src="/static/js/channels.js?v=1.0.26c"></script>
-<script src="/static/js/channel_hub.js?v=1.0.26c"></script>
-<script src="/static/js/propagation.js?v=1.0.1"></script>
-<script src="/static/js/settings.js?v=1.0.3"></script>
-<script src="/static/js/identity.js"></script>
-<script src="/static/js/confetti.js"></script>
-<script src="/static/js/games_tab.js"></script>
-<script src="/static/js/native_channel_share.js?v=1.0.1"></script>
-<script src="/static/js/tauri_events.js"></script>
-<script src="/static/js/init_dom_handlers.js"></script>
+<script src="/static/js/contact_card.js?v=ui-20260803"></script>
+<script src="/static/js/lxmf.js?v=ui-20260803"></script>
+<script src="/static/js/channels.js?v=ui-20260803"></script>
+<script src="/static/js/channel_hub.js?v=ui-20260803"></script>
+<script src="/static/js/propagation.js?v=ui-20260803"></script>
+<script src="/static/js/settings.js?v=ui-20260803"></script>
+<script src="/static/js/identity.js?v=ui-20260803"></script>
+<script src="/static/js/confetti.js?v=ui-20260803"></script>
+<script src="/static/js/games_tab.js?v=ui-20260803"></script>
+<script src="/static/js/native_channel_share.js?v=ui-20260803"></script>
+<script src="/static/js/tauri_events.js?v=ui-20260803"></script>
+<script src="/static/js/init_dom_handlers.js?v=ui-20260803"></script>
 </body>
 </html>
