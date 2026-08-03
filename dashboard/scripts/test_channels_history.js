@@ -250,6 +250,33 @@ async function main() {
         'a healthy local history store must not occupy a persistent transcript rail');
     assert(channelsSource.indexOf('api_saved_channel_room_index') === -1,
         'a bookmark-only index would hide history after forgetting a hub');
+
+    var metadataContext = {
+        channelsRoomIndex: [{
+            hub_destination_hash: 'hub-a',
+            room_name: 'general',
+            topic: 'General discussion'
+        }],
+        channelsSnapshot: {
+            hub: null,
+            rooms: [],
+            directory: { rooms: [] }
+        }
+    };
+    vm.runInNewContext(
+        sourceRange('_channelsRoomDisplayName', '_channelsTimelineHubName'),
+        metadataContext,
+        { filename: 'channels-room-metadata.js' }
+    );
+    assert.strictEqual(metadataContext._channelsRoomDisplayName('#general'), 'general',
+        'the room icon carries the channel marker; text labels should not repeat it');
+    assert.strictEqual(
+        metadataContext._channelsRememberedRoomTopic('hub-a', 'general'),
+        'General discussion',
+        'saved and history room rows should retain their useful topic'
+    );
+    assert(channelsSource.indexOf('Saved locally \\u00b7 open') === -1);
+    assert(channelsSource.indexOf('\\u00b7 stored on this device') === -1);
     console.log('channel history tests passed');
 }
 

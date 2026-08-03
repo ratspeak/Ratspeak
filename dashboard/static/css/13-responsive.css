@@ -3816,9 +3816,14 @@ html[data-text-scale-tier="xlarge"] .bento-grid-dashboard {
         padding: var(--space-10) var(--space-8);
     }
 
-    .channel-welcome-state.has-hub-greeting {
-        min-height: 190px;
-        padding-top: var(--space-6);
+    .channel-hub-home {
+        justify-content: flex-start;
+        gap: var(--space-8);
+        padding: var(--space-6) 0;
+    }
+
+    .channel-hub-home .channel-welcome-state {
+        padding: var(--space-4) 0 0;
     }
 
     .channel-hub-greeting {

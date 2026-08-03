@@ -178,13 +178,10 @@ assert(modelSource.indexOf('JSON.parse') === -1);
 assert(modelSource.indexOf('cbor') === -1);
 assert(modelSource.indexOf('.body') === -1,
     'JavaScript must consume typed native fields instead of protocol bodies');
-assert(channelsSource.indexOf('Welcome & guidance') !== -1);
-assert(channelsSource.indexOf(
-    'Complete bounded transfer \\u00b7 authenticated Link'
-) !== -1);
-assert(channelsSource.indexOf(
-    'NOTICE delivery \\u00b7 completion not signaled by this hub'
-) !== -1);
+assert(channelsSource.indexOf('Hub welcome') !== -1);
+assert(channelsSource.indexOf('NOTICE delivery') === -1);
+assert(channelsSource.indexOf('Complete bounded transfer') === -1);
+assert(channelsSource.indexOf("home.className = 'channel-hub-home'") !== -1);
 assert(channelsSource.indexOf('Authenticated channel hub') !== -1);
 assert(channelsSource.indexOf('Name differs from the recent announce') !== -1);
 assert(channelsSource.indexOf('Private or secret channels may be intentionally hidden') !== -1);
@@ -194,7 +191,8 @@ assert(channelsSource.indexOf("action === 'hub-info'") !== -1);
 assert(hubSource.indexOf("'Welcome & guidance'") !== -1);
 assert(hubSource.indexOf('Use for rules and where to begin') !== -1);
 assert(cssSource.indexOf('.channel-hub-profile-capabilities') !== -1);
-assert(cssSource.indexOf('.channel-hub-greeting-delivery') !== -1);
+assert(cssSource.indexOf('.channel-hub-greeting-delivery') === -1);
+assert(cssSource.indexOf('.channel-hub-home') !== -1);
 assert(responsiveSource.indexOf('.channel-hub-profile-capabilities') !== -1);
 
 console.log('channel hub profile tests passed');

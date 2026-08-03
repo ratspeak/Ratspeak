@@ -231,7 +231,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("function _channelsSyncHistory"));
     assert!(channels_js.contains("after: after"));
     assert!(channels_js.contains("function _channelsTimelineEntries"));
-    assert!(channels_js.contains("meta.textContent = 'Disconnected';"));
+    assert!(channels_js.contains("function _channelsRememberedRoomTopic"));
+    assert!(!channels_js.contains("Saved locally \\u00b7 open"));
+    assert!(!channels_js.contains("\\u00b7 stored on this device"));
     assert!(channels_js.contains("_channelsListSection('History'"));
     assert!(channels_js.contains("_channelsActiveEmpty('No currently active channels')"));
     assert!(channels_css.contains(".channel-active-empty"));
@@ -283,8 +285,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_css.contains(".channels-layout:not(.room-live)"));
     assert!(channels_css.contains(".channel-transition-rail"));
     assert!(channels_css.contains(".channel-hub-greeting"));
+    assert!(channels_css.contains(".channel-hub-home"));
     assert!(channels_css.contains(".channel-hub-profile-capabilities"));
-    assert!(channels_css.contains(".channel-hub-greeting-delivery"));
+    assert!(!channels_css.contains(".channel-hub-greeting-delivery"));
     assert!(channels_css.contains(".channel-event.message-group-start"));
     assert!(channels_css.contains(".channel-event.message-group-middle"));
     assert!(channels_css.contains(".channel-event.message-group-end"));
@@ -314,9 +317,11 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
         )
     );
     assert!(index.contains("id=\"bb-channels-unread\""));
-    assert!(index.contains(
-        "<button class=\"bottom-sheet-item\" type=\"button\" data-view=\"contacts\">"
-    ));
+    assert!(
+        index.contains(
+            "<button class=\"bottom-sheet-item\" type=\"button\" data-view=\"contacts\">"
+        )
+    );
     assert!(!index.contains("data-message-mode="));
     assert!(nav_js.contains("item.setAttribute('aria-current', 'page')"));
     assert!(nav_js.contains("'Channels' + (_messageUnreadSources.channels > 0"));
@@ -478,6 +483,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(db.contains("pub next_after: Option<String>"));
     assert!(db.contains("pub struct ChannelRoomIndexEntry"));
     assert!(db.contains("pub fn list_channel_room_index"));
+    assert!(db.contains("pub topic: Option<String>"));
     assert!(db.contains("mentioned             INTEGER NOT NULL DEFAULT 0"));
     assert!(db.contains("CREATE TABLE IF NOT EXISTS channel_room_state"));
     assert!(db.contains("pub struct ChannelUnreadSummary"));

@@ -299,7 +299,42 @@ function _channelsHubName(hub) {
 
 function _channelsRoomDisplayName(roomName) {
     var name = String(roomName || '');
-    return name.charAt(0) === '#' ? name : '#' + name;
+    return name.charAt(0) === '#' ? name.slice(1) : name;
+}
+
+function _channelsRoomIndexEntry(hubDestinationHash, roomName) {
+    var hub = String(hubDestinationHash || '').toLowerCase();
+    var room = String(roomName || '').toLowerCase();
+    if (!hub || !room) return null;
+    return channelsRoomIndex.find(function(entry) {
+        return String(entry.hub_destination_hash || '').toLowerCase() === hub &&
+            String(entry.room_name || '').toLowerCase() === room;
+    }) || null;
+}
+
+function _channelsRememberedRoomTopic(hubDestinationHash, roomName, fallback) {
+    var topic = String(fallback || '').trim();
+    if (topic) return topic;
+
+    var indexed = _channelsRoomIndexEntry(hubDestinationHash, roomName);
+    topic = String(indexed && indexed.topic || '').trim();
+    if (topic) return topic;
+
+    var activeHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
+    if (String(activeHub || '').toLowerCase() !==
+            String(hubDestinationHash || '').toLowerCase()) return '';
+    var target = String(roomName || '').toLowerCase();
+    var liveRoom = channelsSnapshot.rooms.find(function(room) {
+        return String(room.name || '').toLowerCase() === target;
+    });
+    topic = String(liveRoom && liveRoom.topic || '').trim();
+    if (topic) return topic;
+    var directoryRooms = channelsSnapshot.directory && channelsSnapshot.directory.rooms;
+    if (!Array.isArray(directoryRooms)) return '';
+    var directoryRoom = directoryRooms.find(function(room) {
+        return String(room.name || '').toLowerCase() === target;
+    });
+    return String(directoryRoom && directoryRoom.topic || '').trim();
 }
 
 function _channelsTimelineHubName(hub) {
@@ -489,6 +524,10 @@ function _channelsSelectedRoomView() {
     if (channelsHistorySelection) {
         return {
             name: channelsHistorySelection.room_name,
+            topic: _channelsRememberedRoomTopic(
+                channelsHistorySelection.hub_destination_hash,
+                channelsHistorySelection.room_name
+            ) || null,
             phase: 'history',
             history_only: true,
             members: [],
@@ -1113,8 +1152,8 @@ function channelsLoadSavedRooms(destinationHash) {
         });
         var localByRoom = {};
         channelsRoomIndex.forEach(function(entry) {
-            if (entry.hub_destination_hash !== destination || !entry.has_history) return;
-            localByRoom[entry.room_name] = Object.assign({}, entry, { saved: false });
+            if (entry.hub_destination_hash !== destination) return;
+            localByRoom[entry.room_name] = Object.assign({}, entry);
         });
         channelsSavedRooms.forEach(function(saved) {
             var indexed = localByRoom[saved.room_name] || {
@@ -1540,19 +1579,24 @@ function _channelsPersistConveniences() {
     channelsSnapshot.rooms.forEach(function(room) {
         if (room.phase !== 'joined') return;
         var roomKey = destination + '\n' + room.name;
-        if (_channelsSavedRoomKeys[roomKey]) return;
-        _channelsSavedRoomKeys[roomKey] = true;
+        var topic = _channelsRememberedRoomTopic(destination, room.name, room.topic);
+        var roomFingerprint = topic || '';
+        if (_channelsSavedRoomKeys[roomKey] === roomFingerprint) return;
+        _channelsSavedRoomKeys[roomKey] = roomFingerprint;
         Promise.resolve(_channelsSaveHubPromise).then(function() {
             return RS.invoke('save_channel_room', {
                 args: {
                     hub_destination_hash: destination,
                     room: room.name,
+                    topic: topic || null,
                     joined: true
                 }
             });
         }).then(function() {
+            return channelsRefreshRoomIndex();
+        }).then(function() {
             _channelsSavedRoomsHub = null;
-            channelsLoadSavedRooms(destination);
+            return channelsLoadSavedRooms(destination);
         }).catch(function(error) {
             delete _channelsSavedRoomKeys[roomKey];
             window.RS.diag('warn', '[Channels] could not remember room:', error);
@@ -1682,7 +1726,8 @@ function _channelsRenderList() {
             });
             list.appendChild(_channelsBuildRoomRow({ name: saved.room_name }, true, {
                 hub_destination_hash: saved.hub_destination_hash,
-                has_history: !!(indexed && indexed.has_history)
+                has_history: !!(indexed && indexed.has_history),
+                topic: indexed && indexed.topic
             }));
         });
 
@@ -1762,6 +1807,7 @@ function _channelsRenderList() {
             list.appendChild(_channelsBuildRoomRow({ name: saved.room_name }, true, {
                 hub_destination_hash: saved.hub_destination_hash,
                 has_history: !!saved.has_history,
+                topic: saved.topic,
                 hub_label: _channelsTimelineHubName(_channelsHubByDestination(
                     saved.hub_destination_hash
                 ))
@@ -1980,13 +2026,11 @@ function _channelsBuildRoomRow(room, savedOnly, options) {
     var meta = document.createElement('span');
     meta.className = 'channel-room-row-meta';
     if (savedOnly) {
-        if (options.has_history) {
-            meta.textContent = 'Disconnected';
-        } else {
-            meta.textContent = options.hub_label
-                ? options.hub_label + ' \u00b7 saved locally'
-                : 'Saved locally \u00b7 open';
-        }
+        meta.textContent = _channelsRememberedRoomTopic(
+            roomHub,
+            room.name,
+            options.topic || room.topic
+        ) || (options.hub_label || (options.has_history ? 'Disconnected' : 'Saved channel'));
     } else if (room.last_error) {
         meta.textContent = room.last_error;
     } else if (room.phase === 'joined') {
@@ -2084,9 +2128,13 @@ function _channelsRenderRoom(scrollRestore) {
     } else if (room.phase === 'error') {
         roomMeta = room.last_error || 'Join was not confirmed';
     } else if (room.history_only && historyContext) {
-        roomMeta = _channelsTimelineHubName(_channelsHubByDestination(
+        roomMeta = _channelsRememberedRoomTopic(
+            historyContext.hub_destination_hash,
+            room.name,
+            room.topic
+        ) || _channelsTimelineHubName(_channelsHubByDestination(
             historyContext.hub_destination_hash
-        )) + ' \u00b7 stored on this device';
+        ));
     } else {
         roomMeta = room.topic || (memberCount
             ? memberCount + (memberCount === 1 ? ' person here' : ' people here')
@@ -2234,7 +2282,7 @@ function _channelsBuildHistoryRail(context, entry) {
     } else if (writer.phase === 'degraded') {
         statusText = writer.last_error || 'Some recent activity could not be saved.';
     } else if (writer.phase === 'pending' && Number(writer.pending_events) > 0) {
-        statusText = 'Saving recent activity on this device\u2026';
+        statusText = 'Saving recent activity\u2026';
     }
     if (!statusText && !entry.has_more) return null;
 
@@ -2294,7 +2342,7 @@ function _channelsBuildHistoryOnlyBanner(context) {
     var banner = document.createElement('aside');
     banner.className = 'channel-history-banner';
     var copy = document.createElement('span');
-    copy.textContent = 'Read-only activity stored on this device.';
+    copy.textContent = 'Not currently joined.';
     banner.appendChild(copy);
     banner.appendChild(_channelsHistoryActionButton(context));
     return banner;
@@ -2306,14 +2354,14 @@ function _channelsBuildHistoryEmpty(context, entry) {
     var title = document.createElement('h3');
     var copy = document.createElement('p');
     if (entry && entry.loading) {
-        title.textContent = 'Loading local history\u2026';
-        copy.textContent = 'Ratspeak is reading this room\u2019s bounded timeline from this device.';
+        title.textContent = 'Loading history\u2026';
+        copy.textContent = 'Recent messages will appear in a moment.';
     } else if (entry && entry.error) {
         title.textContent = 'History is temporarily unavailable';
-        copy.textContent = 'The live channel is separate; retry the local timeline when you are ready.';
+        copy.textContent = 'Try again in a moment.';
     } else {
-        title.textContent = 'No local activity yet';
-        copy.textContent = 'Activity appears here after this identity receives it in the channel.';
+        title.textContent = 'No messages yet';
+        copy.textContent = 'Messages you receive in this channel will appear here.';
     }
     state.appendChild(title);
     state.appendChild(copy);
@@ -2443,6 +2491,7 @@ function _channelsRenderRoomEmpty(transcript) {
     button.type = 'button';
     button.className = 'nr-btn nr-btn-primary';
     var secondary = null;
+    var hubGreeting = null;
 
     if (_channelsIsConnecting()) {
         title.textContent = _channelsPhaseLabel(channelsSnapshot.phase) + '\u2026';
@@ -2454,22 +2503,21 @@ function _channelsRenderRoomEmpty(transcript) {
         var profile = _channelsHubProfileModel();
         state.classList.add('channel-hub-home-state');
         title.textContent = profile.display_name;
-        copy.textContent = 'Authenticated Reticulum Link' +
+        copy.textContent = 'Connected' +
             (profile.hops == null
                 ? ''
                 : ' \u00b7 ' + profile.hops +
                     (profile.hops === 1 ? ' hop' : ' hops')) +
-            '. ' + profile.directory.summary;
+            ' \u00b7 ' + profile.directory.summary;
         button.dataset.channelAction = 'join';
-        button.textContent = 'Browse & join';
+        button.textContent = 'Browse channels';
         secondary = document.createElement('button');
         secondary.type = 'button';
         secondary.className = 'nr-btn nr-btn-secondary';
         secondary.dataset.channelAction = 'hub-info';
         secondary.textContent = 'Hub information';
         if (profile.greeting) {
-            transcript.appendChild(_channelsBuildHubGreeting(profile.greeting));
-            state.classList.add('has-hub-greeting');
+            hubGreeting = _channelsBuildHubGreeting(profile.greeting);
         }
     } else if (channelsSnapshot.phase === 'error') {
         title.textContent = 'The channel session ended';
@@ -2497,7 +2545,15 @@ function _channelsRenderRoomEmpty(transcript) {
     actions.appendChild(button);
     if (secondary) actions.appendChild(secondary);
     state.appendChild(actions);
-    transcript.appendChild(state);
+    if (_channelsIsConnected()) {
+        var home = document.createElement('div');
+        home.className = 'channel-hub-home';
+        home.appendChild(state);
+        if (hubGreeting) home.appendChild(hubGreeting);
+        transcript.appendChild(home);
+    } else {
+        transcript.appendChild(state);
+    }
 }
 
 function _channelsBuildHubGreeting(item, compact) {
@@ -2513,7 +2569,7 @@ function _channelsBuildHubGreeting(item, compact) {
     heading.className = 'channel-hub-greeting-heading';
     var label = document.createElement('span');
     label.className = 'channel-hub-notice-label';
-    label.textContent = 'Welcome & guidance';
+    label.textContent = 'Hub welcome';
     var hub = document.createElement('span');
     hub.className = 'channel-hub-greeting-source';
     hub.textContent = _channelsHubName(channelsSnapshot.hub);
@@ -2524,14 +2580,6 @@ function _channelsBuildHubGreeting(item, compact) {
     heading.appendChild(hub);
     greeting.appendChild(heading);
     greeting.appendChild(body);
-    var delivery = document.createElement('div');
-    delivery.className = 'channel-hub-greeting-delivery';
-    if (item.delivery === 'resource' && item.completeness === 'complete') {
-        delivery.textContent = 'Complete bounded transfer \u00b7 authenticated Link';
-    } else {
-        delivery.textContent = 'NOTICE delivery \u00b7 completion not signaled by this hub';
-    }
-    greeting.appendChild(delivery);
     return greeting;
 }
 
@@ -5042,14 +5090,15 @@ function channelsOpenRoomDetails() {
     var copy = document.createElement('p');
     copy.className = 'channel-sheet-copy';
     if (room.history_only) {
-        copy.textContent = 'Stored on this device.';
+        copy.textContent = 'Not currently joined.';
     } else if (room.phase === 'joining') {
         copy.textContent = 'Waiting for the hub to confirm your join.';
     } else if (room.phase === 'error') {
         copy.textContent = room.last_error || 'The hub did not confirm this join. Try again without reconnecting, or leave this channel.';
     }
     if (copy.textContent) built.body.appendChild(copy);
-    if (room.phase === 'joined' && (room.registered != null || room.topic || room.modes)) {
+    if ((room.phase === 'joined' || room.history_only) &&
+            (room.registered != null || room.topic || room.modes)) {
         var details = document.createElement('div');
         details.className = 'channel-room-details';
         if (room.topic) {

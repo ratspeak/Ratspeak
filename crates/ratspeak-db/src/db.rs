@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 41;
+const SCHEMA_VERSION: i64 = 42;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -483,9 +483,10 @@ CREATE INDEX IF NOT EXISTS idx_channel_history_recorded_at
     ON channel_history(recorded_at_ms);
 "#;
 
-// Read position and delivery policy survive history retention and bookmark
-// removal. The sequence is deliberately not a foreign key: history rows may be
-// pruned while the monotonic cursor remains valid for later appends.
+// Read position, delivery policy, and the last authenticated room topic survive
+// history retention and bookmark removal. The sequence is deliberately not a
+// foreign key: history rows may be pruned while the monotonic cursor remains
+// valid for later appends.
 const CHANNEL_ROOM_STATE_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS channel_room_state (
     identity_id          TEXT NOT NULL,
@@ -494,6 +495,8 @@ CREATE TABLE IF NOT EXISTS channel_room_state (
     last_read_sequence   INTEGER NOT NULL DEFAULT 0 CHECK (last_read_sequence >= 0),
     notification_level   TEXT NOT NULL DEFAULT 'mentions'
         CHECK (notification_level IN ('all', 'mentions', 'mute')),
+    topic                TEXT NOT NULL DEFAULT ''
+        CHECK (length(CAST(topic AS BLOB)) <= 512),
     updated_at_ms        INTEGER NOT NULL CHECK (updated_at_ms >= 0),
     PRIMARY KEY (identity_id, hub_destination_hash, room_name),
     FOREIGN KEY (identity_id) REFERENCES identities(hash) ON DELETE CASCADE
@@ -1775,6 +1778,22 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             tracing::info!(
                 "Migrated to schema version 41 (durable Channels participant identities)"
             );
+            Ok(())
+        })?;
+    }
+
+    if from_version < 42 {
+        migration_step(conn, 42, |conn| {
+            let columns = get_column_names(conn, "channel_room_state")?;
+            if !columns.iter().any(|column| column == "topic") {
+                conn.execute_batch(
+                    "ALTER TABLE channel_room_state
+                     ADD COLUMN topic TEXT NOT NULL DEFAULT ''
+                     CHECK (length(CAST(topic AS BLOB)) <= 512);",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 42;")?;
+            tracing::info!("Migrated to schema version 42 (durable Channels room topics)");
             Ok(())
         })?;
     }
@@ -4716,6 +4735,7 @@ pub struct ChannelRoomIndexEntry {
     pub latest_recorded_at_ms: Option<u64>,
     pub saved: bool,
     pub has_history: bool,
+    pub topic: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -5227,24 +5247,38 @@ pub fn list_channel_room_index(
                 FROM channel_history
                 WHERE identity_id = ?1
                 GROUP BY hub_destination_hash, room_name
+            ), grouped_rooms AS (
+                SELECT
+                    hub_destination_hash,
+                    room_name,
+                    MAX(last_joined) AS last_joined,
+                    MAX(latest_recorded_at_ms) AS latest_recorded_at_ms,
+                    MAX(saved) AS saved,
+                    MAX(has_history) AS has_history
+                FROM room_index
+                GROUP BY hub_destination_hash, room_name
             )
             SELECT
-                hub_destination_hash,
-                room_name,
-                MAX(last_joined),
-                MAX(latest_recorded_at_ms),
-                MAX(saved),
-                MAX(has_history)
-            FROM room_index
-            GROUP BY hub_destination_hash, room_name
+                rooms.hub_destination_hash,
+                rooms.room_name,
+                rooms.last_joined,
+                rooms.latest_recorded_at_ms,
+                rooms.saved,
+                rooms.has_history,
+                NULLIF(state.topic, '')
+            FROM grouped_rooms AS rooms
+            LEFT JOIN channel_room_state AS state
+              ON state.identity_id = ?1
+             AND state.hub_destination_hash = rooms.hub_destination_hash
+             AND state.room_name = rooms.room_name
             ORDER BY
                 COALESCE(
-                    MAX(latest_recorded_at_ms),
-                    CAST(MAX(last_joined) * 1000 AS INTEGER),
+                    rooms.latest_recorded_at_ms,
+                    CAST(rooms.last_joined * 1000 AS INTEGER),
                     0
                 ) DESC,
-                hub_destination_hash,
-                room_name COLLATE NOCASE",
+                rooms.hub_destination_hash,
+                rooms.room_name COLLATE NOCASE",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -5256,6 +5290,7 @@ pub fn list_channel_room_index(
                 latest_recorded_at_ms: row.get(3)?,
                 saved: row.get::<_, i64>(4)? != 0,
                 has_history: row.get::<_, i64>(5)? != 0,
+                topic: row.get(6)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -5269,11 +5304,16 @@ pub fn save_channel_room(
     hub_destination_hash: &str,
     room_name: &str,
     joined: bool,
+    topic: Option<&str>,
 ) -> Result<(), String> {
-    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     let now = now_ts();
-    conn.execute(
-        "INSERT INTO channel_rooms
+    transaction
+        .execute(
+            "INSERT INTO channel_rooms
             (identity_id, hub_destination_hash, room_name, added_at, last_joined)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(identity_id, hub_destination_hash, room_name) DO UPDATE SET
@@ -5281,15 +5321,38 @@ pub fn save_channel_room(
                 WHEN excluded.last_joined > 0 THEN excluded.last_joined
                 ELSE channel_rooms.last_joined
             END",
-        params![
-            identity_id,
-            hub_destination_hash,
-            room_name,
-            now,
-            if joined { now } else { 0.0 }
-        ],
-    )
-    .map_err(|error| error.to_string())?;
+            params![
+                identity_id,
+                hub_destination_hash,
+                room_name,
+                now,
+                if joined { now } else { 0.0 }
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(topic) = topic {
+        transaction
+            .execute(
+                "INSERT INTO channel_room_state (
+                    identity_id, hub_destination_hash, room_name,
+                    last_read_sequence, notification_level, topic, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, 0, 'mentions', ?4, ?5)
+                 ON CONFLICT (
+                    identity_id, hub_destination_hash, room_name
+                 ) DO UPDATE SET
+                    topic = excluded.topic,
+                    updated_at_ms = excluded.updated_at_ms",
+                params![
+                    identity_id,
+                    hub_destination_hash,
+                    room_name,
+                    topic,
+                    now_unix_ms()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -5538,7 +5601,15 @@ mod channel_history_tests {
     fn history_is_deduplicated_identity_scoped_and_cursor_paginated() {
         let pool = test_pool();
         save_channel_hub(&pool, IDENTITY_A, HUB_A, "Relay", "A", false).unwrap();
-        save_channel_room(&pool, IDENTITY_A, HUB_A, "general", false).unwrap();
+        save_channel_room(
+            &pool,
+            IDENTITY_A,
+            HUB_A,
+            "general",
+            false,
+            Some("General discussion"),
+        )
+        .unwrap();
 
         let events: Vec<_> = (1..=5)
             .map(|index| event(HUB_A, "general", &format!("event-{index}")))
@@ -5647,6 +5718,7 @@ mod channel_history_tests {
             .expect("saved history room is indexed");
         assert!(indexed.saved);
         assert!(indexed.has_history);
+        assert_eq!(indexed.topic.as_deref(), Some("General discussion"));
         assert!(remove_channel_hub(&pool, IDENTITY_A, HUB_A).unwrap());
         assert_eq!(
             list_channel_history(&pool, IDENTITY_A, HUB_A, "general", None, 10)
@@ -5662,6 +5734,7 @@ mod channel_history_tests {
             .expect("forgotten bookmark history remains discoverable");
         assert!(!retained.saved);
         assert!(retained.has_history);
+        assert_eq!(retained.topic.as_deref(), Some("General discussion"));
         assert_eq!(
             retained.latest_recorded_at_ms,
             Some(u64::try_from(recorded_at_ms).unwrap())
@@ -6348,6 +6421,7 @@ mod channel_bookmark_tests {
             "00112233445566778899aabbccddeeff",
             "field team",
             true,
+            None,
         )
         .unwrap();
 
@@ -6433,7 +6507,7 @@ mod channel_bookmark_tests {
 
         // Updating recency and labels is orthogonal to scheduler intent.
         save_channel_hub(&pool, "identity-a", "bb", "Relay B", "bravo", true).unwrap();
-        save_channel_room(&pool, "identity-a", "bb", "ops", true).unwrap();
+        save_channel_room(&pool, "identity-a", "bb", "ops", true, None).unwrap();
         assert!(
             list_saved_channel_hubs(&pool, "identity-a")
                 .unwrap()
@@ -9021,6 +9095,11 @@ mod migration_tests {
                 .any(|c| c == "lxmf_compression_support"),
             "fresh schema should include LXMF compression capability metadata"
         );
+        let room_state_cols = get_column_names(&conn, "channel_room_state").unwrap();
+        assert!(
+            room_state_cols.iter().any(|column| column == "topic"),
+            "fresh schema should retain authenticated Channels room topics"
+        );
     }
 
     #[test]
@@ -9679,6 +9758,37 @@ mod migration_tests {
         let summary = get_channel_unread_summary(&pool, IDENTITY).unwrap();
         assert_eq!(summary.unread_total, 1);
         assert_eq!(summary.mention_total, 1);
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_from_v41_adds_durable_room_topics() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "ALTER TABLE channel_room_state DROP COLUMN topic;
+                 UPDATE schema_version SET version = 41;",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+        let conn = pool.get().unwrap();
+        let columns = get_column_names(&conn, "channel_room_state").unwrap();
+        assert!(columns.iter().any(|column| column == "topic"));
+        let default_topic: String = conn
+            .query_row(
+                "SELECT dflt_value
+                 FROM pragma_table_info('channel_room_state')
+                 WHERE name = 'topic'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default_topic, "''");
+        drop(conn);
         assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
     }
 

@@ -27,6 +27,7 @@ const CHANNEL_SHARE_FORMAT: &str = "ratspeak.channel.v1";
 // work when pasted but cannot be re-shared as QR.
 const CHANNEL_SHARE_MAX_BYTES: usize = 230;
 const CHANNEL_SHARE_MAX_ROOM_BYTES: usize = 64;
+const CHANNEL_TOPIC_MAX_BYTES: usize = 512;
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectChannelHubArgs {
@@ -216,6 +217,8 @@ pub struct SavedChannelRoomsArgs {
 pub struct SaveChannelRoomArgs {
     pub hub_destination_hash: String,
     pub room: String,
+    #[serde(default)]
+    pub topic: Option<String>,
     #[serde(default)]
     pub joined: bool,
 }
@@ -756,11 +759,29 @@ pub async fn save_channel_room(
     let destination_hash = clean_destination_hash(&args.hub_destination_hash)?;
     let room = ratspeak_runtime::rrc::normalize_room(&args.room, 64)
         .map_err(|error| AppError::bad_request(error.to_string()))?;
+    let topic = args
+        .topic
+        .map(|topic| topic.trim().to_string())
+        .filter(|topic| !topic.is_empty());
+    if topic.as_ref().is_some_and(|topic| {
+        topic.len() > CHANNEL_TOPIC_MAX_BYTES || topic.chars().any(char::is_control)
+    }) {
+        return Err(AppError::bad_request(
+            "Channel topic is too long or contains a control character",
+        ));
+    }
     let joined = args.joined;
     let pool = state.db.clone();
     let room_for_result = room.clone();
     crate::db::spawn_db(pool, move |pool| {
-        crate::db::save_channel_room(&pool, &identity_id, &destination_hash, &room, joined)
+        crate::db::save_channel_room(
+            &pool,
+            &identity_id,
+            &destination_hash,
+            &room,
+            joined,
+            topic.as_deref(),
+        )
     })
     .await
     .map_err(|_| AppError::internal("save channel room database task panicked"))?
