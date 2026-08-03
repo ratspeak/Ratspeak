@@ -4,6 +4,7 @@ function openSettings() {
     showSettingsMobileSectionIndex({ restoreFocus: false });
     initHapticsToggle();
     initChannelHostingToggle();
+    initActivityIdentityProtectionToggle();
     initDeveloperModeToggle();
     initWindowDecorationsToggle();
     syncSettingsIdentityActions();
@@ -25,6 +26,9 @@ var _settingsChannelHostingBusy = false;
 var _settingsChannelHostingEnabled = false;
 var _settingsChannelHostingRequested = null;
 var _settingsChannelHostingSupported = null;
+var _settingsActivityIdentityProtectionBound = false;
+var _settingsActivityIdentityProtectionBusy = false;
+var _settingsActivityIdentityProtectionEnabled = true;
 var RATSPEAK_RELEASE_LATEST_URL = 'https://api.github.com/repos/ratspeak/Ratspeak/releases/latest';
 var RATSPEAK_RELEASES_URL = 'https://github.com/ratspeak/Ratspeak/releases';
 
@@ -133,6 +137,73 @@ function initChannelHostingToggle() {
             adoptChannelHostingFromBackend(overview.hosting_enabled, overview.supported);
         }).catch(function() {});
     }
+}
+
+function syncActivityIdentityProtectionRadioState() {
+    var off = document.getElementById('settings-activity-identity-protection-off');
+    var on = document.getElementById('settings-activity-identity-protection-on');
+    var group = on && on.closest('.settings-radio-group');
+    if (off) {
+        off.checked = !_settingsActivityIdentityProtectionEnabled;
+        off.disabled = _settingsActivityIdentityProtectionBusy;
+    }
+    if (on) {
+        on.checked = _settingsActivityIdentityProtectionEnabled;
+        on.disabled = _settingsActivityIdentityProtectionBusy;
+    }
+    if (group) {
+        group.setAttribute('aria-busy', _settingsActivityIdentityProtectionBusy ? 'true' : 'false');
+    }
+}
+
+function adoptActivityIdentityProtectionFromBackend(enabled) {
+    _settingsActivityIdentityProtectionEnabled = enabled !== false;
+    syncActivityIdentityProtectionRadioState();
+    if (RS.activityIdentityProtection && typeof RS.activityIdentityProtection.set === 'function') {
+        RS.activityIdentityProtection.set(_settingsActivityIdentityProtectionEnabled);
+    }
+}
+
+function setActivityIdentityProtectionEnabled(enabled) {
+    if (_settingsActivityIdentityProtectionBusy) return;
+    var previous = _settingsActivityIdentityProtectionEnabled;
+    _settingsActivityIdentityProtectionEnabled = !!enabled;
+    _settingsActivityIdentityProtectionBusy = true;
+    syncActivityIdentityProtectionRadioState();
+    if (RS.activityIdentityProtection && typeof RS.activityIdentityProtection.set === 'function') {
+        RS.activityIdentityProtection.set(_settingsActivityIdentityProtectionEnabled);
+    }
+    RS.invoke('set_activity_identity_protection', { enabled: _settingsActivityIdentityProtectionEnabled })
+        .then(function(result) {
+            adoptActivityIdentityProtectionFromBackend(
+                result && result.enabled !== undefined ? result.enabled : enabled
+            );
+        })
+        .catch(function(error) {
+            adoptActivityIdentityProtectionFromBackend(previous);
+            if (typeof showToast === 'function') {
+                showToast((error && error.message) || 'Could not update Activity privacy', 'toast-red', 4000);
+            }
+        })
+        .then(function() {
+            _settingsActivityIdentityProtectionBusy = false;
+            syncActivityIdentityProtectionRadioState();
+        });
+}
+
+function initActivityIdentityProtectionToggle() {
+    var off = document.getElementById('settings-activity-identity-protection-off');
+    var on = document.getElementById('settings-activity-identity-protection-on');
+    if (!off || !on) return;
+    syncActivityIdentityProtectionRadioState();
+    if (_settingsActivityIdentityProtectionBound) return;
+    _settingsActivityIdentityProtectionBound = true;
+    off.addEventListener('change', function() {
+        if (off.checked) setActivityIdentityProtectionEnabled(false);
+    });
+    on.addEventListener('change', function() {
+        if (on.checked) setActivityIdentityProtectionEnabled(true);
+    });
 }
 
 function readDeveloperModePreference() {
@@ -1416,6 +1487,12 @@ function applyAppSettingsPayload(data) {
     if (usageToggle && data.announce_ratspeak_usage !== undefined) {
         usageToggle.checked = !!data.announce_ratspeak_usage;
     }
+    if (data.activity_identity_protection !== undefined) {
+        adoptActivityIdentityProtectionFromBackend(data.activity_identity_protection);
+    }
+    if (data.text_scale_percent !== undefined && RS.textScale) {
+        RS.textScale.commit(data.text_scale_percent);
+    }
     var hwBadge = document.getElementById('hw-lock-timeout-select');
     if (hwBadge && data.hardware_session_timeout !== undefined) {
         var t = parseInt(data.hardware_session_timeout, 10);
@@ -1489,6 +1566,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 (function() {
     var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
+    initActivityIdentityProtectionToggle();
     RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {});
     if (!usageToggle) return;
     usageToggle.addEventListener('change', function() {
@@ -1842,7 +1920,7 @@ function confirmDangerAction(action, onClose) {
 var _themeToggleInitialized = false;
 var _hapticsToggleInitialized = false;
 var _textScaleInitialized = false;
-var _textScalePreviewFrame = null;
+var _textScaleSaving = false;
 
 function initThemeToggle() {
     var toggle = document.getElementById('theme-toggle');
@@ -1887,43 +1965,48 @@ function initHapticsToggle() {
 }
 
 function initTextScaleControl() {
-    var input = document.getElementById('settings-text-scale');
-    var output = document.getElementById('settings-text-scale-value');
-    var reset = document.getElementById('settings-text-scale-reset');
-    if (!input || !output || !reset || !RS.textScale) return;
+    var inputs = document.querySelectorAll('input[name="settings-text-scale"]');
+    if (!inputs.length || !RS.textScale) return;
 
     function sync(value) {
         var percent = RS.textScale.normalize(value);
-        input.value = String(percent);
-        input.setAttribute('aria-valuetext', percent + ' percent');
-        output.value = percent + '%';
-        output.textContent = percent + '%';
-        reset.disabled = percent === RS.textScale.MIN;
+        inputs.forEach(function(input) {
+            var selected = Number(input.value) === percent;
+            input.checked = selected;
+            input.disabled = _textScaleSaving;
+        });
+        var fieldset = inputs[0].closest('fieldset');
+        if (fieldset) fieldset.setAttribute('aria-busy', _textScaleSaving ? 'true' : 'false');
+    }
+
+    function save(value) {
+        if (_textScaleSaving) return;
+        var previous = RS.textScale.get();
+        var percent = RS.textScale.commit(value);
+        _textScaleSaving = true;
+        sync(percent);
+        RS.invoke('set_text_scale', { percent: percent }).then(function(result) {
+            RS.textScale.commit(result && result.percent !== undefined ? result.percent : percent);
+        }).catch(function(error) {
+            RS.textScale.commit(previous);
+            if (typeof showToast === 'function') {
+                showToast((error && error.message) || 'Could not save text size', 'toast-red', 4000);
+            }
+        }).then(function() {
+            _textScaleSaving = false;
+            sync(RS.textScale.get());
+        });
     }
 
     sync(RS.textScale.get());
     if (_textScaleInitialized) return;
     _textScaleInitialized = true;
 
-    input.addEventListener('input', function() {
-        var next = input.value;
-        sync(next);
-        if (_textScalePreviewFrame) cancelAnimationFrame(_textScalePreviewFrame);
-        _textScalePreviewFrame = requestAnimationFrame(function() {
-            _textScalePreviewFrame = null;
-            RS.textScale.preview(next);
+    inputs.forEach(function(input) {
+        input.addEventListener('change', function() {
+            if (!input.checked) return;
+            save(input.value);
         });
-    });
-    input.addEventListener('change', function() {
-        if (_textScalePreviewFrame) {
-            cancelAnimationFrame(_textScalePreviewFrame);
-            _textScalePreviewFrame = null;
-        }
-        sync(RS.textScale.commit(input.value));
-    });
-    reset.addEventListener('click', function() {
-        sync(RS.textScale.reset());
-        input.focus({ preventScroll: true });
     });
     window.addEventListener('ratspeak-text-scale-changed', function(event) {
         if (event.detail) sync(event.detail.percent);

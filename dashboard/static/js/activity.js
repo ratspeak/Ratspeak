@@ -8,6 +8,8 @@ var activitySearchQuery = '';
 var activityExpandedSequence = null;
 var activityRevealedFields = Object.create(null);
 var activityRevealPending = Object.create(null);
+var activityRevealEventPending = Object.create(null);
+var activityIdentityProtectionEnabled = true;
 
 var ACTIVITY_MAX_RENDERED = 500;
 var _activityRenderScheduled = false;
@@ -1177,12 +1179,6 @@ function toggleActivityEvent(sequence) {
     activityExpandedSequence = expanding ? sequence : null;
     activityStickToBottom = false;
     renderActivityFeed();
-    if (expanding) {
-        var event = activityEventBySequence(sequence);
-        if (event && event.kind === 'rns.announce.observed') {
-            activityRevealField(event, 'destination');
-        }
-    }
     var row = document.querySelector('[data-activity-sequence="' + sequence + '"]');
     var toggle = row && row.querySelector ? row.querySelector('.activity-event-toggle') : null;
     if (toggle && typeof toggle.focus === 'function') {
@@ -1272,10 +1268,33 @@ function activityPresentationArea(event) {
 function activityResetReveals() {
     activityRevealedFields = Object.create(null);
     activityRevealPending = Object.create(null);
+    activityRevealEventPending = Object.create(null);
 }
 
 function activityRevealKey(event, field) {
     return event.capture_session + ':' + event.sequence + ':' + field;
+}
+
+function activityEventRevealKey(event) {
+    return event.capture_session + ':' + event.sequence;
+}
+
+function activityIdentifierAttributeIsRevealable(attribute) {
+    return !!(attribute && attribute.value && attribute.value.type === 'identifier') &&
+        ['destination', 'endpoint', 'hub', 'identity', 'link', 'message', 'room'].indexOf(attribute.key) !== -1;
+}
+
+function activityIdentifierAttributes(event) {
+    return (event && Array.isArray(event.attributes) ? event.attributes : []).filter(
+        activityIdentifierAttributeIsRevealable
+    );
+}
+
+function activityEventIdentifiersRevealed(event) {
+    var identifiers = activityIdentifierAttributes(event);
+    return identifiers.length === 0 || identifiers.every(function(attribute) {
+        return !!activityRevealedField(event, attribute.key);
+    });
 }
 
 function activityRevealedField(event, field) {
@@ -1326,6 +1345,47 @@ function activityRevealField(event, field) {
     });
     scheduleActivityRender();
     return activityRevealPending[key];
+}
+
+function activityRevealEvent(event) {
+    if (!event || !activityIsCanonicalU64(event.sequence, false) || !event.capture_session) {
+        return Promise.resolve(false);
+    }
+    var identifiers = activityIdentifierAttributes(event);
+    if (!identifiers.length) return Promise.resolve(false);
+    if (activityEventIdentifiersRevealed(event)) return Promise.resolve(true);
+    var key = activityEventRevealKey(event);
+    if (activityRevealEventPending[key]) return activityRevealEventPending[key];
+    activityRevealEventPending[key] = Promise.resolve().then(function() {
+        return Promise.all(identifiers.map(function(attribute) {
+            return activityRevealField(event, attribute.key);
+        }));
+    }).then(function(values) {
+        delete activityRevealEventPending[key];
+        scheduleActivityRender();
+        return values.every(function(value) { return !!value; });
+    }, function() {
+        delete activityRevealEventPending[key];
+        scheduleActivityRender();
+        return false;
+    });
+    scheduleActivityRender();
+    return activityRevealEventPending[key];
+}
+
+function setActivityIdentityProtectionEnabled(enabled) {
+    var next = enabled !== false;
+    if (next === activityIdentityProtectionEnabled) return;
+    activityIdentityProtectionEnabled = next;
+    if (next) activityResetReveals();
+    scheduleActivityRender();
+}
+
+if (typeof RS !== 'undefined') {
+    RS.activityIdentityProtection = {
+        get: function() { return activityIdentityProtectionEnabled; },
+        set: setActivityIdentityProtectionEnabled
+    };
 }
 
 function activityKnownPeerForHash(hash) {
@@ -1388,6 +1448,7 @@ function activityIdentifierLabel(event, field) {
     if (field === 'destination' && announce && announce.isLxmf) return 'LXMF address';
     var labels = {
         destination: 'Destination',
+        endpoint: 'Endpoint',
         hub: 'Hub address',
         identity: 'Identity hash',
         link: 'Link identifier',
@@ -1415,7 +1476,8 @@ function activityRevealIcon() {
 function activityIdentifierControl(event, attribute) {
     var field = attribute.key;
     var raw = activityRevealedField(event, field);
-    var pending = !!activityRevealPending[activityRevealKey(event, field)];
+    var pending = !!activityRevealEventPending[activityEventRevealKey(event)] ||
+        !!activityRevealPending[activityRevealKey(event, field)];
     var label = activityIdentifierLabel(event, field);
     var action = raw ? 'copy' : 'reveal';
     var text = raw ? activityShortToken(raw) : (pending ? 'Revealing…' : 'Reveal');
@@ -1434,12 +1496,11 @@ function activateActivityIdentifier(sequence, field) {
     if (activityRevealedField(event, field)) {
         return copyActivityIdentifier(sequence, field);
     }
-    var label = activityIdentifierLabel(event, field);
-    return activityRevealField(event, field).then(function(value) {
-        if (!value && typeof showToast === 'function') {
-            showToast('Could not reveal ' + label.toLowerCase(), 'toast-red', 3000);
+    return activityRevealEvent(event).then(function(revealed) {
+        if (!revealed && typeof showToast === 'function') {
+            showToast('Could not reveal this event’s identities', 'toast-red', 3000);
         }
-        return !!value;
+        return !!revealed;
     });
 }
 
@@ -1718,7 +1779,7 @@ function activityEventDetails(event) {
         ]);
     }
     (event.attributes || []).forEach(function(attribute) {
-        if (attribute.value && attribute.value.type === 'identifier') {
+        if (activityIdentifierAttributeIsRevealable(attribute)) {
             rows.push([
                 activityIdentifierLabel(event, attribute.key),
                 activityIdentifierControl(event, attribute)
@@ -1778,6 +1839,9 @@ function renderActivityFeed() {
     for (var i = 0; i < visible.length; i++) {
         var event = visible[i];
         var expanded = event.sequence === activityExpandedSequence;
+        if (expanded && !activityIdentityProtectionEnabled && !activityEventIdentifiersRevealed(event)) {
+            activityRevealEvent(event);
+        }
         var problem = activityIsProblem(event);
         var outcome = event.outcome && event.outcome !== 'none' ? event.outcome : '';
         var presentationArea = activityPresentationArea(event);

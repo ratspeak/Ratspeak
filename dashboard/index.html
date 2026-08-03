@@ -1205,14 +1205,47 @@
                             </div>
                             <div class="settings-row settings-text-scale-row">
                                 <div class="settings-row-info">
-                                    <label class="settings-row-label" for="settings-text-scale">Text size</label>
-                                    <span class="settings-row-desc" id="settings-text-scale-desc">Scale text without changing controls or touch targets</span>
+                                    <span class="settings-row-label" id="settings-text-scale-label">Text size</span>
+                                    <span class="settings-row-desc" id="settings-text-scale-desc">Choose a comfortable reading size without enlarging controls or touch targets.</span>
                                 </div>
-                                <div class="settings-text-scale-controls">
-                                    <input id="settings-text-scale" class="settings-text-scale-input" type="range" min="100" max="200" step="10" value="100" aria-describedby="settings-text-scale-desc">
-                                    <output id="settings-text-scale-value" class="settings-text-scale-value" for="settings-text-scale">100%</output>
-                                    <button id="settings-text-scale-reset" class="settings-text-scale-reset" type="button">Reset</button>
-                                </div>
+                                <fieldset class="settings-type-presets" aria-labelledby="settings-text-scale-label" aria-describedby="settings-text-scale-desc">
+                                    <legend class="sr-only">Text size</legend>
+                                    <label class="settings-type-preset" data-scale="100">
+                                        <input type="radio" name="settings-text-scale" value="100" checked>
+                                        <span class="settings-type-preset-card">
+                                            <span class="settings-type-preset-sample" aria-hidden="true">Aa</span>
+                                            <span class="settings-type-preset-value">100%</span>
+                                        </span>
+                                    </label>
+                                    <label class="settings-type-preset" data-scale="110">
+                                        <input type="radio" name="settings-text-scale" value="110">
+                                        <span class="settings-type-preset-card">
+                                            <span class="settings-type-preset-sample" aria-hidden="true">Aa</span>
+                                            <span class="settings-type-preset-value">110%</span>
+                                        </span>
+                                    </label>
+                                    <label class="settings-type-preset" data-scale="120">
+                                        <input type="radio" name="settings-text-scale" value="120">
+                                        <span class="settings-type-preset-card">
+                                            <span class="settings-type-preset-sample" aria-hidden="true">Aa</span>
+                                            <span class="settings-type-preset-value">120%</span>
+                                        </span>
+                                    </label>
+                                    <label class="settings-type-preset" data-scale="130">
+                                        <input type="radio" name="settings-text-scale" value="130">
+                                        <span class="settings-type-preset-card">
+                                            <span class="settings-type-preset-sample" aria-hidden="true">Aa</span>
+                                            <span class="settings-type-preset-value">130%</span>
+                                        </span>
+                                    </label>
+                                    <label class="settings-type-preset" data-scale="140">
+                                        <input type="radio" name="settings-text-scale" value="140">
+                                        <span class="settings-type-preset-card">
+                                            <span class="settings-type-preset-sample" aria-hidden="true">Aa</span>
+                                            <span class="settings-type-preset-value">140%</span>
+                                        </span>
+                                    </label>
+                                </fieldset>
                             </div>
                             <div class="settings-row">
                                 <div class="settings-row-info">
@@ -1255,11 +1288,11 @@
                                 <div class="settings-radio-group" role="radiogroup" aria-label="Channel hosting">
                                     <label class="settings-radio-option">
                                         <input type="radio" name="settings-channel-hosting" id="settings-channel-hosting-off" value="off" checked>
-                                        <span>Off</span>
+                                        <span>OFF</span>
                                     </label>
                                     <label class="settings-radio-option">
                                         <input type="radio" name="settings-channel-hosting" id="settings-channel-hosting-on" value="on">
-                                        <span>On</span>
+                                        <span>ON</span>
                                     </label>
                                 </div>
                             </div>
@@ -1313,6 +1346,22 @@
                             <div class="panel settings-panel" id="panel-settings-privacy">
                         <div class="panel-header">Privacy</div>
                         <div class="panel-body">
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Protect Activity identities</span>
+                                    <span class="settings-row-desc" id="settings-activity-identity-protection-desc" aria-live="polite">Hide peer names and addresses until you reveal an Activity event.</span>
+                                </div>
+                                <div class="settings-radio-group" role="radiogroup" aria-label="Protect Activity identities">
+                                    <label class="settings-radio-option">
+                                        <input type="radio" name="settings-activity-identity-protection" id="settings-activity-identity-protection-off" value="off">
+                                        <span>OFF</span>
+                                    </label>
+                                    <label class="settings-radio-option">
+                                        <input type="radio" name="settings-activity-identity-protection" id="settings-activity-identity-protection-on" value="on" checked>
+                                        <span>ON</span>
+                                    </label>
+                                </div>
+                            </div>
                             <div class="settings-row" style="border-bottom:none;">
                                 <div class="settings-row-info">
                                     <span class="settings-row-label">Announce Ratspeak usage</span>
@@ -1375,11 +1424,11 @@
                                 <div class="settings-radio-group" role="radiogroup" aria-label="Developer Mode">
                                     <label class="settings-radio-option">
                                         <input type="radio" name="settings-developer-mode" id="settings-developer-mode-off" value="off" checked>
-                                        <span>Off</span>
+                                        <span>OFF</span>
                                     </label>
                                     <label class="settings-radio-option">
                                         <input type="radio" name="settings-developer-mode" id="settings-developer-mode-on" value="on">
-                                        <span>On</span>
+                                        <span>ON</span>
                                     </label>
                                 </div>
                             </div>
@@ -1391,15 +1440,15 @@
                                 <div class="settings-radio-group" role="radiogroup" aria-label="Window Decorations">
                                     <label class="settings-radio-option">
                                         <input type="radio" name="settings-window-decorations" id="settings-window-decorations-auto" value="auto" checked>
-                                        <span>Auto</span>
+                                        <span>AUTO</span>
                                     </label>
                                     <label class="settings-radio-option">
                                         <input type="radio" name="settings-window-decorations" id="settings-window-decorations-on" value="on">
-                                        <span>On</span>
+                                        <span>ON</span>
                                     </label>
                                     <label class="settings-radio-option">
                                         <input type="radio" name="settings-window-decorations" id="settings-window-decorations-off" value="off">
-                                        <span>Off</span>
+                                        <span>OFF</span>
                                     </label>
                                 </div>
                             </div>

@@ -3,7 +3,7 @@
 
     var STORAGE_KEY = 'rs-text-scale-percent';
     var MIN = 100;
-    var MAX = 200;
+    var MAX = 140;
     var STEP = 10;
 
     function normalize(value) {
@@ -19,8 +19,9 @@
     }
 
     function tier(percent) {
-        if (percent >= 180) return 'xlarge';
-        if (percent >= 140) return 'large';
+        if (percent >= 140) return 'xlarge';
+        if (percent >= 130) return 'large';
+        if (percent >= 120) return 'medium';
         return 'normal';
     }
 

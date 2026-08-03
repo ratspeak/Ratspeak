@@ -1817,6 +1817,13 @@
     padding: var(--space-1) var(--space-1) var(--space-3);
     border-bottom: 1px solid var(--border-row);
 }
+.settings-detail-header > div,
+.settings-row-info {
+    min-width: 0;
+}
+.settings-detail-header > div {
+    flex: 1 1 auto;
+}
 .settings-detail-eyebrow {
     display: block;
     color: var(--text-secondary);
@@ -1832,12 +1839,14 @@
     line-height: 1.15;
 }
 .settings-detail-header p {
+    flex: 0 1 360px;
     max-width: 360px;
     margin: 0;
     color: var(--text-secondary);
     font-size: var(--text-base);
     line-height: var(--type-leading-body);
     text-align: right;
+    overflow-wrap: anywhere;
 }
 .settings-page-inner {
     max-width: none;
@@ -1871,57 +1880,84 @@
     flex-shrink: 0;
 }
 
-.settings-text-scale-controls {
-    display: grid;
-    grid-template-columns: minmax(140px, 210px) 3.5rem auto;
-    align-items: center;
-    justify-content: end;
-    gap: var(--space-4);
+.settings-text-scale-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: var(--space-5);
+}
+.settings-text-scale-row .settings-row-info {
+    max-width: none;
+}
+.settings-type-presets {
+    width: min(100%, 680px);
     min-width: 0;
-}
-.settings-text-scale-input {
-    width: 100%;
-    height: 44px;
     margin: 0;
-    accent-color: var(--accent);
+    padding: 0;
+    border: 0;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(64px, 112px));
+    gap: var(--space-4);
+}
+.settings-type-preset {
+    position: relative;
+    min-width: 0;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
 }
-.settings-text-scale-input:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 3px;
-    border-radius: var(--radius-sm);
+/* The specimen is a choice cue, not a literal rendering sample. Use a wider
+   progression than the applied percentages so adjacent presets scan clearly. */
+.settings-type-preset[data-scale="100"] { --type-preview-size: 18px; }
+.settings-type-preset[data-scale="110"] { --type-preview-size: 22px; }
+.settings-type-preset[data-scale="120"] { --type-preview-size: 26px; }
+.settings-type-preset[data-scale="130"] { --type-preview-size: 30px; }
+.settings-type-preset[data-scale="140"] { --type-preview-size: 34px; }
+.settings-type-preset input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
 }
-.settings-text-scale-value {
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-}
-.settings-text-scale-reset {
-    min-height: 44px;
-    padding: 0 var(--space-5);
+.settings-type-preset-card {
+    min-height: 76px;
+    padding: var(--space-4) var(--space-3);
     border: 1px solid var(--border-control);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--surface-control);
     color: var(--text-secondary);
-    font: inherit;
-    font-size: var(--text-xs);
-    font-weight: var(--type-weight-semibold);
-    cursor: pointer;
-    transition: background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
-.settings-text-scale-reset:hover:not(:disabled) {
+.settings-type-preset:hover .settings-type-preset-card {
     background: var(--surface-control-hover);
     color: var(--text-primary);
 }
-.settings-text-scale-reset:focus-visible {
+.settings-type-preset input:checked + .settings-type-preset-card {
+    border-color: var(--accent);
+    background: var(--accent-bg-strong);
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.settings-type-preset input:focus-visible + .settings-type-preset-card {
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
 }
-.settings-text-scale-reset:disabled {
-    opacity: var(--opacity-disabled);
-    cursor: default;
+.settings-type-preset-sample {
+    font-family: var(--font-sans);
+    font-size: var(--type-preview-size);
+    font-weight: var(--type-weight-semibold);
+    line-height: 1;
+}
+.settings-type-preset-value {
+    max-width: 100%;
+    font-family: var(--font-mono);
+    font-size: var(--type-badge-size);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
 }
 
 html[data-text-scale-tier="large"] .settings-row {
@@ -1932,9 +1968,14 @@ html[data-text-scale-tier="large"] .settings-row-info {
     min-width: min(100%, 250px);
     flex: 1 1 250px;
 }
-html[data-text-scale-tier="large"] .settings-row-actions,
-html[data-text-scale-tier="large"] .settings-text-scale-controls {
+html[data-text-scale-tier="large"] .settings-row-actions {
     flex: 1 1 280px;
+}
+html[data-text-scale-tier="large"] .settings-detail-header {
+    align-items: flex-start;
+}
+html[data-text-scale-tier="large"] .settings-detail-header p {
+    max-width: 48%;
 }
 
 @media (min-width: 769px) {
@@ -1956,6 +1997,7 @@ html[data-text-scale-tier="large"] .settings-text-scale-controls {
         flex-wrap: wrap;
     }
     html[data-text-scale-tier="xlarge"] .settings-detail-header p {
+        flex-basis: 100%;
         max-width: 100%;
         text-align: left;
     }

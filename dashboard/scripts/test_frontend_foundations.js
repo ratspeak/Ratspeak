@@ -67,11 +67,11 @@ scaleContext.window.localStorage = scaleContext.localStorage;
 vm.createContext(scaleContext);
 vm.runInContext(read('static/js/text_scale.js'), scaleContext);
 assert.strictEqual(scaleContext.window.RS.textScale.get(), 100);
-assert.strictEqual(scaleContext.window.RS.textScale.commit(147), 150);
-assert.strictEqual(root.style.fontSize, '150%');
+assert.strictEqual(scaleContext.window.RS.textScale.commit(127), 130);
+assert.strictEqual(root.style.fontSize, '130%');
 assert.strictEqual(root.dataset.textScaleTier, 'large');
-assert.strictEqual(storage['rs-text-scale-percent'], '150');
-assert.strictEqual(scaleContext.window.RS.textScale.commit(200), 200);
+assert.strictEqual(storage['rs-text-scale-percent'], '130');
+assert.strictEqual(scaleContext.window.RS.textScale.commit(200), 140);
 assert.strictEqual(root.dataset.textScaleTier, 'xlarge');
 assert.strictEqual(scaleContext.window.RS.textScale.reset(), 100);
 assert.strictEqual(storage['rs-text-scale-percent'], undefined);
@@ -95,10 +95,13 @@ var labelTargets = Array.from(html.matchAll(/<label\b[^>]*\sfor="([^"]+)"/g), fu
 assert.deepStrictEqual(Array.from(new Set(labelTargets.filter(function(id) {
     return ids.indexOf(id) === -1;
 }))), [], 'label for attributes must resolve to dashboard controls');
-assert(html.includes('id="settings-text-scale"'));
-assert(html.includes('min="100" max="200" step="10"'));
+assert.strictEqual((html.match(/name="settings-text-scale"/g) || []).length, 5);
+['100', '110', '120', '130', '140'].forEach(function(value) {
+    assert(html.includes('name="settings-text-scale" value="' + value + '"'));
+});
+assert(html.includes('class="settings-type-presets"'));
+assert(html.includes('aria-labelledby="settings-text-scale-label"'));
 assert(html.includes('aria-describedby="settings-text-scale-desc"'));
-assert(!html.includes('aria-describedby="settings-text-scale-desc settings-text-scale-value"'));
 assert(!html.includes('no_pinch.js'), 'browser zoom must remain available');
 assert(html.includes('lxmf-compose message-composer'));
 assert(html.includes('channel-compose message-composer'));

@@ -953,26 +953,39 @@ pub async fn set_auto_announce(state: State<'_, Arc<AppState>>, interval: u64) -
 
 #[tauri::command]
 pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    let (hw_timeout, developer_mode, window_decorations, channel_hosting_enabled) =
-        db::spawn_db(state.db.clone(), |p| {
-            let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(0);
-            let developer_mode =
-                db::get_setting(&p, "developer_mode_enabled").is_some_and(|v| v == "true");
-            let window_decorations =
-                db::get_setting(&p, "window_decorations").unwrap_or_else(|| "auto".to_string());
-            let channel_hosting_enabled =
-                ratspeak_runtime::channel_hub::channel_hosting_enabled(&p);
-            (
-                hw_timeout,
-                developer_mode,
-                window_decorations,
-                channel_hosting_enabled,
-            )
-        })
-        .await
-        .unwrap_or((0, false, "auto".to_string(), false));
+    let (
+        hw_timeout,
+        developer_mode,
+        window_decorations,
+        channel_hosting_enabled,
+        activity_identity_protection,
+        text_scale_percent,
+    ) = db::spawn_db(state.db.clone(), |p| {
+        let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        let developer_mode =
+            db::get_setting(&p, "developer_mode_enabled").is_some_and(|v| v == "true");
+        let window_decorations =
+            db::get_setting(&p, "window_decorations").unwrap_or_else(|| "auto".to_string());
+        let channel_hosting_enabled = ratspeak_runtime::channel_hub::channel_hosting_enabled(&p);
+        let activity_identity_protection = db::get_setting(&p, "activity_identity_protection")
+            .is_none_or(|value| value != "false");
+        let text_scale_percent = db::get_setting(&p, "text_scale_percent")
+            .and_then(|value| value.parse::<u16>().ok())
+            .map(|value| (value.clamp(100, 140) + 5) / 10 * 10)
+            .unwrap_or(100);
+        (
+            hw_timeout,
+            developer_mode,
+            window_decorations,
+            channel_hosting_enabled,
+            activity_identity_protection,
+            text_scale_percent,
+        )
+    })
+    .await
+    .unwrap_or((0, false, "auto".to_string(), false, true, 100));
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
         "announce_ratspeak_usage": state.announce_ratspeak_usage_enabled(),
@@ -981,7 +994,51 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "developer_mode": developer_mode,
         "window_decorations": window_decorations,
         "channel_hosting_enabled": channel_hosting_enabled,
+        "activity_identity_protection": activity_identity_protection,
+        "text_scale_percent": text_scale_percent,
     }))
+}
+
+#[tauri::command]
+pub async fn set_text_scale(state: State<'_, Arc<AppState>>, percent: u16) -> AppResult<Value> {
+    let percent = (percent.clamp(100, 140) + 5) / 10 * 10;
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, "text_scale_percent", &percent.to_string())
+    })
+    .await
+    .map_err(|_| AppError::internal("set_text_scale db task panicked"))?
+    .map_err(|error| {
+        AppError::database_unavailable(format!("Failed to save text size: {error}"))
+    })?;
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({ "text_scale_percent": percent }),
+    );
+    Ok(json!({ "percent": percent }))
+}
+
+#[tauri::command]
+pub async fn set_activity_identity_protection(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> AppResult<Value> {
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(
+            &p,
+            "activity_identity_protection",
+            if enabled { "true" } else { "false" },
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("set_activity_identity_protection db task panicked"))?
+    .map_err(|error| {
+        AppError::database_unavailable(format!("Failed to save Activity privacy setting: {error}"))
+    })?;
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({ "activity_identity_protection": enabled }),
+    );
+    Ok(json!({ "enabled": enabled }))
 }
 
 /// Developer mode lives in SQLite, not WebView localStorage: WKWebView does

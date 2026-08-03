@@ -1154,26 +1154,14 @@
         max-width: 48%;
         flex-wrap: wrap;
     }
-    .settings-text-scale-row {
-        flex-direction: column;
-    }
-    .settings-text-scale-controls {
+    .settings-type-presets {
         width: 100%;
-        grid-template-columns: minmax(0, 1fr) 3.75rem auto;
-        justify-content: stretch;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: var(--space-2);
     }
-    html[data-text-scale-tier="xlarge"] .settings-text-scale-controls {
-        grid-template-columns: minmax(0, 1fr) auto;
-    }
-    html[data-text-scale-tier="xlarge"] .settings-text-scale-input {
-        grid-column: 1 / -1;
-    }
-    html[data-text-scale-tier="xlarge"] .settings-text-scale-value {
-        grid-column: 1;
-        justify-self: start;
-    }
-    html[data-text-scale-tier="xlarge"] .settings-text-scale-reset {
-        grid-column: 2;
+    .settings-type-preset-card {
+        min-height: 72px;
+        padding-inline: var(--space-2);
     }
     .settings-row-label {
         font-size: 1rem;
@@ -3485,6 +3473,10 @@ html[data-text-scale-tier="large"] .dashboard-action-row {
     flex-wrap: wrap;
 }
 
+html[data-text-scale-tier="large"] .activity-event-details > div {
+    grid-template-columns: minmax(96px, 0.28fr) minmax(0, 1fr);
+}
+
 @media (min-width: 769px) {
 html[data-text-scale-tier="xlarge"] .lxmf-sidebar {
     width: clamp(320px, 34vw, 440px);
@@ -3500,6 +3492,11 @@ html[data-text-scale-tier="xlarge"] .view-grid-network,
 html[data-text-scale-tier="xlarge"] .view-grid-identity,
 html[data-text-scale-tier="xlarge"] .bento-grid-dashboard {
     grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-text-scale-tier="xlarge"] .activity-event-details > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
 }
 
     html[data-text-scale-tier="xlarge"] .channels-layout {

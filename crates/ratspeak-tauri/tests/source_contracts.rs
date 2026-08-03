@@ -1149,6 +1149,65 @@ fn privacy_announce_usage_setting_is_wired() {
 }
 
 #[test]
+fn activity_identity_protection_is_default_on_durable_and_event_scoped() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let activity = read_source(root.join("dashboard/static/js/activity.js")).expect("activity js");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+
+    assert!(index.contains("Protect Activity identities"));
+    assert!(index.contains("id=\"settings-activity-identity-protection-on\" value=\"on\" checked"));
+    assert!(settings.contains("set_activity_identity_protection"));
+    assert!(settings.contains("adoptActivityIdentityProtectionFromBackend"));
+    assert!(activity.contains("function activityRevealEvent(event)"));
+    assert!(activity.contains("activityIdentityProtectionEnabled = true"));
+    assert!(!activity.contains("activityRevealField(event, 'destination');"));
+    assert!(interfaces.contains("pub async fn set_activity_identity_protection"));
+    assert!(interfaces.contains("\"activity_identity_protection\""));
+    assert!(interfaces.contains(".unwrap_or((0, false, \"auto\".to_string(), false, true, 100))"));
+    assert!(tauri_lib.contains("set_activity_identity_protection"));
+}
+
+#[test]
+fn text_scale_presets_are_durable_and_backend_validated() {
+    let root = repo_root();
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let scale = read_source(root.join("dashboard/static/js/text_scale.js")).expect("scale js");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+
+    assert!(settings.contains("RS.invoke('set_text_scale'"));
+    assert!(settings.contains("data.text_scale_percent"));
+    assert!(scale.contains("var MAX = 140"));
+    assert!(interfaces.contains("pub async fn set_text_scale"));
+    assert!(interfaces.contains("\"text_scale_percent\""));
+    assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
+    assert!(tauri_lib.contains("set_text_scale"));
+}
+
+#[test]
+fn mobile_shells_advertise_only_portrait_orientations() {
+    let root = repo_root();
+    let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+        .expect("android manifest");
+    let ios_info = read_source(root.join("src-tauri/gen/apple/ratspeak_iOS/Info.plist"))
+        .expect("iOS Info.plist");
+    let ios_project =
+        read_source(root.join("src-tauri/gen/apple/project.yml")).expect("iOS project source");
+
+    assert!(manifest.contains("android:screenOrientation=\"sensorPortrait\""));
+    assert!(manifest.contains("tools:ignore=\"DiscouragedApi,LockedOrientationActivity\""));
+    assert!(ios_info.contains("UIInterfaceOrientationPortrait"));
+    assert!(!ios_info.contains("UIInterfaceOrientationLandscape"));
+    assert!(ios_project.contains("UISupportedInterfaceOrientations:"));
+    assert!(!ios_project.contains("UIInterfaceOrientationLandscape"));
+}
+
+#[test]
 fn ble_rnode_runtime_spawns_enable_flow_control() {
     let root = repo_root();
     let ble_rs =

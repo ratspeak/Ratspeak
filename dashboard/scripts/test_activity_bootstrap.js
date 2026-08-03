@@ -1150,6 +1150,7 @@ test('identifier controls reveal first and copy only after disclosure', async fu
     assert(hiddenHtml.indexOf('<code>Reveal</code>') !== -1);
     assert(hiddenHtml.indexOf('data-action="reveal"') !== -1);
     assert(hiddenHtml.indexOf('data-icon="reveal"') !== -1);
+    assert(hiddenHtml.indexOf('Alice') === -1, 'peer names stay private before explicit reveal');
 
     var copied = null;
     ctx.RS.copyText = function(value) {
@@ -1174,6 +1175,96 @@ test('identifier controls reveal first and copy only after disclosure', async fu
     assert.strictEqual(await ctx.activateActivityIdentifier('9', 'destination'), true);
     assert.strictEqual(copied, rawAddress);
     assert.strictEqual(revealCalls, 1, 'copy should reuse the prior explicit reveal');
+});
+
+test('one Activity disclosure reveals every identifier in only that event', async function() {
+    var ui = loadUiHarness();
+    var ctx = ui.context;
+    var destination = '00112233445566778899aabbccddeeff';
+    var identity = 'ffeeddccbbaa99887766554433221100';
+    var peerEvent = event(SESSION_A, '10', 'rns.link.identified');
+    peerEvent.area = 'links';
+    peerEvent.kind = 'rns.link.identified';
+    peerEvent.summary_code = 'rns.link.identified';
+    peerEvent.attributes = [{
+        key: 'destination',
+        value: {
+            type: 'identifier',
+            value: { kind: 'destination', pseudonym: 'masked-destination', ordinal: 1 }
+        }
+    }, {
+        key: 'identity',
+        value: {
+            type: 'identifier',
+            value: { kind: 'peer', pseudonym: 'masked-identity', ordinal: 1 }
+        }
+    }];
+    ctx.activityEvents = [peerEvent];
+    ctx.activityExpandedSequence = '10';
+    var fields = [];
+    ui.setInvoke(function(name, args) {
+        assert.strictEqual(name, 'activity_reveal');
+        fields.push(args.args.field);
+        var value = args.args.field === 'destination' ? destination : identity;
+        return Promise.resolve({
+            result: 'identifier',
+            key: args.args.field,
+            kind: args.args.field,
+            value: value
+        });
+    });
+
+    ctx.renderActivityFeed();
+    assert.strictEqual((ui.ids['activity-feed'].innerHTML.match(/data-action="reveal"/g) || []).length, 2);
+    assert.strictEqual(await ctx.activateActivityIdentifier('10', 'destination'), true);
+    await flush();
+    ctx.renderActivityFeed();
+    assert.deepStrictEqual(fields.sort(), ['destination', 'identity']);
+    assert.strictEqual((ui.ids['activity-feed'].innerHTML.match(/data-action="copy"/g) || []).length, 2);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('001122334…eeff') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('ffeeddccb…1100') !== -1);
+
+    ctx.setActivityIdentityProtectionEnabled(false);
+    ctx.setActivityIdentityProtectionEnabled(true);
+    ctx.renderActivityFeed();
+    assert.strictEqual((ui.ids['activity-feed'].innerHTML.match(/data-action="reveal"/g) || []).length, 2,
+        'turning protection on clears every transient disclosure');
+});
+
+test('disabling Activity identity protection removes reveal friction without changing capture data', async function() {
+    var ui = loadUiHarness();
+    var ctx = ui.context;
+    var raw = '1234567890abcdef1234567890abcdef';
+    var peerEvent = event(SESSION_A, '11', 'lxmf.delivery.queued');
+    peerEvent.area = 'messages';
+    peerEvent.kind = 'lxmf.delivery.queued';
+    peerEvent.summary_code = 'lxmf.delivery.queued';
+    peerEvent.attributes = [{
+        key: 'destination',
+        value: {
+            type: 'identifier',
+            value: { kind: 'destination', pseudonym: 'masked-lxmf-address', ordinal: 3 }
+        }
+    }];
+    ctx.activityEvents = [peerEvent];
+    ctx.activityExpandedSequence = '11';
+    ui.setInvoke(function(name, args) {
+        assert.strictEqual(name, 'activity_reveal');
+        return Promise.resolve({
+            result: 'identifier',
+            key: args.args.field,
+            kind: 'destination',
+            value: raw
+        });
+    });
+
+    ctx.setActivityIdentityProtectionEnabled(false);
+    await flush();
+    ctx.renderActivityFeed();
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-action="copy"') !== -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-action="reveal"') === -1);
+    assert(ui.ids['activity-feed'].innerHTML.indexOf(raw) === -1,
+        'even unprotected mode keeps full addresses out of the DOM');
 });
 
 test('identity UI reset clears canonical visible state without issuing a Stop command', async function() {

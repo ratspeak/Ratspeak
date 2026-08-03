@@ -98,7 +98,10 @@ assert(settingsFieldRule && /min-height:\s*34px/.test(settingsFieldRule[1]) && /
     'settings fields must grow with scaled text');
 assert(/data-text-scale-tier="xlarge"[\s\S]*?\.channels-layout/.test(sources[14].text),
     'the largest text tier must simplify the Channels layout');
-assert(/data-text-scale-tier="xlarge"[\s\S]*?\.settings-text-scale-input/.test(sources[14].text),
-    'the largest mobile text tier must give the slider its own row');
+assert(/\.settings-type-presets\s*\{[\s\S]*?repeat\(5,/.test(sources[11].text),
+    'text sizing must expose five deliberate presets instead of a continuous slider');
+assert(/data-scale="100"[\s\S]*?--type-preview-size:\s*18px/.test(sources[11].text) &&
+    /data-scale="140"[\s\S]*?--type-preview-size:\s*34px/.test(sources[11].text),
+    'text-size specimens must make the preset progression visually distinct');
 
 console.log('CSS contract tests passed');
