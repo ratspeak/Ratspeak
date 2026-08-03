@@ -173,7 +173,13 @@ jobs:
             throw "No Windows artifacts found for checksums."
           }
 
-          $lines | Set-Content -Encoding ascii $checksumFile
+          $checksumPath = Join-Path (Get-Location) $checksumFile
+          $contents = ($lines -join "`n") + "`n"
+          [System.IO.File]::WriteAllText(
+            $checksumPath,
+            $contents,
+            [System.Text.Encoding]::ASCII
+          )
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
