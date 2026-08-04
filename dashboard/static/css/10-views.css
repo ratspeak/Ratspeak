@@ -1824,14 +1824,6 @@
 .settings-detail-header > div {
     flex: 1 1 auto;
 }
-.settings-detail-eyebrow {
-    display: block;
-    color: var(--text-secondary);
-    font-size: var(--text-sm);
-    font-weight: 600;
-    line-height: 1.2;
-    margin-bottom: var(--space-2);
-}
 .settings-detail-header h2 {
     margin: 0;
     color: var(--text-primary);
