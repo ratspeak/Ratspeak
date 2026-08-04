@@ -112,7 +112,7 @@ assert(/data-text-scale-tier="large"\] \.settings-text-scale-row \.settings-row-
 
 var paletteCss = sourceByName['00-palettes.css'];
 var themeSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'theme.js'), 'utf8');
-var themeFamilies = ['ratspeak', 'nord', 'solarized', 'gruvbox', 'catppuccin'];
+var themeFamilies = ['ratspeak', 'nord', 'everforest', 'gruvbox', 'catppuccin'];
 var registeredFamilies = Array.from(themeSource.matchAll(/\bid:\s*'([^']+)'/g), function(entry) {
     return entry[1];
 });

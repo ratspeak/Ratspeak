@@ -1205,18 +1205,21 @@ fn appearance_families_are_durable_validated_and_native_aware() {
 
     assert!(index.contains("id=\"theme-family-picker\""));
     assert!(index.contains("id=\"theme-toggle\""));
-    for family in ["ratspeak", "nord", "solarized", "gruvbox", "catppuccin"] {
+    for family in ["ratspeak", "nord", "everforest", "gruvbox", "catppuccin"] {
         assert!(theme.contains(&format!("id: '{family}'")));
         assert!(interfaces.contains(&format!("\"{family}\" => Some(\"{family}\")")));
     }
     assert!(theme.contains("data-theme-family"));
     assert!(theme.contains("data-theme-preference"));
     assert!(theme.contains("ratspeak-theme-changed"));
+    assert!(theme.contains("'rs-theme-family'"));
+    assert!(theme.contains("if (value === 'solarized') return 'everforest'"));
     assert!(settings.contains("RS.invoke('set_appearance'"));
     assert!(settings.contains("data.theme_family"));
     assert!(settings.contains("data.theme_mode"));
     assert!(interfaces.contains("pub async fn set_appearance"));
     assert!(interfaces.contains("db::try_set_settings("));
+    assert!(interfaces.contains("\"solarized\" => Some(\"everforest\")"));
     assert!(interfaces.contains("pub fn set_native_theme"));
     assert!(tauri_lib.contains("set_appearance"));
     assert!(tauri_lib.contains("set_native_theme"));

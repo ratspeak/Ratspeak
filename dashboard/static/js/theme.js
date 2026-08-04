@@ -29,12 +29,12 @@
             }
         },
         {
-            id: 'solarized',
-            name: 'Solarized',
-            description: 'Balanced cyan and amber',
+            id: 'everforest',
+            name: 'Everforest',
+            description: 'Forest green and parchment',
             preview: {
-                light: ['#FDF6E3', '#FFFCF0', '#0F6F91'],
-                dark: ['#002B36', '#0B3B46', '#5AADE3']
+                light: ['#EFEBD4', '#FDF6E3', '#526B2F'],
+                dark: ['#232A2E', '#2D353B', '#A7C080']
             }
         },
         {
@@ -62,6 +62,10 @@
     }
 
     function normalizeFamily(value) {
+        // Solarized shipped in an early preview. Preserve that preference by
+        // moving it to the family that replaced it instead of silently falling
+        // back to Ratspeak on the next cold start.
+        if (value === 'solarized') return 'everforest';
         return isFamily(value) ? value : DEFAULT_FAMILY;
     }
 
@@ -80,8 +84,13 @@
 
     function storedFamily() {
         var value = readStored(FAMILY_STORAGE_KEY);
-        if (value && !isFamily(value)) removeStored(FAMILY_STORAGE_KEY);
-        return normalizeFamily(value);
+        var normalized = normalizeFamily(value);
+        if (value === 'solarized') {
+            try { localStorage.setItem(FAMILY_STORAGE_KEY, normalized); } catch (_) {}
+        } else if (value && !isFamily(value)) {
+            removeStored(FAMILY_STORAGE_KEY);
+        }
+        return normalized;
     }
 
     function storedMode() {

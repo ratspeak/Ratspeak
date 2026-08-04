@@ -54,7 +54,10 @@ fn normalize_theme_family(family: &str) -> Option<&'static str> {
     match family.trim() {
         "ratspeak" => Some("ratspeak"),
         "nord" => Some("nord"),
-        "solarized" => Some("solarized"),
+        // Solarized was available in an early preview. Treat its persisted
+        // value as Everforest so existing testers keep an intentional theme.
+        "solarized" => Some("everforest"),
+        "everforest" => Some("everforest"),
         "gruvbox" => Some("gruvbox"),
         "catppuccin" => Some("catppuccin"),
         _ => None,
