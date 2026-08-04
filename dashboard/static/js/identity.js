@@ -63,6 +63,26 @@ function copyIdentityValue(value, noun) {
     });
 }
 
+function identityAddressRowHtml(label, value) {
+    var rawValue = value || '';
+    var safeLabel = escapeHtml(label || 'Value');
+    var safeValue = escapeHtml(rawValue);
+    var unavailable = rawValue ? '' : ' disabled aria-disabled="true"';
+    var actionLabel = rawValue ? 'Copy ' + safeLabel : safeLabel + ' unavailable';
+    return '<button type="button" class="identity-address-row"' +
+        ' data-copy-value="' + safeValue + '"' +
+        ' data-copy-label="' + safeLabel + '"' +
+        ' aria-label="' + actionLabel + '" title="' + actionLabel + '"' + unavailable + '>' +
+            '<span class="identity-address-meta">' +
+                '<span class="identity-label">' + safeLabel + '</span>' +
+                '<span class="identity-value mono" dir="ltr">' + (safeValue || '&mdash;') + '</span>' +
+            '</span>' +
+            '<span class="identity-address-action" aria-hidden="true">' +
+                '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></svg>' +
+            '</span>' +
+        '</button>';
+}
+
 function identitySetInlineError(id, message) {
     var errEl = document.getElementById(id);
     if (!errEl) return;
@@ -630,20 +650,8 @@ function renderActiveIdentityCard() {
             '</div>' +
         '</div>' +
         '<div class="identity-address-stack">' +
-            '<button type="button" class="identity-address-row" data-copy-value="' + escapeHtml(lxmfHash) + '" data-copy-label="Address">' +
-                '<span class="identity-address-meta">' +
-                    '<span class="identity-label">LXMF Address</span>' +
-                    '<span class="identity-value mono">' + copyableHash(lxmfHash) + '</span>' +
-                '</span>' +
-                '<span class="identity-address-action"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></svg></span>' +
-            '</button>' +
-            '<button type="button" class="identity-address-row" data-copy-value="' + escapeHtml(identityHash) + '" data-copy-label="Hash">' +
-                '<span class="identity-address-meta">' +
-                    '<span class="identity-label">Identity Hash</span>' +
-                    '<span class="identity-value mono">' + copyableHash(identityHash) + '</span>' +
-                '</span>' +
-                '<span class="identity-address-action"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></svg></span>' +
-            '</button>' +
+            identityAddressRowHtml('LXMF Address', lxmfHash) +
+            identityAddressRowHtml('Identity Hash', identityHash) +
         '</div>' +
         editorHtml +
         '<div class="identity-detail-actions">' +

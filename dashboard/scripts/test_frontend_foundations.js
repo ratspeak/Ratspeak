@@ -104,6 +104,8 @@ assert(html.includes('aria-labelledby="settings-text-scale-label"'));
 assert(html.includes('aria-describedby="settings-text-scale-desc"'));
 assert(!html.includes('class="settings-detail-eyebrow"'),
     'settings detail headers must not repeat the Ratspeak product name');
+assert(!html.includes('identity-page-kicker'),
+    'Identity Management must not repeat an ornamental Identity eyebrow');
 assert(!/<legend\b[^>]*>\s*Text size\s*<\/legend>/.test(html),
     'the visible settings label must be the preset group\'s only text-size heading');
 assert(!html.includes('no_pinch.js'), 'browser zoom must remain available');
@@ -159,5 +161,25 @@ assert(stateSource.includes("return '<button class=\"hash-copy\" type=\"button\"
     'compact hashes must remain keyboard-operable copy buttons');
 assert(read('static/js/peers.js').includes('<button class="peers-detail-hash"'),
     'peer detail hashes must use a semantic copy control');
+
+var identitySource = read('static/js/identity.js');
+var identityContext = {
+    escapeHtml: function(value) {
+        return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+};
+vm.createContext(identityContext);
+vm.runInContext(functionSource(identitySource, 'identityAddressRowHtml'), identityContext);
+var sampleIdentityHash = '71e7e82e83b19c54bef56903aacf5d7f';
+var addressRow = identityContext.identityAddressRowHtml('LXMF Address', sampleIdentityHash);
+assert.strictEqual((addressRow.match(/<button\b/g) || []).length, 1,
+    'an identity address row must be one copy button without nested interactive controls');
+assert(addressRow.includes('data-copy-value="' + sampleIdentityHash + '"'));
+assert(addressRow.includes('<span class="identity-value mono" dir="ltr">' + sampleIdentityHash + '</span>'));
+assert(addressRow.includes('class="identity-address-action" aria-hidden="true"'));
+assert(!identitySource.includes('copyableHash(lxmfHash)') &&
+    !identitySource.includes('copyableHash(identityHash)'),
+    'the full-row copy controls must render plain hash text instead of nested hash buttons');
 
 console.log('Frontend foundation tests passed');

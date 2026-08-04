@@ -2957,15 +2957,6 @@ body.setup-active .main-content {
     margin: 0 auto var(--space-6);
 }
 
-.identity-page-kicker {
-    color: var(--accent);
-    font-size: var(--type-section-label-size);
-    font-weight: var(--type-section-label-weight);
-    text-transform: uppercase;
-    letter-spacing: var(--type-section-label-tracking);
-    margin-bottom: var(--space-2);
-}
-
 .identity-page-title {
     color: var(--text-primary);
     font-size: var(--text-3xl);
@@ -3414,7 +3405,16 @@ body.setup-active .main-content {
 .identity-address-row:focus-visible {
     background: var(--surface-control-hover);
     border-color: rgba(var(--accent-rgb), 0.3);
-    outline: none;
+}
+
+.identity-address-row:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+
+.identity-address-row:disabled {
+    cursor: default;
+    opacity: var(--opacity-disabled);
 }
 
 .identity-address-meta {
@@ -3423,6 +3423,18 @@ body.setup-active .main-content {
     min-width: 0;
     flex-direction: column;
     gap: var(--space-1);
+}
+
+.identity-address-row .identity-label {
+    margin-bottom: 0;
+}
+
+.identity-address-row .identity-value {
+    display: block;
+    width: 100%;
+    line-height: var(--type-leading-body);
+    overflow-wrap: anywhere;
+    word-break: normal;
 }
 
 .identity-address-action,
@@ -3450,8 +3462,10 @@ body.setup-active .main-content {
     stroke-linejoin: round;
 }
 
-.identity-address-row .hash-copy {
-    pointer-events: none;
+.identity-address-row:not(:disabled):hover .identity-address-action,
+.identity-address-row:not(:disabled):focus-visible .identity-address-action {
+    background: var(--accent-bg-strong);
+    border-color: rgba(var(--accent-rgb), 0.42);
 }
 
 .identity-detail-editor {
@@ -3491,15 +3505,27 @@ body.setup-active .main-content {
 
 .identity-list-item {
     min-height: 64px;
-    border-left: 3px solid transparent;
+    border-left: 0;
 }
 
 .identity-list-item.selected {
-    border-left-color: var(--accent);
+    border-left: 0;
+    background: var(--accent-bg-strong);
+    box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 
 .identity-list-item.active-identity {
-    border-left-color: rgba(var(--accent-rgb), 0.55);
+    border-left: 0;
+    background: var(--accent-bg);
+}
+
+.identity-list-item.active-identity.selected {
+    background: var(--accent-bg-strong);
+}
+
+.identity-list-item.selected:hover,
+.identity-list-item.active-identity.selected:hover {
+    background: var(--accent-bg-strong);
 }
 
 .identity-select-btn {

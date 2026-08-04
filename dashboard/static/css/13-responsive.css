@@ -2203,9 +2203,6 @@
     .identity-title-block {
         min-width: 0;
     }
-    .identity-page-kicker {
-        display: none;
-    }
     .identity-page-title {
         font-size: var(--text-xl);
     }
