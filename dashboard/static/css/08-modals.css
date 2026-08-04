@@ -1085,6 +1085,22 @@
     color: var(--status-warning-fg);
 }
 
+.profile-status-editor-footer .rs-dialog-clear-status {
+    margin-right: auto;
+    border-color: transparent;
+    color: var(--status-error-fg);
+}
+
+.profile-status-editor-footer .rs-dialog-clear-status:hover {
+    background: var(--status-error-bg);
+    border-color: var(--status-error-border);
+    color: var(--status-error-fg);
+}
+
+.profile-status-editor-footer .rs-dialog-clear-status:focus-visible {
+    box-shadow: 0 0 0 2px rgba(var(--status-error-rgb), 0.3);
+}
+
 .rs-dialog-field-label {
     display: block;
     margin: var(--space-3) 0 var(--space-2);

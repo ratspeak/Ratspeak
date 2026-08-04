@@ -901,8 +901,7 @@ function settingsCurrentStatusValue() {
 function syncSettingsIdentityStatus() {
     var active = settingsCurrentActiveIdentity();
     var desc = document.getElementById('settings-identity-status-desc');
-    var editBtn = document.getElementById('settings-edit-status-btn');
-    var clearBtn = document.getElementById('settings-clear-status-btn');
+    var actionBtn = document.getElementById('settings-status-action-btn');
     var status = active ? settingsCurrentStatusValue() : '';
 
     if (desc) {
@@ -912,41 +911,13 @@ function syncSettingsIdentityStatus() {
         desc.title = status || '';
     }
 
-    if (editBtn) {
-        editBtn.disabled = !active;
-        editBtn.title = active ? 'Edit status' : 'No active identity loaded';
-    }
-
-    if (clearBtn) {
-        clearBtn.disabled = !active || !status;
-        clearBtn.title = !active
+    if (actionBtn) {
+        actionBtn.disabled = !active;
+        actionBtn.textContent = status ? 'Edit' : 'Set';
+        actionBtn.title = !active
             ? 'No active identity loaded'
-            : (status ? 'Clear status' : 'No status to clear');
+            : (status ? 'Edit status' : 'Set status');
     }
-}
-
-function clearActiveIdentityStatus() {
-    if (!settingsCurrentActiveIdentity() || typeof saveIdentityStatus !== 'function') return;
-    var clearBtn = document.getElementById('settings-clear-status-btn');
-    var editBtn = document.getElementById('settings-edit-status-btn');
-    if (clearBtn && clearBtn.disabled) return;
-
-    if (clearBtn) clearBtn.disabled = true;
-    if (editBtn) editBtn.disabled = true;
-
-    saveIdentityStatus('').then(function(result) {
-        var savedStatus = typeof profileStatusFromPayload === 'function'
-            ? profileStatusFromPayload(result)
-            : '';
-        setActiveProfileStatus(savedStatus === null ? '' : savedStatus);
-        if (typeof showToast === 'function') showToast('Status cleared', 'toast-green', 2500);
-        if (typeof loadIdentities === 'function') loadIdentities();
-    }).catch(function(err) {
-        if (typeof showToast === 'function') {
-            showToast((err && err.message) ? err.message : 'Failed to clear status', 'toast-red', 3000);
-        }
-        syncSettingsIdentityStatus();
-    });
 }
 
 var PROFILE_STATUS_MAX_BYTES = 50;
@@ -1129,8 +1100,11 @@ function saveIdentityStatus(nextStatus) {
 function openIdentityStatusEditor() {
     if (typeof _rsBuildSheet !== 'function') return;
 
-    var initialStatus = resolveActiveProfileStatus();
-    var built = _rsBuildSheet({}, function() {});
+    var initialStatus = trimProfileStatusToByteLimit(
+        String(resolveActiveProfileStatus() || '').trim(),
+        PROFILE_STATUS_MAX_BYTES
+    );
+    var built = _rsBuildSheet({ title: initialStatus ? 'Edit status' : 'Set status' }, function() {});
 
     built.overlay.addEventListener('click', function(e) {
         if (e.target === built.overlay) built.dismiss(null);
@@ -1138,9 +1112,11 @@ function openIdentityStatusEditor() {
 
     var label = document.createElement('label');
     label.className = 'rs-dialog-field-label';
+    label.htmlFor = 'profile-status-input';
     label.textContent = 'Status';
 
     var textarea = document.createElement('textarea');
+    textarea.id = 'profile-status-input';
     textarea.className = 'rs-dialog-input profile-status-input';
     textarea.placeholder = 'Set a status';
     textarea.rows = 3;
@@ -1152,6 +1128,9 @@ function openIdentityStatusEditor() {
     var counter = document.createElement('span');
     counter.className = 'profile-status-counter';
     meta.appendChild(counter);
+    var saveBtn = null;
+    var clearStatusBtn = null;
+    var isSubmitting = false;
 
     function updateCounter() {
         var trimmed = trimProfileStatusToByteLimit(textarea.value, PROFILE_STATUS_MAX_BYTES);
@@ -1159,6 +1138,9 @@ function openIdentityStatusEditor() {
         var bytes = profileStatusByteLength(textarea.value);
         counter.textContent = bytes + '/' + PROFILE_STATUS_MAX_BYTES;
         counter.classList.toggle('at-limit', bytes >= PROFILE_STATUS_MAX_BYTES);
+        if (saveBtn && !isSubmitting) {
+            saveBtn.disabled = textarea.value.trim() === initialStatus;
+        }
     }
 
     textarea.addEventListener('input', updateCounter);
@@ -1174,34 +1156,62 @@ function openIdentityStatusEditor() {
     cancelBtn.textContent = 'Cancel';
     cancelBtn.addEventListener('click', function() { built.dismiss(null); });
 
-    var saveBtn = document.createElement('button');
+    var saveLabel = initialStatus ? 'Save changes' : 'Set status';
+    saveBtn = document.createElement('button');
     saveBtn.className = 'rs-dialog-confirm';
-    saveBtn.textContent = 'Save';
+    saveBtn.textContent = saveLabel;
     saveBtn.addEventListener('click', function() {
-        var nextStatus = trimProfileStatusToByteLimit(textarea.value.trim(), PROFILE_STATUS_MAX_BYTES);
+        submitStatus(textarea.value);
+    });
+
+    function setSubmitting(submitting, isClearing) {
+        isSubmitting = submitting;
+        cancelBtn.disabled = submitting;
+        saveBtn.disabled = submitting;
+        saveBtn.textContent = submitting
+            ? (isClearing ? 'Clearing...' : 'Saving...')
+            : saveLabel;
+        if (clearStatusBtn) clearStatusBtn.disabled = submitting;
+        if (!submitting) updateCounter();
+    }
+
+    function submitStatus(value) {
+        var nextStatus = trimProfileStatusToByteLimit(String(value || '').trim(), PROFILE_STATUS_MAX_BYTES);
+        var isClearing = !!initialStatus && !nextStatus;
         textarea.value = nextStatus;
         updateCounter();
-        saveBtn.disabled = true;
-        cancelBtn.disabled = true;
-        saveBtn.textContent = 'Saving...';
+        setSubmitting(true, isClearing);
         saveIdentityStatus(nextStatus).then(function(result) {
             var savedStatus = profileStatusFromPayload(result);
             setActiveProfileStatus(savedStatus === null ? nextStatus : savedStatus);
             built.dismiss(nextStatus);
-            if (typeof showToast === 'function') showToast('Status saved', 'toast-green', 2500);
+            if (typeof showToast === 'function') {
+                showToast(isClearing ? 'Status cleared' : 'Status saved', 'toast-green', 2500);
+            }
             if (typeof loadIdentities === 'function') loadIdentities();
         }).catch(function(err) {
-            saveBtn.disabled = false;
-            cancelBtn.disabled = false;
-            saveBtn.textContent = 'Save';
+            setSubmitting(false, false);
             if (typeof showToast === 'function') {
-                showToast((err && err.message) ? err.message : 'Failed to save status', 'toast-red', 3000);
+                showToast(
+                    (err && err.message) ? err.message : (isClearing ? 'Failed to clear status' : 'Failed to save status'),
+                    'toast-red',
+                    3000
+                );
             }
         });
-    });
+    }
 
+    if (initialStatus) {
+        clearStatusBtn = document.createElement('button');
+        clearStatusBtn.className = 'rs-dialog-cancel rs-dialog-clear-status';
+        clearStatusBtn.textContent = 'Clear status';
+        clearStatusBtn.addEventListener('click', function() { submitStatus(''); });
+        built.footer.appendChild(clearStatusBtn);
+    }
+    built.footer.classList.add('profile-status-editor-footer');
     built.footer.appendChild(cancelBtn);
     built.footer.appendChild(saveBtn);
+    updateCounter();
 
     built.sheet.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
@@ -1641,14 +1651,11 @@ if (settingsViewPhraseBtn) settingsViewPhraseBtn.addEventListener('click', funct
     else if (typeof showToast === 'function') showToast('Recovery phrase is not ready yet', 'toast-orange', 2500);
 });
 
-var settingsEditStatusBtn = document.getElementById('settings-edit-status-btn');
-if (settingsEditStatusBtn) settingsEditStatusBtn.addEventListener('click', function() {
-    if (settingsEditStatusBtn.disabled) return;
+var settingsStatusActionBtn = document.getElementById('settings-status-action-btn');
+if (settingsStatusActionBtn) settingsStatusActionBtn.addEventListener('click', function() {
+    if (settingsStatusActionBtn.disabled) return;
     if (typeof openIdentityStatusEditor === 'function') openIdentityStatusEditor();
 });
-
-var settingsClearStatusBtn = document.getElementById('settings-clear-status-btn');
-if (settingsClearStatusBtn) settingsClearStatusBtn.addEventListener('click', clearActiveIdentityStatus);
 
 var _manageIdentitiesBtn = document.getElementById('settings-manage-identities-btn');
 if (_manageIdentitiesBtn) {

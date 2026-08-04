@@ -4560,8 +4560,8 @@ fn settings_information_architecture_groups_one_off_settings() {
         .expect("identity settings panel");
     assert!(identity_panel.contains(r#"<span class="settings-row-label">Status</span>"#));
     assert!(identity_panel.contains(r#"id="settings-identity-status-desc""#));
-    assert!(identity_panel.contains(r#"id="settings-edit-status-btn""#));
-    assert!(identity_panel.contains(r#"id="settings-clear-status-btn" disabled"#));
+    assert!(identity_panel.contains(r#"id="settings-status-action-btn">Set</button>"#));
+    assert!(!identity_panel.contains(r#"id="settings-clear-status-btn""#));
     assert!(identity_panel.contains(
         r#"class="selector-badge selector-badge-no-caret" id="settings-manage-identities-btn">Manage</button>"#
     ));
@@ -4596,11 +4596,18 @@ fn settings_information_architecture_groups_one_off_settings() {
     );
     assert!(!settings_js.contains("document.getElementById('panel-settings-notifications')"));
     assert!(settings_js.contains("function syncSettingsIdentityStatus()"));
-    assert!(settings_js.contains("function clearActiveIdentityStatus()"));
-    assert!(settings_js.contains("saveIdentityStatus('')"));
+    assert!(settings_js.contains("actionBtn.textContent = status ? 'Edit' : 'Set';"));
     assert!(settings_js.contains("openIdentityStatusEditor()"));
+    assert!(settings_js.contains("clearStatusBtn.textContent = 'Clear status';"));
     assert!(
-        settings_js.contains("setActiveProfileStatus(savedStatus === null ? '' : savedStatus);")
+        settings_js.contains(
+            "clearStatusBtn.addEventListener('click', function() { submitStatus(''); });"
+        )
+    );
+    assert!(settings_js.contains("var saveLabel = initialStatus ? 'Save changes' : 'Set status';"));
+    assert!(
+        settings_js
+            .contains("setActiveProfileStatus(savedStatus === null ? nextStatus : savedStatus);")
     );
 
     assert!(views_css.contains(".settings-row-actions"));
@@ -5709,8 +5716,8 @@ fn identity_management_is_first_class_tab() {
     assert!(index.contains(r#"id="panel-settings-identity""#));
     assert!(index.contains(r#"id="settings-active-identity-desc""#));
     assert!(index.contains(r#"id="settings-identity-status-desc""#));
-    assert!(index.contains(r#"id="settings-edit-status-btn""#));
-    assert!(index.contains(r#"id="settings-clear-status-btn""#));
+    assert!(index.contains(r#"id="settings-status-action-btn""#));
+    assert!(!index.contains(r#"id="settings-clear-status-btn""#));
     assert!(index.contains(r#"id="settings-backup-identity-btn""#));
     assert!(index.contains(r#"id="settings-view-recovery-phrase-btn""#));
     let general_nav = index
@@ -5731,9 +5738,9 @@ fn identity_management_is_first_class_tab() {
     assert!(settings_js.contains("settings-backup-identity-btn"));
     assert!(settings_js.contains("settings-view-recovery-phrase-btn"));
     assert!(settings_js.contains("viewActiveRecoveryPhrase();"));
-    assert!(settings_js.contains("settings-edit-status-btn"));
-    assert!(settings_js.contains("settings-clear-status-btn"));
-    assert!(settings_js.contains("saveIdentityStatus('')"));
+    assert!(settings_js.contains("settings-status-action-btn"));
+    assert!(settings_js.contains("rs-dialog-clear-status"));
+    assert!(settings_js.contains("submitStatus('')"));
     assert!(
         settings_js.contains("window.syncSettingsIdentityActions = syncSettingsIdentityActions;")
     );
