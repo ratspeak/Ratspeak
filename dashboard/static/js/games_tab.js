@@ -114,8 +114,8 @@
         if (appId === 'chess') {
             var cs = getComputedStyle(document.documentElement);
             opts.colors = [
-                '#dce1e8',
-                '#5f7185',
+                (cs.getPropertyValue('--chess-light') || '#D4BC9E').trim(),
+                (cs.getPropertyValue('--chess-dark') || '#9B8365').trim(),
                 (cs.getPropertyValue('--accent') || '#D2693B').trim(),
                 (cs.getPropertyValue('--status-online') || '#2E8B57').trim(),
                 (cs.getPropertyValue('--ble-accent') || '#0E9AA7').trim(),

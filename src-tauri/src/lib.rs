@@ -770,6 +770,8 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::set_developer_mode,
             ratspeak_tauri::commands::interfaces::set_announce_ratspeak_usage,
             ratspeak_tauri::commands::interfaces::set_activity_identity_protection,
+            ratspeak_tauri::commands::interfaces::set_appearance,
+            ratspeak_tauri::commands::interfaces::set_native_theme,
             ratspeak_tauri::commands::interfaces::set_text_scale,
             ratspeak_tauri::commands::interfaces::api_notification_settings,
             ratspeak_tauri::commands::interfaces::set_desktop_notifications,

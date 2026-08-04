@@ -15,6 +15,7 @@ fn build_dashboard_css() {
     let out = dashboard_dir.join("static/style.css");
     let modules = [
         "00-tokens.css",
+        "00-palettes.css",
         "01-reset.css",
         "02-typography.css",
         "03-scrollbar.css",

@@ -363,6 +363,17 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    private fun applySystemBarColorMode(mode: String) {
+        if (mode != "light" && mode != "dark") return
+        val isLight = mode == "light"
+        handler.post {
+            WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = isLight
+                isAppearanceLightNavigationBars = isLight
+            }
+        }
+    }
+
     override fun onDestroy() {
         // The foreground service (RatspeakService) owns mesh lifetime, but the BLE
         // GATT handle lives on this Activity. If the Activity is destroyed, close
@@ -529,9 +540,8 @@ class MainActivity : TauriActivity() {
 
     /**
      * Poll the WebView's data-theme attribute and update system bar icon colors.
-     * Runs every 3s for 30s after page load to catch theme changes during init,
-     * then stops. User-initiated theme changes after that are cosmetic-only for
-     * the status bar until next app restart.
+     * Runs every 3s for 30s after page load as an initialization fallback.
+     * Later user changes arrive immediately through setColorMode().
      */
     private fun startThemePolling() {
         var pollCount = 0
@@ -545,15 +555,7 @@ class MainActivity : TauriActivity() {
                 ) { value ->
                     // evaluateJavascript returns JSON-quoted string e.g. "\"dark\""
                     val theme = value?.trim()?.removeSurrounding("\"") ?: ""
-                    if (theme == "light" || theme == "dark") {
-                        val isLight = theme == "light"
-                        handler.post {
-                            WindowCompat.getInsetsController(window, window.decorView).apply {
-                                isAppearanceLightStatusBars = isLight
-                                isAppearanceLightNavigationBars = isLight
-                            }
-                        }
-                    }
+                    applySystemBarColorMode(theme)
                 }
                 handler.postDelayed(this, 3000)
             }
@@ -1632,6 +1634,11 @@ class MainActivity : TauriActivity() {
      * BluetoothManager API (works on Android 13–16+).
      */
     inner class BlePermissionBridge {
+        @JavascriptInterface
+        fun setColorMode(mode: String) {
+            applySystemBarColorMode(mode)
+        }
+
         @JavascriptInterface
         fun exportIdentityBackup(fileName: String, backupBase64: String) {
             val safeName = sanitizeIdentityBackupFileName(fileName)

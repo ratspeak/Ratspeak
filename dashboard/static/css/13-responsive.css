@@ -579,6 +579,7 @@
     .log-filter, .panel-header-btn, .modal-close, .mobile-back-btn,
     .toolbar-dropdown-btn, .toolbar-dropdown-item,
     .theme-toggle-btn, .theme-toggle, .selector-badge, .settings-row,
+    .theme-family-option,
     .settings-nav-item, .settings-mobile-back-btn,
     .emoji-picker-item {
         touch-action: manipulation;
@@ -635,6 +636,8 @@
     }
 
     .theme-toggle-btn { min-width: 44px; min-height: 44px; }
+    .theme-family-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .theme-family-option:hover .theme-family-card { transform: none; }
     .selector-badge { min-height: 44px; padding: var(--space-4) var(--space-6); }
     .settings-row { min-height: 48px; }
     .settings-radio-option span { min-height: 40px; min-width: 58px; }
@@ -4176,5 +4179,11 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 @media (max-width: 380px) {
     .channel-event {
         column-gap: var(--space-4);
+    }
+}
+
+@media (max-width: 360px) {
+    [data-text-scale-tier="xlarge"] .theme-family-grid {
+        grid-template-columns: 1fr;
     }
 }

@@ -1503,6 +1503,14 @@ function applyAppSettingsPayload(data) {
     if (data.text_scale_percent !== undefined && RS.textScale) {
         RS.textScale.commit(data.text_scale_percent);
     }
+    if (RS.appearance && (data.theme_family !== undefined || data.theme_mode !== undefined)) {
+        var appearance = RS.appearance.get();
+        RS.appearance.commit(
+            data.theme_family !== undefined ? data.theme_family : appearance.family,
+            data.theme_mode !== undefined ? data.theme_mode : appearance.preference
+        );
+        syncAppearanceControls();
+    }
     var hwBadge = document.getElementById('hw-lock-timeout-select');
     if (hwBadge && data.hardware_session_timeout !== undefined) {
         var t = parseInt(data.hardware_session_timeout, 10);
@@ -1896,6 +1904,12 @@ function confirmDangerAction(action, onClose) {
             RS.invoke('api_factory_reset')
                 .then(function() {
                     if (typeof clearFirstRunAnnounceHintDone === 'function') clearFirstRunAnnounceHintDone();
+                    if (RS.appearance) {
+                        RS.appearance.commit(
+                            RS.appearance.DEFAULT_FAMILY,
+                            RS.appearance.DEFAULT_MODE
+                        );
+                    }
                     // reload() re-requests tauri://localhost/. location.href='/'
                     // breaks on dev-contaminated builds (TAURI_CONFIG leak → dev URL).
                     setTimeout(function() { window.location.reload(); }, 1500);
@@ -1924,35 +1938,134 @@ function confirmDangerAction(action, onClose) {
     });
 }
 
-var _themeToggleInitialized = false;
+var _appearanceControlsInitialized = false;
+var _appearanceSaving = false;
 var _hapticsToggleInitialized = false;
 var _textScaleInitialized = false;
 var _textScaleSaving = false;
 
-function initThemeToggle() {
+function renderThemeFamilyPicker() {
+    var grid = document.getElementById('theme-family-grid');
+    if (!grid || grid.childElementCount || !RS.appearance) return;
+
+    RS.appearance.families.forEach(function(family) {
+        var label = document.createElement('label');
+        label.className = 'theme-family-option';
+        label.setAttribute('data-family', family.id);
+        label.title = family.name + ' — ' + family.description;
+
+        var input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'settings-theme-family';
+        input.value = family.id;
+        input.setAttribute('aria-label', family.name + ': ' + family.description);
+
+        var card = document.createElement('span');
+        card.className = 'theme-family-card';
+
+        var preview = document.createElement('span');
+        preview.className = 'theme-family-preview';
+        preview.setAttribute('aria-hidden', 'true');
+        preview.style.setProperty('--preview-light-bg', family.preview.light[0]);
+        preview.style.setProperty('--preview-light-panel', family.preview.light[1]);
+        preview.style.setProperty('--preview-light-accent', family.preview.light[2]);
+        preview.style.setProperty('--preview-dark-bg', family.preview.dark[0]);
+        preview.style.setProperty('--preview-dark-panel', family.preview.dark[1]);
+        preview.style.setProperty('--preview-dark-accent', family.preview.dark[2]);
+
+        var light = document.createElement('span');
+        light.className = 'theme-family-preview-half theme-family-preview-light';
+        var dark = document.createElement('span');
+        dark.className = 'theme-family-preview-half theme-family-preview-dark';
+        preview.appendChild(light);
+        preview.appendChild(dark);
+
+        var name = document.createElement('span');
+        name.className = 'theme-family-name';
+        name.textContent = family.name;
+
+        card.appendChild(preview);
+        card.appendChild(name);
+        label.appendChild(input);
+        label.appendChild(card);
+        grid.appendChild(label);
+    });
+}
+
+function syncAppearanceControls() {
     var toggle = document.getElementById('theme-toggle');
-    if (!toggle) return;
+    var picker = document.getElementById('theme-family-picker');
+    if (!toggle || !picker || !RS.appearance) return;
 
-    var btns = toggle.querySelectorAll('.theme-toggle-btn');
-    var pref = typeof getThemePreference === 'function' ? getThemePreference() : 'auto';
-
-    // Re-sync on every call so view re-entry / identity switch refreshes it.
-    btns.forEach(function(btn) {
-        btn.classList.toggle('active', btn.getAttribute('data-theme') === pref);
+    renderThemeFamilyPicker();
+    var current = RS.appearance.get();
+    var familyInputs = picker.querySelectorAll('input[name="settings-theme-family"]');
+    familyInputs.forEach(function(input) {
+        input.checked = input.value === current.family;
+        input.disabled = _appearanceSaving;
     });
 
-    if (!_themeToggleInitialized) {
-        _themeToggleInitialized = true;
-        btns.forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var theme = this.getAttribute('data-theme');
-                if (typeof setTheme === 'function') setTheme(theme);
-                btns.forEach(function(b) {
-                    b.classList.toggle('active', b.getAttribute('data-theme') === theme);
-                });
-            });
+    var btns = toggle.querySelectorAll('.theme-toggle-btn');
+    btns.forEach(function(btn) {
+        var selected = btn.getAttribute('data-theme') === current.preference;
+        btn.classList.toggle('active', selected);
+        btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
+        btn.disabled = _appearanceSaving;
+    });
+    picker.setAttribute('aria-busy', _appearanceSaving ? 'true' : 'false');
+    toggle.setAttribute('aria-busy', _appearanceSaving ? 'true' : 'false');
+}
+
+function saveAppearance(family, preference) {
+    if (_appearanceSaving || !RS.appearance) return;
+    var previous = RS.appearance.get();
+    var next = RS.appearance.commit(family, preference);
+    _appearanceSaving = true;
+    syncAppearanceControls();
+
+    RS.invoke('set_appearance', {
+        family: next.family,
+        mode: next.preference
+    }).then(function(result) {
+        RS.appearance.commit(
+            result && result.theme_family !== undefined ? result.theme_family : next.family,
+            result && result.theme_mode !== undefined ? result.theme_mode : next.preference
+        );
+    }).catch(function(error) {
+        RS.appearance.commit(previous.family, previous.preference);
+        if (typeof showToast === 'function') {
+            showToast((error && error.message) || 'Could not save appearance', 'toast-red', 4000);
+        }
+    }).then(function() {
+        _appearanceSaving = false;
+        syncAppearanceControls();
+    });
+}
+
+function initThemeToggle() {
+    var toggle = document.getElementById('theme-toggle');
+    var picker = document.getElementById('theme-family-picker');
+    if (!toggle || !picker || !RS.appearance) return;
+
+    renderThemeFamilyPicker();
+    syncAppearanceControls();
+
+    if (_appearanceControlsInitialized) return;
+    _appearanceControlsInitialized = true;
+
+    picker.addEventListener('change', function(event) {
+        var input = event.target.closest('input[name="settings-theme-family"]');
+        if (!input || !input.checked) return;
+        var current = RS.appearance.get();
+        saveAppearance(input.value, current.preference);
+    });
+    toggle.querySelectorAll('.theme-toggle-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var current = RS.appearance.get();
+            saveAppearance(current.family, this.getAttribute('data-theme'));
         });
-    }
+    });
+    window.addEventListener('ratspeak-theme-changed', syncAppearanceControls);
 }
 
 function initHapticsToggle() {

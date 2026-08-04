@@ -71,7 +71,7 @@
 }
 
 @keyframes btnSuccessFlash {
-    0%, 40% { background: var(--accent); color: #fff; }
+    0%, 40% { background: var(--accent); color: var(--on-accent); }
     100% { background: transparent; color: inherit; }
 }
 

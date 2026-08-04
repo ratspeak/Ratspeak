@@ -47,6 +47,28 @@ use crate::helpers::sanitize_text;
 use crate::state::{ActivityRequestFence, AppState, RNodeLifecycleOperationLease};
 
 const DEFAULT_PEERS_SORT: &str = "last_seen";
+const DEFAULT_THEME_FAMILY: &str = "ratspeak";
+const DEFAULT_THEME_MODE: &str = "auto";
+
+fn normalize_theme_family(family: &str) -> Option<&'static str> {
+    match family.trim() {
+        "ratspeak" => Some("ratspeak"),
+        "nord" => Some("nord"),
+        "solarized" => Some("solarized"),
+        "gruvbox" => Some("gruvbox"),
+        "catppuccin" => Some("catppuccin"),
+        _ => None,
+    }
+}
+
+fn normalize_theme_mode(mode: &str) -> Option<&'static str> {
+    match mode.trim() {
+        "light" => Some("light"),
+        "auto" => Some("auto"),
+        "dark" => Some("dark"),
+        _ => None,
+    }
+}
 
 fn normalize_peers_sort(sort: &str) -> Option<&'static str> {
     match sort.trim() {
@@ -960,6 +982,8 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         channel_hosting_enabled,
         activity_identity_protection,
         text_scale_percent,
+        theme_family,
+        theme_mode,
     ) = db::spawn_db(state.db.clone(), |p| {
         let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
             .and_then(|v| v.parse::<u64>().ok())
@@ -975,6 +999,12 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             .and_then(|value| value.parse::<u16>().ok())
             .map(|value| (value.clamp(100, 140) + 5) / 10 * 10)
             .unwrap_or(100);
+        let theme_family = db::get_setting(&p, "theme_family")
+            .and_then(|value| normalize_theme_family(&value).map(str::to_string))
+            .unwrap_or_else(|| DEFAULT_THEME_FAMILY.to_string());
+        let theme_mode = db::get_setting(&p, "theme_mode")
+            .and_then(|value| normalize_theme_mode(&value).map(str::to_string))
+            .unwrap_or_else(|| DEFAULT_THEME_MODE.to_string());
         (
             hw_timeout,
             developer_mode,
@@ -982,10 +1012,21 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             channel_hosting_enabled,
             activity_identity_protection,
             text_scale_percent,
+            theme_family,
+            theme_mode,
         )
     })
     .await
-    .unwrap_or((0, false, "auto".to_string(), false, true, 100));
+    .unwrap_or((
+        0,
+        false,
+        "auto".to_string(),
+        false,
+        true,
+        100,
+        DEFAULT_THEME_FAMILY.to_string(),
+        DEFAULT_THEME_MODE.to_string(),
+    ));
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
         "announce_ratspeak_usage": state.announce_ratspeak_usage_enabled(),
@@ -996,7 +1037,66 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "channel_hosting_enabled": channel_hosting_enabled,
         "activity_identity_protection": activity_identity_protection,
         "text_scale_percent": text_scale_percent,
+        "theme_family": theme_family,
+        "theme_mode": theme_mode,
     }))
+}
+
+#[tauri::command]
+pub async fn set_appearance(
+    state: State<'_, Arc<AppState>>,
+    family: String,
+    mode: String,
+) -> AppResult<Value> {
+    let family = normalize_theme_family(&family)
+        .ok_or_else(|| AppError::bad_request("unknown theme family"))?;
+    let mode = normalize_theme_mode(&mode)
+        .ok_or_else(|| AppError::bad_request("theme mode must be light | auto | dark"))?;
+    let family_owned = family.to_string();
+    let mode_owned = mode.to_string();
+    let stored_family = family_owned.clone();
+    let stored_mode = mode_owned.clone();
+
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_settings(
+            &p,
+            &[
+                ("theme_family".to_string(), stored_family),
+                ("theme_mode".to_string(), stored_mode),
+            ],
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("set_appearance db task panicked"))?
+    .map_err(|error| {
+        AppError::database_unavailable(format!("Failed to save appearance: {error}"))
+    })?;
+
+    let payload = json!({
+        "theme_family": family_owned,
+        "theme_mode": mode_owned,
+    });
+    state.emit_to_all("app_settings_updated", payload.clone());
+    Ok(payload)
+}
+
+#[tauri::command]
+pub fn set_native_theme(window: tauri::WebviewWindow, theme: String) -> AppResult<Value> {
+    let theme_name = theme.trim();
+    let native_theme = match theme_name {
+        "light" => tauri::Theme::Light,
+        "dark" => tauri::Theme::Dark,
+        _ => return Err(AppError::bad_request("native theme must be light | dark")),
+    };
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    window
+        .set_theme(Some(native_theme))
+        .map_err(|error| AppError::internal(format!("Failed to update native theme: {error}")))?;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (window, native_theme);
+
+    Ok(json!({ "theme": theme_name }))
 }
 
 #[tauri::command]

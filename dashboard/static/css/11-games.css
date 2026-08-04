@@ -1206,7 +1206,7 @@
 .bottom-sheet-badge {
     display: inline-block;
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     font-size: var(--text-2xs);
     font-weight: 600;
     min-width: 18px;
@@ -1375,7 +1375,7 @@
     overflow: hidden;
     background:
         linear-gradient(135deg, rgba(var(--ble-accent-rgb), 0.24), rgba(var(--accent-rgb), 0.18)),
-        rgba(10, 14, 18, 0.72);
+        var(--chess-border);
     box-shadow: 0 18px 38px rgba(0,0,0,0.22), 0 0 0 1px rgba(255,255,255,0.06);
     user-select: none;
     -webkit-user-select: none;
@@ -1390,8 +1390,8 @@
     cursor: default;
     transition: background-color 120ms ease-out;
 }
-.chess-square.light { background: #dde3eb; }
-.chess-square.dark  { background: #586f87; }
+.chess-square.light { background: var(--chess-light); }
+.chess-square.dark  { background: var(--chess-dark); }
 .chess-square.clickable { cursor: pointer; }
 .chess-square.clickable:hover {
     filter: brightness(1.08);
@@ -1399,11 +1399,11 @@
 
 .chess-square.last-move-from,
 .chess-square.last-move-to {
-    background: color-mix(in oklch, var(--accent) 28%, var(--last-move-base, #edeed1));
+    background: color-mix(in oklch, var(--accent) 28%, var(--chess-light));
 }
 .chess-square.dark.last-move-from,
 .chess-square.dark.last-move-to {
-    background: color-mix(in oklch, var(--accent) 30%, #586f87);
+    background: color-mix(in oklch, var(--accent) 30%, var(--chess-dark));
 }
 
 .chess-square.selected {
@@ -1429,12 +1429,13 @@
 .chess-square.dark.legal-target::before { background: rgba(0,0,0,0.45); }
 
 .chess-square.in-check {
-    background: radial-gradient(circle, #e83b3b 0%, #cc3030 45%, transparent 70%),
-                var(--check-square-bg, #dce1e8);
+    background: radial-gradient(circle, rgba(var(--status-error-rgb), 0.95) 0%, rgba(var(--status-error-rgb), 0.78) 45%, transparent 70%),
+                var(--chess-light);
     animation: chessCheckPulse 1.2s ease-in-out infinite;
 }
 .chess-square.dark.in-check {
-    background: radial-gradient(circle, #e83b3b 0%, #cc3030 45%, transparent 70%), #5f7185;
+    background: radial-gradient(circle, rgba(var(--status-error-rgb), 0.95) 0%, rgba(var(--status-error-rgb), 0.78) 45%, transparent 70%),
+                var(--chess-dark);
 }
 @keyframes chessCheckPulse {
     0%, 100% { filter: brightness(1); }
@@ -1461,15 +1462,15 @@
 }
 .chess-coord-rank { top: 1px; left: 3px; }
 .chess-coord-file { bottom: 0; right: 3px; }
-.chess-square.light .chess-coord { color: #5f7185; }
-.chess-square.dark  .chess-coord { color: #dce1e8; }
+.chess-square.light .chess-coord { color: var(--chess-coord-light); }
+.chess-square.dark  .chess-coord { color: var(--chess-coord-dark); }
 
 .chess-promotion-chooser {
     position: absolute;
     z-index: 10;
     display: flex;
     flex-direction: column;
-    background: var(--surface, #fff);
+    background: var(--surface-panel);
     border-radius: var(--radius-sm);
     box-shadow: 0 4px 18px rgba(0,0,0,0.4);
     overflow: hidden;
@@ -1490,7 +1491,7 @@
 .chess-board-overlay {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    background: rgba(28,35,51,0.55);
+    background: var(--surface-overlay);
     backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
     border-radius: var(--radius-md); z-index: 2;
     font-weight: 600; color: var(--text-primary); text-align: center;
@@ -1502,7 +1503,7 @@
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     background:
         linear-gradient(135deg, rgba(var(--accent-rgb), 0.18), rgba(var(--ble-accent-rgb), 0.12)),
-        rgba(28,35,51,0.78);
+        var(--surface-overlay);
     backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
     border-radius: var(--radius-md); z-index: 2; gap: 6px;
     pointer-events: none;

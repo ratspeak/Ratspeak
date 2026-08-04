@@ -1167,7 +1167,7 @@ fn activity_identity_protection_is_default_on_durable_and_event_scoped() {
     assert!(!activity.contains("activityRevealField(event, 'destination');"));
     assert!(interfaces.contains("pub async fn set_activity_identity_protection"));
     assert!(interfaces.contains("\"activity_identity_protection\""));
-    assert!(interfaces.contains(".unwrap_or((0, false, \"auto\".to_string(), false, true, 100))"));
+    assert!(interfaces.contains(".is_none_or(|value| value != \"false\")"));
     assert!(tauri_lib.contains("set_activity_identity_protection"));
 }
 
@@ -1190,6 +1190,41 @@ fn text_scale_presets_are_durable_and_backend_validated() {
 }
 
 #[test]
+fn appearance_families_are_durable_validated_and_native_aware() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let theme = read_source(root.join("dashboard/static/js/theme.js")).expect("theme js");
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    let android = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("Android activity");
+
+    assert!(index.contains("id=\"theme-family-picker\""));
+    assert!(index.contains("id=\"theme-toggle\""));
+    for family in ["ratspeak", "nord", "solarized", "gruvbox", "catppuccin"] {
+        assert!(theme.contains(&format!("id: '{family}'")));
+        assert!(interfaces.contains(&format!("\"{family}\" => Some(\"{family}\")")));
+    }
+    assert!(theme.contains("data-theme-family"));
+    assert!(theme.contains("data-theme-preference"));
+    assert!(theme.contains("ratspeak-theme-changed"));
+    assert!(settings.contains("RS.invoke('set_appearance'"));
+    assert!(settings.contains("data.theme_family"));
+    assert!(settings.contains("data.theme_mode"));
+    assert!(interfaces.contains("pub async fn set_appearance"));
+    assert!(interfaces.contains("db::try_set_settings("));
+    assert!(interfaces.contains("pub fn set_native_theme"));
+    assert!(tauri_lib.contains("set_appearance"));
+    assert!(tauri_lib.contains("set_native_theme"));
+    assert!(android.contains("fun setColorMode(mode: String)"));
+    assert!(android.contains("applySystemBarColorMode(mode)"));
+}
+
+#[test]
 fn mobile_shells_advertise_only_portrait_orientations() {
     let root = repo_root();
     let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
@@ -1199,7 +1234,7 @@ fn mobile_shells_advertise_only_portrait_orientations() {
     let ios_project =
         read_source(root.join("src-tauri/gen/apple/project.yml")).expect("iOS project source");
 
-    assert!(manifest.contains("android:screenOrientation=\"sensorPortrait\""));
+    assert!(manifest.contains("android:screenOrientation=\"portrait\""));
     assert!(manifest.contains("tools:ignore=\"DiscouragedApi,LockedOrientationActivity\""));
     assert!(ios_info.contains("UIInterfaceOrientationPortrait"));
     assert!(!ios_info.contains("UIInterfaceOrientationLandscape"));

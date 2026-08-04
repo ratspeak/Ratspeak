@@ -7,6 +7,7 @@ OUT="$SCRIPT_DIR/static/style.css"
 
 MODULES=(
     00-tokens.css
+    00-palettes.css
     01-reset.css
     02-typography.css
     03-scrollbar.css
