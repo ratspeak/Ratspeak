@@ -23,6 +23,7 @@ pub mod rns;
 pub mod rns_config;
 pub mod rrc;
 pub mod state;
+pub mod transport_observation;
 pub mod vault;
 #[cfg(feature = "lxst-voice")]
 pub mod voice;
@@ -3812,7 +3813,7 @@ async fn push_stats_once(state: &AppState) {
 
     let (iface_result, path_result, link_result) = tokio::join!(
         handle.query_control(rns_transport::messages::TransportQuery::GetInterfaceStats),
-        handle.query_control(rns_transport::messages::TransportQuery::GetPathTable),
+        crate::transport_observation::authoritative_path_table(&handle),
         handle.query_control(rns_transport::messages::TransportQuery::GetLinkCount),
     );
 
@@ -3850,7 +3851,7 @@ async fn push_stats_once(state: &AppState) {
     };
 
     let (path_table, path_index, path_table_total, path_table_truncated) = match path_result {
-        Some(rns_transport::messages::TransportQueryResponse::PathTable(entries)) => {
+        Some(entries) => {
             cache_lxmf_route_hops_from_path_table(state, &entries);
             crate::rns::path_table_stats_snapshot(entries)
         }
@@ -4122,7 +4123,7 @@ async fn poll_stats_loop(
         let stats = {
             let (iface_result, path_result, link_result, announce_result) = tokio::join!(
                 handle.query_control(rns_transport::messages::TransportQuery::GetInterfaceStats),
-                handle.query_control(rns_transport::messages::TransportQuery::GetPathTable),
+                crate::transport_observation::authoritative_path_table(&handle),
                 handle.query_control(rns_transport::messages::TransportQuery::GetLinkCount),
                 handle.query_transport(rns_transport::messages::TransportQuery::GetRecentAnnounces),
             );
@@ -4242,7 +4243,7 @@ async fn poll_stats_loop(
 
             let (path_table, path_index, path_table_total, path_table_truncated) = match path_result
             {
-                Some(rns_transport::messages::TransportQueryResponse::PathTable(entries)) => {
+                Some(entries) => {
                     cache_lxmf_route_hops_from_path_table(&state, &entries);
                     let path_activity_ready = state
                         .path_activity_baselined

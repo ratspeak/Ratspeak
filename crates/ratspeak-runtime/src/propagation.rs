@@ -663,47 +663,34 @@ async fn transport_query(
 
 async fn relay_path_snapshot(state: &AppState) -> RelayPathSnapshot {
     let now = now_f64();
-    let Some(TransportQueryResponse::PathTable(paths)) =
-        transport_query(state, TransportQuery::GetPathTable).await
-    else {
-        return RelayPathSnapshot {
-            state: RelayPathState::TransportUnavailable,
-            live_paths: HashSet::new(),
-        };
-    };
-
-    let interface_online: Option<std::collections::HashMap<String, bool>> =
-        match transport_query(state, TransportQuery::GetInterfaceStats).await {
-            Some(TransportQueryResponse::InterfaceStats(stats)) => {
-                if stats.is_empty() {
-                    None
-                } else {
-                    Some(stats.into_iter().map(|s| (s.name, s.online)).collect())
-                }
-            }
-            _ => None,
-        };
-    let any_interface_online = interface_online
-        .as_ref()
-        .map(|m| m.values().any(|online| *online))
-        .unwrap_or(true);
-    if !any_interface_online {
+    if matches!(crate::any_interface_online_cached(state), Some(false)) {
         return RelayPathSnapshot {
             state: RelayPathState::Offline,
             live_paths: HashSet::new(),
         };
     }
 
+    let handle = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.clone()));
+    let Some(handle) = handle else {
+        return RelayPathSnapshot {
+            state: RelayPathState::TransportUnavailable,
+            live_paths: HashSet::new(),
+        };
+    };
+    let Some(paths) = crate::transport_observation::authoritative_path_table(&handle).await else {
+        return RelayPathSnapshot {
+            state: RelayPathState::TransportUnavailable,
+            live_paths: HashSet::new(),
+        };
+    };
+
     let live_paths = paths
         .into_iter()
         .filter(|entry| entry.expires > now)
-        .filter(|entry| {
-            interface_online
-                .as_ref()
-                .and_then(|m| m.get(&entry.interface))
-                .copied()
-                .unwrap_or(true)
-        })
         .map(|entry| entry.hash)
         .collect::<HashSet<_>>();
 
@@ -805,11 +792,17 @@ pub async fn request_relay_path(state: &Arc<AppState>, hash: [u8; 16]) {
         .ok()
         .and_then(|g| g.as_ref().map(|mgr| mgr.handle.transport_tx.clone()));
     if let Some(tx) = transport_tx {
-        let _ = tx
-            .send(TransportMessage::RequestPath {
+        if tx
+            .try_send(TransportMessage::RequestPath {
                 destination_hash: hash,
             })
-            .await;
+            .is_err()
+        {
+            tracing::debug!(
+                destination = %crate::short_id(&hex::encode(hash)),
+                "relay path request could not enter the transport queue"
+            );
+        }
     }
 }
 

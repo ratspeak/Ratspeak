@@ -6,10 +6,7 @@ use std::time::Duration;
 
 use rns_identity::destination::Destination;
 use rns_runtime::lifecycle::ShutdownSignal;
-use rns_transport::messages::{
-    AnnounceHandlerEvent, PathTableRpcEntry, TransportMessage, TransportQuery,
-    TransportQueryResponse,
-};
+use rns_transport::messages::{AnnounceHandlerEvent, PathTableRpcEntry, TransportMessage};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -197,6 +194,16 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         .and_then(crate::lxmf::lxmf_compression_support_db_value_from_app_data)
         .map(str::to_string);
 
+    // The announce payload is already validated by Reticulum. Make its
+    // identity material available immediately; a read-only path-table
+    // observation must never delay learning the peer's public key.
+    if let Some(ref public_key) = event.public_key
+        && let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
+    }
+
     if let Some(bytes) = event.app_data.as_deref()
         && let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
@@ -215,10 +222,8 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
 
     let triggered = if let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
+        && mgr.has_live_direct_route(event.destination_hash, now_f64())
     {
-        if let Some(ref public_key) = event.public_key {
-            mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
-        }
         mgr.router
             .trigger_outbound_for_delivery_announce(event.destination_hash)
     } else {
@@ -472,21 +477,7 @@ async fn refresh_lxmf_route_cache_and_lookup_iface(
         let rns = state.rns.read().ok()?;
         rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone())?
     };
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    if tx
-        .send(TransportMessage::Rpc {
-            query: TransportQuery::GetPathTable,
-            response_tx: resp_tx,
-        })
-        .await
-        .is_err()
-    {
-        return None;
-    }
-    let entries = match resp_rx.await {
-        Ok(TransportQueryResponse::PathTable(e)) => e,
-        _ => return None,
-    };
+    let entries = crate::transport_observation::local_path_table(&tx).await?;
     refresh_lxmf_route_cache_from_path_table(state, &entries);
     entries.iter().find(|e| e.hash == dest).and_then(|e| {
         if e.interface.is_empty() {

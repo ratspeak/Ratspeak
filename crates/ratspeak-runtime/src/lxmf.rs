@@ -31,9 +31,7 @@ use rns_identity::ratchet::{
     ReceivedRatchet, clean_received_ratchets_dir, purge_expired_ratchets_in_memory,
 };
 
-use rns_transport::messages::{
-    PathTableRpcEntry, TransportMessage, TransportQuery, TransportQueryResponse,
-};
+use rns_transport::messages::{PathTableRpcEntry, TransportMessage, TransportQuery};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::db;
@@ -2788,6 +2786,10 @@ impl LxmfManager {
             .filter(|entry| entry.expires > now)
     }
 
+    pub fn has_live_direct_route(&self, dest_hash: [u8; 16], now: f64) -> bool {
+        self.direct_route_entry(dest_hash, now).is_some()
+    }
+
     fn direct_reusable_link_state(&self, dest_hash: [u8; 16]) -> DirectReusableLinkState {
         let Some(snapshot) = self
             .link_delivery
@@ -4839,7 +4841,7 @@ pub async fn resolve_destination(
         false
     };
 
-    if let Some(entries) = query_path_table(transport_tx).await {
+    if let Some(entries) = crate::transport_observation::local_path_table(transport_tx).await {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -4922,62 +4924,6 @@ pub async fn resolve_destination(
     known && path_found
 }
 
-fn transport_response_kind(response: &TransportQueryResponse) -> &'static str {
-    match response {
-        TransportQueryResponse::PathTable(_) => "path_table",
-        TransportQueryResponse::InterfaceStats(_) => "interface_stats",
-        TransportQueryResponse::RateTable(_) => "rate_table",
-        TransportQueryResponse::Announces(_) => "announces",
-        TransportQueryResponse::RecalledDestination(_) => "recalled_destination",
-        TransportQueryResponse::IntResult(_) => "int_result",
-        TransportQueryResponse::FloatResult(_) => "float_result",
-        TransportQueryResponse::StringResult(_) => "string_result",
-        TransportQueryResponse::HashResult(_) => "hash_result",
-        TransportQueryResponse::BoolResult(_) => "bool_result",
-        TransportQueryResponse::PathStateResult(_) => "path_state_result",
-        TransportQueryResponse::BlackholeList(_) => "blackhole_list",
-        TransportQueryResponse::BlackholedDests(_) => "blackholed_dests",
-        TransportQueryResponse::Data(_) => "data",
-        TransportQueryResponse::Ok => "ok",
-        TransportQueryResponse::Error(_) => "error",
-    }
-}
-
-async fn query_path_table(
-    transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
-) -> Option<Vec<PathTableRpcEntry>> {
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    if transport_tx
-        .send(TransportMessage::Rpc {
-            query: TransportQuery::GetPathTable,
-            response_tx: resp_tx,
-        })
-        .await
-        .is_err()
-    {
-        tracing::warn!(
-            reason = "request_failed",
-            "path-table RPC failed during route-hop refresh"
-        );
-        return None;
-    }
-
-    match resp_rx.await {
-        Ok(TransportQueryResponse::PathTable(entries)) => Some(entries),
-        Ok(other) => {
-            tracing::warn!(
-                response_kind = transport_response_kind(&other),
-                "unexpected path-table RPC response"
-            );
-            None
-        }
-        Err(_) => {
-            tracing::warn!("path-table RPC response channel closed");
-            None
-        }
-    }
-}
-
 fn cache_route_hops_from_entries(state: &AppState, entries: &[PathTableRpcEntry]) {
     if let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
@@ -4990,7 +4936,7 @@ async fn refresh_route_hops_from_transport(
     state: &AppState,
     transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
 ) {
-    if let Some(entries) = query_path_table(transport_tx).await {
+    if let Some(entries) = crate::transport_observation::local_path_table(transport_tx).await {
         cache_route_hops_from_entries(state, &entries);
     }
 }
@@ -5051,13 +4997,6 @@ pub fn sanitize_stored_file_name(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn transport_response_kind_names_recalled_destinations() {
-        assert_eq!(
-            transport_response_kind(&TransportQueryResponse::RecalledDestination(None)),
-            "recalled_destination"
-        );
-    }
     use lxmf_core::constants::DELIVERY_RETRY_WAIT;
     use r2d2_sqlite::SqliteConnectionManager;
     use std::sync::atomic::{AtomicU64, Ordering};

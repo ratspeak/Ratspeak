@@ -176,10 +176,10 @@ impl RnsManager {
     }
 
     pub async fn get_path_table(&self) -> Vec<Value> {
-        match self.query(TransportQuery::GetPathTable).await {
-            Some(TransportQueryResponse::PathTable(entries)) => path_table_ui_snapshot(entries).0,
-            _ => vec![],
-        }
+        crate::transport_observation::authoritative_path_table(&self.handle)
+            .await
+            .map(|entries| path_table_ui_snapshot(entries).0)
+            .unwrap_or_default()
     }
 
     pub async fn get_rate_table(&self) -> Vec<Value> {
@@ -226,13 +226,11 @@ impl RnsManager {
 
     pub async fn build_stats_update(&self) -> Value {
         let interface_stats = self.get_interface_stats().await;
-        let (path_table, path_index, path_table_total, path_table_truncated) = match self
-            .query(TransportQuery::GetPathTable)
-            .await
-        {
-            Some(TransportQueryResponse::PathTable(entries)) => path_table_stats_snapshot(entries),
-            _ => (vec![], Value::Object(Map::new()), 0, false),
-        };
+        let (path_table, path_index, path_table_total, path_table_truncated) =
+            match crate::transport_observation::authoritative_path_table(&self.handle).await {
+                Some(entries) => path_table_stats_snapshot(entries),
+                _ => (vec![], Value::Object(Map::new()), 0, false),
+            };
         let rate_table = self.get_rate_table().await;
         let link_count = self.get_link_count().await;
 
