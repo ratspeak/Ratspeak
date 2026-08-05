@@ -5722,6 +5722,26 @@ fn message_actions_use_mobile_long_press_and_action_state() {
 }
 
 #[test]
+fn optimistic_lxmf_cancel_is_native_before_canonical_reconciliation() {
+    let root = repo_root();
+    let state = read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("state rs");
+    let messaging = read_source(root.join("crates/ratspeak-tauri/src/commands/messaging.rs"))
+        .expect("messaging command");
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+
+    assert!(state.contains("pub fn begin_lxmf_client_send"));
+    assert!(state.contains("pub fn cancel_lxmf_client_send"));
+    assert!(state.contains("pub fn publish_canonical"));
+    assert!(state.contains("self.clear_lxmf_client_sends();"));
+    assert!(messaging.contains("finalize_lxmf_client_send"));
+    assert!(messaging.contains("LxmfClientSendCancellation::Preparing"));
+    assert!(messaging.contains("LxmfClientSendCancellation::Queued"));
+    assert!(lxmf.contains("_pendingLxmfCancelByClientId[msgId] = true;"));
+    assert!(lxmf.contains("_invokeLxmfCancel(msgId).catch(function(err)"));
+    assert!(lxmf.contains("var eventMsgId = data.msg_id || data.client_msg_id;"));
+}
+
+#[test]
 fn first_run_announce_hint_waits_for_online_mobile_interface() {
     let root = repo_root();
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");

@@ -1599,6 +1599,12 @@ function _cancelLxmfSend(msgId) {
     _markLxmfMessageCancelled(msgId);
     if (!_isCanonicalLxmfMsgId(msgId)) {
         _pendingLxmfCancelByClientId[msgId] = true;
+        // Native tracks optimistic IDs before a canonical LXMF hash exists.
+        // Keep the pending fallback as well: an extremely fast click can race
+        // command admission, in which case canonical reconciliation retries.
+        _invokeLxmfCancel(msgId).catch(function(err) {
+            showToast('Cancel failed: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+        });
         return;
     }
     _invokeLxmfCancel(msgId).catch(function(err) {
@@ -1608,7 +1614,11 @@ function _cancelLxmfSend(msgId) {
 
 function _handleLxmfSendAccepted(resp, clientMsgId) {
     var serverMsgId = resp && resp.msg_id;
-    if (!serverMsgId || !clientMsgId) return;
+    if (!clientMsgId) return;
+    if (!serverMsgId) {
+        if (resp && resp.cancelled) delete _pendingLxmfCancelByClientId[clientMsgId];
+        return;
+    }
     for (var i = 0; i < lxmfConversation.length; i++) {
         if (lxmfConversation[i].id === clientMsgId) {
             lxmfConversation[i].id = serverMsgId;
@@ -1616,7 +1626,11 @@ function _handleLxmfSendAccepted(resp, clientMsgId) {
         }
     }
     _cacheActiveConversation();
-    _flushPendingLxmfCancel(clientMsgId, serverMsgId);
+    if (resp && resp.cancelled) {
+        delete _pendingLxmfCancelByClientId[clientMsgId];
+    } else {
+        _flushPendingLxmfCancel(clientMsgId, serverMsgId);
+    }
 }
 
 function cacheGet(hash) {
@@ -4260,7 +4274,11 @@ RS.listen('lxmf_step', function(data) {
                 break;
             }
         }
-        _flushPendingLxmfCancel(data.client_msg_id, data.msg_id);
+        if (data.step === 'cancelled') {
+            delete _pendingLxmfCancelByClientId[data.client_msg_id];
+        } else {
+            _flushPendingLxmfCancel(data.client_msg_id, data.msg_id);
+        }
     }
     if (data.step === 'delivered' || data.step === 'propagated' || data.step === 'failed' || data.step === 'cancelled' || data.step === 'timeout' || data.step === 'error' || data.step === 'rejected') {
         var resolvedState = (data.step === 'error') ? 'failed' : data.step;
@@ -4268,8 +4286,9 @@ RS.listen('lxmf_step', function(data) {
         // `rejected` — see db::update_message_state for the matching guard.
         var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected'];
         var matched = false;
+        var eventMsgId = data.msg_id || data.client_msg_id;
         lxmfConversation.forEach(function(msg) {
-            if (data.msg_id && msg.id === data.msg_id) {
+            if (eventMsgId && msg.id === eventMsgId) {
                 if (terminalStates.indexOf(msg.state) === -1) {
                     msg.state = resolvedState;
                     if (data.rtt_ms) msg.rtt = data.rtt_ms;
@@ -4279,7 +4298,7 @@ RS.listen('lxmf_step', function(data) {
             }
         });
         // Fallback for legacy events with no msg_id.
-        if (!matched && !data.msg_id) {
+        if (!matched && !eventMsgId) {
             for (var i = lxmfConversation.length - 1; i >= 0; i--) {
                 var msg = lxmfConversation[i];
                 if (msg.state === 'sending' || msg.state === 'sent') {
@@ -4290,6 +4309,7 @@ RS.listen('lxmf_step', function(data) {
         }
         _cacheActiveConversation();
         renderConversation();
+        if (data.client_msg_id) delete _pendingLxmfCancelByClientId[data.client_msg_id];
     }
     var inFlightSteps = [
         'sent',

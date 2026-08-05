@@ -14,13 +14,116 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
 use crate::lxmf::{
-    AttachmentMessageRequest, DeliveryPreference, DeliveryProfile, MessageSendRequest,
+    AttachmentMessageRequest, DeliveryPreference, DeliveryProfile, LxmfManager, MessageSendRequest,
     ReactionSendRequest, ReplyMessageSendRequest,
 };
-use crate::state::AppState;
+use crate::state::{
+    AppState, LxmfClientSendAdmissionError, LxmfClientSendCancellation,
+    LxmfClientSendCancellationProbe, LxmfClientSendGuard,
+};
 use ratspeak_runtime::activity::producer;
 
 const MAX_LXMF_MESSAGE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
+
+enum LxmfClientSendAttempt<T> {
+    Queued(T),
+    Cancelled,
+    Failed(producer::LxmfSubmissionFailureReason),
+}
+
+fn queue_lxmf_client_send<T>(
+    state: &AppState,
+    cancellation: Option<&LxmfClientSendCancellationProbe>,
+    queue: impl FnOnce(&mut LxmfManager) -> Option<T>,
+) -> LxmfClientSendAttempt<T> {
+    if cancellation.is_some_and(LxmfClientSendCancellationProbe::is_cancelled) {
+        return LxmfClientSendAttempt::Cancelled;
+    }
+    let send_lock_started = std::time::Instant::now();
+    let Ok(mut lxmf) = state.lxmf.lock() else {
+        return LxmfClientSendAttempt::Failed(
+            producer::LxmfSubmissionFailureReason::RouterUnavailable,
+        );
+    };
+    let waited = send_lock_started.elapsed();
+    if waited > std::time::Duration::from_secs(1) {
+        tracing::warn!(
+            waited_ms = waited.as_millis() as u64,
+            "send waited on lxmf manager lock"
+        );
+    }
+    if cancellation.is_some_and(LxmfClientSendCancellationProbe::is_cancelled) {
+        return LxmfClientSendAttempt::Cancelled;
+    }
+    let Some(manager) = lxmf.as_mut() else {
+        return LxmfClientSendAttempt::Failed(
+            producer::LxmfSubmissionFailureReason::RouterUnavailable,
+        );
+    };
+    queue(manager)
+        .map(LxmfClientSendAttempt::Queued)
+        .unwrap_or(LxmfClientSendAttempt::Failed(
+            producer::LxmfSubmissionFailureReason::PreparationFailed,
+        ))
+}
+
+fn normalize_lxmf_client_msg_id(raw: Option<&str>) -> AppResult<Option<String>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let client_msg_id = sanitize_text(raw, 128);
+    let valid = client_msg_id.len() == 36
+        && client_msg_id.starts_with("out_")
+        && validate_hex(&client_msg_id[4..], 32, 32);
+    if !valid {
+        return Err(AppError::bad_request("Invalid client message ID"));
+    }
+    Ok(Some(client_msg_id))
+}
+
+fn begin_lxmf_client_send(
+    state: &Arc<AppState>,
+    client_msg_id: Option<&String>,
+) -> AppResult<Option<LxmfClientSendGuard>> {
+    let Some(client_msg_id) = client_msg_id else {
+        return Ok(None);
+    };
+    state
+        .begin_lxmf_client_send(client_msg_id.clone())
+        .map(Some)
+        .map_err(|error| match error {
+            LxmfClientSendAdmissionError::Duplicate => {
+                AppError::conflict("Message is already being prepared")
+            }
+            LxmfClientSendAdmissionError::Capacity => {
+                AppError::service_unavailable("Too many messages are being prepared")
+            }
+        })
+}
+
+fn emit_prequeue_lxmf_cancellation(state: &AppState, client_msg_id: &str) -> Value {
+    state.emit_to_all(
+        "lxmf_step",
+        json!({
+            "step": "cancelled",
+            "client_msg_id": client_msg_id,
+        }),
+    );
+    json!({
+        "ok": true,
+        "cancelled": true,
+        "client_msg_id": client_msg_id,
+    })
+}
+
+fn cancelled_lxmf_client_send_response(
+    state: &AppState,
+    guard: Option<&LxmfClientSendGuard>,
+) -> Option<Value> {
+    guard
+        .filter(|guard| guard.is_cancelled())
+        .map(|guard| emit_prequeue_lxmf_cancellation(state, guard.client_msg_id()))
+}
 
 fn activity_lxmf_delivery_method(
     method: lxmf_core::constants::DeliveryMethod,
@@ -277,7 +380,7 @@ fn destination_identity_known(state: &AppState, dest_hash: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn schedule_announce_after_user_send(
+pub(crate) fn schedule_announce_after_user_send_from_origin(
     state: &Arc<AppState>,
     dest_hash: &str,
     activity_fence: crate::state::ActivityRequestFence,
@@ -378,7 +481,7 @@ pub async fn send_lxmf_message(
     let content = sanitize_message_content(&args.content)?;
     let title = sanitize_text(args.title.as_deref().unwrap_or(""), 256);
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
-    let client_msg_id = args.client_msg_id.clone();
+    let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
 
     if !validate_hex(&dest_hash, 16, 64) {
         state.emit_to_all(
@@ -395,66 +498,66 @@ pub async fn send_lxmf_message(
         return Err(AppError::bad_request("Empty message"));
     }
     validate_delivery_preference(&state, delivery_pref)?;
+    let state_arc = Arc::clone(&state);
+    let client_send = begin_lxmf_client_send(&state_arc, client_msg_id.as_ref())?;
 
     let activity_fence = state.activity_request_fence();
     let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
-    ensure_propagation_ready_for_send(
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    let propagation_readiness = ensure_propagation_ready_for_send(
         &state,
         &dest_hash,
         delivery_pref,
         DeliveryProfile::Message,
         client_msg_id.as_deref(),
     )
-    .await?;
+    .await;
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    propagation_readiness?;
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
     let ct = content.clone();
     let tt = title.clone();
     let id_c = identity_id.clone();
-    let send_result = tokio::task::spawn_blocking(
-        move || -> Result<_, producer::LxmfSubmissionFailureReason> {
-            let send_lock_started = std::time::Instant::now();
-            let mut lxmf = st
-                .lxmf
-                .lock()
-                .map_err(|_| producer::LxmfSubmissionFailureReason::RouterUnavailable)?;
-            let waited = send_lock_started.elapsed();
-            if waited > std::time::Duration::from_secs(1) {
-                tracing::warn!(
-                    waited_ms = waited.as_millis() as u64,
-                    "send waited on lxmf manager lock"
-                );
-            }
-            let mgr = lxmf
-                .as_mut()
-                .ok_or(producer::LxmfSubmissionFailureReason::RouterUnavailable)?;
-            mgr.send_message_with_preference_report(MessageSendRequest {
-                dest_hash_hex: &dh,
-                content: &ct,
-                title: &tt,
-                db_pool: &st.db,
-                identity_id: &id_c,
-                preference: delivery_pref,
-                profile: DeliveryProfile::Message,
-            })
-            .map_err(|_| producer::LxmfSubmissionFailureReason::PreparationFailed)
-        },
-    )
+    let cancellation = client_send
+        .as_ref()
+        .map(LxmfClientSendGuard::cancellation_probe);
+    let send_result = tokio::task::spawn_blocking(move || {
+        queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
+            manager
+                .send_message_with_preference_report(MessageSendRequest {
+                    dest_hash_hex: &dh,
+                    content: &ct,
+                    title: &tt,
+                    db_pool: &st.db,
+                    identity_id: &id_c,
+                    preference: delivery_pref,
+                    profile: DeliveryProfile::Message,
+                })
+                .ok()
+        })
+    })
     .await
     .map_err(|_| AppError::internal("send_message task panicked"))?;
 
     match send_result {
-        Ok(queued) => {
+        LxmfClientSendAttempt::Queued(queued) => {
             let id = queued.message_id;
-            schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
+            if finalize_lxmf_client_send(&state_arc, client_send.as_ref(), &id).await? {
+                return Ok(json!({
+                    "msg_id": id,
+                    "client_msg_id": client_msg_id,
+                    "cancelled": true,
+                }));
+            }
+            schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
             record_lxmf_delivery_queued(&state, activity_fence, &id, &dest_hash, queued.method);
             state.lxmf_notify.notify_one();
-            if let Some(ref cid) = client_msg_id
-                && let Ok(mut map) = state.msg_id_map.lock()
-            {
-                map.insert(id.clone(), cid.clone());
-            }
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -467,7 +570,11 @@ pub async fn send_lxmf_message(
             broadcast_conversations(Arc::clone(&state));
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
         }
-        Err(reason) => {
+        LxmfClientSendAttempt::Cancelled => Ok(emit_prequeue_lxmf_cancellation(
+            &state,
+            client_msg_id.as_deref().unwrap_or_default(),
+        )),
+        LxmfClientSendAttempt::Failed(reason) => {
             record_lxmf_submission_failed(&state, activity_fence, &dest_hash, reason);
             let (message, error) = match reason {
                 producer::LxmfSubmissionFailureReason::RouterUnavailable => (
@@ -567,7 +674,7 @@ pub async fn send_reaction(
     .await
     .unwrap_or(false);
     if sent {
-        schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
+        schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
         state.lxmf_notify.notify_one();
         let mid_for_db = message_id.clone();
         let id_for_db = identity_id.clone();
@@ -623,7 +730,7 @@ pub async fn send_lxmf_reply(
         })
         .unwrap_or_else(|| reply_to_id.clone());
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
-    let client_msg_id = args.client_msg_id.clone();
+    let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
 
     if !validate_hex(&dest_hash, 16, 64) || content.is_empty() {
         state.emit_to_all(
@@ -633,62 +740,64 @@ pub async fn send_lxmf_reply(
         return Err(AppError::bad_request("Invalid reply"));
     }
     validate_delivery_preference(&state, delivery_pref)?;
+    let state_arc = Arc::clone(&state);
+    let client_send = begin_lxmf_client_send(&state_arc, client_msg_id.as_ref())?;
     let activity_fence = state.activity_request_fence();
 
     let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
-    ensure_propagation_ready_for_send(
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    let propagation_readiness = ensure_propagation_ready_for_send(
         &state,
         &dest_hash,
         delivery_pref,
         DeliveryProfile::Message,
         client_msg_id.as_deref(),
     )
-    .await?;
+    .await;
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    propagation_readiness?;
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
     let ct = content.clone();
     let id_c = identity_id.clone();
     let reply_id_for_send = wire_reply_to_id.clone();
+    let cancellation = client_send
+        .as_ref()
+        .map(LxmfClientSendGuard::cancellation_probe);
     let msg_id = tokio::task::spawn_blocking(move || {
-        let send_lock_started = std::time::Instant::now();
-        if let Ok(mut lxmf) = st.lxmf.lock() {
-            let waited = send_lock_started.elapsed();
-            if waited > std::time::Duration::from_secs(1) {
-                tracing::warn!(
-                    waited_ms = waited.as_millis() as u64,
-                    "send waited on lxmf manager lock"
-                );
-            }
-            lxmf.as_mut().and_then(|mgr| {
-                mgr.send_reply_with_preference(ReplyMessageSendRequest {
-                    dest_hash_hex: &dh,
-                    content: &ct,
-                    title: "",
-                    reply_to_id: &reply_id_for_send,
-                    reply_to_preview: &reply_to_preview,
-                    db_pool: &st.db,
-                    identity_id: &id_c,
-                    preference: delivery_pref,
-                    profile: DeliveryProfile::Message,
-                })
+        queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
+            manager.send_reply_with_preference(ReplyMessageSendRequest {
+                dest_hash_hex: &dh,
+                content: &ct,
+                title: "",
+                reply_to_id: &reply_id_for_send,
+                reply_to_preview: &reply_to_preview,
+                db_pool: &st.db,
+                identity_id: &id_c,
+                preference: delivery_pref,
+                profile: DeliveryProfile::Message,
             })
-        } else {
-            None
-        }
+        })
     })
     .await
     .map_err(|_| AppError::internal("send_reply task panicked"))?;
 
     match msg_id {
-        Some(id) => {
-            schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
-            state.lxmf_notify.notify_one();
-            if let Some(ref cid) = client_msg_id
-                && let Ok(mut map) = state.msg_id_map.lock()
-            {
-                map.insert(id.clone(), cid.clone());
+        LxmfClientSendAttempt::Queued(id) => {
+            if finalize_lxmf_client_send(&state_arc, client_send.as_ref(), &id).await? {
+                return Ok(json!({
+                    "msg_id": id,
+                    "client_msg_id": client_msg_id,
+                    "cancelled": true,
+                }));
             }
+            schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
+            state.lxmf_notify.notify_one();
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -701,7 +810,11 @@ pub async fn send_lxmf_reply(
             broadcast_conversations(Arc::clone(&state));
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
         }
-        None => {
+        LxmfClientSendAttempt::Cancelled => Ok(emit_prequeue_lxmf_cancellation(
+            &state,
+            client_msg_id.as_deref().unwrap_or_default(),
+        )),
+        LxmfClientSendAttempt::Failed(_) => {
             state.emit_to_all(
                 "lxmf_step",
                 json!({ "step": "error", "message": "LXMF not initialized" }),
@@ -731,7 +844,7 @@ pub async fn send_lxmf_propagated(
     let dest_hash = sanitize_text(&args.dest_hash, 128);
     let content = sanitize_message_content(&args.content)?;
     let title = sanitize_text(args.title.as_deref().unwrap_or(""), 200);
-    let client_msg_id = args.client_msg_id.clone();
+    let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
 
     if !validate_hex(&dest_hash, 16, 64) {
         state.emit_to_all(
@@ -749,54 +862,61 @@ pub async fn send_lxmf_propagated(
     }
 
     validate_delivery_preference(&state, DeliveryPreference::Propagated)?;
+    let state_arc = Arc::clone(&state);
+    let client_send = begin_lxmf_client_send(&state_arc, client_msg_id.as_ref())?;
 
     let activity_fence = state.activity_request_fence();
     // Propagation still needs the recipient identity for encryption.
     let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
-    ensure_propagation_ready_for_send(
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    let propagation_readiness = ensure_propagation_ready_for_send(
         &state,
         &dest_hash,
         DeliveryPreference::Propagated,
         DeliveryProfile::Message,
         client_msg_id.as_deref(),
     )
-    .await?;
+    .await;
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    propagation_readiness?;
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
     let ct = content.clone();
     let tt = title.clone();
     let id_c = identity_id.clone();
+    let cancellation = client_send
+        .as_ref()
+        .map(LxmfClientSendGuard::cancellation_probe);
     let msg_id = tokio::task::spawn_blocking(move || {
-        let send_lock_started = std::time::Instant::now();
-        if let Ok(mut lxmf) = st.lxmf.lock() {
-            let waited = send_lock_started.elapsed();
-            if waited > std::time::Duration::from_secs(1) {
-                tracing::warn!(
-                    waited_ms = waited.as_millis() as u64,
-                    "send waited on lxmf manager lock"
-                );
-            }
-            lxmf.as_mut().and_then(|mgr| {
-                mgr.send_message_with_method(
-                    &dh,
-                    &ct,
-                    &tt,
-                    &st.db,
-                    &id_c,
-                    DeliveryMethod::Propagated,
-                )
-            })
-        } else {
-            None
-        }
+        queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
+            manager.send_message_with_method(
+                &dh,
+                &ct,
+                &tt,
+                &st.db,
+                &id_c,
+                DeliveryMethod::Propagated,
+            )
+        })
     })
     .await
     .map_err(|_| AppError::internal("send_propagated task panicked"))?;
 
     match msg_id {
-        Some(id) => {
-            schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
+        LxmfClientSendAttempt::Queued(id) => {
+            if finalize_lxmf_client_send(&state_arc, client_send.as_ref(), &id).await? {
+                return Ok(json!({
+                    "msg_id": id,
+                    "client_msg_id": client_msg_id,
+                    "cancelled": true,
+                }));
+            }
+            schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
             record_lxmf_delivery_queued(
                 &state,
                 activity_fence,
@@ -805,11 +925,6 @@ pub async fn send_lxmf_propagated(
                 DeliveryMethod::Propagated,
             );
             state.lxmf_notify.notify_one();
-            if let Some(ref cid) = client_msg_id
-                && let Ok(mut map) = state.msg_id_map.lock()
-            {
-                map.insert(id.clone(), cid.clone());
-            }
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -822,7 +937,11 @@ pub async fn send_lxmf_propagated(
             broadcast_conversations(Arc::clone(&state));
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
         }
-        None => {
+        LxmfClientSendAttempt::Cancelled => Ok(emit_prequeue_lxmf_cancellation(
+            &state,
+            client_msg_id.as_deref().unwrap_or_default(),
+        )),
+        LxmfClientSendAttempt::Failed(_) => {
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -863,7 +982,7 @@ pub async fn send_lxmf_with_attachment(
     let dest_hash = sanitize_text(&args.dest_hash, 128);
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
-    let client_msg_id = args.client_msg_id.clone();
+    let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
 
     let is_image = args.image_data.as_deref().is_some_and(|s| !s.is_empty());
     let image_mime = if is_image {
@@ -916,6 +1035,8 @@ pub async fn send_lxmf_with_attachment(
             "Attachment exceeds protocol resource limit",
         ));
     }
+    let state_arc = Arc::clone(&state);
+    let client_send = begin_lxmf_client_send(&state_arc, client_msg_id.as_ref())?;
 
     let file_bytes = B64.decode(file_data_b64).map_err(|_| {
         state.emit_to_all(
@@ -936,14 +1057,21 @@ pub async fn send_lxmf_with_attachment(
 
     let activity_fence = state.activity_request_fence();
     let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
-    ensure_propagation_ready_for_send(
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    let propagation_readiness = ensure_propagation_ready_for_send(
         &state,
         &dest_hash,
         delivery_pref,
         DeliveryProfile::Attachment,
         client_msg_id.as_deref(),
     )
-    .await?;
+    .await;
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    propagation_readiness?;
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
@@ -951,53 +1079,44 @@ pub async fn send_lxmf_with_attachment(
     let fn_c = file_name.clone();
     let im = image_mime.clone();
     let id_c = identity_id.clone();
+    let cancellation = client_send
+        .as_ref()
+        .map(LxmfClientSendGuard::cancellation_probe);
     let msg_id = tokio::task::spawn_blocking(move || {
-        let send_lock_started = std::time::Instant::now();
-        if let Ok(mut lxmf) = st.lxmf.lock() {
-            let waited = send_lock_started.elapsed();
-            if waited > std::time::Duration::from_secs(1) {
-                tracing::warn!(
-                    waited_ms = waited.as_millis() as u64,
-                    "send waited on lxmf manager lock"
-                );
-            }
-            if let Some(mgr) = lxmf.as_mut() {
-                // Append "[File: …]" so non-attachment clients see the name.
-                let msg_content = if ct.is_empty() {
-                    format!("[File: {}]", fn_c)
-                } else {
-                    format!("{}\n[File: {}]", ct, fn_c)
-                };
-                mgr.send_message_with_attachment_fields_preference(AttachmentMessageRequest {
-                    dest_hash_hex: &dh,
-                    content: &msg_content,
-                    title: "",
-                    file_name: &fn_c,
-                    file_bytes: &file_bytes,
-                    is_image,
-                    image_mime: &im,
-                    db_pool: &st.db,
-                    identity_id: &id_c,
-                    preference: delivery_pref,
-                })
-            } else {
-                None
-            }
+        // Append "[File: …]" so non-attachment clients see the name.
+        let msg_content = if ct.is_empty() {
+            format!("[File: {}]", fn_c)
         } else {
-            None
-        }
+            format!("{}\n[File: {}]", ct, fn_c)
+        };
+        queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
+            manager.send_message_with_attachment_fields_preference(AttachmentMessageRequest {
+                dest_hash_hex: &dh,
+                content: &msg_content,
+                title: "",
+                file_name: &fn_c,
+                file_bytes: &file_bytes,
+                is_image,
+                image_mime: &im,
+                db_pool: &st.db,
+                identity_id: &id_c,
+                preference: delivery_pref,
+            })
+        })
     })
     .await
     .map_err(|_| AppError::internal("send_attachment task panicked"))?;
 
     match msg_id {
-        Some(id) => {
-            schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
-            if let Some(ref cid) = client_msg_id
-                && let Ok(mut map) = state.msg_id_map.lock()
-            {
-                map.insert(id.clone(), cid.clone());
+        LxmfClientSendAttempt::Queued(id) => {
+            if finalize_lxmf_client_send(&state_arc, client_send.as_ref(), &id).await? {
+                return Ok(json!({
+                    "msg_id": id,
+                    "client_msg_id": client_msg_id,
+                    "cancelled": true,
+                }));
             }
+            schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -1011,7 +1130,11 @@ pub async fn send_lxmf_with_attachment(
             state.lxmf_notify.notify_one();
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
         }
-        None => {
+        LxmfClientSendAttempt::Cancelled => Ok(emit_prequeue_lxmf_cancellation(
+            &state,
+            client_msg_id.as_deref().unwrap_or_default(),
+        )),
+        LxmfClientSendAttempt::Failed(_) => {
             state.emit_to_all(
                 "lxmf_step",
                 json!({ "step": "error", "message": "LXMF not initialized" }),
@@ -1041,24 +1164,13 @@ fn resolve_lxmf_message_id_for_cancel(
     })
 }
 
-#[tauri::command]
-pub async fn cancel_lxmf_message(
-    state: State<'_, Arc<AppState>>,
-    args: CancelLxmfMessageArgs,
-) -> AppResult<Value> {
-    let requested_msg_id = sanitize_text(&args.msg_id, 128);
-    let Some((msg_id, client_msg_id)) =
-        resolve_lxmf_message_id_for_cancel(&state, &requested_msg_id)
-    else {
-        return Ok(json!({
-            "ok": true,
-            "cancelled": false,
-            "msg_id": requested_msg_id,
-        }));
-    };
-
-    let st: Arc<AppState> = Arc::clone(&state);
-    let msg_id_for_cancel = msg_id.clone();
+async fn cancel_canonical_lxmf_message(
+    state: &Arc<AppState>,
+    msg_id: &str,
+    client_msg_id: Option<&str>,
+) -> AppResult<bool> {
+    let st = Arc::clone(state);
+    let msg_id_for_cancel = msg_id.to_string();
     let transport_cancelled = tokio::task::spawn_blocking(move || {
         st.lxmf
             .lock()
@@ -1072,8 +1184,8 @@ pub async fn cancel_lxmf_message(
     .await
     .map_err(|_| AppError::internal("cancel_lxmf_message task panicked"))?;
 
-    let msg_id_for_db = msg_id.clone();
-    let identity_for_db = active_identity_id(&state);
+    let msg_id_for_db = msg_id.to_string();
+    let identity_for_db = active_identity_id(state);
     let (db_cancelled, method) = db::spawn_db(state.db.clone(), move |p| {
         let db_cancelled = db::cancel_outbound_message_state(&p, &msg_id_for_db, &identity_for_db);
         let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
@@ -1085,23 +1197,85 @@ pub async fn cancel_lxmf_message(
     let cancelled = transport_cancelled || db_cancelled;
     if cancelled {
         if let Ok(mut times) = state.message_send_times.lock() {
-            times.remove(&msg_id);
+            times.remove(msg_id);
         }
         if let Ok(mut map) = state.msg_id_map.lock() {
-            map.remove(&msg_id);
+            map.remove(msg_id);
         }
         state.emit_to_all(
             "lxmf_step",
             json!({
                 "step": "cancelled",
-                "msg_id": msg_id.clone(),
-                "client_msg_id": client_msg_id.clone(),
+                "msg_id": msg_id,
+                "client_msg_id": client_msg_id,
                 "method": method,
             }),
         );
-        broadcast_conversations(Arc::clone(&state));
+        broadcast_conversations(Arc::clone(state));
         state.lxmf_notify.notify_one();
     }
+    Ok(cancelled)
+}
+
+async fn finalize_lxmf_client_send(
+    state: &Arc<AppState>,
+    guard: Option<&LxmfClientSendGuard>,
+    canonical_msg_id: &str,
+) -> AppResult<bool> {
+    let Some(guard) = guard else {
+        return Ok(false);
+    };
+    if let Ok(mut map) = state.msg_id_map.lock() {
+        map.insert(
+            canonical_msg_id.to_string(),
+            guard.client_msg_id().to_string(),
+        );
+    }
+    if !guard.publish_canonical(canonical_msg_id) {
+        return Ok(false);
+    }
+
+    let cancelled =
+        cancel_canonical_lxmf_message(state, canonical_msg_id, Some(guard.client_msg_id())).await?;
+    if !cancelled {
+        return Err(AppError::internal(
+            "Queued message could not be cancelled before delivery",
+        ));
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn cancel_lxmf_message(
+    state: State<'_, Arc<AppState>>,
+    args: CancelLxmfMessageArgs,
+) -> AppResult<Value> {
+    let requested_msg_id = sanitize_text(&args.msg_id, 128);
+    if requested_msg_id.is_empty() {
+        return Err(AppError::bad_request("Missing message ID"));
+    }
+
+    let (msg_id, client_msg_id) = match state.cancel_lxmf_client_send(&requested_msg_id) {
+        LxmfClientSendCancellation::Preparing => {
+            return Ok(emit_prequeue_lxmf_cancellation(&state, &requested_msg_id));
+        }
+        LxmfClientSendCancellation::Queued { canonical_msg_id } => {
+            (canonical_msg_id, Some(requested_msg_id.clone()))
+        }
+        LxmfClientSendCancellation::NotFound => {
+            let Some(resolved) = resolve_lxmf_message_id_for_cancel(&state, &requested_msg_id)
+            else {
+                return Ok(json!({
+                    "ok": true,
+                    "cancelled": false,
+                    "msg_id": requested_msg_id,
+                }));
+            };
+            resolved
+        }
+    };
+    let cancelled =
+        cancel_canonical_lxmf_message(&state, &msg_id, client_msg_id.as_deref()).await?;
 
     Ok(json!({
         "ok": true,
@@ -1391,6 +1565,24 @@ mod tests {
             ensure_filename_extension("archive", "", "attachment"),
             "archive"
         );
+    }
+
+    #[test]
+    fn optimistic_message_ids_use_the_bounded_native_namespace() {
+        let valid = format!("out_{}", "a".repeat(32));
+        assert_eq!(
+            normalize_lxmf_client_msg_id(Some(&valid)).unwrap(),
+            Some(valid)
+        );
+        assert!(normalize_lxmf_client_msg_id(None).unwrap().is_none());
+        for invalid in [
+            "",
+            "out_short",
+            "out_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ] {
+            assert!(normalize_lxmf_client_msg_id(Some(invalid)).is_err());
+        }
     }
 
     /// Catches column-name drift between inline SQL and schema in `db.rs`.

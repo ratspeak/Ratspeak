@@ -33,6 +33,7 @@ const BLE_RNODE_ACTIVITY_OPERATION_TTL: Duration = Duration::from_secs(240);
 // covers that ten-minute worst case with a five-minute scheduler/cleanup margin
 // while still reclaiming abandoned session-local leases.
 const RNODE_LIFECYCLE_OPERATION_TTL: Duration = Duration::from_secs(15 * 60);
+const MAX_PENDING_LXMF_CLIENT_SENDS: usize = 256;
 
 /// Snapshot used to reject an Activity command that was queued before either
 /// an identity transition or a same-identity runtime privacy reset. Callers
@@ -43,6 +44,109 @@ pub struct ActivityRequestFence {
     identity_session_generation: u64,
     activity_boundary_generation: u64,
     identity_lock_epoch: u64,
+}
+
+/// Admission failure for an optimistic WebView message identifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LxmfClientSendAdmissionError {
+    Duplicate,
+    Capacity,
+}
+
+/// Result of cancelling an identity-scoped outbound operation by the
+/// optimistic identifier created in the WebView.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LxmfClientSendCancellation {
+    NotFound,
+    Preparing,
+    Queued { canonical_msg_id: String },
+}
+
+struct LxmfClientSendOperation {
+    identity_generation: u64,
+    cancelled: Arc<AtomicBool>,
+    canonical_msg_id: Option<String>,
+}
+
+/// RAII lease for a client-ID-bearing LXMF submission.
+///
+/// The cancellation flag can be observed from a blocking router task without
+/// holding the registry lock. Publishing the canonical hash closes the race
+/// between the final pre-queue check and insertion into the LXMF router.
+pub struct LxmfClientSendGuard {
+    state: Arc<AppState>,
+    client_msg_id: String,
+    identity_generation: u64,
+    cancelled: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub struct LxmfClientSendCancellationProbe {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl LxmfClientSendCancellationProbe {
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+impl LxmfClientSendGuard {
+    pub fn client_msg_id(&self) -> &str {
+        &self.client_msg_id
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub fn cancellation_probe(&self) -> LxmfClientSendCancellationProbe {
+        LxmfClientSendCancellationProbe {
+            cancelled: Arc::clone(&self.cancelled),
+        }
+    }
+
+    /// Publish the canonical LXMF hash. Returns true when cancellation won
+    /// either before publication or concurrently with it. A missing/stale
+    /// operation fails closed so an identity transition cannot leak a send.
+    pub fn publish_canonical(&self, canonical_msg_id: &str) -> bool {
+        let mut operations = self
+            .state
+            .lxmf_client_sends
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(operation) = operations.get_mut(&self.client_msg_id) else {
+            return true;
+        };
+        if operation.identity_generation != self.identity_generation
+            || !Arc::ptr_eq(&operation.cancelled, &self.cancelled)
+            || self.state.current_identity_session_generation() != self.identity_generation
+        {
+            operation.cancelled.store(true, Ordering::SeqCst);
+            return true;
+        }
+        operation.canonical_msg_id = Some(canonical_msg_id.to_string());
+        operation.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for LxmfClientSendGuard {
+    fn drop(&mut self) {
+        let mut operations = self
+            .state
+            .lxmf_client_sends
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let remove = operations
+            .get(&self.client_msg_id)
+            .is_some_and(|operation| {
+                operation.identity_generation == self.identity_generation
+                    && Arc::ptr_eq(&operation.cancelled, &self.cancelled)
+            });
+        if remove {
+            operations.remove(&self.client_msg_id);
+        }
+    }
 }
 
 /// Opaque ownership token for one installed RNS runtime session.
@@ -298,6 +402,9 @@ pub struct AppState {
     /// `seen_announce_hashes`; prevents cached announces from replaying as live.
     pub announce_activity_baselined: AtomicBool,
     pub msg_id_map: Mutex<HashMap<String, String>>,
+    /// Identity-scoped optimistic client IDs that have entered native send
+    /// preparation but may not have a canonical LXMF message hash yet.
+    lxmf_client_sends: Mutex<HashMap<String, LxmfClientSendOperation>>,
     /// LRGP msg_id → originating session for delivery-state routing.
     pub lrgp_msg_to_session: Mutex<HashMap<String, LrgpMsgMeta>>,
     pub session_shutdown: RwLock<ShutdownSignal>,
@@ -495,6 +602,7 @@ impl AppState {
             seen_announce_hashes: Mutex::new(std::collections::HashSet::new()),
             announce_activity_baselined: AtomicBool::new(false),
             msg_id_map: Mutex::new(HashMap::new()),
+            lxmf_client_sends: Mutex::new(HashMap::new()),
             lrgp_msg_to_session: Mutex::new(HashMap::new()),
             session_shutdown: RwLock::new(ShutdownSignal::new()),
             is_foreground: Arc::new(AtomicBool::new(true)),
@@ -620,6 +728,89 @@ impl AppState {
 
     pub fn current_identity_session_generation(&self) -> u64 {
         self.identity_session_generation.load(Ordering::SeqCst)
+    }
+
+    /// Register one optimistic WebView message ID before the command performs
+    /// any asynchronous preparation. The returned guard removes only its own
+    /// generation on drop, so a stale completion cannot erase a replacement.
+    pub fn begin_lxmf_client_send(
+        self: &Arc<Self>,
+        client_msg_id: String,
+    ) -> Result<LxmfClientSendGuard, LxmfClientSendAdmissionError> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut operations = self
+            .lxmf_client_sends
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let identity_generation = self.current_identity_session_generation();
+        operations.retain(|_, operation| {
+            let current = operation.identity_generation == identity_generation;
+            if !current {
+                operation.cancelled.store(true, Ordering::SeqCst);
+            }
+            current
+        });
+        if operations.contains_key(&client_msg_id) {
+            return Err(LxmfClientSendAdmissionError::Duplicate);
+        }
+        if operations.len() >= MAX_PENDING_LXMF_CLIENT_SENDS {
+            return Err(LxmfClientSendAdmissionError::Capacity);
+        }
+        operations.insert(
+            client_msg_id.clone(),
+            LxmfClientSendOperation {
+                identity_generation,
+                cancelled: Arc::clone(&cancelled),
+                canonical_msg_id: None,
+            },
+        );
+        drop(operations);
+
+        Ok(LxmfClientSendGuard {
+            state: Arc::clone(self),
+            client_msg_id,
+            identity_generation,
+            cancelled,
+        })
+    }
+
+    /// Cancel a client-ID-bearing operation whether it is still preparing or
+    /// has already published its canonical LXMF message hash.
+    pub fn cancel_lxmf_client_send(&self, client_msg_id: &str) -> LxmfClientSendCancellation {
+        let mut operations = self
+            .lxmf_client_sends
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let identity_generation = self.current_identity_session_generation();
+        let stale = operations
+            .get(client_msg_id)
+            .is_some_and(|operation| operation.identity_generation != identity_generation);
+        if stale {
+            if let Some(operation) = operations.remove(client_msg_id) {
+                operation.cancelled.store(true, Ordering::SeqCst);
+            }
+            return LxmfClientSendCancellation::NotFound;
+        }
+        let Some(operation) = operations.get_mut(client_msg_id) else {
+            return LxmfClientSendCancellation::NotFound;
+        };
+        operation.cancelled.store(true, Ordering::SeqCst);
+        match operation.canonical_msg_id.clone() {
+            Some(canonical_msg_id) => LxmfClientSendCancellation::Queued { canonical_msg_id },
+            None => LxmfClientSendCancellation::Preparing,
+        }
+    }
+
+    fn clear_lxmf_client_sends(&self) {
+        let mut operations = self
+            .lxmf_client_sends
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for operation in operations.values() {
+            operation.cancelled.store(true, Ordering::SeqCst);
+        }
+        operations.clear();
     }
 
     pub fn current_activity_boundary_generation(&self) -> u64 {
@@ -1296,6 +1487,7 @@ impl AppState {
         if let Ok(mut map) = self.msg_id_map.lock() {
             map.clear();
         }
+        self.clear_lxmf_client_sends();
         if let Ok(mut sessions) = self.lrgp_msg_to_session.lock() {
             sessions.clear();
         }
@@ -1655,6 +1847,75 @@ mod tests {
 
     fn make_state() -> AppState {
         make_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    #[test]
+    fn lxmf_client_send_can_be_cancelled_before_canonical_publication() {
+        let state = Arc::new(make_state());
+        let guard = state
+            .begin_lxmf_client_send("client-before-queue".to_string())
+            .unwrap();
+
+        assert_eq!(
+            state.cancel_lxmf_client_send("client-before-queue"),
+            LxmfClientSendCancellation::Preparing
+        );
+        assert!(guard.is_cancelled());
+        assert!(guard.publish_canonical(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn lxmf_client_send_cancel_resolves_published_canonical_hash() {
+        let state = Arc::new(make_state());
+        let guard = state
+            .begin_lxmf_client_send("client-after-queue".to_string())
+            .unwrap();
+        let canonical_msg_id = "b".repeat(64);
+
+        assert!(!guard.publish_canonical(&canonical_msg_id));
+        assert_eq!(
+            state.cancel_lxmf_client_send("client-after-queue"),
+            LxmfClientSendCancellation::Queued { canonical_msg_id }
+        );
+        assert!(guard.is_cancelled());
+    }
+
+    #[test]
+    fn lxmf_client_send_publication_fails_closed_after_identity_change() {
+        let state = Arc::new(make_state());
+        let guard = state
+            .begin_lxmf_client_send("identity-race".to_string())
+            .unwrap();
+
+        state.bump_identity_session_generation();
+        assert!(guard.publish_canonical(&"c".repeat(64)));
+        assert!(guard.is_cancelled());
+    }
+
+    #[test]
+    fn lxmf_client_send_stale_guard_cannot_remove_replacement() {
+        let state = Arc::new(make_state());
+        let stale = state
+            .begin_lxmf_client_send("reused-client-id".to_string())
+            .unwrap();
+        assert!(matches!(
+            state.begin_lxmf_client_send("reused-client-id".to_string()),
+            Err(LxmfClientSendAdmissionError::Duplicate)
+        ));
+
+        state.bump_identity_session_generation();
+        state.clear_identity_scoped_runtime_state();
+        assert!(stale.is_cancelled());
+
+        let replacement = state
+            .begin_lxmf_client_send("reused-client-id".to_string())
+            .unwrap();
+        drop(stale);
+        assert_eq!(
+            state.cancel_lxmf_client_send("reused-client-id"),
+            LxmfClientSendCancellation::Preparing
+        );
+        assert!(replacement.is_cancelled());
     }
 
     #[test]

@@ -363,7 +363,7 @@ pub async fn send_game_action(
 
     match msg_id {
         Some(id) => {
-            crate::commands::messaging::schedule_announce_after_user_send(
+            crate::commands::messaging::schedule_announce_after_user_send_from_origin(
                 &state_arc,
                 &dest_hash,
                 activity_origin,
@@ -747,7 +747,7 @@ pub async fn resend_last_game_action(
 
     match msg_id {
         Some(id) => {
-            crate::commands::messaging::schedule_announce_after_user_send(
+            crate::commands::messaging::schedule_announce_after_user_send_from_origin(
                 &state_arc,
                 &dest_hash,
                 activity_origin,
