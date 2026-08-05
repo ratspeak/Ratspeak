@@ -107,7 +107,7 @@ assert(/\.settings-type-presets\s*\{[\s\S]*?repeat\(5,/.test(sourceByName['10-vi
 assert(/data-scale="100"[\s\S]*?--type-preview-size:\s*18px/.test(sourceByName['10-views.css']) &&
     /data-scale="140"[\s\S]*?--type-preview-size:\s*34px/.test(sourceByName['10-views.css']),
     'text-size specimens must make the preset progression visually distinct');
-assert(/data-text-scale-tier="large"\] \.settings-text-scale-row \.settings-row-info\s*\{[^}]*flex:\s*0 0 auto/s.test(sourceByName['10-views.css']),
+assert(/data-text-scale-tier="large"\] \.settings-text-scale-row \.settings-row-info,\s*html\[data-text-scale-tier="xlarge"\] \.settings-text-scale-row \.settings-row-info\s*\{[^}]*flex:\s*0 0 auto/s.test(sourceByName['10-views.css']),
     'the 130% tier must not stretch the text-size introduction away from its presets');
 
 var paletteCss = sourceByName['00-palettes.css'];

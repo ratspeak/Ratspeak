@@ -1006,6 +1006,73 @@ fn received_ratchet_hash_from_path(path: &Path) -> Option<&str> {
         .filter(|name| crate::helpers::is_protocol_hash_16(name))
 }
 
+/// Read a local identity's public key without borrowing the live LXMF manager.
+/// `data_dir` is the process's `.ratspeak` directory.
+pub fn contact_card_public_key_from_profile(data_dir: &Path, hash_hex: &str) -> Option<[u8; 64]> {
+    if !crate::helpers::is_protocol_hash_16(hash_hex) {
+        return None;
+    }
+
+    if let Some(public_key) = hwid_contact_card_public_key(data_dir, hash_hex) {
+        return Some(public_key);
+    }
+
+    let id_file = data_dir.join("identities").join(hash_hex).join("identity");
+    std::fs::read(id_file).ok().and_then(|key_bytes| {
+        Identity::from_private_key(&key_bytes)
+            .ok()
+            .filter(|identity| hex::encode(identity.hash) == hash_hex)
+            .map(|identity| identity.get_public_key())
+    })
+}
+
+#[cfg(feature = "seed")]
+fn hwid_contact_card_public_key(data_dir: &Path, hash_hex: &str) -> Option<[u8; 64]> {
+    let hwid_file = data_dir
+        .join("identities")
+        .join(hash_hex)
+        .join("identity.hwid");
+    let cfg = rns_ratkey::HwidConfig::from_file(&hwid_file).ok()?;
+    if cfg.identity.hash != hash_hex {
+        return None;
+    }
+
+    let x25519_pub = cfg.x25519_pub_bytes().ok()?;
+    let ed25519_pub = cfg.ed25519_pub_bytes().ok()?;
+    let mut public_key = [0u8; 64];
+    public_key[..32].copy_from_slice(&x25519_pub);
+    public_key[32..].copy_from_slice(&ed25519_pub);
+
+    let identity = Identity::from_public_key(&public_key).ok()?;
+    (hex::encode(identity.hash) == hash_hex).then_some(public_key)
+}
+
+#[cfg(not(feature = "seed"))]
+fn hwid_contact_card_public_key(_data_dir: &Path, _hash_hex: &str) -> Option<[u8; 64]> {
+    None
+}
+
+fn apply_lrgp_fields_to_message(
+    message: &mut LxMessage,
+    fields: &std::collections::HashMap<u8, rmpv::Value>,
+) -> Result<(), String> {
+    for (&field_id, value) in fields {
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, value)
+            .map_err(|error| format!("field {field_id:#x} encode failed: {error}"))?;
+
+        // LRGP allocates native LXMF field values: 0xFB is a MessagePack
+        // string and 0xFD is a MessagePack map. `set_field` would wrap these
+        // already-encoded values in MessagePack BIN, which our own decoder
+        // could unwrap but Python LXMF/LRGP peers correctly see as the wrong
+        // wire types. Preserve the native value shape.
+        message
+            .set_msgpack_field(field_id, bytes)
+            .map_err(|error| format!("field {field_id:#x} is invalid: {error}"))?;
+    }
+    Ok(())
+}
+
 impl LxmfManager {
     pub fn load_or_create(
         data_dir: &Path,
@@ -1407,42 +1474,7 @@ impl LxmfManager {
             return Some(self.identity.get_public_key());
         }
 
-        if let Some(public_key) = self.hwid_contact_card_public_key(hash_hex) {
-            return Some(public_key);
-        }
-
-        self.export_identity(hash_hex).and_then(|key_bytes| {
-            Identity::from_private_key(&key_bytes)
-                .ok()
-                .map(|identity| identity.get_public_key())
-        })
-    }
-
-    #[cfg(feature = "seed")]
-    fn hwid_contact_card_public_key(&self, hash_hex: &str) -> Option<[u8; 64]> {
-        let hwid_file = self
-            .data_dir
-            .join("identities")
-            .join(hash_hex)
-            .join("identity.hwid");
-        let cfg = rns_ratkey::HwidConfig::from_file(&hwid_file).ok()?;
-        if cfg.identity.hash != hash_hex {
-            return None;
-        }
-
-        let x25519_pub = cfg.x25519_pub_bytes().ok()?;
-        let ed25519_pub = cfg.ed25519_pub_bytes().ok()?;
-        let mut public_key = [0u8; 64];
-        public_key[..32].copy_from_slice(&x25519_pub);
-        public_key[32..].copy_from_slice(&ed25519_pub);
-
-        let identity = Identity::from_public_key(&public_key).ok()?;
-        (hex::encode(identity.hash) == hash_hex).then_some(public_key)
-    }
-
-    #[cfg(not(feature = "seed"))]
-    fn hwid_contact_card_public_key(&self, _hash_hex: &str) -> Option<[u8; 64]> {
-        None
+        contact_card_public_key_from_profile(&self.data_dir, hash_hex)
     }
 
     fn peer_recently_seen(&self, db_pool: &DbPool, dest_hash_hex: &str) -> bool {
@@ -2039,11 +2071,14 @@ impl LxmfManager {
         let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, "", fallback_text, method);
         self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
 
-        for (&field_id, value) in lrgp_fields {
-            let mut bytes = Vec::new();
-            if rmpv::encode::write_value(&mut bytes, value).is_ok() {
-                msg.set_field(field_id, bytes);
-            }
+        if let Err(error) = apply_lrgp_fields_to_message(&mut msg, lrgp_fields) {
+            tracing::warn!(
+                target: "ttt_trace",
+                step = "lxmf_send.field_encode_fail",
+                error,
+                "LRGP fields could not be represented as native LXMF values"
+            );
+            return None;
         }
 
         if let Some(prv_key) = self.identity.get_private_key() {
@@ -5049,6 +5084,68 @@ mod tests {
         LxmfManager::load_or_create(&tmp, None, None).unwrap()
     }
 
+    #[test]
+    fn lrgp_fields_are_native_lxmf_values_not_binary_wrappers() {
+        let envelope = lrgp::envelope::pack_envelope(
+            "ttt",
+            1,
+            lrgp::constants::CMD_CHALLENGE,
+            "0123456789abcdef",
+            None,
+            None,
+        )
+        .unwrap();
+        let fields = lrgp::envelope::pack_lxmf_fields(&envelope).unwrap();
+        let mut message = LxMessage::new(
+            [0x11; 16],
+            [0x22; 16],
+            "",
+            "[LRGP TTT] Sent a challenge!",
+            DeliveryMethod::Opportunistic,
+        );
+
+        apply_lrgp_fields_to_message(&mut message, &fields).unwrap();
+        assert!(
+            message
+                .msgpack_field_ids
+                .contains(&lrgp::constants::FIELD_CUSTOM_TYPE)
+        );
+        assert!(
+            message
+                .msgpack_field_ids
+                .contains(&lrgp::constants::FIELD_CUSTOM_META)
+        );
+
+        // Decode the complete LXMF payload exactly as a Python client would:
+        // the allocated LRGP fields must be a native string and map, never
+        // binary values containing another MessagePack document.
+        let packed = message.pack_payload().unwrap();
+        let decoded = rmpv::decode::read_value(&mut packed.as_slice()).unwrap();
+        let field_map = decoded
+            .as_array()
+            .and_then(|values| values.get(3))
+            .and_then(rmpv::Value::as_map)
+            .unwrap();
+        let field = |wanted: u8| {
+            field_map.iter().find_map(|(key, value)| {
+                let actual = key
+                    .as_u64()
+                    .map(|value| value as u8)
+                    .or_else(|| key.as_i64().map(|value| value as u8));
+                (actual == Some(wanted)).then_some(value)
+            })
+        };
+        assert_eq!(
+            field(lrgp::constants::FIELD_CUSTOM_TYPE).and_then(rmpv::Value::as_str),
+            Some(lrgp::constants::PROTOCOL_TYPE)
+        );
+        assert!(
+            field(lrgp::constants::FIELD_CUSTOM_META)
+                .and_then(rmpv::Value::as_map)
+                .is_some()
+        );
+    }
+
     fn delivery_app_data_with_features(features: &[u8]) -> Vec<u8> {
         let values = features
             .iter()
@@ -6025,6 +6122,29 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    #[test]
+    fn contact_card_public_key_reads_plain_profile_without_manager_lock() {
+        let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-lxmf-profile-contact-card-test-{}-{}-{unique}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mgr = LxmfManager::load_or_create(&tmp, None, None).unwrap();
+        let hash = mgr.identity_hash.clone();
+        let public_key = mgr.identity.get_public_key();
+        drop(mgr);
+
+        assert_eq!(
+            contact_card_public_key_from_profile(&tmp.join(".ratspeak"), &hash),
+            Some(public_key)
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[cfg(feature = "seed")]
     #[test]
     fn contact_card_public_key_uses_hwid_public_metadata_without_private_key() {
@@ -6076,6 +6196,10 @@ mod tests {
 
         assert!(mgr.export_identity(&hash).is_none());
         assert_eq!(mgr.contact_card_public_key(&hash).unwrap(), public_key);
+        assert_eq!(
+            contact_card_public_key_from_profile(&tmp.join(".ratspeak"), &hash),
+            Some(public_key)
+        );
         std::fs::remove_dir_all(&tmp).ok();
     }
 

@@ -11,6 +11,8 @@
     // Pre-mutation snapshot per session_id; restored on game_action_result failure.
     var _optimisticBackup = {};
     var _celebratedWins = {};
+    var _actionInFlight = {};
+    var _manifestsById = {};
 
     var WIN_LINES = [
         [0,1,2],[3,4,5],[6,7,8],
@@ -58,6 +60,13 @@
     function _isMe(session, hash) {
         var myHash = _getMyHash(session);
         return myHash && hash === myHash;
+    }
+
+    function _drawOfferOwner(session) {
+        if (!session) return '';
+        return session.draw_offered_by
+            || (session.metadata && session.metadata.draw_offered_by)
+            || '';
     }
 
     function _appId(session) {
@@ -154,6 +163,16 @@
             state === 'reusing_backchannel';
     }
 
+    function _activeMoveDeliveryText(state) {
+        if (_isSendingDeliveryState(state) || state === 'pending' || state === 'routing') {
+            return 'Sending move…';
+        }
+        if (state === 'propagating') return 'Storing move in Offline Inbox…';
+        if (state === 'sent') return 'Move sent';
+        if (state === 'failed') return 'Move failed — tap Resend';
+        return '';
+    }
+
     function _statusText(session) {
         var status = session.status;
 
@@ -194,8 +213,13 @@
         }
         if (status === 'active') {
             // In-flight/failed outbound move overrides the "their turn" label.
-            if (session.delivery_state === 'failed') return 'Move failed — tap Resend';
-            if (session.draw_offered) return 'Draw offered';
+            var deliveryText = _activeMoveDeliveryText(session.delivery_state);
+            if (deliveryText) return deliveryText;
+            if (session.draw_offered) {
+                return _isMe(session, _drawOfferOwner(session))
+                    ? 'Draw offer sent'
+                    : 'Draw offered';
+            }
             var isChess = (session.app_id === 'chess' || session.game === 'chess');
             var myMarker, theirMarker;
             if (isChess) {
@@ -229,7 +253,12 @@
         }
         if (status === 'active') {
             if (session.delivery_state === 'failed') return 'status-lost';
-            if (session.draw_offered) return 'status-challenge';
+            if (_activeMoveDeliveryText(session.delivery_state)) return 'status-waiting';
+            if (session.draw_offered) {
+                return _isMe(session, _drawOfferOwner(session))
+                    ? 'status-waiting'
+                    : 'status-challenge';
+            }
             return _isMe(session, session.turn) ? 'status-your-turn' : 'status-their-turn';
         }
         if (status === 'completed') {
@@ -241,15 +270,41 @@
     }
 
     function _gameIcon(appId) {
-        if (appId === 'ttt') return '#';
-        if (appId === 'chess') return '\u265E'; // black knight glyph — consistent across platforms
+        var manifest = _manifestsById[appId];
+        var icon = manifest && manifest.icon;
+        if (icon === 'ttt' || appId === 'ttt') return '#';
+        if (icon === 'chess' || appId === 'chess') return '\u265E';
         return '?';
     }
 
     function _gameName(appId) {
+        var manifest = _manifestsById[appId];
+        if (manifest && manifest.display_name) return manifest.display_name;
         if (appId === 'ttt') return 'Tic-Tac-Toe';
         if (appId === 'chess') return 'Chess';
         return appId || 'Unknown';
+    }
+
+    function _loadGameManifests() {
+        return RS.invoke('get_available_games').then(function(manifests) {
+            if (!Array.isArray(manifests)) return;
+            var next = {};
+            for (var i = 0; i < manifests.length; i++) {
+                var manifest = manifests[i];
+                if (manifest && manifest.app_id) next[manifest.app_id] = manifest;
+            }
+            _manifestsById = next;
+        }).catch(function() {});
+    }
+
+    function _beginSessionAction(sessionId) {
+        if (!sessionId || _actionInFlight[sessionId]) return false;
+        _actionInFlight[sessionId] = true;
+        return true;
+    }
+
+    function _finishSessionAction(sessionId) {
+        if (sessionId) delete _actionInFlight[sessionId];
     }
 
     function _filterSessions() {
@@ -261,6 +316,18 @@
             if (_activeFilter === 'completed') return status === 'completed' || status === 'declined' || status === 'expired';
             return true;
         });
+    }
+
+    function _findSession(sessionId) {
+        for (var i = 0; i < _allSessions.length; i++) {
+            if (_allSessions[i].game_id === sessionId) return _allSessions[i];
+        }
+        return null;
+    }
+
+    function _canDeleteSession(session) {
+        return !!session && (session.status === 'completed' ||
+            session.status === 'declined' || session.status === 'expired');
     }
 
     function renderSessionList() {
@@ -292,14 +359,15 @@
                 '<div class="games-session-info">' +
                     '<div class="games-session-name">' + ratspeakDisplayNameHtml(_contactName(s.contact_hash), s.contact_hash) + '</div>' +
                     '<div class="games-session-meta">' +
-                        '<span class="games-session-game">' + _gameName(appId) + '</span>' +
-                        '<span class="games-session-status ' + _statusClass(s) + '">' + _statusText(s) + '</span>' +
+                        '<span class="games-session-game">' + escapeHtml(_gameName(appId)) + '</span>' +
+                        '<span class="games-session-status ' + _statusClass(s) + '">' + escapeHtml(_statusText(s)) + '</span>' +
                     '</div>' +
                 '</div>' +
-                '<div class="games-session-time">' + RS.relativeTime(s.updated_at || s.last_action_at) + '</div>' +
-                '<button type="button" class="games-session-delete" aria-label="Remove game from history" title="Remove from history">' +
-                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>' +
-                '</button>' +
+                '<div class="games-session-time">' + escapeHtml(RS.relativeTime(s.updated_at || s.last_action_at)) + '</div>' +
+                (_canDeleteSession(s) ?
+                    '<button type="button" class="games-session-delete" aria-label="Remove game from history" title="Remove from history">' +
+                        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>' +
+                    '</button>' : '') +
             '</div>';
         }
         container.innerHTML = html;
@@ -332,7 +400,7 @@
             });
         }
 
-        if (isMobile()) {
+        if (isMobile() && _canDeleteSession(_findSession(sessionId))) {
             var firedRecently = false;
             RS.gestures.attachLongPress(row, {
                 duration: RS.gestures.LONG_PRESS_GAMES_ROW_MS,
@@ -356,6 +424,12 @@
 
     function _confirmDeleteSession(sessionId, mobile) {
         if (!sessionId) return;
+        if (!_canDeleteSession(_findSession(sessionId))) {
+            if (typeof showToast === 'function') {
+                showToast('Finish the game before removing it', 'toast-red', 3000);
+            }
+            return;
+        }
         if (mobile) {
             _showDeleteSheet(sessionId);
         } else if (typeof rsConfirm === 'function') {
@@ -388,8 +462,13 @@
     }
 
     function _deleteSession(sessionId) {
-        RS.invoke('delete_game_session', { sessionId: sessionId }).catch(function() {});
-        _removeSessionLocal(sessionId);
+        RS.invoke('delete_game_session', { sessionId: sessionId }).then(function() {
+            _removeSessionLocal(sessionId);
+        }).catch(function() {
+            if (typeof showToast === 'function') {
+                showToast('Game could not be removed', 'toast-red', 3000);
+            }
+        });
     }
 
     function _removeSessionLocal(sessionId) {
@@ -426,11 +505,7 @@
     }
 
     function _getSelectedSession() {
-        if (!_selectedSessionId) return null;
-        for (var i = 0; i < _allSessions.length; i++) {
-            if (_allSessions[i].game_id === _selectedSessionId) return _allSessions[i];
-        }
-        return null;
+        return _selectedSessionId ? _findSession(_selectedSessionId) : null;
     }
 
     function _renderDetailMeta(session) {
@@ -498,7 +573,7 @@
             '<div class="games-detail-heading">' +
                 '<span class="games-detail-icon">' + _gameIcon(appId) + '</span>' +
                 '<span class="games-detail-copy">' +
-                    '<span class="games-detail-title">' + _gameName(appId) + '</span>' +
+                    '<span class="games-detail-title">' + escapeHtml(_gameName(appId)) + '</span>' +
                     '<span class="games-detail-vs">vs ' + ratspeakDisplayNameHtml(_contactName(session.contact_hash), session.contact_hash) + '</span>' +
                 '</span>' +
             '</div>' +
@@ -556,6 +631,9 @@
                 RS.invoke('resend_last_game_action', {
                     args: { session_id: session.game_id }
                 }).catch(function(err) {
+                    session.delivery_state = 'failed';
+                    renderSessionList();
+                    renderDetail();
                     if (typeof showToast === 'function') {
                         var msg = (err && err.message) || 'Resend failed';
                         showToast(msg, 'toast-red', 4000);
@@ -601,7 +679,7 @@
         html += '<div class="ttt-player-label' + (xTurnActive ? ' active-turn' : '') + '">' + xPlayer + '</div>';
 
         var markerClass = isMyTurn ? (iAmX ? ' my-marker-x' : ' my-marker-o') : '';
-        html += '<div class="ttt-grid' + (isMyTurn ? ' your-turn' : '') + markerClass + '">';
+        html += '<div class="ttt-grid' + (isMyTurn ? ' your-turn' : '') + markerClass + '" role="grid" aria-label="Tic-Tac-Toe board">';
         for (var i = 0; i < 9; i++) {
             var cell = board[i];
             var classes = 'ttt-cell';
@@ -620,7 +698,9 @@
                 display = '<svg class="ttt-marker-svg" viewBox="0 0 50 50">' +
                     '<circle cx="25" cy="25" r="15" stroke="currentColor" stroke-width="5" fill="none"/></svg>';
             }
-            html += '<div class="' + classes + '" data-cell-index="' + i + '">' + display + '</div>';
+            var cellLabel = 'Square ' + (i + 1) + ': ' + (cell === '_' ? 'empty' : cell);
+            var canPlayCell = isMyTurn && cell === '_';
+            html += '<button type="button" role="gridcell" class="' + classes + '" data-cell-index="' + i + '" aria-label="' + cellLabel + '" aria-disabled="' + (canPlayCell ? 'false' : 'true') + '"' + (canPlayCell ? '' : ' tabindex="-1"') + '>' + display + '</button>';
         }
         html += '</div>';
 
@@ -685,6 +765,7 @@
     function _handleTTTMove(session, cellIndex) {
         var board = (session.state || '_________').split('');
         if (board[cellIndex] !== '_') return;
+        if (!_beginSessionAction(session.game_id)) return;
 
         var myMarker = session.my_marker || (_isMe(session, session.first_turn) ? 'X' : 'O');
 
@@ -745,7 +826,16 @@
                 command: 'move',
                 payload: { i: cellIndex },
             }
-        }).catch(function() {});
+        }).then(function() {
+            _finishSessionAction(session.game_id);
+        }).catch(function() {
+            _finishSessionAction(session.game_id);
+            _handleGameActionFailure({
+                session_id: session.game_id,
+                command: 'move',
+                reason: 'send_failed',
+            });
+        });
     }
 
     function _bindTTTCellEvents(session) {
@@ -942,7 +1032,8 @@
                 var clickable = isMyTurn && (isSelected || isLegalTarget || (piece && piece[0] === myColor));
                 if (clickable) classes.push('clickable');
 
-                html += '<div class="' + classes.join(' ') + '" data-square="' + sq + '">' + coordHtml + pieceHtml + '</div>';
+                var pieceName = piece ? _chessPieceName(piece) : 'empty';
+                html += '<button type="button" role="gridcell" class="' + classes.join(' ') + '" data-square="' + sq + '" aria-label="' + sq + ': ' + pieceName + '" aria-disabled="' + (clickable ? 'false' : 'true') + '"' + (clickable ? '' : ' tabindex="-1"') + '>' + coordHtml + pieceHtml + '</button>';
             }
         }
         html += '</div>';
@@ -997,6 +1088,13 @@
             case 'agr': return 'By agreement';
             default:    return '';
         }
+    }
+
+    function _chessPieceName(piece) {
+        if (!piece || piece.length < 2) return 'empty';
+        var color = piece[0] === 'w' ? 'white' : 'black';
+        var names = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+        return color + ' ' + (names[piece[1]] || 'piece');
     }
 
     function _bindChessSquareEvents(session) {
@@ -1092,31 +1190,36 @@
             document.body.appendChild(wrap);
         }
 
+        var finishPromotion = function(piece) {
+            document.removeEventListener('click', dismiss, true);
+            document.removeEventListener('keydown', escDismiss, true);
+            wrap.remove();
+            _chessSelected[sid] = null;
+            if (piece) {
+                _sendChessMove(session, baseUci + piece);
+            } else {
+                renderDetail();
+            }
+        };
         wrap.querySelectorAll('.chess-promotion-option').forEach(function(btn) {
             btn.addEventListener('click', function(e) {
                 e.stopPropagation();
-                var piece = btn.getAttribute('data-piece');
-                wrap.remove();
-                _chessSelected[sid] = null;
-                _sendChessMove(session, baseUci + piece);
+                finishPromotion(btn.getAttribute('data-piece'));
             });
         });
 
         var dismiss = function(e) {
             if (wrap.contains(e.target)) return;
-            document.removeEventListener('click', dismiss, true);
-            document.removeEventListener('keydown', escDismiss, true);
-            wrap.remove();
-            _chessSelected[sid] = null;
-            _sendChessMove(session, baseUci + 'q');
+            finishPromotion(null);
         };
         var escDismiss = function(e) {
-            if (e.key !== 'Escape' && e.key !== 'Enter') return;
-            document.removeEventListener('click', dismiss, true);
-            document.removeEventListener('keydown', escDismiss, true);
-            wrap.remove();
-            _chessSelected[sid] = null;
-            _sendChessMove(session, baseUci + 'q');
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                finishPromotion(null);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                finishPromotion(available.indexOf('q') !== -1 ? 'q' : available[0]);
+            }
         };
         // Defer a tick so the click doesn't immediately dismiss.
         setTimeout(function() {
@@ -1133,6 +1236,7 @@
         var pieces = _chessFenToPieces(fen);
         var moved = pieces[from];
         if (!moved) return; // shouldn't happen — we validated via legal_moves
+        if (!_beginSessionAction(sid)) return;
 
         _optimisticBackup[sid] = {
             fen: session.fen,
@@ -1191,7 +1295,16 @@
                 command: 'move',
                 payload: { m: uci },
             }
-        }).catch(function() {});
+        }).then(function() {
+            _finishSessionAction(sid);
+        }).catch(function() {
+            _finishSessionAction(sid);
+            _handleGameActionFailure({
+                session_id: sid,
+                command: 'move',
+                reason: 'send_failed',
+            });
+        });
     }
 
     // Approximations OK — authoritative server FEN overwrites in a beat.
@@ -1239,8 +1352,13 @@
         } else if (status === 'active') {
             var isChess = (session.app_id || session.game) === 'chess';
             if (session.draw_offered) {
-                html += '<button class="nr-btn games-ctrl-accept" id="games-draw-accept-btn">Accept Draw</button>';
-                html += '<button class="nr-btn nr-btn-secondary" id="games-draw-decline-btn">Decline Draw</button>';
+                var drawOwner = _drawOfferOwner(session);
+                if (drawOwner && !_isMe(session, drawOwner)) {
+                    html += '<button class="nr-btn games-ctrl-accept" id="games-draw-accept-btn">Accept Draw</button>';
+                    html += '<button class="nr-btn nr-btn-secondary" id="games-draw-decline-btn">Decline Draw</button>';
+                } else {
+                    html += '<span class="games-ctrl-waiting">Waiting for opponent to respond...</span>';
+                }
                 html += '<span class="games-ctrl-separator"></span>';
             } else if (isChess && session.draw_offer_reason === '3fr') {
                 html += '<button class="nr-btn nr-btn-secondary" id="games-draw-offer-btn">Claim threefold</button>';
@@ -1327,6 +1445,8 @@
     }
 
     function _sendAction(session, action, payload) {
+        var sessionId = session.game_id;
+        if (!_beginSessionAction(sessionId)) return;
         RS.invoke('send_game_action', {
             args: {
                 dest_hash: session.contact_hash,
@@ -1335,12 +1455,14 @@
                 command: action,
                 payload: payload || {},
             }
-        }).then(function(ack) {
-            if (ack && ack.ok === false) {
-                var msg = _reasonToMessage(ack.reason || 'send_failed', action);
-                if (typeof showToast === 'function') showToast(msg, 'toast-red', 4000);
-            }
+        }).then(function() {
+            _finishSessionAction(sessionId);
+            // Backend rejections are emitted through game_action_result so
+            // optimistic rollback and user feedback have one ordered path.
+            // The promise catch below remains for IPC failures that cannot
+            // produce a backend event.
         }).catch(function() {
+            _finishSessionAction(sessionId);
             if (typeof showToast === 'function') {
                 showToast(_reasonToMessage('send_failed', action), 'toast-red', 4000);
             }
@@ -1351,8 +1473,17 @@
         switch (reason) {
             case 'invalid_params':       return 'Bad action parameters';
             case 'session_terminal':     return 'Session already ended';
+            case 'session_exists':       return 'That game session already exists';
+            case 'session_not_found':    return 'This game session is no longer available';
+            case 'invalid_state':        return 'That action is not available right now';
             case 'dispatch_failed':      return 'Action rejected by game rules';
             case 'not_your_turn':        return 'Not your turn';
+            case 'unauthorized_sender':  return 'This action is not from the game opponent';
+            case 'session_expired':      return 'This game has expired';
+            case 'unsupported_app':      return 'This game version is not supported';
+            case 'protocol_error':       return 'Invalid game action';
+            case 'storage_failed':       return 'Game state could not be saved';
+            case 'resend_required':       return 'Action saved locally — tap Resend to retry';
             case 'lxmf_not_initialized': return 'Messaging not ready — wait a moment';
             case 'pack_failed':          return 'Action rejected — invalid envelope';
             case 'send_failed':
@@ -1361,6 +1492,63 @@
                     ? 'Move couldn’t be delivered — tap Resend'
                     : 'Action couldn’t be delivered';
         }
+    }
+
+    // Tauri command rejections that happen before LRGP dispatch do not have a
+    // backend game_action_result event to restore an optimistic board. Keep
+    // one rollback path for both IPC rejection and emitted protocol results.
+    function _handleGameActionFailure(data) {
+        if (!data || !data.session_id) return;
+        var sid = data.session_id;
+        var reason = data.reason || 'send_failed';
+
+        // A failed durable-outbox rollback intentionally leaves the canonical
+        // board advanced with its exact envelope available to Resend.
+        if (reason === 'resend_required') {
+            delete _optimisticBackup[sid];
+            for (var pendingIndex = 0; pendingIndex < _allSessions.length; pendingIndex++) {
+                if (_allSessions[pendingIndex].game_id === sid) {
+                    _allSessions[pendingIndex].delivery_state = 'failed';
+                    break;
+                }
+            }
+            renderSessionList();
+            if (sid === _selectedSessionId) renderDetail();
+            if (typeof showToast === 'function') {
+                showToast(_reasonToMessage(reason, data.command), 'toast-red', 5000);
+            }
+            return;
+        }
+
+        var backup = _optimisticBackup[sid];
+        if (backup) {
+            for (var i = 0; i < _allSessions.length; i++) {
+                if (_allSessions[i].game_id !== sid) continue;
+                var session = _allSessions[i];
+                session.state = backup.state;
+                session.move_count = backup.move_count;
+                session.turn = backup.turn;
+                session.status = backup.status;
+                session.terminal = backup.terminal;
+                session.winner = backup.winner;
+                session.delivery_state = backup.delivery_state;
+                if (backup.fen !== undefined) session.fen = backup.fen;
+                if (backup.legal_moves !== undefined) session.legal_moves = backup.legal_moves;
+                if (backup.last_move !== undefined) session.last_move = backup.last_move;
+                if (backup.in_check !== undefined) session.in_check = backup.in_check;
+                if (backup.draw_offer_reason !== undefined) session.draw_offer_reason = backup.draw_offer_reason;
+                if (backup.terminal_reason !== undefined) session.terminal_reason = backup.terminal_reason;
+                break;
+            }
+            delete _optimisticBackup[sid];
+            renderSessionList();
+            if (sid === _selectedSessionId) renderDetail();
+        }
+
+        if (typeof showToast === 'function') {
+            showToast(_reasonToMessage(reason, data.command), 'toast-red', 4000);
+        }
+        if (typeof haptic === 'function') haptic('error');
     }
 
     function showNewGameDialog() {
@@ -1398,6 +1586,28 @@
             }
         }
 
+        var manifests = Object.keys(_manifestsById).map(function(appId) {
+            return _manifestsById[appId];
+        });
+        if (manifests.length === 0) {
+            manifests = [
+                { app_id: 'ttt', display_name: 'Tic-Tac-Toe', icon: 'ttt', session_type: 'turn_based' },
+                { app_id: 'chess', display_name: 'Chess', icon: 'chess', session_type: 'turn_based' },
+            ];
+        }
+        manifests.sort(function(a, b) {
+            return (a.display_name || a.app_id).localeCompare(b.display_name || b.app_id);
+        });
+        var gameCardsHtml = manifests.map(function(manifest, index) {
+            var appId = manifest.app_id || '';
+            var name = manifest.display_name || appId;
+            var hint = manifest.session_type === 'turn_based' ? 'Turn-based' : 'Game';
+            return '<button type="button" class="games-sheet-game-card' + (index === 0 ? ' selected' : '') + '" data-app-id="' + escapeHtml(appId) + '" aria-pressed="' + (index === 0 ? 'true' : 'false') + '">' +
+                '<span class="game-card-icon">' + escapeHtml(_gameIcon(appId)) + '</span>' +
+                '<span><span class="games-sheet-game-name">' + escapeHtml(name) + '</span><span class="games-sheet-game-hint">' + hint + '</span></span>' +
+            '</button>';
+        }).join('');
+
         var shell = RS.sheetShell.create({ sheetClass: 'bottom-sheet games-new-dialog' });
         shell.overlay.id = 'games-new-sheet-overlay';
         shell.sheet.id = 'games-new-sheet';
@@ -1412,16 +1622,7 @@
             '<div class="bottom-sheet-body">' +
                 '<div class="games-sheet-section">' +
                     '<div class="games-sheet-header">Game</div>' +
-                    '<div class="games-sheet-game-grid">' +
-                        '<button type="button" class="games-sheet-game-card selected" data-app-id="ttt" aria-pressed="true">' +
-                            '<span class="game-card-icon">#</span>' +
-                            '<span><span class="games-sheet-game-name">Tic-Tac-Toe</span><span class="games-sheet-game-hint">Fast, simple turns</span></span>' +
-                        '</button>' +
-                        '<button type="button" class="games-sheet-game-card" data-app-id="chess" aria-pressed="false">' +
-                            '<span class="game-card-icon">\u265E</span>' +
-                            '<span><span class="games-sheet-game-name">Chess</span><span class="games-sheet-game-hint">Full rules</span></span>' +
-                        '</button>' +
-                    '</div>' +
+                    '<div class="games-sheet-game-grid">' + gameCardsHtml + '</div>' +
                 '</div>' +
                 '<div class="games-sheet-section">' +
                     '<div class="games-sheet-header">Opponent</div>' +
@@ -1438,7 +1639,7 @@
         var sheet = shell.sheet;
 
         var selectedHash = null;
-        var selectedAppId = 'ttt';
+        var selectedAppId = manifests[0] ? manifests[0].app_id : 'ttt';
 
         if (sheet) {
             sheet.querySelectorAll('.games-sheet-game-card').forEach(function(card) {
@@ -1504,6 +1705,7 @@
         for (var i = 0; i < arr.length; i++) {
             sessionId += ('0' + arr[i].toString(16)).slice(-2);
         }
+        if (!_beginSessionAction(sessionId)) return;
 
         RS.invoke('send_game_action', {
             args: {
@@ -1514,9 +1716,11 @@
                 payload: {},
             }
         }).then(function(ack) {
+            _finishSessionAction(sessionId);
             if (ack && ack.ok === false) {
-                var msg = _reasonToMessage(ack.reason || 'send_failed', 'challenge');
-                if (typeof showToast === 'function') showToast('Challenge failed: ' + msg, 'toast-red', 4000);
+                // game_action_result owns rejection feedback. Avoid showing
+                // the same backend failure twice via both IPC completion and
+                // the event stream.
                 return;
             }
             if (typeof showToast === 'function') showToast('Challenge sent', 'toast-green', 2000);
@@ -1529,6 +1733,7 @@
                 }
             }).catch(function() {});
         }).catch(function() {
+            _finishSessionAction(sessionId);
             if (typeof showToast === 'function') {
                 showToast('Challenge failed', 'toast-red', 4000);
             }
@@ -1565,6 +1770,17 @@
             if (data && data.session_id) _removeSessionLocal(data.session_id);
         });
 
+        RS.listen('game_protocol_error', function(data) {
+            if (!data) return;
+            var message = data.message
+                ? String(data.message).slice(0, 180)
+                : _reasonToMessage(data.code || 'protocol_error', data.ref || 'action');
+            if (typeof showToast === 'function') {
+                showToast('Game action rejected: ' + message, 'toast-red', 5000);
+            }
+            if (typeof haptic === 'function') haptic('error');
+        });
+
         // Success clears the optimistic backup; failure restores it.
         RS.listen('game_action_result', function(data) {
             if (!data || !data.session_id) return;
@@ -1575,56 +1791,7 @@
                 return;
             }
 
-            var reason = data.reason || 'send_failed';
-
-            // Construction-time send failure (lxmf_not_initialized, hex/sign).
-            // Backend already rolled back; drop the optimistic backup so we
-            // don't try to double-rollback locally.
-            if (reason === 'send_failed') {
-                delete _optimisticBackup[sid];
-                if (typeof showToast === 'function') {
-                    showToast(_reasonToMessage(reason, data.command), 'toast-red', 5000);
-                }
-                if (typeof haptic === 'function') haptic('error');
-                return;
-            }
-
-            // Immediate rejection — backend never mutated, roll back locally.
-            var backup = _optimisticBackup[sid];
-            if (!backup) {
-                if (typeof showToast === 'function') {
-                    showToast(_reasonToMessage(reason, data.command), 'toast-red', 4000);
-                }
-                return;
-            }
-
-            for (var i = 0; i < _allSessions.length; i++) {
-                if (_allSessions[i].game_id !== sid) continue;
-                var s = _allSessions[i];
-                s.state = backup.state;
-                s.move_count = backup.move_count;
-                s.turn = backup.turn;
-                s.status = backup.status;
-                s.terminal = backup.terminal;
-                s.winner = backup.winner;
-                s.delivery_state = backup.delivery_state;
-                if (backup.fen !== undefined) s.fen = backup.fen;
-                if (backup.legal_moves !== undefined) s.legal_moves = backup.legal_moves;
-                if (backup.last_move !== undefined) s.last_move = backup.last_move;
-                if (backup.in_check !== undefined) s.in_check = backup.in_check;
-                if (backup.draw_offer_reason !== undefined) s.draw_offer_reason = backup.draw_offer_reason;
-                if (backup.terminal_reason !== undefined) s.terminal_reason = backup.terminal_reason;
-                break;
-            }
-            delete _optimisticBackup[sid];
-
-            renderSessionList();
-            if (sid === _selectedSessionId) renderDetail();
-
-            if (typeof showToast === 'function') {
-                showToast(_reasonToMessage(reason, data.command), 'toast-red', 4000);
-            }
-            if (typeof haptic === 'function') haptic('error');
+            _handleGameActionFailure(data);
         });
 
         // Per-action signal from the runtime — forces a board redraw and badge
@@ -1730,6 +1897,10 @@
 
     window.gamesTabLoad = function() {
         _contactNameCache = {};
+        _loadGameManifests().then(function() {
+            renderSessionList();
+            renderDetail();
+        });
         RS.invoke('get_all_game_sessions').then(function(sessions) {
             if (Array.isArray(sessions)) {
                 _allSessions = sessions;
@@ -1767,6 +1938,7 @@
     };
 
     function _init() {
+        _loadGameManifests();
         _initTabFilters();
         _initNewGameBtn();
         _initGameEvents();

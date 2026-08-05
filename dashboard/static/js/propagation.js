@@ -624,10 +624,6 @@ RS.listen('propagation_update', function(data) {
     refreshInFlight = false;
     clearRelayRefreshWatchdog();
     renderPropagationStatus();
-    var relayDot = document.getElementById('settings-relay-dot');
-    if (relayDot) {
-        relayDot.className = 'panel-header-dot' + (propagationStatus.connected ? ' connected' : '');
-    }
     var relayBadge = document.getElementById('settings-relay-status');
     if (relayBadge) {
         var modeLabel = propagationStatus.mode || 'auto';

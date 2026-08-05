@@ -61,24 +61,38 @@ var PeersCache = (function() {
     var OFFLINE_AFTER_SECS = 24 * 60 * 60;
     var CULL_AFTER_SECS = 7 * 24 * 60 * 60;
     var RETIER_INTERVAL_MS = 60 * 1000;
+    // One ambiguous eight-hex name can be a deliberate username. A cluster is
+    // the bridge-noise pattern we actually want to suppress.
+    var BARE_HEX_CLUSTER_MIN = 3;
 
     var _cache = Object.create(null); // hash → entry
     var _subs = [];
     var _initialized = false;
     var _initPromise = null;
     var _retierTimer = null;
+    // Product preference, default-on until the durable app-settings payload
+    // arrives. This is presentation filtering only; it never creates an RNS
+    // transport blackhole or mutates the peer database.
+    var _hideKnownSpamPeers = true;
 
     // Memoized enriched() output; invalidated on cache mutation or when the
     // path_table reference changes. Avoids O(n) realloc on every render.
     var _enrichedCache = null;
     var _enrichedPathTable = null;
     var _enrichedPathIndex = null;
+    var _visibilityContextCache = null;
 
-    function _isSuppressedPeerDisplayName(displayName) {
+    function _peerNoiseNameKind(displayName) {
         if (typeof displayName !== 'string') return false;
         var name = displayName.trim();
         if (!name) return false;
-        return /meshtastic/i.test(name) || /^![a-f0-9]{8}$/i.test(name);
+        if (/meshtastic/i.test(name) || /^![a-f0-9]{8}$/i.test(name)) return 'explicit';
+        if (/^[a-f0-9]{8}$/i.test(name)) return 'bare-hex';
+        return '';
+    }
+
+    function _isSuppressedPeerDisplayName(displayName) {
+        return !!_peerNoiseNameKind(displayName);
     }
 
     function _normalizeServices(services) {
@@ -103,15 +117,62 @@ var PeersCache = (function() {
         return ratspeakSupportsFeatures(entry);
     }
 
-    function _isSuppressedPeerEntry(entry) {
-        return !!entry && (
-            _isSuppressedPeerDisplayName(entry.display_name) ||
-            !_hasSupportedPeerService(entry)
-        );
+    function _hasConversationWith(hash) {
+        if (!hash || typeof lxmfConversations === 'undefined' || !Array.isArray(lxmfConversations)) {
+            return false;
+        }
+        for (var i = 0; i < lxmfConversations.length; i++) {
+            if (lxmfConversations[i] && lxmfConversations[i].hash === hash) return true;
+        }
+        return false;
+    }
+
+    function _hasKnownPeerEvidence(entry) {
+        if (!entry) return false;
+        if (entry.is_contact || _supportsRatspeakFeatures(entry)) return true;
+        if (typeof entry.profile_status === 'string' && entry.profile_status.trim()) return true;
+        var services = Array.isArray(entry.services) ? entry.services : [];
+        if (services.indexOf('lxst.telephony') !== -1) return true;
+        return _hasConversationWith(entry.hash);
+    }
+
+    function _visibilityContext() {
+        if (_visibilityContextCache) return _visibilityContextCache;
+        var bareHexUnknownCount = 0;
+        for (var hash in _cache) {
+            if (!Object.prototype.hasOwnProperty.call(_cache, hash)) continue;
+            var entry = _cache[hash];
+            if (!_hasSupportedPeerService(entry) || _hasKnownPeerEvidence(entry)) continue;
+            if (_peerNoiseNameKind(entry.display_name) === 'bare-hex') bareHexUnknownCount++;
+        }
+        _visibilityContextCache = { bareHexUnknownCount: bareHexUnknownCount };
+        return _visibilityContextCache;
+    }
+
+    function _isSuppressedPeerEntry(entry, context) {
+        if (!entry) return false;
+        if (!_hasSupportedPeerService(entry)) return true;
+        if (!_hideKnownSpamPeers || _hasKnownPeerEvidence(entry)) return false;
+        var kind = _peerNoiseNameKind(entry.display_name);
+        if (kind === 'explicit') return true;
+        return kind === 'bare-hex' &&
+            (context || _visibilityContext()).bareHexUnknownCount >= BARE_HEX_CLUSTER_MIN;
+    }
+
+    function setHideKnownSpamPeers(enabled) {
+        var next = enabled !== false;
+        if (next === _hideKnownSpamPeers) return;
+        _hideKnownSpamPeers = next;
+        _notify();
+    }
+
+    function hideKnownSpamPeersEnabled() {
+        return _hideKnownSpamPeers;
     }
 
     function _notify() {
         _enrichedCache = null;
+        _visibilityContextCache = null;
         for (var i = 0; i < _subs.length; i++) {
             try { _subs[i](); } catch (e) { /* swallow */ }
         }
@@ -245,14 +306,15 @@ var PeersCache = (function() {
 
     function get(hash) {
         var entry = _cache[hash] || null;
-        return _isSuppressedPeerEntry(entry) ? null : entry;
+        return _isSuppressedPeerEntry(entry, _visibilityContext()) ? null : entry;
     }
 
     function getAll() {
         var out = [];
+        var context = _visibilityContext();
         for (var h in _cache) {
             if (!Object.prototype.hasOwnProperty.call(_cache, h)) continue;
-            if (_isSuppressedPeerEntry(_cache[h])) continue;
+            if (_isSuppressedPeerEntry(_cache[h], context)) continue;
             out.push(_cache[h]);
         }
         return out;
@@ -260,9 +322,10 @@ var PeersCache = (function() {
 
     function size() {
         var n = 0;
+        var context = _visibilityContext();
         for (var h in _cache) {
             if (!Object.prototype.hasOwnProperty.call(_cache, h)) continue;
-            if (_isSuppressedPeerEntry(_cache[h])) continue;
+            if (_isSuppressedPeerEntry(_cache[h], context)) continue;
             n++;
         }
         return n;
@@ -329,6 +392,12 @@ var PeersCache = (function() {
     }
 
     function isInitialized() { return _initialized; }
+
+    // Conversation history is durable relationship evidence but is owned by
+    // the messaging cache. Invalidate visibility when that cache changes.
+    function visibilityContextChanged() {
+        _notify();
+    }
 
     // Cache rows overlaid with the live path index. `path_table` is capped for
     // render cost; `path_index` stays compact but covers the full route set.
@@ -438,6 +507,9 @@ var PeersCache = (function() {
         computeStatus: computeStatus,
         supportsRatspeakFeatures: _supportsRatspeakFeatures,
         isSuppressedPeerDisplayName: _isSuppressedPeerDisplayName,
+        setHideKnownSpamPeers: setHideKnownSpamPeers,
+        hideKnownSpamPeersEnabled: hideKnownSpamPeersEnabled,
+        visibilityContextChanged: visibilityContextChanged,
         enriched: enriched,
         isInitialized: isInitialized,
     };

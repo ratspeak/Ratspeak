@@ -984,6 +984,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         window_decorations,
         channel_hosting_enabled,
         activity_identity_protection,
+        hide_known_spam_peers,
         text_scale_percent,
         theme_family,
         theme_mode,
@@ -998,6 +999,8 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         let channel_hosting_enabled = ratspeak_runtime::channel_hub::channel_hosting_enabled(&p);
         let activity_identity_protection = db::get_setting(&p, "activity_identity_protection")
             .is_none_or(|value| value != "false");
+        let hide_known_spam_peers =
+            db::get_setting(&p, "hide_known_spam_peers").is_none_or(|value| value != "false");
         let text_scale_percent = db::get_setting(&p, "text_scale_percent")
             .and_then(|value| value.parse::<u16>().ok())
             .map(|value| (value.clamp(100, 140) + 5) / 10 * 10)
@@ -1014,6 +1017,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             window_decorations,
             channel_hosting_enabled,
             activity_identity_protection,
+            hide_known_spam_peers,
             text_scale_percent,
             theme_family,
             theme_mode,
@@ -1025,6 +1029,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         false,
         "auto".to_string(),
         false,
+        true,
         true,
         100,
         DEFAULT_THEME_FAMILY.to_string(),
@@ -1039,6 +1044,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "window_decorations": window_decorations,
         "channel_hosting_enabled": channel_hosting_enabled,
         "activity_identity_protection": activity_identity_protection,
+        "hide_known_spam_peers": hide_known_spam_peers,
         "text_scale_percent": text_scale_percent,
         "theme_family": theme_family,
         "theme_mode": theme_mode,
@@ -1140,6 +1146,30 @@ pub async fn set_activity_identity_protection(
     state.emit_to_all(
         "app_settings_updated",
         json!({ "activity_identity_protection": enabled }),
+    );
+    Ok(json!({ "enabled": enabled }))
+}
+
+#[tauri::command]
+pub async fn set_hide_known_spam_peers(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> AppResult<Value> {
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(
+            &p,
+            "hide_known_spam_peers",
+            if enabled { "true" } else { "false" },
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("set_hide_known_spam_peers db task panicked"))?
+    .map_err(|error| {
+        AppError::database_unavailable(format!("Failed to save peer visibility setting: {error}"))
+    })?;
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({ "hide_known_spam_peers": enabled }),
     );
     Ok(json!({ "enabled": enabled }))
 }

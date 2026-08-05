@@ -251,7 +251,12 @@ function _voicePrimeNativeCallRoute() {
     var route = _voiceNativeRouteName();
     _voiceNativeAudioRoutePrimed = true;
     _voiceNativeAudioRouteToken = 'pending:' + route;
-    try { bridge.startCallAudioRoute(route); } catch (_) {}
+    try {
+        bridge.startCallAudioRoute(route);
+        _voiceNativeAudioRouteLastSyncAt = Date.now();
+    } catch (_) {
+        _voiceNativeAudioRouteLastSyncAt = 0;
+    }
 }
 
 function _voiceReleaseNativeCallRoutePrime() {
@@ -297,6 +302,10 @@ function _voiceEnsureMicrophonePermission() {
 }
 
 function _voiceEnsurePlaybackReady() {
+    // Android ringtones and LXST playback use native AudioTracks. Opening a
+    // second Web Audio destination here can re-energize the speaker when the
+    // Activity resumes and provides no audio for the call itself.
+    if (_androidCallRouteBridge()) return Promise.resolve(true);
     if (!window.RS || !RS.audioPlayback || typeof RS.audioPlayback.ensure !== 'function') {
         return Promise.resolve(true);
     }
@@ -4163,6 +4172,10 @@ RS.listen('conversations_update', function(data) {
     lxmfConversations = Array.isArray(data) ? data : [];
     _conversationsFirstLoadDone = true;
     _renderConversationsFromCache(lxmfConversations);
+    if (typeof PeersCache !== 'undefined' && PeersCache &&
+        typeof PeersCache.visibilityContextChanged === 'function') {
+        PeersCache.visibilityContextChanged();
+    }
 });
 
 if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.subscribe === 'function') {

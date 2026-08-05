@@ -1103,16 +1103,6 @@
     .settings-mobile-detail-copy {
         min-width: 0;
     }
-    .settings-mobile-detail-eyebrow {
-        display: block;
-        color: var(--text-secondary);
-        font-size: var(--text-xs);
-        font-weight: 700;
-        line-height: 1.2;
-        margin-bottom: var(--space-1);
-        text-transform: uppercase;
-        letter-spacing: 0;
-    }
     .settings-mobile-detail-copy h2 {
         margin: 0;
         color: var(--text-primary);
@@ -1200,14 +1190,6 @@
     .about-hero-avatar {
         width: 64px;
         height: 64px;
-    }
-
-    .game-modal {
-        width: 100% !important;
-        max-width: 100% !important;
-        border-radius: var(--radius-3xl) var(--radius-3xl) 0 0 !important;
-        max-height: 90vh;
-        overflow-y: auto;
     }
 
     .peers-detail-panel { display: none !important; }
@@ -1495,7 +1477,7 @@
 
     .traffic-table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-    .chess-cell:active, .ttt-cell:active { background: var(--accent-bg); }
+    .chess-square:active, .ttt-cell:active { background: var(--accent-bg); }
 
     .identity-list-item { min-height: 48px; }
 
@@ -2527,8 +2509,6 @@
     .games-sidebar-header { display: none; }
     .games-sidebar-tabs { padding: 8px var(--space-8) 0; }
     .games-session-list { padding: var(--space-2) var(--space-6); }
-    .game-ctrl-btn { min-height: 44px; }
-
     .eventlog-header { border-bottom: 1px solid var(--border-row); }
     .log-filter { min-height: 40px; display: flex; align-items: center; }
 
@@ -3175,19 +3155,6 @@
         width: 44px;
         text-align: right;
     }
-    .game-bar {
-        min-height: 56px;
-        padding: var(--space-4) var(--space-6);
-    }
-    .game-bar-text {
-        font-size: var(--mobile-list-detail-size);
-    }
-    .game-bar-play-btn {
-        min-height: 40px;
-        font-size: var(--text-sm);
-        padding-inline: var(--space-6);
-    }
-
     .conn-card {
         min-height: 56px;
         padding: var(--space-4) var(--space-7);

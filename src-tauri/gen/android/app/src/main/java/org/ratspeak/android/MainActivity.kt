@@ -83,6 +83,11 @@ class MainActivity : TauriActivity() {
         private const val CALL_RINGTONE_OUTGOING_ATTACK_MS = 9L
         private const val CALL_RINGTONE_INCOMING_RELEASE_MS = 52L
         private const val CALL_RINGTONE_OUTGOING_RELEASE_MS = 64L
+        private const val CALL_TIMEOUT_CUE_MS = 520L
+        private const val CALL_TIMEOUT_CUE_VOLUME = 0.20
+        private const val CALL_TIMEOUT_CUE_GLIDE_CENTS = -6.0
+        private const val CALL_TIMEOUT_CUE_ATTACK_MS = 7L
+        private const val CALL_TIMEOUT_CUE_RELEASE_MS = 58L
         private val CALL_RINGTONE_INCOMING_START_MS = longArrayOf(0L, 150L, 300L, 780L, 920L, 1070L)
         private val CALL_RINGTONE_INCOMING_FREQ_HZ = doubleArrayOf(
             CALL_RINGTONE_E5_HZ,
@@ -103,6 +108,14 @@ class MainActivity : TauriActivity() {
         )
         private val CALL_RINGTONE_OUTGOING_DURATION_MS = longArrayOf(118L, 190L, 96L, 160L)
         private val CALL_RINGTONE_OUTGOING_NOTE_GAIN = doubleArrayOf(0.82, 0.88, 0.68, 0.72)
+        private val CALL_TIMEOUT_CUE_START_MS = longArrayOf(0L, 112L, 238L)
+        private val CALL_TIMEOUT_CUE_FREQ_HZ = doubleArrayOf(
+            CALL_RINGTONE_B5_HZ,
+            CALL_RINGTONE_G5_HZ,
+            CALL_RINGTONE_E5_HZ
+        )
+        private val CALL_TIMEOUT_CUE_DURATION_MS = longArrayOf(88L, 104L, 168L)
+        private val CALL_TIMEOUT_CUE_NOTE_GAIN = doubleArrayOf(0.82, 0.74, 0.68)
         private val CALL_RINGTONE_INCOMING_PARTIALS = doubleArrayOf(0.74, 0.18, 0.08)
         private val CALL_RINGTONE_OUTGOING_PARTIALS = doubleArrayOf(0.80, 0.15, 0.05)
         // Standard Bluetooth MAC-48 address format: 6 hex octets separated
@@ -396,7 +409,12 @@ class MainActivity : TauriActivity() {
             } catch (_: Exception) {}
         }
         networkCallback = null
-        releaseCallProximityWakeLock(waitForNoProximity = false)
+        // Activity teardown must release every app-owned audio object and
+        // communication route. Otherwise Android can retain the voice route
+        // across a later Activity launch and audibly reopen the speaker.
+        stopNativeCallRingtone()
+        RatspeakVoiceAudio.stop()
+        stopNativeCallAudioRoute(waitForNoProximity = false)
         super.onDestroy()
     }
 
@@ -644,7 +662,11 @@ class MainActivity : TauriActivity() {
     }
 
     private fun normalizedCallRingtoneMode(mode: String): String {
-        return if (mode.equals("incoming", ignoreCase = true)) "incoming" else "outgoing"
+        return when {
+            mode.equals("incoming", ignoreCase = true) -> "incoming"
+            mode.equals("timeout", ignoreCase = true) -> "timeout"
+            else -> "outgoing"
+        }
     }
 
     private fun startNativeCallRingtone(mode: String): Boolean {
@@ -723,21 +745,24 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    private fun requestCallAudioFocus() {
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+    private fun requestCallAudioFocus(): Boolean {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
         val attributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val existing = callAudioFocusRequest as? AudioFocusRequest
-            if (existing != null) return
+            if (existing != null) return true
             val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                 .setAudioAttributes(attributes)
                 .setOnAudioFocusChangeListener(callAudioFocusListener, handler)
                 .build()
-            callAudioFocusRequest = request
-            audioManager.requestAudioFocus(request)
+            val focusResult = audioManager.requestAudioFocus(request)
+            if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                callAudioFocusRequest = request
+            }
+            focusResult
         } else {
             @Suppress("DEPRECATION")
             audioManager.requestAudioFocus(
@@ -746,6 +771,7 @@ class MainActivity : TauriActivity() {
                 AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
             )
         }
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
     }
 
     private fun abandonCallAudioFocus() {
@@ -783,25 +809,33 @@ class MainActivity : TauriActivity() {
             }
             return
         }
-        configureCommunicationRoute(preferEarpiece = true)
+        if (!callAudioRouteActive) {
+            configureCommunicationRoute(preferEarpiece = true)
+        }
     }
 
     private fun startNativeCallAudioRoute(role: String) {
         val routeName = if (role.equals("speaker", ignoreCase = true)) "speaker" else "earpiece"
+        val preferEarpiece = routeName != "speaker"
+        if (callAudioRouteActive && callAudioRouteName == routeName) {
+            requestCallAudioFocus()
+            syncCallProximityWakeLock(preferEarpiece)
+            return
+        }
         callAudioRouteActive = true
         callAudioRouteName = routeName
         volumeControlStream = AudioManager.STREAM_VOICE_CALL
-        requestCallAudioFocus()
-        val preferEarpiece = routeName != "speaker"
+        if (!requestCallAudioFocus()) {
+            Log.d("Ratspeak", "LXST call audio focus was not granted")
+        }
         configureCommunicationRoute(preferEarpiece)
         syncCallProximityWakeLock(preferEarpiece)
     }
 
-    private fun stopNativeCallAudioRoute() {
+    private fun stopNativeCallAudioRoute(waitForNoProximity: Boolean = true) {
         callAudioRouteActive = false
         callAudioRouteName = null
-        releaseCallProximityWakeLock()
-        restoreCallAudioRoute()
+        restoreCallAudioRoute(waitForNoProximity)
         volumeControlStream = AudioManager.USE_DEFAULT_STREAM_TYPE
         abandonCallAudioFocus()
     }
@@ -836,8 +870,8 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    private fun restoreCallAudioRoute() {
-        releaseCallProximityWakeLock()
+    private fun restoreCallAudioRoute(waitForNoProximity: Boolean = true) {
+        releaseCallProximityWakeLock(waitForNoProximity)
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         @Suppress("DEPRECATION")
         audioManager.isSpeakerphoneOn = false
@@ -930,87 +964,84 @@ class MainActivity : TauriActivity() {
         callProximityWakeLock = null
     }
 
-    private fun callRingtoneSequenceMs(): Long {
-        return CALL_RINGTONE_LOOP_MS
+    private fun callRingtoneSequenceMs(mode: String): Long {
+        return if (mode == "timeout") CALL_TIMEOUT_CUE_MS else CALL_RINGTONE_LOOP_MS
     }
 
     private fun callRingtoneNoteCount(mode: String): Int {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_FREQ_HZ.size
-        } else {
-            CALL_RINGTONE_OUTGOING_FREQ_HZ.size
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_FREQ_HZ.size
+            "timeout" -> CALL_TIMEOUT_CUE_FREQ_HZ.size
+            else -> CALL_RINGTONE_OUTGOING_FREQ_HZ.size
         }
     }
 
     private fun callRingtoneNoteStartMs(mode: String, noteIndex: Int): Long {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_START_MS[noteIndex]
-        } else {
-            CALL_RINGTONE_OUTGOING_START_MS[noteIndex]
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_START_MS[noteIndex]
+            "timeout" -> CALL_TIMEOUT_CUE_START_MS[noteIndex]
+            else -> CALL_RINGTONE_OUTGOING_START_MS[noteIndex]
         }
     }
 
     private fun callRingtoneNoteFrequency(mode: String, noteIndex: Int): Double {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_FREQ_HZ[noteIndex]
-        } else {
-            CALL_RINGTONE_OUTGOING_FREQ_HZ[noteIndex]
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_FREQ_HZ[noteIndex]
+            "timeout" -> CALL_TIMEOUT_CUE_FREQ_HZ[noteIndex]
+            else -> CALL_RINGTONE_OUTGOING_FREQ_HZ[noteIndex]
         }
     }
 
     private fun callRingtoneNoteDurationMs(mode: String, noteIndex: Int): Long {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_DURATION_MS[noteIndex]
-        } else {
-            CALL_RINGTONE_OUTGOING_DURATION_MS[noteIndex]
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_DURATION_MS[noteIndex]
+            "timeout" -> CALL_TIMEOUT_CUE_DURATION_MS[noteIndex]
+            else -> CALL_RINGTONE_OUTGOING_DURATION_MS[noteIndex]
         }
     }
 
     private fun callRingtoneNoteGain(mode: String, noteIndex: Int): Double {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_NOTE_GAIN[noteIndex]
-        } else {
-            CALL_RINGTONE_OUTGOING_NOTE_GAIN[noteIndex]
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_NOTE_GAIN[noteIndex]
+            "timeout" -> CALL_TIMEOUT_CUE_NOTE_GAIN[noteIndex]
+            else -> CALL_RINGTONE_OUTGOING_NOTE_GAIN[noteIndex]
         }
     }
 
     private fun callRingtonePartials(mode: String): DoubleArray {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_PARTIALS
-        } else {
-            CALL_RINGTONE_OUTGOING_PARTIALS
-        }
+        return if (mode == "incoming") CALL_RINGTONE_INCOMING_PARTIALS
+        else CALL_RINGTONE_OUTGOING_PARTIALS
     }
 
     private fun callRingtoneVolume(mode: String): Double {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_VOLUME
-        } else {
-            CALL_RINGTONE_OUTGOING_VOLUME
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_VOLUME
+            "timeout" -> CALL_TIMEOUT_CUE_VOLUME
+            else -> CALL_RINGTONE_OUTGOING_VOLUME
         }
     }
 
     private fun callRingtoneGlideCents(mode: String): Double {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_GLIDE_CENTS
-        } else {
-            CALL_RINGTONE_OUTGOING_GLIDE_CENTS
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_GLIDE_CENTS
+            "timeout" -> CALL_TIMEOUT_CUE_GLIDE_CENTS
+            else -> CALL_RINGTONE_OUTGOING_GLIDE_CENTS
         }
     }
 
     private fun callRingtoneAttackMs(mode: String): Long {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_ATTACK_MS
-        } else {
-            CALL_RINGTONE_OUTGOING_ATTACK_MS
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_ATTACK_MS
+            "timeout" -> CALL_TIMEOUT_CUE_ATTACK_MS
+            else -> CALL_RINGTONE_OUTGOING_ATTACK_MS
         }
     }
 
     private fun callRingtoneReleaseMs(mode: String): Long {
-        return if (mode == "incoming") {
-            CALL_RINGTONE_INCOMING_RELEASE_MS
-        } else {
-            CALL_RINGTONE_OUTGOING_RELEASE_MS
+        return when (mode) {
+            "incoming" -> CALL_RINGTONE_INCOMING_RELEASE_MS
+            "timeout" -> CALL_TIMEOUT_CUE_RELEASE_MS
+            else -> CALL_RINGTONE_OUTGOING_RELEASE_MS
         }
     }
 
@@ -1040,9 +1071,18 @@ class MainActivity : TauriActivity() {
                 try { track.release() } catch (_: Throwable) {}
                 return false
             }
-            track.setLoopPoints(0, frameCount, -1)
+            if (mode != "timeout") {
+                track.setLoopPoints(0, frameCount, -1)
+            }
             callRingtoneTrack = track
             track.play()
+            if (mode == "timeout") {
+                handler.postDelayed({
+                    if (callRingtoneGeneration == generation && callRingtoneMode == "timeout") {
+                        stopNativeCallRingtone()
+                    }
+                }, CALL_TIMEOUT_CUE_MS + 80L)
+            }
             return track.playState == AudioTrack.PLAYSTATE_PLAYING
         } catch (_: Throwable) {
             if (callRingtoneTrack === track) callRingtoneTrack = null
@@ -1054,7 +1094,7 @@ class MainActivity : TauriActivity() {
     private fun buildNativeCallRingtonePcm(mode: String): ByteArray {
         val volume = callRingtoneVolume(mode)
         val partials = callRingtonePartials(mode)
-        val totalSamples = ((CALL_RINGTONE_SAMPLE_RATE * callRingtoneSequenceMs()) / 1000L)
+        val totalSamples = ((CALL_RINGTONE_SAMPLE_RATE * callRingtoneSequenceMs(mode)) / 1000L)
             .toInt()
             .coerceAtLeast(1)
         val samples = DoubleArray(totalSamples)
@@ -1828,6 +1868,13 @@ class MainActivity : TauriActivity() {
         fun stopCallRingtone() {
             handler.post {
                 this@MainActivity.stopNativeCallRingtone()
+            }
+        }
+
+        @JavascriptInterface
+        fun playCallTimeoutCue(): Boolean {
+            return this@MainActivity.runOnMainForBoolean {
+                this@MainActivity.startNativeCallRingtone("timeout")
             }
         }
 

@@ -13,7 +13,6 @@
         {
             id: 'ratspeak',
             name: 'Ratspeak',
-            description: 'Warm clay and paper',
             preview: {
                 light: ['#FAF7F3', '#FFFFFF', '#B14F24'],
                 dark: ['#18171A', '#1D1B1E', '#D2693B']
@@ -22,7 +21,6 @@
         {
             id: 'nord',
             name: 'Nord',
-            description: 'Arctic blue and frost',
             preview: {
                 light: ['#ECEFF4', '#F8FAFC', '#46658A'],
                 dark: ['#252A34', '#3B4252', '#88C0D0']
@@ -31,7 +29,6 @@
         {
             id: 'everforest',
             name: 'Everforest',
-            description: 'Forest green and parchment',
             preview: {
                 light: ['#EFEBD4', '#FDF6E3', '#526B2F'],
                 dark: ['#232A2E', '#2D353B', '#A7C080']
@@ -40,7 +37,6 @@
         {
             id: 'gruvbox',
             name: 'Gruvbox',
-            description: 'Earthy retro contrast',
             preview: {
                 light: ['#FBF1C7', '#F9F5D7', '#076678'],
                 dark: ['#1D2021', '#32302F', '#83A598']
@@ -49,7 +45,6 @@
         {
             id: 'catppuccin',
             name: 'Catppuccin',
-            description: 'Soft lavender and mauve',
             preview: {
                 light: ['#EFF1F5', '#F8F9FC', '#8839EF'],
                 dark: ['#11111B', '#313244', '#CBA6F7']

@@ -518,16 +518,27 @@ fn json_to_rmpv(v: &Value) -> rmpv::Value {
     }
 }
 
-/// `delivery_state = Some` stamps metadata; `None` preserves existing.
-pub(crate) async fn save_session_from_state(
-    state: &AppState,
-    session_id: &str,
-    identity_id: &str,
-    app_id: &str,
-    contact_hash: &str,
-    session_state: &std::collections::HashMap<String, serde_json::Value>,
-    delivery_state: Option<&str>,
-) {
+pub(crate) struct SessionStateSave<'a> {
+    pub(crate) session_id: &'a str,
+    pub(crate) identity_id: &'a str,
+    pub(crate) app_id: &'a str,
+    pub(crate) app_version: u32,
+    pub(crate) contact_hash: &'a str,
+    pub(crate) session_state: &'a std::collections::HashMap<String, serde_json::Value>,
+    /// `Some` stamps delivery metadata; `None` preserves the existing value.
+    pub(crate) delivery_state: Option<&'a str>,
+}
+
+pub(crate) async fn save_session_from_state(state: &AppState, save: SessionStateSave<'_>) {
+    let SessionStateSave {
+        session_id,
+        identity_id,
+        app_id,
+        app_version,
+        contact_hash,
+        session_state,
+        delivery_state,
+    } = save;
     // Empty session_id is unaddressable; bail loudly.
     if session_id.is_empty() {
         tracing::warn!(
@@ -568,7 +579,7 @@ pub(crate) async fn save_session_from_state(
         session_id: session_id.to_string(),
         identity_id: identity_id.to_string(),
         app_id: app_id.to_string(),
-        app_version: 1,
+        app_version,
         contact_hash: contact_hash.to_string(),
         initiator: initiator.to_string(),
         status: status.to_string(),

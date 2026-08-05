@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tauri::State;
 
-use crate::commands::shared::{emit_game_sessions, json_to_rmpv_map};
+use crate::commands::shared::{SessionStateSave, emit_game_sessions, json_to_rmpv_map};
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{active_lxmf_hash, diagnostic_short_protocol_id, sanitize_text, validate_hex};
@@ -33,102 +33,9 @@ fn game_action_result_json(
     })
 }
 
-fn lrgp_payload_is_empty(envelope: &lrgp::envelope::Envelope) -> bool {
-    envelope
-        .get(lrgp::constants::KEY_PAYLOAD)
-        .and_then(lrgp::envelope::map_from_value)
-        .map(|payload| payload.is_empty())
-        .unwrap_or(true)
-}
-
-fn local_lrgp_reject_reason(
-    command: &str,
-    fallback_text: &str,
-    envelope: &lrgp::envelope::Envelope,
-) -> Option<&'static str> {
-    if command != lrgp::constants::CMD_MOVE || !lrgp_payload_is_empty(envelope) {
-        return None;
-    }
-
-    let lower = fallback_text.to_ascii_lowercase();
-    if lower.contains("not your turn") {
-        Some("not_your_turn")
-    } else if lower.contains("invalid")
-        || lower.contains("illegal")
-        || lower.contains("occupied")
-        || lower.contains("cell")
-    {
-        Some("invalid_move")
-    } else {
-        Some("dispatch_failed")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-
-    fn move_envelope(payload: Option<HashMap<String, rmpv::Value>>) -> lrgp::envelope::Envelope {
-        lrgp::envelope::pack_envelope("chess", 1, lrgp::constants::CMD_MOVE, "sid", payload, None)
-    }
-
-    #[test]
-    fn local_reject_maps_empty_wrong_turn_move() {
-        let env = move_envelope(Some(HashMap::new()));
-        assert_eq!(
-            local_lrgp_reject_reason(
-                lrgp::constants::CMD_MOVE,
-                "[LRGP Chess] Not your turn",
-                &env
-            ),
-            Some("not_your_turn")
-        );
-    }
-
-    #[test]
-    fn local_reject_maps_empty_illegal_move() {
-        let env = move_envelope(Some(HashMap::new()));
-        assert_eq!(
-            local_lrgp_reject_reason(
-                lrgp::constants::CMD_MOVE,
-                "[LRGP Chess] Illegal move: e2e5",
-                &env
-            ),
-            Some("invalid_move")
-        );
-    }
-
-    #[test]
-    fn local_reject_ignores_non_empty_move_payload() {
-        let mut payload = HashMap::new();
-        payload.insert("m".into(), rmpv::Value::String("e2e4".into()));
-        let env = move_envelope(Some(payload));
-        assert_eq!(
-            local_lrgp_reject_reason(lrgp::constants::CMD_MOVE, "[LRGP Chess] e2e4", &env),
-            None
-        );
-    }
-
-    #[test]
-    fn local_reject_ignores_empty_non_move_payload() {
-        let env = lrgp::envelope::pack_envelope(
-            "chess",
-            1,
-            lrgp::constants::CMD_DRAW_OFFER,
-            "sid",
-            Some(HashMap::new()),
-            None,
-        );
-        assert_eq!(
-            local_lrgp_reject_reason(
-                lrgp::constants::CMD_DRAW_OFFER,
-                "[LRGP Chess] Offered a draw",
-                &env
-            ),
-            None
-        );
-    }
 
     #[test]
     fn diagnostic_abbreviation_rejects_noncanonical_game_identifiers() {
@@ -166,9 +73,19 @@ pub async fn send_game_action(
     let mut dest_hash = sanitize_text(&args.dest_hash, 128);
     let app_id = sanitize_text(&args.app_id, 64);
     let command = sanitize_text(&args.command, 64);
-    let session_id = sanitize_text(&args.session_id, 128);
-    let delivery_pref =
-        crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref());
+    let mut session_id = sanitize_text(&args.session_id, 128);
+    let app_version = state_arc
+        .lrgp_router
+        .with_app(&app_id, |app| app.version())
+        .unwrap_or(1);
+    let delivery_pref = if args.delivery_method.is_some() {
+        crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref())
+    } else {
+        let manifest_preference = state_arc
+            .lrgp_router
+            .with_app(&app_id, |app| app.get_delivery_method(&command));
+        crate::commands::messaging::parse_delivery_preference(manifest_preference.as_deref())
+    };
 
     if !validate_hex(&dest_hash, 32, 32) || app_id.is_empty() || command.is_empty() {
         let payload =
@@ -233,66 +150,64 @@ pub async fn send_game_action(
     let payload = json_to_rmpv_map(&payload_json);
 
     // Pre-dispatch snapshot for rollback. `None` = fresh CHALLENGE.
-    let snapshot =
-        state_arc
-            .lrgp_router
-            .snapshot_before_outgoing(&app_id, &session_id, &identity_id);
+    let snapshot = state_arc
+        .lrgp_router
+        .snapshot_session(&app_id, &session_id, &identity_id);
 
-    let dispatch_result = state_arc.lrgp_router.dispatch_outgoing(
+    let dispatch_result = state_arc.lrgp_router.dispatch_outgoing_to(
         &app_id,
-        1,
+        app_version,
         &command,
         &session_id,
         &payload,
         &identity_id,
+        &dest_hash,
     );
 
-    let (envelope, fallback_text) = match dispatch_result {
+    let prepared = match dispatch_result {
         Ok(result) => result,
-        Err(_) => {
+        Err(error) => {
             tracing::warn!(
                 target: "ttt_trace",
                 step = "send.dispatch_err",
                 reason = "dispatch_failed",
                 "dispatch_outgoing returned error"
             );
-            let payload = game_action_result_json(
-                false,
-                &session_id,
-                &command,
-                None,
-                Some("dispatch_failed"),
-            );
+            let reason = match &error {
+                lrgp::errors::LrgpError::UnknownApp(_)
+                | lrgp::errors::LrgpError::UnsupportedVersion { .. } => "unsupported_app".into(),
+                lrgp::errors::LrgpError::UnauthorizedPeer { .. } => "unauthorized_sender".into(),
+                lrgp::errors::LrgpError::SessionExpired(_) => "session_expired".into(),
+                lrgp::errors::LrgpError::SessionNotFound(_) => "session_not_found".into(),
+                lrgp::errors::LrgpError::SessionExists(_) => "session_exists".into(),
+                lrgp::errors::LrgpError::ParticipantRequired => "invalid_params".into(),
+                lrgp::errors::LrgpError::IllegalTransition { .. } => "invalid_state".into(),
+                lrgp::errors::LrgpError::Validation { code, .. } => code.clone(),
+                lrgp::errors::LrgpError::InvalidEnvelope(_)
+                | lrgp::errors::LrgpError::EnvelopeTooLarge(_, _)
+                | lrgp::errors::LrgpError::UnsupportedAction { .. } => "protocol_error".into(),
+                _ => "dispatch_failed".into(),
+            };
+            if matches!(&error, lrgp::errors::LrgpError::SessionExpired(_))
+                && let Some(Some(expired)) = state_arc.lrgp_router.with_app(&app_id, |app| {
+                    app.get_session_record(&session_id, &identity_id)
+                })
+            {
+                let _ = db::spawn_db(state_arc.db.clone(), move |pool| {
+                    db::save_game_session(&pool, &expired);
+                })
+                .await;
+                emit_game_sessions(&state_arc, &identity_id, Some(&dest_hash)).await;
+            }
+            let payload =
+                game_action_result_json(false, &session_id, &command, None, Some(&reason));
             state_arc.emit_to_all("game_action_result", payload.clone());
             return Ok(payload);
         }
     };
-
-    if let Some(reason) = local_lrgp_reject_reason(&command, &fallback_text, &envelope) {
-        tracing::info!(
-            target: "lrgp_trace",
-            step = "send.rejected_local",
-            reason,
-            "short-circuiting outgoing LRGP action"
-        );
-
-        if state_arc
-            .lrgp_router
-            .rollback_outgoing(&app_id, &session_id, &identity_id, snapshot)
-            .is_err()
-        {
-            tracing::warn!(
-                target: "lrgp_trace",
-                step = "send.local_reject.rollback_err",
-                reason = "rollback_failed",
-                "rollback_outgoing failed after local LRGP rejection"
-            );
-        }
-
-        let payload = game_action_result_json(false, &session_id, &command, None, Some(reason));
-        state_arc.emit_to_all("game_action_result", payload.clone());
-        return Ok(payload);
-    }
+    session_id = prepared.session_id;
+    let envelope = prepared.envelope;
+    let fallback_text = prepared.fallback_text;
 
     tracing::info!(
         target: "ttt_trace",
@@ -302,29 +217,115 @@ pub async fn send_game_action(
         "dispatch_outgoing returned envelope"
     );
 
-    // Persist pre-send so DB never drifts from router on failure/crash.
-    if let Some(session_state) = state_arc.lrgp_router.with_app(&app_id, |app| {
-        app.get_session_state(&session_id, &identity_id)
-    }) {
-        crate::commands::shared::save_session_from_state(
-            &state_arc,
-            &session_id,
-            &identity_id,
-            &app_id,
-            &dest_hash,
-            &session_state,
-            Some("pending"),
-        )
-        .await;
-    }
-    emit_game_sessions(&state_arc, &identity_id, Some(&dest_hash)).await;
+    let lrgp_fields = match lrgp::envelope::pack_lxmf_fields(&envelope) {
+        Ok(fields) => fields,
+        Err(_) => {
+            let _ = state_arc.lrgp_router.rollback_outgoing(
+                &app_id,
+                &session_id,
+                &identity_id,
+                snapshot,
+            );
+            tracing::error!(
+                reason = "field_pack_failed",
+                "Validated LRGP envelope failed field packing"
+            );
+            let payload =
+                game_action_result_json(false, &session_id, &command, None, Some("pack_failed"));
+            state_arc.emit_to_all("game_action_result", payload.clone());
+            return Ok(payload);
+        }
+    };
 
-    let lrgp_fields = lrgp::envelope::pack_lxmf_fields(&envelope);
-    // Persisted on the action row so the user-driven "Resend last move" path
-    // re-transmits the exact same envelope (including the original nonce)
-    // without having to re-dispatch through the LRGP router, which would
-    // reject the resend because local state already advanced.
-    let envelope_mp = lrgp::envelope::pack_to_bytes(&envelope).ok();
+    // Commit the locally-applied state and exact resendable envelope as one
+    // durable outbox transaction before handing it to LXMF. A process crash
+    // can therefore leave either no action, or a complete action that the
+    // existing Resend path can recover; it cannot leave a board transition
+    // without its wire envelope.
+    let envelope_mp = match lrgp::envelope::pack_to_bytes(&envelope) {
+        Ok(packed) => packed,
+        Err(_) => {
+            let _ = state_arc.lrgp_router.rollback_outgoing(
+                &app_id,
+                &session_id,
+                &identity_id,
+                snapshot,
+            );
+            tracing::error!(
+                reason = "byte_pack_failed",
+                "Validated LRGP envelope failed byte packing"
+            );
+            let result =
+                game_action_result_json(false, &session_id, &command, None, Some("pack_failed"));
+            state_arc.emit_to_all("game_action_result", result.clone());
+            return Ok(result);
+        }
+    };
+    let mut durable_session = match state_arc
+        .lrgp_router
+        .with_app(&app_id, |app| {
+            app.get_session_record(&session_id, &identity_id)
+        })
+        .flatten()
+    {
+        Some(session) => session,
+        None => {
+            let _ = state_arc.lrgp_router.rollback_outgoing(
+                &app_id,
+                &session_id,
+                &identity_id,
+                snapshot,
+            );
+            let result =
+                game_action_result_json(false, &session_id, &command, None, Some("invalid_state"));
+            state_arc.emit_to_all("game_action_result", result.clone());
+            return Ok(result);
+        }
+    };
+    durable_session.metadata.insert(
+        "delivery_state".to_string(),
+        serde_json::Value::String("pending".to_string()),
+    );
+    let action_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let payload_for_history = serde_json::to_string(&payload_json).unwrap_or_else(|_| "{}".into());
+    let session_for_outbox = durable_session.clone();
+    let command_for_outbox = command.clone();
+    let sender_for_outbox = identity_id.clone();
+    let envelope_for_outbox = envelope_mp.clone();
+    let action_num = db::spawn_db(state_arc.db.clone(), move |pool| {
+        db::persist_outbound_game_action(
+            &pool,
+            &session_for_outbox,
+            &command_for_outbox,
+            &payload_for_history,
+            &sender_for_outbox,
+            action_timestamp,
+            &envelope_for_outbox,
+        )
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(action_num) = action_num else {
+        let _ =
+            state_arc
+                .lrgp_router
+                .rollback_outgoing(&app_id, &session_id, &identity_id, snapshot);
+        tracing::error!(
+            session_id,
+            app_id,
+            command,
+            "Failed to commit LRGP durable outbox"
+        );
+        let result =
+            game_action_result_json(false, &session_id, &command, None, Some("storage_failed"));
+        state_arc.emit_to_all("game_action_result", result.clone());
+        return Ok(result);
+    };
+    emit_game_sessions(&state_arc, &identity_id, Some(&dest_hash)).await;
 
     // One blocking task so the lxmf MutexGuard never crosses an .await.
     let st: Arc<AppState> = Arc::clone(&state_arc);
@@ -368,32 +369,6 @@ pub async fn send_game_action(
     match msg_id {
         Some(id) => {
             state_arc.lxmf_notify.notify_one();
-            let pool = state_arc.db.clone();
-            let session_for_db = session_id.clone();
-            let id_for_db = identity_id.clone();
-            let command_for_db = command.clone();
-            let payload_for_db = payload_json.clone();
-            let sender_for_db = sender_hash.clone();
-            let envelope_for_db = envelope_mp.clone();
-            let _ = db::spawn_db(pool, move |p| {
-                let action_num = db::get_game_action_count(&p, &session_for_db, &id_for_db);
-                let action = lrgp::store::Action {
-                    session_id: session_for_db.clone(),
-                    identity_id: id_for_db.clone(),
-                    action_num,
-                    command: command_for_db,
-                    payload_json: serde_json::to_string(&payload_for_db)
-                        .unwrap_or_else(|_| "{}".into()),
-                    sender: sender_for_db,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs_f64(),
-                };
-                db::save_game_action(&p, &action, envelope_for_db.as_deref());
-            })
-            .await;
-
             if let Ok(mut map) = state_arc.lrgp_msg_to_session.lock() {
                 map.insert(
                     id.clone(),
@@ -415,12 +390,15 @@ pub async fn send_game_action(
             }) {
                 crate::commands::shared::save_session_from_state(
                     &state_arc,
-                    &session_id,
-                    &identity_id,
-                    &app_id,
-                    &dest_hash,
-                    &session_state,
-                    Some("sending"),
+                    SessionStateSave {
+                        session_id: &session_id,
+                        identity_id: &identity_id,
+                        app_id: &app_id,
+                        app_version,
+                        contact_hash: &dest_hash,
+                        session_state: &session_state,
+                        delivery_state: Some("sending"),
+                    },
                 )
                 .await;
                 tracing::info!(
@@ -448,7 +426,7 @@ pub async fn send_game_action(
                 .ok()
                 .map(|g| g.is_some())
                 .unwrap_or(false);
-            let reason = if mgr_ready {
+            let mut reason = if mgr_ready {
                 "send_failed"
             } else {
                 "lxmf_not_initialized"
@@ -462,38 +440,65 @@ pub async fn send_game_action(
                 "LRGP submit failed \u{2014} rolling back"
             );
 
-            if state_arc
-                .lrgp_router
-                .rollback_outgoing(&app_id, &session_id, &identity_id, snapshot)
-                .is_err()
-            {
-                tracing::warn!(
-                    target: "ttt_trace",
-                    step = "send.rollback_err",
-                    reason = "rollback_failed",
-                    "rollback_outgoing failed"
-                );
-            }
+            let sid_for_rollback = session_id.clone();
+            let identity_for_rollback = identity_id.clone();
+            let snapshot_for_db = snapshot.clone();
+            let db_rolled_back = db::spawn_db(state_arc.db.clone(), move |pool| {
+                db::rollback_outbound_game_action(
+                    &pool,
+                    &sid_for_rollback,
+                    &identity_for_rollback,
+                    action_num,
+                    snapshot_for_db.as_ref(),
+                )
+            })
+            .await
+            .unwrap_or(false);
 
-            if let Some(session_state) = state_arc.lrgp_router.with_app(&app_id, |app| {
-                app.get_session_state(&session_id, &identity_id)
-            }) {
-                if session_state.is_empty() {
-                    let sid_del = session_id.clone();
-                    let id_del = identity_id.clone();
-                    let _ = db::spawn_db(state_arc.db.clone(), move |p| {
-                        db::delete_game_session(&p, &sid_del, &id_del);
-                    })
-                    .await;
-                } else {
+            if db_rolled_back {
+                // The action never reached LXMF and both durable and in-memory
+                // state are back at the pre-action snapshot. Do not stamp the
+                // restored session as failed: there is no matching envelope
+                // left to resend, and doing so could make the UI retransmit an
+                // older action from this session.
+                if state_arc
+                    .lrgp_router
+                    .rollback_outgoing(&app_id, &session_id, &identity_id, snapshot)
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: "ttt_trace",
+                        step = "send.rollback_err",
+                        reason = "rollback_failed",
+                        "rollback_outgoing failed"
+                    );
+                }
+            } else {
+                // Keep router and DB on the same advanced state. The durable
+                // envelope remains available to the explicit Resend action,
+                // so this is the one failure mode that should be labelled as
+                // resendable instead of rolling the board back in the UI.
+                tracing::error!(
+                    session_id,
+                    action_num,
+                    "Could not roll back LRGP outbox; retaining resendable pending action"
+                );
+                reason = "resend_required";
+                if let Some(session_state) = state_arc.lrgp_router.with_app(&app_id, |app| {
+                    app.get_session_state(&session_id, &identity_id)
+                }) && !session_state.is_empty()
+                {
                     crate::commands::shared::save_session_from_state(
                         &state_arc,
-                        &session_id,
-                        &identity_id,
-                        &app_id,
-                        &dest_hash,
-                        &session_state,
-                        Some("failed"),
+                        SessionStateSave {
+                            session_id: &session_id,
+                            identity_id: &identity_id,
+                            app_id: &app_id,
+                            app_version,
+                            contact_hash: &dest_hash,
+                            session_state: &session_state,
+                            delivery_state: Some("failed"),
+                        },
                     )
                     .await;
                 }
@@ -563,10 +568,51 @@ pub async fn delete_game_session(
     let identity_id = active_lxmf_hash(&state_arc);
     let sid = session_id.clone();
     let id_c = identity_id.clone();
-    let _ = db::spawn_db(state_arc.db.clone(), move |p| {
-        db::delete_game_session(&p, &sid, &id_c);
+    let (outcome, app_id) = db::spawn_db(state_arc.db.clone(), move |p| {
+        let Some(session) = db::get_game_session(&p, &sid, &id_c) else {
+            return ("not_found", None);
+        };
+        let status = session.get("status").and_then(Value::as_str).unwrap_or("");
+        if !matches!(status, "completed" | "declined" | "expired") {
+            return ("active", None);
+        }
+        let app_id = session
+            .get("app_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if db::delete_game_session(&p, &sid, &id_c) {
+            ("deleted", app_id)
+        } else {
+            ("failed", None)
+        }
     })
-    .await;
+    .await
+    .map_err(|_| AppError::internal("delete_game_session db task panicked"))?;
+    match outcome {
+        "deleted" => {}
+        "not_found" => return Err(AppError::not_found("game session not found")),
+        "active" => {
+            return Err(AppError::conflict(
+                "Active and pending games cannot be removed from history",
+            ));
+        }
+        _ => {
+            return Err(AppError::database_unavailable(
+                "game session could not be removed",
+            ));
+        }
+    }
+    if let Some(app_id) = app_id
+        && state_arc
+            .lrgp_router
+            .remove_session(&app_id, &session_id, &identity_id)
+            .is_err()
+    {
+        tracing::warn!(
+            reason = "router_remove_failed",
+            "Failed to remove live LRGP session"
+        );
+    }
     state_arc.emit_to_all("game_session_deleted", json!({ "session_id": session_id }));
     Ok(json!({ "session_id": session_id }))
 }
@@ -646,7 +692,12 @@ pub async fn resend_last_game_action(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    if !validate_hex(&dest_hash, 16, 64) || app_id.is_empty() {
+    let app_version = session
+        .get("app_version")
+        .and_then(Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+        .unwrap_or(1);
+    if !validate_hex(&dest_hash, 32, 32) || app_id.is_empty() {
         return Err(AppError::internal(
             "session row missing contact_hash or app_id",
         ));
@@ -657,7 +708,8 @@ pub async fn resend_last_game_action(
     let command = lrgp::envelope::value_as_str(envelope.get("c").unwrap_or(&rmpv::Value::Nil))
         .unwrap_or("")
         .to_string();
-    let lrgp_fields = lrgp::envelope::pack_lxmf_fields(&envelope);
+    let lrgp_fields = lrgp::envelope::pack_lxmf_fields(&envelope)
+        .map_err(|e| AppError::internal(format!("envelope field packing: {e}")))?;
     let fallback_text = format!("[LRGP {}] {}", app_id, command);
 
     crate::commands::shared::resolve_before_send(&state_arc, &dest_hash).await;
@@ -721,12 +773,15 @@ pub async fn resend_last_game_action(
             }) {
                 crate::commands::shared::save_session_from_state(
                     &state_arc,
-                    &session_id,
-                    &identity_id,
-                    &app_id,
-                    &dest_hash,
-                    &session_state,
-                    Some("sending"),
+                    SessionStateSave {
+                        session_id: &session_id,
+                        identity_id: &identity_id,
+                        app_id: &app_id,
+                        app_version,
+                        contact_hash: &dest_hash,
+                        session_state: &session_state,
+                        delivery_state: Some("sending"),
+                    },
                 )
                 .await;
             }

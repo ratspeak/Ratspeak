@@ -280,6 +280,9 @@ pub struct AppState {
     /// teardown. The handle slot alone cannot make check-then-register atomic.
     pub channel_hub_control_lock: tokio::sync::Mutex<()>,
     pub lxmf: Mutex<Option<LxmfManager>>,
+    /// Public identity keys captured when a local identity is unlocked. Contact
+    /// card export is read-only and must not queue behind the LXMF router lock.
+    local_identity_public_keys: RwLock<HashMap<String, [u8; 64]>>,
     #[cfg(feature = "lxst-voice")]
     pub lxst_voice: Mutex<Option<crate::voice::LxstVoiceServiceHandle>>,
     #[cfg(feature = "lxst-voice")]
@@ -405,6 +408,27 @@ impl AppState {
         let lrgp_router = lrgp::router::LrgpRouter::new();
         lrgp_router.register(Box::new(lrgp::apps::tictactoe::TicTacToeApp::new()));
         lrgp_router.register(Box::new(lrgp::apps::chess::ChessApp::new()));
+        for session in crate::db::load_game_sessions(&db) {
+            let app_id = session.app_id.clone();
+            let session_id = session.session_id.clone();
+            let identity_id = session.identity_id.clone();
+            if lrgp_router.restore_session(session).is_err() {
+                tracing::warn!(
+                    reason = "invalid_durable_session",
+                    "Skipping invalid durable LRGP session during hydration"
+                );
+                continue;
+            }
+
+            // `restore_session` applies the app's TTL policy. Mirror an expiry
+            // transition immediately so the UI and live engine cannot diverge
+            // after a restart.
+            if let Some(Some(restored)) = lrgp_router.with_app(&app_id, |app| {
+                app.get_session_record(&session_id, &identity_id)
+            }) {
+                crate::db::save_game_session(&db, &restored);
+            }
+        }
 
         let initial_interval = crate::db::get_setting(&db, "auto_announce_interval")
             .and_then(|v| v.parse::<u64>().ok())
@@ -459,6 +483,7 @@ impl AppState {
             channel_hub: RwLock::new(None),
             channel_hub_control_lock: tokio::sync::Mutex::new(()),
             lxmf: Mutex::new(None),
+            local_identity_public_keys: RwLock::new(HashMap::new()),
             #[cfg(feature = "lxst-voice")]
             lxst_voice: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
@@ -1481,8 +1506,26 @@ impl AppState {
     }
 
     pub fn set_lxmf(&self, lxmf: LxmfManager) {
+        let identity_hash = lxmf.identity_hash.clone();
+        let public_key = lxmf.identity.get_public_key();
+        if let Ok(mut keys) = self.local_identity_public_keys.write() {
+            keys.insert(identity_hash, public_key);
+        }
         if let Ok(mut l) = self.lxmf.lock() {
             *l = Some(lxmf);
+        }
+    }
+
+    pub fn local_identity_public_key(&self, identity_hash: &str) -> Option<[u8; 64]> {
+        self.local_identity_public_keys
+            .read()
+            .ok()
+            .and_then(|keys| keys.get(identity_hash).copied())
+    }
+
+    pub fn forget_local_identity_public_key(&self, identity_hash: &str) {
+        if let Ok(mut keys) = self.local_identity_public_keys.write() {
+            keys.remove(identity_hash);
         }
     }
 
@@ -1612,6 +1655,25 @@ mod tests {
 
     fn make_state() -> AppState {
         make_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    #[test]
+    fn set_lxmf_snapshots_public_identity_key_outside_router_lock() {
+        let state = make_state();
+        let data_root = state.config.data_root.clone();
+        let manager = crate::lxmf::LxmfManager::load_or_create(&data_root, None, None).unwrap();
+        let identity_hash = manager.identity_hash.clone();
+        let public_key = manager.identity.get_public_key();
+        state.set_lxmf(manager);
+
+        let router_guard = state.lxmf.lock().unwrap();
+        assert_eq!(
+            state.local_identity_public_key(&identity_hash),
+            Some(public_key)
+        );
+
+        drop(router_guard);
+        std::fs::remove_dir_all(data_root).ok();
     }
 
     #[tokio::test]

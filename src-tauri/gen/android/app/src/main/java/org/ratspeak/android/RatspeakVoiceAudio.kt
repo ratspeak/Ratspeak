@@ -3,6 +3,7 @@ package org.ratspeak.android
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.Build
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -11,12 +12,14 @@ object RatspeakVoiceAudio {
     private const val BYTES_PER_FLOAT_SAMPLE = 4
     private const val BYTES_PER_PCM16_SAMPLE = 2
     private const val TARGET_BUFFER_MS = 220
+    private const val START_THRESHOLD_MS = 40
     private val lock = Any()
 
     private var track: AudioTrack? = null
     private var trackSampleRate = 0
     private var trackChannels = 0
     private var trackEncoding = AudioFormat.ENCODING_INVALID
+    private var trackStarted = false
     private var pcm16Scratch = ShortArray(0)
     private var lastError = ""
 
@@ -33,7 +36,9 @@ object RatspeakVoiceAudio {
                 trackChannels == safeChannels
             ) {
                 return try {
-                    existing.play()
+                    if (trackStarted && existing.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        existing.play()
+                    }
                     lastError = ""
                     true
                 } catch (e: Throwable) {
@@ -55,20 +60,22 @@ object RatspeakVoiceAudio {
                     ?: continue
                 try {
                     created.setVolume(AudioTrack.getMaxVolume())
-                    created.play()
+                    configureStartThreshold(created, safeSampleRate)
                     track = created
                     trackSampleRate = safeSampleRate
                     trackChannels = safeChannels
                     trackEncoding = encoding
+                    trackStarted = false
                     lastError = ""
                     return true
                 } catch (e: Throwable) {
-                    errors.add("${encodingName(encoding)} play failed: ${e.message ?: e.javaClass.simpleName}")
+                    errors.add("${encodingName(encoding)} prepare failed: ${e.message ?: e.javaClass.simpleName}")
                     try { created.release() } catch (_: Throwable) {}
                     track = null
                     trackSampleRate = 0
                     trackChannels = 0
                     trackEncoding = AudioFormat.ENCODING_INVALID
+                    trackStarted = false
                 }
             }
             lastError = errors.joinToString("; ").ifBlank { "Android voice AudioTrack could not be initialized" }
@@ -83,13 +90,21 @@ object RatspeakVoiceAudio {
             val count = min(length.coerceAtLeast(0), samples.size)
             if (count == 0) return 0
             return try {
-                if (trackEncoding == AudioFormat.ENCODING_PCM_16BIT) {
-                    writePcm16(active, samples, count)
+                val starting = !trackStarted
+                val writeMode = if (starting) AudioTrack.WRITE_BLOCKING else AudioTrack.WRITE_NON_BLOCKING
+                val written = if (trackEncoding == AudioFormat.ENCODING_PCM_16BIT) {
+                    writePcm16(active, samples, count, writeMode)
                 } else {
-                    active.write(samples, 0, count, AudioTrack.WRITE_NON_BLOCKING)
+                    active.write(samples, 0, count, writeMode)
                 }
+                if (written > 0 && starting) {
+                    active.play()
+                    trackStarted = true
+                }
+                written
             } catch (e: Throwable) {
                 lastError = "AudioTrack write failed: ${e.message ?: e.javaClass.simpleName}"
+                stopLocked()
                 -1
             }
         }
@@ -164,7 +179,24 @@ object RatspeakVoiceAudio {
         return created
     }
 
-    private fun writePcm16(active: AudioTrack, samples: FloatArray, count: Int): Int {
+    private fun configureStartThreshold(active: AudioTrack, sampleRate: Int) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        try {
+            val desiredFrames = (sampleRate * START_THRESHOLD_MS / 1000).coerceAtLeast(1)
+            val capacityFrames = active.bufferCapacityInFrames.coerceAtLeast(1)
+            active.setStartThresholdInFrames(desiredFrames.coerceAtMost(capacityFrames))
+        } catch (_: Throwable) {
+            // Optional latency tuning. Older or unusual sinks keep their
+            // platform-selected threshold while retaining write-before-play.
+        }
+    }
+
+    private fun writePcm16(
+        active: AudioTrack,
+        samples: FloatArray,
+        count: Int,
+        writeMode: Int
+    ): Int {
         if (pcm16Scratch.size < count) {
             pcm16Scratch = ShortArray(count)
         }
@@ -172,7 +204,7 @@ object RatspeakVoiceAudio {
             val clamped = samples[i].coerceIn(-1.0f, 1.0f)
             pcm16Scratch[i] = (clamped * Short.MAX_VALUE.toFloat()).roundToInt().toShort()
         }
-        return active.write(pcm16Scratch, 0, count, AudioTrack.WRITE_NON_BLOCKING)
+        return active.write(pcm16Scratch, 0, count, writeMode)
     }
 
     private fun stopLocked() {
@@ -181,6 +213,7 @@ object RatspeakVoiceAudio {
         trackSampleRate = 0
         trackChannels = 0
         trackEncoding = AudioFormat.ENCODING_INVALID
+        trackStarted = false
         try { current.pause() } catch (_: Throwable) {}
         try { current.flush() } catch (_: Throwable) {}
         try { current.stop() } catch (_: Throwable) {}

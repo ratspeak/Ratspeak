@@ -4,15 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual">
     <meta name="theme-color" content="#FAF7F3">
-    <script src="/static/js/theme.js?v=ui-20260803"></script>
-    <script src="/static/js/text_scale.js?v=ui-20260803"></script>
+    <script src="/static/js/theme.js?v=ui-20260804"></script>
+    <script src="/static/js/text_scale.js?v=ui-20260804"></script>
     <!-- Safe-area insets (--sat/--sab/--sal/--sar) are defined in 00-tokens.css
          via env(safe-area-inset-*). iOS feeds env() through viewport-fit=cover +
          WKWebView contentInsetAdjustmentBehavior=.never; Android MainActivity
          injects pixel values via evaluateJavascript; desktop falls back to 0. -->
     <title>Ratspeak - Dashboard</title>
-    <link rel="stylesheet" href="/static/fonts/fonts.css?v=ui-20260803">
-    <link rel="stylesheet" href="/static/style.css?v=ui-20260803">
+    <link rel="stylesheet" href="/static/fonts/fonts.css?v=ui-20260804">
+    <link rel="stylesheet" href="/static/style.css?v=ui-20260804">
 </head>
 <body class="checking-setup">
 
@@ -1133,9 +1133,9 @@
                                 <span class="settings-nav-label">Identity</span>
                                 <span class="settings-nav-desc">Active identity, status, backup, and recovery</span>
                             </button>
-                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-privacy" data-settings-title="Privacy" data-settings-desc="Privacy related preferences">
+                            <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-privacy" data-settings-title="Privacy" data-settings-desc="Activity identity protection and presence sharing.">
                                 <span class="settings-nav-label">Privacy</span>
-                                <span class="settings-nav-desc">Privacy related preferences</span>
+                                <span class="settings-nav-desc">Activity identity protection and presence sharing</span>
                             </button>
                             <button class="settings-nav-item" type="button" data-settings-panel="panel-settings-network" data-settings-title="Network" data-settings-desc="Transport behavior and announce cadence.">
                                 <span class="settings-nav-label">Network</span>
@@ -1170,7 +1170,6 @@
                                 <span>Settings</span>
                             </button>
                             <div class="settings-mobile-detail-copy">
-                                <span class="settings-mobile-detail-eyebrow">Section</span>
                                 <h2 id="settings-mobile-detail-title">General</h2>
                             </div>
                         </div>
@@ -1182,7 +1181,6 @@
                         </div>
                         <div class="settings-page-inner settings-detail-panels">
                             <div class="panel settings-panel settings-panel-selected" id="panel-settings-general">
-                        <div class="panel-header">General</div>
                         <div class="panel-body">
                             <div class="settings-row settings-theme-family-row">
                                 <div class="settings-row-info">
@@ -1274,6 +1272,22 @@
                                     <span class="prop-slider"></span>
                                 </label>
                             </div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Hide known spam peers</span>
+                                    <span class="settings-row-desc" id="settings-hide-known-spam-peers-desc">Hide repeated bridge-style IDs unless you have saved or messaged the peer.</span>
+                                </div>
+                                <div class="settings-radio-group" role="radiogroup" aria-label="Hide known spam peers" aria-describedby="settings-hide-known-spam-peers-desc">
+                                    <label class="settings-radio-option">
+                                        <input type="radio" name="settings-hide-known-spam-peers" id="settings-hide-known-spam-peers-off" value="off">
+                                        <span>OFF</span>
+                                    </label>
+                                    <label class="settings-radio-option">
+                                        <input type="radio" name="settings-hide-known-spam-peers" id="settings-hide-known-spam-peers-on" value="on" checked>
+                                        <span>ON</span>
+                                    </label>
+                                </div>
+                            </div>
                             <div class="settings-row" style="border-bottom:none;">
                                 <div class="settings-row-info">
                                     <span class="settings-row-label">Block List</span>
@@ -1285,7 +1299,6 @@
                     </div>
 
                             <div class="panel settings-panel" id="panel-settings-channels">
-                        <div class="panel-header">Channels</div>
                         <div class="panel-body">
                             <div class="settings-row">
                                 <div class="settings-row-info">
@@ -1307,7 +1320,6 @@
                     </div>
 
                             <div class="panel settings-panel" id="panel-settings-identity">
-                        <div class="panel-header">Identity</div>
                         <div class="panel-body">
                             <div class="settings-row">
                                 <div class="settings-row-info">
@@ -1348,7 +1360,6 @@
                     </div>
 
                             <div class="panel settings-panel" id="panel-settings-privacy">
-                        <div class="panel-header">Privacy</div>
                         <div class="panel-body">
                             <div class="settings-row">
                                 <div class="settings-row-info">
@@ -1380,7 +1391,6 @@
                     </div>
 
                             <div class="panel settings-panel" id="panel-settings-network">
-                        <div class="panel-header">Network</div>
                         <div class="panel-body">
                             <div class="settings-row">
                                 <div class="settings-row-info">
@@ -1400,10 +1410,6 @@
                     </div>
 
                             <div class="panel settings-panel" id="panel-settings-offline-inbox">
-                        <div class="panel-header">
-                            Offline Inbox
-                            <span class="panel-header-dot" id="settings-relay-dot"></span>
-                        </div>
                         <div class="panel-body">
                             <div class="settings-row" style="border-bottom:none;">
                                 <div class="settings-row-info">
@@ -1417,9 +1423,7 @@
                     </div>
 
                             <div class="panel settings-panel" id="panel-settings-system">
-                        <div class="panel-header">System</div>
                         <div class="panel-body system-panel-body">
-                            <div class="settings-panel-section-title">System</div>
                             <div class="settings-row">
                                 <div class="settings-row-info">
                                     <span class="settings-row-label">Developer Mode</span>
@@ -1916,39 +1920,39 @@
 <!-- Synchronous load order matters: state/constants/setup/nav before any caller
      of their module-level functions; tauri_events.js last (wires everything above).
      Reordering breaks fresh boots silently. -->
-<script src="/static/js/state.js?v=ui-20260803"></script>
-<script src="/static/js/constants.js?v=ui-20260803"></script>
-<script src="/static/js/setup.js?v=ui-20260803"></script>
-<script src="/static/js/nav.js?v=ui-20260803"></script>
-<script src="/static/js/gestures.js?v=ui-20260803"></script>
-<script src="/static/js/view_stack.js?v=ui-20260803"></script>
+<script src="/static/js/state.js?v=ui-20260804"></script>
+<script src="/static/js/constants.js?v=ui-20260804"></script>
+<script src="/static/js/setup.js?v=ui-20260804"></script>
+<script src="/static/js/nav.js?v=ui-20260804"></script>
+<script src="/static/js/gestures.js?v=ui-20260804"></script>
+<script src="/static/js/view_stack.js?v=ui-20260804"></script>
 
-<script src="/static/js/peers_cache.js?v=ui-20260803"></script>
-<script src="/static/js/connections.js?v=ui-20260803"></script>
-<script src="/static/js/peers.js?v=ui-20260803"></script>
-<script src="/static/js/toasts.js?v=ui-20260803"></script>
-<script src="/static/js/dialogs.js?v=ui-20260803"></script>
-<script src="/static/js/action_popover.js?v=ui-20260803"></script>
-<script src="/static/js/ui_shared.js?v=ui-20260803"></script>
-<script src="/static/js/events.js?v=ui-20260803"></script>
-<script src="/static/js/activity.js?v=ui-20260803"></script>
-<script src="/static/js/health.js?v=ui-20260803"></script>
-<script src="/static/js/modals.js?v=ui-20260803"></script>
-<script src="/static/js/emoji_data.js?v=ui-20260803"></script>
-<script src="/static/js/emoji_picker.js?v=ui-20260803"></script>
-<script src="/static/js/voice_ringtones.js?v=ui-20260803"></script>
+<script src="/static/js/peers_cache.js?v=ui-20260804"></script>
+<script src="/static/js/connections.js?v=ui-20260804"></script>
+<script src="/static/js/peers.js?v=ui-20260804"></script>
+<script src="/static/js/toasts.js?v=ui-20260804"></script>
+<script src="/static/js/dialogs.js?v=ui-20260804"></script>
+<script src="/static/js/action_popover.js?v=ui-20260804"></script>
+<script src="/static/js/ui_shared.js?v=ui-20260804"></script>
+<script src="/static/js/events.js?v=ui-20260804"></script>
+<script src="/static/js/activity.js?v=ui-20260804"></script>
+<script src="/static/js/health.js?v=ui-20260804"></script>
+<script src="/static/js/modals.js?v=ui-20260804"></script>
+<script src="/static/js/emoji_data.js?v=ui-20260804"></script>
+<script src="/static/js/emoji_picker.js?v=ui-20260804"></script>
+<script src="/static/js/voice_ringtones.js?v=ui-20260804"></script>
 <script src="/static/js/vendor/jsQR.js"></script>
-<script src="/static/js/contact_card.js?v=ui-20260803"></script>
-<script src="/static/js/lxmf.js?v=ui-20260803"></script>
-<script src="/static/js/channels.js?v=ui-20260803"></script>
-<script src="/static/js/channel_hub.js?v=ui-20260803"></script>
-<script src="/static/js/propagation.js?v=ui-20260803"></script>
-<script src="/static/js/settings.js?v=ui-20260803"></script>
-<script src="/static/js/identity.js?v=ui-20260803"></script>
-<script src="/static/js/confetti.js?v=ui-20260803"></script>
-<script src="/static/js/games_tab.js?v=ui-20260803"></script>
-<script src="/static/js/native_channel_share.js?v=ui-20260803"></script>
-<script src="/static/js/tauri_events.js?v=ui-20260803"></script>
-<script src="/static/js/init_dom_handlers.js?v=ui-20260803"></script>
+<script src="/static/js/contact_card.js?v=ui-20260804"></script>
+<script src="/static/js/lxmf.js?v=ui-20260804"></script>
+<script src="/static/js/channels.js?v=ui-20260804"></script>
+<script src="/static/js/channel_hub.js?v=ui-20260804"></script>
+<script src="/static/js/propagation.js?v=ui-20260804"></script>
+<script src="/static/js/settings.js?v=ui-20260804"></script>
+<script src="/static/js/identity.js?v=ui-20260804"></script>
+<script src="/static/js/confetti.js?v=ui-20260804"></script>
+<script src="/static/js/games_tab.js?v=ui-20260804"></script>
+<script src="/static/js/native_channel_share.js?v=ui-20260804"></script>
+<script src="/static/js/tauri_events.js?v=ui-20260804"></script>
+<script src="/static/js/init_dom_handlers.js?v=ui-20260804"></script>
 </body>
 </html>

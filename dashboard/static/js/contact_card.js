@@ -540,10 +540,58 @@ z`,
     }
 
     function showIdentityShareScreen(identityHash) {
-        RS.invoke('api_contact_card', { hashHex: identityHash || null }).then(function(card) {
+        var built = buildSheet('contact-share-sheet');
+        var closed = false;
+        var loadGeneration = 0;
+
+        function closeShareScreen() {
+            if (closed) return;
+            closed = true;
+            closeSheet(built.overlay, built.sheet);
+        }
+
+        function bindCloseButton() {
+            var closeButton = built.sheet.querySelector('.contact-card-close');
+            if (closeButton) closeButton.addEventListener('click', closeShareScreen);
+        }
+
+        function renderLoading() {
+            built.sheet.setAttribute('aria-busy', 'true');
+            built.sheet.innerHTML =
+                '<div class="contact-card-topbar">' +
+                    '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
+                '</div>' +
+                '<div class="contact-share-loading" role="status" aria-live="polite">' +
+                    '<div class="contact-share-loading-qr" aria-hidden="true">' +
+                        '<span class="loading-spinner"></span>' +
+                    '</div>' +
+                    '<div class="contact-share-loading-label">Preparing contact card&hellip;</div>' +
+                '</div>';
+            bindCloseButton();
+        }
+
+        function renderError(err, generation) {
+            if (closed || generation !== loadGeneration) return;
+            built.sheet.removeAttribute('aria-busy');
+            var message = err && err.message ? err.message : 'Could not build contact card';
+            built.sheet.innerHTML =
+                '<div class="contact-card-topbar">' +
+                    '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
+                '</div>' +
+                '<div class="contact-share-error" role="alert">' +
+                    '<div class="contact-share-error-title">Contact card unavailable</div>' +
+                    '<div class="contact-share-error-message">' + escapeHtml(message) + '</div>' +
+                    '<button class="nr-btn contact-share-retry" type="button">Try again</button>' +
+                '</div>';
+            bindCloseButton();
+            built.sheet.querySelector('.contact-share-retry').addEventListener('click', loadCard);
+        }
+
+        function renderCard(card, generation) {
+            if (closed || generation !== loadGeneration) return;
             var name = card.display_name || 'Ratspeak Contact';
             var fileBase = safeFileBase(name);
-            var built = buildSheet('contact-share-sheet');
+            built.sheet.removeAttribute('aria-busy');
             built.sheet.innerHTML =
                 '<div class="contact-card-topbar">' +
                     '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
@@ -562,26 +610,16 @@ z`,
                 '</div>' +
                 '<div class="contact-share-actions">' +
                     '<button class="nr-btn contact-share-action" id="contact-copy-address">' + iconSvg('copy') + '<span>Copy</span></button>' +
-                    '<button class="nr-btn contact-share-action" id="contact-share-qr">' + iconSvg('qr') + '<span>Share QR</span></button>' +
+                    '<button class="nr-btn contact-share-action" id="contact-share-qr" disabled aria-busy="true">' + iconSvg('qr') + '<span>Share QR</span></button>' +
                 '</div>';
 
             var canvas = built.sheet.querySelector('canvas');
-            try {
-                renderQrCanvas(canvas, card.payload || '');
-            } catch (err) {
-                showToast(err && err.message ? err.message : 'Could not render QR', 'toast-red', 3000);
-            }
-
-            built.overlay.addEventListener('click', function(e) {
-                if (e.target === built.overlay) closeSheet(built.overlay, built.sheet);
-            });
-            built.sheet.querySelector('.contact-card-close').addEventListener('click', function() {
-                closeSheet(built.overlay, built.sheet);
-            });
+            var shareButton = built.sheet.querySelector('#contact-share-qr');
+            bindCloseButton();
             built.sheet.querySelector('#contact-copy-address').addEventListener('click', function() {
                 copyText(card.lxmf_hash, 'Address');
             });
-            built.sheet.querySelector('#contact-share-qr').addEventListener('click', function() {
+            shareButton.addEventListener('click', function() {
                 canvasBlob(canvas).then(function(blob) {
                     return saveQrBlob(blob, fileBase + '-' + CONTACT_QR_FILE);
                 }).then(function(method) {
@@ -591,9 +629,43 @@ z`,
                     showToast(err && err.message ? err.message : 'Could not share QR', 'toast-red', 3000);
                 });
             });
-        }).catch(function(err) {
-            showToast(err && err.message ? err.message : 'Could not build contact card', 'toast-red', 3000);
+
+            // Let the ready sheet paint before the synchronous QR encoder runs.
+            // Two animation frames guarantee one complete rendering opportunity.
+            var nextFrame = window.requestAnimationFrame || function(callback) {
+                return window.setTimeout(callback, 0);
+            };
+            nextFrame(function() {
+                nextFrame(function() {
+                    if (closed || generation !== loadGeneration || !canvas.isConnected) return;
+                    try {
+                        renderQrCanvas(canvas, card.payload || '');
+                        shareButton.disabled = false;
+                        shareButton.removeAttribute('aria-busy');
+                    } catch (err) {
+                        shareButton.removeAttribute('aria-busy');
+                        showToast(err && err.message ? err.message : 'Could not render QR', 'toast-red', 3000);
+                    }
+                });
+            });
+        }
+
+        function loadCard() {
+            if (closed) return;
+            var generation = ++loadGeneration;
+            renderLoading();
+            RS.invoke('api_contact_card', { hashHex: identityHash || null }).then(function(card) {
+                renderCard(card, generation);
+            }).catch(function(err) {
+                renderError(err, generation);
+            });
+        }
+
+        built.overlay.addEventListener('click', function(e) {
+            if (e.target === built.overlay) closeShareScreen();
         });
+        built.sheet._ratspeakDismiss = closeShareScreen;
+        loadCard();
     }
 
     function showScannedCardPreview(parent, payload, card, closeAll) {

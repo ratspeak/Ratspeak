@@ -240,13 +240,23 @@ window.RS.mediaPermissions = {
 
 var _rsAudioPlaybackContext = null;
 var _rsAudioPlaybackUnlockInstalled = false;
+var _rsAudioPlaybackUnlockInFlight = false;
 var _rsAudioPlaybackUnlocked = false;
+var _rsAudioPlaybackPrimed = false;
+var _rsAudioPlaybackUnlockEvents = ['pointerdown', 'touchend', 'mousedown', 'keydown'];
+
+function _rsNativeAndroidAudioAvailable() {
+    return !!(window.RatspeakAndroid &&
+        typeof window.RatspeakAndroid.playCallRingtone === 'function' &&
+        typeof window.RatspeakAndroid.startCallAudioRoute === 'function');
+}
 
 function _rsAudioPlaybackCtor() {
     return window.AudioContext || window.webkitAudioContext || null;
 }
 
 function _rsGetAudioPlaybackContext() {
+    if (_rsNativeAndroidAudioAvailable()) return null;
     var ctor = _rsAudioPlaybackCtor();
     if (!ctor) return null;
     if (_rsAudioPlaybackContext) return _rsAudioPlaybackContext;
@@ -260,7 +270,8 @@ function _rsGetAudioPlaybackContext() {
 }
 
 function _rsPrimeAudioPlayback(ctx) {
-    if (!ctx) return;
+    if (!ctx || _rsAudioPlaybackPrimed) return;
+    _rsAudioPlaybackPrimed = true;
     try {
         var gain = ctx.createGain();
         gain.gain.setValueAtTime(0, ctx.currentTime);
@@ -275,32 +286,40 @@ function _rsPrimeAudioPlayback(ctx) {
             try { gain.disconnect(); } catch (_) {}
         };
     } catch (err) {
+        _rsAudioPlaybackPrimed = false;
         window.RS.diag('warn', '[audio] playback priming failed:', err);
     }
 }
 
 function _rsInstallAudioPlaybackUnlock() {
-    if (_rsAudioPlaybackUnlockInstalled) return;
+    // Android call tones and LXST output use native AudioTracks. Creating a
+    // Web Audio destination there would keep a second, silent output path
+    // alive and can make the speaker re-open when the Activity resumes.
+    if (_rsNativeAndroidAudioAvailable() || _rsAudioPlaybackUnlockInstalled) return;
     _rsAudioPlaybackUnlockInstalled = true;
-    var events = ['pointerdown', 'touchend', 'mousedown', 'keydown'];
     var unlock = function() {
+        if (_rsAudioPlaybackUnlockInFlight) return;
+        _rsAudioPlaybackUnlockInFlight = true;
         window.RS.audioPlayback.ensure({ installUnlock: false }).then(function(ok) {
+            _rsAudioPlaybackUnlockInFlight = false;
             if (!ok) return;
-            events.forEach(function(eventName) {
+            _rsAudioPlaybackUnlockEvents.forEach(function(eventName) {
                 document.removeEventListener(eventName, unlock, true);
             });
+        }).catch(function() {
+            _rsAudioPlaybackUnlockInFlight = false;
         });
     };
-    events.forEach(function(eventName) {
+    _rsAudioPlaybackUnlockEvents.forEach(function(eventName) {
         document.addEventListener(eventName, unlock, true);
     });
 }
 
 function _rsEnsureAudioPlayback(opts) {
     opts = opts || {};
+    if (opts.installUnlock !== false) _rsInstallAudioPlaybackUnlock();
     var ctx = _rsGetAudioPlaybackContext();
     if (!ctx) return Promise.resolve(false);
-    if (opts.installUnlock !== false) _rsInstallAudioPlaybackUnlock();
     var resume = (ctx.state === 'suspended' && typeof ctx.resume === 'function')
         ? ctx.resume()
         : Promise.resolve();
@@ -320,6 +339,7 @@ function _rsEnsureAudioPlayback(opts) {
 
 window.RS.audioPlayback = {
     ensure: _rsEnsureAudioPlayback,
+    installUnlock: _rsInstallAudioPlaybackUnlock,
     context: _rsGetAudioPlaybackContext,
     isReady: function() {
         var ctx = _rsAudioPlaybackContext;

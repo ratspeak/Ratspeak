@@ -415,7 +415,7 @@ async fn notify_inbound_message_if_background(
 fn game_name(app_id: &str) -> &'static str {
     match app_id {
         "chess" => "chess",
-        "tictactoe" | "tic-tac-toe" => "tic-tac-toe",
+        "ttt" | "tictactoe" | "tic-tac-toe" => "tic-tac-toe",
         _ => "a game",
     }
 }
@@ -1719,6 +1719,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             LXMF_DELIVERY_APP_NAME,
                             signing_key,
                         );
+                    let lxmf_link_identities = lxmf_link_mgr.link_identities_handle();
 
                     let (link_pkt_tx, mut link_pkt_rx) =
                         tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
@@ -1812,6 +1813,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 data,
                                 InboundLxmfSource::Link {
                                     link_id: Some(link_id),
+                                    remote_identity_hash: lxmf_link_identities
+                                        .lock()
+                                        .ok()
+                                        .and_then(|identities| identities.get(&link_id).copied()),
                                 },
                                 activity_origin,
                             )
@@ -2281,7 +2286,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         propagation::reconcile_active_auto_node(&tick_state).await;
                         propagation::probe_static_nodes_background(&tick_state).await;
                         check_message_timeouts(&tick_state, tick_activity_origin).await;
-                        sweep_undelivered_game_sessions(&tick_state).await;
+                        sweep_stale_game_deliveries(&tick_state).await;
                         let cleanup_now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
@@ -3153,6 +3158,25 @@ async fn handle_inbound_lxmf(
                     },
                 ))
             });
+            // Delivery proofs arrive on the destination event stream and do
+            // not necessarily reappear in the LXMF manager's polled state
+            // changes. Complete the originating game action here as well, so
+            // its UI cannot remain stuck on "Sending" after a valid proof.
+            let lrgp_meta = state
+                .lrgp_msg_to_session
+                .lock()
+                .ok()
+                .and_then(|mut map| map.remove(msg_id));
+            if let Some(meta) = lrgp_meta {
+                update_game_session_delivery_state(
+                    &state,
+                    &meta.session_id,
+                    &meta.identity_id,
+                    &meta.contact_hash,
+                    "delivered",
+                )
+                .await;
+            }
             continue;
         }
 
@@ -3245,7 +3269,12 @@ enum InboundLxmfSource {
     /// delivery proof is derived from.
     Opportunistic { raw: Bytes },
     /// Link-delivered (direct); the link is noted for backchannel reuse.
-    Link { link_id: Option<[u8; 16]> },
+    Link {
+        link_id: Option<[u8; 16]>,
+        /// Identity authenticated by LINKIDENTIFY for this exact link. The
+        /// LXMF source destination still has to derive from this identity.
+        remote_identity_hash: Option<[u8; 16]>,
+    },
     /// Downloaded from a propagation node.
     Propagated,
 }
@@ -3271,6 +3300,30 @@ impl InboundLxmfSource {
             InboundLxmfSource::Propagated => producer::InboundLxmfMethod::Propagated,
         }
     }
+}
+
+/// LRGP participant binding is only meaningful when `sender_hash` came from
+/// an authenticated transport identity. A valid LXMF signature is sufficient
+/// for every delivery method. A LINKIDENTIFY-authenticated direct link is also
+/// sufficient when the message's LXMF delivery destination derives from that
+/// exact remote identity.
+fn lrgp_sender_authenticated(
+    source: &InboundLxmfSource,
+    source_hash: &[u8; 16],
+    signature_valid: Option<bool>,
+) -> bool {
+    if signature_valid == Some(true) {
+        return true;
+    }
+    let InboundLxmfSource::Link {
+        remote_identity_hash: Some(identity_hash),
+        ..
+    } = source
+    else {
+        return false;
+    };
+    Destination::hash_from_name_and_identity(LXMF_DELIVERY_APP_NAME, Some(identity_hash))
+        == *source_hash
 }
 
 /// Stamp PoW gate (T1-9): applies to every inbound source. Runs after
@@ -3524,6 +3577,7 @@ async fn process_inbound_lxmf(
 
     if let InboundLxmfSource::Link {
         link_id: Some(link_id),
+        ..
     } = source
     {
         let local_destination_matches = hex::decode(&lxmf_id)
@@ -3560,10 +3614,18 @@ async fn process_inbound_lxmf(
     }
 
     // LRGP tunnels over LXMF; don't surface in conversation UI.
+    let lrgp_sender_authenticated = lrgp_sender_authenticated(&source, &msg.source_hash, sig_valid);
     if !matches!(
         chat_extension,
         Some(lxmf::RatspeakChatExtension::Reply { .. })
-    ) && try_handle_inbound_lrgp(state, &msg, &source_hash, &lxmf_id).await
+    ) && try_handle_inbound_lrgp(
+        state,
+        &msg,
+        &source_hash,
+        &lxmf_id,
+        lrgp_sender_authenticated,
+    )
+    .await
     {
         return;
     }
@@ -4629,9 +4691,11 @@ async fn poll_stats_loop(
 // LXMF send → "failed" if no delivery proof within this window.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 
-// LRGP sessions with no delivery proof eventually flip to "undelivered", but
-// propagated challenges can sit on a relay for the normal LXMF expiry window.
-const LRGP_UNDELIVERED_TIMEOUT_SECS: f64 = lxmf_core::constants::MESSAGE_EXPIRY as f64;
+// The process-local LRGP message-to-session map is intentionally ephemeral.
+// After a restart, use the same proof timeout as ordinary Direct messages to
+// recover a durable action left in flight and expose its preserved envelope
+// through Resend.
+const LRGP_RECOVERY_TIMEOUT_SECS: f64 = MESSAGE_TIMEOUT_SECS;
 
 async fn check_message_timeouts(state: &AppState, activity_origin: ActivityRequestFence) {
     let now = std::time::SystemTime::now()
@@ -4703,6 +4767,25 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
                 },
             ))
         });
+        // Keep LRGP delivery state coupled to the same timeout policy as
+        // ordinary Direct messages. Without this, a game action that reached
+        // "sent" but never produced a proof stayed pending forever and never
+        // exposed its exact durable envelope through the Resend UI.
+        let lrgp_meta = state
+            .lrgp_msg_to_session
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(msg_id));
+        if let Some(meta) = lrgp_meta {
+            update_game_session_delivery_state(
+                state,
+                &meta.session_id,
+                &meta.identity_id,
+                &meta.contact_hash,
+                "failed",
+            )
+            .await;
+        }
     }
 }
 
@@ -4716,7 +4799,13 @@ async fn update_game_session_delivery_state(
 ) {
     let sid = session_id.to_string();
     let iid = identity_id.to_string();
-    let ns = new_state.to_string();
+    // A transport rejection is terminal for this send attempt and must expose
+    // the same exact-envelope Resend path as a timeout/failure.
+    let ns = match new_state {
+        "rejected" | "undelivered" => "failed",
+        state => state,
+    }
+    .to_string();
     let pool = state.db.clone();
     let updated = db::spawn_db(pool, move |p| {
         let session = db::get_game_session(&p, &sid, &iid)?;
@@ -4773,20 +4862,49 @@ async fn update_game_session_delivery_state(
     }
 }
 
-async fn sweep_undelivered_game_sessions(state: &AppState) {
+fn game_delivery_state_is_in_flight(state: &str) -> bool {
+    matches!(
+        state,
+        "pending"
+            | "sending"
+            | "routing"
+            | "link_establishing"
+            | "sending_via_link"
+            | "reusing_direct_link"
+            | "reusing_backchannel"
+            | "propagating"
+            | "sent"
+    )
+}
+
+async fn sweep_stale_game_deliveries(state: &AppState) {
     let pool = state.db.clone();
     let candidates: Vec<(String, String, String)> = db::spawn_db(pool, |p| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        let cutoff = now - LRGP_UNDELIVERED_TIMEOUT_SECS;
+        let cutoff = now - LRGP_RECOVERY_TIMEOUT_SECS;
         let conn = match p.get() {
             Ok(c) => c,
             Err(_) => return Vec::new(),
         };
         let Ok(mut stmt) = conn.prepare(
-            "SELECT session_id, identity_id, contact_hash, metadata FROM app_sessions WHERE status = 'pending' AND initiator = identity_id AND created_at < ?1",
+            "SELECT s.session_id, s.identity_id, s.contact_hash, s.metadata
+             FROM app_sessions s
+             WHERE s.last_action_at < ?1
+               AND EXISTS (
+                 SELECT 1 FROM app_actions a
+                 WHERE a.session_id = s.session_id
+                   AND a.identity_id = s.identity_id
+                   AND a.action_num = (
+                     SELECT MAX(latest.action_num) FROM app_actions latest
+                     WHERE latest.session_id = s.session_id
+                       AND latest.identity_id = s.identity_id
+                   )
+                   AND a.sender = s.identity_id
+                   AND a.envelope_mp IS NOT NULL
+               )",
         ) else {
             return Vec::new();
         };
@@ -4801,13 +4919,12 @@ async fn sweep_undelivered_game_sessions(state: &AppState) {
         let Ok(rows) = rows else { return Vec::new() };
         rows.filter_map(Result::ok)
             .filter(|(_, _, _, meta_json)| {
-                let meta: serde_json::Value =
-                    serde_json::from_str(meta_json).unwrap_or(json!({}));
+                let meta: serde_json::Value = serde_json::from_str(meta_json).unwrap_or(json!({}));
                 let ds = meta
                     .get("delivery_state")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                !matches!(ds, "delivered" | "undelivered")
+                game_delivery_state_is_in_flight(ds)
             })
             .map(|(sid, iid, ch, _)| (sid, iid, ch))
             .collect()
@@ -4816,8 +4933,64 @@ async fn sweep_undelivered_game_sessions(state: &AppState) {
     .unwrap_or_default();
 
     for (sid, iid, ch) in candidates {
-        update_game_session_delivery_state(state, &sid, &iid, &ch, "undelivered").await;
-        tracing::info!("LRGP session timed out without delivery proof — marked undelivered");
+        update_game_session_delivery_state(state, &sid, &iid, &ch, "failed").await;
+        tracing::info!("Recovered stale LRGP delivery after restart — Resend is now available");
+    }
+
+    // App manifests own pending/active TTL policy. Asking each registered app
+    // for its records applies that policy in memory; mirror only newly-expired
+    // transitions into durable state so restarts and the UI see the same truth.
+    let expired: Vec<lrgp::session::Session> = state
+        .lrgp_router
+        .list_apps()
+        .into_iter()
+        .flat_map(|manifest| {
+            state
+                .lrgp_router
+                .list_sessions(&manifest.app_id, None)
+                .unwrap_or_default()
+        })
+        .filter(|session| session.status == lrgp::constants::STATUS_EXPIRED)
+        .collect();
+    if expired.is_empty() {
+        return;
+    }
+
+    let changed_identities = db::spawn_db(state.db.clone(), move |pool| {
+        let mut changed = std::collections::HashSet::new();
+        for session in expired {
+            let already_expired =
+                db::get_game_session(&pool, &session.session_id, &session.identity_id)
+                    .and_then(|row| {
+                        row.get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .is_some_and(|status| status == lrgp::constants::STATUS_EXPIRED);
+            if !already_expired {
+                changed.insert(session.identity_id.clone());
+                db::save_game_session(&pool, &session);
+            }
+        }
+        changed
+    })
+    .await
+    .unwrap_or_default();
+
+    let active_identity = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|manager| manager.as_ref().map(|manager| manager.lxmf_hash.clone()));
+    if let Some(identity_id) = active_identity
+        && changed_identities.contains(&identity_id)
+    {
+        let all = db::spawn_db(state.db.clone(), move |pool| {
+            db::list_game_sessions(&pool, &identity_id, None, None)
+        })
+        .await
+        .unwrap_or_default();
+        state.emit_to_all("all_game_sessions", all.into());
     }
 }
 
@@ -4887,18 +5060,101 @@ fn extract_name_from_msgpack(value: &rmpv::Value) -> Option<String> {
     }
 }
 
+struct LrgpErrorReply<'a> {
+    destination: &'a str,
+    identity_id: &'a str,
+    app_id: &'a str,
+    app_version: u32,
+    session_id: &'a str,
+    rejected_command: &'a str,
+    code: &'a str,
+    message: &'a str,
+}
+
+fn send_lrgp_error_best_effort(state: &AppState, reply: LrgpErrorReply<'_>) {
+    let LrgpErrorReply {
+        destination,
+        identity_id,
+        app_id,
+        app_version,
+        session_id,
+        rejected_command,
+        code,
+        message,
+    } = reply;
+    if rejected_command == lrgp::constants::CMD_ERROR || app_id.is_empty() || session_id.is_empty()
+    {
+        return;
+    }
+
+    let payload = std::collections::HashMap::from([
+        (
+            "code".to_string(),
+            rmpv::Value::String(code.to_string().into()),
+        ),
+        (
+            "msg".to_string(),
+            rmpv::Value::String(message.to_string().into()),
+        ),
+        (
+            "ref".to_string(),
+            rmpv::Value::String(rejected_command.to_string().into()),
+        ),
+    ]);
+    let Ok(envelope) = lrgp::envelope::pack_envelope(
+        app_id,
+        app_version,
+        lrgp::constants::CMD_ERROR,
+        session_id,
+        Some(payload),
+        None,
+    ) else {
+        return;
+    };
+    if lrgp::envelope::validate_envelope_size(&envelope).is_err() {
+        return;
+    }
+    let Ok(fields) = lrgp::envelope::pack_lxmf_fields(&envelope) else {
+        return;
+    };
+    let fallback = format!("[LRGP] Action rejected: {message}");
+    let queued = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|mut manager| {
+            manager.as_mut().and_then(|manager| {
+                manager.send_message_with_lrgp_fields_preference(
+                    destination,
+                    &fallback,
+                    &fields,
+                    &state.db,
+                    identity_id,
+                    lxmf::DeliveryPreference::Opportunistic,
+                )
+            })
+        })
+        .is_some();
+    if queued {
+        state.lxmf_notify.notify_one();
+    }
+}
+
 // Returns true if the envelope was LRGP (dispatched); false → fall through.
 async fn try_handle_inbound_lrgp(
     state: &AppState,
     msg: &lxmf_core::message::LxMessage,
     sender_hash: &str,
     identity_id: &str,
+    sender_authenticated: bool,
 ) -> bool {
     let mut rmpv_fields: std::collections::HashMap<u8, rmpv::Value> =
         std::collections::HashMap::new();
     for (&key, bytes) in &msg.fields {
         let mut cursor = std::io::Cursor::new(bytes);
-        if let Ok(value) = rmpv::decode::read_value(&mut cursor) {
+        if let Ok(value) = rmpv::decode::read_value(&mut cursor)
+            && cursor.position() as usize == bytes.len()
+        {
             rmpv_fields.insert(key, value);
         } else if let Ok(s) = std::str::from_utf8(bytes) {
             rmpv_fields.insert(key, rmpv::Value::String(s.into()));
@@ -4907,19 +5163,213 @@ async fn try_handle_inbound_lrgp(
         }
     }
 
+    let has_lrgp_marker = matches!(
+        rmpv_fields.get(&lrgp::constants::FIELD_CUSTOM_TYPE),
+        Some(rmpv::Value::String(value))
+            if value.as_str() == Some(lrgp::constants::PROTOCOL_TYPE)
+    );
+    if !has_lrgp_marker {
+        return false;
+    }
+    if !sender_authenticated {
+        // LRGP binds a session to the sender identity supplied by its
+        // transport; it cannot authenticate that string itself. Never let an
+        // unsigned/unknown LRGP marker fall through into ordinary chat.
+        tracing::warn!(
+            from = %short_id(sender_hash),
+            "Dropping LRGP envelope without an authenticated LXMF sender"
+        );
+        return true;
+    }
+
     let envelope = match lrgp::envelope::unpack_envelope(&rmpv_fields) {
         Ok(Some(env)) => env,
-        _ => return false,
+        Ok(None) => return false,
+        Err(_) => {
+            // A message explicitly marked as LRGP must never leak into the
+            // ordinary chat transcript merely because its envelope is bad.
+            tracing::warn!(
+                from = %short_id(sender_hash),
+                reason = "invalid_envelope",
+                "Dropping malformed LRGP envelope"
+            );
+            return true;
+        }
     };
 
     tracing::info!(from = %short_id(sender_hash), "Inbound LRGP game message received");
+
+    let session_id = envelope
+        .get(lrgp::constants::KEY_SESSION)
+        .and_then(lrgp::envelope::value_as_str)
+        .unwrap_or("")
+        .to_string();
+    let app_ver = envelope
+        .get(lrgp::constants::KEY_APP)
+        .and_then(lrgp::envelope::value_as_str)
+        .unwrap_or("");
+    let (app_id, app_version) = lrgp::envelope::parse_app_version(app_ver)
+        .map(|(id, version)| (id.to_string(), version))
+        .unwrap_or_default();
+    let command = envelope
+        .get(lrgp::constants::KEY_COMMAND)
+        .and_then(lrgp::envelope::value_as_str)
+        .unwrap_or("")
+        .to_string();
+
+    // The router's process-local nonce cache protects the hot path. Retaining
+    // accepted envelopes on action rows lets us compare their protocol nonces
+    // and extend that guarantee across application restarts.
+    let envelope_mp = match lrgp::envelope::pack_to_bytes(&envelope) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            tracing::warn!(
+                reason = "reencode_failed",
+                "Dropping LRGP envelope that cannot be encoded"
+            );
+            return true;
+        }
+    };
+    let durable_nonce: [u8; lrgp::constants::NONCE_BYTES] = envelope
+        .get(lrgp::constants::KEY_NONCE)
+        .and_then(|value| match value {
+            rmpv::Value::Binary(bytes) => bytes.as_slice().try_into().ok(),
+            _ => None,
+        })
+        .expect("unpack_envelope validated the LRGP nonce");
+    let sid = session_id.clone();
+    let iid = identity_id.to_string();
+    let nonce_for_db = durable_nonce;
+    let replayed_after_restart = db::spawn_db(state.db.clone(), move |pool| {
+        db::has_game_nonce(&pool, &sid, &iid, &nonce_for_db)
+    })
+    .await
+    .unwrap_or(false);
+    if replayed_after_restart {
+        tracing::debug!(session_id, command, "Dropping durable LRGP replay");
+        return true;
+    }
+
+    // Keep a router snapshot until durable storage commits. The LRGP app
+    // handlers are intentionally in-memory, so accepting an action in the
+    // router and then losing the database write would otherwise split the two
+    // sources of state for the remainder of the process.
+    let router_snapshot = state
+        .lrgp_router
+        .snapshot_session(&app_id, &session_id, identity_id);
 
     let result = match state
         .lrgp_router
         .dispatch_incoming(&envelope, sender_hash, identity_id)
     {
-        Ok(r) => r,
-        Err(_) => {
+        Ok(lrgp::app_base::IncomingDispatch::Applied(result)) => result,
+        Ok(lrgp::app_base::IncomingDispatch::Replay) => {
+            tracing::debug!(session_id, command, "Dropping in-process LRGP replay");
+            return true;
+        }
+        Ok(lrgp::app_base::IncomingDispatch::RemoteError(error)) => {
+            // Remote protocol errors are accepted LRGP actions even though
+            // they do not mutate game state. Persist their nonce/action before
+            // surfacing them so a transport replay after restart cannot show
+            // the same rejection again.
+            let error_payload = json!({
+                "code": error.code.clone(),
+                "msg": error.message.clone(),
+                "ref": error.reference.clone(),
+            });
+            let persisted = {
+                let sid = error.session_id.clone();
+                let iid = identity_id.to_string();
+                let sender = sender_hash.to_string();
+                let packed = envelope_mp.clone();
+                let payload = serde_json::to_string(&error_payload).unwrap_or_else(|_| "{}".into());
+                let message_timestamp = msg.timestamp;
+                db::spawn_db(state.db.clone(), move |pool| {
+                    db::persist_inbound_game_action(
+                        &pool,
+                        &sid,
+                        &iid,
+                        lrgp::constants::CMD_ERROR,
+                        &payload,
+                        &sender,
+                        message_timestamp,
+                        &packed,
+                        None,
+                    )
+                })
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+            };
+            if !persisted {
+                // Remote errors consume a replay nonce but do not mutate app
+                // state. If the durable action record fails, release only
+                // that nonce and do not surface the error: the authenticated
+                // peer may retransmit the exact envelope after storage
+                // recovers, at which point it can be committed and shown
+                // exactly once.
+                state.lrgp_router.forget_incoming_nonce(
+                    identity_id,
+                    &error.session_id,
+                    &durable_nonce,
+                );
+                tracing::warn!(
+                    session = %short_id(&error.session_id),
+                    "Remote LRGP error was not surfaced because durable replay state failed"
+                );
+                state.emit_to_all(
+                    "game_action_received",
+                    json!({
+                        "session_id": error.session_id,
+                        "app_id": error.app_id,
+                        "command": command,
+                        "from": sender_hash,
+                        "applied": false,
+                        "reason": "storage_failed",
+                    }),
+                );
+                return true;
+            } else {
+                let iid = identity_id.to_string();
+                let all = db::spawn_db(state.db.clone(), move |pool| {
+                    db::list_game_sessions(&pool, &iid, None, None)
+                })
+                .await
+                .unwrap_or_default();
+                state.emit_to_all("all_game_sessions", all.into());
+            }
+            tracing::warn!(
+                session = %short_id(&error.session_id),
+                code = %error_payload["code"].as_str().unwrap_or("protocol_error"),
+                action_kind = %error_payload["ref"].as_str().unwrap_or("action"),
+                "Remote LRGP peer reported a protocol error"
+            );
+            state.emit_to_all(
+                "game_protocol_error",
+                json!({
+                    "session_id": error.session_id,
+                    "app_id": error.app_id,
+                    "from": sender_hash,
+                    "code": error_payload["code"],
+                    "message": error_payload["msg"],
+                    "ref": error_payload["ref"],
+                }),
+            );
+            state.emit_to_all(
+                "game_action_received",
+                json!({
+                    "session_id": session_id,
+                    "app_id": app_id,
+                    "command": command,
+                    "from": sender_hash,
+                    "applied": false,
+                    "remote_error": true,
+                }),
+            );
+            return true;
+        }
+        Err(error) => {
             tracing::warn!(
                 target: "ttt_trace",
                 step = "inbound.dispatched",
@@ -4928,28 +5378,43 @@ async fn try_handle_inbound_lrgp(
                 reason = "dispatch_failed",
                 "dispatch_incoming returned error"
             );
+            let (code, public_message) = match &error {
+                lrgp::errors::LrgpError::UnknownApp(_) => ("unsupported_app", "Game unavailable"),
+                lrgp::errors::LrgpError::SessionExpired(_) => {
+                    ("session_expired", "Game session expired")
+                }
+                lrgp::errors::LrgpError::UnauthorizedPeer { .. } => {
+                    ("unauthorized_sender", "Sender is not part of this game")
+                }
+                _ => ("protocol_error", "Action rejected"),
+            };
+            if matches!(&error, lrgp::errors::LrgpError::SessionExpired(_))
+                && let Some(Some(expired)) = state.lrgp_router.with_app(&app_id, |app| {
+                    app.get_session_record(&session_id, identity_id)
+                })
+            {
+                let _ = db::spawn_db(state.db.clone(), move |pool| {
+                    db::save_game_session(&pool, &expired);
+                })
+                .await;
+            }
+            send_lrgp_error_best_effort(
+                state,
+                LrgpErrorReply {
+                    destination: sender_hash,
+                    identity_id,
+                    app_id: &app_id,
+                    app_version,
+                    session_id: &session_id,
+                    rejected_command: &command,
+                    code,
+                    message: public_message,
+                },
+            );
             // Envelope parsed as LRGP; do not fall through to chat.
             return true;
         }
     };
-
-    let session_id = envelope
-        .get("s")
-        .and_then(|v| lrgp::envelope::value_as_str(v))
-        .unwrap_or("")
-        .to_string();
-    let app_ver = envelope
-        .get("a")
-        .and_then(|v| lrgp::envelope::value_as_str(v))
-        .unwrap_or("");
-    let app_id = lrgp::envelope::parse_app_version(app_ver)
-        .map(|(id, _)| id.to_string())
-        .unwrap_or_default();
-    let command = envelope
-        .get("c")
-        .and_then(|v| lrgp::envelope::value_as_str(v))
-        .unwrap_or("")
-        .to_string();
 
     // Empty session_id can't address app_sessions PK; drop without DB write.
     if session_id.is_empty() {
@@ -4976,118 +5441,136 @@ async fn try_handle_inbound_lrgp(
         "dispatch_incoming ok"
     );
 
+    if let Some(error) = result.error.as_ref() {
+        let code = error
+            .get("code")
+            .and_then(|value| value.as_str())
+            .unwrap_or("protocol_error");
+        let message = error
+            .get("msg")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Action rejected");
+        tracing::warn!(
+            session_id,
+            command,
+            code,
+            "Rejected inbound LRGP action without mutating durable state"
+        );
+        send_lrgp_error_best_effort(
+            state,
+            LrgpErrorReply {
+                destination: sender_hash,
+                identity_id,
+                app_id: &app_id,
+                app_version,
+                session_id: &session_id,
+                rejected_command: &command,
+                code,
+                message,
+            },
+        );
+        state.emit_to_all(
+            "game_action_received",
+            json!({
+                "session_id": session_id,
+                "app_id": app_id,
+                "command": command,
+                "from": sender_hash,
+                "applied": false,
+                "error": error,
+            }),
+        );
+        return true;
+    }
+
     let payload_json = result
         .emit
         .as_ref()
         .map(|e| serde_json::to_value(e).unwrap_or(json!({})))
         .unwrap_or(json!({}));
+    let persisted_session = state
+        .lrgp_router
+        .with_app(&app_id, |app| {
+            app.get_session_record(&session_id, identity_id)
+        })
+        .flatten();
 
-    // The whole persistence sequence is one blocking-pool hop; previously
-    // these ~7 sequential sync calls all ran on the async worker.
-    let (had_session, sessions, all) = {
+    // Action allocation, the canonical session snapshot, and unread state are
+    // committed together. A failed/duplicate commit rolls the in-memory app
+    // back to its pre-dispatch snapshot before anything reaches the UI.
+    let persisted = {
         let session_id = session_id.clone();
         let identity_id = identity_id.to_string();
         let sender_hash = sender_hash.to_string();
-        let app_id = app_id.clone();
         let command = command.clone();
-        let session_data = result.session.clone();
+        let envelope_mp = envelope_mp.clone();
         let timestamp = msg.timestamp;
+        let payload_json = serde_json::to_string(&payload_json).unwrap_or_else(|_| "{}".into());
+        let session = persisted_session.clone();
         db::spawn_db(state.db.clone(), move |p| {
-            let had_session = db::get_game_session(&p, &session_id, &identity_id).is_some();
-
-            let action_num = db::get_game_action_count(&p, &session_id, &identity_id);
-            let action = lrgp::store::Action {
-                session_id: session_id.clone(),
-                identity_id: identity_id.clone(),
-                action_num,
-                command: command.clone(),
-                payload_json: serde_json::to_string(&payload_json)
-                    .unwrap_or_else(|_| "{}".into()),
-                sender: sender_hash.clone(),
+            let had_session = db::persist_inbound_game_action(
+                &p,
+                &session_id,
+                &identity_id,
+                &command,
+                &payload_json,
+                &sender_hash,
                 timestamp,
-            };
-            db::save_game_action(&p, &action, None);
-
-            if let Some(ref session_data) = session_data {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs_f64();
-
-                let status = session_data
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("pending");
-                let initiator = session_data
-                    .get("initiator")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&sender_hash);
-
-                // Unwrap nested "metadata" so DB has flat fields the frontend reads.
-                let metadata_map: std::collections::HashMap<String, serde_json::Value> =
-                    session_data
-                        .get("metadata")
-                        .and_then(|v| v.as_object())
-                        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                        .unwrap_or_default();
-
-                // Bump unread relative to the persisted row so repeat actions
-                // accumulate instead of clobbering each other to 1.
-                let unread = db::get_game_session(&p, &session_id, &identity_id)
-                    .as_ref()
-                    .and_then(|row| row.get("unread").and_then(|v| v.as_i64()))
-                    .unwrap_or(0)
-                    + 1;
-
-                let session = lrgp::session::Session {
-                    session_id: session_id.clone(),
-                    identity_id: identity_id.clone(),
-                    app_id: app_id.clone(),
-                    app_version: 1,
-                    contact_hash: sender_hash.clone(),
-                    initiator: initiator.to_string(),
-                    status: status.to_string(),
-                    metadata: metadata_map,
-                    unread,
-                    created_at: session_data
-                        .get("created_at")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(now),
-                    updated_at: now,
-                    last_action_at: now,
-                };
-                db::save_game_session(&p, &session);
-            } else if let Some(existing) = db::get_game_session(&p, &session_id, &identity_id) {
-                let unread = existing.get("unread").and_then(|v| v.as_i64()).unwrap_or(0) + 1;
-                if let Ok(conn) = p.get() {
-                    conn.execute(
-                        "UPDATE app_sessions SET unread = ?1, last_action_at = ?2 WHERE session_id = ?3 AND identity_id = ?4",
-                        rusqlite::params![unread, timestamp, session_id, identity_id],
-                    ).ok();
-                }
-            }
+                &envelope_mp,
+                session.as_ref(),
+            )?;
 
             let sessions = db::list_game_sessions(&p, &identity_id, Some(&sender_hash), None);
             let all = db::list_game_sessions(&p, &identity_id, None, None);
-            (had_session, sessions, all)
+            Some((had_session, sessions, all))
         })
         .await
-        .unwrap_or_else(|_| {
-            tracing::error!(reason = "task_panicked", "LRGP inbound persistence task panicked");
-            (false, Vec::new(), Vec::new())
-        })
+        .ok()
+        .flatten()
     };
 
-    if result.error.is_none() {
-        notify_game_if_background(
-            state,
-            sender_hash,
-            &session_id,
-            &app_id,
-            &command,
-            !had_session,
+    let Some((had_session, sessions, all)) = persisted else {
+        if state
+            .lrgp_router
+            .rollback_incoming(
+                &app_id,
+                &session_id,
+                identity_id,
+                &durable_nonce,
+                router_snapshot,
+            )
+            .is_err()
+        {
+            tracing::error!(session_id, app_id, "Failed to roll back LRGP router state");
+        }
+        tracing::error!(
+            session_id,
+            app_id,
+            command,
+            "Rejected LRGP action because durable persistence did not commit"
         );
-    }
+        state.emit_to_all(
+            "game_action_received",
+            json!({
+                "session_id": session_id,
+                "app_id": app_id,
+                "command": command,
+                "from": sender_hash,
+                "applied": false,
+                "reason": "storage_failed",
+            }),
+        );
+        return true;
+    };
+
+    notify_game_if_background(
+        state,
+        sender_hash,
+        &session_id,
+        &app_id,
+        &command,
+        !had_session,
+    );
 
     state.emit_to_all(
         "active_games",
@@ -5111,7 +5594,7 @@ async fn try_handle_inbound_lrgp(
             "app_id": app_id,
             "command": command,
             "from": sender_hash,
-            "applied": result.error.is_none(),
+            "applied": true,
         }),
     );
 
@@ -5121,6 +5604,64 @@ async fn try_handle_inbound_lrgp(
 #[cfg(test)]
 mod packet_dispatch_tests {
     use super::*;
+
+    #[test]
+    fn lrgp_requires_a_signature_or_matching_identified_link() {
+        let remote_identity = [0x42; 16];
+        let remote_lxmf = Destination::hash_from_name_and_identity(
+            LXMF_DELIVERY_APP_NAME,
+            Some(&remote_identity),
+        );
+        let propagated = InboundLxmfSource::Propagated;
+        assert!(lrgp_sender_authenticated(
+            &propagated,
+            &[0x99; 16],
+            Some(true)
+        ));
+        assert!(!lrgp_sender_authenticated(&propagated, &remote_lxmf, None));
+
+        let identified_link = InboundLxmfSource::Link {
+            link_id: Some([0x11; 16]),
+            remote_identity_hash: Some(remote_identity),
+        };
+        assert!(lrgp_sender_authenticated(
+            &identified_link,
+            &remote_lxmf,
+            None
+        ));
+        assert!(!lrgp_sender_authenticated(
+            &identified_link,
+            &[0x99; 16],
+            None
+        ));
+    }
+
+    #[test]
+    fn stale_game_recovery_only_targets_in_flight_delivery_states() {
+        for state in [
+            "pending",
+            "sending",
+            "routing",
+            "link_establishing",
+            "sending_via_link",
+            "reusing_direct_link",
+            "reusing_backchannel",
+            "propagating",
+            "sent",
+        ] {
+            assert!(game_delivery_state_is_in_flight(state), "{state}");
+        }
+        for state in [
+            "",
+            "delivered",
+            "propagated",
+            "failed",
+            "rejected",
+            "undelivered",
+        ] {
+            assert!(!game_delivery_state_is_in_flight(state), "{state}");
+        }
+    }
 
     fn raw_packet(
         header_type: rns_wire::flags::HeaderType,
@@ -5539,13 +6080,29 @@ mod inbound_pipeline_tests {
 
         set_blackhole_transport(&state, Some(spawn_blackhole_transport(true)));
         let data = packed_signed_inbound(local_dest(&state), src, "should vanish", &signing);
-        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        handle_decrypted_lxmf(
+            &state,
+            data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
         assert_eq!(message_rows(&state), 0, "blackholed source must be dropped");
         assert_eq!(emitter.count("lxmf_message"), 0);
 
         set_blackhole_transport(&state, Some(spawn_blackhole_transport(false)));
         let data = packed_signed_inbound(local_dest(&state), src, "now allowed", &signing);
-        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        handle_decrypted_lxmf(
+            &state,
+            data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
         assert_eq!(message_rows(&state), 1, "non-blackholed source delivers");
     }
 
@@ -5577,7 +6134,15 @@ mod inbound_pipeline_tests {
         drop(dead_rx);
         set_blackhole_transport(&state, Some(dead_tx));
         let data = packed_signed_inbound(local_dest(&state), src, "channel closed", &signing);
-        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        handle_decrypted_lxmf(
+            &state,
+            data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
         assert_eq!(message_rows(&state), 1);
 
         // Query accepted but the response never arrives.
@@ -5586,7 +6151,15 @@ mod inbound_pipeline_tests {
         tokio::spawn(async move { while mute_rx.recv().await.is_some() {} });
         set_blackhole_transport(&state, Some(mute_tx));
         let data = packed_signed_inbound(local_dest(&state), src, "response dropped", &signing);
-        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        handle_decrypted_lxmf(
+            &state,
+            data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
         assert_eq!(message_rows(&state), 2);
     }
 
@@ -5604,7 +6177,15 @@ mod inbound_pipeline_tests {
 
         let dest = local_dest(&state);
         let link_data = packed_inbound(dest, [0xE1; 16], "via link");
-        handle_decrypted_lxmf(&state, link_data, InboundLxmfSource::Link { link_id: None }).await;
+        handle_decrypted_lxmf(
+            &state,
+            link_data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
 
         let prop_data = packed_inbound(dest, [0xE2; 16], "via propagation");
         handle_decrypted_lxmf(&state, prop_data, InboundLxmfSource::Propagated).await;
@@ -5628,7 +6209,15 @@ mod inbound_pipeline_tests {
             .enforce_stamps
             .store(false, std::sync::atomic::Ordering::Relaxed);
         let data = packed_inbound(dest, [0xE1; 16], "via link");
-        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        handle_decrypted_lxmf(
+            &state,
+            data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
         assert_eq!(message_rows(&state), 1);
     }
 
@@ -5638,7 +6227,15 @@ mod inbound_pipeline_tests {
         let (state, emitter) = pipeline_state();
         let data = packed_inbound(local_dest(&state), [0xEE; 16], "direct hello");
 
-        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        handle_decrypted_lxmf(
+            &state,
+            data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
 
         assert_eq!(message_rows(&state), 1);
         assert_eq!(emitter.count("lxmf_message"), 1);
@@ -5741,7 +6338,15 @@ mod inbound_pipeline_tests {
         msg.signature = Some([0u8; 64]);
         let data = msg.pack().unwrap();
 
-        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Link { link_id: None }).await;
+        handle_decrypted_lxmf(
+            &state,
+            data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
 
         assert_eq!(message_rows(&state), 1);
         assert_eq!(emitter.count("lxmf_message"), 1);
@@ -6124,6 +6729,11 @@ mod notification_tests {
         assert_eq!(seen[0].notification_id, seen[1].notification_id);
         assert_eq!(seen[0].title, "Game update");
         assert!(seen[0].body.contains("Rook"));
+    }
+
+    #[test]
+    fn ttt_notification_uses_the_registered_game_name() {
+        assert_eq!(game_name("ttt"), "tic-tac-toe");
     }
 
     #[test]

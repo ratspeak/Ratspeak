@@ -3,6 +3,7 @@ function openSettings() {
     initSettingsSectionNav();
     showSettingsMobileSectionIndex({ restoreFocus: false });
     initHapticsToggle();
+    initHideKnownSpamPeersToggle();
     initChannelHostingToggle();
     initActivityIdentityProtectionToggle();
     initDeveloperModeToggle();
@@ -29,6 +30,9 @@ var _settingsChannelHostingSupported = null;
 var _settingsActivityIdentityProtectionBound = false;
 var _settingsActivityIdentityProtectionBusy = false;
 var _settingsActivityIdentityProtectionEnabled = true;
+var _settingsHideKnownSpamPeersBound = false;
+var _settingsHideKnownSpamPeersBusy = false;
+var _settingsHideKnownSpamPeersEnabled = true;
 var RATSPEAK_RELEASE_LATEST_URL = 'https://api.github.com/repos/ratspeak/Ratspeak/releases/latest';
 var RATSPEAK_RELEASES_URL = 'https://github.com/ratspeak/Ratspeak/releases';
 
@@ -205,6 +209,81 @@ function initActivityIdentityProtectionToggle() {
         if (on.checked) setActivityIdentityProtectionEnabled(true);
     });
 }
+
+function syncHideKnownSpamPeersRadioState() {
+    var off = document.getElementById('settings-hide-known-spam-peers-off');
+    var on = document.getElementById('settings-hide-known-spam-peers-on');
+    var group = on && on.closest('.settings-radio-group');
+    if (off) {
+        off.checked = !_settingsHideKnownSpamPeersEnabled;
+        off.disabled = _settingsHideKnownSpamPeersBusy;
+    }
+    if (on) {
+        on.checked = _settingsHideKnownSpamPeersEnabled;
+        on.disabled = _settingsHideKnownSpamPeersBusy;
+    }
+    if (group) group.setAttribute('aria-busy', _settingsHideKnownSpamPeersBusy ? 'true' : 'false');
+}
+
+function adoptHideKnownSpamPeersFromBackend(enabled) {
+    _settingsHideKnownSpamPeersEnabled = enabled !== false;
+    syncHideKnownSpamPeersRadioState();
+    if (typeof PeersCache !== 'undefined' && PeersCache &&
+        typeof PeersCache.setHideKnownSpamPeers === 'function') {
+        PeersCache.setHideKnownSpamPeers(_settingsHideKnownSpamPeersEnabled);
+    }
+    // Home and Peers both read PeersCache.enriched(); repaint Home now so a
+    // preference change is visible without waiting for the next stats tick.
+    if (typeof renderDashboardPeersList === 'function') renderDashboardPeersList();
+    if (typeof scheduleRenderPeersList === 'function') {
+        if (typeof _peersLastDirtyKey !== 'undefined') _peersLastDirtyKey = '';
+        scheduleRenderPeersList();
+    }
+}
+
+function setHideKnownSpamPeersEnabled(enabled) {
+    if (_settingsHideKnownSpamPeersBusy) return;
+    var previous = _settingsHideKnownSpamPeersEnabled;
+    _settingsHideKnownSpamPeersEnabled = !!enabled;
+    _settingsHideKnownSpamPeersBusy = true;
+    adoptHideKnownSpamPeersFromBackend(_settingsHideKnownSpamPeersEnabled);
+    syncHideKnownSpamPeersRadioState();
+    RS.invoke('set_hide_known_spam_peers', { enabled: _settingsHideKnownSpamPeersEnabled })
+        .then(function(result) {
+            adoptHideKnownSpamPeersFromBackend(
+                result && result.enabled !== undefined ? result.enabled : enabled
+            );
+        })
+        .catch(function(error) {
+            adoptHideKnownSpamPeersFromBackend(previous);
+            if (typeof showToast === 'function') {
+                showToast((error && error.message) || 'Could not update peer visibility', 'toast-red', 4000);
+            }
+        })
+        .then(function() {
+            _settingsHideKnownSpamPeersBusy = false;
+            syncHideKnownSpamPeersRadioState();
+        });
+}
+
+function initHideKnownSpamPeersToggle() {
+    var off = document.getElementById('settings-hide-known-spam-peers-off');
+    var on = document.getElementById('settings-hide-known-spam-peers-on');
+    if (!off || !on) return;
+    syncHideKnownSpamPeersRadioState();
+    if (_settingsHideKnownSpamPeersBound) return;
+    _settingsHideKnownSpamPeersBound = true;
+    off.addEventListener('change', function() {
+        if (off.checked) setHideKnownSpamPeersEnabled(false);
+    });
+    on.addEventListener('change', function() {
+        if (on.checked) setHideKnownSpamPeersEnabled(true);
+    });
+}
+
+window.ratspeakHideKnownSpamPeersEnabled = function() {
+    return !!_settingsHideKnownSpamPeersEnabled;
+};
 
 function readDeveloperModePreference() {
     try {
@@ -1500,6 +1579,9 @@ function applyAppSettingsPayload(data) {
     if (data.activity_identity_protection !== undefined) {
         adoptActivityIdentityProtectionFromBackend(data.activity_identity_protection);
     }
+    if (data.hide_known_spam_peers !== undefined) {
+        adoptHideKnownSpamPeersFromBackend(data.hide_known_spam_peers);
+    }
     if (data.text_scale_percent !== undefined && RS.textScale) {
         RS.textScale.commit(data.text_scale_percent);
     }
@@ -1585,6 +1667,7 @@ document.addEventListener('DOMContentLoaded', function() {
 (function() {
     var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
     initActivityIdentityProtectionToggle();
+    initHideKnownSpamPeersToggle();
     RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {});
     if (!usageToggle) return;
     usageToggle.addEventListener('change', function() {
@@ -1952,13 +2035,12 @@ function renderThemeFamilyPicker() {
         var label = document.createElement('label');
         label.className = 'theme-family-option';
         label.setAttribute('data-family', family.id);
-        label.title = family.name + ' — ' + family.description;
 
         var input = document.createElement('input');
         input.type = 'radio';
         input.name = 'settings-theme-family';
         input.value = family.id;
-        input.setAttribute('aria-label', family.name + ': ' + family.description);
+        input.setAttribute('aria-label', 'Use ' + family.name + ' theme');
 
         var card = document.createElement('span');
         card.className = 'theme-family-card';

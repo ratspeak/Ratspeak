@@ -1098,6 +1098,7 @@ pub async fn api_delete_identity(
     }
     crate::lxmf::LxmfManager::purge_identity_profile(&state.config.data_root, &hash_hex, cascade)
         .map_err(|e| AppError::internal(format!("Failed to remove identity files: {e}")))?;
+    state.forget_local_identity_public_key(&hash_hex);
     Ok(json!(null))
 }
 

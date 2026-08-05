@@ -131,6 +131,20 @@
         }
     }
 
+    function _startNativeTimeoutCue() {
+        var bridge = _androidRingtoneBridge();
+        if (!bridge || typeof bridge.playCallTimeoutCue !== 'function') return false;
+        try {
+            var started = bridge.playCallTimeoutCue();
+            if (started === false) return false;
+            nativeRingtoneActive = true;
+            return true;
+        } catch (err) {
+            window.RS.diag('warn', '[ringtone] native Android timeout cue failed:', err);
+            return false;
+        }
+    }
+
     function _stopNativeRingtone() {
         var bridge = _androidRingtoneBridge();
         if (!bridge || !nativeRingtoneActive) return;
@@ -171,6 +185,9 @@
     }
 
     function _stopNodes() {
+        // Reading the clock through _ringCtx() creates a context. A no-op stop
+        // must never claim an output device merely to stop zero Web Audio nodes.
+        if (!activeNodes.length) return;
         var now = 0;
         var ctx = _ringCtx();
         if (ctx) now = ctx.currentTime;
@@ -299,6 +316,7 @@
     }
 
     function playTimeoutCue() {
+        if (_startNativeTimeoutCue()) return;
         _ensureAudio().then(function(ok) {
             if (!ok) return;
             var ctx = _ringCtx();

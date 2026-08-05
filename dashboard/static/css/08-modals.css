@@ -1331,33 +1331,6 @@
 .rs-progress-success { color: var(--accent); }
 .rs-progress-error { color: var(--status-error-fg); }
 
-.game-modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.75);
-    backdrop-filter: blur(12px) saturate(120%);
-    -webkit-backdrop-filter: blur(12px) saturate(120%);
-    z-index: var(--z-overlay);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    animation: modalFadeIn 0.2s ease-out;
-}
-.game-modal {
-    background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--surface-game-gradient) 100%);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-pill);
-    width: 440px;
-    max-width: 95vw;
-    max-height: 90vh;
-    overflow-y: auto;
-    box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6),
-        inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    display: flex;
-    flex-direction: column;
-    animation: modalSlideIn 0.25s ease-out;
-}
-
 .games-ctrl-separator {
     width: 1px;
     height: 24px;

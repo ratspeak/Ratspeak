@@ -421,7 +421,6 @@
     }
 
     .bottom-sheet,
-    .game-modal,
     .emoji-picker {
         animation: none !important;
         opacity: 1 !important;

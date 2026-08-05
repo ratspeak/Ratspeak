@@ -18,8 +18,8 @@ function _rsBootstrapOnLoad() {
             showHwUnlock(data.hw_locked, data.hw_locked_kind);
         }
     }).catch(function() {});
-    if (window.RS && RS.audioPlayback && typeof RS.audioPlayback.ensure === 'function') {
-        RS.audioPlayback.ensure({ installUnlock: true }).catch(function() {});
+    if (window.RS && RS.audioPlayback && typeof RS.audioPlayback.installUnlock === 'function') {
+        RS.audioPlayback.installUnlock();
     }
     RS.invoke('api_announces').then(function(data) {
         if (Array.isArray(data)) {

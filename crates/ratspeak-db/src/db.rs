@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
@@ -7880,20 +7880,67 @@ pub fn backfill_identity_id(pool: &DbPool, identity_hash: &str) {
     tracing::info!("Backfilled identity_id on existing contacts/messages");
 }
 
-pub fn save_game_session(pool: &DbPool, session: &lrgp::session::Session) {
+pub fn save_game_session(pool: &DbPool, session: &lrgp::session::Session) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => return false,
     };
     let metadata_json = serde_json::to_string(&session.metadata).unwrap_or_else(|_| "{}".into());
-    conn.execute(
-        "INSERT OR REPLACE INTO app_sessions (session_id, identity_id, app_id, app_version, contact_hash, initiator, status, metadata, unread, created_at, updated_at, last_action_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+    let written = conn.execute(
+        "INSERT INTO app_sessions
+         (session_id, identity_id, app_id, app_version, contact_hash, initiator,
+          status, metadata, unread, created_at, updated_at, last_action_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(session_id, identity_id) DO UPDATE SET
+           app_id = excluded.app_id,
+           app_version = excluded.app_version,
+           contact_hash = CASE
+             WHEN app_sessions.contact_hash = '' THEN excluded.contact_hash
+             ELSE app_sessions.contact_hash
+           END,
+           initiator = CASE
+             WHEN app_sessions.initiator = '' THEN excluded.initiator
+             ELSE app_sessions.initiator
+           END,
+           status = excluded.status,
+           metadata = excluded.metadata,
+           unread = app_sessions.unread,
+           created_at = app_sessions.created_at,
+           updated_at = excluded.updated_at,
+           last_action_at = excluded.last_action_at
+         WHERE app_sessions.app_id = excluded.app_id
+           AND app_sessions.app_version = excluded.app_version
+           AND (app_sessions.contact_hash = '' OR app_sessions.contact_hash = excluded.contact_hash)
+           AND (app_sessions.initiator = '' OR app_sessions.initiator = excluded.initiator)",
         params![
-            session.session_id, session.identity_id, session.app_id, session.app_version,
-            session.contact_hash, session.initiator, session.status, metadata_json,
-            session.unread, session.created_at, session.updated_at, session.last_action_at,
+            session.session_id,
+            session.identity_id,
+            session.app_id,
+            session.app_version,
+            session.contact_hash,
+            session.initiator,
+            session.status,
+            metadata_json,
+            session.unread,
+            session.created_at,
+            session.updated_at,
+            session.last_action_at,
         ],
-    ).ok();
+    );
+    match written {
+        Ok(1) => true,
+        Ok(_) => {
+            tracing::warn!(
+                reason = "binding_conflict",
+                "Refusing to replace an established LRGP session binding"
+            );
+            false
+        }
+        Err(_) => {
+            tracing::error!(reason = "storage_error", "Failed to persist LRGP session");
+            false
+        }
+    }
 }
 
 pub fn get_game_session(
@@ -7946,19 +7993,575 @@ pub fn list_game_sessions(
         .unwrap_or_default()
 }
 
-pub fn save_game_action(pool: &DbPool, action: &lrgp::store::Action, envelope_mp: Option<&[u8]>) {
+/// Load the durable LRGP session records exactly as the game engines expect
+/// them. Unlike `list_game_sessions`, this intentionally returns the typed
+/// storage model instead of the frontend projection so the runtime can
+/// hydrate every local identity before accepting game traffic.
+pub fn load_game_sessions(pool: &DbPool) -> Vec<lrgp::session::Session> {
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT session_id, identity_id, app_id, app_version, contact_hash, initiator,
+                status, metadata, unread, created_at, updated_at, last_action_at
+         FROM app_sessions",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    stmt.query_map([], |row| {
+        let metadata_json: String = row.get(7)?;
+        let metadata = serde_json::from_str(&metadata_json).unwrap_or_default();
+        Ok(lrgp::session::Session {
+            session_id: row.get(0)?,
+            identity_id: row.get(1)?,
+            app_id: row.get(2)?,
+            app_version: row.get::<_, i64>(3)?.try_into().unwrap_or(1),
+            contact_hash: row.get(4)?,
+            initiator: row.get(5)?,
+            status: row.get(6)?,
+            metadata,
+            unread: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+            last_action_at: row.get(11)?,
+        })
+    })
+    .map(|rows| rows.filter_map(Result::ok).collect())
+    .unwrap_or_default()
+}
+
+pub fn save_game_action(
+    pool: &DbPool,
+    action: &lrgp::store::Action,
+    envelope_mp: Option<&[u8]>,
+) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
     };
     conn.execute(
-        "INSERT OR REPLACE INTO app_actions (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO app_actions (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             action.session_id, action.identity_id, action.action_num,
             action.command, action.payload_json, action.sender, action.timestamp,
             envelope_mp,
         ],
-    ).ok();
+    ).is_ok()
+}
+
+/// Atomically allocate and append the next action number for a session.
+///
+/// `COUNT(*)` followed by `INSERT OR REPLACE` can make two concurrent actions
+/// choose the same number and silently overwrite one another. An immediate
+/// transaction plus `MAX(action_num) + 1` serializes allocation and makes a
+/// collision fail instead of replacing durable history.
+#[allow(clippy::too_many_arguments)]
+pub fn append_game_action(
+    pool: &DbPool,
+    session_id: &str,
+    identity_id: &str,
+    command: &str,
+    payload_json: &str,
+    sender: &str,
+    timestamp: f64,
+    envelope_mp: Option<&[u8]>,
+) -> Option<i64> {
+    let mut conn = pool.get().ok()?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .ok()?;
+    let action_num: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(action_num), -1) + 1
+             FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
+            params![session_id, identity_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    tx.execute(
+        "INSERT INTO app_actions
+         (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            session_id,
+            identity_id,
+            action_num,
+            command,
+            payload_json,
+            sender,
+            timestamp,
+            envelope_mp,
+        ],
+    )
+    .ok()?;
+    tx.commit().ok()?;
+    Some(action_num)
+}
+
+/// Atomically persist a locally-applied LRGP state transition together with
+/// the exact envelope needed to resume delivery after a process crash.
+///
+/// This is the durable outbox boundary for games. Persisting the state without
+/// the envelope can leave the local board ahead of the peer after a crash;
+/// persisting the envelope without the state can make a resend impossible to
+/// reconcile locally. Established app, participant, and initiator bindings are
+/// immutable here even if a caller bypasses the router checks.
+#[allow(clippy::too_many_arguments)]
+pub fn persist_outbound_game_action(
+    pool: &DbPool,
+    session: &lrgp::session::Session,
+    command: &str,
+    payload_json: &str,
+    sender: &str,
+    timestamp: f64,
+    envelope_mp: &[u8],
+) -> Option<i64> {
+    let envelope = lrgp::envelope::unpack_from_bytes(envelope_mp).ok()?;
+    let validated = lrgp::envelope::validate_envelope(&envelope).ok()?;
+    if validated.session_id != session.session_id
+        || validated.app_id != session.app_id
+        || validated.version != session.app_version
+        || validated.command != command
+        || sender != session.identity_id
+    {
+        return None;
+    }
+
+    let mut conn = pool.get().ok()?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .ok()?;
+    let existing: Option<(String, u32, String, String)> = tx
+        .query_row(
+            "SELECT app_id, app_version, contact_hash, initiator
+             FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
+            params![session.session_id, session.identity_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get::<_, i64>(1)?.try_into().unwrap_or(0),
+                    row.get(2)?,
+                    row.get(3)?,
+                ))
+            },
+        )
+        .optional()
+        .ok()?;
+    if let Some((app_id, version, contact_hash, initiator)) = existing
+        && (app_id != session.app_id
+            || version != session.app_version
+            || (!contact_hash.is_empty() && contact_hash != session.contact_hash)
+            || (!initiator.is_empty() && initiator != session.initiator))
+    {
+        return None;
+    }
+
+    let nonce = validated.nonce;
+    let duplicate = {
+        let mut statement = tx
+            .prepare(
+                "SELECT envelope_mp FROM app_actions
+                 WHERE session_id = ?1 AND identity_id = ?2 AND envelope_mp IS NOT NULL",
+            )
+            .ok()?;
+        let rows = statement
+            .query_map(params![session.session_id, session.identity_id], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .ok()?;
+        rows.filter_map(Result::ok)
+            .any(|packed| packed_game_nonce(&packed).as_deref() == Some(nonce.as_slice()))
+    };
+    if duplicate {
+        return None;
+    }
+
+    let metadata = serde_json::to_string(&session.metadata).ok()?;
+    let session_written = tx
+        .execute(
+            "INSERT INTO app_sessions
+             (session_id, identity_id, app_id, app_version, contact_hash, initiator,
+              status, metadata, unread, created_at, updated_at, last_action_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(session_id, identity_id) DO UPDATE SET
+               contact_hash = CASE
+                 WHEN app_sessions.contact_hash = '' THEN excluded.contact_hash
+                 ELSE app_sessions.contact_hash
+               END,
+               initiator = CASE
+                 WHEN app_sessions.initiator = '' THEN excluded.initiator
+                 ELSE app_sessions.initiator
+               END,
+               status = excluded.status,
+               metadata = excluded.metadata,
+               updated_at = excluded.updated_at,
+               last_action_at = excluded.last_action_at
+             WHERE app_sessions.app_id = excluded.app_id
+               AND app_sessions.app_version = excluded.app_version
+               AND (app_sessions.contact_hash = '' OR app_sessions.contact_hash = excluded.contact_hash)
+               AND (app_sessions.initiator = '' OR app_sessions.initiator = excluded.initiator)",
+            params![
+                session.session_id,
+                session.identity_id,
+                session.app_id,
+                session.app_version,
+                session.contact_hash,
+                session.initiator,
+                session.status,
+                metadata,
+                session.unread,
+                session.created_at,
+                session.updated_at,
+                session.last_action_at,
+            ],
+        )
+        .ok()?;
+    if session_written != 1 {
+        return None;
+    }
+
+    let action_num: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(action_num), -1) + 1
+             FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
+            params![session.session_id, session.identity_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    tx.execute(
+        "INSERT INTO app_actions
+         (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            session.session_id,
+            session.identity_id,
+            action_num,
+            command,
+            payload_json,
+            sender,
+            timestamp,
+            envelope_mp,
+        ],
+    )
+    .ok()?;
+    tx.commit().ok()?;
+    Some(action_num)
+}
+
+/// Reverse a not-submitted durable outbox entry and restore the matching
+/// pre-dispatch session snapshot in one transaction.
+pub fn rollback_outbound_game_action(
+    pool: &DbPool,
+    session_id: &str,
+    identity_id: &str,
+    action_num: i64,
+    snapshot: Option<&lrgp::session::Session>,
+) -> bool {
+    if snapshot.is_some_and(|session| {
+        session.session_id != session_id || session.identity_id != identity_id
+    }) {
+        return false;
+    }
+    let mut conn = match pool.get() {
+        Ok(conn) => conn,
+        Err(_) => return false,
+    };
+    let tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(_) => return false,
+    };
+    if tx
+        .execute(
+            "DELETE FROM app_actions
+             WHERE session_id = ?1 AND identity_id = ?2 AND action_num = ?3",
+            params![session_id, identity_id, action_num],
+        )
+        .ok()
+        != Some(1)
+    {
+        return false;
+    }
+
+    if let Some(session) = snapshot {
+        let metadata = match serde_json::to_string(&session.metadata) {
+            Ok(metadata) => metadata,
+            Err(_) => return false,
+        };
+        if tx
+            .execute(
+                "UPDATE app_sessions SET
+                   status = ?1, metadata = ?2, unread = ?3,
+                   updated_at = ?4, last_action_at = ?5
+                 WHERE session_id = ?6 AND identity_id = ?7
+                   AND app_id = ?8 AND app_version = ?9
+                   AND contact_hash = ?10 AND initiator = ?11",
+                params![
+                    session.status,
+                    metadata,
+                    session.unread,
+                    session.updated_at,
+                    session.last_action_at,
+                    session.session_id,
+                    session.identity_id,
+                    session.app_id,
+                    session.app_version,
+                    session.contact_hash,
+                    session.initiator,
+                ],
+            )
+            .ok()
+            != Some(1)
+        {
+            return false;
+        }
+    } else {
+        let remaining_actions: i64 = match tx.query_row(
+            "SELECT COUNT(*) FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
+            params![session_id, identity_id],
+            |row| row.get(0),
+        ) {
+            Ok(count) => count,
+            Err(_) => return false,
+        };
+        if remaining_actions != 0
+            || tx
+                .execute(
+                    "DELETE FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
+                    params![session_id, identity_id],
+                )
+                .ok()
+                != Some(1)
+        {
+            return false;
+        }
+    }
+
+    tx.commit().is_ok()
+}
+
+/// Persist an accepted inbound action, its session snapshot, and unread
+/// transition as one transaction. The established contact is immutable: even
+/// if a future caller bypasses LRGP participant authorization, storage refuses
+/// to rebind a session to a different peer.
+#[allow(clippy::too_many_arguments)]
+pub fn persist_inbound_game_action(
+    pool: &DbPool,
+    session_id: &str,
+    identity_id: &str,
+    command: &str,
+    payload_json: &str,
+    sender: &str,
+    timestamp: f64,
+    envelope_mp: &[u8],
+    session: Option<&lrgp::session::Session>,
+) -> Option<bool> {
+    let envelope = lrgp::envelope::unpack_from_bytes(envelope_mp).ok()?;
+    let validated = lrgp::envelope::validate_envelope(&envelope).ok()?;
+    if validated.session_id != session_id || validated.command != command {
+        return None;
+    }
+    if let Some(next) = session
+        && (next.session_id != session_id
+            || next.identity_id != identity_id
+            || next.app_id != validated.app_id
+            || next.app_version != validated.version
+            || next.contact_hash != sender)
+    {
+        return None;
+    }
+    let incoming_nonce = validated.nonce;
+    let mut conn = pool.get().ok()?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .ok()?;
+    let existing: Option<(i64, String, String, u32, String)> = tx
+        .query_row(
+            "SELECT unread, contact_hash, app_id, app_version, initiator FROM app_sessions
+             WHERE session_id = ?1 AND identity_id = ?2",
+            params![session_id, identity_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get::<_, i64>(3)?.try_into().unwrap_or(0),
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .ok()?;
+
+    match &existing {
+        Some((_, contact_hash, app_id, app_version, _)) => {
+            if (!contact_hash.is_empty() && contact_hash != sender)
+                || app_id != &validated.app_id
+                || *app_version != validated.version
+            {
+                return None;
+            }
+        }
+        None if session.is_none() => return None,
+        None => {}
+    }
+
+    if let (
+        Some((_, established, established_app, established_version, established_initiator)),
+        Some(next),
+    ) = (&existing, session)
+        && ((!established.is_empty() && established != &next.contact_hash)
+            || established_app != &next.app_id
+            || *established_version != next.app_version
+            || (!established_initiator.is_empty() && established_initiator != &next.initiator))
+    {
+        tracing::warn!(
+            session_id,
+            "Refusing to rebind an established LRGP session participant or app"
+        );
+        return None;
+    }
+    let duplicate = {
+        let mut statement = tx
+            .prepare(
+                "SELECT envelope_mp FROM app_actions
+                 WHERE session_id = ?1 AND identity_id = ?2 AND envelope_mp IS NOT NULL",
+            )
+            .ok()?;
+        let packed = statement
+            .query_map(params![session_id, identity_id], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .ok()?;
+        packed.filter_map(Result::ok).any(|existing| {
+            packed_game_nonce(&existing).as_deref() == Some(incoming_nonce.as_slice())
+        })
+    };
+    if duplicate {
+        return None;
+    }
+
+    let action_num: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(action_num), -1) + 1
+             FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
+            params![session_id, identity_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    tx.execute(
+        "INSERT INTO app_actions
+         (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            session_id,
+            identity_id,
+            action_num,
+            command,
+            payload_json,
+            sender,
+            timestamp,
+            envelope_mp,
+        ],
+    )
+    .ok()?;
+
+    let unread = existing
+        .as_ref()
+        .map(|(value, _, _, _, _)| value + 1)
+        .unwrap_or(1);
+    if let Some(session) = session {
+        let metadata = serde_json::to_string(&session.metadata).unwrap_or_else(|_| "{}".into());
+        tx.execute(
+            "INSERT INTO app_sessions
+             (session_id, identity_id, app_id, app_version, contact_hash, initiator,
+              status, metadata, unread, created_at, updated_at, last_action_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(session_id, identity_id) DO UPDATE SET
+               contact_hash = CASE
+                 WHEN app_sessions.contact_hash = '' THEN excluded.contact_hash
+                 ELSE app_sessions.contact_hash
+               END,
+               initiator = CASE
+                 WHEN app_sessions.initiator = '' THEN excluded.initiator
+                 ELSE app_sessions.initiator
+               END,
+               status = excluded.status,
+               metadata = excluded.metadata,
+               unread = excluded.unread,
+               updated_at = excluded.updated_at,
+               last_action_at = excluded.last_action_at
+             WHERE app_sessions.app_id = excluded.app_id
+               AND app_sessions.app_version = excluded.app_version
+               AND (app_sessions.contact_hash = '' OR app_sessions.contact_hash = excluded.contact_hash)
+               AND (app_sessions.initiator = '' OR app_sessions.initiator = excluded.initiator)",
+            params![
+                session.session_id,
+                session.identity_id,
+                session.app_id,
+                session.app_version,
+                session.contact_hash,
+                session.initiator,
+                session.status,
+                metadata,
+                unread,
+                session.created_at,
+                session.updated_at,
+                session.last_action_at,
+            ],
+        )
+        .ok()
+        .filter(|written| *written == 1)?;
+    } else if existing.is_some() {
+        tx.execute(
+            "UPDATE app_sessions SET unread = ?1, last_action_at = ?2
+             WHERE session_id = ?3 AND identity_id = ?4",
+            params![unread, timestamp, session_id, identity_id],
+        )
+        .ok()?;
+    }
+
+    tx.commit().ok()?;
+    Some(existing.is_some())
+}
+
+fn packed_game_nonce(envelope_mp: &[u8]) -> Option<Vec<u8>> {
+    lrgp::envelope::unpack_from_bytes(envelope_mp)
+        .ok()?
+        .get(lrgp::constants::KEY_NONCE)
+        .and_then(|value| match value {
+            rmpv::Value::Binary(bytes) => Some(bytes.clone()),
+            _ => None,
+        })
+}
+
+/// Whether this LRGP nonce has already been durably accepted for the local
+/// session. Comparing the nonce rather than the full envelope prevents a
+/// replay from evading restart protection by changing payload bytes while
+/// retaining the same protocol nonce.
+pub fn has_game_nonce(pool: &DbPool, session_id: &str, identity_id: &str, nonce: &[u8]) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let mut statement = match conn.prepare(
+        "SELECT envelope_mp FROM app_actions
+         WHERE session_id = ?1 AND identity_id = ?2 AND envelope_mp IS NOT NULL",
+    ) {
+        Ok(statement) => statement,
+        Err(_) => return false,
+    };
+    let packed = match statement.query_map(params![session_id, identity_id], |row| {
+        row.get::<_, Vec<u8>>(0)
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return false,
+    };
+    packed
+        .filter_map(Result::ok)
+        .any(|existing| packed_game_nonce(&existing).as_deref() == Some(nonce))
 }
 
 /// Returns the packed LRGP envelope for the active identity's most recent
@@ -8037,21 +8640,48 @@ pub fn mark_game_read(pool: &DbPool, session_id: &str, identity_id: &str) {
     .ok();
 }
 
-pub fn delete_game_session(pool: &DbPool, session_id: &str, identity_id: &str) {
-    let conn = match pool.get() {
+pub fn delete_game_session(pool: &DbPool, session_id: &str, identity_id: &str) -> bool {
+    let mut conn = match pool.get() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => return false,
     };
-    conn.execute(
-        "DELETE FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
-        params![session_id, identity_id],
-    )
-    .ok();
-    conn.execute(
-        "DELETE FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
-        params![session_id, identity_id],
-    )
-    .ok();
+    let Ok(tx) = conn.transaction_with_behavior(TransactionBehavior::Immediate) else {
+        return false;
+    };
+    let status: Option<String> = match tx
+        .query_row(
+            "SELECT status FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
+            params![session_id, identity_id],
+            |row| row.get(0),
+        )
+        .optional()
+    {
+        Ok(status) => status,
+        Err(_) => return false,
+    };
+    if !status.is_some_and(|status| matches!(status.as_str(), "completed" | "declined" | "expired"))
+    {
+        return false;
+    }
+    if tx
+        .execute(
+            "DELETE FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
+            params![session_id, identity_id],
+        )
+        .is_err()
+    {
+        return false;
+    }
+    if tx
+        .execute(
+            "DELETE FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
+            params![session_id, identity_id],
+        )
+        .is_err()
+    {
+        return false;
+    }
+    tx.commit().is_ok()
 }
 
 pub fn get_failed_messages_for_contact(
@@ -8206,6 +8836,7 @@ fn row_to_app_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::V
             "winner",
             "terminal",
             "draw_offered",
+            "draw_offered_by",
             "move_count",
             "cancelled_by_initiator",
             "delivery_state",
@@ -8224,6 +8855,410 @@ fn row_to_app_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::V
     }
 
     Ok(obj)
+}
+
+#[cfg(test)]
+mod game_storage_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn test_pool() -> DbPool {
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    fn session() -> lrgp::session::Session {
+        lrgp::session::Session {
+            session_id: "0123456789abcdef".into(),
+            identity_id: "11111111111111111111111111111111".into(),
+            app_id: "ttt".into(),
+            app_version: 1,
+            contact_hash: "22222222222222222222222222222222".into(),
+            initiator: "11111111111111111111111111111111".into(),
+            status: "active".into(),
+            metadata: HashMap::from([("board".into(), serde_json::json!("X________"))]),
+            unread: 2,
+            created_at: 10.0,
+            updated_at: 20.0,
+            last_action_at: 20.0,
+        }
+    }
+
+    fn packed_envelope(nonce: [u8; lrgp::constants::NONCE_BYTES], command: &str) -> Vec<u8> {
+        let mut envelope = lrgp::envelope::Envelope::new();
+        envelope.insert(
+            lrgp::constants::KEY_APP.into(),
+            rmpv::Value::String("ttt.1".into()),
+        );
+        envelope.insert(
+            lrgp::constants::KEY_COMMAND.into(),
+            rmpv::Value::String(command.into()),
+        );
+        envelope.insert(
+            lrgp::constants::KEY_SESSION.into(),
+            rmpv::Value::String("0123456789abcdef".into()),
+        );
+        envelope.insert(
+            lrgp::constants::KEY_PAYLOAD.into(),
+            rmpv::Value::Map(Vec::new()),
+        );
+        envelope.insert(
+            lrgp::constants::KEY_NONCE.into(),
+            rmpv::Value::Binary(nonce.to_vec()),
+        );
+        lrgp::envelope::pack_to_bytes(&envelope).unwrap()
+    }
+
+    #[test]
+    fn typed_sessions_round_trip_for_runtime_hydration() {
+        let pool = test_pool();
+        let expected = session();
+        assert!(save_game_session(&pool, &expected));
+
+        let loaded = load_game_sessions(&pool);
+        assert_eq!(loaded.len(), 1);
+        let actual = &loaded[0];
+        assert_eq!(actual.session_id, expected.session_id);
+        assert_eq!(actual.identity_id, expected.identity_id);
+        assert_eq!(actual.contact_hash, expected.contact_hash);
+        assert_eq!(actual.metadata, expected.metadata);
+        assert_eq!(actual.unread, 2);
+    }
+
+    #[test]
+    fn session_upsert_cannot_rebind_peer_or_initiator() {
+        let pool = test_pool();
+        let established = session();
+        assert!(save_game_session(&pool, &established));
+
+        let mut wrong_peer = established.clone();
+        wrong_peer.contact_hash = "33333333333333333333333333333333".into();
+        assert!(!save_game_session(&pool, &wrong_peer));
+
+        let mut wrong_initiator = established.clone();
+        wrong_initiator.initiator = established.contact_hash.clone();
+        assert!(!save_game_session(&pool, &wrong_initiator));
+
+        let stored = get_game_session(&pool, &established.session_id, &established.identity_id)
+            .expect("established session remains available");
+        assert_eq!(stored["contact_hash"], established.contact_hash);
+        assert_eq!(stored["initiator"], established.initiator);
+    }
+
+    #[test]
+    fn outbound_state_and_envelope_commit_and_roll_back_together() {
+        let pool = test_pool();
+        let original = session();
+        assert!(save_game_session(&pool, &original));
+
+        let mut advanced = original.clone();
+        advanced
+            .metadata
+            .insert("board".into(), serde_json::json!("XO_______"));
+        advanced.updated_at = 30.0;
+        advanced.last_action_at = 30.0;
+        let envelope = packed_envelope([5; lrgp::constants::NONCE_BYTES], "move");
+        let action_num = persist_outbound_game_action(
+            &pool,
+            &advanced,
+            "move",
+            "{}",
+            &advanced.identity_id,
+            30.0,
+            &envelope,
+        )
+        .expect("durable outbox commit");
+
+        assert_eq!(action_num, 0);
+        assert_eq!(
+            get_game_action_count(&pool, &advanced.session_id, &advanced.identity_id),
+            1
+        );
+        assert_eq!(
+            get_last_outbound_envelope_for_session(
+                &pool,
+                &advanced.session_id,
+                &advanced.identity_id,
+            ),
+            Some(envelope)
+        );
+        assert_eq!(
+            get_game_session(&pool, &advanced.session_id, &advanced.identity_id).unwrap()["state"],
+            "XO_______"
+        );
+
+        assert!(rollback_outbound_game_action(
+            &pool,
+            &advanced.session_id,
+            &advanced.identity_id,
+            action_num,
+            Some(&original),
+        ));
+        assert_eq!(
+            get_game_action_count(&pool, &advanced.session_id, &advanced.identity_id),
+            0
+        );
+        assert_eq!(
+            get_game_session(&pool, &advanced.session_id, &advanced.identity_id).unwrap()["state"],
+            "X________"
+        );
+    }
+
+    #[test]
+    fn failed_new_challenge_removes_its_session_and_outbox_entry() {
+        let pool = test_pool();
+        let mut challenge = session();
+        challenge.status = "pending".into();
+        let envelope = packed_envelope([6; lrgp::constants::NONCE_BYTES], "challenge");
+        let action_num = persist_outbound_game_action(
+            &pool,
+            &challenge,
+            "challenge",
+            "{}",
+            &challenge.identity_id,
+            10.0,
+            &envelope,
+        )
+        .expect("durable challenge outbox commit");
+
+        assert!(rollback_outbound_game_action(
+            &pool,
+            &challenge.session_id,
+            &challenge.identity_id,
+            action_num,
+            None,
+        ));
+        assert!(get_game_session(&pool, &challenge.session_id, &challenge.identity_id).is_none());
+        assert_eq!(
+            get_game_action_count(&pool, &challenge.session_id, &challenge.identity_id),
+            0
+        );
+    }
+
+    #[test]
+    fn append_allocates_without_replacing_and_tracks_nonces() {
+        let pool = test_pool();
+        let s = session();
+        let envelope_a = packed_envelope([1; lrgp::constants::NONCE_BYTES], "challenge");
+        let envelope_b = packed_envelope([2; lrgp::constants::NONCE_BYTES], "accept");
+
+        let first = append_game_action(
+            &pool,
+            &s.session_id,
+            &s.identity_id,
+            "challenge",
+            "{}",
+            &s.identity_id,
+            1.0,
+            Some(&envelope_a),
+        );
+        let second = append_game_action(
+            &pool,
+            &s.session_id,
+            &s.identity_id,
+            "accept",
+            "{}",
+            &s.contact_hash,
+            2.0,
+            Some(&envelope_b),
+        );
+
+        assert_eq!(first, Some(0));
+        assert_eq!(second, Some(1));
+        assert_eq!(
+            get_game_actions(&pool, &s.session_id, &s.identity_id).len(),
+            2
+        );
+        assert!(has_game_nonce(
+            &pool,
+            &s.session_id,
+            &s.identity_id,
+            &[1; lrgp::constants::NONCE_BYTES]
+        ));
+        assert!(!has_game_nonce(
+            &pool,
+            &s.session_id,
+            &s.identity_id,
+            &[9; lrgp::constants::NONCE_BYTES]
+        ));
+    }
+
+    #[test]
+    fn inbound_nonce_replay_is_rejected_without_partial_state() {
+        let pool = test_pool();
+        let s = session();
+        save_game_session(&pool, &s);
+        let first = packed_envelope([7; lrgp::constants::NONCE_BYTES], "move");
+        let replay = packed_envelope([7; lrgp::constants::NONCE_BYTES], "resign");
+
+        assert_eq!(
+            persist_inbound_game_action(
+                &pool,
+                &s.session_id,
+                &s.identity_id,
+                "move",
+                "{}",
+                &s.contact_hash,
+                21.0,
+                &first,
+                Some(&s),
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            persist_inbound_game_action(
+                &pool,
+                &s.session_id,
+                &s.identity_id,
+                "resign",
+                "{}",
+                &s.contact_hash,
+                22.0,
+                &replay,
+                Some(&s),
+            ),
+            None
+        );
+        assert_eq!(
+            get_game_actions(&pool, &s.session_id, &s.identity_id).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn inbound_persistence_cannot_rebind_session_peer_or_app() {
+        let pool = test_pool();
+        let established = session();
+        save_game_session(&pool, &established);
+
+        let mut wrong_peer = established.clone();
+        wrong_peer.contact_hash = "33333333333333333333333333333333".into();
+        let peer_envelope = packed_envelope([3; lrgp::constants::NONCE_BYTES], "move");
+        assert_eq!(
+            persist_inbound_game_action(
+                &pool,
+                &established.session_id,
+                &established.identity_id,
+                "move",
+                "{}",
+                &wrong_peer.contact_hash,
+                23.0,
+                &peer_envelope,
+                Some(&wrong_peer),
+            ),
+            None
+        );
+
+        let mut wrong_app = established.clone();
+        wrong_app.app_id = "chess".into();
+        let app_envelope = packed_envelope([4; lrgp::constants::NONCE_BYTES], "move");
+        assert_eq!(
+            persist_inbound_game_action(
+                &pool,
+                &established.session_id,
+                &established.identity_id,
+                "move",
+                "{}",
+                &established.contact_hash,
+                24.0,
+                &app_envelope,
+                Some(&wrong_app),
+            ),
+            None
+        );
+
+        let stored = get_game_session(&pool, &established.session_id, &established.identity_id)
+            .expect("established session remains available");
+        assert_eq!(stored["app_id"], "ttt");
+        assert_eq!(stored["contact_hash"], established.contact_hash);
+        assert!(
+            get_game_actions(&pool, &established.session_id, &established.identity_id).is_empty()
+        );
+    }
+
+    #[test]
+    fn inbound_persistence_requires_correlated_envelope_and_session_state() {
+        let pool = test_pool();
+        let established = session();
+        assert!(save_game_session(&pool, &established));
+        let move_envelope = packed_envelope([8; lrgp::constants::NONCE_BYTES], "move");
+
+        // The command supplied to storage must be the command authenticated
+        // inside the exact packed envelope; callers cannot relabel an action.
+        assert_eq!(
+            persist_inbound_game_action(
+                &pool,
+                &established.session_id,
+                &established.identity_id,
+                "resign",
+                "{}",
+                &established.contact_hash,
+                25.0,
+                &move_envelope,
+                Some(&established),
+            ),
+            None
+        );
+
+        // A state-less inbound record (the standard remote-error path) may
+        // update only an already established, participant-bound session.
+        let unknown_pool = test_pool();
+        assert_eq!(
+            persist_inbound_game_action(
+                &unknown_pool,
+                &established.session_id,
+                &established.identity_id,
+                "move",
+                "{}",
+                &established.contact_hash,
+                25.0,
+                &move_envelope,
+                None,
+            ),
+            None
+        );
+        assert!(
+            get_game_actions(
+                &unknown_pool,
+                &established.session_id,
+                &established.identity_id,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn deleting_a_session_removes_actions_in_the_same_operation() {
+        let pool = test_pool();
+        let mut s = session();
+        s.status = "completed".into();
+        save_game_session(&pool, &s);
+        append_game_action(
+            &pool,
+            &s.session_id,
+            &s.identity_id,
+            "move",
+            "{}",
+            &s.contact_hash,
+            2.0,
+            None,
+        );
+
+        assert!(delete_game_session(&pool, &s.session_id, &s.identity_id));
+        assert!(get_game_session(&pool, &s.session_id, &s.identity_id).is_none());
+        assert!(get_game_actions(&pool, &s.session_id, &s.identity_id).is_empty());
+    }
+
+    #[test]
+    fn active_session_cannot_be_removed_as_history() {
+        let pool = test_pool();
+        let s = session();
+        assert!(save_game_session(&pool, &s));
+        assert!(!delete_game_session(&pool, &s.session_id, &s.identity_id));
+        assert!(get_game_session(&pool, &s.session_id, &s.identity_id).is_some());
+    }
 }
 
 #[cfg(test)]

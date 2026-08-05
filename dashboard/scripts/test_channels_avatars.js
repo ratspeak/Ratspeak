@@ -264,11 +264,11 @@ assert(componentsCss.includes('.message-composer-input'));
 assert(componentsCss.includes('border-radius: var(--radius-pill);'));
 assert(componentsCss.includes('.message-send-btn::before'));
 assert(componentsCss.includes('border-radius: var(--radius-full);'));
-assert(indexSource.includes('/static/style.css?v=ui-20260803'));
-assert(indexSource.includes('/static/js/nav.js?v=ui-20260803'));
-assert(indexSource.includes('/static/js/ui_shared.js?v=ui-20260803'));
-assert(indexSource.includes('/static/js/lxmf.js?v=ui-20260803'));
-assert(indexSource.includes('/static/js/channels.js?v=ui-20260803'));
-assert(indexSource.includes('/static/js/channel_hub.js?v=ui-20260803'));
+assert(indexSource.includes('/static/style.css?v=ui-20260804'));
+assert(indexSource.includes('/static/js/nav.js?v=ui-20260804'));
+assert(indexSource.includes('/static/js/ui_shared.js?v=ui-20260804'));
+assert(indexSource.includes('/static/js/lxmf.js?v=ui-20260804'));
+assert(indexSource.includes('/static/js/channels.js?v=ui-20260804'));
+assert(indexSource.includes('/static/js/channel_hub.js?v=ui-20260804'));
 
 process.stdout.write('Channels avatar tests passed.\n');

@@ -1115,7 +1115,7 @@ fn privacy_announce_usage_setting_is_wired() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     assert!(index.contains("data-settings-title=\"Privacy\""));
-    assert!(index.contains("Privacy related preferences"));
+    assert!(index.contains("Activity identity protection and presence sharing."));
     assert!(index.contains("Announce Ratspeak usage"));
     assert!(index.contains("Let others know you support games, calls, and extra features."));
     assert!(index.contains("id=\"announce-ratspeak-usage-toggle\" checked"));
@@ -1176,6 +1176,8 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     let root = repo_root();
     let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     let scale = read_source(root.join("dashboard/static/js/text_scale.js")).expect("scale js");
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("interfaces commands");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
@@ -1187,6 +1189,12 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
+    assert!(index.contains("/static/style.css?v=ui-20260804"));
+    assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
+    assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
+    assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
+    assert!(views_css.contains("html[data-text-scale-tier=\"xlarge\"] .settings-row"));
+    assert!(!views_css.contains("html[data-text-scale-tier=\"xlarge\"] .settings-page-shell"));
 }
 
 #[test]
@@ -1213,6 +1221,8 @@ fn appearance_families_are_durable_validated_and_native_aware() {
     assert!(theme.contains("data-theme-preference"));
     assert!(theme.contains("ratspeak-theme-changed"));
     assert!(theme.contains("'rs-theme-family'"));
+    assert!(!settings.contains("label.title = family.name"));
+    assert!(settings.contains("'Use ' + family.name + ' theme'"));
     assert!(theme.contains("if (value === 'solarized') return 'everforest'"));
     assert!(settings.contains("RS.invoke('set_appearance'"));
     assert!(settings.contains("data.theme_family"));
@@ -2174,6 +2184,64 @@ fn games_new_sheet_uses_shared_mobile_bottom_sheet_width() {
     assert!(responsive_css.contains(
         ".bottom-sheet {\n        position: fixed;\n        bottom: 0;\n        left: 0;\n        right: 0;"
     ));
+}
+
+#[test]
+fn games_ui_uses_runtime_manifests_and_accessible_atomic_actions() {
+    let root = repo_root();
+    let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
+    let games_css = read_source(root.join("dashboard/static/css/11-games.css")).expect("games css");
+
+    assert!(games_js.contains("RS.invoke('get_available_games')"));
+    assert!(games_js.contains("var _manifestsById = {};"));
+    assert!(games_js.contains("function _beginSessionAction(sessionId)"));
+    assert!(games_js.contains("function _drawOfferOwner(session)"));
+    assert!(games_js.contains("function _canDeleteSession(session)"));
+    assert!(games_js.contains("function _handleGameActionFailure(data)"));
+    assert!(games_js.contains("function _activeMoveDeliveryText(state)"));
+    assert!(games_js.contains("escapeHtml(_statusText(s))"));
+    assert!(games_js.contains("escapeHtml(RS.relativeTime(s.updated_at || s.last_action_at))"));
+    assert!(games_js.contains("finishPromotion(null);"));
+    assert!(games_js.contains("_isMe(session, _drawOfferOwner(session))"));
+    assert!(games_js.contains("if (!_beginSessionAction(session.game_id)) return;"));
+    assert!(games_js.contains("if (!_beginSessionAction(sid)) return;"));
+    assert!(games_js.contains("RS.listen('game_protocol_error'"));
+    assert!(games_js.contains("role=\"gridcell\""));
+    assert!(games_js.contains("aria-label=\"Tic-Tac-Toe board\""));
+    assert!(games_js.contains("function _chessPieceName(piece)"));
+    assert!(games_css.contains(".ttt-cell:focus-visible"));
+    assert!(games_css.contains(".chess-square:focus-visible"));
+    assert!(games_css.contains("background: var(--surface-scrim);"));
+    assert!(
+        !games_css.contains(".game-modal"),
+        "Games must use the shared bottom sheet instead of a parallel legacy modal"
+    );
+}
+
+#[test]
+fn games_transport_uses_native_lxmf_fields_and_a_durable_outbox() {
+    let root = repo_root();
+    let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf rs");
+    let games = read_source(root.join("crates/ratspeak-tauri/src/commands/games.rs"))
+        .expect("games commands");
+    let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db source");
+    let runtime =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime source");
+
+    assert!(lxmf.contains("apply_lrgp_fields_to_message"));
+    assert!(lxmf.contains(".set_msgpack_field(field_id, bytes)"));
+    assert!(games.contains("db::persist_outbound_game_action("));
+    assert!(games.contains("db::rollback_outbound_game_action("));
+    assert!(games.contains("reason = \"resend_required\";"));
+    assert!(db.contains("pub fn persist_outbound_game_action("));
+    assert!(db.contains("pub fn rollback_outbound_game_action("));
+    assert!(!db.contains("INSERT OR REPLACE INTO app_actions"));
+    assert!(runtime.contains("fn lrgp_sender_authenticated("));
+    assert!(runtime.contains(".rollback_incoming("));
+    assert!(runtime.contains(".forget_incoming_nonce("));
+    assert!(runtime.contains("fn game_delivery_state_is_in_flight(state: &str)"));
+    assert!(runtime.contains("sweep_stale_game_deliveries(&tick_state).await"));
+    assert!(runtime.contains("update_game_session_delivery_state(\n                    &state,"));
 }
 
 #[test]
@@ -4069,6 +4137,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("mediaPlaybackRequiresUserGesture = false"));
     assert!(activity.contains("fun playCallRingtone(mode: String)"));
     assert!(activity.contains("fun stopCallRingtone()"));
+    assert!(activity.contains("fun playCallTimeoutCue(): Boolean"));
     assert!(activity.contains("fun startCallAudioRoute(role: String)"));
     assert!(activity.contains("fun stopCallAudioRoute()"));
     assert!(activity.contains("requestCallAudioFocus()"));
@@ -4086,6 +4155,13 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING"));
     assert!(activity.contains("AudioAttributes.USAGE_NOTIFICATION_RINGTONE"));
     assert!(activity.contains("audioManager.setCommunicationDevice(route)"));
+    assert!(activity.contains("private fun requestCallAudioFocus(): Boolean"));
+    assert!(activity.contains("callAudioRouteActive && callAudioRouteName == routeName"));
+    assert!(
+        activity.contains("if (!callAudioRouteActive) {\n            configureCommunicationRoute")
+    );
+    assert!(activity.contains("RatspeakVoiceAudio.stop()"));
+    assert!(activity.contains("stopNativeCallAudioRoute(waitForNoProximity = false)"));
 
     let voice_audio = read_source(root.join(
         "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceAudio.kt",
@@ -4097,12 +4173,27 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_FLOAT"));
     assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_16BIT"));
     assert!(voice_audio.contains("AudioTrack.MODE_STREAM"));
+    assert!(voice_audio.contains("AudioTrack.WRITE_BLOCKING"));
     assert!(voice_audio.contains("AudioTrack.WRITE_NON_BLOCKING"));
+    assert!(voice_audio.contains("setStartThresholdInFrames"));
+    assert!(voice_audio.contains("if (written > 0 && starting)"));
+    assert!(!voice_audio.contains("created.play()"));
+    let first_write = voice_audio
+        .find("val written = if (trackEncoding")
+        .expect("initial AudioTrack write");
+    let first_play = voice_audio[first_write..]
+        .find("active.play()")
+        .map(|offset| first_write + offset)
+        .expect("AudioTrack starts after its initial write");
+    assert!(first_write < first_play);
     assert!(voice_audio.contains("fun lastError(): String"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("window.RS.mediaPermissions"));
     assert!(state_js.contains("window.RS.audioPlayback"));
+    assert!(state_js.contains("function _rsNativeAndroidAudioAvailable()"));
+    assert!(state_js.contains("if (_rsNativeAndroidAudioAvailable()) return null;"));
+    assert!(state_js.contains("installUnlock: _rsInstallAudioPlaybackUnlock"));
     assert!(state_js.contains("window.RatspeakAndroid.requestMediaPermissions"));
     assert!(state_js.contains("function _rsDesktopMicrophonePermission(audio)"));
     assert!(state_js.contains("RS.invoke('request_microphone_permission')"));
@@ -4117,6 +4208,18 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         .expect("voice microphone permission function");
     assert!(!voice_mic_permission.contains("isTauriDesktop"));
     assert!(lxmf.contains("function _voiceEnsurePlaybackReady()"));
+    let playback_ready = lxmf
+        .split("function _voiceEnsurePlaybackReady()")
+        .nth(1)
+        .and_then(|tail| tail.split("function _voiceSyncRingtone()").next())
+        .expect("voice playback readiness function");
+    assert!(
+        playback_ready.contains("if (_androidCallRouteBridge()) return Promise.resolve(true);")
+    );
+    assert!(
+        playback_ready.find("_androidCallRouteBridge()").unwrap()
+            < playback_ready.find("RS.audioPlayback.ensure").unwrap()
+    );
     assert!(lxmf.contains("function _voiceAfterNextPaint()"));
     assert!(lxmf.contains("function _voiceSetOptimisticOutgoing(hash)"));
     assert!(lxmf.contains("function _voiceBlockMobileNavigation(ms)"));
@@ -4133,6 +4236,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(lxmf.contains("function _voiceToggleSpeaker()"));
     assert!(lxmf.contains("function _voicePrimeNativeCallRoute()"));
     assert!(lxmf.contains("_voiceNativeAudioRouteLastSyncAt"));
+    assert!(lxmf.contains("_voiceNativeAudioRouteLastSyncAt = Date.now();"));
     assert!(lxmf.contains("voice_set_microphone_muted"));
     assert!(lxmf.contains("voice_restart_speaker"));
     assert!(lxmf.contains("function _voicePeerLookupHash(call)"));
@@ -4251,7 +4355,9 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(ringtone_js.contains("source.loop = true"));
     assert!(ringtone_js.contains("var OUTGOING_TIMEOUT_MS = 25000"));
     assert!(ringtone_js.contains("playCallRingtone"));
+    assert!(ringtone_js.contains("playCallTimeoutCue"));
     assert!(ringtone_js.contains("stopCallRingtone"));
+    assert!(ringtone_js.contains("if (!activeNodes.length) return;"));
     assert!(ringtone_js.contains("if (started === false)"));
     assert!(ringtone_js.contains("playTimeoutCue();"));
     assert!(ringtone_js.contains("active.status !== 'established'"));
@@ -4267,6 +4373,8 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     );
     assert!(activity.contains("private const val CALL_RINGTONE_INCOMING_VOLUME = 0.36"));
     assert!(activity.contains("private const val CALL_RINGTONE_OUTGOING_VOLUME = 0.18"));
+    assert!(activity.contains("private const val CALL_TIMEOUT_CUE_MS = 520L"));
+    assert!(activity.contains("mode.equals(\"timeout\", ignoreCase = true) -> \"timeout\""));
     assert!(
         activity.contains(
             "private val CALL_RINGTONE_INCOMING_PARTIALS = doubleArrayOf(0.74, 0.18, 0.08)"
@@ -4281,6 +4389,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    assert!(index.contains("/static/js/state.js?v=ui-20260804"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260804"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260804"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260804"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -4290,6 +4402,11 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         .expect("ringtone script");
     let lxmf_pos = index.find("/static/js/lxmf.js").expect("lxmf script");
     assert!(ringtone_pos < lxmf_pos);
+
+    let tauri_events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
+    assert!(tauri_events.contains("RS.audioPlayback.installUnlock();"));
+    assert!(!tauri_events.contains("RS.audioPlayback.ensure({ installUnlock: true })"));
 
     let activity_js =
         read_source(root.join("dashboard/static/js/activity.js")).expect("activity js");
@@ -4667,6 +4784,21 @@ fn mobile_settings_use_section_drilldown_instead_of_stacked_panels() {
     assert!(index.contains("class=\"settings-nav-desc\""));
     assert!(index.contains("id=\"settings-mobile-back-btn\""));
     assert!(index.contains("id=\"settings-mobile-detail-title\""));
+    assert!(!index.contains("settings-mobile-detail-eyebrow"));
+    for duplicated_title in [
+        r#"<div class="panel-header">General</div>"#,
+        r#"<div class="panel-header">Channels</div>"#,
+        r#"<div class="panel-header">Identity</div>"#,
+        r#"<div class="panel-header">Privacy</div>"#,
+        r#"<div class="panel-header">Network</div>"#,
+        r#"<div class="panel-header">System</div>"#,
+    ] {
+        assert!(
+            !index.contains(duplicated_title),
+            "settings detail should not repeat its page title: {duplicated_title}"
+        );
+    }
+    assert!(!index.contains("settings-relay-dot"));
     assert!(settings_js.contains("function _settingsMobileModeActive()"));
     assert!(settings_js.contains("showMobileDetail: _settingsMobileModeActive()"));
     assert!(settings_js.contains("function showSettingsMobileSectionIndex(opts)"));
@@ -4679,6 +4811,7 @@ fn mobile_settings_use_section_drilldown_instead_of_stacked_panels() {
     assert!(nav_js.contains("showSettingsMobileSectionIndex();"));
     assert!(nav_js.contains("initSettingsDetailSwipeBack();"));
     assert!(views_css.contains(".settings-nav-desc,"));
+    assert!(!responsive_css.contains(".settings-mobile-detail-eyebrow"));
     assert!(
         responsive_css
             .contains(".settings-page:not(.settings-mobile-detail-active) .settings-detail-pane")
@@ -4706,8 +4839,8 @@ fn settings_system_panel_has_developer_mode_and_reset_group() {
     );
     assert!(index.contains(r#"<span class="settings-nav-label">System</span>"#));
     assert!(!index.contains(r#"<span class="settings-nav-label">System Data</span>"#));
-    assert!(index.contains(r#"<div class="panel-header">System</div>"#));
-    assert!(index.contains(r#"<div class="settings-panel-section-title">System</div>"#));
+    assert!(!index.contains(r#"<div class="panel-header">System</div>"#));
+    assert!(!index.contains(r#"<div class="settings-panel-section-title">System</div>"#));
     assert!(index.contains(r#"<span class="settings-row-label">Developer Mode</span>"#));
     assert!(index.contains(r#"role="radiogroup" aria-label="Developer Mode""#));
     assert!(index.contains(r#"type="radio" name="settings-developer-mode" id="settings-developer-mode-off" value="off" checked"#));
@@ -4716,9 +4849,6 @@ fn settings_system_panel_has_developer_mode_and_reset_group() {
     ));
     assert!(index.contains(r#"<div class="settings-panel-section-title">Reset</div>"#));
 
-    let system_title = index
-        .find(r#"<div class="settings-panel-section-title">System</div>"#)
-        .unwrap();
     let developer_mode = index
         .find(r#"<span class="settings-row-label">Developer Mode</span>"#)
         .unwrap();
@@ -4726,11 +4856,7 @@ fn settings_system_panel_has_developer_mode_and_reset_group() {
         .find(r#"<div class="settings-panel-section-title">Reset</div>"#)
         .unwrap();
     let cache_section = index.find(r#"id="system-section-caches""#).unwrap();
-    assert!(
-        system_title < developer_mode
-            && developer_mode < reset_title
-            && reset_title < cache_section
-    );
+    assert!(developer_mode < reset_title && reset_title < cache_section);
 
     assert!(settings_js.contains("function initDeveloperModeToggle()"));
     assert!(settings_js.contains("initDeveloperModeToggle();"));
@@ -5298,6 +5424,27 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("window.RS.qr = {"));
     assert!(contact_card_js.contains("openScanner: openContactQrScanner"));
     assert!(contact_card_js.contains("renderQrCanvas(canvas, card.payload || '')"));
+    let share_start = contact_card_js
+        .find("function showIdentityShareScreen(identityHash)")
+        .expect("identity share flow");
+    let share_end = contact_card_js[share_start..]
+        .find("function showScannedCardPreview")
+        .map(|offset| share_start + offset)
+        .expect("identity share flow end");
+    let share_flow = &contact_card_js[share_start..share_end];
+    assert!(share_flow.contains("Preparing contact card&hellip;"));
+    assert!(share_flow.contains("built.sheet.setAttribute('aria-busy', 'true')"));
+    assert!(share_flow.contains("window.requestAnimationFrame"));
+    let share_sheet_pos = share_flow
+        .find("buildSheet('contact-share-sheet')")
+        .expect("share sheet is created");
+    let share_request_pos = share_flow
+        .find("RS.invoke('api_contact_card'")
+        .expect("contact-card request is made");
+    assert!(
+        share_sheet_pos < share_request_pos,
+        "share sheet must appear before contact-card generation begins"
+    );
     assert!(contact_card_js.contains("function QrContactCard(text)"));
     assert!(contact_card_js.contains("var VERSION = 13;"));
     assert!(contact_card_js.contains("var ERROR_CORRECTION_FORMAT_BITS = 3;"));
@@ -5349,6 +5496,8 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(views_css.contains("transform: translate(-50%, calc(-50% + 12px)) scale(0.98);"));
     assert!(views_css.contains("transform: translate(-50%, -50%) scale(1);"));
     assert!(views_css.contains(".contact-share-qr-shell"));
+    assert!(views_css.contains(".contact-share-loading-qr"));
+    assert!(views_css.contains(".contact-share-error-title"));
     assert!(views_css.contains(".contact-scan-camera-wrap"));
     assert!(views_css.contains(".contact-scan-avatar {\n    width: 72px;\n    height: 72px;\n    border-radius: var(--radius-full);"));
     assert!(views_css.contains(".contact-scan-avatar canvas"));
@@ -6596,14 +6745,49 @@ fn peer_spammer_names_are_ui_suppressed_not_user_blocked() {
     assert!(peers.contains("function _isSuppressedPeerDisplayName(displayName)"));
     assert!(peers.contains("/meshtastic/i.test(name)"));
     assert!(peers.contains("/^![a-f0-9]{8}$/i.test(name)"));
-    assert!(peers.contains("if (_isSuppressedPeerEntry(_cache[h])) continue;"));
-    assert!(peers.contains("return _isSuppressedPeerEntry(entry) ? null : entry;"));
+    assert!(peers.contains("/^[a-f0-9]{8}$/i.test(name)"));
+    assert!(peers.contains("var BARE_HEX_CLUSTER_MIN = 3"));
+    assert!(peers.contains("function _hasKnownPeerEvidence(entry)"));
+    assert!(peers.contains("_hasConversationWith(entry.hash)"));
+    assert!(peers.contains("entry.is_contact || _supportsRatspeakFeatures(entry)"));
+    assert!(peers.contains("services.indexOf('lxst.telephony') !== -1"));
+    assert!(peers.contains("var _hideKnownSpamPeers = true"));
+    assert!(peers.contains("function setHideKnownSpamPeers(enabled)"));
+    assert!(peers.contains("if (_isSuppressedPeerEntry(_cache[h], context)) continue;"));
+    assert!(peers.contains("_isSuppressedPeerEntry(entry, _visibilityContext()) ? null : entry"));
+    assert!(peers.contains("function visibilityContextChanged()"));
+
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    assert!(lxmf.contains("PeersCache.visibilityContextChanged();"));
+
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    assert!(health.contains("var peers = PeersCache.enriched();"));
+
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    assert!(index.contains("Hide known spam peers"));
+    assert!(
+        index
+            .contains("Hide repeated bridge-style IDs unless you have saved or messaged the peer.")
+    );
+    assert!(index.contains("id=\"settings-hide-known-spam-peers-on\" value=\"on\" checked"));
 
     let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     assert!(
         !settings.contains("_isSuppressedPeerDisplayName"),
-        "automatic spammer suppression must not appear in the user block list"
+        "the classifier must stay centralized in PeersCache"
     );
+    assert!(settings.contains("set_hide_known_spam_peers"));
+    assert!(settings.contains("PeersCache.setHideKnownSpamPeers"));
+    assert!(settings.contains("renderDashboardPeersList()"));
+
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    assert!(interfaces.contains("pub async fn set_hide_known_spam_peers"));
+    assert!(interfaces.contains("\"hide_known_spam_peers\""));
+    assert!(interfaces.contains(".is_none_or(|value| value != \"false\")"));
+
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    assert!(tauri_lib.contains("set_hide_known_spam_peers"));
 }
 
 #[test]
