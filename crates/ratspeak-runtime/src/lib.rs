@@ -413,12 +413,12 @@ async fn notify_inbound_message_if_background(
     ));
 }
 
-fn game_name(app_id: &str) -> &'static str {
-    match app_id {
-        "chess" => "chess",
-        "ttt" | "tictactoe" | "tic-tac-toe" => "tic-tac-toe",
-        _ => "a game",
-    }
+fn game_name(state: &AppState, app_id: &str) -> String {
+    state
+        .lrgp_router
+        .with_app(app_id, |app| app.manifest().display_name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "a game".to_string())
 }
 
 fn notify_game_if_background(
@@ -435,7 +435,7 @@ fn notify_game_if_background(
 
     let identity_id = helpers::active_identity_id(state);
     let label = contact_label_from_db(&state.db, sender_hash, &identity_id);
-    let game = game_name(app_id);
+    let game = game_name(state, app_id);
     let is_challenge = is_new_session
         || command.eq_ignore_ascii_case("challenge")
         || command.eq_ignore_ascii_case("invite");
@@ -6733,8 +6733,11 @@ mod notification_tests {
     }
 
     #[test]
-    fn ttt_notification_uses_the_registered_game_name() {
-        assert_eq!(game_name("ttt"), "tic-tac-toe");
+    fn game_notifications_use_registered_manifest_names() {
+        let state = make_state(Arc::new(RecordingNotifier::default()));
+        assert_eq!(game_name(&state, "ttt"), "Tic-Tac-Toe");
+        assert_eq!(game_name(&state, "chess"), "Chess");
+        assert_eq!(game_name(&state, "future-game"), "a game");
     }
 
     #[test]

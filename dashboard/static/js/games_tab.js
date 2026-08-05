@@ -73,6 +73,10 @@
         return (session && (session.app_id || session.game)) || '';
     }
 
+    function _gameView(appId) {
+        return RS.games && RS.games.views ? RS.games.views.get(appId) : null;
+    }
+
     function _isViewingSession(sessionId) {
         if (!sessionId || _selectedSessionId !== sessionId) return false;
         if (typeof currentView === 'undefined' || currentView !== 'games') return false;
@@ -115,23 +119,13 @@
 
     function _celebrationOptions(session) {
         var appId = _appId(session);
-        var opts = {
-            count: appId === 'chess' ? 72 : 48,
-            duration: appId === 'chess' ? 1900 : 1600,
-        };
-
-        if (appId === 'chess') {
-            var cs = getComputedStyle(document.documentElement);
-            opts.colors = [
-                (cs.getPropertyValue('--chess-light') || '#D4BC9E').trim(),
-                (cs.getPropertyValue('--chess-dark') || '#9B8365').trim(),
-                (cs.getPropertyValue('--accent') || '#D2693B').trim(),
-                (cs.getPropertyValue('--status-online') || '#2E8B57').trim(),
-                (cs.getPropertyValue('--ble-accent') || '#0E9AA7').trim(),
-            ];
-        }
-
-        var target = document.querySelector(appId === 'chess' ? '.chess-board' : '.ttt-grid');
+        var view = _gameView(appId);
+        var opts = view && view.celebrationOptions
+            ? view.celebrationOptions(session)
+            : { count: 48, duration: 1600 };
+        var target = view && view.boardSelector
+            ? document.querySelector(view.boardSelector)
+            : null;
         if (target) {
             var rect = target.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0) {
@@ -220,21 +214,15 @@
                     ? 'Draw offer sent'
                     : 'Draw offered';
             }
-            var isChess = (session.app_id === 'chess' || session.game === 'chess');
-            var myMarker, theirMarker;
-            if (isChess) {
-                var myCol = session.my_color || (session.metadata && session.metadata.my_color) || '';
-                myMarker = myCol === 'b' ? 'Black' : 'White';
-                theirMarker = myCol === 'b' ? 'White' : 'Black';
-            } else {
-                myMarker = session.my_marker
-                    || (_isMe(session, session.first_turn) ? 'X' : 'O');
-                theirMarker = myMarker === 'X' ? 'O' : 'X';
+            var view = _gameView(_appId(session));
+            if (view && view.activeStatusText) {
+                var customStatus = view.activeStatusText(session);
+                if (customStatus) return customStatus;
             }
-            if (_isMe(session, session.turn)) return 'Your turn (' + myMarker + ')';
+            if (_isMe(session, session.turn)) return 'Your turn';
             if (session.turn) {
                 var name = _contactName(session.contact_hash) || 'Opponent';
-                return name + '\u2019s turn (' + theirMarker + ')';
+                return name + '\u2019s turn';
             }
             return 'Active';
         }
@@ -270,10 +258,11 @@
     }
 
     function _gameIcon(appId) {
+        var view = _gameView(appId);
+        if (view) return view.icon;
         var manifest = _manifestsById[appId];
         var icon = manifest && manifest.icon;
-        if (icon === 'ttt' || appId === 'ttt') return '#';
-        if (icon === 'chess' || appId === 'chess') return '\u265E';
+        if (icon && icon.length <= 2) return icon;
         return '?';
     }
 
@@ -509,21 +498,14 @@
     }
 
     function _renderDetailMeta(session) {
-        var appId = _appId(session);
         var chips = [];
         var moveCount = parseInt(session.move_count, 10);
         if (!isNaN(moveCount) && moveCount > 0) chips.push('Move ' + moveCount);
 
-        if (appId === 'chess') {
-            var myColor = session.my_color || (session.metadata && session.metadata.my_color) || '';
-            if (myColor === 'w') chips.push('White');
-            if (myColor === 'b') chips.push('Black');
-            if (session.in_check || (session.metadata && session.metadata.in_check)) chips.push('Check');
-            var lastMove = session.last_move || (session.metadata && session.metadata.last_move) || '';
-            if (lastMove) chips.push(lastMove.slice(0, 2) + '\u2192' + lastMove.slice(2, 4));
-        } else if (appId === 'ttt') {
-            var marker = session.my_marker || (_isMe(session, session.first_turn) ? 'X' : 'O');
-            if (marker) chips.push('You are ' + marker);
+        var view = _gameView(_appId(session));
+        if (view && view.detailChips) {
+            var gameChips = view.detailChips(session);
+            if (Array.isArray(gameChips)) chips = chips.concat(gameChips);
         }
 
         if (_isSendingDeliveryState(session.delivery_state)) chips.push('Sending');
@@ -557,11 +539,12 @@
         }
 
         var appId = _appId(session);
+        var gameView = _gameView(appId);
         panel.setAttribute('data-game', appId);
         var status = session.status;
         var statusTxt = _statusText(session);
         var statusCls = _statusClass(session);
-        var themeClass = appId === 'chess' ? 'games-theme-chess' : (appId === 'ttt' ? 'games-theme-ttt' : 'games-theme-unknown');
+        var themeClass = gameView ? gameView.themeClass : 'games-theme-unknown';
 
         var html = '';
 
@@ -591,10 +574,8 @@
         }
 
         html += '<div class="games-detail-board games-board-' + escapeHtml(appId || 'unknown') + '">';
-        if (appId === 'ttt') {
-            html += _renderTTTBoard(session);
-        } else if (appId === 'chess') {
-            html += _renderChessBoard(session);
+        if (gameView) {
+            html += gameView.renderBoard(session);
         } else {
             html += '<div class="empty-state-primary">Unsupported game type</div>';
         }
@@ -643,8 +624,7 @@
         }
 
         _bindControlEvents(session);
-        _bindTTTCellEvents(session);
-        _bindChessSquareEvents(session);
+        if (gameView) gameView.bindBoard(session);
     }
 
     function _renderTTTBoard(session) {
@@ -762,6 +742,36 @@
         return null;
     }
 
+    function _tttActiveStatusText(session) {
+        var myMarker = session.my_marker
+            || (_isMe(session, session.first_turn) ? 'X' : 'O');
+        var theirMarker = myMarker === 'X' ? 'O' : 'X';
+        if (_isMe(session, session.turn)) return 'Your turn (' + myMarker + ')';
+        if (session.turn) {
+            return (_contactName(session.contact_hash) || 'Opponent') +
+                '\u2019s turn (' + theirMarker + ')';
+        }
+        return '';
+    }
+
+    function _tttDetailChips(session) {
+        var marker = session.my_marker || (_isMe(session, session.first_turn) ? 'X' : 'O');
+        return marker ? ['You are ' + marker] : [];
+    }
+
+    function _tttSessionDelta(record, previous) {
+        var previousBoard = previous ? previous.state : null;
+        if (record.game_id !== _selectedSessionId || !record.state ||
+                !previousBoard || record.state === previousBoard) return;
+        for (var cell = 0; cell < 9; cell++) {
+            if ((previousBoard[cell] || '_') !== (record.state[cell] || '_')) {
+                _animatingCell = cell;
+                _animatingCellExpiry = Date.now() + 600;
+                break;
+            }
+        }
+    }
+
     function _handleTTTMove(session, cellIndex) {
         var board = (session.state || '_________').split('');
         if (board[cellIndex] !== '_') return;
@@ -855,6 +865,53 @@
     // Piece values for captured-tray sorting + material advantage display.
     var CHESS_PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
     var _chessSelected = {}; // { [session_id]: "e2" | null }
+
+    function _chessActiveStatusText(session) {
+        var myColor = session.my_color || (session.metadata && session.metadata.my_color) || '';
+        var myMarker = myColor === 'b' ? 'Black' : 'White';
+        var theirMarker = myColor === 'b' ? 'White' : 'Black';
+        if (_isMe(session, session.turn)) return 'Your turn (' + myMarker + ')';
+        if (session.turn) {
+            return (_contactName(session.contact_hash) || 'Opponent') +
+                '\u2019s turn (' + theirMarker + ')';
+        }
+        return '';
+    }
+
+    function _chessDetailChips(session) {
+        var chips = [];
+        var myColor = session.my_color || (session.metadata && session.metadata.my_color) || '';
+        if (myColor === 'w') chips.push('White');
+        if (myColor === 'b') chips.push('Black');
+        if (session.in_check || (session.metadata && session.metadata.in_check)) chips.push('Check');
+        var lastMove = session.last_move || (session.metadata && session.metadata.last_move) || '';
+        if (lastMove) chips.push(lastMove.slice(0, 2) + '\u2192' + lastMove.slice(2, 4));
+        return chips;
+    }
+
+    function _chessCelebrationOptions() {
+        var styles = getComputedStyle(document.documentElement);
+        return {
+            count: 72,
+            duration: 1900,
+            colors: [
+                (styles.getPropertyValue('--chess-light') || '#D4BC9E').trim(),
+                (styles.getPropertyValue('--chess-dark') || '#9B8365').trim(),
+                (styles.getPropertyValue('--accent') || '#D2693B').trim(),
+                (styles.getPropertyValue('--status-online') || '#2E8B57').trim(),
+                (styles.getPropertyValue('--ble-accent') || '#0E9AA7').trim(),
+            ],
+        };
+    }
+
+    function _chessActionPayload(action, session, payload) {
+        // A FIDE claim reason makes the peer auto-accept instead of prompting.
+        if (action === 'draw_offer' &&
+                (session.draw_offer_reason === '3fr' || session.draw_offer_reason === '50m')) {
+            return { r: session.draw_offer_reason };
+        }
+        return payload;
+    }
 
     // FEN field 1 → { square: pieceCode } map. pieceCode is "w"|"b" + letter.
     function _chessFenToPieces(fen) {
@@ -1337,6 +1394,48 @@
         return board + tail;
     }
 
+    function _gameActions(session) {
+        var appId = _appId(session);
+        var manifest = _manifestsById[appId];
+        if (manifest && Array.isArray(manifest.actions)) return manifest.actions;
+        var view = _gameView(appId);
+        return view && Array.isArray(view.actions) ? view.actions : [];
+    }
+
+    function _gameSupportsAction(session, action) {
+        return _gameActions(session).indexOf(action) !== -1;
+    }
+
+    function _renderStandardActiveControls(session, drawOfferLabel) {
+        var html = '';
+        if (session.draw_offered &&
+                _gameSupportsAction(session, 'draw_accept') &&
+                _gameSupportsAction(session, 'draw_decline')) {
+            var drawOwner = _drawOfferOwner(session);
+            if (drawOwner && !_isMe(session, drawOwner)) {
+                html += '<button class="nr-btn games-ctrl-accept" id="games-draw-accept-btn">Accept Draw</button>';
+                html += '<button class="nr-btn nr-btn-secondary" id="games-draw-decline-btn">Decline Draw</button>';
+            } else {
+                html += '<span class="games-ctrl-waiting">Waiting for opponent to respond...</span>';
+            }
+            html += '<span class="games-ctrl-separator"></span>';
+        } else if (_gameSupportsAction(session, 'draw_offer')) {
+            html += '<button class="nr-btn nr-btn-secondary" id="games-draw-offer-btn">' +
+                escapeHtml(drawOfferLabel || 'Offer Draw') + '</button>';
+        }
+        if (_gameSupportsAction(session, 'resign')) {
+            html += '<button class="nr-btn nr-btn-danger" id="games-resign-btn">Resign</button>';
+        }
+        return html;
+    }
+
+    function _chessRenderActiveControls(session) {
+        var drawLabel = '';
+        if (session.draw_offer_reason === '3fr') drawLabel = 'Claim threefold';
+        if (session.draw_offer_reason === '50m') drawLabel = 'Claim 50-move';
+        return _renderStandardActiveControls(session, drawLabel);
+    }
+
     function _renderControls(session) {
         var status = session.status;
         var html = '';
@@ -1350,24 +1449,10 @@
                 html += '<button class="nr-btn nr-btn-secondary" id="games-cancel-btn">Cancel</button>';
             }
         } else if (status === 'active') {
-            var isChess = (session.app_id || session.game) === 'chess';
-            if (session.draw_offered) {
-                var drawOwner = _drawOfferOwner(session);
-                if (drawOwner && !_isMe(session, drawOwner)) {
-                    html += '<button class="nr-btn games-ctrl-accept" id="games-draw-accept-btn">Accept Draw</button>';
-                    html += '<button class="nr-btn nr-btn-secondary" id="games-draw-decline-btn">Decline Draw</button>';
-                } else {
-                    html += '<span class="games-ctrl-waiting">Waiting for opponent to respond...</span>';
-                }
-                html += '<span class="games-ctrl-separator"></span>';
-            } else if (isChess && session.draw_offer_reason === '3fr') {
-                html += '<button class="nr-btn nr-btn-secondary" id="games-draw-offer-btn">Claim threefold</button>';
-            } else if (isChess && session.draw_offer_reason === '50m') {
-                html += '<button class="nr-btn nr-btn-secondary" id="games-draw-offer-btn">Claim 50-move</button>';
-            } else {
-                html += '<button class="nr-btn nr-btn-secondary" id="games-draw-offer-btn">Offer Draw</button>';
-            }
-            html += '<button class="nr-btn nr-btn-danger" id="games-resign-btn">Resign</button>';
+            var view = _gameView(_appId(session));
+            html += view && view.renderActiveControls
+                ? view.renderActiveControls(session)
+                : _renderStandardActiveControls(session, '');
         } else if (status === 'completed' || status === 'declined' || status === 'expired') {
             html += '<button class="nr-btn" id="games-rematch-btn">Rematch</button>';
         }
@@ -1423,11 +1508,10 @@
             startNewGame(session.app_id || session.game || 'ttt', session.contact_hash);
         });
         _bindBtn('games-draw-offer-btn', function() {
-            // FIDE reason makes the peer auto-accept instead of prompting.
             var payload = {};
-            var isChess = (session.app_id || session.game) === 'chess';
-            if (isChess && (session.draw_offer_reason === '3fr' || session.draw_offer_reason === '50m')) {
-                payload = { r: session.draw_offer_reason };
+            var view = _gameView(_appId(session));
+            if (view && view.actionPayload) {
+                payload = view.actionPayload('draw_offer', session, payload) || payload;
             }
             _sendAction(session, 'draw_offer', payload);
         });
@@ -1437,6 +1521,15 @@
         _bindBtn('games-draw-decline-btn', function() {
             _sendAction(session, 'draw_decline');
         });
+        var view = _gameView(_appId(session));
+        if (view && view.bindControls) {
+            view.bindControls(session, {
+                bindButton: _bindBtn,
+                sendAction: function(action, payload) {
+                    _sendAction(session, action, payload);
+                },
+            });
+        }
     }
 
     function _bindBtn(id, handler) {
@@ -1586,9 +1679,9 @@
             }
         }
 
-        var manifests = Object.keys(_manifestsById).map(function(appId) {
+        var manifests = RS.games.views.supportedManifests(Object.keys(_manifestsById).map(function(appId) {
             return _manifestsById[appId];
-        });
+        }));
         if (manifests.length === 0) {
             manifests = [
                 { app_id: 'ttt', display_name: 'Tic-Tac-Toe', icon: 'ttt', session_type: 'turn_based' },
@@ -1813,17 +1906,11 @@
     function _handleSessionDelta(record, prev) {
         if (!record || !record.game_id) return;
 
-        var prevBoard = prev ? prev.state : null;
         var prevStatus = prev ? prev.status : null;
 
-        if (record.game_id === _selectedSessionId && record.state && prevBoard && record.state !== prevBoard) {
-            for (var c = 0; c < 9; c++) {
-                if ((prevBoard[c] || '_') !== (record.state[c] || '_')) {
-                    _animatingCell = c;
-                    _animatingCellExpiry = Date.now() + 600;
-                    break;
-                }
-            }
+        var view = _gameView(_appId(record));
+        if (view && view.onSessionDelta) {
+            view.onSessionDelta(record, prev);
         }
 
         var isNew = !prev;
@@ -1937,12 +2024,53 @@
         updateGamesBadge();
     };
 
+    function _registerBuiltinGameViews() {
+        if (!RS.games || !RS.games.views) {
+            throw new Error('Game view registry must load before games_tab.js');
+        }
+        if (!RS.games.views.has('ttt')) {
+            RS.games.views.register('ttt', {
+                icon: '#',
+                themeClass: 'games-theme-ttt',
+                boardSelector: '.ttt-grid',
+                actions: ['challenge', 'accept', 'decline', 'move', 'resign',
+                    'draw_offer', 'draw_accept', 'draw_decline'],
+                renderBoard: _renderTTTBoard,
+                bindBoard: _bindTTTCellEvents,
+                activeStatusText: _tttActiveStatusText,
+                detailChips: _tttDetailChips,
+                onSessionDelta: _tttSessionDelta,
+                celebrationOptions: function() {
+                    return { count: 48, duration: 1600 };
+                },
+            });
+        }
+        if (!RS.games.views.has('chess')) {
+            RS.games.views.register('chess', {
+                icon: '\u265E',
+                themeClass: 'games-theme-chess',
+                boardSelector: '.chess-board',
+                actions: ['challenge', 'accept', 'decline', 'move', 'resign',
+                    'draw_offer', 'draw_accept', 'draw_decline'],
+                renderBoard: _renderChessBoard,
+                bindBoard: _bindChessSquareEvents,
+                activeStatusText: _chessActiveStatusText,
+                detailChips: _chessDetailChips,
+                renderActiveControls: _chessRenderActiveControls,
+                celebrationOptions: _chessCelebrationOptions,
+                actionPayload: _chessActionPayload,
+            });
+        }
+    }
+
     function _init() {
         _loadGameManifests();
         _initTabFilters();
         _initNewGameBtn();
         _initGameEvents();
     }
+
+    _registerBuiltinGameViews();
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', _init);

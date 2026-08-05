@@ -33,6 +33,21 @@ fn game_action_result_json(
     })
 }
 
+fn game_manifest_json(manifest: &lrgp::app_base::AppManifest) -> Value {
+    json!({
+        "app_id": manifest.app_id,
+        "version": manifest.version,
+        "display_name": manifest.display_name,
+        "icon": manifest.icon,
+        "session_type": manifest.session_type,
+        "max_players": manifest.max_players,
+        "validation": manifest.validation,
+        "actions": manifest.actions,
+        "preferred_delivery": manifest.preferred_delivery,
+        "ttl": manifest.ttl,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,6 +61,35 @@ mod tests {
             "0123456789abcdef0123456789abcdef0123456789abcdef",
         ] {
             assert_eq!(short_hex(malformed), "invalid");
+        }
+    }
+
+    #[test]
+    fn available_game_manifest_exposes_the_complete_extension_contract() {
+        let router = lrgp::router::LrgpRouter::with_builtin_apps();
+        let manifests = router.list_apps();
+        assert!(!manifests.is_empty());
+
+        for manifest in &manifests {
+            let value = game_manifest_json(manifest);
+            for key in [
+                "app_id",
+                "version",
+                "display_name",
+                "icon",
+                "session_type",
+                "max_players",
+                "validation",
+                "actions",
+                "preferred_delivery",
+                "ttl",
+            ] {
+                assert!(value.get(key).is_some(), "missing manifest field {key}");
+            }
+            assert_eq!(
+                value.get("app_id").and_then(Value::as_str),
+                Some(manifest.app_id.as_str())
+            );
         }
     }
 }
@@ -802,19 +846,6 @@ pub async fn resend_last_game_action(
 #[tauri::command]
 pub async fn get_available_games(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let manifests = state.lrgp_router.list_apps();
-    let games: Vec<Value> = manifests
-        .iter()
-        .map(|m| {
-            json!({
-                "app_id": m.app_id,
-                "version": m.version,
-                "display_name": m.display_name,
-                "icon": m.icon,
-                "session_type": m.session_type,
-                "max_players": m.max_players,
-                "actions": m.actions,
-            })
-        })
-        .collect();
+    let games: Vec<Value> = manifests.iter().map(game_manifest_json).collect();
     Ok(json!(games))
 }

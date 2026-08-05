@@ -512,9 +512,9 @@ impl AppState {
         emitter: Arc<dyn Emitter>,
         notifier: Arc<dyn NativeNotifier>,
     ) -> Self {
-        let lrgp_router = lrgp::router::LrgpRouter::new();
-        lrgp_router.register(Box::new(lrgp::apps::tictactoe::TicTacToeApp::new()));
-        lrgp_router.register(Box::new(lrgp::apps::chess::ChessApp::new()));
+        // LRGP owns the canonical built-in registry. A new built-in game must
+        // not require a second hard-coded registration list in Ratspeak.
+        let lrgp_router = lrgp::router::LrgpRouter::with_builtin_apps();
         for session in crate::db::load_game_sessions(&db) {
             let app_id = session.app_id.clone();
             let session_id = session.session_id.clone();
@@ -1847,6 +1847,24 @@ mod tests {
 
     fn make_state() -> AppState {
         make_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    #[test]
+    fn app_state_registers_the_complete_lrgp_builtin_set() {
+        let state = make_state();
+        let registered: Vec<_> = state
+            .lrgp_router
+            .list_apps()
+            .into_iter()
+            .map(|manifest| manifest.app_id)
+            .collect();
+        let mut expected: Vec<_> = lrgp::apps::builtin_games()
+            .into_iter()
+            .map(|app| app.app_id().to_string())
+            .collect();
+        expected.sort();
+
+        assert_eq!(registered, expected);
     }
 
     #[test]

@@ -2190,10 +2190,30 @@ fn games_new_sheet_uses_shared_mobile_bottom_sheet_width() {
 fn games_ui_uses_runtime_manifests_and_accessible_atomic_actions() {
     let root = repo_root();
     let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
+    let game_registry =
+        read_source(root.join("dashboard/static/js/game_registry.js")).expect("game registry js");
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     let games_css = read_source(root.join("dashboard/static/css/11-games.css")).expect("games css");
 
     assert!(games_js.contains("RS.invoke('get_available_games')"));
     assert!(games_js.contains("var _manifestsById = {};"));
+    assert!(games_js.contains("RS.games.views.register('ttt'"));
+    assert!(games_js.contains("RS.games.views.register('chess'"));
+    assert!(games_js.contains("html += gameView.renderBoard(session);"));
+    assert!(games_js.contains("if (gameView) gameView.bindBoard(session);"));
+    assert!(games_js.contains("RS.games.views.supportedManifests("));
+    assert!(games_js.contains("view.activeStatusText(session)"));
+    assert!(games_js.contains("view.detailChips(session)"));
+    assert!(games_js.contains("view.renderActiveControls(session)"));
+    assert!(games_js.contains("view.bindControls(session, {"));
+    assert!(!games_js.contains("if (appId === 'ttt') {\n            html += _renderTTTBoard"));
+    assert!(game_registry.contains("function register(appId, adapter)"));
+    assert!(game_registry.contains("function get(appId)"));
+    assert!(game_registry.contains("function listIds()"));
+    assert!(game_registry.contains("function supportedManifests(manifests)"));
+    let registry_script = index.find("/static/js/game_registry.js").unwrap();
+    let games_script = index.find("/static/js/games_tab.js").unwrap();
+    assert!(registry_script < games_script);
     assert!(games_js.contains("function _beginSessionAction(sessionId)"));
     assert!(games_js.contains("function _drawOfferOwner(session)"));
     assert!(games_js.contains("function _canDeleteSession(session)"));
@@ -2227,6 +2247,8 @@ fn games_transport_uses_native_lxmf_fields_and_a_durable_outbox() {
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db source");
     let runtime =
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime source");
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("state source");
 
     assert!(lxmf.contains("apply_lrgp_fields_to_message"));
     assert!(lxmf.contains(".set_msgpack_field(field_id, bytes)"));
@@ -2242,6 +2264,11 @@ fn games_transport_uses_native_lxmf_fields_and_a_durable_outbox() {
     assert!(runtime.contains("fn game_delivery_state_is_in_flight(state: &str)"));
     assert!(runtime.contains("sweep_stale_game_deliveries(&tick_state).await"));
     assert!(runtime.contains("update_game_session_delivery_state(\n                    &state,"));
+    assert!(state.contains("LrgpRouter::with_builtin_apps()"));
+    assert!(!state.contains("register(Box::new(lrgp::apps::tictactoe"));
+    for field in ["validation", "preferred_delivery", "ttl"] {
+        assert!(games.contains(&format!("\"{field}\": manifest.{field}")));
+    }
 }
 
 #[test]
