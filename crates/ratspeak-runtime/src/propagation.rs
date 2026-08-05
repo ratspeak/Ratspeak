@@ -791,18 +791,17 @@ pub async fn request_relay_path(state: &Arc<AppState>, hash: [u8; 16]) {
         .read()
         .ok()
         .and_then(|g| g.as_ref().map(|mgr| mgr.handle.transport_tx.clone()));
-    if let Some(tx) = transport_tx {
-        if tx
+    if let Some(tx) = transport_tx
+        && tx
             .try_send(TransportMessage::RequestPath {
                 destination_hash: hash,
             })
             .is_err()
-        {
-            tracing::debug!(
-                destination = %crate::short_id(&hex::encode(hash)),
-                "relay path request could not enter the transport queue"
-            );
-        }
+    {
+        tracing::debug!(
+            destination = %crate::short_id(&hex::encode(hash)),
+            "relay path request could not enter the transport queue"
+        );
     }
 }
 
