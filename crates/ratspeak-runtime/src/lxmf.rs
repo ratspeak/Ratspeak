@@ -35,7 +35,7 @@ use rns_transport::messages::{PathTableRpcEntry, TransportMessage, TransportQuer
 use tokio::sync::{mpsc, oneshot};
 
 use crate::db;
-use crate::state::{AppState, DbPool};
+use crate::state::DbPool;
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
@@ -1815,6 +1815,13 @@ impl LxmfManager {
             msg.timestamp,
         );
 
+        self.preempt_opportunistic_path(&mut msg);
+        self.track_direct_retry_policy(&msg, preference);
+        let method = msg.method;
+        self.router.try_send(msg).ok()?;
+
+        // The manager lock is still held here, so the router cannot advance
+        // this freshly accepted message before its local history row exists.
         db::save_message(
             db_pool,
             &msg_id,
@@ -1832,13 +1839,8 @@ impl LxmfManager {
             "",
             reply_to_id,
             reply_to_preview,
-            Some(delivery_method_name(msg.method)),
+            Some(delivery_method_name(method)),
         );
-
-        self.preempt_opportunistic_path(&mut msg);
-        self.track_direct_retry_policy(&msg, preference);
-        let method = msg.method;
-        self.router.send(msg);
 
         Some(LxmfQueuedMessage {
             message_id: msg_id,
@@ -1866,8 +1868,7 @@ impl LxmfManager {
             self.ephemeral_outbound.insert(hash);
         }
         self.preempt_opportunistic_path(&mut msg);
-        self.router.send(msg);
-        true
+        self.router.try_send(msg).is_ok()
     }
 
     /// FIELD_FILE_ATTACHMENTS 0x05 = msgpack `[[filename, bytes]]`.
@@ -1964,7 +1965,13 @@ impl LxmfManager {
             msg.timestamp,
         );
 
-        // Persist the blob; columns are needed for history rehydration.
+        self.preempt_opportunistic_path(&mut msg);
+        self.track_direct_retry_policy(&msg, preference);
+        let method = msg.method;
+        self.router.try_send(msg).ok()?;
+
+        // Persist the blob only after the router has accepted the message, so
+        // an immediate propagated-routing rejection cannot orphan a file.
         let stored_name = self.save_attachment(file_name, file_bytes);
         let (attachment_name_col, attachment_stored_col, image_name_col, image_stored_col) =
             if is_image {
@@ -1990,12 +1997,8 @@ impl LxmfManager {
             image_stored_col,
             "",
             "",
-            Some(delivery_method_name(msg.method)),
+            Some(delivery_method_name(method)),
         );
-
-        self.preempt_opportunistic_path(&mut msg);
-        self.track_direct_retry_policy(&msg, preference);
-        self.router.send(msg);
         Some(msg_id)
     }
 
@@ -2110,7 +2113,7 @@ impl LxmfManager {
 
         self.preempt_opportunistic_path(&mut msg);
         self.track_direct_retry_policy(&msg, preference);
-        self.router.send(msg);
+        self.router.try_send(msg).ok()?;
         let msg_id_short: String = msg_id.chars().take(8).collect();
         tracing::info!(
             target: "ttt_trace",
@@ -2427,15 +2430,56 @@ impl LxmfManager {
         });
     }
 
-    pub fn send_reaction_with_preference(&mut self, request: ReactionSendRequest<'_>) {
+    pub fn send_reaction_with_preference(&mut self, request: ReactionSendRequest<'_>) -> bool {
         if !matches!(hex::decode(request.dest_hash_hex), Ok(bytes) if bytes.len() == 16) {
-            return;
+            return false;
         }
         let action = if request.action == "remove" {
             "remove"
         } else {
             "add"
         };
+
+        let custom_fields = match ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
+            target: request.message_id.to_string(),
+            emoji: request.emoji.to_string(),
+            action: action.to_string(),
+        }) {
+            Some(fields) => fields,
+            None => return false,
+        };
+
+        let mut msg = match self.create_message_with_custom_fields(
+            request.dest_hash_hex,
+            &reaction_fallback_text(request.emoji, action),
+            "",
+            self.pick_delivery_method(
+                request.db_pool,
+                request.dest_hash_hex,
+                request.preference,
+                DeliveryProfile::Message,
+            ),
+            &custom_fields,
+        ) {
+            Some(msg) => msg,
+            None => return false,
+        };
+        self.apply_peer_lxmf_compression_support(
+            &mut msg,
+            Some(request.db_pool),
+            request.dest_hash_hex,
+        );
+
+        normalize_protocol_delivery_method(&mut msg);
+        if !message_within_resource_limit(&msg) {
+            return false;
+        }
+
+        self.preempt_opportunistic_path(&mut msg);
+        self.track_direct_retry_policy(&msg, request.preference);
+        if self.router.try_send(msg).is_err() {
+            return false;
+        }
 
         if action == "remove" {
             db::remove_reaction(
@@ -2454,45 +2498,7 @@ impl LxmfManager {
                 request.identity_id,
             );
         }
-
-        let custom_fields = match ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
-            target: request.message_id.to_string(),
-            emoji: request.emoji.to_string(),
-            action: action.to_string(),
-        }) {
-            Some(fields) => fields,
-            None => return,
-        };
-
-        let mut msg = match self.create_message_with_custom_fields(
-            request.dest_hash_hex,
-            &reaction_fallback_text(request.emoji, action),
-            "",
-            self.pick_delivery_method(
-                request.db_pool,
-                request.dest_hash_hex,
-                request.preference,
-                DeliveryProfile::Message,
-            ),
-            &custom_fields,
-        ) {
-            Some(msg) => msg,
-            None => return,
-        };
-        self.apply_peer_lxmf_compression_support(
-            &mut msg,
-            Some(request.db_pool),
-            request.dest_hash_hex,
-        );
-
-        normalize_protocol_delivery_method(&mut msg);
-        if !message_within_resource_limit(&msg) {
-            return;
-        }
-
-        self.preempt_opportunistic_path(&mut msg);
-        self.track_direct_retry_policy(&msg, request.preference);
-        self.router.send(msg);
+        true
     }
 
     pub fn create_announce_packet(&mut self) -> Result<Vec<u8>, String> {
@@ -4815,164 +4821,6 @@ impl LxmfManager {
             }
         }
         results
-    }
-}
-
-/// Request path + await announce. Must be called outside the LXMF mutex.
-pub async fn resolve_destination(
-    state: &AppState,
-    dest_hash_hex: &str,
-    transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
-) -> bool {
-    let dest = match hex::decode(dest_hash_hex) {
-        Ok(bytes) if bytes.len() == 16 => {
-            let mut d = [0u8; 16];
-            d.copy_from_slice(&bytes);
-            d
-        }
-        _ => return false,
-    };
-
-    let identity_known = if let Ok(lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_ref()
-    {
-        mgr.is_destination_known(dest_hash_hex)
-    } else {
-        false
-    };
-
-    if let Some(entries) = crate::transport_observation::local_path_table(transport_tx).await {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        let path_entry = entries
-            .iter()
-            .find(|entry| entry.hash == dest && entry.expires > now)
-            .cloned();
-        cache_route_hops_from_entries(state, &entries);
-        if let Some(entry) = path_entry {
-            tracing::debug!(
-                dest = %crate::short_id(dest_hash_hex),
-                identity_known,
-                has_path = true,
-                hops = entry.hops,
-                path_age_secs = now - entry.timestamp,
-                path_expires_in_secs = entry.expires - now,
-                "destination path already available before send"
-            );
-            if !identity_known {
-                pull_identity_from_announces(state, transport_tx, dest_hash_hex).await;
-            }
-            return if identity_known {
-                true
-            } else if let Ok(lxmf) = state.lxmf.lock()
-                && let Some(mgr) = lxmf.as_ref()
-            {
-                mgr.is_destination_known(dest_hash_hex)
-            } else {
-                false
-            };
-        }
-    }
-
-    tracing::info!(
-        dest = %crate::short_id(dest_hash_hex),
-        identity_known,
-        "resolving destination path before send..."
-    );
-
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    if transport_tx
-        .send(TransportMessage::AwaitPath {
-            dest,
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
-        tracing::warn!(dest = %crate::short_id(dest_hash_hex), reason = "registration_failed", "path wait registration failed during destination resolve");
-        return false;
-    }
-
-    // 5s tighter than transport's 15s for interactive responsiveness.
-    let path_found = matches!(
-        tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await,
-        Ok(Ok(true))
-    );
-
-    if path_found {
-        refresh_route_hops_from_transport(state, transport_tx).await;
-        pull_identity_from_announces(state, transport_tx, dest_hash_hex).await;
-    }
-
-    let known = if let Ok(lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_ref()
-    {
-        mgr.is_destination_known(dest_hash_hex)
-    } else {
-        false
-    };
-
-    if known {
-        tracing::info!(dest = %crate::short_id(dest_hash_hex), path_found, "destination resolved before send");
-    } else if path_found {
-        tracing::debug!(dest = %crate::short_id(dest_hash_hex), "path found but identity key pending; will retry");
-    } else {
-        tracing::warn!(dest = %crate::short_id(dest_hash_hex), reason = "timeout", "destination resolution timed out after 5s");
-    }
-    known && path_found
-}
-
-fn cache_route_hops_from_entries(state: &AppState, entries: &[PathTableRpcEntry]) {
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.replace_route_hops_from_path_table(entries);
-    }
-}
-
-async fn refresh_route_hops_from_transport(
-    state: &AppState,
-    transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
-) {
-    if let Some(entries) = crate::transport_observation::local_path_table(transport_tx).await {
-        cache_route_hops_from_entries(state, &entries);
-    }
-}
-
-async fn pull_identity_from_announces(
-    state: &AppState,
-    transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
-    dest_hash_hex: &str,
-) {
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    if transport_tx
-        .try_send(TransportMessage::Rpc {
-            query: rns_transport::messages::TransportQuery::GetRecentAnnounces,
-            response_tx: resp_tx,
-        })
-        .is_err()
-    {
-        tracing::warn!(
-            reason = "backpressure",
-            "announce-RPC drop during identity pull"
-        );
-        return;
-    }
-    if let Ok(rns_transport::messages::TransportQueryResponse::Announces(announces)) = resp_rx.await
-        && let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        for a in &announces {
-            if let Some(ref pk) = a.public_key {
-                mgr.update_remote_crypto(&hex::encode(a.dest_hash), pk, a.ratchet.as_ref());
-            }
-            mgr.update_lxmf_announce_app_data(a.dest_hash, a.name_hash, a.app_data.as_deref());
-        }
-        if mgr.is_destination_known(dest_hash_hex) {
-            tracing::debug!(dest = %crate::short_id(dest_hash_hex), "identity key cached from announce data");
-        }
     }
 }
 
@@ -8228,6 +8076,26 @@ mod tests {
         });
 
         assert_eq!(result, Err(LxmfSubmissionFailure::PreparationFailed));
+    }
+
+    #[test]
+    fn propagated_submission_without_a_router_node_leaves_no_sending_history() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let identity_id = mgr.identity_hash.clone();
+        let dest = "ce".repeat(16);
+
+        let result = mgr.send_message_with_method(
+            &dest,
+            "hello",
+            "",
+            &pool,
+            &identity_id,
+            DeliveryMethod::Propagated,
+        );
+
+        assert!(result.is_none());
+        assert!(db::get_conversation(&pool, &dest, &identity_id, 100).is_empty());
     }
 
     #[tokio::test]

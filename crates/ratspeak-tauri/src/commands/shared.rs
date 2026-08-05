@@ -10,7 +10,6 @@ use serde_json::{Value, json};
 
 use crate::db;
 use crate::helpers::{active_identity_id, validate_hex};
-use crate::lxmf::resolve_destination;
 use crate::state::AppState;
 
 use ratspeak_core::LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME;
@@ -453,30 +452,6 @@ pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_has
         return true;
     }
     false
-}
-
-// Extracts transport_tx then calls resolve_destination outside the lock
-// (clippy::await_holding_lock). Failure does not block sending.
-pub(crate) async fn resolve_before_send(state: &AppState, dest_hash: &str) {
-    let _ = hydrate_contact_identity_for_send(state, dest_hash).await;
-
-    let transport_tx = {
-        if let Ok(lxmf) = state.lxmf.lock() {
-            lxmf.as_ref()
-                .and_then(|mgr| mgr.router.transport_tx.clone())
-        } else {
-            None
-        }
-    };
-
-    if let Some(tx) = transport_tx
-        && !resolve_destination(state, dest_hash, &tx).await
-    {
-        tracing::warn!(
-            reason = "resolve_failed",
-            "could not resolve destination, sending anyway"
-        );
-    }
 }
 
 pub(crate) use ratspeak_core::hex_to_array16;

@@ -6666,19 +6666,15 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
     let root = repo_root();
 
     let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf");
-    let resolve_destination = lxmf
-        .split("pub async fn resolve_destination")
-        .nth(1)
-        .expect("resolve destination fn");
-    let resolve_destination = resolve_destination
-        .split("// 5s tighter than transport's 15s for interactive responsiveness.")
-        .next()
-        .expect("resolve destination pre-timeout section");
-    assert!(resolve_destination.contains("TransportMessage::AwaitPath"));
-    assert!(
-        !resolve_destination.contains("TransportMessage::RequestPath"),
-        "AwaitPath already requests a path when none exists"
-    );
+    assert!(!lxmf.contains("pub async fn resolve_destination"));
+    assert!(lxmf.contains("self.router.try_send(msg).ok()?;"));
+
+    let messaging = read_source(root.join("crates/ratspeak-tauri/src/commands/messaging.rs"))
+        .expect("messaging commands");
+    assert!(!messaging.contains("TransportMessage::AwaitPath"));
+    assert!(!messaging.contains("resolve_before_send"));
+    assert!(messaging.contains("hydrate_contact_identity_for_send"));
+    assert!(messaging.contains("schedule_announce_after_user_send"));
 
     let handlers = read_source(root.join("crates/ratspeak-runtime/src/announce_handlers.rs"))
         .expect("announce handlers");

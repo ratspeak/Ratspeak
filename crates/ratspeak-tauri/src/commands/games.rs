@@ -98,7 +98,8 @@ pub async fn send_game_action(
     // reject or warn for contacts that do not advertise `ratspeak.games`.
     crate::commands::messaging::validate_delivery_preference(&state_arc, delivery_pref)?;
 
-    crate::commands::shared::resolve_before_send(&state_arc, &dest_hash).await;
+    let _ =
+        crate::commands::shared::hydrate_contact_identity_for_send(&state_arc, &dest_hash).await;
     crate::commands::messaging::ensure_propagation_ready_for_send(
         &state_arc,
         &dest_hash,
@@ -107,12 +108,6 @@ pub async fn send_game_action(
         None,
     )
     .await?;
-    let _ = crate::maybe_opportunistic_announce_before_user_send_from_origin(
-        &state_arc,
-        &dest_hash,
-        activity_origin,
-    )
-    .await;
 
     // LRGP turn/winner fields keyed by LXMF hash.
     let identity_id = active_lxmf_hash(&state_arc);
@@ -368,6 +363,11 @@ pub async fn send_game_action(
 
     match msg_id {
         Some(id) => {
+            crate::commands::messaging::schedule_announce_after_user_send(
+                &state_arc,
+                &dest_hash,
+                activity_origin,
+            );
             state_arc.lxmf_notify.notify_one();
             if let Ok(mut map) = state_arc.lrgp_msg_to_session.lock() {
                 map.insert(
@@ -712,7 +712,8 @@ pub async fn resend_last_game_action(
         .map_err(|e| AppError::internal(format!("envelope field packing: {e}")))?;
     let fallback_text = format!("[LRGP {}] {}", app_id, command);
 
-    crate::commands::shared::resolve_before_send(&state_arc, &dest_hash).await;
+    let _ =
+        crate::commands::shared::hydrate_contact_identity_for_send(&state_arc, &dest_hash).await;
     crate::commands::messaging::ensure_propagation_ready_for_send(
         &state_arc,
         &dest_hash,
@@ -721,12 +722,6 @@ pub async fn resend_last_game_action(
         None,
     )
     .await?;
-    let _ = crate::maybe_opportunistic_announce_before_user_send_from_origin(
-        &state_arc,
-        &dest_hash,
-        activity_origin,
-    )
-    .await;
 
     let st: Arc<AppState> = Arc::clone(&state_arc);
     let dh = dest_hash.clone();
@@ -752,6 +747,11 @@ pub async fn resend_last_game_action(
 
     match msg_id {
         Some(id) => {
+            crate::commands::messaging::schedule_announce_after_user_send(
+                &state_arc,
+                &dest_hash,
+                activity_origin,
+            );
             state_arc.lxmf_notify.notify_one();
             if let Ok(mut map) = state_arc.lrgp_msg_to_session.lock() {
                 map.insert(

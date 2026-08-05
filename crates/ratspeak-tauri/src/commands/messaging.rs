@@ -277,17 +277,21 @@ fn destination_identity_known(state: &AppState, dest_hash: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn maybe_announce_before_user_send(
+pub(crate) fn schedule_announce_after_user_send(
     state: &Arc<AppState>,
     dest_hash: &str,
     activity_fence: crate::state::ActivityRequestFence,
 ) {
-    let _ = crate::maybe_opportunistic_announce_before_user_send_from_origin(
-        state,
-        dest_hash,
-        activity_fence,
-    )
-    .await;
+    let state = Arc::clone(state);
+    let dest_hash = dest_hash.to_string();
+    tokio::spawn(async move {
+        let _ = crate::maybe_opportunistic_announce_before_user_send_from_origin(
+            &state,
+            &dest_hash,
+            activity_fence,
+        )
+        .await;
+    });
 }
 
 pub(crate) async fn ensure_propagation_ready_for_send(
@@ -393,7 +397,7 @@ pub async fn send_lxmf_message(
     validate_delivery_preference(&state, delivery_pref)?;
 
     let activity_fence = state.activity_request_fence();
-    resolve_before_send(&state, &dest_hash).await;
+    let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
     ensure_propagation_ready_for_send(
         &state,
         &dest_hash,
@@ -402,8 +406,6 @@ pub async fn send_lxmf_message(
         client_msg_id.as_deref(),
     )
     .await?;
-    maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
-
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
@@ -445,6 +447,7 @@ pub async fn send_lxmf_message(
     match send_result {
         Ok(queued) => {
             let id = queued.message_id;
+            schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
             record_lxmf_delivery_queued(&state, activity_fence, &id, &dest_hash, queued.method);
             state.lxmf_notify.notify_one();
             if let Some(ref cid) = client_msg_id
@@ -482,20 +485,6 @@ pub async fn send_lxmf_message(
     }
 }
 
-/// Resolve identity+path before send; no-ops if transport not ready.
-async fn resolve_before_send(state: &AppState, dest_hash: &str) {
-    let _ = crate::commands::shared::hydrate_contact_identity_for_send(state, dest_hash).await;
-
-    let tx = state
-        .lxmf
-        .lock()
-        .ok()
-        .and_then(|l| l.as_ref().and_then(|mgr| mgr.router.transport_tx.clone()));
-    if let Some(ref tx) = tx {
-        crate::lxmf::resolve_destination(state, dest_hash, tx).await;
-    }
-}
-
 #[derive(Deserialize)]
 pub struct SendReactionArgs {
     pub dest_hash: String,
@@ -529,7 +518,8 @@ pub async fn send_reaction(
     let activity_fence = state.activity_request_fence();
 
     if validate_hex(&dest_hash, 16, 64) {
-        resolve_before_send(&state, &dest_hash).await;
+        let _ =
+            crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
         ensure_propagation_ready_for_send(
             &state,
             &dest_hash,
@@ -538,7 +528,6 @@ pub async fn send_reaction(
             None,
         )
         .await?;
-        maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
     }
 
     let identity_id = active_identity_id(&state);
@@ -567,8 +556,7 @@ pub async fn send_reaction(
                     db_pool: &st.db,
                     identity_id: &id_c,
                     preference: delivery_pref,
-                });
-                true
+                })
             } else {
                 false
             }
@@ -579,6 +567,7 @@ pub async fn send_reaction(
     .await
     .unwrap_or(false);
     if sent {
+        schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
         state.lxmf_notify.notify_one();
         let mid_for_db = message_id.clone();
         let id_for_db = identity_id.clone();
@@ -646,7 +635,7 @@ pub async fn send_lxmf_reply(
     validate_delivery_preference(&state, delivery_pref)?;
     let activity_fence = state.activity_request_fence();
 
-    resolve_before_send(&state, &dest_hash).await;
+    let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
     ensure_propagation_ready_for_send(
         &state,
         &dest_hash,
@@ -655,8 +644,6 @@ pub async fn send_lxmf_reply(
         client_msg_id.as_deref(),
     )
     .await?;
-    maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
-
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
@@ -695,6 +682,7 @@ pub async fn send_lxmf_reply(
 
     match msg_id {
         Some(id) => {
+            schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
             state.lxmf_notify.notify_one();
             if let Some(ref cid) = client_msg_id
                 && let Ok(mut map) = state.msg_id_map.lock()
@@ -764,7 +752,7 @@ pub async fn send_lxmf_propagated(
 
     let activity_fence = state.activity_request_fence();
     // Propagation still needs the recipient identity for encryption.
-    resolve_before_send(&state, &dest_hash).await;
+    let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
     ensure_propagation_ready_for_send(
         &state,
         &dest_hash,
@@ -773,8 +761,6 @@ pub async fn send_lxmf_propagated(
         client_msg_id.as_deref(),
     )
     .await?;
-    maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
-
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
@@ -810,6 +796,7 @@ pub async fn send_lxmf_propagated(
 
     match msg_id {
         Some(id) => {
+            schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
             record_lxmf_delivery_queued(
                 &state,
                 activity_fence,
@@ -948,7 +935,7 @@ pub async fn send_lxmf_with_attachment(
     }
 
     let activity_fence = state.activity_request_fence();
-    resolve_before_send(&state, &dest_hash).await;
+    let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
     ensure_propagation_ready_for_send(
         &state,
         &dest_hash,
@@ -957,8 +944,6 @@ pub async fn send_lxmf_with_attachment(
         client_msg_id.as_deref(),
     )
     .await?;
-    maybe_announce_before_user_send(&state, &dest_hash, activity_fence).await;
-
     let identity_id = active_identity_id(&state);
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
@@ -1007,6 +992,7 @@ pub async fn send_lxmf_with_attachment(
 
     match msg_id {
         Some(id) => {
+            schedule_announce_after_user_send(&state, &dest_hash, activity_fence);
             if let Some(ref cid) = client_msg_id
                 && let Ok(mut map) = state.msg_id_map.lock()
             {
