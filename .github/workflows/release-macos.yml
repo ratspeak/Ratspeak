@@ -29,6 +29,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26
   RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26
@@ -39,6 +43,7 @@ jobs:
   build:
     name: macOS
     runs-on: macos-latest
+    timeout-minutes: 150
     steps:
       - name: Checkout Ratspeak
         uses: actions/checkout@v5
@@ -85,6 +90,7 @@ jobs:
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2.0" --locked
@@ -254,7 +260,7 @@ jobs:
             Ratspeak/dist/macos/*
             Ratspeak/checksums-macos.txt
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
       - name: Publish GitHub Release
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}

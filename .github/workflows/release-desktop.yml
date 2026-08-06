@@ -24,6 +24,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26
   RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26
@@ -34,6 +38,7 @@ jobs:
   build:
     name: Linux ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -98,6 +103,7 @@ jobs:
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Linux system deps
         shell: bash
@@ -212,12 +218,13 @@ jobs:
           path: |
             Ratspeak/dist/linux/*
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
 
   package:
     name: Linux package
     needs: build
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - name: Download Linux artifacts
         uses: actions/download-artifact@v7
@@ -286,7 +293,7 @@ jobs:
             Ratspeak/dist/linux/*
             Ratspeak/checksums-linux.txt
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
       - name: Publish GitHub Release
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}

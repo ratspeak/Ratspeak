@@ -12,10 +12,24 @@ on:
           - release
           - debug
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.profile }}
+  cancel-in-progress: true
+
+env:
+  RATSPEAK_RSRETICULUM_REF: e47a1d4932a9f07a21d5e302376e12c0c2279698
+  RATSPEAK_RSLXMF_REF: c0bd1ef82f9bbc67c57a314b004430906e6dc02c
+  RATSPEAK_RSLXST_REF: a381eab55c4fc9af2cc02c555deddf0177e31f85
+  RATSPEAK_LRGP_REF: 3d4bed6770ae58aab07a6b02629065a957d711f7
+
 jobs:
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -23,21 +37,33 @@ jobs:
           - os: ubuntu-22.04
             artifact_name: ratspeak-linux-amd64
             build_command: cargo tauri build --bundles deb appimage rpm
+            debug_build_command: cargo tauri build --debug --bundles deb appimage rpm
             artifact_path: |
               Ratspeak/src-tauri/target/release/bundle/deb/*.deb
               Ratspeak/src-tauri/target/release/bundle/appimage/*.AppImage
               Ratspeak/src-tauri/target/release/bundle/rpm/*.rpm
+            debug_artifact_path: |
+              Ratspeak/src-tauri/target/debug/bundle/deb/*.deb
+              Ratspeak/src-tauri/target/debug/bundle/appimage/*.AppImage
+              Ratspeak/src-tauri/target/debug/bundle/rpm/*.rpm
           - os: ubuntu-22.04-arm
             artifact_name: ratspeak-linux-arm64
             build_command: cargo tauri build --bundles deb
+            debug_build_command: cargo tauri build --debug --bundles deb
             artifact_path: |
               Ratspeak/src-tauri/target/release/bundle/deb/*.deb
+            debug_artifact_path: |
+              Ratspeak/src-tauri/target/debug/bundle/deb/*.deb
           - os: windows-latest
             artifact_name: ratspeak-windows
             build_command: cargo tauri build
+            debug_build_command: cargo tauri build --debug
             artifact_path: |
               Ratspeak/src-tauri/target/release/bundle/msi/*.msi
               Ratspeak/src-tauri/target/release/bundle/nsis/*.exe
+            debug_artifact_path: |
+              Ratspeak/src-tauri/target/debug/bundle/msi/*.msi
+              Ratspeak/src-tauri/target/debug/bundle/nsis/*.exe
     steps:
       # Check out repos into $GITHUB_WORKSPACE as siblings so Cargo
       # `../rsReticulum` path deps resolve correctly.
@@ -50,18 +76,28 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
+          ref: ${{ env.RATSPEAK_RSRETICULUM_REF }}
           path: rsReticulum
 
       - name: Checkout rsLXMF sibling
         uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/rsLXMF
+          ref: ${{ env.RATSPEAK_RSLXMF_REF }}
           path: rsLXMF
+
+      - name: Checkout rsLXST sibling
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/rsLXST
+          ref: ${{ env.RATSPEAK_RSLXST_REF }}
+          path: rsLXST
 
       - name: Checkout lrgp-rs sibling
         uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
+          ref: ${{ env.RATSPEAK_LRGP_REF }}
           path: lrgp-rs
 
       - name: Install Rust toolchain
@@ -74,6 +110,7 @@ jobs:
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' && inputs.profile == 'release' }}
 
       - name: Install Linux system deps
         if: startsWith(matrix.os, 'ubuntu-')
@@ -87,6 +124,8 @@ jobs:
             librsvg2-dev \
             libudev-dev \
             libpcsclite-dev \
+            libasound2-dev \
+            libdbus-1-dev \
             pkg-config \
             patchelf \
             libfuse2 \
@@ -101,14 +140,20 @@ jobs:
         working-directory: Ratspeak
         run: bash dashboard/build-css.sh
 
-      - name: Build Tauri desktop app
+      - name: Build Tauri desktop app (release)
+        if: ${{ inputs.profile == 'release' }}
         working-directory: Ratspeak/src-tauri
         run: ${{ matrix.build_command }}
+
+      - name: Build Tauri desktop app (debug)
+        if: ${{ inputs.profile == 'debug' }}
+        working-directory: Ratspeak/src-tauri
+        run: ${{ matrix.debug_build_command }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
-          if-no-files-found: warn
-          retention-days: 14
+          path: ${{ inputs.profile == 'debug' && matrix.debug_artifact_path || matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 7
