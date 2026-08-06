@@ -2954,9 +2954,9 @@ async fn spawn_editable_interface(
                     if device_name.is_empty() {
                         return Err("Empty USB device name".to_string());
                     }
-                    match rns_interface::android_usb::request_usb_permission(device_name).await {
+                    match rns_interface::android_usb::has_usb_permission(device_name).await {
                         Ok(true) => {}
-                        Ok(false) => return Err("USB permission denied".to_string()),
+                        Ok(false) => return Err("USB permission is required".to_string()),
                         Err(e) => return Err(format!("USB permission probe failed: {e}")),
                     }
                     let spawned =
@@ -3879,7 +3879,8 @@ pub async fn add_lora_interface(
         );
         return Err(AppError::internal("Config write error"));
     }
-    // USB-OTG: factory skips `androidusb://` on restart; user re-adds.
+    // USB-OTG permission prompts belong to the Activity. The Rust probe only
+    // verifies the grant before it claims the exact configured device.
     #[cfg(target_os = "android")]
     if port.starts_with("androidusb://") {
         let device_name = port.strip_prefix("androidusb://").unwrap_or("").to_string();
@@ -3942,11 +3943,11 @@ pub async fn add_lora_interface(
                 &st,
                 "add_lora",
                 "hub",
-                "Requesting USB permission...",
+                "Checking USB permission...",
                 false,
                 None,
             );
-            match rns_interface::android_usb::request_usb_permission(&device_name).await {
+            match rns_interface::android_usb::has_usb_permission(&device_name).await {
                 Ok(true) => {}
                 Ok(false) => {
                     if !st.is_current_rnode_lifecycle_operation(&operation_lease) {
@@ -3956,9 +3957,9 @@ pub async fn add_lora_interface(
                         &st,
                         "add_lora",
                         "hub",
-                        "USB permission not granted for device",
+                        "USB permission is required for this device",
                         true,
-                        Some("Permission denied"),
+                        Some("Permission required"),
                     );
                     record_interface_activity(
                         &st,

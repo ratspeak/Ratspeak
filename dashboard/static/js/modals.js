@@ -1186,6 +1186,8 @@ function updateRnodeHandoffHints() {
     var hasBle = false, hasUsb = false;
     for (var i = 0; i < rnodes.length; i++) {
         var p = rnodes[i].port || '';
+        var live = getInterfaceLiveStatus(rnodes[i].name || '');
+        if (!live || live.online === false) continue;
         if (p.indexOf('ble://') === 0) hasBle = true;
         else if (p.indexOf('androidusb://') === 0) hasUsb = true;
     }

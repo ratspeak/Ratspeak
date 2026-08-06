@@ -3727,11 +3727,15 @@ fn interface_pause_resume_is_config_backed_and_visible() {
     assert!(health_js.contains("pause_interface"));
     assert!(health_js.contains("resume_interface"));
     assert!(health_js.contains("conn-iface-pill-paused"));
+    assert!(health_js.contains("waitingForAndroidUsb"));
+    assert!(health_js.contains("Waiting for USB"));
+    assert!(health_js.contains("enabled && !waitingForAndroidUsb"));
     assert!(!health_js.contains("Display Name"));
     assert!(!health_js.contains("dangerDivider"));
 
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains("name: name || (host + ':' + port)"));
+    assert!(modals_js.contains("if (!live || live.online === false) continue;"));
     assert!(!modals_js.contains("'TCP to ' + host + ':' + port"));
 
     let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
@@ -3747,6 +3751,8 @@ fn interface_pause_resume_is_config_backed_and_visible() {
             .contains("crate::rns_config::set_interface_enabled(&config_dir, &name, true)")
     );
     assert!(interfaces_rs.contains("teardown_live_interface_by_name(&st, &iface_name"));
+    assert!(interfaces_rs.contains("android_usb::has_usb_permission"));
+    assert!(!interfaces_rs.contains("android_usb::request_usb_permission"));
     assert!(!interfaces_rs.contains("format!(\"TCP to {}:{}\""));
 
     let rns_config_rs =

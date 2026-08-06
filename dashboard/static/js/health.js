@@ -285,11 +285,14 @@ function buildIfaceActionItems(ifaceType, ifaceName) {
     var record = getConfiguredInterfaceRecord(ifaceName);
     var supportsPause = !!(record && record.iface && ifaceType !== 'ble_peer');
     var paused = supportsPause && !isInterfaceConfigEnabled(record.iface);
+    var live = supportsPause ? getInterfaceLiveStatus(ifaceName) : null;
+    var statusKnown = !!(lastStats && lastStats.interface_stats);
+    var unavailable = supportsPause && statusKnown && !paused && (!live || live.online === false);
     if (supportsPause) {
         items.push({
-            label: paused ? 'Resume Interface' : 'Pause Interface',
-            icon: paused ? ICON_PLAY : ICON_PAUSE,
-            onSelect: function() { setInterfacePaused(ifaceType, ifaceName, !paused); }
+            label: (paused || unavailable) ? 'Resume Interface' : 'Pause Interface',
+            icon: (paused || unavailable) ? ICON_PLAY : ICON_PAUSE,
+            onSelect: function() { setInterfacePaused(ifaceType, ifaceName, !(paused || unavailable)); }
         });
         items.push({ separator: true });
     }
@@ -905,14 +908,19 @@ function _renderConnectionsFromCache() {
         Object.keys(configByName).forEach(function(cn) {
             if (matchedConfigNames[cn]) return;
             var record = configByName[cn];
-            if (!record || !record.iface || isInterfaceConfigEnabled(record.iface)) return;
+            if (!record || !record.iface) return;
+            var enabled = isInterfaceConfigEnabled(record.iface);
+            var port = String(record.iface.port || '');
+            var waitingForAndroidUsb = enabled && port.indexOf('androidusb://') === 0;
+            if (enabled && !waitingForAndroidUsb) return;
             var section = interfaceSectionForConfigType(record.ifaceType);
             if (!section) return;
             allIfaces.push({
                 iface: record.iface,
                 section: section,
                 ifaceType: record.ifaceType,
-                paused: true
+                paused: !enabled,
+                waitingForDevice: waitingForAndroidUsb
             });
         });
 
@@ -964,6 +972,7 @@ function _renderConnectionsFromCache() {
                 var iface = item.iface;
                 var ifaceType = item.ifaceType;
                 var paused = !!item.paused;
+                var waitingForDevice = !!item.waitingForDevice;
                 var name = iface.name || 'unknown';
                 var typeName = iface.type || '';
 
@@ -1018,6 +1027,8 @@ function _renderConnectionsFromCache() {
                 }
                 if (paused) {
                     pillHtml += '<span class="conn-iface-pill conn-iface-pill-paused">Paused</span>';
+                } else if (waitingForDevice) {
+                    pillHtml += '<span class="conn-iface-pill">Waiting for USB</span>';
                 }
 
                 // Augment label with non-default group ID (matches Python rnsd).
