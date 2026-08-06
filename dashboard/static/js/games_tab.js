@@ -62,11 +62,12 @@
         return myHash && hash === myHash;
     }
 
+    function _sessionValue(session, key, fallback) {
+        return RS.games.state.value(session, key, fallback);
+    }
+
     function _drawOfferOwner(session) {
-        if (!session) return '';
-        return session.draw_offered_by
-            || (session.metadata && session.metadata.draw_offered_by)
-            || '';
+        return _sessionValue(session, 'draw_offered_by', '');
     }
 
     function _appId(session) {
@@ -75,6 +76,18 @@
 
     function _gameView(appId) {
         return RS.games && RS.games.views ? RS.games.views.get(appId) : null;
+    }
+
+    function _gameViewContext(session, root) {
+        return {
+            root: root || document,
+            isMe: function(hash) { return _isMe(session, hash); },
+            myHash: function() { return _getMyHash(session); },
+            contactName: _contactName,
+            sendMove: function(payload, optimistic) {
+                return _sendGameViewMove(session, payload, optimistic);
+            },
+        };
     }
 
     function _isViewingSession(sessionId) {
@@ -121,7 +134,7 @@
         var appId = _appId(session);
         var view = _gameView(appId);
         var opts = view && view.celebrationOptions
-            ? view.celebrationOptions(session)
+            ? view.celebrationOptions(session, _gameViewContext(session))
             : { count: 48, duration: 1600 };
         var target = view && view.boardSelector
             ? document.querySelector(view.boardSelector)
@@ -137,7 +150,8 @@
     }
 
     function _maybeCelebrateWin(session) {
-        if (!session || session.status !== 'completed' || !_isMe(session, session.winner)) return;
+        if (!session || session.status !== 'completed' ||
+                !_isMe(session, _sessionValue(session, 'winner', ''))) return;
         if (!session.game_id || _celebratedWins[session.game_id]) return;
 
         _celebratedWins[session.game_id] = true;
@@ -196,31 +210,33 @@
         }
         if (status === 'expired') return 'Expired';
         if (status === 'completed') {
-            var t = session.terminal || '';
+            var t = _sessionValue(session, 'terminal', '');
+            var winner = _sessionValue(session, 'winner', '');
             if (t === 'draw') return 'Draw';
             if (t === 'resign') {
-                return _isMe(session, session.winner) ? 'They resigned' : 'You resigned';
+                return _isMe(session, winner) ? 'They resigned' : 'You resigned';
             }
-            if (_isMe(session, session.winner)) return 'You won!';
-            if (session.winner) return 'You lost!';
+            if (_isMe(session, winner)) return 'You won!';
+            if (winner) return 'You lost!';
             return 'Completed';
         }
         if (status === 'active') {
             // In-flight/failed outbound move overrides the "their turn" label.
             var deliveryText = _activeMoveDeliveryText(session.delivery_state);
             if (deliveryText) return deliveryText;
-            if (session.draw_offered) {
+            if (_sessionValue(session, 'draw_offered', false)) {
                 return _isMe(session, _drawOfferOwner(session))
                     ? 'Draw offer sent'
                     : 'Draw offered';
             }
             var view = _gameView(_appId(session));
             if (view && view.activeStatusText) {
-                var customStatus = view.activeStatusText(session);
+                var customStatus = view.activeStatusText(session, _gameViewContext(session));
                 if (customStatus) return customStatus;
             }
-            if (_isMe(session, session.turn)) return 'Your turn';
-            if (session.turn) {
+            var turn = _sessionValue(session, 'turn', '');
+            if (_isMe(session, turn)) return 'Your turn';
+            if (turn) {
                 var name = _contactName(session.contact_hash) || 'Opponent';
                 return name + '\u2019s turn';
             }
@@ -242,16 +258,18 @@
         if (status === 'active') {
             if (session.delivery_state === 'failed') return 'status-lost';
             if (_activeMoveDeliveryText(session.delivery_state)) return 'status-waiting';
-            if (session.draw_offered) {
+            if (_sessionValue(session, 'draw_offered', false)) {
                 return _isMe(session, _drawOfferOwner(session))
                     ? 'status-waiting'
                     : 'status-challenge';
             }
-            return _isMe(session, session.turn) ? 'status-your-turn' : 'status-their-turn';
+            return _isMe(session, _sessionValue(session, 'turn', ''))
+                ? 'status-your-turn'
+                : 'status-their-turn';
         }
         if (status === 'completed') {
-            if (_isMe(session, session.winner)) return 'status-won';
-            if (session.terminal === 'draw') return 'status-draw';
+            if (_isMe(session, _sessionValue(session, 'winner', ''))) return 'status-won';
+            if (_sessionValue(session, 'terminal', '') === 'draw') return 'status-draw';
             return 'status-lost';
         }
         return 'status-muted';
@@ -269,6 +287,8 @@
     function _gameName(appId) {
         var manifest = _manifestsById[appId];
         if (manifest && manifest.display_name) return manifest.display_name;
+        var view = _gameView(appId);
+        if (view && view.displayName) return view.displayName;
         if (appId === 'ttt') return 'Tic-Tac-Toe';
         if (appId === 'chess') return 'Chess';
         return appId || 'Unknown';
@@ -499,12 +519,12 @@
 
     function _renderDetailMeta(session) {
         var chips = [];
-        var moveCount = parseInt(session.move_count, 10);
+        var moveCount = parseInt(_sessionValue(session, 'move_count', ''), 10);
         if (!isNaN(moveCount) && moveCount > 0) chips.push('Move ' + moveCount);
 
         var view = _gameView(_appId(session));
         if (view && view.detailChips) {
-            var gameChips = view.detailChips(session);
+            var gameChips = view.detailChips(session, _gameViewContext(session));
             if (Array.isArray(gameChips)) chips = chips.concat(gameChips);
         }
 
@@ -575,7 +595,7 @@
 
         html += '<div class="games-detail-board games-board-' + escapeHtml(appId || 'unknown') + '">';
         if (gameView) {
-            html += gameView.renderBoard(session);
+            html += gameView.renderBoard(session, _gameViewContext(session, panel));
         } else {
             html += '<div class="empty-state-primary">Unsupported game type</div>';
         }
@@ -624,7 +644,7 @@
         }
 
         _bindControlEvents(session);
-        if (gameView) gameView.bindBoard(session);
+        if (gameView) gameView.bindBoard(session, _gameViewContext(session, panel));
     }
 
     function _renderTTTBoard(session) {
@@ -1408,7 +1428,7 @@
 
     function _renderStandardActiveControls(session, drawOfferLabel) {
         var html = '';
-        if (session.draw_offered &&
+        if (_sessionValue(session, 'draw_offered', false) &&
                 _gameSupportsAction(session, 'draw_accept') &&
                 _gameSupportsAction(session, 'draw_decline')) {
             var drawOwner = _drawOfferOwner(session);
@@ -1562,6 +1582,54 @@
         });
     }
 
+    // View adapters can request immediate, presentation-only move feedback
+    // without owning transport or protocol authority. The runtime remains the
+    // source of truth and its next session snapshot replaces this local state.
+    function _sendGameViewMove(session, payload, optimistic) {
+        var sessionId = session && session.game_id;
+        if (!sessionId || !_beginSessionAction(sessionId)) return false;
+
+        optimistic = optimistic || {};
+        var fields = Array.isArray(optimistic.fields) ? optimistic.fields : [];
+        var adapterFields = RS.games.optimistic.captureFields(session, fields);
+        _optimisticBackup[sessionId] = {
+            state: session.state,
+            move_count: session.move_count,
+            turn: session.turn,
+            status: session.status,
+            terminal: session.terminal,
+            winner: session.winner,
+            delivery_state: session.delivery_state,
+            adapter_fields: adapterFields,
+        };
+
+        if (typeof optimistic.apply === 'function') optimistic.apply(session);
+        session.delivery_state = 'pending';
+        renderSessionList();
+        renderDetail();
+        if (typeof haptic === 'function') haptic('selection');
+
+        RS.invoke('send_game_action', {
+            args: {
+                dest_hash: session.contact_hash,
+                session_id: session.game_id,
+                app_id: session.app_id || session.game,
+                command: 'move',
+                payload: payload || {},
+            }
+        }).then(function() {
+            _finishSessionAction(sessionId);
+        }).catch(function() {
+            _finishSessionAction(sessionId);
+            _handleGameActionFailure({
+                session_id: sessionId,
+                command: 'move',
+                reason: 'send_failed',
+            });
+        });
+        return true;
+    }
+
     function _reasonToMessage(reason, command) {
         switch (reason) {
             case 'invalid_params':       return 'Bad action parameters';
@@ -1631,6 +1699,9 @@
                 if (backup.in_check !== undefined) session.in_check = backup.in_check;
                 if (backup.draw_offer_reason !== undefined) session.draw_offer_reason = backup.draw_offer_reason;
                 if (backup.terminal_reason !== undefined) session.terminal_reason = backup.terminal_reason;
+                if (backup.adapter_fields) {
+                    RS.games.optimistic.restoreFields(session, backup.adapter_fields);
+                }
                 break;
             }
             delete _optimisticBackup[sid];
@@ -1686,6 +1757,7 @@
             manifests = [
                 { app_id: 'ttt', display_name: 'Tic-Tac-Toe', icon: 'ttt', session_type: 'turn_based' },
                 { app_id: 'chess', display_name: 'Chess', icon: 'chess', session_type: 'turn_based' },
+                { app_id: 'four_in_a_row', display_name: 'Four in a Row', icon: 'four_in_a_row', session_type: 'turn_based' },
             ];
         }
         manifests.sort(function(a, b) {
@@ -1910,7 +1982,7 @@
 
         var view = _gameView(_appId(record));
         if (view && view.onSessionDelta) {
-            view.onSessionDelta(record, prev);
+            view.onSessionDelta(record, prev, _gameViewContext(record));
         }
 
         var isNew = !prev;
@@ -1930,7 +2002,9 @@
         // Toast on remote moves whenever the user isn't actively staring at
         // this game's board. `currentView !== 'games'` catches every other tab;
         // even on the games view a delta on a non-selected game still alerts.
-        var movedSinceLast = prev && record.move_count !== prev.move_count;
+        var movedSinceLast = prev &&
+            _sessionValue(record, 'move_count', null) !==
+            _sessionValue(prev, 'move_count', null);
         var notViewingThisGame = !_isViewingSession(record.game_id);
         if (movedSinceLast && notViewingThisGame && record.status === 'active') {
             if (typeof showToast === 'function') showToast('Game update from ' + _contactName(record.contact_hash), 'toast-blue', 3000, function() { window.openGameSession(record.game_id); });
@@ -2030,6 +2104,7 @@
         }
         if (!RS.games.views.has('ttt')) {
             RS.games.views.register('ttt', {
+                displayName: 'Tic-Tac-Toe',
                 icon: '#',
                 themeClass: 'games-theme-ttt',
                 boardSelector: '.ttt-grid',
@@ -2047,6 +2122,7 @@
         }
         if (!RS.games.views.has('chess')) {
             RS.games.views.register('chess', {
+                displayName: 'Chess',
                 icon: '\u265E',
                 themeClass: 'games-theme-chess',
                 boardSelector: '.chess-board',

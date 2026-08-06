@@ -110,6 +110,18 @@ assert(/data-scale="100"[\s\S]*?--type-preview-size:\s*18px/.test(sourceByName['
 assert(/data-text-scale-tier="large"\] \.settings-text-scale-row \.settings-row-info,\s*html\[data-text-scale-tier="xlarge"\] \.settings-text-scale-row \.settings-row-info\s*\{[^}]*flex:\s*0 0 auto/s.test(sourceByName['10-views.css']),
     'the 130% tier must not stretch the text-size introduction away from its presets');
 
+var gamesCss = sourceByName['11-games.css'];
+assert(/\.four-board\s*\{[\s\S]*?grid-template-columns:\s*repeat\(7,/.test(gamesCss) &&
+    /grid-template-rows:\s*repeat\(6,/.test(gamesCss),
+    'Four in a Row must preserve its responsive 7 by 6 signal matrix');
+assert(/\.four-lane-action\s*\{[\s\S]*?min-height:\s*44px/.test(gamesCss),
+    'Four in a Row lanes must keep mobile-safe touch targets');
+assert(/\.four-token-a\s*\{[\s\S]*?background:\s*var\(--accent\)/.test(gamesCss) &&
+    /\.four-token-b\s*\{[\s\S]*?border:[\s\S]*?var\(--ble-accent-fg\)/.test(gamesCss),
+    'Four in a Row sides must differ by solid-node versus ring geometry');
+assert(/prefers-reduced-motion:[^)]*reduce[\s\S]*?\.four-token[\s\S]*?animation:\s*none\s*!important/.test(gamesCss),
+    'Four in a Row placement and win motion must honor reduced motion');
+
 var paletteCss = sourceByName['00-palettes.css'];
 var themeSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'theme.js'), 'utf8');
 var themeFamilies = ['ratspeak', 'nord', 'everforest', 'gruvbox', 'catppuccin'];

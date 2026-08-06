@@ -6737,6 +6737,7 @@ mod notification_tests {
         let state = make_state(Arc::new(RecordingNotifier::default()));
         assert_eq!(game_name(&state, "ttt"), "Tic-Tac-Toe");
         assert_eq!(game_name(&state, "chess"), "Chess");
+        assert_eq!(game_name(&state, "four_in_a_row"), "Four in a Row");
         assert_eq!(game_name(&state, "future-game"), "a game");
     }
 

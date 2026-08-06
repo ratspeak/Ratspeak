@@ -54,7 +54,7 @@ released. iOS does not have a public download yet; and macOS is unsigned, with W
   status, and transport health in the app.
 - Experimental peer-to-peer voice calls over [LXST](https://github.com/ratspeak/rsLXST)
   (contacts-only, 0-hop, native microphone/speaker).
-- Chess and Tic-Tac-Toe.
+- Chess, Tic-Tac-Toe, and Four in a Row.
 - I'm tired boss, this whole README is going to get a revamp.
 
 ## Install

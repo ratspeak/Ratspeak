@@ -2199,11 +2199,12 @@ fn games_ui_uses_runtime_manifests_and_accessible_atomic_actions() {
     assert!(games_js.contains("var _manifestsById = {};"));
     assert!(games_js.contains("RS.games.views.register('ttt'"));
     assert!(games_js.contains("RS.games.views.register('chess'"));
-    assert!(games_js.contains("html += gameView.renderBoard(session);"));
-    assert!(games_js.contains("if (gameView) gameView.bindBoard(session);"));
+    assert!(games_js.contains("gameView.renderBoard(session, _gameViewContext(session, panel))"));
+    assert!(games_js.contains("gameView.bindBoard(session, _gameViewContext(session, panel))"));
     assert!(games_js.contains("RS.games.views.supportedManifests("));
-    assert!(games_js.contains("view.activeStatusText(session)"));
-    assert!(games_js.contains("view.detailChips(session)"));
+    assert!(games_js.contains("app_id: 'four_in_a_row', display_name: 'Four in a Row'"));
+    assert!(games_js.contains("view.activeStatusText(session, _gameViewContext(session))"));
+    assert!(games_js.contains("view.detailChips(session, _gameViewContext(session))"));
     assert!(games_js.contains("view.renderActiveControls(session)"));
     assert!(games_js.contains("view.bindControls(session, {"));
     assert!(!games_js.contains("if (appId === 'ttt') {\n            html += _renderTTTBoard"));
@@ -2212,8 +2213,9 @@ fn games_ui_uses_runtime_manifests_and_accessible_atomic_actions() {
     assert!(game_registry.contains("function listIds()"));
     assert!(game_registry.contains("function supportedManifests(manifests)"));
     let registry_script = index.find("/static/js/game_registry.js").unwrap();
+    let four_script = index.find("/static/js/four_in_a_row_view.js").unwrap();
     let games_script = index.find("/static/js/games_tab.js").unwrap();
-    assert!(registry_script < games_script);
+    assert!(registry_script < four_script && four_script < games_script);
     assert!(games_js.contains("function _beginSessionAction(sessionId)"));
     assert!(games_js.contains("function _drawOfferOwner(session)"));
     assert!(games_js.contains("function _canDeleteSession(session)"));
@@ -2231,11 +2233,57 @@ fn games_ui_uses_runtime_manifests_and_accessible_atomic_actions() {
     assert!(games_js.contains("function _chessPieceName(piece)"));
     assert!(games_css.contains(".ttt-cell:focus-visible"));
     assert!(games_css.contains(".chess-square:focus-visible"));
+    assert!(games_css.contains(".four-lane-action:focus-visible"));
     assert!(games_css.contains("background: var(--surface-scrim);"));
     assert!(
         !games_css.contains(".game-modal"),
         "Games must use the shared bottom sheet instead of a parallel legacy modal"
     );
+}
+
+#[test]
+fn four_in_a_row_view_is_accessible_theme_native_and_protocol_thin() {
+    let root = repo_root();
+    let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
+    let registry =
+        read_source(root.join("dashboard/static/js/game_registry.js")).expect("registry js");
+    let four = read_source(root.join("dashboard/static/js/four_in_a_row_view.js"))
+        .expect("four in a row view js");
+    let css = read_source(root.join("dashboard/static/css/11-games.css")).expect("games css");
+
+    assert!(four.contains("var APP_ID = 'four_in_a_row';"));
+    assert!(four.contains("RS.games.views.register(APP_ID"));
+    assert!(four.contains("var CELL_COUNT = ROWS * COLUMNS;"));
+    assert!(four.contains("role=\"grid\" aria-label=\"Four in a Row board\""));
+    assert!(four.contains("role=\"gridcell\""));
+    assert!(four.contains("aria-rowindex=\""));
+    assert!(four.contains("aria-colindex=\""));
+    assert!(four.contains("class=\"four-lane-action\""));
+    assert!(four.contains("role=\"group\" aria-label=\"Column drop controls\""));
+    assert!(four.contains("context.sendMove({ c: column }"));
+    assert!(!four.contains("payload: { board:"));
+    assert!(!four.contains("payload: { turn:"));
+    assert!(four.contains("fields: ['board', 'last_column', 'last_row', 'last_cell']"));
+    assert!(four.contains("event.key === 'ArrowLeft'"));
+    assert!(four.contains("event.key === 'ArrowRight'"));
+    assert!(four.contains("event.key === 'Home'"));
+    assert!(four.contains("event.key === 'End'"));
+    assert!(games_js.contains("function _sendGameViewMove(session, payload, optimistic)"));
+    assert!(games_js.contains("function _sessionValue(session, key, fallback)"));
+    assert!(games_js.contains("_sessionValue(session, 'move_count', '')"));
+    assert!(games_js.contains("_sessionValue(record, 'move_count', null)"));
+    assert!(games_js.contains("_sessionValue(session, 'winner', '')"));
+    assert!(games_js.contains("RS.games.optimistic.restoreFields(session, backup.adapter_fields)"));
+    assert!(registry.contains("function sessionValue(session, key, fallback)"));
+    assert!(registry.contains("RS.games.state = Object.freeze"));
+    assert!(registry.contains("function captureFields(target, fields)"));
+    assert!(registry.contains("function restoreFields(target, snapshot)"));
+    assert!(css.contains(".four-token-a"));
+    assert!(css.contains(".four-token-b"));
+    assert!(css.contains(".four-win-trace line"));
+    assert!(css.contains(".four-win-trace.animate line"));
+    assert!(css.contains("@keyframes fourSettle"));
+    assert!(css.contains("@media (prefers-reduced-motion: reduce)"));
 }
 
 #[test]
