@@ -84,7 +84,7 @@ var appearance = firstBoot.appearance;
 
 assert.strictEqual(
     JSON.stringify(appearance.families.map(function(family) { return family.id; })),
-    JSON.stringify(['ratspeak', 'nord', 'everforest', 'gruvbox', 'catppuccin'])
+    JSON.stringify(['ratspeak', 'nord', 'everforest', 'gruvbox', 'catppuccin', 'rose-pine'])
 );
 assert.strictEqual(storage['rs-theme'], undefined, 'invalid legacy mode cache must be removed');
 assert.strictEqual(storage['rs-theme-family'], undefined, 'invalid family cache must be removed');
@@ -107,6 +107,17 @@ appearance.commit('everforest', 'dark');
 assert.strictEqual(storage['rs-theme-family'], 'everforest');
 assert.strictEqual(storage['rs-theme'], 'dark');
 assert.strictEqual(firstBoot.meta.content, '#232A2E');
+
+appearance.commit('rose-pine', 'dark');
+assert.strictEqual(storage['rs-theme-family'], 'rose-pine');
+assert.strictEqual(firstBoot.attrs['data-theme-family'], 'rose-pine');
+assert.strictEqual(firstBoot.meta.content, '#232136');
+var roseRestart = bootTheme(storage, false);
+assert.strictEqual(roseRestart.attrs['data-theme-family'], 'rose-pine');
+assert.strictEqual(roseRestart.attrs['data-theme'], 'dark');
+assert.strictEqual(roseRestart.meta.content, '#232136');
+
+appearance.commit('everforest', 'dark');
 
 // A fresh JS realm models a fully closed and relaunched app. The pre-paint
 // cache must restore both axes before settings hydration can reach SQLite.

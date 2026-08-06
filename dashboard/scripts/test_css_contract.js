@@ -124,7 +124,7 @@ assert(/prefers-reduced-motion:[^)]*reduce[\s\S]*?\.four-token[\s\S]*?animation:
 
 var paletteCss = sourceByName['00-palettes.css'];
 var themeSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'theme.js'), 'utf8');
-var themeFamilies = ['ratspeak', 'nord', 'everforest', 'gruvbox', 'catppuccin'];
+var themeFamilies = ['ratspeak', 'nord', 'everforest', 'gruvbox', 'catppuccin', 'rose-pine'];
 var registeredFamilies = Array.from(themeSource.matchAll(/\bid:\s*'([^']+)'/g), function(entry) {
     return entry[1];
 });
@@ -253,5 +253,13 @@ assert(/data-theme-family', family/.test(themeSource) &&
     'family, preference, and resolved mode must remain independent appearance axes');
 assert(/ratspeak-theme-changed/.test(themeSource),
     'appearance changes must publish one shared frontend event');
+assert(/\.theme-family-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/
+    .test(sourceByName['13-responsive.css']),
+    'mobile theme families must form a compact three-column grid');
+assert(/\.theme-family-card\s*\{[\s\S]*?min-height:\s*72px/.test(sourceByName['13-responsive.css']),
+    'mobile theme cards must remain compact full-card touch targets');
+assert(/\.theme-family-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\)/
+    .test(sourceByName['10-views.css']),
+    'wide desktop theme families must form one balanced six-card row');
 
 console.log('CSS contract tests passed');

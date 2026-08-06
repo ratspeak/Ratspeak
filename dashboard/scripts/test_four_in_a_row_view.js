@@ -38,7 +38,7 @@ vm.runInContext(viewSource, context, { filename: 'four_in_a_row_view.js' });
 var views = windowStub.RS.games.views;
 var adapter = views.get('four_in_a_row');
 assert(adapter, 'Four in a Row adapter must register under its canonical app_id');
-assert.strictEqual(adapter.icon, '\u283f');
+assert.strictEqual(adapter.icon, '\u25cf\u25cf\u25cf\u25cf');
 assert.strictEqual(adapter.boardSelector, '.four-board');
 assert.deepStrictEqual(Array.from(adapter.actions), [
     'challenge', 'accept', 'decline', 'move', 'resign',

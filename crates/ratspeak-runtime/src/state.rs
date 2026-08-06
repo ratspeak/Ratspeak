@@ -390,6 +390,15 @@ pub struct AppState {
     #[cfg(feature = "lxst-voice")]
     pub lxst_voice: Mutex<Option<crate::voice::LxstVoiceServiceHandle>>,
     #[cfg(feature = "lxst-voice")]
+    pub voice_memo_recording: Mutex<Option<crate::voice_memo::VoiceMemoRecordingHandle>>,
+    #[cfg(feature = "lxst-voice")]
+    pub voice_memo_control_lock: tokio::sync::Mutex<()>,
+    /// Reserves the shared microphone for an incoming, outgoing, or active
+    /// LXST call. Voice-memo startup checks this on the native side so a stale
+    /// or suspended WebView cannot open a second capture stream.
+    #[cfg(feature = "lxst-voice")]
+    pub(crate) voice_call_audio_reserved: AtomicBool,
+    #[cfg(feature = "lxst-voice")]
     pub lxst_rejected_call_attempts: Mutex<HashMap<String, (u32, Instant)>>,
     pub known_path_hashes: Mutex<std::collections::HashSet<String>>,
     /// False until the first non-empty path-table snapshot has seeded
@@ -593,6 +602,12 @@ impl AppState {
             local_identity_public_keys: RwLock::new(HashMap::new()),
             #[cfg(feature = "lxst-voice")]
             lxst_voice: Mutex::new(None),
+            #[cfg(feature = "lxst-voice")]
+            voice_memo_recording: Mutex::new(None),
+            #[cfg(feature = "lxst-voice")]
+            voice_memo_control_lock: tokio::sync::Mutex::new(()),
+            #[cfg(feature = "lxst-voice")]
+            voice_call_audio_reserved: AtomicBool::new(false),
             #[cfg(feature = "lxst-voice")]
             lxst_rejected_call_attempts: Mutex::new(HashMap::new()),
             known_path_hashes: Mutex::new(std::collections::HashSet::new()),

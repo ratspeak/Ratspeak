@@ -60,6 +60,7 @@ fn normalize_theme_family(family: &str) -> Option<&'static str> {
         "everforest" => Some("everforest"),
         "gruvbox" => Some("gruvbox"),
         "catppuccin" => Some("catppuccin"),
+        "rose-pine" => Some("rose-pine"),
         _ => None,
     }
 }

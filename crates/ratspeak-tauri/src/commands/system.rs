@@ -217,6 +217,17 @@ pub async fn api_set_foreground(
     args: SetForegroundArgs,
 ) -> AppResult<Value> {
     let fg = args.foreground.unwrap_or(true);
+    #[cfg(all(feature = "lxst-voice", any(target_os = "android", target_os = "ios")))]
+    if !fg
+        && crate::voice_memo::cancel_recording(state.inner())
+            .await
+            .is_err()
+    {
+        tracing::warn!(
+            reason = "mobile_background_voice_memo_cancel_failed",
+            "could not release voice memo capture while backgrounding"
+        );
+    }
     let transition = state.begin_foreground_transition();
     if fg {
         let _identity_lifecycle = state.identity_switch_lock.lock().await;

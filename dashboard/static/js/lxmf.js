@@ -576,6 +576,13 @@ function _voiceSetOptimisticOutgoing(hash) {
     _voiceTrackEstablished(lxstVoiceState.active);
 }
 
+function _voiceCancelMemoForCall() {
+    if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.cancelForCall === 'function') {
+        return RS.voiceMemos.cancelForCall();
+    }
+    return Promise.resolve();
+}
+
 function _voiceStartCall(hash) {
     if (!lxstVoiceState.available || !hash) return Promise.resolve();
     var dialToken = ++_voiceDialToken;
@@ -586,7 +593,7 @@ function _voiceStartCall(hash) {
     _voiceSetOptimisticOutgoing(hash);
     _voicePrimeNativeCallRoute();
     renderVoiceUi();
-    return _voiceAfterNextPaint().then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission).then(function() {
+    return _voiceCancelMemoForCall().then(_voiceAfterNextPaint).then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission).then(function() {
         if (dialToken !== _voiceDialToken || !_voiceActiveMatchesContact(hash)) return;
         return RS.invoke('voice_call', { args: { hash: hash } }).then(function(result) {
             if (dialToken !== _voiceDialToken || !_voiceActiveMatchesContact(hash)) return;
@@ -623,7 +630,7 @@ function _voiceStartCall(hash) {
 function _voiceAnswerCall() {
     _voiceStopRingtone();
     _voiceHaptic('selection');
-    return _voiceEnsurePlaybackReady().then(_voiceEnsureMicrophonePermission).then(function() {
+    return _voiceCancelMemoForCall().then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission).then(function() {
         _voiceResetCallControls();
         _voicePrimeNativeCallRoute();
         return RS.invoke('voice_answer').then(function() {
@@ -1843,6 +1850,9 @@ function _promoteGhostConversationRow(hash) {
 
 function _onChatDetailExit() {
     var exitingHash = lxmfActiveContact;
+    if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.onConversationChanged === 'function') {
+        RS.voiceMemos.onConversationChanged(null);
+    }
     var input = document.getElementById('lxmf-input');
     if (input && exitingHash) {
         if (input.value.trim()) { _lxmfDrafts[exitingHash] = input.value; }
@@ -1871,6 +1881,9 @@ function _onChatDetailExit() {
 
 // Cache-first render to avoid an empty-spinner flash; reconciles via fetch.
 function _loadConversation(hash) {
+    if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.onConversationChanged === 'function') {
+        RS.voiceMemos.onConversationChanged(hash);
+    }
     // Reactions are keyed per message; drop the previous conversation's
     // entries so the map doesn't accumulate across switches.
     _msgReactions = {};
@@ -2006,6 +2019,9 @@ function _updateConversationPreview(hash, previewText, timestamp) {
 
 function _conversationPreviewForMessage(message) {
     if (!message) return '';
+    if (Array.isArray(message.attachments) && message.attachments.some(function(attachment) {
+        return window.RS && RS.voiceMemos && RS.voiceMemos.isAttachment(attachment);
+    })) return 'Voice message';
     var content = (message.content || '').trim();
     if (content) return content;
     if (message.image) return 'Photo';
@@ -2930,6 +2946,9 @@ function renderConversation(options) {
         var attachHtml = '';
         if (msg.attachments && msg.attachments.length > 0) {
             attachHtml = msg.attachments.map(function(att) {
+                if (window.RS && RS.voiceMemos && RS.voiceMemos.isAttachment(att)) {
+                    return RS.voiceMemos.renderAttachment(att, msg);
+                }
                 var sizeStr = att.size ? prettySize(att.size) : '';
                 var nameHtml = att.stored_name
                     ? '<a href="#" class="file-name rs-file-download" data-stored-name="' + escapeHtml(att.stored_name) + '">' + escapeHtml(att.filename || 'file') + '</a>'
@@ -3022,6 +3041,9 @@ function renderConversation(options) {
         '</div>');
     }
     container.innerHTML = htmlParts.join('');
+    if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.hydratePlayers === 'function') {
+        RS.voiceMemos.hydratePlayers(container);
+    }
     var shouldPinMessages = _applyLxmfMessageScrollAfterRender(container, scrollState, options);
     _watchLxmfImagesForBottomPin(container, shouldPinMessages);
 
@@ -3290,6 +3312,7 @@ function _finishLxmfComposerSend(input, shouldRestoreFocus) {
     }
     var counter = document.getElementById('lxmf-char-count');
     if (counter) { counter.textContent = ''; counter.className = 'lxmf-char-count'; counter.style.display = 'none'; }
+    if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
 }
 
 function sendLxmfMessage(deliveryMethod) {
@@ -3411,6 +3434,56 @@ function sendLxmfMessage(deliveryMethod) {
     loadConversations();
     _finishLxmfComposerSend(input, shouldRestoreComposerFocus);
 }
+
+function sendLxmfVoiceMemo(voiceDraft, targetHash) {
+    if (!lxmfActiveContact || targetHash !== lxmfActiveContact || !voiceDraft || !voiceDraft.data_base64) return false;
+    var input = document.getElementById('lxmf-input');
+    if (!input) return false;
+    var msgId = generateMsgId();
+    var filename = voiceDraft.filename || 'Voice message.lxvm';
+    var chosenDelivery = _deliveryPrefOrAuto('auto');
+    RS.invoke('send_lxmf_with_attachment', {
+        args: {
+            dest_hash: targetHash,
+            content: '',
+            delivery_method: chosenDelivery,
+            client_msg_id: msgId,
+            file_data: voiceDraft.data_base64,
+            file_name: filename,
+            image_data: null,
+            image_mime: null,
+        }
+    }).then(function(resp) {
+        _handleLxmfSendAccepted(resp, msgId);
+    }).catch(function() {});
+
+    if (window.RS && RS.voiceMemos) RS.voiceMemos.registerDraft(msgId, voiceDraft);
+    lxmfConversation.push({
+        id: msgId,
+        direction: 'outbound',
+        content: '',
+        timestamp: Date.now() / 1000,
+        state: 'sending',
+        delivery_method: _optimisticDeliveryMethod(chosenDelivery),
+        attachments: [{
+            filename: filename,
+            size: voiceDraft.size || 0,
+            voice_memo_key: msgId,
+            voice_memo: {
+                duration_ms: voiceDraft.duration_ms,
+                waveform: voiceDraft.waveform || [],
+            },
+        }],
+    });
+    _cacheActiveConversation();
+    renderConversation({ forceScrollBottom: true });
+    _updateConversationPreview(targetHash, 'Voice message', Date.now() / 1000);
+    loadConversations();
+    _finishLxmfComposerSend(input, false);
+    return true;
+}
+
+window.sendLxmfVoiceMemo = sendLxmfVoiceMemo;
 
 function triggerFileAttachment() {
     var fileInput = document.getElementById('lxmf-file-input');
@@ -3644,6 +3717,7 @@ function renderPendingFile() {
     if (!lxmfPendingFile) {
         container.innerHTML = '';
         container.style.display = 'none';
+        if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
         return;
     }
 
@@ -3661,6 +3735,7 @@ function renderPendingFile() {
         '</span>' +
         '<button class="pending-file-clear">&times;</button>';
     container.querySelector('.pending-file-clear').addEventListener('click', clearPendingFile);
+    if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
 }
 
 function clearPendingFile() {
@@ -3672,12 +3747,17 @@ function clearPendingFile() {
         container.style.display = 'none';
         container.classList.remove('pending-file-has-image');
     }
+    if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
 }
 
 function setReplyTarget(msgData) {
+    var replyContent = (msgData.content || '').substring(0, 100);
+    if (!replyContent && Array.isArray(msgData.attachments) && msgData.attachments.some(function(attachment) {
+        return window.RS && RS.voiceMemos && RS.voiceMemos.isAttachment(attachment);
+    })) replyContent = 'Voice message';
     _replyTarget = {
         id: msgData.id,
-        content: (msgData.content || '').substring(0, 100),
+        content: replyContent,
         sender: msgData.direction === 'inbound' ? msgData.source : msgData.destination,
         senderName: msgData.direction === 'inbound' ? _getContactName(msgData.source) : 'You',
     };
@@ -4391,7 +4471,9 @@ RS.listen('lxmf_delivery_progress', function(data) {
 
 RS.listen('voice_call_update', _voiceHandleUpdate);
 RS.listen('voice_incoming_call', function(data) {
-    _voiceHandleUpdate(Object.assign({ type: 'incoming' }, data || {}));
+    _voiceCancelMemoForCall().then(function() {
+        _voiceHandleUpdate(Object.assign({ type: 'incoming' }, data || {}));
+    });
 });
 
 document.addEventListener('rs-audio-playback-ready', _voiceSyncRingtone);

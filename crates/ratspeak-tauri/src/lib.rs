@@ -27,6 +27,8 @@ pub use ratspeak_runtime::platform_ios;
 pub use ratspeak_runtime::shutdown_ble_peer_for_exit;
 #[cfg(feature = "lxst-voice")]
 pub use ratspeak_runtime::voice;
+#[cfg(feature = "lxst-voice")]
+pub use ratspeak_runtime::voice_memo;
 pub use ratspeak_runtime::{
     announce_handlers, channel_hub, channels, helpers, identity_prune, lxmf, propagation, rns,
     rns_config, state,

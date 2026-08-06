@@ -31,6 +31,12 @@ use crate::state::{ActivityRequestFence, AppState};
 
 const AUDIO_FRAME_CHANNEL_DEPTH: usize = 8;
 const AUDIO_SPEAKER_CHANNEL_DEPTH: usize = 32;
+const MICROPHONE_CAPTURE_RETRY_DELAYS: [Duration; 3] = [
+    Duration::ZERO,
+    Duration::from_millis(150),
+    Duration::from_millis(400),
+];
+const MICROPHONE_DEVICE_ATTEMPT_LIMIT: usize = 16;
 const VOICE_AGC_TARGET_RMS: f32 = 0.14125375;
 const VOICE_AGC_MIN_GAIN: f32 = 0.35;
 const VOICE_AGC_MAX_GAIN: f32 = 3.0;
@@ -204,6 +210,7 @@ pub async fn shutdown_voice_service(state: &Arc<AppState>) {
     if let Some(handle) = handle {
         handle.shutdown().await;
     }
+    release_call_audio(state);
     VOICE_MICROPHONE_MUTED.store(false, Ordering::Relaxed);
 
     state.emit_to_all(
@@ -228,6 +235,25 @@ pub fn voice_status(state: &AppState) -> Value {
         "running": running,
         "microphone_muted": microphone_muted(),
     })
+}
+
+/// The call and memo surfaces share one platform microphone. This reservation
+/// begins before signalling so capture cannot race an outgoing request or an
+/// accepted incoming call, and ends only on a terminal call transition.
+pub fn call_audio_reserved(state: &AppState) -> bool {
+    state.voice_call_audio_reserved.load(Ordering::Acquire)
+}
+
+pub fn reserve_call_audio(state: &AppState) {
+    state
+        .voice_call_audio_reserved
+        .store(true, Ordering::Release);
+}
+
+pub fn release_call_audio(state: &AppState) {
+    state
+        .voice_call_audio_reserved
+        .store(false, Ordering::Release);
 }
 
 pub fn set_microphone_muted(state: &AppState, muted: bool) -> VoiceResult<Value> {
@@ -287,6 +313,7 @@ pub async fn answer(state: &Arc<AppState>) -> VoiceResult<Value> {
 
 pub async fn hangup(state: &Arc<AppState>) -> VoiceResult<Value> {
     if voice_control_tx(state).is_none() {
+        release_call_audio(state);
         return Ok(json!({ "ok": true, "running": false }));
     }
     send_control(
@@ -296,6 +323,9 @@ pub async fn hangup(state: &Arc<AppState>) -> VoiceResult<Value> {
         },
     )
     .await?;
+    // Keep the shared microphone reserved until LXST reports the terminal
+    // transition. Sending Hangup only starts teardown; capture and the
+    // platform audio session may still be active until CallTerminated.
     Ok(json!({ "ok": true }))
 }
 
@@ -831,6 +861,16 @@ async fn drive_voice_events(
                     continue;
                 }
 
+                // Reserve capture before stopping a memo. start_recording()
+                // checks the flag both outside and inside its lifecycle lock,
+                // so an incoming call cannot race a second microphone stream.
+                reserve_call_audio(&state);
+                if crate::voice_memo::cancel_recording(&state).await.is_err() {
+                    tracing::warn!(
+                        reason = "voice_memo_handoff_failed",
+                        "could not stop voice memo before incoming call"
+                    );
+                }
                 let remote_lxmf_destination = policy.remote_lxmf_destination.clone();
                 let payload = json!({
                     "type": "incoming",
@@ -893,6 +933,7 @@ async fn drive_voice_events(
                 remote_identity,
                 message,
             } => {
+                release_call_audio(&state);
                 state.emit_to_all(
                     "voice_call_update",
                     json!({
@@ -920,6 +961,7 @@ async fn drive_voice_events(
                 if suppressed_call_links.remove(&link_id) {
                     continue;
                 }
+                release_call_audio(&state);
                 stop_audio_session(audio_session.take(), &control_tx).await;
                 audio_failure = None;
                 profile_adaptation.reset();
@@ -1049,6 +1091,7 @@ async fn drive_voice_events(
                 }
             }
             TelephonyServiceEvent::Stopped => {
+                release_call_audio(&state);
                 stop_audio_session(audio_session.take(), &control_tx).await;
                 profile_adaptation.reset();
                 state.emit_to_all(
@@ -1067,6 +1110,7 @@ async fn drive_voice_events(
         }
     }
 
+    release_call_audio(&state);
     stop_audio_session(audio_session.take(), &control_tx).await;
 }
 
@@ -1635,6 +1679,27 @@ struct VoiceAudioSession {
     _input_stream: Option<cpal::Stream>,
     _output_stream: Option<VoiceOutputStream>,
     sink_task: Option<JoinHandle<()>>,
+    // Declared after the streams so iOS deactivates AVAudioSession only after
+    // RemoteIO input/output have been dropped.
+    _platform_audio_session: PlatformVoiceAudioSession,
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) type PlatformVoiceAudioSession = crate::platform_ios::VoiceAudioSessionGuard;
+
+#[cfg(not(target_os = "ios"))]
+pub(crate) struct PlatformVoiceAudioSession;
+
+pub(crate) fn start_platform_voice_audio_session() -> VoiceResult<PlatformVoiceAudioSession> {
+    #[cfg(target_os = "ios")]
+    {
+        crate::platform_ios::VoiceAudioSessionGuard::activate()
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    {
+        Ok(PlatformVoiceAudioSession)
+    }
 }
 
 #[cfg(target_os = "android")]
@@ -1697,19 +1762,7 @@ impl VoiceAudioSession {
                 .is_some_and(|retry_at| now >= retry_at)
         {
             let host = cpal::default_host();
-            let target_channels = usize::from(self.profile.channels());
-            let target_sample_rate = self.profile.sample_rate_hz();
-            let target_frames = self.profile.sample_frames_per_packet();
-            match start_microphone_side(
-                &host,
-                self.profile,
-                control_tx.clone(),
-                target_channels,
-                target_sample_rate,
-                target_frames,
-            )
-            .await
-            {
+            match start_microphone_side(&host, self.profile, control_tx.clone()).await {
                 Ok(stream) => {
                     tracing::info!(
                         link_id = %crate::short_id(&hex::encode(self.link_id)),
@@ -1796,21 +1849,10 @@ impl VoiceAudioSession {
         self.speaker = false;
 
         let host = cpal::default_host();
-        let target_channels = usize::from(self.profile.channels());
         let target_sample_rate = self.profile.sample_rate_hz();
-        let target_frames = self.profile.sample_frames_per_packet();
         let mut restart_warnings = Vec::new();
 
-        match start_microphone_side(
-            &host,
-            self.profile,
-            control_tx.clone(),
-            target_channels,
-            target_sample_rate,
-            target_frames,
-        )
-        .await
-        {
+        match start_microphone_side(&host, self.profile, control_tx.clone()).await {
             Ok(stream) => {
                 self._input_stream = Some(stream);
                 self.microphone = true;
@@ -1857,22 +1899,12 @@ impl VoiceAudioSession {
         control_tx: mpsc::Sender<TelephonyControl>,
     ) -> VoiceResult<Self> {
         VOICE_MICROPHONE_MUTED.store(false, Ordering::Relaxed);
+        let platform_audio_session = start_platform_voice_audio_session()?;
         let host = cpal::default_host();
-        let target_channels = usize::from(profile.channels());
         let target_sample_rate = profile.sample_rate_hz();
-        let target_frames = profile.sample_frames_per_packet();
 
         let mut warnings = Vec::new();
-        let input_stream = match start_microphone_side(
-            &host,
-            profile,
-            control_tx.clone(),
-            target_channels,
-            target_sample_rate,
-            target_frames,
-        )
-        .await
-        {
+        let input_stream = match start_microphone_side(&host, profile, control_tx.clone()).await {
             Ok(stream) => Some(stream),
             Err(message) => {
                 warnings.push(message);
@@ -1911,6 +1943,7 @@ impl VoiceAudioSession {
             _input_stream: input_stream,
             _output_stream: output_stream,
             sink_task,
+            _platform_audio_session: platform_audio_session,
         };
         if !session.microphone {
             session.schedule_microphone_retry();
@@ -1926,27 +1959,8 @@ async fn start_microphone_side(
     host: &cpal::Host,
     profile: Profile,
     control_tx: mpsc::Sender<TelephonyControl>,
-    target_channels: usize,
-    target_sample_rate: u32,
-    target_frames: usize,
 ) -> VoiceResult<cpal::Stream> {
-    let input_device = host
-        .default_input_device()
-        .ok_or_else(|| "No default microphone is available".to_string())?;
-    let input_config = select_input_config(&input_device, target_sample_rate)?;
-    let (capture_tx, capture_rx) = mpsc::channel::<RawAudioFrame>(AUDIO_FRAME_CHANNEL_DEPTH);
-    let input_builder = Arc::new(Mutex::new(InputFrameBuilder::new(
-        usize::from(input_config.channels()),
-        input_config.sample_rate().0,
-        target_channels,
-        target_sample_rate,
-        target_frames,
-    )));
-    let input_stream = build_input_stream(&input_device, &input_config, input_builder, capture_tx)?;
-
-    input_stream
-        .play()
-        .map_err(|e| format!("Failed to start microphone stream: {e}"))?;
+    let (input_stream, capture_rx) = open_microphone_capture(host, profile)?;
 
     if let Err(e) = control_tx
         .send(TelephonyControl::StartOpusStream {
@@ -1959,6 +1973,91 @@ async fn start_microphone_side(
     }
 
     Ok(input_stream)
+}
+
+/// Open the platform microphone and normalize it into the exact frame shape
+/// used by an LXST profile without starting a live telephony stream. Voice
+/// memos use this bridge so calls and asynchronous recordings share one audio
+/// capture/resampling path instead of drifting into platform-specific codecs.
+pub(crate) fn start_microphone_capture(
+    profile: Profile,
+) -> VoiceResult<(
+    PlatformVoiceAudioSession,
+    cpal::Stream,
+    mpsc::Receiver<RawAudioFrame>,
+)> {
+    let platform_audio_session = start_platform_voice_audio_session()?;
+    let mut last_error = "No microphone is available".to_string();
+    for delay in MICROPHONE_CAPTURE_RETRY_DELAYS {
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+        let host = cpal::default_host();
+        match open_microphone_capture(&host, profile) {
+            Ok((stream, capture_rx)) => {
+                return Ok((platform_audio_session, stream, capture_rx));
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    Err(format!(
+        "Microphone capture remained unavailable after {} attempts: {last_error}",
+        MICROPHONE_CAPTURE_RETRY_DELAYS.len()
+    ))
+}
+
+fn open_microphone_capture(
+    host: &cpal::Host,
+    profile: Profile,
+) -> VoiceResult<(cpal::Stream, mpsc::Receiver<RawAudioFrame>)> {
+    let mut last_error = "No default microphone is available".to_string();
+    if let Some(device) = host.default_input_device() {
+        match open_microphone_device(&device, profile) {
+            Ok(capture) => return Ok(capture),
+            Err(error) => last_error = format!("Default microphone failed: {error}"),
+        }
+    }
+
+    match host.input_devices() {
+        Ok(devices) => {
+            for (index, device) in devices.take(MICROPHONE_DEVICE_ATTEMPT_LIMIT).enumerate() {
+                match open_microphone_device(&device, profile) {
+                    Ok(capture) => return Ok(capture),
+                    Err(error) => {
+                        last_error = format!("Input device {} failed: {error}", index + 1);
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            last_error = format!("{last_error}; microphone enumeration failed: {error}");
+        }
+    }
+
+    Err(last_error)
+}
+
+fn open_microphone_device(
+    input_device: &cpal::Device,
+    profile: Profile,
+) -> VoiceResult<(cpal::Stream, mpsc::Receiver<RawAudioFrame>)> {
+    let target_channels = usize::from(profile.channels());
+    let target_sample_rate = profile.sample_rate_hz();
+    let target_frames = profile.sample_frames_per_packet();
+    let input_config = select_input_config(input_device, target_sample_rate)?;
+    let (capture_tx, capture_rx) = mpsc::channel::<RawAudioFrame>(AUDIO_FRAME_CHANNEL_DEPTH);
+    let input_builder = Arc::new(Mutex::new(InputFrameBuilder::new(
+        usize::from(input_config.channels()),
+        input_config.sample_rate().0,
+        target_channels,
+        target_sample_rate,
+        target_frames,
+    )));
+    let input_stream = build_input_stream(input_device, &input_config, input_builder, capture_tx)?;
+    input_stream
+        .play()
+        .map_err(|e| format!("Failed to start microphone stream: {e}"))?;
+    Ok((input_stream, capture_rx))
 }
 
 async fn start_speaker_side(
@@ -3003,6 +3102,24 @@ mod android_voice_audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microphone_capture_retries_are_short_and_bounded() {
+        assert_eq!(MICROPHONE_CAPTURE_RETRY_DELAYS.len(), 3);
+        assert_eq!(MICROPHONE_CAPTURE_RETRY_DELAYS[0], Duration::ZERO);
+        assert!(
+            MICROPHONE_CAPTURE_RETRY_DELAYS
+                .windows(2)
+                .all(|delays| delays[0] < delays[1])
+        );
+        assert!(
+            MICROPHONE_CAPTURE_RETRY_DELAYS
+                .iter()
+                .copied()
+                .sum::<Duration>()
+                <= Duration::from_millis(750)
+        );
+    }
     use crate::config::DashboardConfig;
     use r2d2_sqlite::SqliteConnectionManager;
     use ratspeak_core::{NativeNotification, NativeNotificationKind, NativeNotifier};

@@ -34,6 +34,31 @@
         catch (_) { input.focus(); }
     };
 
+    // Composer replacements (voice recorder, attachment review, etc.) must
+    // wait for the mobile IME/visual viewport to settle after blur. Keeping
+    // this transition here prevents each composer from inventing a subtly
+    // different keyboard workaround.
+    RS.composer.dismissForReplacement = function(input) {
+        if (input && document.activeElement === input) input.blur();
+        return new Promise(function(resolve) {
+            var startedAt = Date.now();
+            function settled() {
+                var mobile = typeof isTauriMobile === 'function' && isTauriMobile();
+                var keyboardOpen = document.documentElement.classList.contains('keyboard-open');
+                if (!mobile || !keyboardOpen || Date.now() - startedAt >= 240) {
+                    if (typeof requestAnimationFrame === 'function') {
+                        requestAnimationFrame(function() { requestAnimationFrame(resolve); });
+                    } else {
+                        setTimeout(resolve, 0);
+                    }
+                    return;
+                }
+                setTimeout(settled, 24);
+            }
+            settled();
+        });
+    };
+
     RS.composer.resize = function(input, maxHeight) {
         if (!input) return '';
         input.style.height = 'auto';

@@ -330,12 +330,12 @@ fn save_image_to_photos(filename: String, mime: String, data_base64: String) -> 
 
 #[tauri::command]
 async fn request_microphone_permission(_app: tauri::AppHandle) -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         use std::time::Duration;
 
         let (tx, rx) = std::sync::mpsc::channel();
-        _app.run_on_main_thread(move || request_microphone_permission_macos(tx))
+        _app.run_on_main_thread(move || request_microphone_permission_apple(tx))
             .map_err(|e| format!("Could not start microphone permission request: {e}"))?;
 
         tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(120)))
@@ -344,18 +344,18 @@ async fn request_microphone_permission(_app: tauri::AppHandle) -> Result<bool, S
             .map_err(|_| "Timed out waiting for microphone permission".to_string())?
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     {
         Ok(true)
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {}
 
-#[cfg(target_os = "macos")]
-fn request_microphone_permission_macos(reply: std::sync::mpsc::Sender<Result<bool, String>>) {
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn request_microphone_permission_apple(reply: std::sync::mpsc::Sender<Result<bool, String>>) {
     use block2::RcBlock;
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
@@ -878,6 +878,22 @@ pub fn run() {
             ratspeak_tauri::commands::voice::voice_set_microphone_muted,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_restart_speaker,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_start,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_status,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_pause,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_stop,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_cancel,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_decode_data,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_decode_stored,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_inspect_stored,
             // Hardware (PIV) identity commands — desktop only (pcsc).
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             ratspeak_tauri::commands::hardware::hw_detect,

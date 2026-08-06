@@ -49,6 +49,14 @@
                 light: ['#EFF1F5', '#F8F9FC', '#8839EF'],
                 dark: ['#11111B', '#313244', '#CBA6F7']
             }
+        },
+        {
+            id: 'rose-pine',
+            name: 'Rosé Pine',
+            preview: {
+                light: ['#FAF4ED', '#FFFAF3', '#9C4D69'],
+                dark: ['#232136', '#2A273F', '#EA9A97']
+            }
         }
     ];
 

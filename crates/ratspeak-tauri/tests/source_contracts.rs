@@ -1213,7 +1213,14 @@ fn appearance_families_are_durable_validated_and_native_aware() {
 
     assert!(index.contains("id=\"theme-family-picker\""));
     assert!(index.contains("id=\"theme-toggle\""));
-    for family in ["ratspeak", "nord", "everforest", "gruvbox", "catppuccin"] {
+    for family in [
+        "ratspeak",
+        "nord",
+        "everforest",
+        "gruvbox",
+        "catppuccin",
+        "rose-pine",
+    ] {
         assert!(theme.contains(&format!("id: '{family}'")));
         assert!(interfaces.contains(&format!("\"{family}\" => Some(\"{family}\")")));
     }
@@ -2166,7 +2173,7 @@ fn games_new_sheet_uses_shared_mobile_bottom_sheet_width() {
 
     let games_css = read_source(root.join("dashboard/static/css/11-games.css")).expect("games css");
     assert!(games_css.contains(
-        "@media (min-width: 769px) {\n    .bottom-sheet.open.games-new-dialog {\n        width: min(520px, 92vw);\n    }\n}"
+        "@media (min-width: 769px) {\n    .bottom-sheet.open.games-new-dialog {\n        width: min(640px, calc(100vw - 48px));\n    }\n}"
     ));
     assert!(!games_css.contains(".games-sheet-send-btn {\n    border: 1px solid var(--accent);"));
     assert!(
@@ -4270,7 +4277,9 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(state_js.contains("if (_rsNativeAndroidAudioAvailable()) return null;"));
     assert!(state_js.contains("installUnlock: _rsInstallAudioPlaybackUnlock"));
     assert!(state_js.contains("window.RatspeakAndroid.requestMediaPermissions"));
-    assert!(state_js.contains("function _rsDesktopMicrophonePermission(audio)"));
+    assert!(state_js.contains("function _rsNativeMicrophonePermission(audio)"));
+    assert!(state_js.contains("isTauriMobile() &&"));
+    assert!(state_js.contains("isIOS()"));
     assert!(state_js.contains("RS.invoke('request_microphone_permission')"));
     assert!(state_js.contains("navigator.mediaDevices.getUserMedia"));
 
@@ -4299,8 +4308,12 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(lxmf.contains("function _voiceSetOptimisticOutgoing(hash)"));
     assert!(lxmf.contains("function _voiceBlockMobileNavigation(ms)"));
     assert!(lxmf.contains("var dialToken = ++_voiceDialToken;"));
+    assert!(lxmf.contains("function _voiceCancelMemoForCall()"));
     assert!(lxmf.contains(
-        "return _voiceAfterNextPaint().then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission)"
+        "return _voiceCancelMemoForCall().then(_voiceAfterNextPaint).then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission)"
+    ));
+    assert!(lxmf.contains(
+        "return _voiceCancelMemoForCall().then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission)"
     ));
     assert!(lxmf.contains("RS.ringtones.sync(lxstVoiceState)"));
     assert!(lxmf.contains("RS.ringtones.setHandlers({ onOutgoingTimeout"));
@@ -4333,7 +4346,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     assert!(tauri_lib.contains("async fn request_microphone_permission(_app: tauri::AppHandle)"));
-    assert!(tauri_lib.contains("fn request_microphone_permission_macos("));
+    assert!(tauri_lib.contains("fn request_microphone_permission_apple("));
     assert!(tauri_lib.contains("AVCaptureDevice"));
     assert!(tauri_lib.contains("requestAccessForMediaType"));
     assert!(tauri_lib.contains("_app.run_on_main_thread"));
@@ -7033,6 +7046,80 @@ fn lxmf_tick_runs_blocking_work_off_async_runtime() {
     assert!(runtime.contains("lxmf tick worker failed; skipping this tick"));
     assert!(lxmf.contains("OutboundAction::Failed(message) | OutboundAction::Expired(message)"));
     assert!(lxmf.contains("expired_or_attempt_exhausted_outbound_surfaces_failed_state"));
+}
+
+#[test]
+fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
+    let root = repo_root();
+    let memo = read_source(root.join("crates/ratspeak-runtime/src/voice_memo.rs"))
+        .expect("voice memo runtime");
+    let voice =
+        read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice runtime");
+    let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/voice.rs"))
+        .expect("voice commands");
+    let messaging = read_source(root.join("dashboard/static/js/lxmf.js")).expect("messaging js");
+    let tauri = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri entrypoint");
+    let system = read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs"))
+        .expect("system commands");
+    let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
+    let shared_ui = read_source(root.join("dashboard/static/js/ui_shared.js")).expect("shared ui");
+    let voice_memos =
+        read_source(root.join("dashboard/static/js/voice_memos.js")).expect("voice memo js");
+    let android = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("android activity");
+    let ios_audio = read_source(root.join("crates/ratspeak-runtime/src/platform_ios.rs"))
+        .expect("ios audio session");
+
+    assert!(memo.contains("const PROFILE: Profile = Profile::QualityMedium"));
+    assert!(memo.contains("crate::voice::start_microphone_capture(PROFILE)"));
+    assert!(voice.contains("pub(crate) fn start_microphone_capture"));
+    assert!(voice.contains("MICROPHONE_CAPTURE_RETRY_DELAYS"));
+    assert!(voice.contains("host.input_devices()"));
+    assert!(voice.contains("pub fn reserve_call_audio"));
+    assert!(voice.contains("pub fn release_call_audio"));
+    let hangup = voice
+        .split("pub async fn hangup")
+        .nth(1)
+        .and_then(|source| source.split("pub async fn reject").next())
+        .expect("hangup implementation");
+    assert_eq!(
+        hangup.matches("release_call_audio").count(),
+        1,
+        "hangup may release an orphaned reservation when the service is absent, \
+         but successful signalling must wait for LXST's terminal event"
+    );
+    assert!(memo.contains("call_audio_reserved"));
+    assert!(memo.contains("_platform_audio_session"));
+    assert!(memo.contains("MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE"));
+    assert!(commands.contains("VOICE_MEMO_START_UNAVAILABLE"));
+    assert!(commands.contains("crate::voice_memo::cancel_recording(&app_state)"));
+    assert!(commands.contains("spawn_blocking(move || crate::voice_memo::decode_voice_memo"));
+    assert!(messaging.contains("RS.invoke('send_lxmf_with_attachment'"));
+    assert!(messaging.contains("_voiceCancelMemoForCall().then(function()"));
+    assert!(state_js.contains("function _rsNativeMicrophonePermission(audio)"));
+    assert!(shared_ui.contains("RS.composer.dismissForReplacement"));
+    assert!(voice_memos.contains("window.addEventListener('pagehide'"));
+    assert!(voice_memos.contains("startVoiceMemoAudioSession"));
+    assert!(voice_memos.contains("handleAudioInterruption"));
+    assert!(system.contains("mobile_background_voice_memo_cancel_failed"));
+    assert!(android.contains("AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE"));
+    assert!(android.contains("fun startVoiceMemoAudioSession(): Boolean"));
+    assert!(ios_audio.contains("AVAudioSessionCategoryPlayAndRecord"));
+    assert!(ios_audio.contains("AVAudioSessionModeVoiceChat"));
+    for command in [
+        "voice_memo_start",
+        "voice_memo_status",
+        "voice_memo_pause",
+        "voice_memo_stop",
+        "voice_memo_cancel",
+        "voice_memo_decode_data",
+        "voice_memo_decode_stored",
+        "voice_memo_inspect_stored",
+    ] {
+        assert!(tauri.contains(&format!("commands::voice::{command}")));
+    }
 }
 
 #[test]

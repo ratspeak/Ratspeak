@@ -27,6 +27,8 @@ pub mod transport_observation;
 pub mod vault;
 #[cfg(feature = "lxst-voice")]
 pub mod voice;
+#[cfg(feature = "lxst-voice")]
+pub mod voice_memo;
 
 #[cfg(target_os = "ios")]
 pub mod platform_ios;
@@ -375,7 +377,21 @@ pub(crate) fn contact_label_from_db(
 }
 
 fn notification_body(content: &str, has_attachment: bool) -> String {
-    let preview: String = content.trim().chars().take(120).collect();
+    let trimmed = content.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if has_attachment && lower.starts_with("[file:") && trimmed.ends_with(']') {
+        return if lower.contains(".lxvm") {
+            "Voice message".to_string()
+        } else {
+            "New attachment".to_string()
+        };
+    }
+    let without_fallback = trimmed
+        .rfind("\n[File:")
+        .map(|index| &trimmed[..index])
+        .unwrap_or(trimmed)
+        .trim();
+    let preview: String = without_fallback.chars().take(120).collect();
     if !preview.is_empty() {
         preview
     } else if has_attachment {
@@ -711,6 +727,8 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
         .hw_lock_gen
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     state.emit_to_all("system_status", json!({"status": "stopping"}));
+    #[cfg(feature = "lxst-voice")]
+    voice_memo::cancel_recording(state).await.ok();
     #[cfg(feature = "lxst-voice")]
     voice::shutdown_voice_service(state).await;
     if let Some(channels) = state.take_channels() {
@@ -6612,6 +6630,22 @@ mod notification_tests {
         let pool = r2d2::Pool::builder().max_size(2).build(mgr).unwrap();
         db::init_schema(&pool).unwrap();
         AppState::new(config, pool, Arc::new(ratspeak_core::NoopEmitter), notifier)
+    }
+
+    #[test]
+    fn attachment_notifications_hide_wire_fallback_and_name_voice_memos() {
+        assert_eq!(
+            notification_body("[File: Voice message.lxvm]", true),
+            "Voice message"
+        );
+        assert_eq!(
+            notification_body("[File: field-notes.pdf]", true),
+            "New attachment"
+        );
+        assert_eq!(
+            notification_body("Please review\n[File: field-notes.pdf]", true),
+            "Please review"
+        );
     }
 
     #[tokio::test]

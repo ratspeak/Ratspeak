@@ -1486,9 +1486,16 @@ pub async fn api_file_download(
         tracing::warn!(reason = "read_failed", "file-download read failed");
         AppError::not_found("File not found")
     })?;
-    let mime = mime_guess::from_path(&path)
-        .first_or_octet_stream()
-        .to_string();
+    let mime = if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("lxvm"))
+    {
+        "audio/x-lxst-voice-memo".to_string()
+    } else {
+        mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string()
+    };
     let filename = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

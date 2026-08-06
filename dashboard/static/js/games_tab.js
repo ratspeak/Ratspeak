@@ -284,6 +284,15 @@
         return '?';
     }
 
+    function _gameIconMarkup(appId) {
+        if (appId === 'four_in_a_row') {
+            return '<span class="games-four-icon-mark" aria-hidden="true">' +
+                '<span></span><span></span><span></span><span></span>' +
+            '</span>';
+        }
+        return escapeHtml(_gameIcon(appId));
+    }
+
     function _gameName(appId) {
         var manifest = _manifestsById[appId];
         if (manifest && manifest.display_name) return manifest.display_name;
@@ -364,7 +373,7 @@
 
             var appId = _appId(s);
             html += '<div class="' + classes + ' game-row-' + escapeHtml(appId || 'unknown') + '" data-session-id="' + escapeHtml(s.game_id) + '" role="button" tabindex="0">' +
-                '<div class="games-session-icon">' + _gameIcon(s.app_id || s.game) + '</div>' +
+                '<div class="games-session-icon">' + _gameIconMarkup(s.app_id || s.game) + '</div>' +
                 '<div class="games-session-info">' +
                     '<div class="games-session-name">' + ratspeakDisplayNameHtml(_contactName(s.contact_hash), s.contact_hash) + '</div>' +
                     '<div class="games-session-meta">' +
@@ -574,7 +583,7 @@
 
         html += '<div class="games-detail-header ' + themeClass + '">' +
             '<div class="games-detail-heading">' +
-                '<span class="games-detail-icon">' + _gameIcon(appId) + '</span>' +
+                '<span class="games-detail-icon">' + _gameIconMarkup(appId) + '</span>' +
                 '<span class="games-detail-copy">' +
                     '<span class="games-detail-title">' + escapeHtml(_gameName(appId)) + '</span>' +
                     '<span class="games-detail-vs">vs ' + ratspeakDisplayNameHtml(_contactName(session.contact_hash), session.contact_hash) + '</span>' +
@@ -1734,7 +1743,16 @@
 
         var contactsHtml = '';
         if (sorted.length === 0) {
-            contactsHtml = '<div class="games-sheet-empty">No contacts yet.</div>';
+            contactsHtml = '<div class="games-sheet-empty">' +
+                '<span class="games-sheet-empty-icon" aria-hidden="true">' +
+                    '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"></circle><path d="M3.5 18c.5-3 2.4-4.7 5.5-4.7 1.5 0 2.7.4 3.6 1.1"></path><path d="M17 11v7M13.5 14.5h7"></path></svg>' +
+                '</span>' +
+                '<span class="games-sheet-empty-copy">' +
+                    '<span class="games-sheet-empty-title">No contacts yet</span>' +
+                    '<span class="games-sheet-empty-hint">Add someone before starting a game.</span>' +
+                '</span>' +
+                '<button type="button" class="nr-btn nr-btn-secondary games-sheet-open-contacts" id="games-sheet-open-contacts">Open Contacts</button>' +
+            '</div>';
         } else {
             for (var i = 0; i < sorted.length; i++) {
                 var c = sorted[i];
@@ -1766,32 +1784,36 @@
         var gameCardsHtml = manifests.map(function(manifest, index) {
             var appId = manifest.app_id || '';
             var name = manifest.display_name || appId;
-            var hint = manifest.session_type === 'turn_based' ? 'Turn-based' : 'Game';
             return '<button type="button" class="games-sheet-game-card' + (index === 0 ? ' selected' : '') + '" data-app-id="' + escapeHtml(appId) + '" aria-pressed="' + (index === 0 ? 'true' : 'false') + '">' +
-                '<span class="game-card-icon">' + escapeHtml(_gameIcon(appId)) + '</span>' +
-                '<span><span class="games-sheet-game-name">' + escapeHtml(name) + '</span><span class="games-sheet-game-hint">' + hint + '</span></span>' +
+                '<span class="game-card-icon">' + _gameIconMarkup(appId) + '</span>' +
+                '<span class="games-sheet-game-copy"><span class="games-sheet-game-name">' + escapeHtml(name) + '</span></span>' +
+                '<span class="games-sheet-game-check" aria-hidden="true">✓</span>' +
             '</button>';
         }).join('');
 
         var shell = RS.sheetShell.create({ sheetClass: 'bottom-sheet games-new-dialog' });
         shell.overlay.id = 'games-new-sheet-overlay';
         shell.sheet.id = 'games-new-sheet';
+        shell.sheet.setAttribute('role', 'dialog');
+        shell.sheet.setAttribute('aria-modal', 'true');
+        shell.sheet.setAttribute('aria-labelledby', 'games-new-sheet-title');
+        shell.sheet._gamesPreviousFocus = document.activeElement;
         shell.sheet.innerHTML = '<div class="bottom-sheet-handle"></div>' +
             '<div class="bottom-sheet-header">' +
                 '<div>' +
-                    '<div class="bottom-sheet-title">New game</div>' +
-                    '<div class="games-sheet-subtitle">Choose a game and opponent.</div>' +
+                    '<div class="bottom-sheet-title" id="games-new-sheet-title">New game</div>' +
+                    '<div class="games-sheet-subtitle">Choose what to play and who to challenge.</div>' +
                 '</div>' +
                 '<button type="button" class="bottom-sheet-close" id="games-sheet-close" aria-label="Close">&times;</button>' +
             '</div>' +
             '<div class="bottom-sheet-body">' +
                 '<div class="games-sheet-section">' +
-                    '<div class="games-sheet-header">Game</div>' +
-                    '<div class="games-sheet-game-grid">' + gameCardsHtml + '</div>' +
+                    '<div class="games-sheet-header" id="games-sheet-game-label">Game</div>' +
+                    '<div class="games-sheet-game-grid" role="group" aria-labelledby="games-sheet-game-label">' + gameCardsHtml + '</div>' +
                 '</div>' +
                 '<div class="games-sheet-section">' +
-                    '<div class="games-sheet-header">Opponent</div>' +
-                    '<div class="games-sheet-contact-list">' + contactsHtml + '</div>' +
+                    '<div class="games-sheet-header" id="games-sheet-opponent-label">Opponent</div>' +
+                    '<div class="games-sheet-contact-list' + (sorted.length === 0 ? ' is-empty' : '') + '" role="group" aria-labelledby="games-sheet-opponent-label">' + contactsHtml + '</div>' +
                 '</div>' +
             '</div>' +
             '<div class="bottom-sheet-footer games-sheet-footer">' +
@@ -1807,6 +1829,10 @@
         var selectedAppId = manifests[0] ? manifests[0].app_id : 'ttt';
 
         if (sheet) {
+            sheet._ratspeakDismiss = function() {
+                _closeNewGameSheet();
+                return true;
+            };
             sheet.querySelectorAll('.games-sheet-game-card').forEach(function(card) {
                 card.addEventListener('click', function() {
                     if (typeof haptic === 'function') haptic('selection');
@@ -1834,10 +1860,42 @@
                     if (sendBtn) sendBtn.disabled = false;
                 });
             });
+
+            sheet.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    _closeNewGameSheet();
+                    return;
+                }
+                if (e.key !== 'Tab') return;
+                var focusable = sheet.querySelectorAll('button:not([disabled])');
+                if (!focusable.length) return;
+                var first = focusable[0];
+                var last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            });
+
+            requestAnimationFrame(function() {
+                var selectedGame = sheet.querySelector('.games-sheet-game-card.selected');
+                if (selectedGame) selectedGame.focus();
+            });
         }
 
         _bindBtn('games-sheet-close', _closeNewGameSheet);
         _bindBtn('games-sheet-cancel', _closeNewGameSheet);
+        _bindBtn('games-sheet-open-contacts', function() {
+            _closeNewGameSheet(function() {
+                if (typeof switchView === 'function') {
+                    switchView('contacts', { pushState: true });
+                }
+            });
+        });
         _bindBtn('games-sheet-send', function() {
             if (!selectedHash) return;
             if (typeof haptic === 'function') haptic('selection');
@@ -1856,10 +1914,18 @@
         }
     }
 
-    function _closeNewGameSheet() {
+    function _closeNewGameSheet(done) {
+        var sheet = document.getElementById('games-new-sheet');
+        var previousFocus = sheet && sheet._gamesPreviousFocus;
         RS.sheetShell.dismiss({
             overlay: document.getElementById('games-new-sheet-overlay'),
-            sheet: document.getElementById('games-new-sheet'),
+            sheet: sheet,
+        }, function() {
+            if (typeof done === 'function') {
+                done();
+            } else if (previousFocus && previousFocus.focus) {
+                previousFocus.focus();
+            }
         });
     }
 

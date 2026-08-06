@@ -205,8 +205,13 @@ function _rsBrowserMediaPermission(audio, camera) {
     });
 }
 
-function _rsDesktopMicrophonePermission(audio) {
-    if (!audio || typeof isTauriDesktop !== 'function' || !isTauriDesktop()) {
+function _rsNativeMicrophonePermission(audio) {
+    var nativeApple = typeof isTauriDesktop === 'function' && isTauriDesktop();
+    if (!nativeApple && typeof isTauriMobile === 'function' && isTauriMobile() &&
+        typeof isIOS === 'function' && isIOS()) {
+        nativeApple = true;
+    }
+    if (!audio || !nativeApple) {
         return Promise.resolve(null);
     }
     if (!window.RS || typeof RS.invoke !== 'function') {
@@ -228,9 +233,9 @@ window.RS.mediaPermissions = {
         if (!audio && !camera) return Promise.resolve(true);
         return _rsAndroidMediaPermission(audio, camera).then(function(androidGranted) {
             if (androidGranted !== null) return androidGranted;
-            return _rsDesktopMicrophonePermission(audio).then(function(desktopMicGranted) {
-                if (desktopMicGranted === false) return false;
-                return _rsBrowserMediaPermission(audio && desktopMicGranted !== true, camera).then(function(browserGranted) {
+            return _rsNativeMicrophonePermission(audio).then(function(nativeMicGranted) {
+                if (nativeMicGranted === false) return false;
+                return _rsBrowserMediaPermission(audio && nativeMicGranted !== true, camera).then(function(browserGranted) {
                     return browserGranted !== false;
                 });
             });
@@ -721,6 +726,7 @@ function formatConvTime(ts) {
     var dd = d.getDate().toString().padStart(2, '0');
     var mm = (d.getMonth() + 1).toString().padStart(2, '0');
     var yyyy = d.getFullYear();
+    if (yyyy === now.getFullYear()) return _dateOrderDMY ? dd + '/' + mm : mm + '/' + dd;
     return _dateOrderDMY ? dd + '/' + mm + '/' + yyyy : mm + '/' + dd + '/' + yyyy;
 }
 

@@ -636,7 +636,23 @@
     }
 
     .theme-toggle-btn { min-width: 44px; min-height: 44px; }
-    .theme-family-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .theme-family-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-3);
+    }
+    .theme-family-card {
+        min-height: 72px;
+        gap: var(--space-2);
+        padding: var(--space-3);
+    }
+    .theme-family-preview { height: 34px; }
+    .theme-family-preview-half::before { inset: 5px; }
+    .theme-family-preview-half::after {
+        right: 7px;
+        bottom: 7px;
+        width: 9px;
+    }
+    .theme-family-name { font-size: var(--text-2xs); }
     .theme-family-option:hover .theme-family-card { transform: none; }
     .selector-badge { min-height: 44px; padding: var(--space-4) var(--space-6); }
     .settings-row { min-height: 48px; }
@@ -929,6 +945,38 @@
 
     .lxmf-compose .lxmf-send-btn {
         box-shadow: var(--shadow-card);
+    }
+
+    .voice-memo-record-btn,
+    .voice-memo-action {
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        flex-basis: 44px;
+    }
+
+    .voice-memo-recorder {
+        margin: 0;
+        border-top: 1px solid var(--border-row);
+        background: var(--surface-panel);
+    }
+
+    .voice-memo-field {
+        min-height: 44px;
+        padding: 0 var(--space-2);
+        gap: var(--space-2);
+    }
+
+    .voice-memo-field .voice-memo-action {
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        flex-basis: 44px;
+    }
+
+    .voice-memo-player {
+        width: min(310px, 76vw);
+        min-width: 210px;
     }
 
     .view-grid-identity {
@@ -2679,9 +2727,50 @@
     .games-new-dialog .bottom-sheet-body {
         padding: var(--space-5) var(--space-5);
         gap: var(--space-5);
+        min-width: 0;
+        overflow-x: hidden;
+    }
+    .bottom-sheet.open.games-new-dialog {
+        width: 100%;
+        max-width: 100vw;
+        min-width: 0;
+        overflow-x: hidden;
+        overflow-y: hidden;
+    }
+    .games-new-dialog .bottom-sheet-header,
+    .games-new-dialog .bottom-sheet-footer,
+    .games-sheet-section {
+        min-width: 0;
+        box-sizing: border-box;
+    }
+    .games-new-dialog .bottom-sheet-title {
+        color: var(--text-primary);
+        font-size: var(--mobile-list-title-size);
+        font-weight: var(--type-weight-semibold);
+    }
+    .games-sheet-subtitle,
+    .games-sheet-header {
+        font-size: var(--mobile-list-detail-size);
     }
     .games-sheet-game-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-2);
+        padding: 2px;
+        margin: -2px;
+    }
+    .games-sheet-game-card {
+        min-height: 96px;
+        padding: var(--space-4);
+        gap: var(--space-3);
+        min-width: 0;
+    }
+    .games-sheet-game-card .game-card-icon {
+        width: 34px;
+        height: 34px;
+    }
+    .games-sheet-game-check {
+        top: var(--space-3);
+        right: var(--space-3);
     }
     .games-sheet-contact-list {
         max-height: 32vh;
@@ -2697,11 +2786,25 @@
         background: var(--surface-row-active);
     }
     .games-sheet-footer {
+        width: 100%;
+        flex-wrap: nowrap;
         padding: var(--space-4) var(--space-5) calc(var(--space-5) + var(--sab));
     }
     .games-sheet-send-btn,
     .games-sheet-cancel-btn {
         flex: 1;
+        min-width: 0;
+        min-height: 44px;
+        padding-inline: var(--space-3);
+    }
+    .games-sheet-empty {
+        flex-wrap: wrap;
+        row-gap: var(--space-3);
+        min-height: 0;
+        padding: var(--space-4);
+    }
+    .games-sheet-open-contacts {
+        width: 100%;
         min-height: 44px;
     }
 }
@@ -4148,6 +4251,6 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 
 @media (max-width: 360px) {
     [data-text-scale-tier="xlarge"] .theme-family-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 }

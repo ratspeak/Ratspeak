@@ -332,7 +332,7 @@
     if (!RS.games.views.has(APP_ID)) {
         RS.games.views.register(APP_ID, {
             displayName: 'Four in a Row',
-            icon: '\u283F',
+            icon: '\u25CF\u25CF\u25CF\u25CF',
             themeClass: 'games-theme-four-in-a-row',
             boardSelector: '.four-board',
             actions: ['challenge', 'accept', 'decline', 'move', 'resign',
