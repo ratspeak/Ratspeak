@@ -2782,6 +2782,13 @@ function _channelsMemberName(member) {
     return member.nickname || _channelsShortHash(member.identity_hash) || 'Channel member';
 }
 
+function _channelsMemberListName(member) {
+    var channelNickname = String(member.nickname || '').trim();
+    if (channelNickname) return channelNickname;
+    var details = _channelsMemberDetails(member);
+    return details.knownName || _channelsShortHash(member.identity_hash) || 'Channel member';
+}
+
 function _channelsMemberKey(member) {
     var identity = String(member.identity_hash || '').toLowerCase();
     if (identity) return 'identity:' + identity;
@@ -3256,7 +3263,7 @@ function _channelsShowMemberList() {
 
 function _channelsBuildMemberRow(room, member) {
     var memberKey = _channelsMemberKey(member);
-    var nameText = _channelsMemberName(member);
+    var nameText = _channelsMemberListName(member);
     var row = document.createElement('button');
     row.type = 'button';
     row.className = 'channel-member-row';
@@ -3385,6 +3392,12 @@ function _channelsRenderMembers(room) {
         omitted.textContent = '+' + model.omitted + ' more in local history';
         list.appendChild(omitted);
     }
+}
+
+function _channelsRefreshMemberNamesFromPeers() {
+    if (!_channelsViewVisible()) return;
+    var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
+    if (room) _channelsRenderMembers(room);
 }
 
 function _channelsUpdateComposer() {
@@ -5524,6 +5537,11 @@ RS.listen('channels_snapshot', function(snapshot) {
 RS.listen('channels_unread', function() {
     channelsRefreshUnread();
 });
+
+if (typeof PeersCache !== 'undefined' && PeersCache &&
+        typeof PeersCache.subscribe === 'function') {
+    PeersCache.subscribe(_channelsRefreshMemberNamesFromPeers);
+}
 
 // Hub discovery is announce-driven. The backend query reads Reticulum's
 // recent announce cache, so presenting it as an active "scan" is misleading.

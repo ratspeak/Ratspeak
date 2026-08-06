@@ -140,6 +140,31 @@ assert.strictEqual(fallback.children[0].textContent, 'A');
 assert.strictEqual(fallback.innerHTML, '',
     'a nickname must never be fed into the hash-derived avatar generator');
 
+var memberNameContext = {
+    String: String,
+    _channelsShortHash: function(hash) { return hash ? 'short-hash' : ''; },
+    _channelsMemberDetails: function(member) {
+        return { knownName: member.known_name || '' };
+    }
+};
+vm.createContext(memberNameContext);
+vm.runInContext(functionSource('_channelsMemberListName'), memberNameContext);
+assert.strictEqual(memberNameContext._channelsMemberListName({
+    identity_hash: knownRemote,
+    nickname: null,
+    known_name: 'Runr01'
+}), 'Runr01', 'a seeded identity must use its already-known peer name immediately');
+assert.strictEqual(memberNameContext._channelsMemberListName({
+    identity_hash: knownRemote,
+    nickname: 'Runr',
+    known_name: 'Runr01'
+}), 'Runr', 'a channel-supplied nickname must supersede the prior known peer name');
+assert.strictEqual(memberNameContext._channelsMemberListName({
+    identity_hash: knownRemote,
+    nickname: null,
+    known_name: ''
+}), 'short-hash', 'an unknown seeded identity must retain the bounded hash fallback');
+
 var transcriptStart = channelsSource.indexOf('function _channelsBuildTranscriptItem');
 var transcriptEnd = channelsSource.indexOf('\nfunction _channelsMemberName', transcriptStart);
 var transcriptSource = channelsSource.slice(transcriptStart, transcriptEnd);
@@ -152,6 +177,7 @@ var memberStart = channelsSource.indexOf('function _channelsBuildMemberRow');
 var memberEnd = channelsSource.indexOf('\nfunction _channelsUpdateComposer', memberStart);
 var memberSource = channelsSource.slice(memberStart, memberEnd);
 assert(memberSource.includes("avatar.className = 'channel-member-avatar'"));
+assert(memberSource.includes('var nameText = _channelsMemberListName(member);'));
 assert(memberSource.includes('_channelsIdentityAvatarSeed(member.identity_hash, member.lxmf_hash, !!member.is_self'));
 assert(!memberSource.includes('channel-identity-marker'));
 assert(!memberSource.includes('row.dataset.tone'));
@@ -240,6 +266,8 @@ assert(channelsSource.includes("built.sheet.classList.add('channel-member-profil
 assert(channelsSource.includes("title: 'Member details'"));
 assert(channelsSource.includes('avatarSize: 64'));
 assert(channelsSource.includes('if (_channelsCompact()) {'));
+assert(channelsSource.includes('PeersCache.subscribe(_channelsRefreshMemberNamesFromPeers);'),
+    'peer-cache hydration must repaint a visible channel roster without requiring a member action');
 
 assert(channelsCss.includes('grid-template-areas:'));
 assert(channelsCss.includes('"avatar author meta"'));
