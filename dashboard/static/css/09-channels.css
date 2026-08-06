@@ -2394,6 +2394,13 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     border-bottom: 1px solid var(--border-row);
 }
 
+/* The join preview already closes with a rule, and the sheet footer supplies
+ * the final boundary. Keep the expandable private-key row visually quiet. */
+.channel-join-sheet .channel-private-access {
+    border-top: 0;
+    border-bottom: 0;
+}
+
 .channel-private-access-body {
     display: flex;
     flex-direction: column;

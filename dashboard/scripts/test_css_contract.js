@@ -109,6 +109,9 @@ assert(/data-scale="100"[\s\S]*?--type-preview-size:\s*18px/.test(sourceByName['
     'text-size specimens must make the preset progression visually distinct');
 assert(/data-text-scale-tier="large"\] \.settings-text-scale-row \.settings-row-info,\s*html\[data-text-scale-tier="xlarge"\] \.settings-text-scale-row \.settings-row-info\s*\{[^}]*flex:\s*0 0 auto/s.test(sourceByName['10-views.css']),
     'the 130% tier must not stretch the text-size introduction away from its presets');
+assert(/\.channel-join-sheet \.channel-private-access\s*\{[^}]*border-top:\s*0;[^}]*border-bottom:\s*0;/s
+    .test(sourceByName['09-channels.css']),
+    'join-channel details must rely on the preview and footer dividers instead of drawing duplicate rules');
 
 var gamesCss = sourceByName['11-games.css'];
 assert(/\.four-board\s*\{[\s\S]*?grid-template-columns:\s*repeat\(7,/.test(gamesCss) &&
