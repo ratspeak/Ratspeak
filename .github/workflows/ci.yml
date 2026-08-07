@@ -72,6 +72,9 @@ jobs:
       - name: Validate shell scripts
         run: bash -n dashboard/build-css.sh scripts/release/*.sh
         working-directory: Ratspeak
+      - name: Validate ordinary workflow dependency pins
+        run: bash scripts/ci/check-workflow-dependency-pins.sh
+        working-directory: Ratspeak
       - name: Build dashboard CSS
         run: bash dashboard/build-css.sh
         working-directory: Ratspeak

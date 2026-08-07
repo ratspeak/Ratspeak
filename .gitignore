@@ -16,6 +16,8 @@ src-tauri/target/
 
 # Maintainer-only scripts are local by default. CI still needs release helpers.
 /scripts/*
+!/scripts/ci/
+!/scripts/ci/check-workflow-dependency-pins.sh
 !/scripts/release/
 !/scripts/release/assert-no-tauri-dev-url.sh
 !/scripts/release/setup-android-signing.sh

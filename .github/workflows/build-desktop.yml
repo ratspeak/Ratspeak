@@ -20,10 +20,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RATSPEAK_RSRETICULUM_REF: e47a1d4932a9f07a21d5e302376e12c0c2279698
-  RATSPEAK_RSLXMF_REF: c0bd1ef82f9bbc67c57a314b004430906e6dc02c
-  RATSPEAK_RSLXST_REF: a381eab55c4fc9af2cc02c555deddf0177e31f85
-  RATSPEAK_LRGP_REF: 3d4bed6770ae58aab07a6b02629065a957d711f7
+  # Keep these ordinary CI/manual-build pins aligned with ci.yml. The
+  # release-*.yml workflows intentionally use coordinated release tags.
+  RATSPEAK_RSRETICULUM_REF: bc419b109d8a6d1c82070fe5f61efd6af56a4530
+  RATSPEAK_RSLXMF_REF: 2e124b10060dc9854151d0ffeed5167ad0f68589
+  RATSPEAK_RSLXST_REF: 47827c9e2adb1fbdff84b12e687581f9c8991344
+  RATSPEAK_LRGP_REF: a3da010b5c2fe835c6ec2d6831d4bae08e9e8766
 
 jobs:
   build:
@@ -99,6 +101,10 @@ jobs:
           repository: ${{ github.repository_owner }}/lrgp-rs
           ref: ${{ env.RATSPEAK_LRGP_REF }}
           path: lrgp-rs
+
+      - name: Validate ordinary workflow dependency pins
+        working-directory: Ratspeak
+        run: bash scripts/ci/check-workflow-dependency-pins.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
