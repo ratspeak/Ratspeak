@@ -5,7 +5,7 @@
 # Ratspeak
 
 Ratspeak is a native desktop and mobile client for E2EE conversations over
-Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/image sharing, voice calls (experimental), LoRa capability, WiFi, BLE, TCP, offline messaging, turn-based games, and more.
+Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/image sharing, voice calls and voice messages (experimental), Channels, LoRa capability, WiFi, BLE, TCP, offline messaging, turn-based games, and more.
 
 [Docs](https://docs.ratspeak.org/) |
 [Build from source](https://docs.ratspeak.org/docs/reference/building-from-source) |
@@ -16,11 +16,11 @@ Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/ima
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](#feature-status)
+[![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](#current-state)
 
 <img src="docs/readme/ratspeak-showcase.png" alt="Ratspeak running on desktop and mobile" width="100%">
 
-###### *Note: Ratspeak is currently in ALPHA. If you are looking for a more stable<br> experience, I recommend waiting until v1.1.0 is released.*
+###### *Note: Ratspeak is currently in ALPHA. If you are looking for a more stable<br> experience, waiting for a later stable release is recommended.*
 
 </div>
 
@@ -38,24 +38,31 @@ your device and becomes your address on the mesh, no personal information needed
 
 ## Current State
 
-Ratspeak is in experimental/alpha status. That means there are bugs, there are quirks, and things are not perfect. We stand by a strict contribute, don't complain policy. If something isn't working up to your standards, or at all, contribute by opening an issue and providing valuable feedback required to fix the issue. Code does not have emotion, so there's no reason a bug report should either.
+Ratspeak is in experimental/alpha status. That means there are bugs, there are quirks, and things are not perfect. If something isn't working up to your standards, or at all, open an issue with the details needed to reproduce it. Useful, direct feedback helps us fix things faster.
 
 Supported app targets are macOS, Windows, Linux, Android, and iOS. Public
 desktop and Android packages will be linked from
 [ratspeak.org/download.html](https://ratspeak.org/download.html) as they are
-released. iOS does not have a public download yet; and macOS is unsigned, with Window's .MSIX needing signing for BLE Peering support. These will come once LLC formation is complete and I have the patience to deal with Apple and signing-certificates.
+released. iOS does not have a public download yet; macOS is unsigned, and the
+Windows MSIX still needs signing for BLE Peering support. These distribution
+lanes are in progress.
 
 ## What You Get
 
 - Account-free messaging over Reticulum.
 - Full offline messaging support.
+- Shared Channels, including local history, member presence, and optional hub
+  hosting.
 - Local Network, TCP, RNode/LoRa support, Bluetooth Peering, and more.
 - Contacts, discovered peers, path requests, interface status, propagation
   status, and transport health in the app.
+- Activity tools for understanding network and messaging events without
+  leaving the app.
 - Experimental peer-to-peer voice calls over [LXST](https://github.com/ratspeak/rsLXST)
   (contacts-only, 0-hop, native microphone/speaker).
+- Experimental voice messages with local recording and playback.
 - Chess, Tic-Tac-Toe, and Four in a Row.
-- I'm tired boss, this whole README is going to get a revamp.
+- Built-in light/dark modes, selectable color themes, and adjustable text size.
 
 ## Install
 
