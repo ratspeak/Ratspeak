@@ -136,12 +136,12 @@ async fn ble_platform_probe() -> BlePlatformProbe {
             ),
             _ => (true, vec![]),
         };
-        return BlePlatformProbe {
+        BlePlatformProbe {
             available,
             missing,
             auth_state: Some(auth),
             permission_required: false,
-        };
+        }
     }
 
     #[cfg(all(feature = "ble", target_os = "android"))]
@@ -158,7 +158,7 @@ async fn ble_platform_probe() -> BlePlatformProbe {
                     .collect()
             })
             .unwrap_or_default();
-        return BlePlatformProbe {
+        BlePlatformProbe {
             available: payload
                 .get("available")
                 .and_then(Value::as_bool)
@@ -169,18 +169,20 @@ async fn ble_platform_probe() -> BlePlatformProbe {
                 .get("permission_required")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-        };
+        }
     }
 
     // macOS: skip btleplug probe; `Manager::new()` triggers the system
     // Bluetooth permission prompt prematurely.
     #[cfg(all(feature = "ble", target_os = "macos"))]
-    return BlePlatformProbe {
-        available: true,
-        missing: vec![],
-        auth_state: None,
-        permission_required: false,
-    };
+    {
+        BlePlatformProbe {
+            available: true,
+            missing: vec![],
+            auth_state: None,
+            permission_required: false,
+        }
+    }
 
     #[cfg(all(
         feature = "ble",
@@ -200,12 +202,12 @@ async fn ble_platform_probe() -> BlePlatformProbe {
             Ok(Err(e)) => (false, vec![e]),
             Err(_) => (false, vec!["BLE check timed out".to_string()]),
         };
-        return BlePlatformProbe {
+        BlePlatformProbe {
             available,
             missing,
             auth_state: None,
             permission_required: false,
-        };
+        }
     }
 
     #[cfg(not(feature = "ble"))]
@@ -312,7 +314,9 @@ pub async fn api_serial_ports() -> AppResult<Value> {
 pub async fn api_ble_available() -> AppResult<Value> {
     // Android: bridge BLE is always present; no probe.
     #[cfg(all(feature = "ble", target_os = "android"))]
-    return Ok(json!({"available": true, "missing": [], "install_cmd": ""}));
+    {
+        Ok(json!({"available": true, "missing": [], "install_cmd": ""}))
+    }
 
     // Linux/BSD desktop keeps its own adapter probe: BlueZ-specific hints the
     // shared probe does not produce.
@@ -328,24 +332,26 @@ pub async fn api_ble_available() -> AppResult<Value> {
     )
     .await
     {
-        Ok(Ok(true)) => {
-            return Ok(json!({"available": true, "missing": [], "install_cmd": ""}));
-        }
+        Ok(Ok(true)) => Ok(json!({"available": true, "missing": [], "install_cmd": ""})),
         Ok(Ok(false)) => {
             #[cfg(target_os = "linux")]
-            return Ok(json!({
-                "available": false,
-                "missing": [
-                    "No BLE adapter found. If your machine has Bluetooth, ensure bluetoothd is running: sudo systemctl start bluetooth"
-                ],
-                "install_cmd": "",
-            }));
+            {
+                Ok(json!({
+                    "available": false,
+                    "missing": [
+                        "No BLE adapter found. If your machine has Bluetooth, ensure bluetoothd is running: sudo systemctl start bluetooth"
+                    ],
+                    "install_cmd": "",
+                }))
+            }
             #[cfg(not(target_os = "linux"))]
-            return Ok(json!({
-                "available": false,
-                "missing": ["No BLE adapter found"],
-                "install_cmd": "",
-            }));
+            {
+                Ok(json!({
+                    "available": false,
+                    "missing": ["No BLE adapter found"],
+                    "install_cmd": "",
+                }))
+            }
         }
         Ok(Err(e)) => {
             #[cfg(target_os = "linux")]
@@ -367,15 +373,15 @@ pub async fn api_ble_available() -> AppResult<Value> {
                     Some(h) => vec![format!("{e} — {h}")],
                     None => vec![e],
                 };
-                return Ok(json!({"available": false, "missing": missing, "install_cmd": ""}));
+                Ok(json!({"available": false, "missing": missing, "install_cmd": ""}))
             }
             #[cfg(not(target_os = "linux"))]
-            return Ok(json!({"available": false, "missing": [e], "install_cmd": ""}));
+            {
+                Ok(json!({"available": false, "missing": [e], "install_cmd": ""}))
+            }
         }
         Err(_) => {
-            return Ok(
-                json!({"available": false, "missing": ["BLE check timed out"], "install_cmd": ""}),
-            );
+            Ok(json!({"available": false, "missing": ["BLE check timed out"], "install_cmd": ""}))
         }
     }
 
@@ -7503,12 +7509,10 @@ mod backbone_args_tests {
 
 #[cfg(test)]
 mod ble_probe_tests {
-    use super::*;
-
     #[cfg(not(feature = "ble"))]
     #[tokio::test]
     async fn ble_probe_without_feature_reports_stub() {
-        let probe = ble_platform_probe().await;
+        let probe = super::ble_platform_probe().await;
         assert!(!probe.available);
         assert_eq!(probe.missing, vec!["ble feature not compiled".to_string()]);
         assert_eq!(probe.auth_state, None);
@@ -7518,7 +7522,7 @@ mod ble_probe_tests {
     #[cfg(all(feature = "ble", target_os = "macos"))]
     #[tokio::test]
     async fn ble_probe_macos_skips_probe_and_reports_available() {
-        let probe = ble_platform_probe().await;
+        let probe = super::ble_platform_probe().await;
         assert!(probe.available);
         assert!(probe.missing.is_empty());
         assert_eq!(probe.auth_state, None);

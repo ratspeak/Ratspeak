@@ -250,9 +250,9 @@ pub async fn submit_ble_rnode_passkey(_passkey: u32) -> AppResult<Value> {
         if rns_interface::ble_rnode::linux_submit_passkey(_passkey) {
             return Ok(json!({ "ok": true }));
         }
-        return Err(AppError::not_found(
+        Err(AppError::not_found(
             "No BLE pairing in progress".to_string(),
-        ));
+        ))
     }
     #[cfg(not(all(feature = "ble", target_os = "linux")))]
     {
