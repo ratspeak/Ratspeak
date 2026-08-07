@@ -237,7 +237,7 @@ pub const fn valid_evidence_retention_secs(value: u64) -> bool {
     value == 0
         || (value >= CHANNEL_HUB_EVIDENCE_RETENTION_MIN_SECS
             && value <= CHANNEL_HUB_EVIDENCE_RETENTION_MAX_SECS
-            && value.is_multiple_of(60 * 60))
+            && value % (60 * 60) == 0)
 }
 
 fn bool_setting(enabled: bool) -> String {
@@ -1140,10 +1140,10 @@ impl HubSession {
         }
         self.seen_ids.push_back(id);
         self.seen_set.insert(id);
-        if self.seen_ids.len() > SEEN_ID_LIMIT
-            && let Some(evicted) = self.seen_ids.pop_front()
-        {
-            self.seen_set.remove(&evicted);
+        if self.seen_ids.len() > SEEN_ID_LIMIT {
+            if let Some(evicted) = self.seen_ids.pop_front() {
+                self.seen_set.remove(&evicted);
+            }
         }
         true
     }
@@ -3018,9 +3018,7 @@ impl HubCore {
     /// Mark room activity for the prune clock. Deliberately does not write:
     /// a durable round trip per relayed message would be absurd.
     fn touch_room(&mut self, room_name: &str) {
-        if let Some(room) = self.rooms.get_mut(room_name)
-            && room.registered
-        {
+        if let Some(room) = self.rooms.get_mut(room_name).filter(|room| room.registered) {
             room.last_used = now_unix();
             room.last_used_dirty = true;
         }
@@ -4375,9 +4373,8 @@ impl HubCore {
         };
         envelope.timestamp_ms = rrc::sanitize_display_timestamp_ms(envelope.timestamp_ms, now_ms());
         let is_action = envelope.message_type == rrc::MessageType::Action;
-        if !is_action
-            && let Some(text) = rrc::text_body(&envelope)
-            && text.trim_start().starts_with('/')
+        if rrc::text_body(&envelope)
+            .is_some_and(|text| !is_action && text.trim_start().starts_with('/'))
         {
             if !self.handle_slash_command(link_id, identity, &envelope, out) {
                 let room = envelope.room.clone();
@@ -4732,7 +4729,7 @@ impl HubCore {
             .get(&room_name)
             .is_some_and(|room| self.can_view_room(room, identity));
         let mut members: Vec<String> = Vec::new();
-        if visible && let Some(room) = self.rooms.get(&room_name) {
+        if let Some(room) = self.rooms.get(&room_name).filter(|_| visible) {
             let mut entries: Vec<(Option<String>, [u8; 16])> = room
                 .members
                 .iter()
@@ -5822,8 +5819,10 @@ impl HubCore {
             envelope: welcome,
         });
 
-        if first_welcome && let Some(greeting) = self.config.greeting.clone() {
-            self.push_greeting(link_id, &greeting, out);
+        if first_welcome {
+            if let Some(greeting) = self.config.greeting.clone() {
+                self.push_greeting(link_id, &greeting, out);
+            }
         }
     }
 
@@ -6812,9 +6811,7 @@ async fn flush_sends(
         // never echoed outward.
         let mut told: HashSet<[u8; 16]> = HashSet::new();
         for (origin, room) in failures {
-            if let Some(origin) = origin
-                && told.insert(origin)
-            {
+            if let Some(origin) = origin.filter(|origin| told.insert(*origin)) {
                 envelopes.insert(
                     0,
                     HubSend::Envelope {
@@ -9175,9 +9172,10 @@ mod tests {
             "/ban vault list",
         ] {
             for send in run_command(&mut core, LINK_A, ID_A, command) {
-                if let HubSend::Envelope { envelope, .. } = send
-                    && let Some(text) = rrc::text_body(&envelope)
-                {
+                if let HubSend::Envelope { envelope, .. } = send {
+                    let Some(text) = rrc::text_body(&envelope) else {
+                        continue;
+                    };
                     rendered.push_str(text);
                     rendered.push('\n');
                 }
@@ -9185,9 +9183,10 @@ mod tests {
         }
         // The room-status notice on join is the other room-describing reply.
         for send in join(&mut core, LINK_B, ID_B, "vault") {
-            if let HubSend::Envelope { envelope, .. } = send
-                && let Some(text) = rrc::text_body(&envelope)
-            {
+            if let HubSend::Envelope { envelope, .. } = send {
+                let Some(text) = rrc::text_body(&envelope) else {
+                    continue;
+                };
                 rendered.push_str(text);
                 rendered.push('\n');
             }

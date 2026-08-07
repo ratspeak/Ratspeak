@@ -660,8 +660,8 @@ fn startup_enabled_public_tcp_server_count(ifaces: &Value) -> usize {
             if !startup_cfg_bool_default_true(entry, "enabled") {
                 continue;
             }
-            if let Some(id) = startup_public_tcp_server_id_from_entry(entry)
-                && !ids.contains(&id)
+            if let Some(id) =
+                startup_public_tcp_server_id_from_entry(entry).filter(|id| !ids.contains(id))
             {
                 ids.push(id);
             }
@@ -764,10 +764,10 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
         mgr.shutdown().await;
     }
     // Persist ratchet + peer-key state before dropping the manager.
-    if let Ok(lxmf) = state.lxmf.lock()
-        && let Some(ref mgr) = *lxmf
-    {
-        mgr.save_crypto_state();
+    if let Ok(lxmf) = state.lxmf.lock() {
+        if let Some(ref mgr) = *lxmf {
+            mgr.save_crypto_state();
+        }
     }
     if let Ok(mut lxmf) = state.lxmf.lock() {
         *lxmf = None;
@@ -1098,8 +1098,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         Ok(mut mgr) => {
             state.set_hw_locked(None);
             state.set_hw_last_error(None);
-            if let Some(preferred) = preferred_identity_hash.as_deref()
-                && mgr.identity_hash != preferred
+            if let Some(preferred) = preferred_identity_hash
+                .as_deref()
+                .filter(|preferred| mgr.identity_hash != *preferred)
             {
                 tracing::error!(
                     loaded = %short_id(&mgr.identity_hash),
@@ -1361,10 +1362,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         );
                     }
                 }
-                if let Ok(mut lxmf) = state.lxmf.lock()
-                    && let Some(mgr) = lxmf.as_mut()
-                {
-                    mgr.delivery_tx = Some(delivery_tx);
+                if let Ok(mut lxmf) = state.lxmf.lock() {
+                    if let Some(mgr) = lxmf.as_mut() {
+                        mgr.delivery_tx = Some(delivery_tx);
+                    }
                 }
 
                 let (pkt_tx, pkt_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
@@ -1685,15 +1686,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             // hash; Auto selects below; Off keeps any stored hash dormant. This
             // is separate from hosted propagation-node enablement.
             let (mode, _) = propagation::read_settings(&state);
-            if let Ok(mut lxmf) = state.lxmf.lock()
-                && let Some(mgr) = lxmf.as_mut()
-            {
-                let identity_id = mgr.identity_hash.clone();
-                mgr.enable_propagation(
-                    mode != propagation::PropagationMode::Off,
-                    &state.db,
-                    &identity_id,
-                );
+            if let Ok(mut lxmf) = state.lxmf.lock() {
+                if let Some(mgr) = lxmf.as_mut() {
+                    let identity_id = mgr.identity_hash.clone();
+                    mgr.enable_propagation(
+                        mode != propagation::PropagationMode::Off,
+                        &state.db,
+                        &identity_id,
+                    );
+                }
             }
             if mode == propagation::PropagationMode::Manual {
                 let stored_pn = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
@@ -1705,16 +1706,17 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             .map(String::from)
                     })
                     .unwrap_or_default();
-                if !stored_pn.is_empty()
-                    && let Ok(mut lxmf) = state.lxmf.lock()
-                    && let Some(mgr) = lxmf.as_mut()
-                {
-                    let identity_id = mgr.identity_hash.clone();
-                    if mgr.set_propagation_node(Some(&stored_pn), &state.db, &identity_id) {
-                        tracing::info!(
-                            node = %short_id(&stored_pn),
-                            "restored Manual-mode propagation node from DB"
-                        );
+                if !stored_pn.is_empty() {
+                    if let Ok(mut lxmf) = state.lxmf.lock() {
+                        if let Some(mgr) = lxmf.as_mut() {
+                            let identity_id = mgr.identity_hash.clone();
+                            if mgr.set_propagation_node(Some(&stored_pn), &state.db, &identity_id) {
+                                tracing::info!(
+                                    node = %short_id(&stored_pn),
+                                    "restored Manual-mode propagation node from DB"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1768,17 +1770,17 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     lxmf_link_mgr.set_link_packet_proof_channel(link_packet_proof_tx);
                     lxmf_link_mgr.set_outbound_resource_proof_channel(link_resource_proof_tx);
 
-                    if let Ok(mut lxmf) = state.lxmf.lock()
-                        && let Some(mgr) = lxmf.as_mut()
-                    {
-                        mgr.set_lxmf_link_control(
-                            link_command_tx,
-                            link_pkt_tx.clone(),
-                            link_identified_rx,
-                            link_closed_rx,
-                            link_packet_proof_rx,
-                            link_resource_proof_rx,
-                        );
+                    if let Ok(mut lxmf) = state.lxmf.lock() {
+                        if let Some(mgr) = lxmf.as_mut() {
+                            mgr.set_lxmf_link_control(
+                                link_command_tx,
+                                link_pkt_tx.clone(),
+                                link_identified_rx,
+                                link_closed_rx,
+                                link_packet_proof_rx,
+                                link_resource_proof_rx,
+                            );
+                        }
                     }
 
                     let lxmf_link_shutdown = state
@@ -1942,12 +1944,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             interval.tick().await;
                             // Defer ratchet cleanup +900s to avoid a large
                             // purge in the first post-resume tick.
-                            if is_fg
-                                && !was_foreground
-                                && let Ok(mut lxmf) = tick_state.lxmf.lock()
-                                && let Some(mgr) = lxmf.as_mut()
-                            {
-                                mgr.mark_foreground_resume();
+                            if is_fg && !was_foreground {
+                                if let Ok(mut lxmf) = tick_state.lxmf.lock() {
+                                    if let Some(mgr) = lxmf.as_mut() {
+                                        mgr.mark_foreground_resume();
+                                    }
+                                }
                             }
                             was_foreground = is_fg;
                         }
@@ -1975,63 +1977,61 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             false
                         };
                     save_counter = save_counter.wrapping_add(1);
-                    let should_save_crypto_state = save_counter.is_multiple_of(600);
+                    let should_save_crypto_state = save_counter % 600 == 0;
                     let tick_state_for_lxmf = tick_state.clone();
                     let tick_result = tokio::task::spawn_blocking(move || {
+                        let empty_result = || {
+                            (
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        };
                         let lock_wait_started = std::time::Instant::now();
-                        if let Ok(mut lxmf) = tick_state_for_lxmf.lxmf.lock()
-                            && let Some(mgr) = lxmf.as_mut()
-                        {
-                            let waited = lock_wait_started.elapsed();
-                            if waited > Duration::from_secs(1) {
-                                tracing::warn!(
-                                    waited_ms = waited.as_millis() as u64,
-                                    "lxmf tick waited on manager lock"
-                                );
-                            }
-                            let hold_started = std::time::Instant::now();
-                            let results = mgr.tick_with_auto_propagation_download_ready(
-                                auto_inbox_download_ready,
+                        let Ok(mut lxmf) = tick_state_for_lxmf.lxmf.lock() else {
+                            return empty_result();
+                        };
+                        let Some(mgr) = lxmf.as_mut() else {
+                            return empty_result();
+                        };
+                        let waited = lock_wait_started.elapsed();
+                        if waited > Duration::from_secs(1) {
+                            tracing::warn!(
+                                waited_ms = waited.as_millis() as u64,
+                                "lxmf tick waited on manager lock"
                             );
-                            let tick_held = hold_started.elapsed();
-                            if tick_held > Duration::from_secs(1) {
-                                tracing::warn!(
-                                    held_ms = tick_held.as_millis() as u64,
-                                    "lxmf tick held manager lock (tick body)"
-                                );
-                            }
-                            let delivery_progress = mgr.take_delivery_progress_updates();
-                            let downloaded = mgr.take_downloaded_propagation_messages();
-                            let (
-                                completed_deposits,
-                                failed_deposits,
-                                completed_syncs,
-                                failed_syncs,
-                            ) = mgr.take_propagation_health();
-                            // Persist crypto state every ~5 min (600 × 500ms).
-                            if should_save_crypto_state {
-                                mgr.save_crypto_state();
-                            }
-                            (
-                                results,
-                                delivery_progress,
-                                downloaded,
-                                completed_deposits,
-                                failed_deposits,
-                                completed_syncs,
-                                failed_syncs,
-                            )
-                        } else {
-                            (
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                            )
                         }
+                        let hold_started = std::time::Instant::now();
+                        let results = mgr
+                            .tick_with_auto_propagation_download_ready(auto_inbox_download_ready);
+                        let tick_held = hold_started.elapsed();
+                        if tick_held > Duration::from_secs(1) {
+                            tracing::warn!(
+                                held_ms = tick_held.as_millis() as u64,
+                                "lxmf tick held manager lock (tick body)"
+                            );
+                        }
+                        let delivery_progress = mgr.take_delivery_progress_updates();
+                        let downloaded = mgr.take_downloaded_propagation_messages();
+                        let (completed_deposits, failed_deposits, completed_syncs, failed_syncs) =
+                            mgr.take_propagation_health();
+                        // Persist crypto state every ~5 min (600 × 500ms).
+                        if should_save_crypto_state {
+                            mgr.save_crypto_state();
+                        }
+                        (
+                            results,
+                            delivery_progress,
+                            downloaded,
+                            completed_deposits,
+                            failed_deposits,
+                            completed_syncs,
+                            failed_syncs,
+                        )
                     })
                     .await;
                     let (
@@ -2070,10 +2070,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             .lock()
                             .ok()
                             .and_then(|guard| guard.clone());
-                        if let Some(node) = hosted_node
-                            && let Ok(mut node) = node.lock()
-                        {
-                            node.tick();
+                        if let Some(node) = hosted_node {
+                            if let Ok(mut node) = node.lock() {
+                                node.tick();
+                            }
                         }
                     }
                     let propagation_deposit_terminal = !completed_propagation_deposits.is_empty()
@@ -2193,13 +2193,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             "failed" => Some(producer::LxmfDeliveryState::Failed),
                             _ => None,
                         };
-                        if let Some(activity_state) = activity_state
-                            && !lxmf_progress_supersedes_state(
-                                &delivery_progress,
-                                msg_id,
-                                new_state,
-                            )
-                        {
+                        if let Some(activity_state) = activity_state.filter(|_| {
+                            !lxmf_progress_supersedes_state(&delivery_progress, msg_id, new_state)
+                        }) {
                             record_activity_if_current(&tick_state, tick_activity_origin, || {
                                 let message = producer::MessageId::from_hex(msg_id)?;
                                 let method = method
@@ -2232,10 +2228,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             if let Ok(mut times) = tick_state.message_send_times.lock() {
                                 times.insert(msg_id.clone(), now);
                             }
-                        } else if *new_state == "failed"
-                            && let Ok(mut times) = tick_state.message_send_times.lock()
-                        {
-                            times.remove(msg_id);
+                        } else if *new_state == "failed" {
+                            if let Ok(mut times) = tick_state.message_send_times.lock() {
+                                times.remove(msg_id);
+                            }
                         }
 
                         // Route delivery-state to originating LRGP session.
@@ -2253,12 +2249,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 new_state,
                             )
                             .await;
-                            if (*new_state == "delivered"
+                            if *new_state == "delivered"
                                 || *new_state == "failed"
-                                || *new_state == "propagated")
-                                && let Ok(mut map) = tick_state.lrgp_msg_to_session.lock()
+                                || *new_state == "propagated"
                             {
-                                map.remove(msg_id);
+                                if let Ok(mut map) = tick_state.lrgp_msg_to_session.lock() {
+                                    map.remove(msg_id);
+                                }
                             }
                         }
                     }
@@ -2301,7 +2298,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
 
                     // Every ~30s: timeout sweep + evict >1h tracking entries.
                     timeout_check_counter += 1;
-                    if timeout_check_counter.is_multiple_of(60) {
+                    if timeout_check_counter % 60 == 0 {
                         propagation::reconcile_active_auto_node(&tick_state).await;
                         propagation::probe_static_nodes_background(&tick_state).await;
                         check_message_timeouts(&tick_state, tick_activity_origin).await;
@@ -2311,13 +2308,19 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             .unwrap_or_default()
                             .as_secs_f64();
                         let cutoff = cleanup_now - 3600.0;
-                        if let Ok(mut times) = tick_state.message_send_times.lock()
-                            && times.len() > 200
+                        if let Some(mut times) = tick_state
+                            .message_send_times
+                            .lock()
+                            .ok()
+                            .filter(|times| times.len() > 200)
                         {
                             times.retain(|_, &mut t| t > cutoff);
                         }
-                        if let Ok(mut map) = tick_state.msg_id_map.lock()
-                            && map.len() > 200
+                        if let Some(mut map) = tick_state
+                            .msg_id_map
+                            .lock()
+                            .ok()
+                            .filter(|map| map.len() > 200)
                         {
                             // No timestamps; hard cap only.
                             if map.len() > 1000 {
@@ -2688,25 +2691,26 @@ async fn send_announce_from_state_inner(
     let (packets, transport_tx) = {
         let mut packets: Vec<([u8; 16], Vec<u8>, bool)> = Vec::new();
         let lock_wait_started = std::time::Instant::now();
-        if let Ok(mut lxmf) = state.lxmf.lock()
-            && let Some(mgr) = lxmf.as_mut()
-        {
-            let waited = lock_wait_started.elapsed();
-            if waited > Duration::from_secs(1) {
-                tracing::warn!(
-                    waited_ms = waited.as_millis() as u64,
-                    "announce waited on lxmf manager lock"
-                );
-            }
-            if let Ok(raw) = mgr.create_announce_packet() {
-                packets.push((mgr.lxmf_dest_hash, raw, true));
-            }
-            if state
-                .propagation_node_hosting_enabled
-                .load(std::sync::atomic::Ordering::Relaxed)
-                && let Ok(raw) = mgr.create_propagation_announce_packet()
-            {
-                packets.push((mgr.propagation_dest_hash, raw, false));
+        if let Ok(mut lxmf) = state.lxmf.lock() {
+            if let Some(mgr) = lxmf.as_mut() {
+                let waited = lock_wait_started.elapsed();
+                if waited > Duration::from_secs(1) {
+                    tracing::warn!(
+                        waited_ms = waited.as_millis() as u64,
+                        "announce waited on lxmf manager lock"
+                    );
+                }
+                if let Ok(raw) = mgr.create_announce_packet() {
+                    packets.push((mgr.lxmf_dest_hash, raw, true));
+                }
+                if state
+                    .propagation_node_hosting_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    if let Ok(raw) = mgr.create_propagation_announce_packet() {
+                        packets.push((mgr.propagation_dest_hash, raw, false));
+                    }
+                }
             }
         }
         let tx = state
@@ -2846,10 +2850,17 @@ fn extract_and_save_attachment(
 ) -> Option<ExtractedAttachment> {
     if let Some(field_bytes) = msg.get_field(lxmf_core::constants::FIELD_FILE_ATTACHMENTS) {
         let mut cursor = std::io::Cursor::new(field_bytes);
-        if let Ok(rmpv::Value::Array(attachments)) = rmpv::decode::read_value(&mut cursor)
-            && let Some(rmpv::Value::Array(pair)) = attachments.first()
-            && pair.len() >= 2
-        {
+        let attachment = rmpv::decode::read_value(&mut cursor)
+            .ok()
+            .and_then(|value| match value {
+                rmpv::Value::Array(attachments) => attachments.into_iter().next(),
+                _ => None,
+            })
+            .and_then(|value| match value {
+                rmpv::Value::Array(pair) if pair.len() >= 2 => Some(pair),
+                _ => None,
+            });
+        if let Some(pair) = attachment {
             let file_name = match &pair[0] {
                 rmpv::Value::Binary(b) => String::from_utf8_lossy(b).to_string(),
                 rmpv::Value::String(s) => s.as_str().unwrap_or("attachment").to_string(),
@@ -2859,28 +2870,32 @@ fn extract_and_save_attachment(
                 rmpv::Value::Binary(b) => b.as_slice(),
                 _ => return None,
             };
-            if let Ok(mut lxmf) = state.lxmf.lock()
-                && let Some(mgr) = lxmf.as_mut()
-            {
-                let stored = mgr.save_attachment(&file_name, file_data);
-                tracing::info!(
-                    size = file_data.len(),
-                    kind = "file",
-                    "extracted inbound attachment"
-                );
-                return Some(ExtractedAttachment {
-                    file_name,
-                    stored_name: stored,
-                    is_image: false,
-                });
+            if let Ok(mut lxmf) = state.lxmf.lock() {
+                if let Some(mgr) = lxmf.as_mut() {
+                    let stored = mgr.save_attachment(&file_name, file_data);
+                    tracing::info!(
+                        size = file_data.len(),
+                        kind = "file",
+                        "extracted inbound attachment"
+                    );
+                    return Some(ExtractedAttachment {
+                        file_name,
+                        stored_name: stored,
+                        is_image: false,
+                    });
+                }
             }
         }
     }
 
     if let Some(field_bytes) = msg.get_field(lxmf_core::constants::FIELD_IMAGE) {
         let mut cursor = std::io::Cursor::new(field_bytes);
-        if let Ok(rmpv::Value::Array(pair)) = rmpv::decode::read_value(&mut cursor)
-            && pair.len() >= 2
+        if let Some(pair) = rmpv::decode::read_value(&mut cursor)
+            .ok()
+            .and_then(|value| match value {
+                rmpv::Value::Array(pair) if pair.len() >= 2 => Some(pair),
+                _ => None,
+            })
         {
             let mime_type = match &pair[0] {
                 rmpv::Value::Binary(b) => String::from_utf8_lossy(b).to_string(),
@@ -2893,20 +2908,20 @@ fn extract_and_save_attachment(
             };
             let ext = mime_type.rsplit('/').next().unwrap_or("png");
             let file_name = format!("image.{ext}");
-            if let Ok(mut lxmf) = state.lxmf.lock()
-                && let Some(mgr) = lxmf.as_mut()
-            {
-                let stored = mgr.save_attachment(&file_name, image_data);
-                tracing::info!(
-                    size = image_data.len(),
-                    kind = "image",
-                    "extracted inbound attachment"
-                );
-                return Some(ExtractedAttachment {
-                    file_name,
-                    stored_name: stored,
-                    is_image: true,
-                });
+            if let Ok(mut lxmf) = state.lxmf.lock() {
+                if let Some(mgr) = lxmf.as_mut() {
+                    let stored = mgr.save_attachment(&file_name, image_data);
+                    tracing::info!(
+                        size = image_data.len(),
+                        kind = "image",
+                        "extracted inbound attachment"
+                    );
+                    return Some(ExtractedAttachment {
+                        file_name,
+                        stored_name: stored,
+                        is_image: true,
+                    });
+                }
             }
         }
     }
@@ -3506,20 +3521,24 @@ async fn process_inbound_lxmf(
     }
 
     // FIELD_TICKET 0x0C: `[expires_f64, token:16]` for stamp bypass.
-    if let Some(ticket_data) = msg.fields.get(&lxmf_core::constants::FIELD_TICKET)
-        && let Some((token, expires)) = decode_lxmf_ticket_field(ticket_data)
-        && let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
+    if let Some((token, expires)) = msg
+        .fields
+        .get(&lxmf_core::constants::FIELD_TICKET)
+        .and_then(|ticket_data| decode_lxmf_ticket_field(ticket_data))
     {
-        mgr.router.ticket_store.add(lxmf_core::ticket::Ticket::new(
-            token,
-            msg.source_hash,
-            expires,
-        ));
-        tracing::debug!(
-            from = %short_id(&hex::encode(msg.source_hash)),
-            "stored inbound ticket for future stamp bypass"
-        );
+        if let Ok(mut lxmf) = state.lxmf.lock() {
+            if let Some(mgr) = lxmf.as_mut() {
+                mgr.router.ticket_store.add(lxmf_core::ticket::Ticket::new(
+                    token,
+                    msg.source_hash,
+                    expires,
+                ));
+                tracing::debug!(
+                    from = %short_id(&hex::encode(msg.source_hash)),
+                    "stored inbound ticket for future stamp bypass"
+                );
+            }
+        }
     }
 
     // Opportunistic ACK; runs before the blocked check on purpose so a
@@ -3531,9 +3550,11 @@ async fn process_inbound_lxmf(
             let tx = mgr.router.transport_tx.clone()?;
             Some((proof, tx))
         });
-        if let Some((proof_raw, tx)) = proof_and_tx
-            && let Ok((proof_hdr, _)) = rns_wire::header::PacketHeader::unpack(&proof_raw)
-        {
+        if let Some((proof_raw, tx, proof_hdr)) = proof_and_tx.and_then(|(proof_raw, tx)| {
+            rns_wire::header::PacketHeader::unpack(&proof_raw)
+                .ok()
+                .map(|(proof_hdr, _)| (proof_raw, tx, proof_hdr))
+        }) {
             let _ = tx.try_send(rns_transport::messages::TransportMessage::Outbound(
                 rns_transport::messages::OutboundRequest {
                     raw: Bytes::from(proof_raw),
@@ -3603,11 +3624,12 @@ async fn process_inbound_lxmf(
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
             .is_some_and(|local_dest: [u8; 16]| local_dest == msg.destination_hash);
-        if local_destination_matches
-            && let Ok(mut lxmf) = state.lxmf.lock()
-            && let Some(mgr) = lxmf.as_mut()
-        {
-            mgr.note_pending_direct_backchannel(msg.source_hash, link_id);
+        if local_destination_matches {
+            if let Ok(mut lxmf) = state.lxmf.lock() {
+                if let Some(mgr) = lxmf.as_mut() {
+                    mgr.note_pending_direct_backchannel(msg.source_hash, link_id);
+                }
+            }
             tracing::debug!(
                 from = %short_id(&source_hash),
                 link_id = %short_id(&hex::encode(link_id)),
@@ -3924,10 +3946,10 @@ fn cache_lxmf_route_hops_from_path_table(
     state: &AppState,
     entries: &[rns_transport::messages::PathTableRpcEntry],
 ) {
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.replace_route_hops_from_path_table(entries);
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            mgr.replace_route_hops_from_path_table(entries);
+        }
     }
 }
 
@@ -4212,9 +4234,7 @@ async fn poll_stats_loop(
                             }
                         }
                         let prev_burst = prev_ingress_burst.get(&key).copied();
-                        if let Some(was_bursting) = prev_burst
-                            && was_bursting != burst_active
-                        {
+                        if prev_burst.is_some_and(|was_bursting| was_bursting != burst_active) {
                             activity_observations.push(
                                 PollActivityObservation::AnnounceIngressBurst {
                                     active: burst_active,
@@ -4326,95 +4346,101 @@ async fn poll_stats_loop(
                 let mut peer_activity_hashes: Vec<String> = Vec::new();
                 let mut delivery_trigger_hashes: Vec<[u8; 16]> = Vec::new();
                 // Aspect-agnostic: crypto cache, announce_history, contact-name refresh.
-                if let Ok(mut lxmf) = state.lxmf.lock()
-                    && let Some(mgr) = lxmf.as_mut()
-                {
-                    let mut identities_changed = false;
-                    let mut router_changed = false;
-                    let mut changed_ratchets: Vec<(
-                        String,
-                        rns_identity::ratchet::ReceivedRatchet,
-                    )> = Vec::new();
-                    for a in &announces {
-                        let dest_hex = hex::encode(a.dest_hash);
-                        tracing::debug!(
-                            dest = %short_id(&dest_hex),
-                            has_pk = a.public_key.is_some(),
-                            has_ratchet = a.ratchet.is_some(),
-                            hops = a.hops,
-                            "processing announce entry"
-                        );
-                        if let Some(ref pk) = a.public_key {
-                            let is_new = !mgr.known_identities.contains_key(&dest_hex);
-                            let (id_changed, ratchet_changed) =
-                                mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
-                            identities_changed |= id_changed;
-                            if ratchet_changed
-                                && let Some(rr) = mgr.received_ratchets.get(&dest_hex)
-                            {
-                                changed_ratchets.push((dest_hex.clone(), *rr));
-                            }
-                            if is_new {
-                                tracing::debug!(
-                                    dest = %short_id(&dest_hex),
-                                    has_ratchet = a.ratchet.is_some(),
-                                    "new remote identity cached from announce"
-                                );
-                            }
-                        }
-                        router_changed |= mgr.update_lxmf_announce_app_data(
-                            a.dest_hash,
-                            a.name_hash,
-                            a.app_data.as_deref(),
-                        );
-                    }
-                    // Persist only announce-derived deltas, off the poll
-                    // loop; the ring and full rewrites stay on the
-                    // rotation/periodic/shutdown saves. Stamp costs persist
-                    // per batch like Python's delivery announce handler.
-                    if router_changed {
-                        mgr.save_router_state();
-                    }
-                    if identities_changed || !changed_ratchets.is_empty() {
-                        let ratchet_dir = mgr.ratchets_dir();
-                        let ki_blob = identities_changed.then(|| mgr.known_identities_blob());
-                        tracing::debug!(
-                            known_identities = mgr.known_identities.len(),
-                            changed_ratchets = changed_ratchets.len(),
-                            router_state_changed = router_changed,
-                            "announce-derived crypto state persisted"
-                        );
-                        tokio::task::spawn_blocking(move || {
-                            let received_dir = ratchet_dir.join("received");
-                            std::fs::create_dir_all(&received_dir).ok();
-                            for (hash_hex, rr) in &changed_ratchets {
-                                let path = received_dir.join(format!("{hash_hex}.ratchet"));
-                                if rr.save(&path).is_err() {
-                                    tracing::warn!(
-                                        reason = "write_failed",
-                                        "Failed to persist received ratchet"
-                                    );
-                                }
-                            }
-                            if let Some(blob) = ki_blob {
-                                let ki_path = ratchet_dir.join("known_identities");
-                                if rns_identity::persistence::atomic_write(&ki_path, &blob).is_err()
+                if let Ok(mut lxmf) = state.lxmf.lock() {
+                    if let Some(mgr) = lxmf.as_mut() {
+                        let mut identities_changed = false;
+                        let mut router_changed = false;
+                        let mut changed_ratchets: Vec<(
+                            String,
+                            rns_identity::ratchet::ReceivedRatchet,
+                        )> = Vec::new();
+                        for a in &announces {
+                            let dest_hex = hex::encode(a.dest_hash);
+                            tracing::debug!(
+                                dest = %short_id(&dest_hex),
+                                has_pk = a.public_key.is_some(),
+                                has_ratchet = a.ratchet.is_some(),
+                                hops = a.hops,
+                                "processing announce entry"
+                            );
+                            if let Some(ref pk) = a.public_key {
+                                let is_new = !mgr.known_identities.contains_key(&dest_hex);
+                                let (id_changed, ratchet_changed) =
+                                    mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
+                                identities_changed |= id_changed;
+                                if let Some(rr) = mgr
+                                    .received_ratchets
+                                    .get(&dest_hex)
+                                    .filter(|_| ratchet_changed)
                                 {
-                                    tracing::warn!(
-                                        reason = "write_failed",
-                                        "Failed to save known identities"
+                                    changed_ratchets.push((dest_hex.clone(), *rr));
+                                }
+                                if is_new {
+                                    tracing::debug!(
+                                        dest = %short_id(&dest_hex),
+                                        has_ratchet = a.ratchet.is_some(),
+                                        "new remote identity cached from announce"
                                     );
                                 }
                             }
-                        });
+                            router_changed |= mgr.update_lxmf_announce_app_data(
+                                a.dest_hash,
+                                a.name_hash,
+                                a.app_data.as_deref(),
+                            );
+                        }
+                        // Persist only announce-derived deltas, off the poll
+                        // loop; the ring and full rewrites stay on the
+                        // rotation/periodic/shutdown saves. Stamp costs persist
+                        // per batch like Python's delivery announce handler.
+                        if router_changed {
+                            mgr.save_router_state();
+                        }
+                        if identities_changed || !changed_ratchets.is_empty() {
+                            let ratchet_dir = mgr.ratchets_dir();
+                            let ki_blob = identities_changed.then(|| mgr.known_identities_blob());
+                            tracing::debug!(
+                                known_identities = mgr.known_identities.len(),
+                                changed_ratchets = changed_ratchets.len(),
+                                router_state_changed = router_changed,
+                                "announce-derived crypto state persisted"
+                            );
+                            tokio::task::spawn_blocking(move || {
+                                let received_dir = ratchet_dir.join("received");
+                                std::fs::create_dir_all(&received_dir).ok();
+                                for (hash_hex, rr) in &changed_ratchets {
+                                    let path = received_dir.join(format!("{hash_hex}.ratchet"));
+                                    if rr.save(&path).is_err() {
+                                        tracing::warn!(
+                                            reason = "write_failed",
+                                            "Failed to persist received ratchet"
+                                        );
+                                    }
+                                }
+                                if let Some(blob) = ki_blob {
+                                    let ki_path = ratchet_dir.join("known_identities");
+                                    if rns_identity::persistence::atomic_write(&ki_path, &blob)
+                                        .is_err()
+                                    {
+                                        tracing::warn!(
+                                            reason = "write_failed",
+                                            "Failed to save known identities"
+                                        );
+                                    }
+                                }
+                            });
+                        }
                     }
                 }
 
                 if let Ok(mut history) = state.announce_history.write() {
                     let current_announce_hashes: std::collections::HashSet<String> =
                         announces.iter().map(|a| hex::encode(a.dest_hash)).collect();
-                    if let Ok(mut seen) = state.seen_announce_hashes.lock()
-                        && seen.len() > 50_000
+                    if let Some(mut seen) = state
+                        .seen_announce_hashes
+                        .lock()
+                        .ok()
+                        .filter(|seen| seen.len() > 50_000)
                     {
                         if current_announce_hashes.is_empty() {
                             seen.clear();
@@ -4484,11 +4510,11 @@ async fn poll_stats_loop(
                                 });
                                 peer_activity_hashes.push(hash_hex.clone());
                                 delivery_trigger_hashes.push(a.dest_hash);
-                            } else if a.name_hash == lxst_telephony_name_hash
-                                && let Some(identity_hash) = a
-                                    .public_key
-                                    .as_ref()
-                                    .map(|pk| rns_crypto::sha::truncated_hash(pk))
+                            } else if let Some(identity_hash) = a
+                                .public_key
+                                .as_ref()
+                                .filter(|_| a.name_hash == lxst_telephony_name_hash)
+                                .map(|pk| rns_crypto::sha::truncated_hash(pk))
                             {
                                 let lxmf_dest = Destination::hash_from_name_and_identity(
                                     db::PEER_SERVICE_LXMF_DELIVERY,
@@ -4564,15 +4590,16 @@ async fn poll_stats_loop(
                 if !delivery_trigger_hashes.is_empty() {
                     delivery_trigger_hashes.sort();
                     delivery_trigger_hashes.dedup();
-                    let triggered = if let Ok(mut lxmf) = state.lxmf.lock()
-                        && let Some(mgr) = lxmf.as_mut()
-                    {
-                        delivery_trigger_hashes
-                            .iter()
-                            .map(|dest| mgr.router.trigger_outbound_for_delivery_announce(*dest))
-                            .sum::<usize>()
-                    } else {
-                        0
+                    let triggered = match state.lxmf.lock() {
+                        Ok(mut lxmf) => lxmf.as_mut().map_or(0, |mgr| {
+                            delivery_trigger_hashes
+                                .iter()
+                                .map(|dest| {
+                                    mgr.router.trigger_outbound_for_delivery_announce(*dest)
+                                })
+                                .sum::<usize>()
+                        }),
+                        Err(_) => 0,
                     };
                     if triggered > 0 {
                         state.lxmf_notify.notify_one();
@@ -5001,8 +5028,8 @@ async fn sweep_stale_game_deliveries(state: &AppState) {
         .lock()
         .ok()
         .and_then(|manager| manager.as_ref().map(|manager| manager.lxmf_hash.clone()));
-    if let Some(identity_id) = active_identity
-        && changed_identities.contains(&identity_id)
+    if let Some(identity_id) =
+        active_identity.filter(|identity_id| changed_identities.contains(identity_id))
     {
         let all = db::spawn_db(state.db.clone(), move |pool| {
             db::list_game_sessions(&pool, &identity_id, None, None)
@@ -5062,8 +5089,9 @@ pub(crate) fn extract_display_name(data: &[u8]) -> String {
         return s.to_string();
     }
     let mut cursor = std::io::Cursor::new(data);
-    if let Ok(value) = rmpv::decode::read_value(&mut cursor)
-        && let Some(name) = extract_name_from_msgpack(&value)
+    if let Some(name) = rmpv::decode::read_value(&mut cursor)
+        .ok()
+        .and_then(|value| extract_name_from_msgpack(&value))
     {
         return name;
     }
@@ -5171,8 +5199,9 @@ async fn try_handle_inbound_lrgp(
         std::collections::HashMap::new();
     for (&key, bytes) in &msg.fields {
         let mut cursor = std::io::Cursor::new(bytes);
-        if let Ok(value) = rmpv::decode::read_value(&mut cursor)
-            && cursor.position() as usize == bytes.len()
+        if let Some(value) = rmpv::decode::read_value(&mut cursor)
+            .ok()
+            .filter(|_| cursor.position() as usize == bytes.len())
         {
             rmpv_fields.insert(key, value);
         } else if let Ok(s) = std::str::from_utf8(bytes) {
@@ -5407,15 +5436,15 @@ async fn try_handle_inbound_lrgp(
                 }
                 _ => ("protocol_error", "Action rejected"),
             };
-            if matches!(&error, lrgp::errors::LrgpError::SessionExpired(_))
-                && let Some(Some(expired)) = state.lrgp_router.with_app(&app_id, |app| {
+            if matches!(&error, lrgp::errors::LrgpError::SessionExpired(_)) {
+                if let Some(Some(expired)) = state.lrgp_router.with_app(&app_id, |app| {
                     app.get_session_record(&session_id, identity_id)
-                })
-            {
-                let _ = db::spawn_db(state.db.clone(), move |pool| {
-                    db::save_game_session(&pool, &expired);
-                })
-                .await;
+                }) {
+                    let _ = db::spawn_db(state.db.clone(), move |pool| {
+                        db::save_game_session(&pool, &expired);
+                    })
+                    .await;
+                }
             }
             send_lrgp_error_best_effort(
                 state,
@@ -6023,14 +6052,15 @@ mod inbound_pipeline_tests {
             while let Some(message) = rx.recv().await {
                 if let rns_transport::messages::TransportMessage::Rpc { query, response_tx } =
                     message
-                    && matches!(
+                {
+                    if matches!(
                         query,
                         rns_transport::messages::TransportQuery::IsBlackholed { .. }
-                    )
-                {
-                    let _ = response_tx.send(
-                        rns_transport::messages::TransportQueryResponse::BoolResult(blackholed),
-                    );
+                    ) {
+                        let _ = response_tx.send(
+                            rns_transport::messages::TransportQueryResponse::BoolResult(blackholed),
+                        );
+                    }
                 }
             }
         });

@@ -2914,9 +2914,7 @@ pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
         "UPDATE messages SET state = 'failed' WHERE state IN ('sending', 'routing', 'propagating', 'sent') AND direction = 'outbound' AND identity_id = ?1",
         params![identity_id],
     );
-    if let Ok(count) = result
-        && count > 0
-    {
+    if let Some(count) = result.ok().filter(|count| *count > 0) {
         tracing::info!("Cleaned up {count} stale outbound message(s)");
     }
 }
@@ -2963,28 +2961,45 @@ pub fn get_hidden_conversations(
         .unwrap_or_default()
 }
 
+fn query_message_file_refs<P>(conn: &Connection, sql: &str, params: P) -> Vec<String>
+where
+    P: rusqlite::Params,
+{
+    let Ok(mut statement) = conn.prepare(sql) else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map(params, |row| {
+        Ok((
+            row.get::<_, String>(0).unwrap_or_default(),
+            row.get::<_, String>(1).unwrap_or_default(),
+        ))
+    }) else {
+        return Vec::new();
+    };
+
+    let mut file_refs = Vec::new();
+    for (attachment, image) in rows.flatten() {
+        if !attachment.is_empty() {
+            file_refs.push(attachment);
+        }
+        if !image.is_empty() {
+            file_refs.push(image);
+        }
+    }
+    file_refs
+}
+
 pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) -> Vec<String> {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return vec![],
     };
 
-    let mut file_refs = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT attachment_stored_name, image_stored_name FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2"
-    )
-        && let Ok(rows) = stmt.query_map(params![dest_hash, identity_id], |row| {
-            Ok((
-                row.get::<_, String>(0).unwrap_or_default(),
-                row.get::<_, String>(1).unwrap_or_default(),
-            ))
-        })
-    {
-        for r in rows.flatten() {
-            if !r.0.is_empty() { file_refs.push(r.0); }
-            if !r.1.is_empty() { file_refs.push(r.1); }
-        }
-    }
+    let file_refs = query_message_file_refs(
+        &conn,
+        "SELECT attachment_stored_name, image_stored_name FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    );
 
     conn.execute(
         "DELETE FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2",
@@ -7727,45 +7742,19 @@ pub fn clear_all_messages(pool: &DbPool, identity_id: &str) -> Vec<String> {
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    let mut file_refs = Vec::new();
-    if identity_id.is_empty() {
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT attachment_stored_name, image_stored_name FROM messages")
-            && let Ok(rows) = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0).unwrap_or_default(),
-                    row.get::<_, String>(1).unwrap_or_default(),
-                ))
-            })
-        {
-            for r in rows.flatten() {
-                if !r.0.is_empty() {
-                    file_refs.push(r.0);
-                }
-                if !r.1.is_empty() {
-                    file_refs.push(r.1);
-                }
-            }
-        }
+    let file_refs = if identity_id.is_empty() {
+        query_message_file_refs(
+            &conn,
+            "SELECT attachment_stored_name, image_stored_name FROM messages",
+            [],
+        )
     } else {
-        if let Ok(mut stmt) = conn.prepare(
+        query_message_file_refs(
+            &conn,
             "SELECT attachment_stored_name, image_stored_name FROM messages WHERE identity_id = ?1",
-        ) && let Ok(rows) = stmt.query_map(params![identity_id], |row| {
-            Ok((
-                row.get::<_, String>(0).unwrap_or_default(),
-                row.get::<_, String>(1).unwrap_or_default(),
-            ))
-        }) {
-            for r in rows.flatten() {
-                if !r.0.is_empty() {
-                    file_refs.push(r.0);
-                }
-                if !r.1.is_empty() {
-                    file_refs.push(r.1);
-                }
-            }
-        }
-    }
+            params![identity_id],
+        )
+    };
     if identity_id.is_empty() {
         conn.execute("DELETE FROM messages", []).ok();
     } else {
@@ -7786,25 +7775,11 @@ pub fn get_identity_file_refs(pool: &DbPool, identity_id: &str) -> Vec<String> {
     if identity_id.is_empty() {
         return vec![];
     }
-    let mut file_refs = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
+    query_message_file_refs(
+        &conn,
         "SELECT attachment_stored_name, image_stored_name FROM messages WHERE identity_id = ?1",
-    ) && let Ok(rows) = stmt.query_map(params![identity_id], |row| {
-        Ok((
-            row.get::<_, String>(0).unwrap_or_default(),
-            row.get::<_, String>(1).unwrap_or_default(),
-        ))
-    }) {
-        for r in rows.flatten() {
-            if !r.0.is_empty() {
-                file_refs.push(r.0);
-            }
-            if !r.1.is_empty() {
-                file_refs.push(r.1);
-            }
-        }
-    }
-    file_refs
+        params![identity_id],
+    )
 }
 
 pub fn clear_all_contacts(pool: &DbPool, identity_id: &str) {
@@ -8150,12 +8125,12 @@ pub fn persist_outbound_game_action(
         )
         .optional()
         .ok()?;
-    if let Some((app_id, version, contact_hash, initiator)) = existing
-        && (app_id != session.app_id
+    if existing.is_some_and(|(app_id, version, contact_hash, initiator)| {
+        app_id != session.app_id
             || version != session.app_version
             || (!contact_hash.is_empty() && contact_hash != session.contact_hash)
-            || (!initiator.is_empty() && initiator != session.initiator))
-    {
+            || (!initiator.is_empty() && initiator != session.initiator)
+    }) {
         return None;
     }
 
@@ -8363,13 +8338,13 @@ pub fn persist_inbound_game_action(
     if validated.session_id != session_id || validated.command != command {
         return None;
     }
-    if let Some(next) = session
-        && (next.session_id != session_id
+    if session.is_some_and(|next| {
+        next.session_id != session_id
             || next.identity_id != identity_id
             || next.app_id != validated.app_id
             || next.app_version != validated.version
-            || next.contact_hash != sender)
-    {
+            || next.contact_hash != sender
+    }) {
         return None;
     }
     let incoming_nonce = validated.nonce;
@@ -8408,15 +8383,17 @@ pub fn persist_inbound_game_action(
         None => {}
     }
 
-    if let (
-        Some((_, established, established_app, established_version, established_initiator)),
-        Some(next),
-    ) = (&existing, session)
-        && ((!established.is_empty() && established != &next.contact_hash)
+    let attempts_rebind = matches!(
+        (&existing, session),
+        (
+            Some((_, established, established_app, established_version, established_initiator)),
+            Some(next),
+        ) if (!established.is_empty() && established != &next.contact_hash)
             || established_app != &next.app_id
             || *established_version != next.app_version
-            || (!established_initiator.is_empty() && established_initiator != &next.initiator))
-    {
+            || (!established_initiator.is_empty() && established_initiator != &next.initiator)
+    );
+    if attempts_rebind {
         tracing::warn!(
             session_id,
             "Refusing to rebind an established LRGP session participant or app"
@@ -8823,9 +8800,7 @@ fn row_to_app_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::V
     });
 
     // Lift known metadata keys to top-level for the frontend.
-    if let serde_json::Value::Object(meta) = &metadata
-        && let Some(obj_map) = obj.as_object_mut()
-    {
+    if let (serde_json::Value::Object(meta), Some(obj_map)) = (&metadata, obj.as_object_mut()) {
         if let Some(board) = meta.get("board") {
             obj_map.insert("state".to_string(), board.clone());
         }

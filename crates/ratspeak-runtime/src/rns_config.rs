@@ -402,8 +402,10 @@ pub fn rnode_names_with_port_prefix(config_dir: &Path, prefix: &str) -> Vec<Stri
     if let Some(arr) = v.get("rnode").and_then(|v| v.as_array()) {
         for entry in arr {
             let port = entry.get("port").and_then(|v| v.as_str()).unwrap_or("");
-            if port.starts_with(prefix)
-                && let Some(name) = entry.get("name").and_then(|v| v.as_str())
+            if let Some(name) = entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .filter(|_| port.starts_with(prefix))
             {
                 names.push(name.to_string());
             }
@@ -479,8 +481,8 @@ pub fn get_all_interfaces(config_dir: &Path) -> Value {
             continue;
         }
 
-        if let Some(ref section_name) = current_section
-            && let Some((key, value)) = parse_key_value(trimmed)
+        if let Some((section_name, (key, value))) =
+            current_section.as_ref().zip(parse_key_value(trimmed))
         {
             if key == "type" || key == "interface_type" {
                 current_iface = Some((
@@ -1009,8 +1011,10 @@ fn interface_block_ranges(content: &str) -> Vec<(String, InterfaceBlockRange)> {
             }
 
             if trimmed.starts_with("[[") {
-                if in_interfaces && let Some(name) = interface_block_name(line) {
-                    current = Some((name.to_string(), offset));
+                if in_interfaces {
+                    if let Some(name) = interface_block_name(line) {
+                        current = Some((name.to_string(), offset));
+                    }
                 }
             } else {
                 in_interfaces = named_top_level_section(line, "interfaces");

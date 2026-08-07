@@ -147,7 +147,7 @@ fn base32_encode_padded(bytes: &[u8]) -> String {
     if bits > 0 {
         out.push(BASE32_ALPHABET[((buffer << (5 - bits)) & 0x1f) as usize] as char);
     }
-    while !out.len().is_multiple_of(8) {
+    while out.len() % 8 != 0 {
         out.push('=');
     }
     out
@@ -233,8 +233,9 @@ fn parse_private_identity_bytes(
         return Err("Unsupported identity backup format".into());
     }
 
-    if let Ok(key_bytes) = hex::decode(text)
-        && key_bytes.len() == 64
+    if let Some(key_bytes) = hex::decode(text)
+        .ok()
+        .filter(|key_bytes| key_bytes.len() == 64)
     {
         return Ok(ParsedIdentityImport {
             key_bytes,
@@ -243,8 +244,10 @@ fn parse_private_identity_bytes(
         });
     }
 
-    if let Ok(key_bytes) = B64.decode(text)
-        && key_bytes.len() == 64
+    if let Some(key_bytes) = B64
+        .decode(text)
+        .ok()
+        .filter(|key_bytes| key_bytes.len() == 64)
     {
         return Ok(ParsedIdentityImport {
             key_bytes,
@@ -253,8 +256,9 @@ fn parse_private_identity_bytes(
         });
     }
 
-    if let Ok(key_bytes) = base32_decode_text(text)
-        && key_bytes.len() == 64
+    if let Some(key_bytes) = base32_decode_text(text)
+        .ok()
+        .filter(|key_bytes| key_bytes.len() == 64)
     {
         return Ok(ParsedIdentityImport {
             key_bytes,
@@ -1339,13 +1343,12 @@ pub async fn api_set_display_name(
     // A live channels session snapshots its nickname at connect, so without
     // this it would keep stamping the superseded name on every outbound
     // envelope for the rest of the session.
-    if !rename.previous_name.is_empty()
-        && rename.previous_name != display_name
-        && let Some(channels) = state.channels_handle()
-    {
-        channels
-            .identity_renamed(&rename.previous_name, &display_name)
-            .await;
+    if !rename.previous_name.is_empty() && rename.previous_name != display_name {
+        if let Some(channels) = state.channels_handle() {
+            channels
+                .identity_renamed(&rename.previous_name, &display_name)
+                .await;
+        }
     }
 
     if updated_in_memory {

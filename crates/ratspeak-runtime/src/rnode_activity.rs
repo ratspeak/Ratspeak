@@ -401,7 +401,7 @@ async fn await_identity_lifecycle_release(
 ) -> bool {
     loop {
         let observed_epoch = state.identity_switch_lock.epoch();
-        if observed_epoch.is_multiple_of(2) {
+        if observed_epoch % 2 == 0 {
             if state.current_identity_session_generation() != identity_generation {
                 return false;
             }
@@ -727,7 +727,7 @@ mod tests {
         let shutdown = rns_runtime::lifecycle::ShutdownSignal::new();
         let origin = state.current_identity_session_generation();
         let before = state.identity_switch_lock.epoch();
-        assert!(before.is_multiple_of(2));
+        assert_eq!(before % 2, 0);
         assert!(await_identity_lifecycle_release(&state, &shutdown, origin).await);
         assert_eq!(state.identity_switch_lock.epoch(), before);
     }

@@ -64,11 +64,13 @@ pub fn sanitize_announced_status(value: &str) -> Result<String, String> {
 /// only happens when an identity-table write bumped `db::identity_generation`.
 pub fn active_identity_snapshot(state: &AppState) -> Option<(String, String)> {
     let generation = db::identity_generation();
-    if let Ok(cache) = state.active_identity_cache.lock()
-        && let Some((cached_generation, snapshot)) = cache.as_ref()
-        && *cached_generation == generation
-    {
-        return snapshot.clone();
+    if let Ok(cache) = state.active_identity_cache.lock() {
+        if let Some((_, snapshot)) = cache
+            .as_ref()
+            .filter(|(cached_generation, _)| *cached_generation == generation)
+        {
+            return snapshot.clone();
+        }
     }
 
     let snapshot = db::get_active_identity(&state.db).and_then(|id| {

@@ -361,10 +361,10 @@ fn atomic_secret_write(path: &Path, tmp: &Path, bytes: &[u8]) -> Result<(), Vaul
 }
 
 fn sync_parent_dir(path: &Path) {
-    if let Some(parent) = path.parent()
-        && let Ok(dir) = std::fs::File::open(parent)
-    {
-        let _ = dir.sync_all();
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
     }
 }
 

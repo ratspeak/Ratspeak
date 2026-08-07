@@ -396,12 +396,13 @@ pub async fn api_clear_paths(state: State<'_, Arc<AppState>>) -> AppResult<Value
         {
             cleared += n;
         }
-        if handle.instance_mode == rns_runtime::reticulum::InstanceMode::Client
-            && let Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) = handle
+        if handle.instance_mode == rns_runtime::reticulum::InstanceMode::Client {
+            if let Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) = handle
                 .query_transport(rns_transport::messages::TransportQuery::DropPathTable)
                 .await
-        {
-            cleared += n;
+            {
+                cleared += n;
+            }
         }
         if let Some(rns_transport::messages::TransportQueryResponse::PathTable(entries)) = handle
             .query_control(rns_transport::messages::TransportQuery::GetPathTable)
@@ -424,10 +425,10 @@ pub async fn api_clear_paths(state: State<'_, Arc<AppState>>) -> AppResult<Value
     state
         .path_activity_baselined
         .store(false, std::sync::atomic::Ordering::Relaxed);
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.replace_route_hops_from_path_table(&[]);
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            mgr.replace_route_hops_from_path_table(&[]);
+        }
     }
     clear_cached_path_stats(&state);
     state.emit_to_all("paths_cleared", json!({ "cleared": cleared }));
@@ -453,12 +454,13 @@ pub async fn api_clear_announces(state: State<'_, Arc<AppState>>) -> AppResult<V
         {
             recent_cleared += n;
         }
-        if handle.instance_mode == rns_runtime::reticulum::InstanceMode::Client
-            && let Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) = handle
+        if handle.instance_mode == rns_runtime::reticulum::InstanceMode::Client {
+            if let Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) = handle
                 .query_control(rns_transport::messages::TransportQuery::DropRecentAnnounces)
                 .await
-        {
-            recent_cleared += n;
+            {
+                recent_cleared += n;
+            }
         }
         let _ = handle
             .query_control(rns_transport::messages::TransportQuery::DropAnnounceQueues)
@@ -727,14 +729,13 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
                 "Factory reset: failed to remove channel hub keys"
             );
         }
-        if let Some(rns_dir) = app_private_rns_config_dir
-            && rns_dir.exists()
-            && std::fs::remove_dir_all(&rns_dir).is_err()
-        {
-            tracing::warn!(
-                reason = "remove_config_failed",
-                "Factory reset: failed to remove app-private Reticulum config"
-            );
+        if let Some(rns_dir) = app_private_rns_config_dir {
+            if rns_dir.exists() && std::fs::remove_dir_all(&rns_dir).is_err() {
+                tracing::warn!(
+                    reason = "remove_config_failed",
+                    "Factory reset: failed to remove app-private Reticulum config"
+                );
+            }
         }
         if let Ok(entries) = std::fs::read_dir(&data_dir) {
             for entry in entries.flatten() {

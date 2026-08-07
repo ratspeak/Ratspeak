@@ -1047,9 +1047,8 @@ pub fn run() {
                 // sits flush under the compose bar (no prev/next/done toolbar).
                 unsafe {
                     use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-                    use std::ffi::{c_char, CStr};
 
-                    let class_name = CStr::from_bytes_with_nul_unchecked(b"WKContentView\0");
+                    let class_name = c"WKContentView";
                     if let Some(cls) = AnyClass::get(class_name) {
                         let sel = objc2::sel!(inputAccessoryView);
 
@@ -1069,7 +1068,7 @@ pub fn run() {
                                     -> *const AnyObject,
                         );
                         // ObjC type encoding: returns @, takes self (@), selector (:).
-                        let types = b"@@:\0".as_ptr() as *const c_char;
+                        let types = c"@@:".as_ptr();
                         objc2::ffi::class_replaceMethod(
                             cls as *const AnyClass as *mut AnyClass,
                             sel,

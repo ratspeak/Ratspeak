@@ -114,8 +114,9 @@ fn find_identity_by_serial(data_dir: &Path, serial: u32) -> Option<HwExisting> {
         if !hwid_path.exists() {
             continue;
         }
-        if let Ok(cfg) = rns_ratkey::HwidConfig::from_file(&hwid_path)
-            && cfg.device.serial == serial
+        if let Some(cfg) = rns_ratkey::HwidConfig::from_file(&hwid_path)
+            .ok()
+            .filter(|cfg| cfg.device.serial == serial)
         {
             return Some(HwExisting {
                 hash: cfg.identity.hash,
@@ -146,8 +147,9 @@ fn slot_occupied(session: &mut PcscPivSession, slot: u8) -> bool {
 
 /// Refuse to overwrite a key that already backs an app identity unless forced.
 fn guard_overwrite(data_dir: &Path, session: &mut PcscPivSession) -> Result<(), String> {
-    if let Some(serial) = session.serial()
-        && let Some(existing) = find_identity_by_serial(data_dir, serial)
+    if let Some(existing) = session
+        .serial()
+        .and_then(|serial| find_identity_by_serial(data_dir, serial))
     {
         let who = if existing.nickname.is_empty() {
             "an existing identity".to_string()

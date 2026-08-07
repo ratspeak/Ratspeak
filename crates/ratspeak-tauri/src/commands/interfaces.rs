@@ -904,17 +904,9 @@ async fn respawn_android_auto_interfaces(state: Arc<AppState>) {
 
     for config in auto_configs {
         let name = config.name.clone();
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        if handle
-            .transport_tx
-            .send(rns_transport::messages::TransportMessage::Rpc {
-                query: rns_transport::messages::TransportQuery::GetInterfaceStats,
-                response_tx: resp_tx,
-            })
+        if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) = handle
+            .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
             .await
-            .is_ok()
-            && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
-                resp_rx.await
         {
             for iface in stats {
                 if iface.name == name {
@@ -1260,10 +1252,10 @@ pub async fn set_announce_ratspeak_usage(
     .map_err(|e| AppError::database_unavailable(format!("Failed to save privacy setting: {e}")))?;
 
     state.set_announce_ratspeak_usage_enabled(enabled);
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.announce_ratspeak_usage = enabled;
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            mgr.announce_ratspeak_usage = enabled;
+        }
     }
 
     state.emit_to_all(
@@ -1521,9 +1513,7 @@ fn validate_lora_radio_params(
 }
 
 fn validate_airtime_limit(value: Option<f64>, label: &str) -> AppResult<()> {
-    if let Some(v) = value
-        && !(v.is_finite() && (0.0..=100.0).contains(&v))
-    {
+    if value.is_some_and(|v| !(v.is_finite() && (0.0..=100.0).contains(&v))) {
         return Err(AppError::bad_request(format!(
             "Invalid {label} airtime limit"
         )));
@@ -3322,10 +3312,10 @@ async fn finish_rnode_interface_replace(
                 None,
             );
             let pending_monitor = outcome.take_rnode_activity_monitor();
-            if state.finish_rnode_lifecycle_operation(&operation_lease)
-                && let Some(pending_monitor) = pending_monitor
-            {
-                let _ = pending_monitor.activate(Arc::clone(&state));
+            if state.finish_rnode_lifecycle_operation(&operation_lease) {
+                if let Some(pending_monitor) = pending_monitor {
+                    let _ = pending_monitor.activate(Arc::clone(&state));
+                }
             }
         }
         Err(error) => {
@@ -3417,10 +3407,10 @@ async fn finish_rnode_interface_replace(
                 },
                 None,
             );
-            if state.finish_rnode_lifecycle_operation(&operation_lease)
-                && let Some(rollback_monitor) = rollback_monitor
-            {
-                let _ = rollback_monitor.activate(Arc::clone(&state));
+            if state.finish_rnode_lifecycle_operation(&operation_lease) {
+                if let Some(rollback_monitor) = rollback_monitor {
+                    let _ = rollback_monitor.activate(Arc::clone(&state));
+                }
             }
         }
     }
@@ -3669,11 +3659,12 @@ pub async fn resume_interface(
                     resumable_interface_tcp_endpoint(&runtime),
                 );
                 let pending_monitor = outcome.take_rnode_activity_monitor();
-                if let Some(lease) = operation_lease.as_ref()
-                    && st.finish_rnode_lifecycle_operation(lease)
-                    && let Some(pending_monitor) = pending_monitor
-                {
-                    let _ = pending_monitor.activate(Arc::clone(&st));
+                if let Some(lease) = operation_lease.as_ref() {
+                    if st.finish_rnode_lifecycle_operation(lease) {
+                        if let Some(pending_monitor) = pending_monitor {
+                            let _ = pending_monitor.activate(Arc::clone(&st));
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -4053,10 +4044,10 @@ pub async fn add_lora_interface(
                                     rnode_activity_transition(RnodeActivityOutcome::Online),
                                     None,
                                 );
-                                if st.finish_rnode_lifecycle_operation(&operation_lease)
-                                    && let Some(pending_monitor) = pending_monitor
-                                {
-                                    let _ = pending_monitor.activate(Arc::clone(&st));
+                                if st.finish_rnode_lifecycle_operation(&operation_lease) {
+                                    if let Some(pending_monitor) = pending_monitor {
+                                        let _ = pending_monitor.activate(Arc::clone(&st));
+                                    }
                                 }
                             }
                             Err(OwnedRnodeReadinessError::Superseded) => return,
@@ -4246,14 +4237,15 @@ pub async fn add_lora_interface(
                 {
                     if let Some((_, rollback_context)) =
                         st_a.take_pending_ble_rnode_activity_operation(&activity_operation)
-                        && let Some((config_dir, name, marker)) = rollback_context
                     {
-                        let _ = crate::commands::shared::rollback_fresh_lora_add_marker(
-                            &st_a,
-                            &config_dir,
-                            &name,
-                            marker,
-                        );
+                        if let Some((config_dir, name, marker)) = rollback_context {
+                            let _ = crate::commands::shared::rollback_fresh_lora_add_marker(
+                                &st_a,
+                                &config_dir,
+                                &name,
+                                marker,
+                            );
+                        }
                     }
                     return;
                 }
@@ -4412,10 +4404,10 @@ pub async fn add_lora_interface(
                                         rnode_activity_transition(RnodeActivityOutcome::Online),
                                         None,
                                     );
-                                    if st.finish_rnode_lifecycle_operation(&operation_lease)
-                                        && let Some(pending_monitor) = pending_monitor
-                                    {
-                                        let _ = pending_monitor.activate(Arc::clone(&st));
+                                    if st.finish_rnode_lifecycle_operation(&operation_lease) {
+                                        if let Some(pending_monitor) = pending_monitor {
+                                            let _ = pending_monitor.activate(Arc::clone(&st));
+                                        }
                                     }
                                 }
                                 Err(OwnedRnodeReadinessError::Superseded) => return,
@@ -4423,16 +4415,15 @@ pub async fn add_lora_interface(
                                     // Rollback only entries this add created;
                                     // a same-name replacement carries a newer
                                     // marker and therefore stays configured.
-                                    if error.is_timeout()
-                                        && let Some(marker) = fresh_marker
-                                    {
-                                        let _ =
-                                            crate::commands::shared::rollback_fresh_lora_add_marker(
+                                    if error.is_timeout() {
+                                        if let Some(marker) = fresh_marker {
+                                            let _ = crate::commands::shared::rollback_fresh_lora_add_marker(
                                                 &st,
                                                 &config_dir,
                                                 &name_for_status,
                                                 marker,
                                             );
+                                        }
                                     }
                                     let step = if error.is_timeout() {
                                         format!(
@@ -4698,10 +4689,10 @@ pub async fn add_lora_interface(
                                     rnode_activity_transition(RnodeActivityOutcome::Online),
                                     None,
                                 );
-                                if st.finish_rnode_lifecycle_operation(&operation_lease)
-                                    && let Some(pending_monitor) = pending_monitor
-                                {
-                                    let _ = pending_monitor.activate(Arc::clone(&st));
+                                if st.finish_rnode_lifecycle_operation(&operation_lease) {
+                                    if let Some(pending_monitor) = pending_monitor {
+                                        let _ = pending_monitor.activate(Arc::clone(&st));
+                                    }
                                 }
                             }
                             Err(OwnedRnodeReadinessError::Superseded) => return,
@@ -5331,9 +5322,10 @@ pub async fn enable_auto_interface(
             "discovery_port and data_port must be 1-65535",
         ));
     }
-    if let (Some(d), Some(p)) = (opts.discovery_port, opts.data_port)
-        && d == p
-    {
+    if matches!(
+        (opts.discovery_port, opts.data_port),
+        (Some(discovery), Some(data)) if discovery == data
+    ) {
         return Err(AppError::bad_request(
             "discovery_port and data_port must differ",
         ));
@@ -5566,17 +5558,10 @@ pub async fn disable_auto_interface(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()))
         {
-            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-            if handle
-                .transport_tx
-                .send(rns_transport::messages::TransportMessage::Rpc {
-                    query: rns_transport::messages::TransportQuery::GetInterfaceStats,
-                    response_tx: resp_tx,
-                })
-                .await
-                .is_ok()
-                && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
-                    resp_rx.await
+            if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
+                handle
+                    .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
+                    .await
             {
                 for iface in stats {
                     if names.iter().any(|name| name == &iface.name) {
@@ -5966,17 +5951,10 @@ pub async fn remove_tcp_connection(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
-            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-            if handle
-                .transport_tx
-                .send(rns_transport::messages::TransportMessage::Rpc {
-                    query: rns_transport::messages::TransportQuery::GetInterfaceStats,
-                    response_tx: resp_tx,
-                })
-                .await
-                .is_ok()
-                && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
-                    resp_rx.await
+            if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
+                handle
+                    .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
+                    .await
             {
                 for iface in stats {
                     if iface.name == name2 {
@@ -6254,17 +6232,10 @@ pub async fn remove_tcp_server(state: State<'_, Arc<AppState>>, name: String) ->
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
-            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-            if handle
-                .transport_tx
-                .send(rns_transport::messages::TransportMessage::Rpc {
-                    query: rns_transport::messages::TransportQuery::GetInterfaceStats,
-                    response_tx: resp_tx,
-                })
-                .await
-                .is_ok()
-                && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
-                    resp_rx.await
+            if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
+                handle
+                    .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
+                    .await
             {
                 for iface in stats {
                     if iface.name == name2 {
@@ -6608,17 +6579,10 @@ pub async fn remove_backbone_connection(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
-            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-            if handle
-                .transport_tx
-                .send(rns_transport::messages::TransportMessage::Rpc {
-                    query: rns_transport::messages::TransportQuery::GetInterfaceStats,
-                    response_tx: resp_tx,
-                })
-                .await
-                .is_ok()
-                && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
-                    resp_rx.await
+            if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
+                handle
+                    .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
+                    .await
             {
                 for iface in stats {
                     if iface.name == name2 {
@@ -6930,17 +6894,10 @@ pub async fn remove_backbone_server(
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.clone()));
         if let Some(handle) = rns_handle {
-            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-            if handle
-                .transport_tx
-                .send(rns_transport::messages::TransportMessage::Rpc {
-                    query: rns_transport::messages::TransportQuery::GetInterfaceStats,
-                    response_tx: resp_tx,
-                })
-                .await
-                .is_ok()
-                && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
-                    resp_rx.await
+            if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
+                handle
+                    .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
+                    .await
             {
                 for iface in stats {
                     if iface.name == name2 {

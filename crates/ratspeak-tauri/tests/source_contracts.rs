@@ -7048,7 +7048,11 @@ fn lxmf_tick_runs_blocking_work_off_async_runtime() {
     let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf source");
 
     assert!(runtime.contains("tokio::task::spawn_blocking(move ||"));
-    assert!(runtime.contains("mgr.tick_with_auto_propagation_download_ready("));
+    // Match the call rather than its line layout so `cargo fmt` cannot break
+    // this source contract by wrapping the receiver onto a preceding line.
+    assert!(
+        runtime.contains("tick_with_auto_propagation_download_ready(auto_inbox_download_ready)")
+    );
     assert!(runtime.contains("lxmf tick worker failed; skipping this tick"));
     assert!(lxmf.contains("OutboundAction::Failed(message) | OutboundAction::Expired(message)"));
     assert!(lxmf.contains("expired_or_attempt_exhausted_outbound_surfaces_failed_state"));

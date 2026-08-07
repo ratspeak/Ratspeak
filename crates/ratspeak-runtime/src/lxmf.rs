@@ -380,9 +380,7 @@ fn standard_chat_fields(ext: &RatspeakChatExtension) -> Vec<(u8, Vec<u8>)> {
             emoji,
             action,
         } => {
-            if action == "add"
-                && let Some(hash) = id_as_32_bytes(target)
-            {
+            if let Some(hash) = id_as_32_bytes(target).filter(|_| action == "add") {
                 fields.push((
                     lxmf_core::constants::FIELD_REACTION,
                     encode_standard_reaction_field(&hash, emoji),
@@ -448,13 +446,10 @@ fn standard_hash_hex(bytes: &[u8]) -> Option<String> {
     if bytes.len() == 32 {
         return Some(hex::encode(bytes));
     }
-    if bytes.len() == 64
-        && let Ok(s) = std::str::from_utf8(bytes)
-        && hex::decode(s).is_ok_and(|b| b.len() == 32)
-    {
-        return Some(s.to_ascii_lowercase());
-    }
-    None
+    std::str::from_utf8(bytes)
+        .ok()
+        .filter(|value| bytes.len() == 64 && hex::decode(value).is_ok_and(|hash| hash.len() == 32))
+        .map(str::to_ascii_lowercase)
 }
 
 // Inbound standard LXMF 1.0.1 fields. Reactions carry no action key — the
@@ -703,14 +698,14 @@ fn message_within_resource_limit(msg: &LxMessage) -> bool {
 }
 
 fn normalize_protocol_delivery_method(msg: &mut LxMessage) {
-    if msg.method == DeliveryMethod::Opportunistic
-        && let Ok(packed) = msg.pack_payload()
-    {
-        let content_size = packed
-            .len()
-            .saturating_sub(TIMESTAMP_SIZE + STRUCT_OVERHEAD);
-        if content_size > OPPORTUNISTIC_MAX_CONTENT_BYTES {
-            msg.method = DeliveryMethod::Direct;
+    if msg.method == DeliveryMethod::Opportunistic {
+        if let Ok(packed) = msg.pack_payload() {
+            let content_size = packed
+                .len()
+                .saturating_sub(TIMESTAMP_SIZE + STRUCT_OVERHEAD);
+            if content_size > OPPORTUNISTIC_MAX_CONTENT_BYTES {
+                msg.method = DeliveryMethod::Direct;
+            }
         }
     }
 }
@@ -1123,14 +1118,14 @@ impl LxmfManager {
             Identity::from_file(&legacy_path)?
         } else {
             let mut found = None;
-            if identities_dir.is_dir()
-                && let Ok(entries) = std::fs::read_dir(&identities_dir)
-            {
-                for entry in entries.flatten() {
-                    let id_file = entry.path().join("identity");
-                    if id_file.exists() {
-                        found = Some(Identity::from_file(&id_file)?);
-                        break;
+            if identities_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&identities_dir) {
+                    for entry in entries.flatten() {
+                        let id_file = entry.path().join("identity");
+                        if id_file.exists() {
+                            found = Some(Identity::from_file(&id_file)?);
+                            break;
+                        }
                     }
                 }
             }
@@ -1202,8 +1197,8 @@ impl LxmfManager {
         if let Ok(entries) = std::fs::read_dir(&received_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if let Some(name) = received_ratchet_hash_from_path(&path)
-                    && let Ok(rr) = ReceivedRatchet::load(&path)
+                if let Some((name, rr)) =
+                    received_ratchet_hash_from_path(&path).zip(ReceivedRatchet::load(&path).ok())
                 {
                     received_ratchets.insert(name.to_string(), rr);
                 }
@@ -1213,8 +1208,10 @@ impl LxmfManager {
         // Binary: repeated [dest_hash:16][pubkey:64] records.
         let ki_path = ratchet_dir.join("known_identities");
         let mut known_identities: HashMap<String, [u8; 64]> = HashMap::new();
-        if ki_path.exists()
-            && let Ok(data) = std::fs::read(&ki_path)
+        if let Some(data) = ki_path
+            .exists()
+            .then(|| std::fs::read(&ki_path))
+            .and_then(Result::ok)
         {
             let mut pos = 0;
             while pos + 80 <= data.len() {
@@ -1452,11 +1449,10 @@ impl LxmfManager {
     }
 
     pub fn export_identity(&self, hash_hex: &str) -> Option<Vec<u8>> {
-        if self.identity_hash == hash_hex
-            && !self.is_hardware
-            && let Some(private_key) = self.identity.get_private_key()
-        {
-            return Some(private_key.to_vec());
+        if self.identity_hash == hash_hex && !self.is_hardware {
+            if let Some(private_key) = self.identity.get_private_key() {
+                return Some(private_key.to_vec());
+            }
         }
 
         let id_file = self
@@ -2637,9 +2633,11 @@ impl LxmfManager {
         let contacts = db::get_all_contacts(db_pool, identity_id);
         let mut count = 0;
         for contact in &contacts {
-            if let Some(hash_str) = contact.get("dest_hash").and_then(|v| v.as_str())
-                && let Ok(bytes) = hex::decode(hash_str)
-                && bytes.len() == 16
+            if let Some(bytes) = contact
+                .get("dest_hash")
+                .and_then(|value| value.as_str())
+                .and_then(|hash| hex::decode(hash).ok())
+                .filter(|bytes| bytes.len() == 16)
             {
                 let mut dest = [0u8; 16];
                 dest.copy_from_slice(&bytes);
@@ -2692,8 +2690,9 @@ impl LxmfManager {
     pub fn known_identities_blob(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(self.known_identities.len() * 80);
         for (hash_hex, pk) in &self.known_identities {
-            if let Ok(hash_bytes) = hex::decode(hash_hex)
-                && hash_bytes.len() == 16
+            if let Some(hash_bytes) = hex::decode(hash_hex)
+                .ok()
+                .filter(|hash_bytes| hash_bytes.len() == 16)
             {
                 data.extend_from_slice(&hash_bytes);
                 data.extend_from_slice(pk);
@@ -2753,12 +2752,11 @@ impl LxmfManager {
             self.known_identities.insert(dest_hash_hex.to_string(), *pk);
         }
         let mut ratchet_changed = false;
-        if let Some(r) = ratchet
-            && self
-                .received_ratchets
+        if let Some(r) = ratchet.filter(|ratchet| {
+            self.received_ratchets
                 .get(dest_hash_hex)
-                .is_none_or(|rr| rr.ratchet_pub != *r)
-        {
+                .is_none_or(|received| received.ratchet_pub != **ratchet)
+        }) {
             self.received_ratchets
                 .insert(dest_hash_hex.to_string(), ReceivedRatchet::new(*r));
             ratchet_changed = true;
@@ -3001,22 +2999,21 @@ impl LxmfManager {
             .unwrap_or(message);
 
         let prop_hash = self.router.outbound_propagation_node;
-        if self.client_propagation_enabled
-            && self.auto_direct_fallback.contains(&hash)
-            && let Some(prop_hash) = prop_hash
-        {
-            tracing::warn!(
-                dest = %crate::short_id(&hex::encode(dest_hash)),
-                prop = %crate::short_id(&hex::encode(prop_hash)),
-                reason = "retry_window_exceeded",
-                attempts = message.delivery_attempts,
-                age_secs = age,
-                "direct link retry window exceeded; elevating Auto send to propagation"
-            );
-            Self::prepare_direct_message_for_propagation(&mut message);
-            self.clear_direct_retry_policy(&hash);
-            self.start_propagation_delivery(message, prop_hash, results);
-            return true;
+        if self.client_propagation_enabled && self.auto_direct_fallback.contains(&hash) {
+            if let Some(prop_hash) = prop_hash {
+                tracing::warn!(
+                    dest = %crate::short_id(&hex::encode(dest_hash)),
+                    prop = %crate::short_id(&hex::encode(prop_hash)),
+                    reason = "retry_window_exceeded",
+                    attempts = message.delivery_attempts,
+                    age_secs = age,
+                    "direct link retry window exceeded; elevating Auto send to propagation"
+                );
+                Self::prepare_direct_message_for_propagation(&mut message);
+                self.clear_direct_retry_policy(&hash);
+                self.start_propagation_delivery(message, prop_hash, results);
+                return true;
+            }
         }
 
         tracing::warn!(
@@ -3165,9 +3162,7 @@ impl LxmfManager {
                         in_flight = report.in_flight_deliveries,
                         "outbound LXMF: Direct Link delivery accepted"
                     );
-                    if let Some(hash) = msg_hash
-                        && !is_ephemeral
-                    {
+                    if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                         results.push((hex::encode(hash), step));
                     }
                 }
@@ -3190,9 +3185,7 @@ impl LxmfManager {
                         self.requeue_direct_after_link_failure(*err.message, dest_hash, &reason)
                     };
                     if requeued {
-                        if let Some(hash) = msg_hash
-                            && !is_ephemeral
-                        {
+                        if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                             results.push((hex::encode(hash), "routing"));
                         }
                     } else {
@@ -3808,8 +3801,10 @@ impl LxmfManager {
         cancelled |= self.ephemeral_outbound.remove(&hash);
         cancelled |= self.in_flight_propagation.remove(&hash).is_some();
 
-        if let Some(ref mut ld) = self.link_delivery
-            && ld.cancel_delivery_by_message_hash(hash)
+        if self
+            .link_delivery
+            .as_mut()
+            .is_some_and(|delivery| delivery.cancel_delivery_by_message_hash(hash))
         {
             cancelled = true;
         }
@@ -4391,9 +4386,7 @@ impl LxmfManager {
                         match ld.start_backchannel_delivery(message, dest_hash) {
                             Ok(_) => {
                                 self.drain_core_backchannel_send_commands();
-                                if let Some(hash) = msg_hash
-                                    && !is_ephemeral
-                                {
+                                if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                                     results.push((hex::encode(hash), "reusing_backchannel"));
                                 }
                                 continue;
@@ -4464,10 +4457,7 @@ impl LxmfManager {
                         if !router_owned {
                             self.router.send(message);
                         }
-                        if identity_known
-                            && let Some(hash) = msg_hash
-                            && !is_ephemeral
-                        {
+                        if let Some(hash) = msg_hash.filter(|_| identity_known && !is_ephemeral) {
                             results.push((hex::encode(hash), "routing"));
                         }
                     }
@@ -4491,9 +4481,7 @@ impl LxmfManager {
                         if !router_owned {
                             self.router.send(message);
                         }
-                        if let Some(hash) = msg_hash
-                            && !is_ephemeral
-                        {
+                        if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                             results.push((hex::encode(hash), "sending_via_link"));
                         }
                     }
@@ -4560,9 +4548,7 @@ impl LxmfManager {
                     message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
                     self.queue_path_rediscovery(dest_hash, drop_existing, reason, false);
                     self.router.send(message);
-                    if let Some(hash) = msg_hash
-                        && !is_ephemeral
-                    {
+                    if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                         results.push((hex::encode(hash), "routing"));
                     }
                     continue;
@@ -4700,10 +4686,7 @@ impl LxmfManager {
                             "outbound LXMF: oversized Link delivery waiting for path"
                         );
                         self.router.send(message);
-                        if identity_known
-                            && let Some(hash) = msg_hash
-                            && !is_ephemeral
-                        {
+                        if let Some(hash) = msg_hash.filter(|_| identity_known && !is_ephemeral) {
                             results.push((hex::encode(hash), "routing"));
                         }
                     }
@@ -4723,9 +4706,7 @@ impl LxmfManager {
                             "outbound LXMF: oversized Link delivery waiting for reusable Link"
                         );
                         self.router.send(message);
-                        if let Some(hash) = msg_hash
-                            && !is_ephemeral
-                        {
+                        if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                             results.push((hex::encode(hash), "sending_via_link"));
                         }
                     }
@@ -5331,7 +5312,6 @@ mod tests {
             get(lxmf_core::constants::FIELD_REPLY_QUOTE).map(Vec::as_slice),
             Some("quoted".as_bytes())
         );
-        const { assert!(EMIT_LEGACY_REPLY_REACTION_ENVELOPE) };
         assert_eq!(
             get(lxmf_core::constants::FIELD_CUSTOM_TYPE).map(Vec::as_slice),
             Some(RATSPEAK_CHAT_CUSTOM_TYPE_V2)

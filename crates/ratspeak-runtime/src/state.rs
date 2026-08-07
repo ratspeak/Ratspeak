@@ -879,7 +879,7 @@ impl AppState {
     /// origin stale first or waits for/purges the already-admitted draft.
     pub fn is_current_activity_origin_fence(&self, fence: ActivityRequestFence) -> bool {
         let current_epoch = self.identity_switch_lock.epoch();
-        fence.identity_lock_epoch.is_multiple_of(2)
+        fence.identity_lock_epoch % 2 == 0
             && current_epoch == fence.identity_lock_epoch
             && self.current_identity_session_generation() == fence.identity_session_generation
             && self.current_activity_boundary_generation() == fence.activity_boundary_generation
@@ -1134,8 +1134,8 @@ impl AppState {
         let displaced_lease = displaced
             .as_ref()
             .and_then(|operation| operation.lifecycle_lease.clone());
-        if let Some(displaced_lease) = displaced_lease
-            && Some(displaced_lease.generation) != lifecycle_generation
+        if let Some(displaced_lease) =
+            displaced_lease.filter(|lease| Some(lease.generation) != lifecycle_generation)
         {
             // Native BLE setup is process-global. Replacing its token also
             // revokes a distinct product transaction before dropping its

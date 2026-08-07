@@ -93,14 +93,14 @@ fn mark_lora_add_freshness_in(
         return None;
     }
 
-    if !registry.contains_key(&key)
-        && registry.len() >= MAX_FRESH_LORA_ADDS
-        && let Some(oldest) = registry
+    if !registry.contains_key(&key) && registry.len() >= MAX_FRESH_LORA_ADDS {
+        if let Some(oldest) = registry
             .iter()
             .min_by_key(|(_, entry)| entry.marked_at)
             .map(|(key, _)| key.clone())
-    {
-        registry.remove(&oldest);
+        {
+            registry.remove(&oldest);
+        }
     }
     let marker = NEXT_FRESH_LORA_ADD_MARKER
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -443,11 +443,11 @@ pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_has
         return false;
     }
 
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.update_remote_crypto(&dest_hash, &public_key, None);
-        mgr.save_crypto_state();
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            mgr.update_remote_crypto(&dest_hash, &public_key, None);
+            mgr.save_crypto_state();
+        }
         tracing::debug!("hydrated LXMF identity from contact card");
         return true;
     }
@@ -684,7 +684,7 @@ async fn disable_ble_peer_inner_locked(state: &Arc<AppState>) -> bool {
     let mut had_live_interface = false;
     if let Some(handle) = rns_handle {
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        if handle
+        let stats = if handle
             .transport_tx
             .send(rns_transport::messages::TransportMessage::Rpc {
                 query: rns_transport::messages::TransportQuery::GetInterfaceStats,
@@ -692,9 +692,17 @@ async fn disable_ble_peer_inner_locked(state: &Arc<AppState>) -> bool {
             })
             .await
             .is_ok()
-            && let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
-                resp_rx.await
         {
+            match resp_rx.await {
+                Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) => {
+                    Some(stats)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(stats) = stats {
             #[cfg(feature = "ble")]
             let mut torn_down = false;
             let iface_count = stats.len();

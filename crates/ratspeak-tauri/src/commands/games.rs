@@ -227,16 +227,16 @@ pub async fn send_game_action(
                 | lrgp::errors::LrgpError::UnsupportedAction { .. } => "protocol_error".into(),
                 _ => "dispatch_failed".into(),
             };
-            if matches!(&error, lrgp::errors::LrgpError::SessionExpired(_))
-                && let Some(Some(expired)) = state_arc.lrgp_router.with_app(&app_id, |app| {
+            if matches!(&error, lrgp::errors::LrgpError::SessionExpired(_)) {
+                if let Some(Some(expired)) = state_arc.lrgp_router.with_app(&app_id, |app| {
                     app.get_session_record(&session_id, &identity_id)
-                })
-            {
-                let _ = db::spawn_db(state_arc.db.clone(), move |pool| {
-                    db::save_game_session(&pool, &expired);
-                })
-                .await;
-                emit_game_sessions(&state_arc, &identity_id, Some(&dest_hash)).await;
+                }) {
+                    let _ = db::spawn_db(state_arc.db.clone(), move |pool| {
+                        db::save_game_session(&pool, &expired);
+                    })
+                    .await;
+                    emit_game_sessions(&state_arc, &identity_id, Some(&dest_hash)).await;
+                }
             }
             let payload =
                 game_action_result_json(false, &session_id, &command, None, Some(&reason));
@@ -530,21 +530,22 @@ pub async fn send_game_action(
                 reason = "resend_required";
                 if let Some(session_state) = state_arc.lrgp_router.with_app(&app_id, |app| {
                     app.get_session_state(&session_id, &identity_id)
-                }) && !session_state.is_empty()
-                {
-                    crate::commands::shared::save_session_from_state(
-                        &state_arc,
-                        SessionStateSave {
-                            session_id: &session_id,
-                            identity_id: &identity_id,
-                            app_id: &app_id,
-                            app_version,
-                            contact_hash: &dest_hash,
-                            session_state: &session_state,
-                            delivery_state: Some("failed"),
-                        },
-                    )
-                    .await;
+                }) {
+                    if !session_state.is_empty() {
+                        crate::commands::shared::save_session_from_state(
+                            &state_arc,
+                            SessionStateSave {
+                                session_id: &session_id,
+                                identity_id: &identity_id,
+                                app_id: &app_id,
+                                app_version,
+                                contact_hash: &dest_hash,
+                                session_state: &session_state,
+                                delivery_state: Some("failed"),
+                            },
+                        )
+                        .await;
+                    }
                 }
             }
 
@@ -646,16 +647,17 @@ pub async fn delete_game_session(
             ));
         }
     }
-    if let Some(app_id) = app_id
-        && state_arc
+    if let Some(app_id) = app_id {
+        if state_arc
             .lrgp_router
             .remove_session(&app_id, &session_id, &identity_id)
             .is_err()
-    {
-        tracing::warn!(
-            reason = "router_remove_failed",
-            "Failed to remove live LRGP session"
-        );
+        {
+            tracing::warn!(
+                reason = "router_remove_failed",
+                "Failed to remove live LRGP session"
+            );
+        }
     }
     state_arc.emit_to_all("game_session_deleted", json!({ "session_id": session_id }));
     Ok(json!({ "session_id": session_id }))

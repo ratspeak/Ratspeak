@@ -197,37 +197,40 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
     // The announce payload is already validated by Reticulum. Make its
     // identity material available immediately; a read-only path-table
     // observation must never delay learning the peer's public key.
-    if let Some(ref public_key) = event.public_key
-        && let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
+    if let Some(ref public_key) = event.public_key {
+        if let Ok(mut lxmf) = state.lxmf.lock() {
+            if let Some(mgr) = lxmf.as_mut() {
+                mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
+            }
+        }
     }
 
-    if let Some(bytes) = event.app_data.as_deref()
-        && let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        let changed = mgr.update_lxmf_announce_app_data(
-            event.destination_hash,
-            rns_identity::name_hash::name_hash(LXMF_DELIVERY_APP_NAME),
-            Some(bytes),
-        );
-        if changed {
-            mgr.save_router_state();
+    if let Some(bytes) = event.app_data.as_deref() {
+        if let Ok(mut lxmf) = state.lxmf.lock() {
+            if let Some(mgr) = lxmf.as_mut() {
+                let changed = mgr.update_lxmf_announce_app_data(
+                    event.destination_hash,
+                    rns_identity::name_hash::name_hash(LXMF_DELIVERY_APP_NAME),
+                    Some(bytes),
+                );
+                if changed {
+                    mgr.save_router_state();
+                }
+            }
         }
     }
 
     let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
 
-    let triggered = if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-        && mgr.has_live_direct_route(event.destination_hash, now_f64())
-    {
-        mgr.router
-            .trigger_outbound_for_delivery_announce(event.destination_hash)
-    } else {
-        0
+    let triggered = match state.lxmf.lock() {
+        Ok(mut lxmf) => lxmf
+            .as_mut()
+            .filter(|mgr| mgr.has_live_direct_route(event.destination_hash, now_f64()))
+            .map_or(0, |mgr| {
+                mgr.router
+                    .trigger_outbound_for_delivery_announce(event.destination_hash)
+            }),
+        Err(_) => 0,
     };
     if triggered > 0 {
         state.lxmf_notify.notify_one();
@@ -376,14 +379,14 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         .and_then(|d| lxmf_core::handlers::pn_name_from_app_data(d))
         .filter(|s| !s.is_empty());
 
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        if let Some(ref public_key) = event.public_key {
-            mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            if let Some(ref public_key) = event.public_key {
+                mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
+            }
+            mgr.router
+                .set_stamp_cost(event.destination_hash, pn.stamp_cost);
         }
-        mgr.router
-            .set_stamp_cost(event.destination_hash, pn.stamp_cost);
     }
 
     let mut entry = json!({
@@ -454,14 +457,14 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         crate::propagation::mark_relay_path_success(state, event.destination_hash);
         state.trim_propagation_nodes();
         crate::propagation::maybe_reselect_on_announce(state).await;
-        let triggered = if let Some(app_data) = event.app_data.as_deref()
-            && let Ok(mut lxmf) = state.lxmf.lock()
-            && let Some(mgr) = lxmf.as_mut()
-        {
-            mgr.router
-                .trigger_outbound_for_propagation_node_announce(event.destination_hash, app_data)
-        } else {
-            0
+        let triggered = match (event.app_data.as_deref(), state.lxmf.lock()) {
+            (Some(app_data), Ok(mut lxmf)) => lxmf.as_mut().map_or(0, |mgr| {
+                mgr.router.trigger_outbound_for_propagation_node_announce(
+                    event.destination_hash,
+                    app_data,
+                )
+            }),
+            _ => 0,
         };
         if triggered > 0 {
             state.lxmf_notify.notify_one();
@@ -489,10 +492,10 @@ async fn refresh_lxmf_route_cache_and_lookup_iface(
 }
 
 fn refresh_lxmf_route_cache_from_path_table(state: &Arc<AppState>, entries: &[PathTableRpcEntry]) {
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.replace_route_hops_from_path_table(entries);
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            mgr.replace_route_hops_from_path_table(entries);
+        }
     }
 }
 

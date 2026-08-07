@@ -685,10 +685,10 @@ fn request_lxmf_path(state: &AppState, remote_lxmf_destination: &str) {
 }
 
 fn cache_remote_lxmf_crypto(state: &AppState, remote_lxmf_destination: &str, public_key: [u8; 64]) {
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.update_remote_crypto(remote_lxmf_destination, &public_key, None);
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            mgr.update_remote_crypto(remote_lxmf_destination, &public_key, None);
+        }
     }
 }
 
@@ -1217,10 +1217,10 @@ async fn reconcile_audio_session(
         .as_ref()
         .is_some_and(|session| session.link_id == active.link_id && session.profile == profile);
     if current_matches {
-        if let Some(session) = audio_session.as_mut()
-            && session.retry_missing_audio(control_tx.clone()).await
-        {
-            emit_audio_session_state(state, "recovered", session);
+        if let Some(session) = audio_session.as_mut() {
+            if session.retry_missing_audio(control_tx.clone()).await {
+                emit_audio_session_state(state, "recovered", session);
+            }
         }
         return;
     }
@@ -1537,13 +1537,13 @@ impl VoiceProfileAdaptation {
         }
 
         let now = Instant::now();
-        if self.link_id == Some(link_id)
-            && let Some(requested) = self.requested_profile
-        {
-            if current == requested {
-                self.requested_profile = None;
-            } else {
-                return None;
+        if self.link_id == Some(link_id) {
+            if let Some(requested) = self.requested_profile {
+                if current == requested {
+                    self.requested_profile = None;
+                } else {
+                    return None;
+                }
             }
         }
 
@@ -1551,13 +1551,14 @@ impl VoiceProfileAdaptation {
 
         if self.dropped_since_switch >= VOICE_PROFILE_DROPPED_FRAME_THRESHOLD
             && self.can_switch(now, VOICE_PROFILE_DOWNGRADE_COOLDOWN)
-            && let Some(profile) = lower_quality_profile(current)
         {
-            self.upgrade_blocked_until = Some(
-                now.checked_add(VOICE_PROFILE_UPGRADE_LOCKOUT_AFTER_DOWNGRADE)
-                    .unwrap_or(now),
-            );
-            return Some(profile);
+            if let Some(profile) = lower_quality_profile(current) {
+                self.upgrade_blocked_until = Some(
+                    now.checked_add(VOICE_PROFILE_UPGRADE_LOCKOUT_AFTER_DOWNGRADE)
+                        .unwrap_or(now),
+                );
+                return Some(profile);
+            }
         }
 
         if self.dropped_since_switch > 0

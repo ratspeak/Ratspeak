@@ -78,16 +78,17 @@ pub async fn set_propagation_hosting(
     .await
     .map_err(|_| AppError::internal("set_propagation_hosting db task panicked"))?;
 
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        crate::apply_lxmf_settings_from_state(&state, mgr);
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            crate::apply_lxmf_settings_from_state(&state, mgr);
+        }
     }
-    if let Ok(slot) = state.propagation_node.lock()
-        && let Some(node) = slot.as_ref()
-        && let Ok(mut node) = node.lock()
-    {
-        node.set_min_stamp_cost(cost);
+    if let Ok(slot) = state.propagation_node.lock() {
+        if let Some(node) = slot.as_ref() {
+            if let Ok(mut node) = node.lock() {
+                node.set_min_stamp_cost(cost);
+            }
+        }
     }
 
     if args.enabled {
@@ -133,10 +134,10 @@ pub async fn set_stamp_settings(
     .await
     .map_err(|_| AppError::internal("set_stamp_settings db task panicked"))?;
 
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        crate::apply_lxmf_settings_from_state(&state, mgr);
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            crate::apply_lxmf_settings_from_state(&state, mgr);
+        }
     }
 
     crate::send_announce_from_origin(&state, activity_origin).await;
@@ -209,10 +210,10 @@ pub async fn set_propagation_mode(
             let st_for_off = st.clone();
             let identity_id = crate::helpers::active_identity_id(&st);
             tokio::task::spawn_blocking(move || {
-                if let Ok(mut lxmf) = st_for_off.lxmf.lock()
-                    && let Some(mgr) = lxmf.as_mut()
-                {
-                    mgr.enable_propagation(false, &st_for_off.db, &identity_id);
+                if let Ok(mut lxmf) = st_for_off.lxmf.lock() {
+                    if let Some(mgr) = lxmf.as_mut() {
+                        mgr.enable_propagation(false, &st_for_off.db, &identity_id);
+                    }
                 }
             })
             .await
@@ -225,10 +226,10 @@ pub async fn set_propagation_mode(
             let st_for_on = st.clone();
             let identity_id = crate::helpers::active_identity_id(&st);
             tokio::task::spawn_blocking(move || {
-                if let Ok(mut lxmf) = st_for_on.lxmf.lock()
-                    && let Some(mgr) = lxmf.as_mut()
-                {
-                    mgr.enable_propagation(true, &st_for_on.db, &identity_id);
+                if let Ok(mut lxmf) = st_for_on.lxmf.lock() {
+                    if let Some(mgr) = lxmf.as_mut() {
+                        mgr.enable_propagation(true, &st_for_on.db, &identity_id);
+                    }
                 }
             })
             .await
@@ -261,14 +262,14 @@ pub async fn set_propagation_mode(
             let st_for_man = st.clone();
             let stored = stored_hash.clone();
             tokio::task::spawn_blocking(move || {
-                if let Ok(mut lxmf) = st_for_man.lxmf.lock()
-                    && let Some(mgr) = lxmf.as_mut()
-                {
-                    mgr.enable_propagation(true, &st_for_man.db, &identity_id);
-                    if !stored.is_empty() && validate_hex(&stored, 32, 32) {
-                        mgr.set_propagation_node(Some(&stored), &st_for_man.db, &identity_id);
-                    } else {
-                        mgr.set_runtime_propagation_node(None);
+                if let Ok(mut lxmf) = st_for_man.lxmf.lock() {
+                    if let Some(mgr) = lxmf.as_mut() {
+                        mgr.enable_propagation(true, &st_for_man.db, &identity_id);
+                        if !stored.is_empty() && validate_hex(&stored, 32, 32) {
+                            mgr.set_propagation_node(Some(&stored), &st_for_man.db, &identity_id);
+                        } else {
+                            mgr.set_runtime_propagation_node(None);
+                        }
                     }
                 }
             })
@@ -934,10 +935,10 @@ pub async fn set_propagation_node(
     if mode == crate::propagation::PropagationMode::Manual {
         let path_request_node = runtime_node;
         tokio::task::spawn_blocking(move || {
-            if let Ok(mut lxmf) = st.lxmf.lock()
-                && let Some(mgr) = lxmf.as_mut()
-            {
-                mgr.set_runtime_propagation_node(runtime_node);
+            if let Ok(mut lxmf) = st.lxmf.lock() {
+                if let Some(mgr) = lxmf.as_mut() {
+                    mgr.set_runtime_propagation_node(runtime_node);
+                }
             }
         })
         .await
@@ -984,14 +985,18 @@ pub async fn sync_propagation(state: State<'_, Arc<AppState>>) -> AppResult<Valu
     }
 
     // Run failure handler if last run failed.
-    let prev_failed = if let Ok(lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_ref()
-        && let Some(ref client) = mgr.propagation_client
-    {
-        client.state() == PropagationClientState::Failed
-    } else {
-        false
-    };
+    let prev_failed = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| {
+            lxmf.as_ref().and_then(|mgr| {
+                mgr.propagation_client
+                    .as_ref()
+                    .map(|client| client.state() == PropagationClientState::Failed)
+            })
+        })
+        .unwrap_or(false);
     if prev_failed {
         let st: Arc<AppState> = Arc::clone(&state);
         crate::propagation::handle_sync_failure(&st).await;

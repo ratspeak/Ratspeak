@@ -243,11 +243,11 @@ pub async fn import_contact_card(
     .await
     .map_err(|_| AppError::internal("contact-card import db task panicked"))?;
 
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.update_remote_crypto(&dest_hash, &card.public_key, None);
-        mgr.save_crypto_state();
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(mgr) = lxmf.as_mut() {
+            mgr.update_remote_crypto(&dest_hash, &card.public_key, None);
+            mgr.save_crypto_state();
+        }
     }
 
     state.emit_to_all("contacts_update", json!(contacts_list));

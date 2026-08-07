@@ -2798,8 +2798,8 @@ async fn run_manager(input: ChannelsManagerInput) {
                             secret,
                             activity_fence,
                         ).await;
-                        if let Ok(joined_room) = result.as_ref()
-                            && let Some(session) = active.as_ref()
+                        if let (Some(joined_room), Some(session)) =
+                            (result.as_ref().ok(), active.as_ref())
                         {
                             let destination = hex::encode(session.destination_hash);
                             mutate_snapshot(&snapshot, |state| {
@@ -2845,9 +2845,8 @@ async fn run_manager(input: ChannelsManagerInput) {
                             room,
                             activity_fence,
                         ).await;
-                        if result.is_ok()
-                            && let (Some(room), Some(session)) =
-                                (desired_room, active.as_ref())
+                        if let (true, Some(room), Some(session)) =
+                            (result.is_ok(), desired_room, active.as_ref())
                         {
                             let destination = hex::encode(session.destination_hash);
                             mutate_snapshot(&snapshot, |state| {
@@ -2895,8 +2894,8 @@ async fn run_manager(input: ChannelsManagerInput) {
                     }
                     ChannelsCommand::IdentityRenamed { previous, current } => {
                         let mut adopted_target = None;
-                        if let Some(session) = active.as_mut()
-                            && let Some(adopted) = adopt_renamed_nickname(
+                        if let Some(session) = active.as_mut() {
+                            if let Some(adopted) = adopt_renamed_nickname(
                                 &session.nickname,
                                 &previous,
                                 &current,
@@ -2904,14 +2903,17 @@ async fn run_manager(input: ChannelsManagerInput) {
                                     .limits
                                     .max_nick_bytes
                                     .unwrap_or(DEFAULT_NICK_MAX_BYTES),
-                            )
-                        {
-                            session.nickname = adopted.clone();
-                            adopted_target = Some((hex::encode(session.destination_hash), adopted.clone()));
-                            mutate_snapshot(&snapshot, |snapshot| {
-                                snapshot.nickname = Some(adopted);
-                            });
-                            emit_snapshot(&emitter, &snapshot);
+                            ) {
+                                session.nickname = adopted.clone();
+                                adopted_target = Some((
+                                    hex::encode(session.destination_hash),
+                                    adopted.clone(),
+                                ));
+                                mutate_snapshot(&snapshot, |snapshot| {
+                                    snapshot.nickname = Some(adopted);
+                                });
+                                emit_snapshot(&emitter, &snapshot);
+                            }
                         }
                         if let Some((destination, adopted)) = adopted_target {
                             mutate_snapshot(&snapshot, |state| {
@@ -2977,11 +2979,11 @@ async fn run_manager(input: ChannelsManagerInput) {
                         let _ = result_tx.send(());
                     }
                     ChannelsCommand::FlushHistory { result_tx } => {
-                        if let Some(session) = active.as_mut()
-                            && enqueue_session_persistence(&history, session)
-                        {
-                            history.project(&snapshot);
-                            emit_snapshot(&emitter, &snapshot);
+                        if let Some(session) = active.as_mut() {
+                            if enqueue_session_persistence(&history, session) {
+                                history.project(&snapshot);
+                                emit_snapshot(&emitter, &snapshot);
+                            }
                         }
                         let _ = result_tx.send(history.barrier().await);
                     }
@@ -3316,12 +3318,11 @@ async fn run_manager(input: ChannelsManagerInput) {
                 }
             }
             completion = greeting_resource_completion_rx.recv() => {
-                if let Some(completion) = completion
-                    && let Some(active) = active.as_mut()
-                    && apply_hub_greeting_resource_completion(active, &activity, completion)
-                {
-                    sync_session_snapshot(active, &snapshot);
-                    emit_snapshot(&emitter, &snapshot);
+                if let (Some(completion), Some(active)) = (completion, active.as_mut()) {
+                    if apply_hub_greeting_resource_completion(active, &activity, completion) {
+                        sync_session_snapshot(active, &snapshot);
+                        emit_snapshot(&emitter, &snapshot);
+                    }
                 }
             }
         }
@@ -4289,22 +4290,23 @@ async fn part_room(
         .get(&room)
         .map(|context| context.token)
         .unwrap_or_else(activity::ChannelRoomToken::random);
-    if prior == ChannelRoomPhase::Joining
-        && let Some(join) = active
+    if prior == ChannelRoomPhase::Joining {
+        if let Some(join) = active
             .room_activity
             .get_mut(&room)
             .and_then(|context| context.join.take())
-    {
-        record_room_operation(
-            activity_recorder,
-            active.activity,
-            room_token,
-            RoomOperationContext {
-                origin: activity_fence,
-                ..join
-            },
-            activity::ChannelRoomTransition::JoinCancelled,
-        );
+        {
+            record_room_operation(
+                activity_recorder,
+                active.activity,
+                room_token,
+                RoomOperationContext {
+                    origin: activity_fence,
+                    ..join
+                },
+                activity::ChannelRoomTransition::JoinCancelled,
+            );
+        }
     }
     let operation = RoomOperationContext {
         correlation_id: CorrelationId::random(),
@@ -5595,12 +5597,11 @@ fn apply_parted(active: &mut ActiveSession, envelope: &Envelope) {
                 .and_then(|hash| hex::decode(hash).ok())
                 .is_none_or(|identity| !identities.iter().any(|left| left.as_slice() == identity))
         });
-    } else if let Some(nickname) = envelope.nickname.as_deref()
-        && let Some(index) = room
-            .members
+    } else if let Some(index) = envelope.nickname.as_deref().and_then(|nickname| {
+        room.members
             .iter()
             .position(|member| member.nickname.as_deref() == Some(nickname) && !member.is_self)
-    {
+    }) {
         room.members.remove(index);
     }
     let nickname = envelope.nickname.clone();
@@ -5682,9 +5683,12 @@ fn append_content(
         envelope.source == active.source,
     );
     item.mentioned = mentioned;
-    if let Some(room_name) = envelope.room.as_deref()
-        && let Some(room) = active.rooms.get_mut(room_name)
-    {
+    if let Some((room_name, room)) = envelope.room.as_deref().and_then(|room_name| {
+        active
+            .rooms
+            .get_mut(room_name)
+            .map(|room| (room_name, room))
+    }) {
         // RRC content received over the authenticated hub Link is a live,
         // hub-attested observation of its source, not an independently signed
         // peer claim. Once membership is confirmed, a room message/action is
@@ -5967,13 +5971,14 @@ fn expire_room_transitions(
     }
     for name in parted_out {
         rooms.remove(&name);
-        if let Some(context) = room_activity.remove(&name)
-            && let Some(operation) = context.part
+        if let Some((token, operation)) = room_activity
+            .remove(&name)
+            .and_then(|context| context.part.map(|operation| (context.token, operation)))
         {
             record_room_operation(
                 activity_recorder,
                 session_activity,
-                context.token,
+                token,
                 operation,
                 activity::ChannelRoomTransition::PartTimedOut,
             );
