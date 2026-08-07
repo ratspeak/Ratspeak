@@ -13,7 +13,9 @@
 
   void setWebView(org.ratspeak.android.RustWebView);
   java.lang.Class getAppClass(...);
+  int getId();
   java.lang.String getVersion();
+  int startActivity(...);
 }
 
 -keep class org.ratspeak.android.Ipc {
