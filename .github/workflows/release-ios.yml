@@ -87,6 +87,32 @@ jobs:
         working-directory: Ratspeak
         run: bash dashboard/build-css.sh
 
+      - name: Validate TestFlight configuration
+        if: ${{ inputs.build_mode == 'testflight' }}
+        shell: bash
+        env:
+          IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+          APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
+        run: |
+          for name in \
+            IOS_DISTRIBUTION_CERTIFICATE_BASE64 \
+            IOS_DISTRIBUTION_CERTIFICATE_PASSWORD \
+            IOS_PROVISIONING_PROFILE_BASE64 \
+            APPSTORE_API_PRIVATE_KEY \
+            APPLE_TEAM_ID \
+            APPSTORE_API_KEY_ID \
+            APPSTORE_ISSUER_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing required TestFlight configuration: $name" >&2
+              exit 1
+            fi
+          done
+
       - name: Import iOS signing credentials
         if: ${{ inputs.build_mode == 'testflight' }}
         shell: bash
@@ -95,13 +121,6 @@ jobs:
           IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
         run: |
-          for name in IOS_DISTRIBUTION_CERTIFICATE_BASE64 IOS_DISTRIBUTION_CERTIFICATE_PASSWORD IOS_PROVISIONING_PROFILE_BASE64; do
-            if [ -z "${!name:-}" ]; then
-              echo "Missing required iOS signing secret: $name" >&2
-              exit 1
-            fi
-          done
-
           CERTIFICATE_PATH="$RUNNER_TEMP/ios_distribution.p12"
           PROFILE_PATH="$RUNNER_TEMP/ratspeak.mobileprovision"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
@@ -119,11 +138,6 @@ jobs:
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/ratspeak.mobileprovision"
 
-      - name: Use App Store export method
-        if: ${{ inputs.build_mode == 'testflight' }}
-        working-directory: Ratspeak/src-tauri/gen/apple
-        run: /usr/libexec/PlistBuddy -c "Set :method app-store-connect" ExportOptions.plist
-
       - name: Build iOS simulator smoke app
         if: ${{ inputs.build_mode == 'simulator-smoke' }}
         shell: bash
@@ -137,10 +151,19 @@ jobs:
         if: ${{ inputs.build_mode == 'testflight' }}
         shell: bash
         working-directory: Ratspeak/src-tauri
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri ios build --target aarch64
+          cargo tauri ios build --ci --target aarch64 \
+            --build-number "${GITHUB_RUN_NUMBER}" \
+            --export-method app-store-connect
+
+      - name: Check bundled privacy manifest
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/assert-ios-privacy-manifest.sh src-tauri/gen/apple/build
 
       - name: Check for bundled dev URLs
         shell: bash

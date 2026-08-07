@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		090776E6170ADE7C67826358 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1761BAEB380B3C49A6C61EE0 /* WebKit.framework */; };
+		B1C2D3E4F5061728394A5B6C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* PrivacyInfo.xcprivacy */; };
 		2E0F5B881FADDBAB4BB805C6 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 2E9BF6B30D57306E023AF667 /* assets */; };
 		3AFECF06DB3749B719B25A9F /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C1D65839F75EF5BD851F181C /* MetalKit.framework */; };
 		3C69065B8E97EFD9386FC636 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 7FCB0EE758931AA0239C1C7A /* LaunchScreen.storyboard */; };
@@ -24,6 +25,7 @@
 
 /* Begin PBXFileReference section */
 		0DEA56EFD94DD906484BF35A /* port.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = port.rs; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		1761BAEB380B3C49A6C61EE0 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		1934C7564E789311F6605A72 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		1CB7D0B71AC0A8D943A2083E /* Ratspeak.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ratspeak.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -102,6 +104,7 @@
 			isa = PBXGroup;
 			children = (
 				1934C7564E789311F6605A72 /* Info.plist */,
+				A1B2C3D4E5F60718293A4B5C /* PrivacyInfo.xcprivacy */,
 				32362064E80F2706EC43B0EA /* ratspeak_iOS.entitlements */,
 			);
 			path = ratspeak_iOS;
@@ -216,6 +219,7 @@
 			files = (
 				3CE461FDA76AB792DA3F1DDF /* Assets.xcassets in Resources */,
 				3C69065B8E97EFD9386FC636 /* LaunchScreen.storyboard in Resources */,
+				B1C2D3E4F5061728394A5B6C /* PrivacyInfo.xcprivacy in Resources */,
 				2E0F5B881FADDBAB4BB805C6 /* assets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

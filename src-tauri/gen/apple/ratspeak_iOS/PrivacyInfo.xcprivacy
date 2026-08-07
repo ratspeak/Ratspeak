@@ -14,9 +14,10 @@
         - rusqlite / SQLite file operations.
 
       Ratspeak does not transmit any off-device telemetry, does not perform
-      cross-app tracking, and does not embed any ad/analytics SDK. Mesh
-      messages are end-to-end encrypted and only flow between peers; no
-      backend owned by the Ratspeak developer collects user data.
+      cross-app tracking, and does not embed any ad/analytics SDK. Direct
+      messages are end-to-end encrypted between peers. Public channel
+      messages are relayed by the hub the user chooses; no backend owned by
+      the Ratspeak developer collects user data.
     -->
 
     <key>NSPrivacyTracking</key>
@@ -42,8 +43,8 @@
         <dict>
             <!--
               std::fs metadata, SQLite file stat, Tauri fs plugin file reads.
-              Reason C617.1: "display timestamps to the user inside the app"
-              — surfaced in the Messages and Settings views.
+              Reason C617.1: access timestamps, sizes, or other metadata for
+              files inside the app container.
             -->
             <key>NSPrivacyAccessedAPIType</key>
             <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>

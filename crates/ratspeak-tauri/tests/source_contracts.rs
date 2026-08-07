@@ -4534,6 +4534,41 @@ fn apple_bluetooth_permission_copy_is_current_and_aligned() {
 }
 
 #[test]
+fn ios_project_model_owns_app_store_info_declarations() {
+    let root = repo_root();
+    let project =
+        read_source(root.join("src-tauri/gen/apple/project.yml")).expect("iOS project model");
+    let info = read_source(root.join("src-tauri/gen/apple/ratspeak_iOS/Info.plist"))
+        .expect("generated iOS Info.plist");
+
+    for key in [
+        "CFBundleURLTypes",
+        "NSBluetoothAlwaysUsageDescription",
+        "NSBluetoothPeripheralUsageDescription",
+        "NSBonjourServices",
+        "NSCameraUsageDescription",
+        "NSLocalNetworkUsageDescription",
+        "NSMicrophoneUsageDescription",
+        "NSPhotoLibraryAddUsageDescription",
+        "NSPhotoLibraryUsageDescription",
+        "UIBackgroundModes",
+    ] {
+        assert!(project.contains(key), "project.yml must own {key}");
+        assert!(
+            info.contains(key),
+            "generated Info.plist must contain {key}"
+        );
+    }
+    for mode in ["audio", "bluetooth-central", "bluetooth-peripheral"] {
+        assert!(project.contains(mode), "project.yml must own {mode}");
+        assert!(
+            info.contains(mode),
+            "generated Info.plist must contain {mode}"
+        );
+    }
+}
+
+#[test]
 fn ios_release_assets_use_supported_single_size_appearance_catalog() {
     let root = repo_root();
     let catalog_dir = root.join("src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset");
@@ -4575,7 +4610,7 @@ fn ios_release_assets_use_supported_single_size_appearance_catalog() {
 
     let project =
         read_source(root.join("src-tauri/gen/apple/project.yml")).expect("iOS project model");
-    assert!(project.contains("Keep CFBundleURLTypes in the static Info.plist"));
+    assert!(project.contains("CFBundleURLTypes:"));
 }
 
 #[test]
@@ -4768,6 +4803,38 @@ fn release_workflows_pin_v1_0_26_and_stage_tag_builds_as_prereleases() {
     for dependency_ref in dependency_refs {
         assert!(ios.contains(dependency_ref));
     }
+    assert!(ios.contains(r#"--build-number "${GITHUB_RUN_NUMBER}""#));
+    assert!(ios.contains("--export-method app-store-connect"));
+    assert!(ios.contains("APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}"));
+    for required in [
+        "IOS_DISTRIBUTION_CERTIFICATE_BASE64",
+        "IOS_DISTRIBUTION_CERTIFICATE_PASSWORD",
+        "IOS_PROVISIONING_PROFILE_BASE64",
+        "APPSTORE_API_PRIVATE_KEY",
+        "APPLE_TEAM_ID",
+        "APPSTORE_API_KEY_ID",
+        "APPSTORE_ISSUER_ID",
+    ] {
+        assert!(ios.contains(required));
+    }
+    assert!(!ios.contains("PlistBuddy"));
+    assert!(ios.contains("assert-ios-privacy-manifest.sh"));
+
+    let ios_project = read_source(root.join("src-tauri/gen/apple/project.yml"))
+        .expect("iOS project specification");
+    assert!(ios_project.contains("path: ratspeak_iOS/PrivacyInfo.xcprivacy"));
+    assert!(ios_project.contains("buildPhase: resources"));
+
+    let ios_pbx = read_source(root.join("src-tauri/gen/apple/ratspeak.xcodeproj/project.pbxproj"))
+        .expect("generated iOS project");
+    assert!(ios_pbx.contains("PrivacyInfo.xcprivacy in Resources"));
+
+    let privacy_manifest =
+        read_source(root.join("src-tauri/gen/apple/ratspeak_iOS/PrivacyInfo.xcprivacy"))
+            .expect("iOS privacy manifest");
+    assert!(privacy_manifest.contains("NSPrivacyTracking"));
+    assert!(privacy_manifest.contains("NSPrivacyAccessedAPITypes"));
+    assert!(privacy_manifest.contains("Public channel"));
 }
 
 #[test]

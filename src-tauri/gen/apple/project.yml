@@ -32,16 +32,36 @@ targets:
       - path: Assets.xcassets
       - path: Externals
       - path: ratspeak_iOS
+      - path: ratspeak_iOS/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - path: assets
         buildPhase: resources
         type: folder
       - path: LaunchScreen.storyboard
-    # Keep CFBundleURLTypes in the static Info.plist: build-time plugin
-    # rewriting can race Xcode signing and invalidate an otherwise valid app.
+    # Keep App Store permission, background, and URL declarations in the generated
+    # static Info.plist. Build-time plist rewriting can race Xcode signing and
+    # invalidate an otherwise valid app.
     info:
       path: ratspeak_iOS/Info.plist
       properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: ratspeak
+            CFBundleURLSchemes:
+              - ratspeak
         LSRequiresIPhoneOS: true
+        NSBluetoothAlwaysUsageDescription: Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.
+        NSBluetoothPeripheralUsageDescription: Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.
+        NSBonjourServices:
+          - _reticulum._udp
+        NSCameraUsageDescription: Ratspeak accesses your camera so you can take photos or videos to send in a message.
+        NSLocalNetworkUsageDescription: Required when you enable a TCP, Local, or Bluetooth Peer interface in Network settings so Ratspeak can reach other nodes on your local network.
+        NSMicrophoneUsageDescription: Ratspeak uses your microphone for voice calls, voice messages, and videos you choose to record.
+        NSPhotoLibraryAddUsageDescription: Ratspeak saves received images to your photo library when you choose Save to Photos.
+        NSPhotoLibraryUsageDescription: Ratspeak accesses your photo library so you can attach existing photos or videos to a message.
+        UIBackgroundModes:
+          - audio
+          - bluetooth-central
+          - bluetooth-peripheral
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:
