@@ -253,7 +253,7 @@ jobs:
         run: cargo check --manifest-path Ratspeak/src-tauri/Cargo.toml --locked
 
   mobile-rust-lint:
-    name: Mobile Clippy (${{ matrix.target }}, ${{ matrix.toolchain }})
+    name: Mobile gate (${{ matrix.target }}, ${{ matrix.toolchain }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -263,15 +263,19 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-linux-android
             toolchain: stable
+            native_android_lint: true
           - os: ubuntu-latest
             target: aarch64-linux-android
             toolchain: 1.85.0
+            native_android_lint: false
           - os: macos-latest
             target: aarch64-apple-ios-sim
             toolchain: stable
+            native_android_lint: false
           - os: macos-latest
             target: aarch64-apple-ios-sim
             toolchain: 1.85.0
+            native_android_lint: false
     steps:
       - uses: actions/checkout@v5
         with:
@@ -312,6 +316,13 @@ jobs:
         with:
           ndk-version: r27d
           add-to-path: false
+      - uses: actions/setup-java@v5
+        if: matrix.native_android_lint
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: Ratspeak/src-tauri/gen/android/**/*.gradle*
       - name: Clippy Android
         if: matrix.target == 'aarch64-linux-android'
         working-directory: Ratspeak
@@ -320,26 +331,18 @@ jobs:
           AR_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
           CC_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
           CXX_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
+          TAURI_ANDROID_PROJECT_PATH: ${{ github.workspace }}/Ratspeak/src-tauri/gen/android
+          TAURI_ANDROID_PACKAGE_UNESCAPED: org.ratspeak.android
+          WRY_ANDROID_PACKAGE: org.ratspeak.android
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --all-features --locked -- -D warnings
+      - name: Compile Kotlin and run Android lint
+        if: matrix.native_android_lint
+        working-directory: Ratspeak/src-tauri/gen/android
+        run: |
+          test -s tauri.settings.gradle
+          test -s app/tauri.build.gradle.kts
+          ./gradlew :app:compileArm64DebugKotlin :app:lintArm64Debug --warning-mode all --no-daemon
       - name: Clippy iOS simulator
         if: matrix.target == 'aarch64-apple-ios-sim'
         working-directory: Ratspeak
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --all-features --locked -- -D warnings
-
-  android-lint:
-    name: Android native lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          path: Ratspeak
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-          cache-dependency-path: Ratspeak/src-tauri/gen/android/**/*.gradle*
-      - name: Compile Kotlin and run Android lint
-        working-directory: Ratspeak/src-tauri/gen/android
-        run: ./gradlew :app:compileArm64DebugKotlin :app:lintArm64Debug --warning-mode all --no-daemon
