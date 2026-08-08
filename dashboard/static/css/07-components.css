@@ -794,29 +794,41 @@
     position: relative;
     cursor: help;
 }
-.tooltip-trigger::after {
-    content: attr(data-tooltip);
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
+
+.rs-help-popover {
+    position: fixed;
+    z-index: var(--z-tooltip);
+    box-sizing: border-box;
+    width: max-content;
+    max-width: min(300px, calc(100vw - 24px));
     background: var(--surface-popover);
     border: 1px solid var(--border-surface);
     border-radius: var(--radius-md);
-    padding: var(--space-2) var(--space-5);
-    font-size: var(--text-2xs);
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-xs);
+    font-weight: var(--type-weight-regular);
+    line-height: 1.45;
     color: var(--text-secondary);
-    white-space: nowrap;
     pointer-events: none;
     opacity: 0;
-    transition: opacity var(--transition-base);
-    z-index: var(--z-tooltip);
+    transform: translateY(-3px);
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
     box-shadow: var(--shadow-popover);
 }
-.tooltip-trigger:hover::after,
-.tooltip-trigger:focus-visible::after {
-    opacity: 1;
+
+.rs-help-popover[data-placement="above"] {
+    transform: translateY(3px);
 }
+
+.rs-help-popover.open {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.rs-help-popover[hidden] {
+    display: none;
+}
+
 .tooltip-trigger:focus-visible {
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;
@@ -840,8 +852,48 @@
     transition: background var(--transition-base);
 }
 
-.help-icon:hover {
-    background: var(--border-light);
+@media (hover: hover) and (pointer: fine) {
+    .help-icon:hover {
+        background: var(--border-light);
+    }
+}
+
+/* Shared underline navigation for compact subviews and list filters. */
+.section-subtabs {
+    gap: var(--space-2);
+    flex-shrink: 0;
+}
+
+.section-subtab-btn {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: var(--space-3) var(--space-2);
+    overflow: hidden;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: var(--type-weight-semibold);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.section-subtab-btn.active,
+.section-subtab-btn[aria-selected="true"],
+.section-subtab-btn[aria-pressed="true"] {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .section-subtab-btn:hover {
+        color: var(--text-secondary);
+    }
 }
 
 

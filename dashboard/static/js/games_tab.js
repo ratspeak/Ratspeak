@@ -2109,8 +2109,12 @@
         for (var i = 0; i < tabs.length; i++) {
             tabs[i].addEventListener('click', function() {
                 var all = document.querySelectorAll('.games-tab');
-                for (var j = 0; j < all.length; j++) all[j].classList.remove('active');
+                for (var j = 0; j < all.length; j++) {
+                    all[j].classList.remove('active');
+                    all[j].setAttribute('aria-pressed', 'false');
+                }
                 this.classList.add('active');
+                this.setAttribute('aria-pressed', 'true');
                 _activeFilter = this.getAttribute('data-filter');
                 renderSessionList();
             });

@@ -661,25 +661,7 @@
 
 .network-subtabs {
     display: none;
-    gap: var(--space-2);
     padding: 0 var(--space-2);
-    flex-shrink: 0;
-}
-.network-subtab-btn {
-    flex: 1;
-    padding: var(--space-3) 0;
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: var(--text-muted);
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
-}
-.network-subtab-btn.active {
-    color: var(--text-primary);
-    border-bottom-color: var(--accent);
 }
 
 

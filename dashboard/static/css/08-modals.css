@@ -1683,7 +1683,7 @@
 }
 .about-policy-links button {
     min-height: var(--control-height-sm);
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-control);
     border-radius: var(--radius-md);
     background: var(--bg-tertiary);
     color: var(--text-secondary);
@@ -1694,6 +1694,6 @@
 }
 .about-policy-links button:hover,
 .about-policy-links button:focus-visible {
-    border-color: color-mix(in srgb, var(--accent) 52%, var(--border-color));
+    border-color: color-mix(in srgb, var(--accent) 52%, var(--border-control));
     color: var(--accent);
 }

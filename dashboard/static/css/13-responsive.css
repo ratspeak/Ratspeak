@@ -277,49 +277,6 @@
     }
 
     .tooltip-trigger { position: static; }
-    .tooltip-trigger::after {
-        position: fixed;
-        bottom: auto;
-        top: 50%;
-        left: 16px;
-        right: 16px;
-        transform: translateY(-50%);
-        white-space: normal;
-        max-width: none;
-        width: auto;
-        padding: var(--space-5) var(--space-6);
-        font-size: var(--text-sm);
-        line-height: 1.5;
-        border-radius: var(--radius-lg);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-        z-index: var(--z-tooltip);
-    }
-    .tooltip-trigger.open::after {
-        opacity: 1;
-    }
-    /* Suppress hover/focus auto-show on mobile — taps drive .open. */
-    .tooltip-trigger:hover::after,
-    .tooltip-trigger:focus::after {
-        opacity: 0;
-    }
-    .tooltip-trigger.open:hover::after,
-    .tooltip-trigger.open:focus::after {
-        opacity: 1;
-    }
-    .tooltip-backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.45);
-        z-index: calc(var(--z-tooltip) - 1);
-        opacity: 0;
-        transition: opacity var(--transition-base);
-        pointer-events: none;
-    }
-    .tooltip-backdrop.open {
-        opacity: 1;
-        pointer-events: auto;
-    }
-
     .cockpit-grid {
         grid-template-columns: 1fr;
         grid-template-rows: 1fr;
@@ -3833,7 +3790,7 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     }
 
     .channel-room-actions {
-        gap: 0;
+        gap: var(--space-2);
         margin-left: var(--space-2);
     }
 

@@ -401,43 +401,10 @@ function completeSetupAfterHardwareIdentity(result, pin) {
 
 window.completeSetupAfterHardwareIdentity = completeSetupAfterHardwareIdentity;
 
-// Mobile tap-toggle for .tooltip-trigger; desktop uses CSS hover/focus.
 function initSetupTooltips() {
-    if (!isMobile()) return;
-    var triggers = document.querySelectorAll('#view-setup .tooltip-trigger');
-    if (!triggers.length) return;
-
-    var backdrop = document.querySelector('.tooltip-backdrop');
-    if (!backdrop) {
-        backdrop = document.createElement('div');
-        backdrop.className = 'tooltip-backdrop';
-        document.body.appendChild(backdrop);
+    if (RS.ui && typeof RS.ui.bindHelpPopovers === 'function') {
+        RS.ui.bindHelpPopovers(document.getElementById('view-setup'));
     }
-
-    var open = null;
-    function close() {
-        if (!open) return;
-        open.classList.remove('open');
-        backdrop.classList.remove('open');
-        open = null;
-    }
-
-    triggers.forEach(function(t) {
-        t.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            if (open === t) { close(); return; }
-            close();
-            t.classList.add('open');
-            backdrop.classList.add('open');
-            open = t;
-        });
-    });
-
-    backdrop.addEventListener('click', close);
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') close();
-    });
 }
 
 document.addEventListener('DOMContentLoaded', function() {

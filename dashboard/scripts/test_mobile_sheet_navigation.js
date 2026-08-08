@@ -108,9 +108,10 @@ var sharedModal = {
 };
 var sharedOverlay = { classList: classList() };
 var sharedContext = {
-    window: { RS: {} },
+    window: { RS: {}, addEventListener: function() {} },
     document: {
         activeElement: null,
+        documentElement: { dataset: {} },
         getElementById: function() { return null; },
         addEventListener: function(name, handler) { sharedListeners[name] = handler; },
         removeEventListener: function(name, handler) {
@@ -146,6 +147,12 @@ assert.strictEqual(sharedDismissals, 1, 'Escape routes through feature-specific 
 sharedContext.RS.ui.closeExistingSheet(sharedModal, sharedOverlay);
 assert.strictEqual(focusReleases, 1);
 assert.strictEqual(sharedListeners.keydown, undefined, 'closing removes the Escape listener');
+assert(sharedSource.includes('RS.ui.bindHelpPopovers = function(root)'),
+    'contextual help must use the shared anchored-popover primitive');
+assert(sharedSource.includes("interactionModality !== 'touch'"),
+    'touch activation must release transient button focus');
+assert(channelsSource.includes('RS.ui.focusAfterUpdate(nextRefresh)'),
+    'rebuilt channel controls only regain focus for keyboard navigation');
 
 var drillSwipe = functionSource(navSource, 'initDrillDownSwipeBack');
 var tabSwipe = functionSource(navSource, 'initTabSwipe');

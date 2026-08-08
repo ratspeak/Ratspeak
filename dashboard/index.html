@@ -711,11 +711,11 @@
                             New
                         </button>
                     </div>
-                    <div class="games-sidebar-tabs">
-                        <button class="games-tab active" data-filter="all">All</button>
-                        <button class="games-tab" data-filter="active">Active</button>
-                        <button class="games-tab" data-filter="pending">Pending</button>
-                        <button class="games-tab" data-filter="completed">Completed</button>
+                    <div class="games-sidebar-tabs section-subtabs" aria-label="Filter games">
+                        <button class="games-tab section-subtab-btn active" type="button" data-filter="all" aria-pressed="true">All</button>
+                        <button class="games-tab section-subtab-btn" type="button" data-filter="active" aria-pressed="false">Active</button>
+                        <button class="games-tab section-subtab-btn" type="button" data-filter="pending" aria-pressed="false">Pending</button>
+                        <button class="games-tab section-subtab-btn" type="button" data-filter="completed" aria-pressed="false">Completed</button>
                     </div>
                     <div class="games-session-list" id="games-session-list">
                         <div class="games-empty-sidebar">No games yet</div>
@@ -822,9 +822,9 @@
                     </div>
                 </div>
 
-                <div class="network-subtabs" id="network-subtabs">
-                    <button class="network-subtab-btn active" data-subtab="connections">Connections</button>
-                    <button class="network-subtab-btn" data-subtab="activity">Activity</button>
+                <div class="network-subtabs section-subtabs" id="network-subtabs" role="tablist" aria-label="Network details">
+                    <button class="network-subtab-btn section-subtab-btn active" type="button" role="tab" aria-selected="true" data-subtab="connections">Connections</button>
+                    <button class="network-subtab-btn section-subtab-btn" type="button" role="tab" aria-selected="false" data-subtab="activity">Activity</button>
                 </div>
 
                 <div class="network-main">

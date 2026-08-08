@@ -107,7 +107,10 @@ function _trapFocus(modalEl) {
     var focusable = modalEl.querySelectorAll(
         'button, [href], input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])'
     );
-    if (focusable.length > 0) {
+    var wantsKeyboardFocus = window.RS && RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function'
+        ? RS.ui.prefersKeyboardFocus()
+        : !isMobile();
+    if (focusable.length > 0 && wantsKeyboardFocus) {
         var first = focusable[0];
         if (!isMobile() || (first.tagName !== 'INPUT' && first.tagName !== 'TEXTAREA' && first.tagName !== 'SELECT')) {
             first.focus();
@@ -138,10 +141,15 @@ function _releaseFocus(modalEl) {
         modalEl.removeEventListener('keydown', modalEl._focusTrapHandler);
         delete modalEl._focusTrapHandler;
     }
-    if (_modalPreviousFocus && _modalPreviousFocus.focus) {
+    var restoreFocus = window.RS && RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function'
+        ? RS.ui.prefersKeyboardFocus()
+        : !isMobile();
+    if (restoreFocus && _modalPreviousFocus && _modalPreviousFocus.focus) {
         _modalPreviousFocus.focus();
-        _modalPreviousFocus = null;
+    } else if (modalEl.contains(document.activeElement) && document.activeElement.blur) {
+        document.activeElement.blur();
     }
+    _modalPreviousFocus = null;
 }
 
 var currentModalNode = null;

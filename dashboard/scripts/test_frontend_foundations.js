@@ -113,6 +113,10 @@ assert(html.includes('lxmf-compose message-composer'));
 assert(html.includes('channel-compose message-composer'));
 assert(html.includes('message-composer-input'));
 assert(html.includes('message-send-btn'));
+assert(html.includes('games-sidebar-tabs section-subtabs'));
+assert(html.includes('games-tab section-subtab-btn'));
+assert(html.includes('network-subtabs section-subtabs'));
+assert(html.includes('network-subtab-btn section-subtab-btn'));
 assert(!/<a class="bottom-sheet-item"/.test(html), 'mobile navigation rows must be buttons');
 assert(!/<a class="bottom-bar-item"/.test(html), 'mobile primary navigation must use semantic buttons');
 
@@ -153,6 +157,10 @@ var shared = read('static/js/ui_shared.js');
 assert(shared.includes('modal._ratspeakDismiss = function()'));
 assert(shared.includes('RS.composer.resize = function'));
 assert(shared.includes('RS.text.utf8Length = function'));
+assert(shared.includes('RS.ui.bindHelpPopovers = function'));
+assert(shared.includes('RS.ui.prefersKeyboardFocus = function'));
+assert(!read('static/js/setup.js').includes('tooltip-backdrop'),
+    'setup help must not dim the entire screen with a bespoke backdrop');
 var lxmf = read('static/js/lxmf.js');
 assert(lxmf.includes("e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isMobile()"));
 assert(!read('static/js/peers.js').includes('displayName.substring(0, 40)'));

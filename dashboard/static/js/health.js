@@ -1315,8 +1315,12 @@ function initNetworkSubtabs() {
         var btn = e.target.closest('.network-subtab-btn');
         if (!btn) return;
         var tab = btn.dataset.subtab;
-        bar.querySelectorAll('.network-subtab-btn').forEach(function(b) { b.classList.remove('active'); });
+        bar.querySelectorAll('.network-subtab-btn').forEach(function(b) {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+        });
         btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
         main.className = main.className.replace(/subtab-\w+/g, '').trim() + ' subtab-' + tab;
     });
 }

@@ -4,6 +4,49 @@
     RS.composer = RS.composer || {};
     RS.text = RS.text || {};
 
+    // Keep focus behavior appropriate to the user's latest input method.
+    // Touch controls should release their transient focus after activation,
+    // while keyboard and assistive activation retain visible focus and focus
+    // restoration across rebuilt surfaces.
+    var interactionModality = 'keyboard';
+
+    function setInteractionModality(value) {
+        interactionModality = value;
+        document.documentElement.dataset.inputModality = value;
+    }
+
+    document.addEventListener('keydown', function(event) {
+        if (event.metaKey || event.ctrlKey || event.altKey) return;
+        setInteractionModality('keyboard');
+    }, true);
+    document.addEventListener('pointerdown', function(event) {
+        setInteractionModality(event.pointerType === 'touch' ? 'touch' : 'pointer');
+    }, true);
+    document.addEventListener('touchstart', function() {
+        setInteractionModality('touch');
+    }, { capture: true, passive: true });
+
+    RS.ui.prefersKeyboardFocus = function() {
+        return interactionModality === 'keyboard';
+    };
+
+    RS.ui.focusAfterUpdate = function(element) {
+        if (!element || !RS.ui.prefersKeyboardFocus()) return;
+        try { element.focus({ preventScroll: true }); }
+        catch (_) { element.focus(); }
+    };
+
+    document.addEventListener('click', function(event) {
+        if (interactionModality !== 'touch') return;
+        var target = event.target && event.target.closest
+            ? event.target.closest('button, a[href], [role="button"]')
+            : null;
+        if (!target || target.hasAttribute('data-keep-touch-focus')) return;
+        setTimeout(function() {
+            if (document.activeElement === target && typeof target.blur === 'function') target.blur();
+        }, 0);
+    }, true);
+
     // Shared soft-keyboard continuity for every chat composer. Pointer-down on
     // a send control must not blur the textarea, otherwise Android closes and
     // reopens the IME around the asynchronous command response.
@@ -162,6 +205,111 @@
     function elementRef(elOrId) {
         return typeof elOrId === 'string' ? document.getElementById(elOrId) : elOrId;
     }
+
+    var helpPopover = null;
+    var helpTrigger = null;
+    var helpPinned = false;
+
+    function ensureHelpPopover() {
+        if (helpPopover) return helpPopover;
+        helpPopover = document.createElement('div');
+        helpPopover.id = 'rs-help-popover';
+        helpPopover.className = 'rs-help-popover';
+        helpPopover.setAttribute('role', 'tooltip');
+        helpPopover.hidden = true;
+        document.body.appendChild(helpPopover);
+        return helpPopover;
+    }
+
+    function positionHelpPopover() {
+        if (!helpTrigger || !helpPopover || helpPopover.hidden) return;
+        var margin = 12;
+        var gap = 8;
+        var triggerRect = helpTrigger.getBoundingClientRect();
+        var popoverRect = helpPopover.getBoundingClientRect();
+        var left = triggerRect.left + (triggerRect.width - popoverRect.width) / 2;
+        left = Math.max(margin, Math.min(left, window.innerWidth - popoverRect.width - margin));
+        var top = triggerRect.bottom + gap;
+        var placement = 'below';
+        if (top + popoverRect.height > window.innerHeight - margin &&
+            triggerRect.top - gap - popoverRect.height >= margin) {
+            top = triggerRect.top - gap - popoverRect.height;
+            placement = 'above';
+        }
+        top = Math.max(margin, Math.min(top, window.innerHeight - popoverRect.height - margin));
+        helpPopover.style.left = Math.round(left) + 'px';
+        helpPopover.style.top = Math.round(top) + 'px';
+        helpPopover.dataset.placement = placement;
+    }
+
+    function closeHelpPopover() {
+        if (!helpTrigger) return;
+        helpTrigger.classList.remove('open');
+        helpTrigger.setAttribute('aria-expanded', 'false');
+        helpTrigger.removeAttribute('aria-describedby');
+        helpTrigger = null;
+        helpPinned = false;
+        if (helpPopover) {
+            helpPopover.classList.remove('open');
+            helpPopover.hidden = true;
+        }
+    }
+
+    function openHelpPopover(trigger, pinned) {
+        var text = trigger && trigger.getAttribute('data-tooltip');
+        if (!text) return;
+        if (helpTrigger && helpTrigger !== trigger) closeHelpPopover();
+        var popover = ensureHelpPopover();
+        helpTrigger = trigger;
+        helpPinned = !!pinned;
+        popover.textContent = text;
+        popover.hidden = false;
+        trigger.classList.add('open');
+        trigger.setAttribute('aria-expanded', 'true');
+        trigger.setAttribute('aria-describedby', popover.id);
+        positionHelpPopover();
+        requestAnimationFrame(function() {
+            if (helpTrigger === trigger) popover.classList.add('open');
+        });
+    }
+
+    RS.ui.bindHelpPopovers = function(root) {
+        var scope = root || document;
+        var triggers = scope.querySelectorAll('[data-tooltip]');
+        triggers.forEach(function(trigger) {
+            if (trigger._ratspeakHelpPopoverBound) return;
+            trigger._ratspeakHelpPopoverBound = true;
+            trigger.setAttribute('aria-expanded', 'false');
+            trigger.addEventListener('click', function(event) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (helpTrigger === trigger && helpPinned) closeHelpPopover();
+                else openHelpPopover(trigger, true);
+            });
+            trigger.addEventListener('focus', function() {
+                if (RS.ui.prefersKeyboardFocus()) openHelpPopover(trigger, false);
+            });
+            trigger.addEventListener('blur', function() {
+                if (helpTrigger === trigger && !helpPinned) closeHelpPopover();
+            });
+            trigger.addEventListener('pointerenter', function(event) {
+                if (event.pointerType !== 'touch') openHelpPopover(trigger, false);
+            });
+            trigger.addEventListener('pointerleave', function(event) {
+                if (event.pointerType === 'touch' || helpPinned || document.activeElement === trigger) return;
+                if (helpTrigger === trigger) closeHelpPopover();
+            });
+        });
+    };
+
+    document.addEventListener('click', function(event) {
+        if (helpTrigger && !helpTrigger.contains(event.target)) closeHelpPopover();
+    });
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') closeHelpPopover();
+    });
+    window.addEventListener('resize', positionHelpPopover);
+    window.addEventListener('scroll', positionHelpPopover, true);
 
     function currentNetworkType() {
         if (navigator.connection && navigator.connection.type) return navigator.connection.type;

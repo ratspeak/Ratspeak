@@ -4476,7 +4476,9 @@ function channelsOpenHubSwitcher() {
             if (built.sheet.isConnected && contextIsCurrent()) {
                 renderList();
                 var nextRefresh = list.querySelector('[data-channel-hub-refresh]');
-                if (nextRefresh) nextRefresh.focus();
+                if (nextRefresh && RS.ui && typeof RS.ui.focusAfterUpdate === 'function') {
+                    RS.ui.focusAfterUpdate(nextRefresh);
+                }
             } else if (built.sheet.isConnected) {
                 retireStaleSwitcher();
             }
@@ -4486,7 +4488,9 @@ function channelsOpenHubSwitcher() {
             if (built.sheet.isConnected && contextIsCurrent()) {
                 renderList();
                 var nextRefresh = list.querySelector('[data-channel-hub-refresh]');
-                if (nextRefresh) nextRefresh.focus();
+                if (nextRefresh && RS.ui && typeof RS.ui.focusAfterUpdate === 'function') {
+                    RS.ui.focusAfterUpdate(nextRefresh);
+                }
             } else if (built.sheet.isConnected) {
                 retireStaleSwitcher();
             }
@@ -5893,23 +5897,8 @@ function _channelsBindUI() {
     var membersScrim = _channelsEl('channel-members-scrim');
     if (membersScrim) membersScrim.addEventListener('click', channelsCloseMemberPane);
     var membersInfo = _channelsEl('channel-members-info');
-    if (membersInfo) {
-        membersInfo.addEventListener('click', function(event) {
-            event.stopPropagation();
-            var open = !membersInfo.classList.contains('open');
-            membersInfo.classList.toggle('open', open);
-            membersInfo.setAttribute('aria-expanded', open ? 'true' : 'false');
-        });
-        membersInfo.addEventListener('keydown', function(event) {
-            if (event.key !== 'Escape') return;
-            event.preventDefault();
-            membersInfo.classList.remove('open');
-            membersInfo.setAttribute('aria-expanded', 'false');
-        });
-        document.addEventListener('click', function() {
-            membersInfo.classList.remove('open');
-            membersInfo.setAttribute('aria-expanded', 'false');
-        });
+    if (membersInfo && RS.ui && typeof RS.ui.bindHelpPopovers === 'function') {
+        RS.ui.bindHelpPopovers(_channelsEl('channel-members-pane'));
     }
     var membersPane = _channelsEl('channel-members-pane');
     if (membersPane) membersPane.addEventListener('keydown', function(event) {

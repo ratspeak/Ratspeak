@@ -112,6 +112,15 @@ assert(/data-text-scale-tier="large"\] \.settings-text-scale-row \.settings-row-
 assert(/\.channel-join-sheet \.channel-private-access\s*\{[^}]*border-top:\s*0;[^}]*border-bottom:\s*0;/s
     .test(sourceByName['09-channels.css']),
     'join-channel details must rely on the preview and footer dividers instead of drawing duplicate rules');
+assert(/\.rs-help-popover\s*\{[^}]*position:\s*fixed;[^}]*max-width:/s.test(sourceByName['07-components.css']),
+    'contextual help must use one viewport-clamped anchored popover');
+assert(!allCss.includes('.tooltip-backdrop'),
+    'contextual help must not create a modal dimming layer');
+assert(/\.section-subtab-btn\s*\{[^}]*border-bottom:\s*2px solid transparent/s
+    .test(sourceByName['07-components.css']),
+    'compact subviews and filters must share the underline navigation primitive');
+assert(!/\.games-tab\.active\s*\{/.test(sourceByName['11-games.css']),
+    'Games filters must not maintain a parallel selected-tab treatment');
 
 var gamesCss = sourceByName['11-games.css'];
 assert(/\.four-board\s*\{[\s\S]*?grid-template-columns:\s*repeat\(7,/.test(gamesCss) &&
