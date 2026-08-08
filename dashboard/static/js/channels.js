@@ -5188,7 +5188,7 @@ function channelsOpenHubOptions(eventOrTrigger) {
                 });
             }
         }
-    ], { title: displayName });
+    ], { title: displayName, showTitle: false });
 }
 
 function channelsOpenHubDetails() {
@@ -5529,7 +5529,8 @@ function channelsOpenRoomOptions(eventOrTrigger) {
         });
     }
     RS.ui.openActionMenu(trigger, items, {
-        title: _channelsRoomDisplayName(room.name)
+        title: _channelsRoomDisplayName(room.name),
+        showTitle: false
     });
 }
 

@@ -134,6 +134,7 @@ function _rsHandleNativeBack(opts, dismiss) {
 // Builds canonical .bottom-sheet shell. Caller wires its own overlay-click
 // handler so dismiss-on-tap can use live state.
 function _rsBuildSheet(opts, onClose) {
+    opts = opts || {};
     var resolved = false;
     var previousFocus = document.activeElement;
 
@@ -145,13 +146,14 @@ function _rsBuildSheet(opts, onClose) {
     var sheet = shell.sheet;
     sheet.setAttribute('role', 'dialog');
     sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', opts.ariaLabel || opts.title || 'Dialog');
     sheet.style.zIndex = '100000';
 
     var handle = document.createElement('div');
     handle.className = 'bottom-sheet-handle';
     sheet.appendChild(handle);
 
-    if (opts.title) {
+    if (opts.title && opts.showTitle !== false) {
         var header = document.createElement('div');
         header.className = 'bottom-sheet-header';
         var title = document.createElement('div');
@@ -342,7 +344,9 @@ function rsChoice(opts) {
         var built = _rsBuildSheet({
             title: opts.title || 'Choose',
             titleIcon: opts.titleIcon || '',
-            titleIconType: opts.titleIconType || ''
+            titleIconType: opts.titleIconType || '',
+            showTitle: opts.showTitle !== false,
+            ariaLabel: opts.ariaLabel || opts.title || 'Choose an action'
         }, resolve);
 
         built.overlay.addEventListener('click', function(e) {

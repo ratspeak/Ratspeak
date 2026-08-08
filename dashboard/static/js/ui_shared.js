@@ -380,7 +380,11 @@
                     danger: !!item.danger
                 };
             });
-            return rsChoice({ title: opts.title || 'Actions', choices: choices }).then(function(idx) {
+            return rsChoice({
+                title: opts.title || 'Actions',
+                showTitle: opts.showTitle !== false,
+                choices: choices
+            }).then(function(idx) {
                 if (idx === null || idx === undefined) return null;
                 var item = items.filter(function(candidate) { return !candidate.separator && !candidate.disabled; })[idx];
                 if (item && typeof item.onSelect === 'function') item.onSelect();

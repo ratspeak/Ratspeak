@@ -1183,7 +1183,10 @@ function openIdentityStatusEditor() {
         String(resolveActiveProfileStatus() || '').trim(),
         PROFILE_STATUS_MAX_BYTES
     );
-    var built = _rsBuildSheet({ title: initialStatus ? 'Edit status' : 'Set status' }, function() {});
+    var built = _rsBuildSheet({
+        title: initialStatus ? 'Edit status' : 'Set status',
+        showTitle: false
+    }, function() {});
 
     built.overlay.addEventListener('click', function(e) {
         if (e.target === built.overlay) built.dismiss(null);
