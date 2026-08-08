@@ -17,6 +17,14 @@ var channelsCss = fs.readFileSync(
     path.join(dashboardRoot, 'static', 'css', '09-channels.css'),
     'utf8'
 );
+var componentsCss = fs.readFileSync(
+    path.join(dashboardRoot, 'static', 'css', '07-components.css'),
+    'utf8'
+);
+var uiSharedSource = fs.readFileSync(
+    path.join(dashboardRoot, 'static', 'js', 'ui_shared.js'),
+    'utf8'
+);
 var indexSource = fs.readFileSync(path.join(dashboardRoot, 'index.html'), 'utf8');
 
 function sourceRange(startName, endName) {
@@ -143,16 +151,17 @@ assert(indexSource.includes(
 ), 'the people-pane explanation must describe bounded and known-peer memory');
 assert(!indexSource.includes('id="channel-members-note"'),
     'partial-roster help must not consume a separate member-pane row');
-assert(channelsCss.includes('.channel-members-info::after') &&
-        channelsCss.includes('.channel-members-info.open::after'),
-    'the compact roster affordance must work for pointer and touch input');
-var memberTooltipCss = channelsCss
-    .split('.channel-members-info::after')[1]
-    .split('}')[0];
-assert(memberTooltipCss.includes('left: 50%') &&
-        memberTooltipCss.includes('transform: translateX(-50%)') &&
-        memberTooltipCss.includes('box-sizing: border-box'),
-    'the roster tooltip must center its bounded box instead of clipping');
+assert(indexSource.includes('id="channel-members-info"') &&
+        indexSource.includes('data-tooltip="Visible people are reported by the hub'),
+    'the compact roster affordance must use the shared help-popover contract');
+assert(channelsSource.includes('RS.ui.bindHelpPopovers(_channelsEl(\'channel-members-pane\'))'),
+    'the people pane must bind the shared pointer and touch help behavior');
+assert(uiSharedSource.includes("trigger.addEventListener('click'") &&
+        uiSharedSource.includes("trigger.addEventListener('pointerenter'"),
+    'the shared help primitive must support pinned touch/click and pointer hover');
+assert(componentsCss.includes('max-width: min(300px, calc(100vw - 24px))') &&
+        uiSharedSource.includes('window.innerWidth - popoverRect.width - margin'),
+    'shared help popovers must clamp to the viewport instead of clipping');
 
 assert(channelsCss.includes('.channel-event.message-group-start') &&
         channelsCss.includes('.channel-event.message-group-middle') &&

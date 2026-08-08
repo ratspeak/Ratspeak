@@ -176,6 +176,7 @@ async function main() {
         _channelsLiveItemSeenAt: { 'general\npending': 12_000 },
         _channelsLocalRoomEvents: { general: [] },
         _channelsLiveItemKey: function(room, id) { return room + '\n' + id; },
+        _channelsIsBlockedItem: function(item) { return !!(item && item._blocked); },
         _channelsIsHubNotice: function() { return false; },
         _channelsIsConnectionLifecycleItem: function(item) {
             return !!item && item.kind === 'system' &&
@@ -224,6 +225,16 @@ async function main() {
                 nickname: null,
                 text: 'Reconnected to hub',
                 ours: true
+            },
+            {
+                id: 'blocked',
+                kind: 'message',
+                timestamp_ms: 4,
+                source_hash: 'peer-blocked',
+                nickname: 'Blocked',
+                text: 'must not render',
+                ours: false,
+                _blocked: true
             }
         ]
     }, {

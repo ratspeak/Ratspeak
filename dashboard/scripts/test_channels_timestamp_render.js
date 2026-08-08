@@ -35,7 +35,8 @@ function element(tagName) {
         dataset: {},
         children: [],
         appendChild: function(child) { this.children.push(child); },
-        setAttribute: function() {}
+        setAttribute: function() {},
+        addEventListener: function() {}
     };
 }
 
@@ -76,7 +77,8 @@ var rendered = context._channelsBuildTranscriptItem({
 }, false);
 var avatar = rendered.children[0];
 var meta = rendered.children[2];
-var time = meta.children[0];
+var time = meta.children.find(function(child) { return child.tagName === 'time'; });
+assert(time, 'message metadata must retain a semantic time element beside its actions');
 assert.doesNotThrow(function() { new Date(time.dateTime).toISOString(); });
 assert.notStrictEqual(time.dateTime, 'Invalid Date');
 assert.strictEqual(avatar.className, 'channel-event-avatar');

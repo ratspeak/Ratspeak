@@ -220,7 +220,8 @@ var rosterContext = {
     String: String,
     _channelsObservedMembersByRoom: { room: observedRoom },
     _channelsHistoryContext: function() { return { key: 'room' }; },
-    _channelsHistoryEntry: function() { return rosterEntry; }
+    _channelsHistoryEntry: function() { return rosterEntry; },
+    _channelsIsBlockedMember: function(member) { return !!(member && member._blocked); }
 };
 vm.createContext(rosterContext);
 vm.runInContext(
@@ -232,11 +233,14 @@ var rosterRoom = {
     members_complete: false,
     members: [
         { identity_hash: active.hash, nickname: 'Bob', is_self: true },
-        { identity_hash: knownRemote, nickname: 'Ada', is_self: false }
+        { identity_hash: knownRemote, nickname: 'Ada', is_self: false },
+        { identity_hash: 'ff'.repeat(16), nickname: 'Blocked', is_self: false, _blocked: true }
     ]
 };
 var roster = rosterContext._channelsMemberRosterModel(rosterRoom);
 assert.strictEqual(roster.visible.length, 2);
+assert(!roster.visible.some(function(member) { return member.nickname === 'Blocked'; }),
+    'blocked peers must not leak into the visible member roster');
 assert.deepStrictEqual(Array.from(roster.continuity, function(member) { return member.nickname; }),
     ['Returner'], 'a short reconnect should keep prior live peers near-normal while reconfirming');
 assert.deepStrictEqual(Array.from(roster.seen, function(member) { return member.nickname; }),
