@@ -159,7 +159,13 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(index.contains("id=\"channel-members-back\""));
     assert!(!index.contains("Messages are not saved and disappear when this session ends."));
     assert!(!index.contains("id=\"channel-session-banner\""));
-    assert!(!channels_js.contains("hub relays and can read channel messages"));
+    assert_eq!(
+        channels_js
+            .matches("hub relays and can read channel messages")
+            .count(),
+        1,
+        "hub-readability disclosure belongs in the one-time consent, not repeated channel chrome"
+    );
     assert!(channels_js.contains("Ratspeak saves only identity-sealed ciphertext"));
     assert!(channels_js.contains("only after the hub confirms membership"));
     assert!(channels_js.contains("has_stored_join_key"));
@@ -1259,7 +1265,9 @@ fn mobile_shells_advertise_only_portrait_orientations() {
     assert!(ios_info.contains("UIInterfaceOrientationPortrait"));
     assert!(!ios_info.contains("UIInterfaceOrientationLandscape"));
     assert!(ios_project.contains("UISupportedInterfaceOrientations:"));
+    assert!(ios_project.contains("UISupportedInterfaceOrientations~ipad:"));
     assert!(!ios_project.contains("UIInterfaceOrientationLandscape"));
+    assert!(ios_project.contains("TARGETED_DEVICE_FAMILY: \"1,2\""));
 }
 
 #[test]
@@ -7223,4 +7231,67 @@ fn bundled_ratspeak_propagation_nodes_are_destination_hashes_with_sync_hub_prior
     assert!(announce_handlers.contains("let hash_hex = hex::encode(event.destination_hash);"));
     assert!(announce_handlers.contains("mgr.router"));
     assert!(announce_handlers.contains("set_stamp_cost(event.destination_hash"));
+}
+
+#[test]
+fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
+    let root = repo_root();
+    let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/channels.rs"))
+        .expect("channels runtime");
+    let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channels.rs"))
+        .expect("channels commands");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("settings commands");
+    let channels =
+        read_source(root.join("dashboard/static/js/channels.js")).expect("channels frontend");
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("navigation frontend");
+    let state = read_source(root.join("dashboard/static/js/state.js")).expect("shared frontend");
+    let tauri = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri entrypoint");
+    let android = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("android activity");
+
+    assert!(db.contains("PUBLIC_CHANNEL_CONSENT_VERSION"));
+    assert!(db.contains("PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING"));
+    assert!(runtime.contains("has_current_public_channel_consent"));
+    assert!(runtime.contains("hub.desired_connected = false"));
+    assert!(runtime.contains("room.desired_joined = false"));
+    assert!(commands.contains("require_public_channel_consent"));
+    for command in ["connect_channel_hub", "join_channel"] {
+        let block = rust_function_block(&commands, command);
+        assert!(block.contains("require_public_channel_consent"));
+    }
+    assert!(interfaces.contains("adult_confirmed: bool"));
+    assert!(interfaces.contains("independent_hubs_understood: bool"));
+    assert!(interfaces.contains("policies_accepted: bool"));
+    assert!(interfaces.contains("db::try_set_settings"));
+
+    for copy in [
+        "Before you enter public channels",
+        "I am 18 or older.",
+        "I agree to the Terms and Community Guidelines.",
+        "independent hubs may contain unmoderated content",
+    ] {
+        assert!(channels.contains(copy));
+    }
+    for url in [
+        "https://ratspeak.org/privacy.html",
+        "https://ratspeak.org/terms.html",
+        "https://ratspeak.org/community-guidelines.html",
+        "https://ratspeak.org/support.html",
+    ] {
+        assert!(channels.contains(url) || nav.contains(url));
+        assert!(nav.contains(url));
+    }
+    assert!(channels.contains("api_blocked_contacts"));
+    assert!(channels.contains("block_contact"));
+    assert!(channels.contains("Report channel content"));
+    assert!(channels.contains("Nothing is sent automatically"));
+    assert!(channels.contains("mail@ratspeak.org"));
+    assert!(state.contains("window.RS.openSupportEmail"));
+    assert!(tauri.contains("fn open_support_email"));
+    assert!(tauri.contains("open_support_email,"));
+    assert!(android.contains("fun openSupportEmail"));
 }

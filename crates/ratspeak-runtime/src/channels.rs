@@ -788,9 +788,23 @@ impl ChannelsStore {
     async fn load(&self) -> Result<DurableChannelsState, String> {
         let pool = self.pool.clone();
         let identity_id = self.identity_id.clone();
-        db::spawn_db(pool, move |pool| load_durable_channels(&pool, &identity_id))
-            .await
-            .map_err(|_| "Channels state database task panicked".to_string())?
+        db::spawn_db(pool, move |pool| {
+            let mut durable = load_durable_channels(&pool, &identity_id)?;
+            // History and saved channel metadata remain available before the
+            // acknowledgement, but a prior session must never reconnect (or
+            // rejoin rooms) behind the adults-only public-channel gate.
+            if !db::has_current_public_channel_consent(&pool) {
+                for hub in &mut durable.hubs {
+                    hub.desired_connected = false;
+                }
+                for room in &mut durable.rooms {
+                    room.desired_joined = false;
+                }
+            }
+            Ok(durable)
+        })
+        .await
+        .map_err(|_| "Channels state database task panicked".to_string())?
     }
 
     async fn set_hub_desired(
@@ -7700,6 +7714,40 @@ mod tests {
                 .all(|hub| hub.destination_hash != "bb"),
             "a removed unobserved hub must leave the unified service model"
         );
+    }
+
+    #[tokio::test]
+    async fn channels_store_withholds_reconnect_intent_until_consent() {
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|connection| connection.execute_batch("PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder().max_size(2).build(manager).unwrap();
+        db::init_schema(&pool).unwrap();
+        db::save_identity(&pool, "identity-a", "lxmf-a", "A", "A");
+        let store = ChannelsStore::new(pool.clone(), "identity-a".into());
+
+        store
+            .set_hub_desired("aa".into(), "alpha".into(), true)
+            .await
+            .unwrap();
+        store
+            .set_room_desired("aa".into(), "general".into(), true)
+            .await
+            .unwrap();
+
+        let gated = store.load().await.unwrap();
+        assert_eq!(gated.hubs.len(), 1, "saved hub metadata remains visible");
+        assert_eq!(gated.rooms.len(), 1, "saved room history remains visible");
+        assert!(!gated.hubs[0].desired_connected);
+        assert!(!gated.rooms[0].desired_joined);
+
+        db::set_setting(
+            &pool,
+            db::PUBLIC_CHANNEL_CONSENT_SETTING,
+            &db::PUBLIC_CHANNEL_CONSENT_VERSION.to_string(),
+        );
+        let accepted = store.load().await.unwrap();
+        assert!(accepted.hubs[0].desired_connected);
+        assert!(accepted.rooms[0].desired_joined);
     }
 
     #[test]

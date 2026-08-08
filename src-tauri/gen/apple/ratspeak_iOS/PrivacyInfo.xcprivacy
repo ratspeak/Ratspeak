@@ -13,11 +13,14 @@
         - Tauri v2 fs and notification plugins.
         - rusqlite / SQLite file operations.
 
-      Ratspeak does not transmit any off-device telemetry, does not perform
-      cross-app tracking, and does not embed any ad/analytics SDK. Direct
-      messages are end-to-end encrypted between peers. Public channel
-      messages are relayed by the hub the user chooses; no backend owned by
-      the Ratspeak developer collects user data.
+      Ratspeak does not transmit off-device analytics or advertising
+      telemetry, does not perform cross-app tracking, and does not embed any
+      ad/analytics SDK. Direct messages are end-to-end encrypted between
+      peers. A propagation node may temporarily queue encrypted payloads and
+      protocol metadata for delivery. Public channel messages are readable by
+      the independently operated or clearly labelled official hub the user
+      chooses. These network roles and their retention boundaries are
+      described in the public Privacy Policy.
     -->
 
     <key>NSPrivacyTracking</key>

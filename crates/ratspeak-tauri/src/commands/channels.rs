@@ -48,6 +48,21 @@ fn default_true() -> bool {
     true
 }
 
+async fn require_public_channel_consent(state: &Arc<AppState>) -> AppResult<()> {
+    let accepted = crate::db::spawn_db(state.db.clone(), |pool| {
+        crate::db::has_current_public_channel_consent(&pool)
+    })
+    .await
+    .map_err(|_| AppError::internal("public channel consent database task panicked"))?;
+    if accepted {
+        Ok(())
+    } else {
+        Err(AppError::bad_request(
+            "Review and accept the public-channel safety notice before continuing.",
+        ))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChannelShareArgs {
     pub hub_destination_hash: String,
@@ -503,6 +518,7 @@ pub async fn connect_channel_hub(
     state: State<'_, Arc<AppState>>,
     args: ConnectChannelHubArgs,
 ) -> AppResult<ChannelsSnapshot> {
+    require_public_channel_consent(state.inner()).await?;
     let channels = channels_handle(&state)?;
     let destination_hash = clean_destination_hash(&args.destination_hash)?;
     let owned_hub = state.channel_hub_handle().and_then(|hub| {
@@ -549,6 +565,7 @@ pub async fn join_channel(
     state: State<'_, Arc<AppState>>,
     args: JoinChannelArgs,
 ) -> AppResult<Value> {
+    require_public_channel_consent(state.inner()).await?;
     let channels = channels_handle(&state)?;
     let room = channels
         .join_with_key_policy(&args.room, args.key, args.remember_key)

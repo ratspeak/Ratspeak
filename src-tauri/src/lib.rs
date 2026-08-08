@@ -232,16 +232,38 @@ fn validate_http_url(raw: &str) -> Result<String, String> {
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     let clean = validate_http_url(&url)?;
+    open_platform_url(&clean)
+}
+
+#[tauri::command]
+fn open_support_email(subject: String, body: String) -> Result<(), String> {
+    let subject = subject.trim();
+    if subject.is_empty() || subject.len() > 180 || body.len() > 8_000 {
+        return Err("Invalid support email".into());
+    }
+    if subject.chars().any(|character| matches!(character, '\r' | '\n' | '\0'))
+        || body.contains('\0')
+    {
+        return Err("Invalid support email".into());
+    }
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("subject", subject)
+        .append_pair("body", &body)
+        .finish();
+    open_platform_url(&format!("mailto:mail@ratspeak.org?{query}"))
+}
+
+fn open_platform_url(clean: &str) -> Result<(), String> {
 
     #[cfg(target_os = "ios")]
     {
-        open_external_url_ios(&clean)
+        open_external_url_ios(clean)
     }
 
     #[cfg(target_os = "android")]
     {
         let _ = clean;
-        Err("Android external links are opened through the native WebView bridge".into())
+        Err("Android links are opened through the native WebView bridge".into())
     }
 
     #[cfg(all(
@@ -250,7 +272,7 @@ fn open_external_url(url: String) -> Result<(), String> {
     ))]
     {
         std::process::Command::new("open")
-            .arg(&clean)
+            .arg(clean)
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Failed to open link: {e}"))
@@ -262,7 +284,7 @@ fn open_external_url(url: String) -> Result<(), String> {
     ))]
     {
         std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", &clean])
+            .args(["url.dll,FileProtocolHandler", clean])
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Failed to open link: {e}"))
@@ -274,7 +296,7 @@ fn open_external_url(url: String) -> Result<(), String> {
     ))]
     {
         std::process::Command::new("xdg-open")
-            .arg(&clean)
+            .arg(clean)
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Failed to open link: {e}"))
@@ -666,6 +688,7 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             open_external_url,
+            open_support_email,
             set_window_decorations,
             save_image_to_photos,
             request_microphone_permission,
@@ -771,6 +794,7 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::set_announce_ratspeak_usage,
             ratspeak_tauri::commands::interfaces::set_activity_identity_protection,
             ratspeak_tauri::commands::interfaces::set_hide_known_spam_peers,
+            ratspeak_tauri::commands::interfaces::accept_public_channel_consent,
             ratspeak_tauri::commands::interfaces::set_appearance,
             ratspeak_tauri::commands::interfaces::set_native_theme,
             ratspeak_tauri::commands::interfaces::set_text_scale,

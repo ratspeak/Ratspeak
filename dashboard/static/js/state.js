@@ -543,6 +543,26 @@ window.RS.openExternalUrl = function(url) {
     return Promise.resolve(true);
 };
 
+window.RS.openSupportEmail = function(subject, body) {
+    var cleanSubject = String(subject || '').trim();
+    var cleanBody = String(body || '');
+    if (!cleanSubject || cleanSubject.length > 180 || cleanBody.length > 8000) {
+        return Promise.reject(new Error('Invalid support email'));
+    }
+    if (hasAndroidBridge() && typeof window.RatspeakAndroid.openSupportEmail === 'function') {
+        try {
+            return Promise.resolve(!!window.RatspeakAndroid.openSupportEmail(cleanSubject, cleanBody));
+        } catch (_) {}
+    }
+    if (typeof window.RS.invoke === 'function') {
+        return window.RS.invoke('open_support_email', {
+            subject: cleanSubject,
+            body: cleanBody
+        }).then(function() { return true; }).catch(function() { return false; });
+    }
+    return Promise.resolve(false);
+};
+
 // Mobile uses native RatspeakService channel; rsNotify is desktop-only.
 var _desktopNotifEnabled = true;
 

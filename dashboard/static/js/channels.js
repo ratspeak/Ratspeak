@@ -81,6 +81,15 @@ var _channelsMemberDetailDismiss = null;
 var _channelsHubPulseTimer = null;
 var _channelsObservedMembersByRoom = {};
 var _channelsMemberContinuityTimer = null;
+var _channelsPublicConsent = {
+    loaded: false,
+    acceptedVersion: 0,
+    requiredVersion: 1
+};
+var _channelsPublicConsentLoadPromise = null;
+var _channelsPublicConsentPromptPromise = null;
+var _channelsBlockedAddresses = {};
+var _channelsBlockedLoadPromise = null;
 var CHANNEL_HUB_PULSE_INTERVAL_MS = 60 * 1000;
 var CHANNEL_MEMBER_CONTINUITY_MS = 60 * 1000;
 var CHANNEL_MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
@@ -107,6 +116,208 @@ function _channelsIsConnecting() {
         channelsSnapshot.phase === 'connecting' ||
         channelsSnapshot.phase === 'awaiting_welcome' ||
         channelsSnapshot.phase === 'reconnecting';
+}
+
+function _channelsApplyPublicConsentSettings(data) {
+    if (!data) return;
+    if (data.public_channel_consent_required_version !== undefined) {
+        _channelsPublicConsent.requiredVersion = Math.max(
+            1,
+            parseInt(data.public_channel_consent_required_version, 10) || 1
+        );
+    }
+    if (data.public_channel_consent_version !== undefined) {
+        _channelsPublicConsent.acceptedVersion = Math.max(
+            0,
+            parseInt(data.public_channel_consent_version, 10) || 0
+        );
+    }
+    _channelsPublicConsent.loaded = true;
+}
+
+function _channelsHasPublicConsent() {
+    return _channelsPublicConsent.loaded &&
+        _channelsPublicConsent.acceptedVersion === _channelsPublicConsent.requiredVersion;
+}
+
+function _channelsLoadPublicConsent() {
+    if (_channelsPublicConsent.loaded) return Promise.resolve(_channelsPublicConsent);
+    if (_channelsPublicConsentLoadPromise) return _channelsPublicConsentLoadPromise;
+    _channelsPublicConsentLoadPromise = RS.invoke('api_app_settings').then(function(data) {
+        _channelsApplyPublicConsentSettings(data);
+        return _channelsPublicConsent;
+    }).finally(function() {
+        _channelsPublicConsentLoadPromise = null;
+    });
+    return _channelsPublicConsentLoadPromise;
+}
+
+function _channelsPublicConsentLink(label, url) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'channel-consent-policy-link';
+    button.textContent = label;
+    button.addEventListener('click', function() {
+        RS.openExternalUrl(url);
+    });
+    return button;
+}
+
+function _channelsShowPublicConsent() {
+    if (_channelsHasPublicConsent()) return Promise.resolve(true);
+    if (_channelsPublicConsentPromptPromise) return _channelsPublicConsentPromptPromise;
+    if (typeof _rsBuildSheet !== 'function') return Promise.resolve(false);
+
+    _channelsPublicConsentPromptPromise = new Promise(function(resolve) {
+        var built = _rsBuildSheet({ title: 'Before you enter public channels' }, function(value) {
+            _channelsPublicConsentPromptPromise = null;
+            resolve(value === true);
+        });
+        built.sheet.classList.add('channel-consent-sheet');
+
+        var intro = document.createElement('p');
+        intro.className = 'channel-consent-intro';
+        intro.textContent = 'Public channels can connect you to independently operated infrastructure and people Ratspeak does not control.';
+        built.body.appendChild(intro);
+
+        var facts = document.createElement('div');
+        facts.className = 'channel-consent-facts';
+        [
+            ['Independent hubs', 'Unless clearly identified as an official Ratspeak hub, a hub is operated and moderated by someone else. Content may be offensive, misleading, or illegal.'],
+            ['Channel privacy', 'A hub relays and can read channel messages. Public channels do not have the same end-to-end privacy as direct messages.'],
+            ['Your controls', 'You can block people, report content, or leave at any time. Ratspeak is for adults age 18 and older.']
+        ].forEach(function(fact) {
+            var item = document.createElement('div');
+            item.className = 'channel-consent-fact';
+            var title = document.createElement('strong');
+            title.textContent = fact[0];
+            var copy = document.createElement('span');
+            copy.textContent = fact[1];
+            item.appendChild(title);
+            item.appendChild(copy);
+            facts.appendChild(item);
+        });
+        built.body.appendChild(facts);
+
+        function acknowledgement(labelText) {
+            var label = document.createElement('label');
+            label.className = 'channel-consent-check';
+            var input = document.createElement('input');
+            input.type = 'checkbox';
+            var copy = document.createElement('span');
+            copy.textContent = labelText;
+            label.appendChild(input);
+            label.appendChild(copy);
+            built.body.appendChild(label);
+            return input;
+        }
+        var adult = acknowledgement('I am 18 or older.');
+        var independent = acknowledgement('I understand that independent hubs may contain unmoderated content.');
+        var policiesAccepted = acknowledgement('I agree to the Terms and Community Guidelines.');
+
+        var policies = document.createElement('div');
+        policies.className = 'channel-consent-policies';
+        policies.appendChild(_channelsPublicConsentLink('Terms', 'https://ratspeak.org/terms.html'));
+        policies.appendChild(_channelsPublicConsentLink('Community Guidelines', 'https://ratspeak.org/community-guidelines.html'));
+        policies.appendChild(_channelsPublicConsentLink('Privacy', 'https://ratspeak.org/privacy.html'));
+        built.body.appendChild(policies);
+
+        var error = document.createElement('div');
+        error.className = 'channel-sheet-error';
+        error.setAttribute('aria-live', 'polite');
+        built.body.appendChild(error);
+
+        var cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'nr-btn nr-btn-secondary';
+        cancel.textContent = 'Not now';
+        cancel.addEventListener('click', function() { built.dismiss(false); });
+        var continueButton = document.createElement('button');
+        continueButton.type = 'button';
+        continueButton.className = 'nr-btn nr-btn-primary';
+        continueButton.textContent = 'Continue';
+        continueButton.disabled = true;
+        function syncContinue() {
+            continueButton.disabled = !(adult.checked && independent.checked && policiesAccepted.checked);
+            error.textContent = '';
+        }
+        adult.addEventListener('change', syncContinue);
+        independent.addEventListener('change', syncContinue);
+        policiesAccepted.addEventListener('change', syncContinue);
+        continueButton.addEventListener('click', function() {
+            if (!adult.checked || !independent.checked || !policiesAccepted.checked) return;
+            continueButton.disabled = true;
+            continueButton.textContent = 'Saving\u2026';
+            RS.invoke('accept_public_channel_consent', {
+                version: _channelsPublicConsent.requiredVersion,
+                adultConfirmed: adult.checked,
+                independentHubsUnderstood: independent.checked,
+                policiesAccepted: policiesAccepted.checked
+            }).then(function(data) {
+                _channelsApplyPublicConsentSettings(data);
+                built.dismiss(true);
+            }).catch(function(err) {
+                error.textContent = (err && err.message) || 'Could not save this acknowledgement.';
+                continueButton.textContent = 'Continue';
+                syncContinue();
+            });
+        });
+        built.footer.appendChild(cancel);
+        built.footer.appendChild(continueButton);
+        _channelsPresentSheet(built, adult);
+    });
+    return _channelsPublicConsentPromptPromise;
+}
+
+function _channelsEnsurePublicConsent() {
+    return _channelsLoadPublicConsent().then(function() {
+        return _channelsHasPublicConsent() ? true : _channelsShowPublicConsent();
+    });
+}
+
+function _channelsApplyBlockedContacts(rows) {
+    var blocked = {};
+    (Array.isArray(rows) ? rows : []).forEach(function(row) {
+        var hash = String(row && (row.hash || row.dest_hash) || '').trim().toLowerCase();
+        if (/^[0-9a-f]{32}$/.test(hash)) blocked[hash] = true;
+    });
+    _channelsBlockedAddresses = blocked;
+}
+
+function _channelsLoadBlockedContacts() {
+    if (_channelsBlockedLoadPromise) return _channelsBlockedLoadPromise;
+    _channelsBlockedLoadPromise = RS.invoke('api_blocked_contacts').then(function(rows) {
+        _channelsApplyBlockedContacts(rows);
+        return _channelsBlockedAddresses;
+    }).finally(function() {
+        _channelsBlockedLoadPromise = null;
+    });
+    return _channelsBlockedLoadPromise;
+}
+
+function _channelsIsBlockedAddress(value) {
+    return !!_channelsBlockedAddresses[String(value || '').trim().toLowerCase()];
+}
+
+function _channelsIsBlockedItem(item) {
+    if (!item || item.ours) return false;
+    var canonical = String(item.source_lxmf_hash || '').trim().toLowerCase();
+    if (!canonical && item.source_hash) {
+        canonical = _channelsIdentityAvatarSeed(item.source_hash, '', false);
+    }
+    return _channelsIsBlockedAddress(canonical);
+}
+
+function _channelsIsBlockedMember(member) {
+    if (!member || member.is_self) return false;
+    var details = _channelsMemberDetails(member);
+    return _channelsIsBlockedAddress(details.lxmfAddress);
+}
+
+function _channelsRenderAfterSafetyChange() {
+    var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
+    if (room) _channelsRenderRoom();
+    else renderChannels();
 }
 
 function _channelsViewVisible() {
@@ -353,6 +564,14 @@ function _channelsOwnedHubReady() {
 function channelsConnectToHub(hub, options) {
     hub = hub || {};
     options = options || {};
+    if (!options.public_consent_checked && !_channelsHasPublicConsent()) {
+        return _channelsEnsurePublicConsent().then(function(accepted) {
+            if (!accepted) return null;
+            return channelsConnectToHub(hub, Object.assign({}, options, {
+                public_consent_checked: true
+            }));
+        });
+    }
     if (!options.preserve_pending_share) channelsPendingShareJoin = null;
     var destination = String(hub.destination_hash || '').trim().toLowerCase();
     var nickname = String(hub.nickname || _channelsDefaultNickname()).trim();
@@ -2222,6 +2441,7 @@ function _channelsTimelineEntries(room, historyEntry) {
 
     function append(item, hubNotice) {
         if (!item) return;
+        if (_channelsIsBlockedItem(item)) return;
         if (_channelsIsConnectionLifecycleItem(item)) return;
         // RRC membership is best-effort and many hubs omit member lists or
         // cannot prove every disconnect. Keep JOINED/PARTED as native state
@@ -2651,11 +2871,29 @@ function _channelsBindTouchReplyAction(event, item, authorText) {
                 _channelsInsertQuote(item, authorText);
                 return;
             }
-            actionPopover(event, [{
+            var actions = [{
                 label: 'Quote in reply',
                 icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"></polyline><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path></svg>',
                 onSelect: function() { _channelsInsertQuote(item, authorText); }
-            }]);
+            }];
+            if (!item.ours) {
+                actions.push({
+                    label: 'Report',
+                    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h11l-1 4 1 4H5"/></svg>',
+                    onSelect: function() {
+                        _channelsOpenReportSheet({
+                            nickname: authorText,
+                            identityHash: item.source_hash,
+                            lxmfAddress: item.source_lxmf_hash,
+                            messageId: item.id,
+                            messageText: item.text,
+                            timestampMs: item.timestamp_ms,
+                            room: channelsActiveRoom
+                        });
+                    }
+                });
+            }
+            actionPopover(event, actions);
         }
     });
 }
@@ -2765,6 +3003,28 @@ function _channelsBuildTranscriptItem(item, hubNotice, messageGroup) {
     meta.className = 'channel-event-meta';
     var quote = _channelsBuildQuoteButton(item, authorText);
     if (quote) meta.appendChild(quote);
+    if (!item.ours) {
+        var report = document.createElement('button');
+        report.type = 'button';
+        report.className = 'channel-event-report';
+        report.title = 'Report message';
+        report.setAttribute('aria-label', 'Report message from ' + authorText);
+        report.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h11l-1 4 1 4H5"/></svg>';
+        report.addEventListener('click', function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            _channelsOpenReportSheet({
+                nickname: authorText,
+                identityHash: item.source_hash,
+                lxmfAddress: item.source_lxmf_hash,
+                messageId: item.id,
+                messageText: item.text,
+                timestampMs: item.timestamp_ms,
+                room: channelsActiveRoom
+            });
+        });
+        meta.appendChild(report);
+    }
     meta.appendChild(time);
     var body = document.createElement('div');
     body.className = 'channel-event-text';
@@ -2891,7 +3151,9 @@ function _channelsObserveRoomMembers(hubDestinationHash, rooms) {
 function _channelsMemberRosterModel(room) {
     var context = _channelsHistoryContext(room);
     var nativeMembers = room && Array.isArray(room.members) ? room.members : [];
-    var visible = nativeMembers.slice();
+    var visible = nativeMembers.filter(function(member) {
+        return !_channelsIsBlockedMember(member);
+    });
     var visibleKeys = {};
     var visibleNames = {};
     visible.forEach(function(member) {
@@ -2963,6 +3225,12 @@ function _channelsMemberRosterModel(room) {
         });
     }
     var seen = Object.keys(seenByKey).map(function(key) { return seenByKey[key]; });
+    continuity = continuity.filter(function(member) {
+        return !_channelsIsBlockedMember(member);
+    });
+    seen = seen.filter(function(member) {
+        return !_channelsIsBlockedMember(member);
+    });
     seen.sort(function(a, b) {
         return Number(b.last_seen_at_ms || 0) - Number(a.last_seen_at_ms || 0);
     });
@@ -3093,6 +3361,108 @@ function _channelsMemberDetailField(labelText, value, copyLabel) {
     return row;
 }
 
+function _channelsOpenReportSheet(context) {
+    context = context || {};
+    if (typeof _rsBuildSheet !== 'function') return;
+    var roomName = String(context.room || channelsActiveRoom || '').trim();
+    var hub = channelsSnapshot.hub || {};
+    var hubName = _channelsHubName(hub);
+    var hubAddress = String(hub.destination_hash || '').trim().toLowerCase();
+    var nickname = String(context.nickname || 'Channel member').trim();
+    var identityHash = String(context.identityHash || '').trim().toLowerCase();
+    var lxmfAddress = String(context.lxmfAddress || '').trim().toLowerCase();
+    var messageText = String(context.messageText || '').trim();
+    var messageId = String(context.messageId || '').trim();
+    var timestampMs = Number(context.timestampMs) || 0;
+
+    var built = _rsBuildSheet({ title: 'Report channel content' }, function() {});
+    built.sheet.classList.add('channel-report-sheet');
+    var explanation = document.createElement('p');
+    explanation.className = 'channel-report-explanation';
+    explanation.textContent = 'Ratspeak can investigate app conduct and activity on official Ratspeak services. Independent hub operators control and moderate their own hubs.';
+    built.body.appendChild(explanation);
+
+    var summary = document.createElement('div');
+    summary.className = 'channel-report-summary';
+    [
+        ['Hub', hubName],
+        ['Channel', roomName ? _channelsRoomDisplayName(roomName) : 'Unknown'],
+        ['Reported person', nickname]
+    ].forEach(function(field) {
+        var row = document.createElement('div');
+        var label = document.createElement('span');
+        label.textContent = field[0];
+        var value = document.createElement('strong');
+        value.textContent = field[1];
+        row.appendChild(label);
+        row.appendChild(value);
+        summary.appendChild(row);
+    });
+    if (messageText) {
+        var excerpt = document.createElement('blockquote');
+        excerpt.textContent = messageText.length > 500
+            ? messageText.slice(0, 500) + '\u2026'
+            : messageText;
+        summary.appendChild(excerpt);
+    }
+    built.body.appendChild(summary);
+
+    var privacy = document.createElement('p');
+    privacy.className = 'channel-report-privacy';
+    privacy.textContent = 'Nothing is sent automatically. Ratspeak will prepare an email containing the details above for you to review.';
+    built.body.appendChild(privacy);
+
+    var error = document.createElement('div');
+    error.className = 'channel-sheet-error';
+    error.setAttribute('aria-live', 'polite');
+    built.body.appendChild(error);
+
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', function() { built.dismiss(); });
+    var prepare = document.createElement('button');
+    prepare.type = 'button';
+    prepare.className = 'nr-btn nr-btn-primary';
+    prepare.textContent = 'Prepare email';
+    prepare.addEventListener('click', function() {
+        var lines = [
+            'I would like to report channel content in Ratspeak.',
+            '',
+            'Hub: ' + hubName,
+            'Hub address: ' + (hubAddress || 'Unavailable'),
+            'Channel: ' + (roomName || 'Unavailable'),
+            'Reported person: ' + nickname,
+            'Identity hash: ' + (identityHash || 'Unavailable'),
+            'LXMF address: ' + (lxmfAddress || 'Unavailable'),
+            'Event ID: ' + (messageId || 'Unavailable'),
+            'Observed at: ' + (timestampMs ? new Date(timestampMs).toISOString() : 'Unavailable')
+        ];
+        if (messageText) lines.push('', 'Message:', messageText.slice(0, 2000));
+        lines.push('', 'Additional context:', '');
+        var body = lines.join('\n');
+        prepare.disabled = true;
+        RS.openSupportEmail('Ratspeak channel report: ' + (roomName || hubName), body).then(function(opened) {
+            if (opened) {
+                built.dismiss();
+                return;
+            }
+            return RS.copyText(body).then(function() {
+                error.textContent = 'No email app was available. The report was copied; send it to mail@ratspeak.org.';
+                RS.openExternalUrl('https://ratspeak.org/support.html');
+            });
+        }).catch(function() {
+            error.textContent = 'Could not prepare the report. Email mail@ratspeak.org or use the Support page.';
+        }).then(function() {
+            prepare.disabled = false;
+        });
+    });
+    built.footer.appendChild(cancel);
+    built.footer.appendChild(prepare);
+    _channelsPresentSheet(built, prepare);
+}
+
 function _channelsAppendMemberDetail(room, member, container, options) {
     options = options || {};
     var details = _channelsMemberDetails(member);
@@ -3195,6 +3565,51 @@ function _channelsAppendMemberDetail(room, member, container, options) {
                 openConversationWith(details.lxmfAddress);
             });
             actions.appendChild(message);
+        }
+        var report = document.createElement('button');
+        report.type = 'button';
+        report.className = 'nr-btn entity-action-btn';
+        report.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h11l-1 4 1 4H5"/></svg><span>Report</span>';
+        report.addEventListener('click', function() {
+            closeDetail();
+            setTimeout(function() {
+                _channelsOpenReportSheet({
+                    nickname: channelName,
+                    identityHash: details.identityHash,
+                    lxmfAddress: details.lxmfAddress,
+                    room: room.name
+                });
+            }, 220);
+        });
+        actions.appendChild(report);
+        if (details.lxmfAddress) {
+            var block = document.createElement('button');
+            block.type = 'button';
+            block.className = 'danger-btn entity-action-btn';
+            block.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg><span>Block</span>';
+            block.addEventListener('click', function() {
+                rsConfirmWithCheckbox({
+                    message: 'Block "' + channelName + '"? Their channel messages and member entry will be hidden.',
+                    danger: true,
+                    confirmText: 'Block',
+                    checkboxLabel: 'Also block at the network layer (drop their packets entirely)',
+                    checkboxHelp: 'This affects all identities on this device and may hide more than channel activity.',
+                    defaultChecked: false
+                }).then(function(result) {
+                    if (!result.confirmed) return;
+                    return RS.invokeOrToast('block_contact', {
+                        args: {
+                            hash: details.lxmfAddress,
+                            escalate_to_blackhole: result.checked
+                        }
+                    }, 'Could not block channel member').then(function() {
+                        _channelsBlockedAddresses[details.lxmfAddress.toLowerCase()] = true;
+                        closeDetail();
+                        _channelsRenderAfterSafetyChange();
+                    });
+                }).catch(function() {});
+            });
+            actions.appendChild(block);
         }
         (options.actionsContainer || container).appendChild(actions);
     }
@@ -4158,6 +4573,19 @@ function channelsOpenHubSwitcher() {
 function channelsOpenConnectSheet(prefill) {
     if (typeof _rsBuildSheet !== 'function') return;
     prefill = prefill || {};
+    if (!prefill.public_consent_checked) {
+        _channelsEnsurePublicConsent().then(function(accepted) {
+            if (!accepted) return;
+            channelsOpenConnectSheet(Object.assign({}, prefill, {
+                public_consent_checked: true
+            }));
+        }).catch(function(err) {
+            if (typeof showToast === 'function') {
+                showToast((err && err.message) || 'Could not load channel safety settings.', 'toast-red', 5000);
+            }
+        });
+        return;
+    }
     var selectedHash = String(prefill.destination_hash || '').trim().toLowerCase();
     var selectedLabel = prefill.label || prefill.announced_name || '';
     var sharedDestination = prefill.shared_room ? selectedHash : '';
@@ -4456,8 +4884,19 @@ function _channelsPresentSheet(built, initialFocus) {
     if (initialFocus) setTimeout(function() { initialFocus.focus(); }, 250);
 }
 
-function channelsOpenJoinSheet(prefillRoom) {
+function channelsOpenJoinSheet(prefillRoom, options) {
     if (!_channelsIsConnected() || typeof _rsBuildSheet !== 'function') return;
+    options = options || {};
+    if (!options.public_consent_checked) {
+        _channelsEnsurePublicConsent().then(function(accepted) {
+            if (accepted) channelsOpenJoinSheet(prefillRoom, { public_consent_checked: true });
+        }).catch(function(err) {
+            if (typeof showToast === 'function') {
+                showToast((err && err.message) || 'Could not load channel safety settings.', 'toast-red', 5000);
+            }
+        });
+        return;
+    }
     var normalizedPrefill = String(prefillRoom || '').trim().toLowerCase();
     var directoryRooms = channelsSnapshot.directory &&
         Array.isArray(channelsSnapshot.directory.rooms)
@@ -5531,6 +5970,18 @@ RS.listen('channels_snapshot', function(snapshot) {
     channelsApplySnapshot(snapshot);
 });
 
+RS.listen('app_settings_updated', _channelsApplyPublicConsentSettings);
+
+RS.listen('contact_blocked', function(data) {
+    var hash = String(data && data.hash || '').trim().toLowerCase();
+    if (hash) _channelsBlockedAddresses[hash] = true;
+    _channelsRenderAfterSafetyChange();
+});
+
+RS.listen('contact_unblocked', function() {
+    _channelsLoadBlockedContacts().then(_channelsRenderAfterSafetyChange).catch(function() {});
+});
+
 // Treat push payloads as invalidation signals. A request sequence around the
 // follow-up DB read prevents an older event or command response from replacing
 // newer unread state on the independent Tauri delivery paths.
@@ -5606,4 +6057,8 @@ document.addEventListener('visibilitychange', function() {
     if (!document.hidden) setTimeout(function() { channelsPrepareVisibleRead(); }, 0);
 });
 
-document.addEventListener('DOMContentLoaded', _channelsBindUI);
+document.addEventListener('DOMContentLoaded', function() {
+    _channelsLoadPublicConsent().catch(function() {});
+    _channelsLoadBlockedContacts().then(_channelsRenderAfterSafetyChange).catch(function() {});
+    _channelsBindUI();
+});

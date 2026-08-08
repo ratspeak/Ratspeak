@@ -3025,6 +3025,21 @@ pub fn get_setting(pool: &DbPool, key: &str) -> Option<String> {
     .ok()
 }
 
+/// Current wording version for the app-wide, adults-only public-channel
+/// acknowledgement. Bump only when the safety acknowledgement materially
+/// changes; identity switching must not turn this gate into a bypass.
+pub const PUBLIC_CHANNEL_CONSENT_VERSION: u16 = 1;
+pub const PUBLIC_CHANNEL_CONSENT_SETTING: &str = "public_channel_consent_version";
+pub const PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING: &str = "public_channel_consent_accepted_at";
+
+pub fn public_channel_consent_is_current(stored: Option<&str>) -> bool {
+    stored.and_then(|value| value.parse::<u16>().ok()) == Some(PUBLIC_CHANNEL_CONSENT_VERSION)
+}
+
+pub fn has_current_public_channel_consent(pool: &DbPool) -> bool {
+    public_channel_consent_is_current(get_setting(pool, PUBLIC_CHANNEL_CONSENT_SETTING).as_deref())
+}
+
 /// Read a related set of settings from one SQLite snapshot. Missing keys are
 /// omitted; database failures are surfaced instead of being confused with an
 /// unset preference.
@@ -3138,6 +3153,35 @@ mod settings_tests {
         );
         assert!(result.is_err());
         assert_eq!(get_setting(&pool, "first"), None);
+    }
+
+    #[test]
+    fn public_channel_consent_requires_the_current_version() {
+        let pool = test_pool();
+        assert!(!has_current_public_channel_consent(&pool));
+        assert!(!public_channel_consent_is_current(Some("0")));
+        assert!(!public_channel_consent_is_current(Some("not-a-version")));
+
+        try_set_settings(
+            &pool,
+            &[
+                (
+                    PUBLIC_CHANNEL_CONSENT_SETTING.to_string(),
+                    PUBLIC_CHANNEL_CONSENT_VERSION.to_string(),
+                ),
+                (
+                    PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING.to_string(),
+                    "1786147200".to_string(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert!(has_current_public_channel_consent(&pool));
+        assert_eq!(
+            get_setting(&pool, PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING).as_deref(),
+            Some("1786147200")
+        );
     }
 }
 

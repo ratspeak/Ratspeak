@@ -1675,3 +1675,25 @@
 .about-modal-link-row {
     margin-top: var(--space-6);
 }
+.about-policy-links {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+    margin-top: var(--space-7);
+}
+.about-policy-links button {
+    min-height: var(--control-height-sm);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--type-row-meta-size);
+    font-weight: var(--type-weight-semibold);
+}
+.about-policy-links button:hover,
+.about-policy-links button:focus-visible {
+    border-color: color-mix(in srgb, var(--accent) 52%, var(--border-color));
+    color: var(--accent);
+}

@@ -987,6 +987,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         text_scale_percent,
         theme_family,
         theme_mode,
+        public_channel_consent_version,
     ) = db::spawn_db(state.db.clone(), |p| {
         let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
             .and_then(|v| v.parse::<u64>().ok())
@@ -1010,6 +1011,11 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         let theme_mode = db::get_setting(&p, "theme_mode")
             .and_then(|value| normalize_theme_mode(&value).map(str::to_string))
             .unwrap_or_else(|| DEFAULT_THEME_MODE.to_string());
+        let public_channel_consent_version =
+            db::get_setting(&p, db::PUBLIC_CHANNEL_CONSENT_SETTING)
+                .filter(|value| db::public_channel_consent_is_current(Some(value)))
+                .and_then(|value| value.parse::<u16>().ok())
+                .unwrap_or(0);
         (
             hw_timeout,
             developer_mode,
@@ -1020,6 +1026,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             text_scale_percent,
             theme_family,
             theme_mode,
+            public_channel_consent_version,
         )
     })
     .await
@@ -1033,6 +1040,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         100,
         DEFAULT_THEME_FAMILY.to_string(),
         DEFAULT_THEME_MODE.to_string(),
+        0,
     ));
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
@@ -1047,7 +1055,83 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "text_scale_percent": text_scale_percent,
         "theme_family": theme_family,
         "theme_mode": theme_mode,
+        "public_channel_consent_version": public_channel_consent_version,
+        "public_channel_consent_required_version": db::PUBLIC_CHANNEL_CONSENT_VERSION,
     }))
+}
+
+/// Persist the versioned, adults-only public-channel acknowledgement.
+///
+/// The frontend supplies the version it displayed. Rejecting stale/future
+/// values prevents an old WebView or crafted IPC call from recording consent
+/// to words the user did not actually review.
+fn validate_public_channel_consent(
+    version: u16,
+    adult_confirmed: bool,
+    independent_hubs_understood: bool,
+    policies_accepted: bool,
+) -> AppResult<()> {
+    if version != db::PUBLIC_CHANNEL_CONSENT_VERSION {
+        return Err(AppError::bad_request(
+            "Public channel terms changed. Review the current acknowledgement.",
+        ));
+    }
+    if !adult_confirmed || !independent_hubs_understood || !policies_accepted {
+        return Err(AppError::bad_request(
+            "Confirm every public-channel acknowledgement before continuing.",
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn accept_public_channel_consent(
+    state: State<'_, Arc<AppState>>,
+    version: u16,
+    adult_confirmed: bool,
+    independent_hubs_understood: bool,
+    policies_accepted: bool,
+) -> AppResult<Value> {
+    validate_public_channel_consent(
+        version,
+        adult_confirmed,
+        independent_hubs_understood,
+        policies_accepted,
+    )?;
+    let accepted_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_settings(
+            &p,
+            &[
+                (
+                    db::PUBLIC_CHANNEL_CONSENT_SETTING.to_string(),
+                    version.to_string(),
+                ),
+                (
+                    db::PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING.to_string(),
+                    accepted_at,
+                ),
+            ],
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("accept_public_channel_consent db task panicked"))?
+    .map_err(|error| {
+        AppError::database_unavailable(format!(
+            "Failed to save public channel acknowledgement: {error}"
+        ))
+    })?;
+
+    let payload = json!({
+        "public_channel_consent_version": version,
+        "public_channel_consent_required_version": db::PUBLIC_CHANNEL_CONSENT_VERSION,
+    });
+    state.emit_to_all("app_settings_updated", payload.clone());
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -6925,6 +7009,26 @@ pub async fn remove_backbone_server(
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))
+}
+
+#[cfg(test)]
+mod public_channel_consent_tests {
+    use super::*;
+
+    #[test]
+    fn consent_requires_current_copy_and_every_acknowledgement() {
+        let current = db::PUBLIC_CHANNEL_CONSENT_VERSION;
+        assert!(validate_public_channel_consent(current, true, true, true).is_ok());
+        assert!(
+            validate_public_channel_consent(current.saturating_sub(1), true, true, true).is_err()
+        );
+        assert!(
+            validate_public_channel_consent(current.saturating_add(1), true, true, true).is_err()
+        );
+        assert!(validate_public_channel_consent(current, false, true, true).is_err());
+        assert!(validate_public_channel_consent(current, true, false, true).is_err());
+        assert!(validate_public_channel_consent(current, true, true, false).is_err());
+    }
 }
 
 #[cfg(test)]

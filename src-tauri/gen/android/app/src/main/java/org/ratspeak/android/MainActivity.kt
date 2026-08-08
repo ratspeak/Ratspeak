@@ -1829,6 +1829,30 @@ class MainActivity : TauriActivity() {
         }
 
         @JavascriptInterface
+        fun openSupportEmail(subject: String, body: String): Boolean {
+            val cleanSubject = subject.trim()
+            if (cleanSubject.isEmpty() || cleanSubject.length > 180 || body.length > 8_000) {
+                return false
+            }
+            if (cleanSubject.any { it == '\r' || it == '\n' || it == '\u0000' } || body.contains('\u0000')) {
+                return false
+            }
+            val uri = "mailto:mail@ratspeak.org".toUri().buildUpon()
+                .appendQueryParameter("subject", cleanSubject)
+                .appendQueryParameter("body", body)
+                .build()
+            val intent = Intent(Intent.ACTION_SENDTO, uri)
+            return try {
+                startActivity(intent)
+                true
+            } catch (_: ActivityNotFoundException) {
+                false
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
+        @JavascriptInterface
         fun importIdentityBackup() {
             handler.post {
                 try {
