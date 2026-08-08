@@ -1556,6 +1556,8 @@
     padding: var(--space-7) clamp(20px, 6vw, 32px) var(--space-10);
 }
 .conn-detail-sheet {
+    height: auto;
+    min-height: 0;
     max-width: 100vw;
     overflow-x: hidden;
 }
@@ -1598,7 +1600,7 @@
 }
 .conn-detail-sheet--progressive.conn-detail-sheet--with-add .conn-detail-sheet-content {
     gap: var(--space-5);
-    padding-bottom: calc(var(--space-6) + var(--sab));
+    padding-bottom: calc(var(--space-3) + var(--sab));
 }
 .conn-detail-sheet-identity {
     display: grid;
@@ -1698,14 +1700,14 @@
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    margin-top: var(--space-4);
+    margin-top: 0;
 }
 .conn-detail-sheet--compact .conn-detail-sheet-actions {
-    margin-top: var(--space-3);
+    margin-top: 0;
 }
 .conn-detail-sheet--with-add .conn-detail-sheet-actions {
     gap: var(--space-3);
-    margin-top: var(--space-4);
+    margin-top: 0;
 }
 .conn-detail-sheet-primary-actions,
 .conn-detail-sheet-secondary-actions {
@@ -1773,17 +1775,17 @@
     gap: var(--space-1);
     min-height: 48px;
     width: 100%;
-    margin-top: var(--space-3);
+    margin-top: 0;
     padding: 0;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
 }
 .conn-detail-sheet--compact .conn-detail-sheet-expand-hint {
-    margin-top: var(--space-2);
+    margin-top: 0;
     min-height: 44px;
 }
 .conn-detail-sheet--with-add .conn-detail-sheet-expand-hint {
-    margin-top: var(--space-3);
+    margin-top: 0;
 }
 .conn-detail-sheet-expand-hint svg {
     color: var(--accent);
@@ -2811,7 +2813,7 @@
 
 @media (max-width: 768px) {
     .setup-container {
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
         height: 100%;
         box-sizing: border-box;
@@ -2821,6 +2823,9 @@
         scroll-padding-bottom: calc(16px + var(--sab));
     }
     .setup-card {
+        flex: 0 0 auto;
+        height: fit-content;
+        margin-block: auto;
         padding: 32px 24px;
         border-radius: var(--radius-xl);
         max-width: 100%;
@@ -2842,12 +2847,13 @@
         font-size: var(--text-base);
     }
     body.setup-backup-active .setup-container {
-        align-items: stretch;
+        align-items: flex-start;
         justify-content: flex-start;
         padding-top: calc(12px + var(--sat));
         padding-bottom: calc(18px + var(--sab));
     }
     body.setup-backup-active .setup-card {
+        margin-block: auto;
         padding: 24px 22px;
     }
     body.setup-backup-active .setup-icon {
