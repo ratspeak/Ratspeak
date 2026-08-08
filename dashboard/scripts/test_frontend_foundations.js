@@ -161,6 +161,14 @@ assert(shared.includes('RS.ui.bindHelpPopovers = function'));
 assert(shared.includes('RS.ui.prefersKeyboardFocus = function'));
 assert(!read('static/js/setup.js').includes('tooltip-backdrop'),
     'setup help must not dim the entire screen with a bespoke backdrop');
+var channelsSource = read('static/js/channels.js');
+assert(channelsSource.includes('channel-consent-acknowledgements'),
+    'public-channel safety confirmations must remain one coherent acknowledgement group');
+assert(channelsSource.includes('Promise.resolve(RS.openExternalUrl(url))') &&
+    channelsSource.includes("showToast((err && err.message) || 'This link could not be opened.'"),
+    'public-channel policy links must surface native-open failures instead of failing silently');
+assert(channelsSource.includes('RS.ui.focusAfterUpdate(initialFocus)'),
+    'compact channel sheets must not force keyboard focus during touch navigation');
 var lxmf = read('static/js/lxmf.js');
 assert(lxmf.includes("e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isMobile()"));
 assert(!read('static/js/peers.js').includes('displayName.substring(0, 40)'));

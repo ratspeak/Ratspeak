@@ -121,6 +121,17 @@ assert(/\.section-subtab-btn\s*\{[^}]*border-bottom:\s*2px solid transparent/s
     'compact subviews and filters must share the underline navigation primitive');
 assert(!/\.games-tab\.active\s*\{/.test(sourceByName['11-games.css']),
     'Games filters must not maintain a parallel selected-tab treatment');
+assert(/\.channel-consent-fact\s*\{[^}]*display:\s*flex;/s
+    .test(sourceByName['09-channels.css']) &&
+    /\.channel-consent-fact \+ \.channel-consent-fact\s*\{[^}]*border-top:/s
+        .test(sourceByName['09-channels.css']),
+    'public-channel safety facts must read as compact information rows instead of action cards');
+assert(/\.channel-consent-acknowledgements\s*\{[^}]*border:\s*1px solid/s
+    .test(sourceByName['09-channels.css']),
+    'public-channel confirmations must share one bounded acknowledgement group');
+assert(/\.channel-consent-sheet\s*\{[^}]*max-height:\s*min\(88dvh,\s*760px\)/s
+    .test(sourceByName['13-responsive.css']),
+    'the public-channel consent sheet must keep its footer reachable on compact viewports');
 
 var gamesCss = sourceByName['11-games.css'];
 assert(/\.four-board\s*\{[\s\S]*?grid-template-columns:\s*repeat\(7,/.test(gamesCss) &&

@@ -191,7 +191,10 @@ function _rsBuildSheet(opts, onClose) {
         resolved = true;
 
         RS.sheetShell.dismiss(shell, function() {
-            if (previousFocus && previousFocus.focus) previousFocus.focus();
+            var restoreFocus = RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function'
+                ? RS.ui.prefersKeyboardFocus()
+                : true;
+            if (restoreFocus && previousFocus && previousFocus.focus) previousFocus.focus();
         });
 
         if (onClose) onClose(value);

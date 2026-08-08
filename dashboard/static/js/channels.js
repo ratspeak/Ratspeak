@@ -157,8 +157,16 @@ function _channelsPublicConsentLink(label, url) {
     button.type = 'button';
     button.className = 'channel-consent-policy-link';
     button.textContent = label;
-    button.addEventListener('click', function() {
-        RS.openExternalUrl(url);
+    button.addEventListener('click', function(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        Promise.resolve(RS.openExternalUrl(url)).then(function(opened) {
+            if (opened === false) throw new Error('This link could not be opened.');
+        }).catch(function(err) {
+            if (typeof showToast === 'function') {
+                showToast((err && err.message) || 'This link could not be opened.', 'toast-red', 5000);
+            }
+        });
     });
     return button;
 }
@@ -183,22 +191,39 @@ function _channelsShowPublicConsent() {
         var facts = document.createElement('div');
         facts.className = 'channel-consent-facts';
         [
-            ['Independent hubs', 'Unless clearly identified as an official Ratspeak hub, a hub is operated and moderated by someone else. Content may be offensive, misleading, or illegal.'],
-            ['Channel privacy', 'A hub relays and can read channel messages. Public channels do not have the same end-to-end privacy as direct messages.'],
-            ['Your controls', 'You can block people, report content, or leave at any time. Ratspeak is for adults age 18 and older.']
+            ['hub', 'Independent hubs', 'Unless marked official, each hub is run and moderated by someone else. Content may be offensive, misleading, or illegal.'],
+            ['privacy', 'Hub-readable messages', 'The hub relays and can read channel messages. They do not have the same end-to-end privacy as direct messages.'],
+            ['controls', 'You stay in control', 'You can block people, report content, or leave at any time. Public channels are for adults 18 and older.']
         ].forEach(function(fact) {
             var item = document.createElement('div');
             item.className = 'channel-consent-fact';
+            var icon = document.createElement('span');
+            icon.className = 'channel-consent-fact-icon';
+            icon.setAttribute('aria-hidden', 'true');
+            icon.dataset.icon = fact[0];
+            if (fact[0] === 'hub') {
+                icon.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 20h16M6 20V9l6-5 6 5v11M9 13h6M9 16h6"/></svg>';
+            } else if (fact[0] === 'privacy') {
+                icon.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3 4.5 6v5.5c0 4.5 3 7.8 7.5 9.5 4.5-1.7 7.5-5 7.5-9.5V6L12 3Z"/><path d="M9 12h6"/></svg>';
+            } else {
+                icon.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg>';
+            }
+            var text = document.createElement('span');
+            text.className = 'channel-consent-fact-copy';
             var title = document.createElement('strong');
-            title.textContent = fact[0];
+            title.textContent = fact[1];
             var copy = document.createElement('span');
-            copy.textContent = fact[1];
-            item.appendChild(title);
-            item.appendChild(copy);
+            copy.textContent = fact[2];
+            text.appendChild(title);
+            text.appendChild(copy);
+            item.appendChild(icon);
+            item.appendChild(text);
             facts.appendChild(item);
         });
         built.body.appendChild(facts);
 
+        var acknowledgements = document.createElement('div');
+        acknowledgements.className = 'channel-consent-acknowledgements';
         function acknowledgement(labelText) {
             var label = document.createElement('label');
             label.className = 'channel-consent-check';
@@ -208,12 +233,13 @@ function _channelsShowPublicConsent() {
             copy.textContent = labelText;
             label.appendChild(input);
             label.appendChild(copy);
-            built.body.appendChild(label);
+            acknowledgements.appendChild(label);
             return input;
         }
         var adult = acknowledgement('I am 18 or older.');
         var independent = acknowledgement('I understand that independent hubs may contain unmoderated content.');
         var policiesAccepted = acknowledgement('I agree to the Terms and Community Guidelines.');
+        built.body.appendChild(acknowledgements);
 
         var policies = document.createElement('div');
         policies.className = 'channel-consent-policies';
@@ -4885,7 +4911,10 @@ function _channelsPresentSheet(built, initialFocus) {
         });
     }
     built.present();
-    if (initialFocus) setTimeout(function() { initialFocus.focus(); }, 250);
+    if (initialFocus) setTimeout(function() {
+        if (RS.ui && typeof RS.ui.focusAfterUpdate === 'function') RS.ui.focusAfterUpdate(initialFocus);
+        else if (!_channelsCompact()) initialFocus.focus();
+    }, 250);
 }
 
 function channelsOpenJoinSheet(prefillRoom, options) {
