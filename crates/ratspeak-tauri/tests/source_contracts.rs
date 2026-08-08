@@ -4292,6 +4292,12 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(state_js.contains("installUnlock: _rsInstallAudioPlaybackUnlock"));
     assert!(state_js.contains("window.RatspeakAndroid.requestMediaPermissions"));
     assert!(state_js.contains("function _rsNativeMicrophonePermission(audio)"));
+    assert!(state_js.contains("ctx.state === 'suspended' || ctx.state === 'interrupted'"));
+    assert!(!state_js.contains(
+        "_rsAudioPlaybackUnlocked = ctx.state === 'running' || ctx.state === 'interrupted'"
+    ));
+    assert!(state_js.contains("ctx.state !== 'interrupted' &&"));
+    assert!(state_js.contains("ctx.state !== 'closed'"));
     assert!(state_js.contains("isTauriMobile() &&"));
     assert!(state_js.contains("isIOS()"));
     assert!(state_js.contains("RS.invoke('request_microphone_permission')"));
@@ -5335,7 +5341,12 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     );
     assert!(responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-expand-hint"));
     assert!(responsive_css.contains(".conn-detail-sheet--with-add .conn-detail-sheet-expand-hint"));
-    assert!(responsive_css.contains(".conn-detail-sheet {\n    max-width: 100vw;"));
+    let conn_sheet_css = responsive_css
+        .split(".conn-detail-sheet {")
+        .nth(1)
+        .and_then(|tail| tail.split('}').next())
+        .expect("mobile connection detail sheet rule");
+    assert!(conn_sheet_css.contains("max-width: 100vw;"));
     assert!(
         responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-primary-actions")
     );
@@ -7188,6 +7199,25 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(voice_memos.contains("window.addEventListener('pagehide'"));
     assert!(voice_memos.contains("startVoiceMemoAudioSession"));
     assert!(voice_memos.contains("handleAudioInterruption"));
+    assert!(voice_memos.contains("RS.audioPlayback.ensure({ installUnlock: true })"));
+    assert!(voice_memos.contains("RS.audioPlayback.context()"));
+    assert!(voice_memos.contains("RS.audioPlayback.isReady()"));
+    assert!(voice_memos.contains("ctx.decodeAudioData"));
+    assert!(voice_memos.contains("typeof isIOS === 'function' && isIOS()"));
+    assert!(!voice_memos.contains("voice-memo-player-speed"));
+    assert!(!voice_memos.contains("playbackSpeed"));
+    let call_handoff = voice_memos
+        .split("function cancelForCall()")
+        .nth(1)
+        .and_then(|source| source.split("function handleAudioInterruption()").next())
+        .expect("voice memo call handoff");
+    let stop_playback = call_handoff
+        .find("stopAnyPlayback();")
+        .expect("call handoff stops memo playback");
+    let idle_branch = call_handoff
+        .find("if (recorderState === 'idle')")
+        .expect("call handoff handles an idle recorder");
+    assert!(stop_playback < idle_branch);
     assert!(system.contains("mobile_background_voice_memo_cancel_failed"));
     assert!(android.contains("AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE"));
     assert!(android.contains("fun startVoiceMemoAudioSession(): Boolean"));

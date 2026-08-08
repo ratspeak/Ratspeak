@@ -64,6 +64,12 @@ assert(sharedUi.includes('RS.composer.dismissForReplacement'),
     'composer replacements need one shared mobile keyboard transition');
 assert(state.includes('function _rsNativeMicrophonePermission(audio)'),
     'Apple desktop and iOS must share the native microphone permission broker');
+assert(state.includes("ctx.state === 'suspended' || ctx.state === 'interrupted'"),
+    'iOS audio interruptions must be resumed before voice-message playback');
+assert(!state.includes("_rsAudioPlaybackUnlocked = ctx.state === 'running' || ctx.state === 'interrupted'"),
+    'an interrupted iOS audio context must never be treated as already unlocked');
+assert(state.includes("ctx.state !== 'interrupted' &&") && state.includes("ctx.state !== 'closed'"),
+    'shared audio readiness must exclude interrupted and closed contexts');
 assert(state.includes('isTauriMobile() &&') && state.includes('isIOS()'),
     'iOS must request permission through the same native API used for capture');
 assert(voice.includes('showToast(START_FAILURE_MESSAGE'),
@@ -88,6 +94,25 @@ assert(voice.includes('handleAudioInterruption'),
     'native audio interruptions must stop the recorder visibly');
 assert(voice.includes('MAX_PLAYBACK_BYTES'),
     'decoded WAV object URLs must live in a bounded cache');
+assert(voice.includes("RS.audioPlayback.ensure({ installUnlock: true })"),
+    'voice playback must reuse the shared audio unlock path');
+assert(voice.includes('RS.audioPlayback.context()') && voice.includes('ctx.decodeAudioData'),
+    'iOS playback must use the shared Web Audio context after native capture releases it');
+assert(voice.includes("typeof RS.audioPlayback.isReady === 'function' && RS.audioPlayback.isReady()"),
+    'iOS playback must only enter Web Audio after the shared context is ready');
+assert(voice.includes("typeof isIOS === 'function' && isIOS()"),
+    'the Web Audio compatibility path must remain scoped to iOS');
+assert(voice.indexOf('stopAnyPlayback();', voice.indexOf('function cancelForCall()')) <
+    voice.indexOf("if (recorderState === 'idle')", voice.indexOf('function cancelForCall()')),
+    'starting a call must stop memo playback even when the recorder is idle');
+assert(!voice.includes('voice-memo-player-speed') && !voice.includes('playbackSpeed'),
+    'voice messages must not expose distracting playback-speed controls');
+assert(!html.includes('voice-memo-icon-resume') && !html.includes('voice-memo-icon-pause'),
+    'recorder actions must render one stateful icon instead of stacked play/pause glyphs');
+assert(voice.includes('class="voice-memo-player-icon"') &&
+    !voice.includes('voice-memo-player-icon-play') &&
+    !voice.includes('voice-memo-player-icon-pause'),
+    'message playback must render exactly one stateful play/pause glyph');
 assert(messaging.includes("RS.invoke('send_lxmf_with_attachment'"));
 assert(messaging.includes("_updateConversationPreview(targetHash, 'Voice message'"));
 assert(messaging.includes('RS.voiceMemos.hydratePlayers(container)'));
@@ -124,6 +149,8 @@ assert(/\.voice-memo-record-btn,[\s\S]*?width:\s*44px/.test(responsive),
     'mobile recorder controls must retain 44px touch targets');
 assert(/\.voice-memo-field\s*\{[\s\S]*?min-height:\s*44px/.test(responsive),
     'the mobile recording field must retain the composer touch-height contract');
+assert(/\.voice-memo-player-play\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px/.test(responsive),
+    'mobile voice-message playback must retain a 44px touch target');
 assert(androidManifest.includes('android.permission.RECORD_AUDIO'));
 assert(androidActivity.includes('AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE'));
 assert(androidActivity.includes('fun startVoiceMemoAudioSession(): Boolean'));

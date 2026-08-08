@@ -23,6 +23,8 @@
     var pointerStartedRecording = false;
     var mobileAudioSessionActive = false;
     var START_FAILURE_MESSAGE = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
+    var ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
+    var ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
 
     function el(id) { return document.getElementById(id); }
     function esc(value) {
@@ -129,10 +131,8 @@
     function syncPauseButton() {
         var button = el('voice-memo-pause-btn');
         if (!button) return;
-        var pauseIcon = button.querySelector('.voice-memo-icon-pause');
-        var resumeIcon = button.querySelector('.voice-memo-icon-resume');
-        if (pauseIcon) pauseIcon.hidden = paused;
-        if (resumeIcon) resumeIcon.hidden = !paused;
+        var icon = button.querySelector('.voice-memo-state-icon');
+        if (icon) icon.innerHTML = paused ? ICON_PLAY : ICON_PAUSE;
         button.setAttribute('aria-label', paused ? 'Resume voice message recording' : 'Pause voice message recording');
         button.title = paused ? 'Resume recording' : 'Pause recording';
     }
@@ -146,6 +146,27 @@
         var canRecord = available && recorderState === 'idle' && !hasText && !hasAttachment;
         recordButton.hidden = !canRecord;
         sendButton.hidden = canRecord;
+    }
+    function voiceCallOwnsAudio() {
+        return typeof lxstVoiceState !== 'undefined' && !!(lxstVoiceState.active || lxstVoiceState.incoming);
+    }
+    function preparePlaybackInteraction() {
+        if (voiceCallOwnsAudio()) {
+            showToast('Finish the current call before playing a voice message.', 'toast-orange', 4200);
+            return Promise.resolve(false);
+        }
+        if (!window.RS || !RS.audioPlayback || typeof RS.audioPlayback.ensure !== 'function') {
+            return Promise.resolve(true);
+        }
+        // Keep this call in the original tap/click task. WebKit can leave its
+        // audio context interrupted after iOS releases the microphone session;
+        // resuming here restores playback before native memo decoding completes.
+        return RS.audioPlayback.ensure({ installUnlock: true }).then(function() {
+            return true;
+        }).catch(function(error) {
+            window.RS.diag('warn', '[voice memo] playback unlock failed:', error);
+            return true;
+        });
     }
     function stopAnyPlayback() {
         if (!activeAudio) return;
@@ -191,7 +212,7 @@
     }
     function startRecording() {
         if (recorderState !== 'idle' || !window.lxmfActiveContact) return Promise.resolve(false);
-        if (typeof lxstVoiceState !== 'undefined' && (lxstVoiceState.active || lxstVoiceState.incoming)) {
+        if (voiceCallOwnsAudio()) {
             showToast('Finish the current call before recording a voice message.', 'toast-orange', 4200);
             return Promise.resolve(false);
         }
@@ -293,11 +314,18 @@
             voiceHaptic('medium');
         }
     }
-    function base64BlobUrl(base64, mime) {
+    function base64Bytes(base64) {
         var raw = atob(base64 || '');
         var bytes = new Uint8Array(raw.length);
         for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-        return URL.createObjectURL(new Blob([bytes], { type: mime || 'audio/wav' }));
+        return bytes;
+    }
+    function ensureMediaUrl(item) {
+        if (!item.url) {
+            item.url = URL.createObjectURL(new Blob([item.wavBytes], { type: item.mime || 'audio/wav' }));
+            if (!(typeof isIOS === 'function' && isIOS())) item.wavBytes = null;
+        }
+        return item.url;
     }
     function decodeDraftOrStored(source) {
         if (source.data_base64) {
@@ -321,7 +349,9 @@
             var item = playbackByKey[key];
             if (!item) continue;
             playbackBytes = Math.max(0, playbackBytes - (item.bytes || 0));
-            try { URL.revokeObjectURL(item.url); } catch (_) {}
+            if (item.url) {
+                try { URL.revokeObjectURL(item.url); } catch (_) {}
+            }
             delete playbackByKey[key];
             if (key === activeKey) stopAnyPlayback();
         }
@@ -332,11 +362,14 @@
             return Promise.resolve(playbackByKey[key]);
         }
         return decodeDraftOrStored(source).then(function(result) {
+            var wavBytes = base64Bytes(result.data_base64);
             var item = {
-                url: base64BlobUrl(result.data_base64, result.mime),
+                url: '',
+                mime: result.mime || 'audio/wav',
+                wavBytes: wavBytes,
                 duration_ms: result.duration_ms,
                 waveform: result.waveform || [],
-                bytes: Math.floor((result.data_base64 || '').length * 3 / 4),
+                bytes: wavBytes.byteLength,
             };
             playbackByKey[key] = item;
             playbackBytes += item.bytes;
@@ -345,27 +378,184 @@
             return item;
         });
     }
+    function createEventedPlaybackHandle() {
+        var listeners = Object.create(null);
+        return {
+            addEventListener: function(name, callback) {
+                if (!listeners[name]) listeners[name] = [];
+                listeners[name].push(callback);
+            },
+            _emit: function(name) {
+                (listeners[name] || []).slice().forEach(function(callback) {
+                    try { callback(); } catch (_) {}
+                });
+            },
+        };
+    }
+    function decodeWebAudioBuffer(ctx, item) {
+        var data = item.wavBytes.buffer.slice(
+            item.wavBytes.byteOffset,
+            item.wavBytes.byteOffset + item.wavBytes.byteLength
+        );
+        return new Promise(function(resolve, reject) {
+            var settled = false;
+            function done(buffer) {
+                if (settled) return;
+                settled = true;
+                resolve(buffer);
+            }
+            function failed(error) {
+                if (settled) return;
+                settled = true;
+                reject(error || new Error('Web Audio could not decode the voice message'));
+            }
+            try {
+                var result = ctx.decodeAudioData(data, done, failed);
+                if (result && typeof result.then === 'function') result.then(done, failed);
+            } catch (error) {
+                failed(error);
+            }
+        });
+    }
+    function createWebAudioPlayback(item) {
+        var ctx = window.RS && RS.audioPlayback && typeof RS.audioPlayback.context === 'function'
+            ? RS.audioPlayback.context()
+            : null;
+        if (!ctx) return Promise.reject(new Error('Web Audio is unavailable'));
+        return decodeWebAudioBuffer(ctx, item).then(function(buffer) {
+            var handle = createEventedPlaybackHandle();
+            var source = null;
+            var animationFrame = 0;
+            var offset = 0;
+            var startedAt = 0;
+            var intentionallyStopped = false;
+            handle.paused = true;
+            handle.duration = buffer.duration;
+
+            function currentTime() {
+                if (handle.paused) return offset;
+                return Math.max(0, Math.min(buffer.duration, ctx.currentTime - startedAt));
+            }
+            function cancelProgress() {
+                if (!animationFrame) return;
+                cancelAnimationFrame(animationFrame);
+                animationFrame = 0;
+            }
+            function tick() {
+                if (handle.paused) return;
+                handle._emit('timeupdate');
+                animationFrame = requestAnimationFrame(tick);
+            }
+            function stopSource() {
+                if (!source) return;
+                intentionallyStopped = true;
+                source.onended = null;
+                try { source.stop(); } catch (_) {}
+                try { source.disconnect(); } catch (_) {}
+                source = null;
+            }
+            function startSource() {
+                stopSource();
+                intentionallyStopped = false;
+                if (offset >= buffer.duration) offset = 0;
+                source = ctx.createBufferSource();
+                source.buffer = buffer;
+                source.connect(ctx.destination);
+                source.onended = function() {
+                    var wasIntentional = intentionallyStopped;
+                    source = null;
+                    if (wasIntentional || handle.paused) return;
+                    cancelProgress();
+                    offset = 0;
+                    handle.paused = true;
+                    handle._emit('timeupdate');
+                    handle._emit('ended');
+                };
+                startedAt = ctx.currentTime - offset;
+                handle.paused = false;
+                source.start(0, offset);
+                cancelProgress();
+                tick();
+            }
+            handle.play = function() {
+                var ready = window.RS && RS.audioPlayback && typeof RS.audioPlayback.ensure === 'function'
+                    ? RS.audioPlayback.ensure({ installUnlock: true })
+                    : Promise.resolve(true);
+                return Promise.resolve(ready).then(function(canPlay) {
+                    if (canPlay === false) throw new Error('Web Audio is not ready');
+                    startSource();
+                });
+            };
+            handle.pause = function() {
+                if (handle.paused) return;
+                offset = currentTime();
+                handle.paused = true;
+                cancelProgress();
+                stopSource();
+                handle._emit('timeupdate');
+            };
+            Object.defineProperty(handle, 'currentTime', {
+                get: currentTime,
+                set: function(value) {
+                    offset = Math.max(0, Math.min(buffer.duration, Number(value) || 0));
+                    if (!handle.paused) startSource();
+                    handle._emit('timeupdate');
+                },
+            });
+            return handle;
+        });
+    }
+    function createMediaPlayback(item) {
+        var audio = new Audio(ensureMediaUrl(item));
+        audio.preload = 'auto';
+        return Promise.resolve(audio);
+    }
+    function createPlayback(item) {
+        // WKWebView is materially more reliable when PCM decoded by Ratspeak is
+        // handed to the already-unlocked Web Audio context. Keep Android and
+        // desktop on their established HTMLMediaElement path.
+        var sharedAudioReady = window.RS && RS.audioPlayback &&
+            typeof RS.audioPlayback.isReady === 'function' && RS.audioPlayback.isReady();
+        if (typeof isIOS === 'function' && isIOS() && sharedAudioReady) {
+            return createWebAudioPlayback(item).catch(function(error) {
+                window.RS.diag('warn', '[voice memo] Web Audio playback unavailable, using media element:', error);
+                return createMediaPlayback(item);
+            });
+        }
+        return createMediaPlayback(item);
+    }
     function togglePreviewPlayback() {
         if (!draft) return;
         var key = '__voice_memo_draft__';
+        var ready = preparePlaybackInteraction();
         if (activeAudio && activeKey === key) {
-            if (activeAudio.paused) {
-                activeAudio.play().catch(function() {});
-                syncPreviewPlayButton(true);
-            } else {
-                activeAudio.pause();
-                syncPreviewPlayButton(false);
-            }
+            ready.then(function(canPlay) {
+                if (!canPlay) return;
+                if (activeAudio.paused) {
+                    activeAudio.play().then(function() { syncPreviewPlayButton(true); }).catch(playbackError);
+                } else {
+                    activeAudio.pause();
+                    syncPreviewPlayButton(false);
+                }
+            });
             return;
         }
         stopAnyPlayback();
-        ensurePlayback(key, draft).then(function(item) {
-            var audio = new Audio(item.url);
+        ready.then(function(canPlay) {
+            if (!canPlay) return null;
+            return ensurePlayback(key, draft);
+        }).then(function(item) {
+            if (!item) return null;
+            return createPlayback(item).then(function(audio) { return { audio: audio, item: item }; });
+        }).then(function(prepared) {
+            if (!prepared) return;
+            var audio = prepared.audio;
+            var item = prepared.item;
             activeAudio = audio;
             activeKey = key;
             audio.addEventListener('timeupdate', function() {
                 var timer = el('voice-memo-timer');
-                if (timer) timer.textContent = formatDuration(audio.currentTime * 1000) + ' / ' + formatDuration(item.duration_ms);
+                if (timer) timer.textContent = formatDuration(audio.currentTime * 1000);
             });
             audio.addEventListener('ended', function() {
                 var timer = el('voice-memo-timer');
@@ -374,21 +564,22 @@
                 activeAudio = null;
                 activeKey = '';
             });
-            audio.play().then(function() { syncPreviewPlayButton(true); }).catch(function() {
-                showToast('Could not play this voice message.', 'toast-red', 3500);
-            });
+            audio.play().then(function() { syncPreviewPlayButton(true); }).catch(playbackError);
         }).catch(function(error) {
             showToast((error && error.message) || 'Could not prepare voice message playback.', 'toast-red', 4000);
         });
     }
+    function playbackError(error) {
+        window.RS.diag('warn', '[voice memo] playback failed:', error && (error.name || error.message || error));
+        showToast('Could not play this voice message.', 'toast-red', 3500);
+    }
     function syncPreviewPlayButton(playing) {
         var button = el('voice-memo-play-btn');
         if (!button) return;
-        var play = button.querySelector('.voice-memo-icon-play');
-        var pauseIcon = button.querySelector('.voice-memo-icon-pause');
-        if (play) play.hidden = !!playing;
-        if (pauseIcon) pauseIcon.hidden = !playing;
+        var icon = button.querySelector('.voice-memo-state-icon');
+        if (icon) icon.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
         button.setAttribute('aria-label', playing ? 'Pause voice message' : 'Play voice message');
+        button.title = playing ? 'Pause preview' : 'Play preview';
     }
 
     function renderAttachment(attachment, message) {
@@ -400,12 +591,10 @@
         var disabled = !storedName && !draftByKey[key];
         return '<div class="voice-memo-player' + (disabled ? ' is-loading' : '') + '" data-voice-key="' + esc(key) + '" data-stored-name="' + esc(storedName) + '">' +
             '<button class="voice-memo-player-play" type="button" aria-label="Play voice message"' + (disabled ? ' disabled' : '') + '>' +
-                '<svg class="voice-memo-player-icon-play" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>' +
-                '<svg class="voice-memo-player-icon-pause" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" hidden><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>' +
+                '<svg class="voice-memo-player-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + ICON_PLAY + '</svg>' +
             '</button>' +
             '<div class="voice-memo-player-waveform" role="slider" tabindex="0" aria-label="Voice message position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' + barsHtml(waveform || [], 0) + '</div>' +
             '<span class="voice-memo-player-time">' + (duration ? formatDuration(duration) : '--:--') + '</span>' +
-            '<button class="voice-memo-player-speed" type="button" aria-label="Playback speed">1×</button>' +
         '</div>';
     }
     function registerDraft(key, value) {
@@ -422,12 +611,13 @@
         return null;
     }
     function setPlayerPlaying(player, playing) {
-        var play = player.querySelector('.voice-memo-player-icon-play');
-        var pauseIcon = player.querySelector('.voice-memo-player-icon-pause');
+        var icon = player.querySelector('.voice-memo-player-icon');
         var button = player.querySelector('.voice-memo-player-play');
-        if (play) play.hidden = playing;
-        if (pauseIcon) pauseIcon.hidden = !playing;
-        if (button) button.setAttribute('aria-label', playing ? 'Pause voice message' : 'Play voice message');
+        if (icon) icon.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+        if (button) {
+            button.setAttribute('aria-label', playing ? 'Pause voice message' : 'Play voice message');
+            button.title = playing ? 'Pause voice message' : 'Play voice message';
+        }
     }
     function updatePlayerProgress(key, fraction, playing) {
         var player = document.querySelector('.voice-memo-player[data-voice-key="' + cssEscape(key) + '"]');
@@ -448,32 +638,52 @@
         var key = player.dataset.voiceKey || '';
         var source = sourceForPlayer(player);
         if (!source || !key) return;
+        var ready = preparePlaybackInteraction();
         if (activeAudio && activeKey === key) {
-            if (activeAudio.paused) {
-                activeAudio.play().catch(function() {});
-                setPlayerPlaying(player, true);
-            } else {
-                activeAudio.pause();
-                setPlayerPlaying(player, false);
-            }
+            ready.then(function(canPlay) {
+                if (!canPlay) return;
+                if (activeAudio.paused) {
+                    activeAudio.play().then(function() {
+                        player.classList.remove('is-error');
+                        setPlayerPlaying(player, true);
+                    }).catch(function(error) {
+                        player.classList.add('is-error');
+                        playbackError(error);
+                    });
+                } else {
+                    activeAudio.pause();
+                    setPlayerPlaying(player, false);
+                }
+            });
             return;
         }
         stopAnyPlayback();
         player.classList.add('is-loading');
-        ensurePlayback(key, source).then(function(item) {
+        ready.then(function(canPlay) {
+            if (!canPlay) return null;
+            return ensurePlayback(key, source);
+        }).then(function(item) {
+            if (!item) {
+                player.classList.remove('is-loading');
+                return null;
+            }
             player.classList.remove('is-loading');
             var time = player.querySelector('.voice-memo-player-time');
             if (time) time.textContent = formatDuration(item.duration_ms);
-            var audio = new Audio(item.url);
+            return createPlayback(item).then(function(audio) {
+                return { audio: audio, item: item };
+            });
+        }).then(function(prepared) {
+            if (!prepared) return;
+            var audio = prepared.audio;
+            var item = prepared.item;
             activeAudio = audio;
             activeKey = key;
-            var speed = Number(player.dataset.playbackSpeed || 1);
-            audio.playbackRate = speed;
             audio.addEventListener('timeupdate', function() {
                 var fraction = audio.duration ? audio.currentTime / audio.duration : 0;
                 updatePlayerProgress(key, fraction, !audio.paused);
                 var currentTime = player.querySelector('.voice-memo-player-time');
-                if (currentTime) currentTime.textContent = formatDuration(audio.currentTime * 1000) + ' / ' + formatDuration(item.duration_ms);
+                if (currentTime) currentTime.textContent = formatDuration(audio.currentTime * 1000);
             });
             audio.addEventListener('ended', function() {
                 updatePlayerProgress(key, 0, false);
@@ -482,9 +692,12 @@
                 activeAudio = null;
                 activeKey = '';
             });
-            audio.play().then(function() { setPlayerPlaying(player, true); }).catch(function() {
+            audio.play().then(function() {
+                player.classList.remove('is-error');
+                setPlayerPlaying(player, true);
+            }).catch(function(error) {
                 player.classList.add('is-error');
-                showToast('Could not play this voice message.', 'toast-red', 3500);
+                playbackError(error);
             });
         }).catch(function(error) {
             player.classList.remove('is-loading');
@@ -523,17 +736,8 @@
             player.dataset.voiceBound = '1';
             hydrateMetadata(player);
             var play = player.querySelector('.voice-memo-player-play');
-            var speed = player.querySelector('.voice-memo-player-speed');
             var waveform = player.querySelector('.voice-memo-player-waveform');
             if (play) play.addEventListener('click', function() { togglePlayer(player); });
-            if (speed) speed.addEventListener('click', function() {
-                var current = Number(player.dataset.playbackSpeed || 1);
-                var next = current === 1 ? 1.5 : (current === 1.5 ? 2 : 1);
-                player.dataset.playbackSpeed = String(next);
-                speed.textContent = next + '×';
-                speed.setAttribute('aria-label', 'Playback speed ' + next + ' times');
-                if (activeAudio && activeKey === player.dataset.voiceKey) activeAudio.playbackRate = next;
-            });
             if (waveform) {
                 function seekFromEvent(event) {
                     var rect = waveform.getBoundingClientRect();
@@ -650,11 +854,11 @@
     }
 
     function cancelForCall() {
+        stopAnyPlayback();
         if (recorderState === 'idle') {
             stopMobileAudioSession();
             return Promise.resolve();
         }
-        stopAnyPlayback();
         var wasCapturing = recorderState !== 'review';
         var request = wasCapturing ? RS.invoke('voice_memo_cancel').catch(function() {}) : Promise.resolve();
         return request.then(function() {
@@ -668,6 +872,7 @@
     }
 
     function handleAudioInterruption() {
+        stopAnyPlayback();
         if (recorderState === 'idle') {
             stopMobileAudioSession();
             return Promise.resolve();

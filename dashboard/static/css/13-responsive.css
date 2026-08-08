@@ -949,6 +949,12 @@
     .voice-memo-player {
         width: min(310px, 76vw);
         min-width: 210px;
+        grid-template-columns: 44px minmax(0, 1fr);
+    }
+
+    .voice-memo-player-play {
+        width: 44px;
+        height: 44px;
     }
 
     .view-grid-identity {

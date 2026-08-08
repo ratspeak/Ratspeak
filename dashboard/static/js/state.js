@@ -264,7 +264,14 @@ function _rsGetAudioPlaybackContext() {
     if (_rsNativeAndroidAudioAvailable()) return null;
     var ctor = _rsAudioPlaybackCtor();
     if (!ctor) return null;
-    if (_rsAudioPlaybackContext) return _rsAudioPlaybackContext;
+    if (_rsAudioPlaybackContext && _rsAudioPlaybackContext.state !== 'closed') {
+        return _rsAudioPlaybackContext;
+    }
+    if (_rsAudioPlaybackContext && _rsAudioPlaybackContext.state === 'closed') {
+        _rsAudioPlaybackContext = null;
+        _rsAudioPlaybackUnlocked = false;
+        _rsAudioPlaybackPrimed = false;
+    }
     try {
         _rsAudioPlaybackContext = new ctor();
     } catch (err) {
@@ -325,13 +332,15 @@ function _rsEnsureAudioPlayback(opts) {
     if (opts.installUnlock !== false) _rsInstallAudioPlaybackUnlock();
     var ctx = _rsGetAudioPlaybackContext();
     if (!ctx) return Promise.resolve(false);
-    var resume = (ctx.state === 'suspended' && typeof ctx.resume === 'function')
+    var needsResume = ctx.state === 'suspended' || ctx.state === 'interrupted';
+    var resume = (needsResume && typeof ctx.resume === 'function')
         ? ctx.resume()
         : Promise.resolve();
     return Promise.resolve(resume).then(function() {
         _rsPrimeAudioPlayback(ctx);
-        _rsAudioPlaybackUnlocked = ctx.state === 'running' || ctx.state === 'interrupted';
-        var ready = _rsAudioPlaybackUnlocked || ctx.state !== 'suspended';
+        _rsAudioPlaybackUnlocked = ctx.state === 'running';
+        var ready = _rsAudioPlaybackUnlocked ||
+            (ctx.state !== 'suspended' && ctx.state !== 'interrupted' && ctx.state !== 'closed');
         if (ready) {
             try { document.dispatchEvent(new CustomEvent('rs-audio-playback-ready')); } catch (_) {}
         }
@@ -348,7 +357,10 @@ window.RS.audioPlayback = {
     context: _rsGetAudioPlaybackContext,
     isReady: function() {
         var ctx = _rsAudioPlaybackContext;
-        return !!(_rsAudioPlaybackUnlocked || (ctx && ctx.state !== 'suspended'));
+        return !!(_rsAudioPlaybackUnlocked || (ctx &&
+            ctx.state !== 'suspended' &&
+            ctx.state !== 'interrupted' &&
+            ctx.state !== 'closed'));
     }
 };
 
