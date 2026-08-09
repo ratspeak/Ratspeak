@@ -1129,9 +1129,16 @@ body.image-viewer-open {
     opacity: 0.48;
     transition: height 90ms linear, opacity var(--transition-fast), background var(--transition-fast);
 }
-.voice-memo-waveform span.is-live {
+.voice-memo-waveform span.is-empty {
+    opacity: 0.22;
+}
+.voice-memo-waveform span.is-recorded {
     background: var(--status-error);
-    opacity: 0.88;
+    opacity: 0.66;
+}
+.voice-memo-waveform span.is-live {
+    opacity: 0.96;
+    animation: voice-memo-live-head 1.15s ease-in-out infinite;
 }
 .voice-memo-player-waveform span.is-played {
     background: var(--accent);
@@ -1237,6 +1244,11 @@ body.image-viewer-open {
     border: 0 !important;
 }
 
+@keyframes voice-memo-live-head {
+    0%, 100% { opacity: 0.72; }
+    50% { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .voice-memo-waveform span,
     .voice-memo-player-waveform span {
@@ -1244,6 +1256,9 @@ body.image-viewer-open {
     }
     .voice-memo-live-dot {
         box-shadow: none;
+    }
+    .voice-memo-waveform span.is-live {
+        animation: none;
     }
 }
 .lxmf-empty {

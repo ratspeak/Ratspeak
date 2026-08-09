@@ -22,6 +22,8 @@
     var recordingTarget = '';
     var pointerStartedRecording = false;
     var mobileAudioSessionActive = false;
+    var iosPlaybackSessionActive = false;
+    var iosPlaybackSessionTransition = Promise.resolve();
     var START_FAILURE_MESSAGE = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
     var ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
     var ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
@@ -85,11 +87,29 @@
     function renderRecorderWaveform(values, live) {
         var waveform = el('voice-memo-waveform');
         if (!waveform) return;
-        var rendered = downsample(values, BAR_COUNT);
-        waveform.innerHTML = rendered.map(function(value, index) {
+        var capturing = live === true || live === 'paused';
+        if (!capturing) {
+            waveform.innerHTML = downsample(values, BAR_COUNT).map(function(value) {
+                var height = 4 + Math.round(Math.max(0, Math.min(255, Number(value) || 0)) / 255 * 22);
+                return '<span style="--voice-bar-height:' + height + 'px"></span>';
+            }).join('');
+            return;
+        }
+
+        // A recording is a right-edge timeline, not a decorative animation:
+        // new signal enters on the right, previous samples move left, and only
+        // captured samples receive the recording color.
+        var recent = (Array.isArray(values) ? values : []).slice(-BAR_COUNT);
+        var emptyCount = BAR_COUNT - recent.length;
+        var slots = Array.from({ length: emptyCount }, function() { return null; }).concat(recent);
+        waveform.innerHTML = slots.map(function(value, index) {
+            if (value === null) {
+                return '<span class="is-empty" style="--voice-bar-height:4px"></span>';
+            }
             var height = 4 + Math.round(Math.max(0, Math.min(255, Number(value) || 0)) / 255 * 22);
-            var liveClass = live && index >= Math.max(0, rendered.length - 5) ? ' class="is-live"' : '';
-            return '<span' + liveClass + ' style="--voice-bar-height:' + height + 'px"></span>';
+            var classes = ['is-recorded'];
+            if (live === true && index === slots.length - 1) classes.push('is-live');
+            return '<span class="' + classes.join(' ') + '" style="--voice-bar-height:' + height + 'px"></span>';
         }).join('');
     }
     function setRecorderState(next) {
@@ -125,6 +145,10 @@
             if (timer) timer.textContent = '0:00';
             liveWaveform = [];
             renderRecorderWaveform([], false);
+        } else if (next === 'recording') {
+            renderRecorderWaveform(liveWaveform, true);
+        } else if (next === 'paused') {
+            renderRecorderWaveform(liveWaveform, 'paused');
         }
         syncComposer();
     }
@@ -168,14 +192,48 @@
             return true;
         });
     }
+    function queueIosPlaybackSession(action) {
+        iosPlaybackSessionTransition = iosPlaybackSessionTransition.catch(function() {}).then(action);
+        return iosPlaybackSessionTransition;
+    }
+    function startIosPlaybackSession() {
+        if (!(typeof isIOS === 'function' && isIOS())) return Promise.resolve(true);
+        return queueIosPlaybackSession(function() {
+            if (iosPlaybackSessionActive) return true;
+            return RS.invoke('voice_memo_playback_session_start').then(function() {
+                iosPlaybackSessionActive = true;
+                return true;
+            });
+        });
+    }
+    function stopIosPlaybackSession() {
+        if (!(typeof isIOS === 'function' && isIOS())) return Promise.resolve(true);
+        return queueIosPlaybackSession(function() {
+            if (!iosPlaybackSessionActive) return true;
+            iosPlaybackSessionActive = false;
+            return RS.invoke('voice_memo_playback_session_stop').catch(function(error) {
+                window.RS.diag('warn', '[voice memo] iOS playback session release failed:', error);
+                return false;
+            });
+        });
+    }
+    function playWithAudioSession(audio) {
+        return startIosPlaybackSession().then(function() {
+            return audio.play();
+        }).catch(function(error) {
+            return stopIosPlaybackSession().then(function() { throw error; });
+        });
+    }
     function stopAnyPlayback() {
-        if (!activeAudio) return;
-        try { activeAudio.pause(); } catch (_) {}
+        if (activeAudio) {
+            try { activeAudio.pause(); } catch (_) {}
+        }
         activeAudio = null;
         var previous = activeKey;
         activeKey = '';
         if (previous) updatePlayerProgress(previous, 0, false);
         syncPreviewPlayButton(false);
+        return stopIosPlaybackSession();
     }
     function startMobileAudioSession() {
         if (!window.RatspeakAndroid || typeof window.RatspeakAndroid.startVoiceMemoAudioSession !== 'function') {
@@ -217,8 +275,9 @@
             return Promise.resolve(false);
         }
         recordingTarget = window.lxmfActiveContact;
-        stopAnyPlayback();
-        return dismissComposerForRecording().then(function() {
+        return stopAnyPlayback().then(function() {
+            return dismissComposerForRecording();
+        }).then(function() {
             return RS.mediaPermissions.ensure({ audio: true });
         }).then(function(granted) {
             if (!granted) {
@@ -284,10 +343,10 @@
         });
     }
     function discardRecording() {
-        stopAnyPlayback();
+        var playbackStopped = stopAnyPlayback();
         var wasCapturing = recorderState === 'recording' || recorderState === 'paused' || recorderState === 'starting' || recorderState === 'stopping';
         var request = wasCapturing ? RS.invoke('voice_memo_cancel').catch(function() {}) : Promise.resolve();
-        return request.then(function() {
+        return Promise.all([playbackStopped, request]).then(function() {
             stopMobileAudioSession();
             draft = null;
             paused = false;
@@ -532,18 +591,19 @@
             ready.then(function(canPlay) {
                 if (!canPlay) return;
                 if (activeAudio.paused) {
-                    activeAudio.play().then(function() { syncPreviewPlayButton(true); }).catch(playbackError);
+                    playWithAudioSession(activeAudio).then(function() { syncPreviewPlayButton(true); }).catch(playbackError);
                 } else {
                     activeAudio.pause();
                     syncPreviewPlayButton(false);
+                    stopIosPlaybackSession();
                 }
             });
             return;
         }
-        stopAnyPlayback();
+        var stopped = stopAnyPlayback();
         ready.then(function(canPlay) {
             if (!canPlay) return null;
-            return ensurePlayback(key, draft);
+            return stopped.then(function() { return ensurePlayback(key, draft); });
         }).then(function(item) {
             if (!item) return null;
             return createPlayback(item).then(function(audio) { return { audio: audio, item: item }; });
@@ -563,14 +623,16 @@
                 syncPreviewPlayButton(false);
                 activeAudio = null;
                 activeKey = '';
+                stopIosPlaybackSession();
             });
-            audio.play().then(function() { syncPreviewPlayButton(true); }).catch(playbackError);
+            playWithAudioSession(audio).then(function() { syncPreviewPlayButton(true); }).catch(playbackError);
         }).catch(function(error) {
             showToast((error && error.message) || 'Could not prepare voice message playback.', 'toast-red', 4000);
         });
     }
     function playbackError(error) {
         window.RS.diag('warn', '[voice memo] playback failed:', error && (error.name || error.message || error));
+        stopAnyPlayback();
         showToast('Could not play this voice message.', 'toast-red', 3500);
     }
     function syncPreviewPlayButton(playing) {
@@ -643,7 +705,7 @@
             ready.then(function(canPlay) {
                 if (!canPlay) return;
                 if (activeAudio.paused) {
-                    activeAudio.play().then(function() {
+                    playWithAudioSession(activeAudio).then(function() {
                         player.classList.remove('is-error');
                         setPlayerPlaying(player, true);
                     }).catch(function(error) {
@@ -653,15 +715,16 @@
                 } else {
                     activeAudio.pause();
                     setPlayerPlaying(player, false);
+                    stopIosPlaybackSession();
                 }
             });
             return;
         }
-        stopAnyPlayback();
+        var stopped = stopAnyPlayback();
         player.classList.add('is-loading');
         ready.then(function(canPlay) {
             if (!canPlay) return null;
-            return ensurePlayback(key, source);
+            return stopped.then(function() { return ensurePlayback(key, source); });
         }).then(function(item) {
             if (!item) {
                 player.classList.remove('is-loading');
@@ -691,8 +754,9 @@
                 if (finalTime) finalTime.textContent = formatDuration(item.duration_ms);
                 activeAudio = null;
                 activeKey = '';
+                stopIosPlaybackSession();
             });
-            audio.play().then(function() {
+            playWithAudioSession(audio).then(function() {
                 player.classList.remove('is-error');
                 setPlayerPlaying(player, true);
             }).catch(function(error) {
@@ -768,6 +832,7 @@
         } else if (data.state === 'paused') {
             paused = true;
             recorderState = 'paused';
+            renderRecorderWaveform(liveWaveform, 'paused');
         } else if (data.state === 'limit') {
             stopRecording();
             announce('Maximum voice message length reached');
@@ -854,14 +919,15 @@
     }
 
     function cancelForCall() {
-        stopAnyPlayback();
-        if (recorderState === 'idle') {
-            stopMobileAudioSession();
-            return Promise.resolve();
-        }
-        var wasCapturing = recorderState !== 'review';
-        var request = wasCapturing ? RS.invoke('voice_memo_cancel').catch(function() {}) : Promise.resolve();
-        return request.then(function() {
+        return stopAnyPlayback().then(function() {
+            if (recorderState === 'idle') {
+                stopMobileAudioSession();
+                return false;
+            }
+            var wasCapturing = recorderState !== 'review';
+            return wasCapturing ? RS.invoke('voice_memo_cancel').catch(function() {}) : true;
+        }).then(function(hadRecorder) {
+            if (hadRecorder === false) return;
             stopMobileAudioSession();
             draft = null;
             paused = false;
@@ -872,13 +938,14 @@
     }
 
     function handleAudioInterruption() {
-        stopAnyPlayback();
-        if (recorderState === 'idle') {
-            stopMobileAudioSession();
-            return Promise.resolve();
-        }
-        showToast('Recording stopped because another app needed audio.', 'toast-orange', 4200);
-        return discardRecording();
+        return stopAnyPlayback().then(function() {
+            if (recorderState === 'idle') {
+                stopMobileAudioSession();
+                return;
+            }
+            showToast('Recording stopped because another app needed audio.', 'toast-orange', 4200);
+            return discardRecording();
+        });
     }
 
     window.RS = window.RS || {};

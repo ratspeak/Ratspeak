@@ -684,6 +684,12 @@ mod tests {
         assert_eq!(playback.channels, 1);
         assert_eq!(&playback.wav_data[..4], b"RIFF");
         assert_eq!(&playback.wav_data[8..12], b"WAVE");
+        let peak = playback.wav_data[44..]
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]).unsigned_abs())
+            .max()
+            .unwrap_or_default();
+        assert!(peak > 100, "decoded memo audio must retain audible PCM");
     }
 
     #[test]

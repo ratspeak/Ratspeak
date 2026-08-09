@@ -7203,6 +7203,11 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(voice_memos.contains("RS.audioPlayback.context()"));
     assert!(voice_memos.contains("RS.audioPlayback.isReady()"));
     assert!(voice_memos.contains("ctx.decodeAudioData"));
+    assert!(voice_memos.contains("RS.invoke('voice_memo_playback_session_start')"));
+    assert!(voice_memos.contains("RS.invoke('voice_memo_playback_session_stop')"));
+    assert!(voice_memos.contains("classes = ['is-recorded']"));
+    assert!(voice_memos.contains("classes.push('is-live')"));
+    assert!(voice_memos.contains("class=\"is-empty\""));
     assert!(voice_memos.contains("typeof isIOS === 'function' && isIOS()"));
     assert!(!voice_memos.contains("voice-memo-player-speed"));
     assert!(!voice_memos.contains("playbackSpeed"));
@@ -7212,7 +7217,7 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
         .and_then(|source| source.split("function handleAudioInterruption()").next())
         .expect("voice memo call handoff");
     let stop_playback = call_handoff
-        .find("stopAnyPlayback();")
+        .find("stopAnyPlayback().then")
         .expect("call handoff stops memo playback");
     let idle_branch = call_handoff
         .find("if (recorderState === 'idle')")
@@ -7223,12 +7228,17 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(android.contains("fun startVoiceMemoAudioSession(): Boolean"));
     assert!(ios_audio.contains("AVAudioSessionCategoryPlayAndRecord"));
     assert!(ios_audio.contains("AVAudioSessionModeVoiceChat"));
+    assert!(ios_audio.contains("AVAudioSessionCategoryPlayback"));
+    assert!(ios_audio.contains("AVAudioSessionModeDefault"));
+    assert!(ios_audio.contains("VOICE_MEMO_PLAYBACK_SESSION_ACTIVE"));
     for command in [
         "voice_memo_start",
         "voice_memo_status",
         "voice_memo_pause",
         "voice_memo_stop",
         "voice_memo_cancel",
+        "voice_memo_playback_session_start",
+        "voice_memo_playback_session_stop",
         "voice_memo_decode_data",
         "voice_memo_decode_stored",
         "voice_memo_inspect_stored",

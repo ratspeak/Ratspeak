@@ -27,6 +27,11 @@ fn voice_memo_start_error(error: String) -> AppError {
     AppError::service_unavailable(VOICE_MEMO_START_UNAVAILABLE)
 }
 
+fn release_platform_voice_memo_playback_session() {
+    #[cfg(target_os = "ios")]
+    crate::platform_ios::deactivate_voice_memo_playback_session();
+}
+
 #[derive(Deserialize)]
 pub struct VoiceCallArgs {
     pub hash: String,
@@ -117,6 +122,7 @@ pub async fn voice_call(state: State<'_, Arc<AppState>>, args: VoiceCallArgs) ->
     // handoff natively as well as in the WebView so a stale client cannot
     // leave an unseen recorder competing for the microphone.
     crate::voice::reserve_call_audio(&app_state);
+    release_platform_voice_memo_playback_session();
     if let Err(error) = crate::voice_memo::cancel_recording(&app_state).await {
         crate::voice::release_call_audio(&app_state);
         return Err(AppError::service_unavailable(error));
@@ -146,6 +152,7 @@ pub async fn voice_call(state: State<'_, Arc<AppState>>, args: VoiceCallArgs) ->
 pub async fn voice_answer(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let app_state = state.inner().clone();
     crate::voice::reserve_call_audio(&app_state);
+    release_platform_voice_memo_playback_session();
     if let Err(error) = crate::voice_memo::cancel_recording(&app_state).await {
         crate::voice::release_call_audio(&app_state);
         return Err(AppError::service_unavailable(error));
@@ -195,6 +202,7 @@ pub async fn voice_restart_speaker(
 
 #[tauri::command]
 pub async fn voice_memo_start(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    release_platform_voice_memo_playback_session();
     crate::voice_memo::start_recording(state.inner())
         .await
         .map(|status| {
@@ -243,6 +251,37 @@ pub async fn voice_memo_cancel(state: State<'_, Arc<AppState>>) -> AppResult<Val
     crate::voice_memo::cancel_recording(&state)
         .await
         .map_err(AppError::service_unavailable)?;
+    Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn voice_memo_playback_session_start(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Value> {
+    // Serialize against recorder startup. Outgoing/accepted calls reserve
+    // audio before entering this lock, so either playback wins cleanly and is
+    // then superseded by the call, or the playback request is rejected.
+    let _control = state.voice_memo_control_lock.lock().await;
+    if crate::voice::call_audio_reserved(&state) {
+        return Err(AppError::conflict("A voice call is using audio"));
+    }
+    if crate::voice_memo::recording_status(&state).state != "idle" {
+        return Err(AppError::conflict("A voice message is being recorded"));
+    }
+
+    #[cfg(target_os = "ios")]
+    crate::platform_ios::activate_voice_memo_playback_session()
+        .map_err(AppError::service_unavailable)?;
+
+    Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn voice_memo_playback_session_stop(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let _control = state.voice_memo_control_lock.lock().await;
+
+    release_platform_voice_memo_playback_session();
+
     Ok(json!({ "ok": true }))
 }
 

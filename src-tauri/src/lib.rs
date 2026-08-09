@@ -913,6 +913,10 @@ pub fn run() {
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_memo_cancel,
             #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_playback_session_start,
+            #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::voice_memo_playback_session_stop,
+            #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_memo_decode_data,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_memo_decode_stored,

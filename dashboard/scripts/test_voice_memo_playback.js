@@ -13,6 +13,8 @@ var decodeCalls = 0;
 var sourceStarts = 0;
 var sourceStops = 0;
 var toasts = [];
+var sessionCalls = [];
+var failSessionStart = false;
 
 function classList() {
     var values = new Set();
@@ -110,13 +112,25 @@ var context = {
     RS: {
         diag: function() {},
         invoke: function(command) {
-            assert.equal(command, 'voice_memo_decode_data');
-            return Promise.resolve({
-                mime: 'audio/wav',
-                data_base64: 'AQIDBA==',
-                duration_ms: 4000,
-                waveform: [30, 80, 120],
-            });
+            if (command === 'voice_memo_decode_data') {
+                return Promise.resolve({
+                    mime: 'audio/wav',
+                    data_base64: 'AQIDBA==',
+                    duration_ms: 4000,
+                    waveform: [30, 80, 120],
+                });
+            }
+            if (command === 'voice_memo_playback_session_start') {
+                sessionCalls.push('start');
+                return failSessionStart
+                    ? Promise.reject(new Error('audio session unavailable'))
+                    : Promise.resolve({ ok: true });
+            }
+            if (command === 'voice_memo_playback_session_stop') {
+                sessionCalls.push('stop');
+                return Promise.resolve({ ok: true });
+            }
+            return Promise.reject(new Error('Unexpected command: ' + command));
         },
         audioPlayback: {
             ensure: function() { return Promise.resolve(true); },
@@ -150,6 +164,8 @@ async function flush() {
     await flush();
     assert.equal(decodeCalls, 1, 'iOS must decode through the shared Web Audio context');
     assert.equal(sourceStarts, 1, 'the decoded voice message must begin playback');
+    assert.deepEqual(sessionCalls, ['start'],
+        'iOS must activate its playback-only audio session before starting PCM');
     assert.equal(playButton['aria-label'], 'Pause voice message');
     assert(icon.innerHTML.includes('M6 5h4v14H6z'), 'the playing state must show only pause');
     assert.deepEqual(toasts, []);
@@ -157,6 +173,8 @@ async function flush() {
     clickHandler();
     await flush();
     assert.equal(sourceStops, 1, 'a second tap must pause the active voice message');
+    assert.deepEqual(sessionCalls, ['start', 'stop'],
+        'pausing must release the iOS playback session');
     assert.equal(playButton['aria-label'], 'Play voice message');
     assert(icon.innerHTML.includes('M8 5v14l11-7z'), 'the paused state must show only play');
 
@@ -166,6 +184,15 @@ async function flush() {
     assert.equal(sourceStarts, 1, 'an active call must prevent paused memo playback from resuming');
     assert(toasts.some(function(message) { return message.includes('current call'); }),
         'call-owned audio must explain why memo playback is unavailable');
+
+    context.lxstVoiceState = { active: false, incoming: false };
+    failSessionStart = true;
+    clickHandler();
+    await flush();
+    assert.equal(sourceStarts, 1,
+        'visual playback must not begin when iOS cannot acquire an audible session');
+    assert(toasts.some(function(message) { return message.includes('Could not play') }),
+        'an unavailable native output session must surface a playback error');
 
     console.log('Voice memo playback tests passed');
 })().catch(function(error) {

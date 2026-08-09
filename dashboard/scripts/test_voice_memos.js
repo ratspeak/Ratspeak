@@ -48,6 +48,8 @@ for (var command of [
     'voice_memo_pause',
     'voice_memo_stop',
     'voice_memo_cancel',
+    'voice_memo_playback_session_start',
+    'voice_memo_playback_session_stop',
     'voice_memo_decode_data',
     'voice_memo_decode_stored',
     'voice_memo_inspect_stored',
@@ -98,11 +100,15 @@ assert(voice.includes("RS.audioPlayback.ensure({ installUnlock: true })"),
     'voice playback must reuse the shared audio unlock path');
 assert(voice.includes('RS.audioPlayback.context()') && voice.includes('ctx.decodeAudioData'),
     'iOS playback must use the shared Web Audio context after native capture releases it');
+assert(voice.includes("RS.invoke('voice_memo_playback_session_start')"),
+    'iOS playback must acquire a native playback-only AVAudioSession');
+assert(voice.includes("RS.invoke('voice_memo_playback_session_stop')"),
+    'iOS playback must release its native audio session on pause, end, and handoff');
 assert(voice.includes("typeof RS.audioPlayback.isReady === 'function' && RS.audioPlayback.isReady()"),
     'iOS playback must only enter Web Audio after the shared context is ready');
 assert(voice.includes("typeof isIOS === 'function' && isIOS()"),
     'the Web Audio compatibility path must remain scoped to iOS');
-assert(voice.indexOf('stopAnyPlayback();', voice.indexOf('function cancelForCall()')) <
+assert(voice.indexOf('stopAnyPlayback().then', voice.indexOf('function cancelForCall()')) <
     voice.indexOf("if (recorderState === 'idle')", voice.indexOf('function cancelForCall()')),
     'starting a call must stop memo playback even when the recorder is idle');
 assert(!voice.includes('voice-memo-player-speed') && !voice.includes('playbackSpeed'),
@@ -137,12 +143,21 @@ assert(commands.includes('spawn_blocking(move || crate::voice_memo::decode_voice
 assert(systemCommands.includes('mobile_background_voice_memo_cancel_failed'));
 assert(iosPlatform.includes('AVAudioSessionCategoryPlayAndRecord'));
 assert(iosPlatform.includes('AVAudioSessionModeVoiceChat'));
+assert(iosPlatform.includes('AVAudioSessionCategoryPlayback'));
+assert(iosPlatform.includes('AVAudioSessionModeDefault'));
+assert(iosPlatform.includes('VOICE_MEMO_PLAYBACK_SESSION_ACTIVE'));
 assert(iosPlatform.includes('setActive: true'));
 
 assert(/\.voice-memo-field\s*\{[\s\S]*?background:\s*var\(--input-bg\)/.test(css),
     'the recorder field must use the same themed input surface as text composition');
 assert(/\.voice-memo-recorder\s*\{[\s\S]*?background:\s*transparent/.test(css),
     'the recorder shell must not become a second full-width pill');
+assert(voice.includes("classes = ['is-recorded']") && voice.includes("classes.push('is-live')"),
+    'the live waveform must distinguish captured signal from its single newest sample');
+assert(voice.includes("class=\"is-empty\""),
+    'the live waveform must leave uncaptured timeline slots visibly empty');
+assert(/\.voice-memo-waveform span\.is-recorded\s*\{[\s\S]*?background:\s*var\(--status-error\)/.test(css),
+    'only recorded waveform samples should use the recording color');
 assert(/prefers-reduced-motion:[^)]*reduce[\s\S]*?voice-memo/.test(css),
     'voice animation must honor reduced motion');
 assert(/\.voice-memo-record-btn,[\s\S]*?width:\s*44px/.test(responsive),
