@@ -46,6 +46,7 @@ var policySource = sourceFunction(
 var insertionSource = sourceFunction('_channelsCanCompose', '_channelsDurableRoom');
 var sendSource = sourceFunction('channelsSendMessage', '_channelsBindUI');
 var renderRoomSource = sourceFunction('_channelsRenderRoom', '_channelsTimelineEntries');
+var renderConversationSource = namedFunctionSource(lxmfSource, 'renderConversation');
 
 assert(!channelsSource.includes('_channelsTranscriptPinToken'),
     'Channels must not maintain a parallel transcript-follow state machine');
@@ -53,6 +54,8 @@ assert(renderRoomSource.includes('RS.chatScroll.capture(transcript)'));
 assert(renderRoomSource.includes('RS.chatScroll.applyAfterRender(transcript, scrollState'));
 assert(sendSource.includes("RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'))"),
     'sending with the keyboard open must reuse the Direct Messages scroll controller');
+assert(!renderConversationSource.includes('preventDefaultOnStart'),
+    'message long-press recognition must not cancel Android transcript panning');
 
 var scrollFunctions = [
     '_lxmfMessageScrollStateFor',
@@ -68,11 +71,18 @@ var scrollFunctions = [
 ].map(function(name) { return namedFunctionSource(lxmfSource, name); }).join('\n');
 var now = 1000;
 var scrollHandlers = {};
+var pendingSettleCallbacks = [];
 var scrollPolicyContext = {
     Date: { now: function() { return now; } },
     WeakMap: WeakMap,
-    requestAnimationFrame: function() { return 1; },
-    setTimeout: function() { return 1; }
+    requestAnimationFrame: function(callback) {
+        pendingSettleCallbacks.push(callback);
+        return pendingSettleCallbacks.length;
+    },
+    setTimeout: function(callback) {
+        pendingSettleCallbacks.push(callback);
+        return pendingSettleCallbacks.length;
+    }
 };
 vm.createContext(scrollPolicyContext);
 vm.runInContext(
@@ -107,8 +117,13 @@ assert.strictEqual(transcript.scrollTop, 800,
     'new traffic follows the recent edge while the reader is already there');
 
 now = 1200;
+scrollHandlers.touchstart();
 transcript.scrollTop = 300;
 scrollHandlers.scroll();
+pendingSettleCallbacks.forEach(function(callback) { callback(); });
+pendingSettleCallbacks = [];
+assert.strictEqual(transcript.scrollTop, 300,
+    'touching history must cancel delayed send-settle pins before Android pans');
 var readingState = scrollPolicyContext.capture(transcript);
 transcript.scrollHeight = 1300;
 assert.strictEqual(scrollPolicyContext.applyAfterRender(

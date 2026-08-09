@@ -1040,6 +1040,15 @@ function _wireLxmfMessageScroll(container) {
     var state = _lxmfMessageScrollStateFor(container);
     state.scrollTop = container.scrollTop;
     state.followLatest = _lxmfMessagesNearBottom(container);
+    // A real touch takes ownership from any post-render settle callbacks.
+    // Without this, Android can begin a history pan while an optimistic send
+    // still has delayed bottom pins queued, making the transcript appear
+    // frozen as those callbacks repeatedly pull it back to the latest edge.
+    container.addEventListener('touchstart', function() {
+        state.settleToken++;
+        state.programmaticScrollUntil = 0;
+        state.scrollTop = container.scrollTop;
+    }, { passive: true });
     container.addEventListener('scroll', function() {
         var now = Date.now();
         var currentTop = container.scrollTop;
@@ -1055,6 +1064,8 @@ function _wireLxmfMessageScroll(container) {
     }, { passive: true });
     container.addEventListener('wheel', function(e) {
         if (e.deltaY < -1) {
+            state.settleToken++;
+            state.programmaticScrollUntil = 0;
             state.lastUserScrollUpAt = Date.now();
             state.followLatest = false;
         }
@@ -3170,9 +3181,10 @@ function renderConversation(options) {
                 duration: 500,
                 moveCancelPx: 12,
                 hapticStages: [{ at: 0.55, level: 'light' }],
-                preventDefaultOnStart: function() {
-                    return _shouldPreserveLxmfComposerKeyboard();
-                },
+                // Keep the gesture start passive. The transcript's delegated
+                // touch handler already preserves composer focus, while
+                // cancelling touchstart here prevents Android WebView from
+                // handing the same gesture to native vertical scrolling.
                 onFire: function(touch) {
                     var msgId = bubble.getAttribute('data-msg-id');
                     if (!msgId) return;

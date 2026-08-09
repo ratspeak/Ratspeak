@@ -5854,7 +5854,11 @@ fn message_actions_use_mobile_long_press_and_action_state() {
         .expect("messaging command");
 
     assert!(lxmf.contains("RS.gestures.attachLongPress(bubble"));
-    assert!(lxmf.contains("preventDefaultOnStart: function()"));
+    assert!(!lxmf.contains("preventDefaultOnStart: function()"));
+    assert!(lxmf.contains("container.addEventListener('touchstart', function()"));
+    assert!(lxmf.contains("state.settleToken++;"));
+    assert!(lxmf.contains("state.programmaticScrollUntil = 0;"));
+    assert!(lxmf.contains("}, { passive: true });"));
     assert!(lxmf.contains("if (e.defaultPrevented) return;"));
     assert!(lxmf.contains("(t.closest('.lxmf-msg') && _shouldPreserveLxmfComposerKeyboard())"));
     assert!(lxmf.contains("function _bindMessageFocusPreservingActivation"));
