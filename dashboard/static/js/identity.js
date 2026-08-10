@@ -2491,7 +2491,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Hardware (YubiKey/PIV) identities are desktop-only for now: the `hardware`
     // feature + hw_* commands are gated off on mobile. Hide the entry points there.
     // TODO(ratkey-mobile): add the wrapped-session model — see HARDWARE_STATUS.md.
-    var hideHardware = (typeof isMobile === 'function') && isMobile();
+    var hideHardware = (typeof supportsHardwareIdentities === 'function')
+        && !supportsHardwareIdentities();
 
     var identityHwBtn = document.getElementById('identity-hardware-btn');
     if (identityHwBtn) {

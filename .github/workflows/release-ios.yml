@@ -29,7 +29,7 @@ env:
 jobs:
   build:
     name: iOS
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 150
     steps:
       - name: Checkout Ratspeak
@@ -87,6 +87,16 @@ jobs:
         working-directory: Ratspeak
         run: bash dashboard/build-css.sh
 
+      - name: Validate Apple toolchain
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/assert-apple-toolchain.sh
+
+      - name: Validate iOS project metadata
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/assert-ios-project-metadata.sh .
+
       - name: Validate TestFlight configuration
         if: ${{ inputs.build_mode == 'testflight' }}
         shell: bash
@@ -120,11 +130,13 @@ jobs:
           IOS_DISTRIBUTION_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
           IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           CERTIFICATE_PATH="$RUNNER_TEMP/ios_distribution.p12"
           PROFILE_PATH="$RUNNER_TEMP/ratspeak.mobileprovision"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "RATSPEAK_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
           echo "$IOS_DISTRIBUTION_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
           echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
@@ -133,10 +145,18 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERTIFICATE_PATH" -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -Eq '[1-9][0-9]* valid identities found'
 
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/ratspeak.mobileprovision"
+          PROFILE_UUID="$(bash Ratspeak/scripts/release/assert-ios-signing-profile.sh \
+            "$PROFILE_PATH" "$APPLE_TEAM_ID" org.ratspeak.ios)"
+          for PROFILE_DIRECTORY in \
+            "$HOME/Library/MobileDevice/Provisioning Profiles" \
+            "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$PROFILE_DIRECTORY"
+            cp "$PROFILE_PATH" "$PROFILE_DIRECTORY/$PROFILE_UUID.mobileprovision"
+          done
 
       - name: Build iOS simulator smoke app
         if: ${{ inputs.build_mode == 'simulator-smoke' }}
@@ -160,10 +180,19 @@ jobs:
             --build-number "${GITHUB_RUN_NUMBER}" \
             --export-method app-store-connect
 
-      - name: Check bundled privacy manifest
+      - name: Validate iOS simulator bundle
+        if: ${{ inputs.build_mode == 'simulator-smoke' }}
         shell: bash
         working-directory: Ratspeak
-        run: bash scripts/release/assert-ios-privacy-manifest.sh src-tauri/gen/apple/build
+        run: bash scripts/release/assert-ios-bundle.sh simulator src-tauri/gen/apple/build/arm64-sim/Ratspeak.app
+
+      - name: Validate TestFlight bundle
+        if: ${{ inputs.build_mode == 'testflight' }}
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: bash scripts/release/assert-ios-bundle.sh testflight src-tauri/gen/apple/build/arm64/Ratspeak.ipa
 
       - name: Check for bundled dev URLs
         shell: bash
@@ -188,3 +217,8 @@ jobs:
           issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
           api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      - name: Remove temporary signing keychain
+        if: ${{ always() && env.RATSPEAK_SIGNING_KEYCHAIN != '' }}
+        shell: bash
+        run: security delete-keychain "$RATSPEAK_SIGNING_KEYCHAIN" || true

@@ -510,7 +510,7 @@ document.addEventListener('DOMContentLoaded', function() {
         // `hardware` feature + hw_* commands are gated off on mobile.
         // TODO(ratkey-mobile): mobile needs the wrapped-session model (tap to
         // unlock a software session via on-card ECDH) — see HARDWARE_STATUS.md.
-        if ((typeof isMobile === 'function') && isMobile()) {
+        if ((typeof supportsHardwareIdentities === 'function') && !supportsHardwareIdentities()) {
             hardwareKeyBtn.style.display = 'none';
         }
         hardwareKeyBtn.addEventListener('click', function() {

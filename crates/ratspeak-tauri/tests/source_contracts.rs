@@ -4834,16 +4834,40 @@ fn release_workflows_pin_v1_0_26_and_stage_tag_builds_as_prereleases() {
         assert!(ios.contains(required));
     }
     assert!(!ios.contains("PlistBuddy"));
-    assert!(ios.contains("assert-ios-privacy-manifest.sh"));
+    for release_gate in [
+        "assert-apple-toolchain.sh",
+        "assert-ios-project-metadata.sh",
+        "assert-ios-signing-profile.sh",
+        "assert-ios-bundle.sh simulator",
+        "assert-ios-bundle.sh testflight",
+        "assert-no-tauri-dev-url.sh",
+    ] {
+        assert!(
+            ios.contains(release_gate),
+            "missing iOS gate: {release_gate}"
+        );
+    }
+    assert!(ios.contains("runs-on: macos-26"));
+    assert!(ios.contains("security set-key-partition-list"));
+    assert!(ios.contains("$PROFILE_UUID.mobileprovision"));
+    assert!(ios.contains("Remove temporary signing keychain"));
 
     let ios_project = read_source(root.join("src-tauri/gen/apple/project.yml"))
         .expect("iOS project specification");
     assert!(ios_project.contains("path: ratspeak_iOS/PrivacyInfo.xcprivacy"));
     assert!(ios_project.contains("buildPhase: resources"));
+    assert!(!ios_project.contains("entitlements:"));
 
     let ios_pbx = read_source(root.join("src-tauri/gen/apple/ratspeak.xcodeproj/project.pbxproj"))
         .expect("generated iOS project");
     assert!(ios_pbx.contains("PrivacyInfo.xcprivacy in Resources"));
+    assert!(!ios_pbx.contains("CODE_SIGN_ENTITLEMENTS"));
+
+    let app_cargo = read_source(root.join("src-tauri/Cargo.toml")).expect("app Cargo.toml");
+    assert!(app_cargo.contains(r#"tauri = { version = "2", features = [] }"#));
+    assert!(
+        app_cargo.contains(r#"tauri = { version = "2", features = ["tray-icon", "devtools"] }"#)
+    );
 
     let privacy_manifest =
         read_source(root.join("src-tauri/gen/apple/ratspeak_iOS/PrivacyInfo.xcprivacy"))
@@ -6209,8 +6233,16 @@ fn hardware_new_identity_reset_flow_handles_initialized_keys() {
     let root = repo_root();
     let identity_js =
         read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    let setup_js = read_source(root.join("dashboard/static/js/setup.js")).expect("setup js");
+    let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     let hardware_rs =
         read_source(root.join("crates/ratspeak-runtime/src/hardware.rs")).expect("hardware rs");
+
+    assert!(state_js.contains("function supportsHardwareIdentities()"));
+    assert!(state_js.contains("if (isTauriMobile()) return false;"));
+    assert!(setup_js.contains("!supportsHardwareIdentities()"));
+    assert!(identity_js.contains("!supportsHardwareIdentities()"));
+    assert!(!setup_js.contains("typeof isMobile === 'function') && isMobile()"));
 
     assert!(identity_js.contains("function _hwConfirmOverwriteIfNeeded"));
     assert!(identity_js.contains("title: 'Reset this security key?'"));

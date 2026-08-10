@@ -30,6 +30,11 @@ function isAndroid() {
 
 function isTauriMobile() { return window.__RATSPEAK_MOBILE__ === true; }
 function isTauriDesktop() { return window.__RATSPEAK_DESKTOP__ === true; }
+function supportsHardwareIdentities() {
+    if (isTauriMobile()) return false;
+    if (isTauriDesktop()) return true;
+    return !isIOS() && !isAndroid();
+}
 function hasAndroidBridge() {
     return isTauriMobile() && typeof window.RatspeakAndroid !== 'undefined';
 }
