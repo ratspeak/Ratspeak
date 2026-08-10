@@ -152,7 +152,7 @@ function _channelsLoadPublicConsent() {
     return _channelsPublicConsentLoadPromise;
 }
 
-function _channelsPublicConsentLink(label, url) {
+function _channelsPublicConsentLink(label, documentId) {
     var button = document.createElement('button');
     button.type = 'button';
     button.className = 'channel-consent-policy-link';
@@ -160,13 +160,11 @@ function _channelsPublicConsentLink(label, url) {
     button.addEventListener('click', function(event) {
         event.preventDefault();
         event.stopPropagation();
-        Promise.resolve(RS.openExternalUrl(url)).then(function(opened) {
-            if (opened === false) throw new Error('This link could not be opened.');
-        }).catch(function(err) {
+        if (!RS.legal || typeof RS.legal.open !== 'function' || !RS.legal.open(documentId)) {
             if (typeof showToast === 'function') {
-                showToast((err && err.message) || 'This link could not be opened.', 'toast-red', 5000);
+                showToast('This document could not be opened.', 'toast-red', 5000);
             }
-        });
+        }
     });
     return button;
 }
@@ -243,9 +241,9 @@ function _channelsShowPublicConsent() {
 
         var policies = document.createElement('div');
         policies.className = 'channel-consent-policies';
-        policies.appendChild(_channelsPublicConsentLink('Terms', 'https://ratspeak.org/terms.html'));
-        policies.appendChild(_channelsPublicConsentLink('Community Guidelines', 'https://ratspeak.org/community-guidelines.html'));
-        policies.appendChild(_channelsPublicConsentLink('Privacy', 'https://ratspeak.org/privacy.html'));
+        policies.appendChild(_channelsPublicConsentLink('Terms', 'terms'));
+        policies.appendChild(_channelsPublicConsentLink('Community Guidelines', 'guidelines'));
+        policies.appendChild(_channelsPublicConsentLink('Privacy', 'privacy'));
         built.body.appendChild(policies);
 
         var error = document.createElement('div');
@@ -3476,7 +3474,7 @@ function _channelsOpenReportSheet(context) {
             }
             return RS.copyText(body).then(function() {
                 error.textContent = 'No email app was available. The report was copied; send it to mail@ratspeak.org.';
-                RS.openExternalUrl('https://ratspeak.org/support.html');
+                if (RS.legal && typeof RS.legal.open === 'function') RS.legal.open('support');
             });
         }).catch(function() {
             error.textContent = 'Could not prepare the report. Email mail@ratspeak.org or use the Support page.';

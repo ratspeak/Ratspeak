@@ -4203,7 +4203,9 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(android_activity.contains("fun openExternalUrl(url: String): Boolean"));
 
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
-    assert!(tauri_lib.contains("fn open_external_url(url: String)"));
+    assert!(tauri_lib.contains("async fn open_external_url(app: tauri::AppHandle, url: String)"));
+    assert!(tauri_lib.contains("app.run_on_main_thread(move ||"));
+    assert!(tauri_lib.contains("rx.recv_timeout(Duration::from_secs(15))"));
     assert!(tauri_lib.contains("fn save_image_to_photos("));
     assert!(tauri_lib.contains("performChangesAndWait"));
     assert!(tauri_lib.contains("PHAssetChangeRequest"));
@@ -7290,6 +7292,9 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     let channels =
         read_source(root.join("dashboard/static/js/channels.js")).expect("channels frontend");
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("navigation frontend");
+    let legal = read_source(root.join("dashboard/static/js/legal_documents.js"))
+        .expect("offline legal documents");
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard entrypoint");
     let state = read_source(root.join("dashboard/static/js/state.js")).expect("shared frontend");
     let tauri = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri entrypoint");
     let android = read_source(
@@ -7326,9 +7331,19 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
         "https://ratspeak.org/community-guidelines.html",
         "https://ratspeak.org/support.html",
     ] {
-        assert!(channels.contains(url) || nav.contains(url));
-        assert!(nav.contains(url));
+        assert!(legal.contains(url));
     }
+    assert!(legal.contains("version: '2026-08-07'"));
+    assert!(legal.contains("Available offline"));
+    assert!(legal.contains("function openDocument(documentId)"));
+    assert!(legal.contains("View current version online"));
+    assert!(legal.contains("Ratspeak does not currently operate a public channel hub."));
+    assert!(legal.contains("Network blackholing may also be available for known identities."));
+    assert!(channels.contains("RS.legal.open(documentId)"));
+    assert!(channels.contains("RS.legal.open('support')"));
+    assert!(nav.contains("data-about-document"));
+    assert!(nav.contains("RS.legal.open(documentId)"));
+    assert!(index.contains("/static/js/legal_documents.js"));
     assert!(channels.contains("api_blocked_contacts"));
     assert!(channels.contains("block_contact"));
     assert!(channels.contains("Report channel content"));

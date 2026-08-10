@@ -230,13 +230,17 @@ fn validate_http_url(raw: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+async fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let clean = validate_http_url(&url)?;
-    open_platform_url(&clean)
+    open_platform_url(app, clean).await
 }
 
 #[tauri::command]
-fn open_support_email(subject: String, body: String) -> Result<(), String> {
+async fn open_support_email(
+    app: tauri::AppHandle,
+    subject: String,
+    body: String,
+) -> Result<(), String> {
     let subject = subject.trim();
     if subject.is_empty() || subject.len() > 180 || body.len() > 8_000 {
         return Err("Invalid support email".into());
@@ -250,19 +254,29 @@ fn open_support_email(subject: String, body: String) -> Result<(), String> {
         .append_pair("subject", subject)
         .append_pair("body", &body)
         .finish();
-    open_platform_url(&format!("mailto:mail@ratspeak.org?{query}"))
+    open_platform_url(app, format!("mailto:mail@ratspeak.org?{query}")).await
 }
 
-fn open_platform_url(clean: &str) -> Result<(), String> {
-
+async fn open_platform_url(app: tauri::AppHandle, clean: String) -> Result<(), String> {
     #[cfg(target_os = "ios")]
     {
-        open_external_url_ios(clean)
+        use std::time::Duration;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(open_external_url_ios(&clean));
+        })
+        .map_err(|error| format!("Could not open link: {error}"))?;
+
+        tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(15)))
+            .await
+            .map_err(|error| format!("Link task failed: {error}"))?
+            .map_err(|_| "Timed out while opening the link".to_string())?
     }
 
     #[cfg(target_os = "android")]
     {
-        let _ = clean;
+        let _ = (app, clean);
         Err("Android links are opened through the native WebView bridge".into())
     }
 
@@ -271,8 +285,9 @@ fn open_platform_url(clean: &str) -> Result<(), String> {
         target_os = "macos"
     ))]
     {
+        let _ = app;
         std::process::Command::new("open")
-            .arg(clean)
+            .arg(&clean)
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Failed to open link: {e}"))
@@ -283,8 +298,9 @@ fn open_platform_url(clean: &str) -> Result<(), String> {
         target_os = "windows"
     ))]
     {
+        let _ = app;
         std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", clean])
+            .args(["url.dll,FileProtocolHandler", &clean])
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Failed to open link: {e}"))
@@ -295,8 +311,9 @@ fn open_platform_url(clean: &str) -> Result<(), String> {
         not(any(target_os = "macos", target_os = "windows"))
     ))]
     {
+        let _ = app;
         std::process::Command::new("xdg-open")
-            .arg(clean)
+            .arg(&clean)
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("Failed to open link: {e}"))

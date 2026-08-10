@@ -679,10 +679,10 @@ function showAboutModal() {
                     '<a href="https://reticulum.network" target="_blank" rel="noopener" class="text-link">reticulum.network</a>' +
                 '</p>' +
                 '<div class="about-policy-links" aria-label="Ratspeak policies and support">' +
-                    '<button type="button" data-about-url="https://ratspeak.org/privacy.html">Privacy</button>' +
-                    '<button type="button" data-about-url="https://ratspeak.org/terms.html">Terms</button>' +
-                    '<button type="button" data-about-url="https://ratspeak.org/community-guidelines.html">Guidelines</button>' +
-                    '<button type="button" data-about-url="https://ratspeak.org/support.html">Support</button>' +
+                    '<button type="button" data-about-document="privacy">Privacy</button>' +
+                    '<button type="button" data-about-document="terms">Terms</button>' +
+                    '<button type="button" data-about-document="guidelines">Guidelines</button>' +
+                    '<button type="button" data-about-document="support">Support</button>' +
                 '</div>' +
             '</div>' +
         '</div>';
@@ -696,9 +696,11 @@ function showAboutModal() {
 
     function close() { overlay.remove(); }
     document.getElementById('about-modal-close').addEventListener('click', close);
-    overlay.querySelectorAll('[data-about-url]').forEach(function(button) {
+    overlay.querySelectorAll('[data-about-document]').forEach(function(button) {
         button.addEventListener('click', function() {
-            RS.openExternalUrl(button.getAttribute('data-about-url'));
+            var documentId = button.getAttribute('data-about-document');
+            close();
+            if (RS.legal && typeof RS.legal.open === 'function') RS.legal.open(documentId);
         });
     });
     overlay.addEventListener('click', function(e) {

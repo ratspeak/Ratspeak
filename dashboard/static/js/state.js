@@ -542,17 +542,21 @@ window.RS.openExternalUrl = function(url) {
     if (!/^https?:\/\//i.test(clean)) clean = 'https://' + clean;
     if (hasAndroidBridge() && typeof window.RatspeakAndroid.openExternalUrl === 'function') {
         try {
-            if (window.RatspeakAndroid.openExternalUrl(clean)) return Promise.resolve(true);
-        } catch (_) {}
+            return Promise.resolve(!!window.RatspeakAndroid.openExternalUrl(clean));
+        } catch (error) {
+            return Promise.reject(error);
+        }
     }
-    if (typeof window.RS.invoke === 'function') {
-        return window.RS.invoke('open_external_url', { url: clean }).then(function() { return true; }).catch(function() {
-            window.open(clean, '_blank', 'noopener');
-            return true;
-        });
+    if (_rsInvokeAvailable() || isTauriMobile() || isTauriDesktop()) {
+        return window.RS.invoke('open_external_url', { url: clean }).then(function() { return true; });
     }
-    window.open(clean, '_blank', 'noopener');
-    return Promise.resolve(true);
+    try {
+        var opened = window.open(clean, '_blank');
+        if (opened) opened.opener = null;
+        return Promise.resolve(!!opened);
+    } catch (error) {
+        return Promise.reject(error);
+    }
 };
 
 window.RS.openSupportEmail = function(subject, body) {

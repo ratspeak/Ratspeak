@@ -164,9 +164,14 @@ assert(!read('static/js/setup.js').includes('tooltip-backdrop'),
 var channelsSource = read('static/js/channels.js');
 assert(channelsSource.includes('channel-consent-acknowledgements'),
     'public-channel safety confirmations must remain one coherent acknowledgement group');
-assert(channelsSource.includes('Promise.resolve(RS.openExternalUrl(url))') &&
-    channelsSource.includes("showToast((err && err.message) || 'This link could not be opened.'"),
-    'public-channel policy links must surface native-open failures instead of failing silently');
+var legalDocumentsSource = read('static/js/legal_documents.js');
+assert(channelsSource.includes('RS.legal.open(documentId)') &&
+    legalDocumentsSource.includes("version: '2026-08-07'") &&
+    legalDocumentsSource.includes('Available offline'),
+    'public-channel policies must open the versioned offline reader');
+assert(legalDocumentsSource.includes('View current version online') &&
+    legalDocumentsSource.includes('Promise.resolve(RS.openExternalUrl(current.url))'),
+    'the offline reader must retain an explicit, failure-aware path to the current online copy');
 assert(channelsSource.includes('RS.ui.focusAfterUpdate(initialFocus)'),
     'compact channel sheets must not force keyboard focus during touch navigation');
 var lxmf = read('static/js/lxmf.js');
