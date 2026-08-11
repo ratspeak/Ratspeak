@@ -414,7 +414,7 @@
 					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
 					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.ratspeak.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = org.ratspeak.apple;
 				PRODUCT_NAME = "Ratspeak";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -455,7 +455,7 @@
 					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
 					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.ratspeak.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = org.ratspeak.apple;
 				PRODUCT_NAME = "Ratspeak";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

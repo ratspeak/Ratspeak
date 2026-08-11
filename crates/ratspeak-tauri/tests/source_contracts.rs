@@ -4585,6 +4585,39 @@ fn ios_project_model_owns_app_store_info_declarations() {
 }
 
 #[test]
+fn apple_bundle_identifier_is_consistent_without_migrating_desktop() {
+    let root = repo_root();
+    let ios_config: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("src-tauri/tauri.ios.conf.json")).expect("iOS Tauri config"),
+    )
+    .expect("valid iOS Tauri config");
+    let desktop_config: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("src-tauri/tauri.conf.json")).expect("base Tauri config"),
+    )
+    .expect("valid base Tauri config");
+    let project_model =
+        read_source(root.join("src-tauri/gen/apple/project.yml")).expect("iOS project model");
+    let project = read_source(root.join("src-tauri/gen/apple/ratspeak.xcodeproj/project.pbxproj"))
+        .expect("generated iOS project");
+    let runtime = read_source(root.join("src-tauri/src/lib.rs")).expect("Tauri runtime");
+    let workflow =
+        read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS workflow");
+
+    assert_eq!(ios_config["identifier"], "org.ratspeak.apple");
+    assert_eq!(desktop_config["identifier"], "org.ratspeak.desktop");
+    assert!(project_model.contains("bundleIdPrefix: org.ratspeak.apple"));
+    assert!(project_model.contains("PRODUCT_BUNDLE_IDENTIFIER: org.ratspeak.apple"));
+    assert_eq!(
+        project
+            .matches("PRODUCT_BUNDLE_IDENTIFIER = org.ratspeak.apple;")
+            .count(),
+        2
+    );
+    assert!(runtime.contains("OsLogger::new(\"org.ratspeak.apple\", \"default\")"));
+    assert!(workflow.contains("org.ratspeak.apple)"));
+}
+
+#[test]
 fn ios_release_assets_use_supported_single_size_appearance_catalog() {
     let root = repo_root();
     let catalog_dir = root.join("src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset");

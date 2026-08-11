@@ -13,7 +13,7 @@
 	    1. Active paid Apple Developer Program membership. Free personal
 	       teams cannot sign the multicast networking entitlement.
 	    2. Approved request for `com.apple.developer.networking.multicast`
-	       against bundle id `org.ratspeak.ios`. Submit at
+	       against bundle id `org.ratspeak.apple`. Submit at
 	       https://developer.apple.com/contact/request/networking-multicast/
 	       with use case: "Mesh networking app discovers nearby Reticulum
 	       nodes via UDP multicast on local Wi-Fi (no internet)."

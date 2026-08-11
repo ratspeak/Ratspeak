@@ -567,7 +567,7 @@ fn init_tracing() -> TracingGuard {
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(filter_fn(diagnostic_metadata_allowed))
-            .with(tracing_oslog::OsLogger::new("org.ratspeak.ios", "default"))
+            .with(tracing_oslog::OsLogger::new("org.ratspeak.apple", "default"))
             .try_init();
     }
 

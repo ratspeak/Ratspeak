@@ -3,7 +3,7 @@ set -euo pipefail
 
 profile="${1:-}"
 expected_team_id="${2:-}"
-expected_bundle_id="${3:-org.ratspeak.ios}"
+expected_bundle_id="${3:-org.ratspeak.apple}"
 
 if [[ ! -f "$profile" ]]; then
   echo "Provisioning profile is missing: ${profile:-<not supplied>}" >&2

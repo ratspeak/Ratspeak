@@ -1,6 +1,6 @@
 name: ratspeak
 options:
-  bundleIdPrefix: org.ratspeak.ios
+  bundleIdPrefix: org.ratspeak.apple
   deploymentTarget:
     iOS: 14.0
 fileGroups: [../../src]
@@ -11,7 +11,7 @@ settingGroups:
   app:
     base:
       PRODUCT_NAME: Ratspeak
-      PRODUCT_BUNDLE_IDENTIFIER: org.ratspeak.ios
+      PRODUCT_BUNDLE_IDENTIFIER: org.ratspeak.apple
       DEVELOPMENT_TEAM: X92A7KF9SP
 targetTemplates:
   app:

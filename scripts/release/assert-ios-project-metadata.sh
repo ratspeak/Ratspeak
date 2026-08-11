@@ -78,8 +78,8 @@ if plutil -extract UIRequiresFullScreen raw -o - "$info_plist" >/dev/null 2>&1; 
 fi
 
 for declaration in \
-  'bundleIdPrefix: org.ratspeak.ios' \
-  'PRODUCT_BUNDLE_IDENTIFIER: org.ratspeak.ios' \
+  'bundleIdPrefix: org.ratspeak.apple' \
+  'PRODUCT_BUNDLE_IDENTIFIER: org.ratspeak.apple' \
   "DEVELOPMENT_TEAM: $expected_team_id" \
   'iOS: 14.0' \
   'TARGETED_DEVICE_FAMILY: "1,2"' \

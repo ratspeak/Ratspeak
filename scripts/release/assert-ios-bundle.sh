@@ -3,7 +3,7 @@ set -euo pipefail
 
 mode="${1:-}"
 artifact="${2:-}"
-expected_bundle_id="${EXPECTED_IOS_BUNDLE_ID:-org.ratspeak.ios}"
+expected_bundle_id="${EXPECTED_IOS_BUNDLE_ID:-org.ratspeak.apple}"
 expected_version="${EXPECTED_IOS_VERSION:-1.0.26}"
 
 if [[ "$mode" != "simulator" && "$mode" != "testflight" ]]; then
