@@ -245,7 +245,9 @@ async fn open_support_email(
     if subject.is_empty() || subject.len() > 180 || body.len() > 8_000 {
         return Err("Invalid support email".into());
     }
-    if subject.chars().any(|character| matches!(character, '\r' | '\n' | '\0'))
+    if subject
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n' | '\0'))
         || body.contains('\0')
     {
         return Err("Invalid support email".into());
@@ -567,7 +569,10 @@ fn init_tracing() -> TracingGuard {
         let _ = tracing_subscriber::registry()
             .with(filter)
             .with(filter_fn(diagnostic_metadata_allowed))
-            .with(tracing_oslog::OsLogger::new("org.ratspeak.apple", "default"))
+            .with(tracing_oslog::OsLogger::new(
+                "org.ratspeak.apple",
+                "default",
+            ))
             .try_init();
     }
 

@@ -4613,7 +4613,8 @@ fn apple_bundle_identifier_is_consistent_without_migrating_desktop() {
             .count(),
         2
     );
-    assert!(runtime.contains("OsLogger::new(\"org.ratspeak.apple\", \"default\")"));
+    let normalized_runtime = runtime.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(normalized_runtime.contains("OsLogger::new( \"org.ratspeak.apple\", \"default\", )"));
     assert!(workflow.contains("org.ratspeak.apple)"));
 }
 
@@ -7398,7 +7399,7 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     ] {
         assert!(legal.contains(url));
     }
-    assert!(legal.contains("version: '2026-08-07'"));
+    assert!(legal.contains("version: '2026-08-11'"));
     assert!(legal.contains("Available offline"));
     assert!(legal.contains("function openDocument(documentId)"));
     assert!(legal.contains("View current version online"));

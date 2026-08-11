@@ -166,7 +166,7 @@ assert(channelsSource.includes('channel-consent-acknowledgements'),
     'public-channel safety confirmations must remain one coherent acknowledgement group');
 var legalDocumentsSource = read('static/js/legal_documents.js');
 assert(channelsSource.includes('RS.legal.open(documentId)') &&
-    legalDocumentsSource.includes("version: '2026-08-07'") &&
+    legalDocumentsSource.includes("version: '2026-08-11'") &&
     legalDocumentsSource.includes('Available offline'),
     'public-channel policies must open the versioned offline reader');
 assert(legalDocumentsSource.includes('View current version online') &&
