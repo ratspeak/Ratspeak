@@ -12,6 +12,7 @@ settingGroups:
     base:
       PRODUCT_NAME: Ratspeak
       PRODUCT_BUNDLE_IDENTIFIER: org.ratspeak.ios
+      DEVELOPMENT_TEAM: X92A7KF9SP
 targetTemplates:
   app:
     type: application

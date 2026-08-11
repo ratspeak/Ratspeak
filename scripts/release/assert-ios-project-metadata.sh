@@ -7,6 +7,7 @@ project_file="$repo_root/src-tauri/gen/apple/ratspeak.xcodeproj/project.pbxproj"
 info_plist="$repo_root/src-tauri/gen/apple/ratspeak_iOS/Info.plist"
 privacy_manifest="$repo_root/src-tauri/gen/apple/ratspeak_iOS/PrivacyInfo.xcprivacy"
 entitlements="$repo_root/src-tauri/gen/apple/ratspeak_iOS/ratspeak_iOS.entitlements"
+expected_team_id="X92A7KF9SP"
 
 for required_file in "$project_model" "$project_file" "$info_plist" "$privacy_manifest" "$entitlements"; do
   if [[ ! -f "$required_file" ]]; then
@@ -79,6 +80,7 @@ fi
 for declaration in \
   'bundleIdPrefix: org.ratspeak.ios' \
   'PRODUCT_BUNDLE_IDENTIFIER: org.ratspeak.ios' \
+  "DEVELOPMENT_TEAM: $expected_team_id" \
   'iOS: 14.0' \
   'TARGETED_DEVICE_FAMILY: "1,2"' \
   'path: ratspeak_iOS/PrivacyInfo.xcprivacy' \
@@ -88,6 +90,17 @@ for declaration in \
     exit 1
   fi
 done
+
+team_setting_count="$(grep -Fc "DEVELOPMENT_TEAM = $expected_team_id;" "$project_file" || true)"
+if [[ "$team_setting_count" -ne 2 ]]; then
+  echo "$project_file: expected both build configurations to use team $expected_team_id, found $team_setting_count" >&2
+  exit 1
+fi
+
+if grep -F 'DEVELOPMENT_TEAM = ' "$project_file" | grep -Fvq "DEVELOPMENT_TEAM = $expected_team_id;"; then
+  echo "$project_file: contains a signing team other than $expected_team_id" >&2
+  exit 1
+fi
 
 if ! grep -Fq 'PrivacyInfo.xcprivacy in Resources' "$project_file"; then
   echo "$project_file: privacy manifest is not in the Resources phase" >&2
