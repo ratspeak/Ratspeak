@@ -55,7 +55,7 @@ context.RS = context.window.RS;
 vm.runInNewContext(source, context, { filename: 'legal_documents.js' });
 
 const legal = context.window.RS.legal;
-assert.strictEqual(legal.version, '2026-08-07');
+assert.strictEqual(legal.version, '2026-08-11');
 assert.strictEqual(
     Array.from(Object.keys(legal.documents)).join(','),
     'privacy,terms,guidelines,support'
@@ -71,6 +71,9 @@ assert.strictEqual(builtSheet.sheet.attributes['aria-label'], 'Privacy Policy');
 assert.strictEqual(builtSheet.body.children.length, 1);
 assert(builtSheet.body.children[0].innerHTML.includes('Available offline'));
 assert(builtSheet.body.children[0].innerHTML.includes('Ratspeak does not currently operate a public channel hub.'));
+assert(builtSheet.body.children[0].innerHTML.includes('Vercel Web Analytics'));
+assert(builtSheet.body.children[0].innerHTML.includes('is not linked to your Ratspeak identity'));
+assert(builtSheet.body.children[0].innerHTML.includes('connecting IP address'));
 
 const article = builtSheet.body.children[0];
 article.listeners.click({
