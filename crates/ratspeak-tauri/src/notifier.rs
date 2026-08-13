@@ -53,7 +53,9 @@ impl NativeNotifier for TauriNotifier {
             // Recoverable on Android via the serialized notification payload.
             // TODO(desktop): notify-rust has no tap/action callback, so taps
             // only focus the window; investigate a richer backend later.
-            builder = builder.extra("route", thread_id.clone()).group(thread_id);
+            builder = builder
+                .extra("route", thread_id.clone())
+                .group(thread_id.clone());
             #[cfg(target_os = "ios")]
             {
                 // notification 2.3.3 drops `extra` when reconstructing an iOS

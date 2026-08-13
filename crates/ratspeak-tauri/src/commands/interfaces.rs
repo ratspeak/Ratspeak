@@ -3334,15 +3334,15 @@ async fn spawn_editable_interface(
                         name.to_string(),
                         port.to_string(),
                         ResolvedLoraRadio {
-                            frequency,
-                            bandwidth,
-                            spreading_factor,
-                            coding_rate,
-                            tx_power,
+                            frequency: *frequency,
+                            bandwidth: *bandwidth,
+                            spreading_factor: *spreading_factor,
+                            coding_rate: *coding_rate,
+                            tx_power: *tx_power,
                             region_key: None,
                             preset_key: None,
-                            airtime_limit_short,
-                            airtime_limit_long,
+                            airtime_limit_short: *airtime_limit_short,
+                            airtime_limit_long: *airtime_limit_long,
                         },
                         mode.to_string(),
                         *id_interval,
@@ -4466,9 +4466,8 @@ pub async fn add_lora_interface(
                 config_written,
             ))
         })?;
-    let fresh_add = fresh_marker.is_some();
-    #[cfg(not(all(feature = "ble", target_os = "android")))]
-    let _ = fresh_add;
+    #[cfg(not(feature = "ble"))]
+    let _ = fresh_marker;
     #[cfg(not(any(feature = "ble", target_os = "android")))]
     let _ = &existing_rnode_port;
     #[cfg(not(target_os = "android"))]
@@ -4862,7 +4861,7 @@ pub async fn add_lora_interface(
                     name_a.clone(),
                     port_str,
                     radio,
-                    mode,
+                    mode.to_string(),
                     None,
                     None,
                 ) {

@@ -1184,6 +1184,9 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         #[cfg(any(target_os = "ios", target_os = "android"))]
+        let _ = app_handle;
+
+        #[cfg(any(target_os = "ios", target_os = "android"))]
         match event {
             tauri::RunEvent::WindowEvent {
                 event: tauri::WindowEvent::Suspended,

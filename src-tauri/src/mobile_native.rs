@@ -21,6 +21,7 @@ static APP_STATE: OnceLock<RwLock<Weak<AppState>>> = OnceLock::new();
 static LAST_NETWORK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "android")]
 static LAST_USB_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "ios")]
 static NATIVE_NETWORK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static NETWORK_WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
 static PENDING_NETWORK: Mutex<Option<PendingNetwork>> = Mutex::new(None);
@@ -447,7 +448,7 @@ fn take_pending_ble_request(token: &str, generation: u64) -> Option<NativeBleRno
 }
 
 #[cfg(target_os = "android")]
-const fn native_ble_failure_code(
+fn native_ble_failure_code(
     code: &str,
 ) -> ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode {
     use ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode;
@@ -459,7 +460,7 @@ const fn native_ble_failure_code(
 }
 
 #[cfg(target_os = "android")]
-const fn native_ble_hardware_reason(code: &str) -> &'static str {
+fn native_ble_hardware_reason(code: &str) -> &'static str {
     match code {
         "bluetooth_off" => "bluetooth_off",
         "permission_needed" => "permission_needed",
@@ -668,6 +669,7 @@ pub(crate) fn submit_lifecycle(foreground: bool) {
 
 /// Submit a trusted in-process platform transition (currently iOS
 /// Network.framework) with a process-monotonic sequence.
+#[cfg(target_os = "ios")]
 pub(crate) fn submit_native_network(network_type: &str) {
     let sequence = NATIVE_NETWORK_SEQUENCE
         .fetch_add(1, Ordering::AcqRel)
@@ -790,7 +792,7 @@ fn ensure_network_worker() {
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_org_ratspeak_android_RatspeakNativeBridge_nativeSetNetworkType(
-    mut env: jni::JNIEnv,
+    env: jni::JNIEnv,
     _class: jni::objects::JClass,
     network_type: jni::objects::JString,
     sequence: jni::sys::jlong,
