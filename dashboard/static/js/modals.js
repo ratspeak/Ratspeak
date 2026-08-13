@@ -968,6 +968,8 @@ var _RNODE_INTERFACE_MODE_VALUES = {
     boundary: true,
     roaming: true,
 };
+var _RNODE_NEW_INTERFACE_MODE = 'roaming';
+var _RNODE_LEGACY_INTERFACE_MODE = 'full';
 
 function _rnodeNormaliseInterfaceMode(mode) {
     mode = String(mode || 'full').trim().toLowerCase();
@@ -985,6 +987,11 @@ function _rnodeSetInterfaceMode(mode) {
 function _rnodeReadInterfaceMode() {
     var select = document.getElementById('rnode-interface-mode');
     return _rnodeNormaliseInterfaceMode(select ? select.value : 'full');
+}
+
+function _rnodeInitialInterfaceMode(editIface) {
+    if (!editIface) return _RNODE_NEW_INTERFACE_MODE;
+    return editIface.mode || editIface.interface_mode || _RNODE_LEGACY_INTERFACE_MODE;
 }
 
 function _rnodeDeveloperModeEnabled() {
@@ -1038,7 +1045,7 @@ function openRnodeModal(mode, editIface) {
     var catalogReady = loadRnodePresetCatalog();
     _rnodeApplyDefaultRadioControls();
     _rnodeSetAirtimeLimits(null, null);
-    _rnodeSetInterfaceMode('full');
+    _rnodeSetInterfaceMode(_rnodeInitialInterfaceMode(editIface));
     _rnodeSyncInterfaceModeVisibility();
     _rnodeResetPublicMap();
     _bleSelectedDevice = null;
@@ -1070,7 +1077,6 @@ function openRnodeModal(mode, editIface) {
     if (editIface) {
         var port = _ifaceString(editIface, 'port', '');
         _rnodeEditContext = { oldName: editIface.name || '', port: port };
-        _rnodeSetInterfaceMode(editIface.mode || editIface.interface_mode || 'full');
         if (port.indexOf('ble://') === 0) {
             var addr = port.substring(6);
             _bleSelectedDevice = { name: editIface.name || 'LoRa Radio', address: addr };

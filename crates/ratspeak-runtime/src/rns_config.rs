@@ -12,7 +12,10 @@ use serde_json::{Value, json};
 
 static CONFIG_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub const RNODE_DEFAULT_INTERFACE_MODE: &str = "full";
+/// Ratspeak's product default for newly added mobile radio interfaces.
+pub const RNODE_NEW_INTERFACE_DEFAULT_MODE: &str = "roaming";
+/// Reticulum's default when an existing config omits an interface mode.
+pub const RETICULUM_DEFAULT_INTERFACE_MODE: &str = "full";
 pub const RNODE_INTERFACE_MODES: &[&str] =
     &["full", "gateway", "access_point", "boundary", "roaming"];
 
@@ -601,7 +604,7 @@ pub fn normalize_rnode_interface_mode(mode: Option<&str>) -> Option<&'static str
     let mode = mode
         .map(str::trim)
         .filter(|mode| !mode.is_empty())
-        .unwrap_or(RNODE_DEFAULT_INTERFACE_MODE);
+        .unwrap_or(RNODE_NEW_INTERFACE_DEFAULT_MODE);
     let key = mode.to_ascii_lowercase();
     match key.as_str() {
         "full" => Some("full"),
@@ -618,7 +621,7 @@ pub fn normalize_rnode_interface_mode(mode: Option<&str>) -> Option<&'static str
 pub fn rnode_interface_mode_passthrough(mode: Option<&str>) -> &str {
     let mode = mode.map(str::trim).filter(|mode| !mode.is_empty());
     normalize_rnode_interface_mode(mode)
-        .unwrap_or_else(|| mode.unwrap_or(RNODE_DEFAULT_INTERFACE_MODE))
+        .unwrap_or_else(|| mode.unwrap_or(RNODE_NEW_INTERFACE_DEFAULT_MODE))
 }
 
 pub fn rnode_interface_mode_value(
@@ -2895,7 +2898,7 @@ mod tests {
     }
 
     #[test]
-    fn rnode_interface_defaults_to_full_mode() {
+    fn new_rnode_interface_defaults_to_roaming_mode() {
         let dir = temp_config_dir();
         write_base_config(&dir);
 
@@ -2905,6 +2908,34 @@ mod tests {
                 name: "Default Mode Radio",
                 port: "/dev/ttyUSB0",
                 mode: None,
+                frequency: 915_000_000,
+                bandwidth: 250_000,
+                spreading_factor: 9,
+                coding_rate: 5,
+                tx_power: 17,
+                region_key: Some("americas"),
+                preset_key: Some("medium_fast"),
+                airtime_limit_short: None,
+                airtime_limit_long: None,
+                public_map: RnodePublicMapArgs::default(),
+            },
+        ));
+
+        let content = read_config(&dir).unwrap();
+        assert!(content.contains("mode = roaming"));
+    }
+
+    #[test]
+    fn new_rnode_interface_preserves_explicit_full_mode() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+
+        assert!(add_rnode_interface(
+            &dir,
+            RnodeInterfaceArgs {
+                name: "Explicit Full Radio",
+                port: "/dev/ttyUSB0",
+                mode: Some("full"),
                 frequency: 915_000_000,
                 bandwidth: 250_000,
                 spreading_factor: 9,
@@ -3010,7 +3041,11 @@ mod tests {
 
     #[test]
     fn rnode_mode_helpers_cover_exposed_modes() {
-        assert_eq!(normalize_rnode_interface_mode(None), Some("full"));
+        assert_eq!(normalize_rnode_interface_mode(None), Some("roaming"));
+        assert_eq!(
+            rnode_interface_mode_value(None),
+            Some(rns_interface::traits::InterfaceMode::Roaming)
+        );
         assert_eq!(normalize_rnode_interface_mode(Some("full")), Some("full"));
         assert_eq!(
             normalize_rnode_interface_mode(Some("gateway")),
@@ -3042,8 +3077,8 @@ mod tests {
 
     #[test]
     fn rnode_mode_passthrough_keeps_unknown_values_verbatim() {
-        assert_eq!(rnode_interface_mode_passthrough(None), "full");
-        assert_eq!(rnode_interface_mode_passthrough(Some("")), "full");
+        assert_eq!(rnode_interface_mode_passthrough(None), "roaming");
+        assert_eq!(rnode_interface_mode_passthrough(Some("")), "roaming");
         assert_eq!(rnode_interface_mode_passthrough(Some("gw")), "gateway");
         assert_eq!(
             rnode_interface_mode_passthrough(Some("internal")),

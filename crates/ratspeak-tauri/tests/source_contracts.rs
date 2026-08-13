@@ -3886,6 +3886,9 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(modals_js.contains("if (_rnodeIsTcpPort(port)) return 'tcp';"));
     assert!(modals_js.contains("setRnodeConnectionType('tcp')"));
     assert!(modals_js.contains("function _rnodeNormaliseInterfaceMode(mode)"));
+    assert!(modals_js.contains("var _RNODE_NEW_INTERFACE_MODE = 'roaming';"));
+    assert!(modals_js.contains("var _RNODE_LEGACY_INTERFACE_MODE = 'full';"));
+    assert!(modals_js.contains("if (!editIface) return _RNODE_NEW_INTERFACE_MODE;"));
     assert!(modals_js.contains("mode: _rnodeReadInterfaceMode()"));
     assert!(modals_js.contains("window.ratspeakDeveloperModeEnabled()"));
     assert!(modals_js.contains("built.sheet.classList.add('local-network-sheet')"));
@@ -3904,8 +3907,14 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(index.contains(r#"<option value="gateway">Gateway</option>"#));
     assert!(index.contains(r#"<option value="access_point">Access Point (AP)</option>"#));
     assert!(index.contains(r#"<option value="boundary">Boundary</option>"#));
-    assert!(index.contains(r#"<option value="roaming">Roaming</option>"#));
-    assert!(index.contains("Mode affects routing and announce propagation."));
+    assert!(index.contains(r#"<option value="roaming" selected>Roaming (recommended)</option>"#));
+    assert!(index.contains("Best for mobile radios."));
+    assert!(
+        rns_config_rs.contains(r#"pub const RNODE_NEW_INTERFACE_DEFAULT_MODE: &str = "roaming";"#)
+    );
+    assert!(
+        rns_config_rs.contains(r#"pub const RETICULUM_DEFAULT_INTERFACE_MODE: &str = "full";"#)
+    );
     assert!(rns_config_rs.contains(
         r#"pub const RNODE_INTERFACE_MODES: &[&str] =
     &["full", "gateway", "access_point", "boundary", "roaming"];"#

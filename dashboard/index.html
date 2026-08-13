@@ -1463,7 +1463,7 @@
                             <div class="settings-row">
                                 <div class="settings-row-info">
                                     <span class="settings-row-label">Developer Mode</span>
-                                    <span class="settings-row-desc">Show advanced developer settings when available.</span>
+                                    <span class="settings-row-desc">Show advanced interface controls and developer settings when available.</span>
                                 </div>
                                 <div class="settings-radio-group" role="radiogroup" aria-label="Developer Mode">
                                     <label class="settings-radio-option">
@@ -1864,15 +1864,15 @@
                     <span class="inline-hint-sm" id="rnode-preset-hint"></span>
                 </div>
                 <div class="modal-field" id="rnode-mode-field" style="display:none;">
-                    <label>Interface Mode</label>
-                    <select id="rnode-interface-mode" class="nr-select">
+                    <label for="rnode-interface-mode">Interface Mode</label>
+                    <select id="rnode-interface-mode" class="nr-select" aria-describedby="rnode-interface-mode-hint">
                         <option value="full">Full</option>
                         <option value="gateway">Gateway</option>
                         <option value="access_point">Access Point (AP)</option>
                         <option value="boundary">Boundary</option>
-                        <option value="roaming">Roaming</option>
+                        <option value="roaming" selected>Roaming (recommended)</option>
                     </select>
-                    <span class="inline-hint-sm">Mode affects routing and announce propagation.</span>
+                    <span class="inline-hint-sm" id="rnode-interface-mode-hint">Best for mobile radios. Choose another mode only when this RNode has a fixed routing role.</span>
                 </div>
 
                 <details id="rnode-advanced" class="rnode-advanced-details">

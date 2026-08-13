@@ -1479,6 +1479,23 @@ fn normalize_lora_interface_mode(mode: Option<&str>) -> AppResult<&'static str> 
         .ok_or_else(|| AppError::bad_request("Invalid RNode interface mode"))
 }
 
+fn resolve_lora_update_mode(requested_mode: Option<&str>, existing_mode: &str) -> String {
+    let Some(requested_mode) = requested_mode else {
+        return existing_mode.to_string();
+    };
+
+    // Existing unknown, hand-edited modes are presented as Reticulum's Full
+    // fallback by the edit dropdown. Treat that unchanged fallback as
+    // preservation; any other requested mode is an explicit replacement.
+    if requested_mode == crate::rns_config::RETICULUM_DEFAULT_INTERFACE_MODE
+        && crate::rns_config::normalize_rnode_interface_mode(Some(existing_mode)).is_none()
+    {
+        existing_mode.to_string()
+    } else {
+        requested_mode.to_string()
+    }
+}
+
 fn rnode_runtime_mode(mode: &str) -> rns_interface::traits::InterfaceMode {
     crate::rns_config::rnode_interface_mode_value(Some(mode))
         .unwrap_or(rns_interface::traits::InterfaceMode::Full)
@@ -2014,9 +2031,19 @@ fn ifac_settings_from_args(
 
 fn cfg_rnode_mode(entry: &Value) -> String {
     let raw = cfg_str(entry, "mode").or_else(|| cfg_str(entry, "interface_mode"));
+    let raw = raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty());
+    let Some(raw) = raw else {
+        // Do not reinterpret legacy or hand-written configs. Reticulum itself
+        // uses Full when the mode is absent, independently of Ratspeak's
+        // Roaming default for newly added RNodes.
+        return crate::rns_config::RETICULUM_DEFAULT_INTERFACE_MODE.to_string();
+    };
     // Unrecognized hand-edited modes pass through verbatim; runtime spawn maps
     // them to Full via rnode_runtime_mode without rewriting the config value.
-    crate::rns_config::rnode_interface_mode_passthrough(raw.as_deref()).to_string()
+    crate::rns_config::rnode_interface_mode_passthrough(Some(raw)).to_string()
 }
 
 fn cfg_csv(entry: &Value, key: &str) -> Option<Vec<String>> {
@@ -5075,7 +5102,13 @@ pub async fn update_lora_interface(
         airtime_limit_short: args.airtime_limit_short,
         airtime_limit_long: args.airtime_limit_long,
     })?;
-    let ui_mode = normalize_lora_interface_mode(args.mode.as_deref())?;
+    let requested_mode = args
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+        .map(|mode| normalize_lora_interface_mode(Some(mode)))
+        .transpose()?;
     let public_map_update =
         resolve_rnode_public_map_update(&state_arc, args.public_map.as_ref()).await?;
 
@@ -5104,16 +5137,8 @@ pub async fn update_lora_interface(
             },
             RnodePublicMapUpdate::Set(public_map) => public_map.clone(),
         };
-        // The dropdown coerces unknown modes to the default, so a default
-        // submission over a hand-edited mode is not a deliberate change.
         let existing_mode = cfg_rnode_mode(&old_entry);
-        let mode = if ui_mode == crate::rns_config::RNODE_DEFAULT_INTERFACE_MODE
-            && crate::rns_config::normalize_rnode_interface_mode(Some(&existing_mode)).is_none()
-        {
-            existing_mode
-        } else {
-            ui_mode.to_string()
-        };
+        let mode = resolve_lora_update_mode(requested_mode, &existing_mode);
         // Lease creation and the config mutation share the same serialization
         // boundary. Whichever operation writes last also owns the continuation.
         let operation_lease = state_arc
@@ -7233,6 +7258,25 @@ mod backbone_args_tests {
 
         let entry = serde_json::json!({ "name": "Radio" });
         assert_eq!(cfg_rnode_mode(&entry), "full");
+
+        let entry = serde_json::json!({ "name": "Radio", "mode": "   " });
+        assert_eq!(cfg_rnode_mode(&entry), "full");
+    }
+
+    #[test]
+    fn lora_update_mode_preserves_omissions_and_explicit_choices() {
+        assert_eq!(resolve_lora_update_mode(None, "full"), "full");
+        assert_eq!(resolve_lora_update_mode(None, "roaming"), "roaming");
+        assert_eq!(resolve_lora_update_mode(Some("full"), "roaming"), "full");
+        assert_eq!(resolve_lora_update_mode(Some("roaming"), "full"), "roaming");
+        assert_eq!(
+            resolve_lora_update_mode(Some("full"), "internal"),
+            "internal"
+        );
+        assert_eq!(
+            resolve_lora_update_mode(Some("roaming"), "internal"),
+            "roaming"
+        );
     }
 
     #[test]
