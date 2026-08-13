@@ -1451,12 +1451,10 @@ function linkifyMessageText(text) {
     return out.replace(/\n/g, '<br>');
 }
 
-// Icons must distinguish proof-backed delivery from accepted-for-forwarding.
-// Opportunistic sends have no LXMF receipt; propagation means node deposit,
-// not end-to-end recipient delivery.
+// Check color reflects the observable delivery state, independent of transport
+// method. Propagation remains a node deposit, not recipient delivery.
 function _messageStateIconHtml(msg) {
     var state = msg.state;
-    var method = msg.delivery_method || 'opportunistic';
     var SVG_OPEN = '<svg viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
     var ICON = {
         read: '<polyline points="1 8 4 11 9 4"/><polyline points="5 8 8 11 13 4"/>',
@@ -1475,10 +1473,10 @@ function _messageStateIconHtml(msg) {
     if (state === 'cancelled') return wrap('msg-state-cancelled', 'Cancelled', ICON.x);
     if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
-    if (state === 'delivered' && method === 'direct') return wrap('msg-state-delivered-direct', 'Delivered', ICON.check);
-    if ((state === 'sent' || state === 'delivered') && method !== 'direct') return wrap('msg-state-sent', 'Sent', ICON.check);
+    if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.check);
+    if (state === 'sent') return wrap('msg-state-sent', 'Sent', ICON.check);
     // In-flight: sending, routing, propagating, generating, outbound,
-    // resending, or `sent` awaiting a Direct LXMF link receipt.
+    // resending, Link setup, or Resource transfer.
     var progressPercent = _messageProgressPercent(msg);
     var label = progressPercent !== null
         ? 'Sending ' + progressPercent + '%'

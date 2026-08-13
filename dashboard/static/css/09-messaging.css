@@ -935,10 +935,10 @@ body.image-viewer-open {
 }
 .msg-state-icon { display: inline-flex; vertical-align: middle; margin-left: 4px; }
 .msg-state-icon svg { width: 12px; height: 12px; }
-/* Opportunistic-sent / fallback delivered: muted ✓ — no LXMF-level proof. */
+/* Sent: muted ✓ while an authenticated delivery proof is outstanding. */
 .msg-state-sent svg { stroke: var(--text-muted); }
-/* Direct delivery confirmed via LXMF link receipt: accent ✓. */
-.msg-state-delivered-direct svg { stroke: var(--accent); }
+/* Delivered: accent ✓ after proof, independent of delivery method. */
+.msg-state-delivered svg { stroke: var(--accent); }
 /* Read receipt: muted (existing double ✓✓). */
 .msg-state-read svg { stroke: var(--text-muted); }
 /* In-flight: clock with pulse — also covers Direct's `sent` waiting for proof. */

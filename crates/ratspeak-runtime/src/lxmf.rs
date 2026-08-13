@@ -765,7 +765,7 @@ impl DeliveryPreference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryProfile {
-    /// Chat-like payloads. Ratspeak Auto uses proof-backed Direct by default,
+    /// Chat-like payloads. Ratspeak Auto uses Link-based Direct by default,
     /// except for peers that explicitly advertise constrained no-bz2 support.
     Message,
     /// Payloads that usually need proof-backed link/resource delivery.
@@ -8410,6 +8410,14 @@ mod tests {
         assert_eq!(mgr.opportunistic_in_flight.len(), 1);
         assert!(mgr.complete_opportunistic_delivery(&msg_id));
         assert!(mgr.opportunistic_in_flight.is_empty());
+        assert!(
+            !mgr.complete_opportunistic_delivery(&msg_id),
+            "duplicate proof completion must be ignored"
+        );
+        assert!(
+            !mgr.complete_opportunistic_delivery(&"ff".repeat(32)),
+            "an unmatched proof must not complete another message"
+        );
     }
 
     #[test]

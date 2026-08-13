@@ -3205,10 +3205,21 @@ async fn handle_inbound_lxmf(
             // Reticulum has already authenticated this proof. Rejoin it with
             // the retained Opportunistic LXMF message so callbacks and ticket
             // last-delivery accounting advance only on actual delivery.
-            if let Ok(mut lxmf) = state.lxmf.lock() {
-                if let Some(manager) = lxmf.as_mut() {
-                    manager.complete_opportunistic_delivery(msg_id);
-                }
+            let completed = state
+                .lxmf
+                .lock()
+                .ok()
+                .and_then(|mut lxmf| {
+                    lxmf.as_mut()
+                        .map(|manager| manager.complete_opportunistic_delivery(msg_id))
+                })
+                .unwrap_or(false);
+            if !completed {
+                tracing::debug!(
+                    msg_id = %short_id(msg_id),
+                    "ignored delivery proof without a matching in-flight Opportunistic message"
+                );
+                continue;
             }
             let rtt_ms = rtt.map(|d| d.as_secs_f64() * 1000.0);
             let msg_id_for_db = msg_id.clone();
@@ -5874,6 +5885,27 @@ mod inbound_pipeline_tests {
                 .filter(|(event, _)| event == name)
                 .count()
         }
+    }
+
+    #[tokio::test]
+    async fn unmatched_opportunistic_proof_does_not_emit_delivery() {
+        let (state, emitter) = pipeline_state();
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let shutdown = rns_runtime::lifecycle::ShutdownSignal::new();
+        let task = tokio::spawn(handle_inbound_lxmf(state, rx, shutdown));
+
+        tx.send(
+            rns_transport::link_messages::DestinationEvent::DeliveryProof {
+                msg_id: "ab".repeat(32),
+                rtt: Some(std::time::Duration::from_millis(25)),
+            },
+        )
+        .await
+        .unwrap();
+        drop(tx);
+        task.await.unwrap();
+
+        assert_eq!(emitter.count("lxmf_step"), 0);
     }
 
     fn pipeline_state() -> (Arc<AppState>, Arc<RecordingEmitter>) {
