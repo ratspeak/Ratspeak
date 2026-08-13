@@ -535,23 +535,34 @@
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6m3 0V4h8v2"/></svg>
                             </button>
                             <div class="voice-memo-field">
-                                <button class="voice-memo-action voice-memo-play" id="voice-memo-play-btn" type="button" title="Preview recording" aria-label="Play voice message" hidden>
-                                    <svg class="voice-memo-state-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-                                </button>
-                                <span class="voice-memo-live-dot" id="voice-memo-live-dot" aria-hidden="true"></span>
-                                <div class="voice-memo-waveform" id="voice-memo-waveform" aria-hidden="true"></div>
-                                <span class="voice-memo-timer" id="voice-memo-timer" aria-live="polite">0:00</span>
-                                <span class="sr-only" id="voice-memo-announcer" aria-live="assertive"></span>
-                                <button class="voice-memo-action voice-memo-pause" id="voice-memo-pause-btn" type="button" title="Pause recording" aria-label="Pause voice message recording">
-                                    <svg class="voice-memo-state-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-                                </button>
+                                <span class="voice-memo-leading-slot">
+                                    <button class="voice-memo-action voice-memo-play" id="voice-memo-play-btn" type="button" title="Preview recording" aria-label="Play voice message" hidden>
+                                        <svg class="voice-memo-state-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                                    </button>
+                                    <span class="voice-memo-live-dot" id="voice-memo-live-dot" aria-hidden="true"></span>
+                                    <span class="loading-spinner voice-memo-state-spinner" id="voice-memo-state-spinner" aria-hidden="true"></span>
+                                </span>
+                                <span class="voice-memo-signal">
+                                    <span class="voice-memo-waveform" id="voice-memo-waveform" aria-hidden="true"></span>
+                                    <span class="voice-memo-inline-status" id="voice-memo-inline-status" role="status" aria-live="polite" aria-atomic="true">Preparing…</span>
+                                </span>
+                                <span class="voice-memo-timer" id="voice-memo-timer" aria-label="Voice message duration">0:00</span>
+                                <span class="sr-only" id="voice-memo-announcer" role="status" aria-live="polite" aria-atomic="true"></span>
+                                <span class="sr-only" id="voice-memo-alert" role="alert" aria-live="assertive" aria-atomic="true"></span>
+                                <span class="voice-memo-trailing-slot">
+                                    <button class="voice-memo-action voice-memo-pause" id="voice-memo-pause-btn" type="button" title="Pause recording" aria-label="Pause voice message recording">
+                                        <svg class="voice-memo-state-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+                                    </button>
+                                </span>
                             </div>
-                            <button class="voice-memo-action voice-memo-stop" id="voice-memo-stop-btn" type="button" title="Finish recording" aria-label="Finish voice message recording">
-                                <span aria-hidden="true"></span>
-                            </button>
-                            <button class="lxmf-send-btn message-send-btn voice-memo-send" id="voice-memo-send-btn" type="button" title="Send voice message" aria-label="Send voice message" hidden>
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-                            </button>
+                            <span class="voice-memo-primary-slot">
+                                <button class="voice-memo-action voice-memo-stop" id="voice-memo-stop-btn" type="button" title="Finish recording" aria-label="Finish voice message recording">
+                                    <span aria-hidden="true"></span>
+                                </button>
+                                <button class="lxmf-send-btn message-send-btn voice-memo-send" id="voice-memo-send-btn" type="button" title="Send voice message" aria-label="Send voice message" hidden>
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                                </button>
+                            </span>
                         </div>
                         <div class="lxmf-compose message-composer" id="lxmf-compose-bar" style="display:none;">
                             <input type="file" id="lxmf-file-input" style="display:none;">

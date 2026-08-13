@@ -26,12 +26,15 @@ pub fn bluetooth_authorization() -> &'static str {
 /// not configure AVAudioSession; iOS' default session is playback-only.
 pub struct VoiceAudioSessionGuard;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Memo playback is driven by WKWebView, while calls and recording are driven
 /// by the native audio stack. Track only the playback lease here so a delayed
 /// WebView cleanup cannot deactivate a newer call/recording session.
-static VOICE_MEMO_PLAYBACK_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Exact process-local owner of the playback-only AVAudioSession. Zero means
+/// there is no playback lease. A delayed WebView stop may release only the
+/// lease it acquired, never a replacement call, recorder, or playback attempt.
+static VOICE_MEMO_PLAYBACK_SESSION_ACTIVE: AtomicU64 = AtomicU64::new(0);
 
 impl VoiceAudioSessionGuard {
     pub fn activate() -> Result<Self, String> {
@@ -55,7 +58,7 @@ fn configure_voice_audio_session() -> Result<(), String> {
 
     // A capture/call session supersedes memo playback. Clear its lease before
     // reconfiguring so a late playback stop cannot deactivate this session.
-    VOICE_MEMO_PLAYBACK_SESSION_ACTIVE.store(false, Ordering::Release);
+    VOICE_MEMO_PLAYBACK_SESSION_ACTIVE.store(0, Ordering::Release);
 
     unsafe {
         let session_class = AnyClass::get(c"AVAudioSession")
@@ -105,9 +108,13 @@ fn configure_voice_audio_session() -> Result<(), String> {
 /// may prefer the receiver route. Recorded messages are ordinary media: the
 /// playback category follows the selected speaker/headset route and continues
 /// to work when the Ring/Silent switch is enabled.
-pub fn activate_voice_memo_playback_session() -> Result<(), String> {
+pub fn activate_voice_memo_playback_session(lease_id: u64) -> Result<(), String> {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
+
+    if lease_id == 0 {
+        return Err("Voice message playback lease is invalid".to_string());
+    }
 
     unsafe {
         let session_class = AnyClass::get(c"AVAudioSession")
@@ -148,16 +155,22 @@ pub fn activate_voice_memo_playback_session() -> Result<(), String> {
             return Err("iOS could not activate voice message playback".to_string());
         }
     }
-    VOICE_MEMO_PLAYBACK_SESSION_ACTIVE.store(true, Ordering::Release);
+    VOICE_MEMO_PLAYBACK_SESSION_ACTIVE.store(lease_id, Ordering::Release);
     Ok(())
 }
 
 /// Release playback only when this process still owns the playback lease.
 /// Calls and capture clear the lease before replacing the AVAudioSession.
-pub fn deactivate_voice_memo_playback_session() {
-    if VOICE_MEMO_PLAYBACK_SESSION_ACTIVE.swap(false, Ordering::AcqRel) {
-        deactivate_voice_audio_session();
+pub fn deactivate_voice_memo_playback_session(lease_id: u64) -> bool {
+    if lease_id == 0
+        || VOICE_MEMO_PLAYBACK_SESSION_ACTIVE
+            .compare_exchange(lease_id, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return false;
     }
+    deactivate_voice_audio_session();
+    true
 }
 
 fn deactivate_voice_audio_session() {

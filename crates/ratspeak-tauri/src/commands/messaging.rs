@@ -504,7 +504,7 @@ pub async fn send_lxmf_message(
     state: State<'_, Arc<AppState>>,
     args: SendLxmfArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.dest_hash, 128);
+    let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(&args.content)?;
     let title = sanitize_text(args.title.as_deref().unwrap_or(""), 256);
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
@@ -666,7 +666,7 @@ pub async fn send_reaction(
     state: State<'_, Arc<AppState>>,
     args: SendReactionArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.dest_hash, 128);
+    let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let message_id = sanitize_text(&args.message_id, 128);
     let emoji = sanitize_text(&args.emoji, 16);
     let action = sanitize_text(&args.action, 16);
@@ -769,7 +769,7 @@ pub async fn send_lxmf_reply(
     state: State<'_, Arc<AppState>>,
     args: SendReplyArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.dest_hash, 128);
+    let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(&args.content)?;
     let reply_to_id = sanitize_text(args.reply_to_id.as_deref().unwrap_or(""), 128);
     let reply_to_preview = sanitize_text(args.reply_to_preview.as_deref().unwrap_or(""), 200);
@@ -895,7 +895,7 @@ pub async fn send_lxmf_propagated(
 ) -> AppResult<Value> {
     use lxmf_core::constants::DeliveryMethod;
 
-    let dest_hash = sanitize_text(&args.dest_hash, 128);
+    let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(&args.content)?;
     let title = sanitize_text(args.title.as_deref().unwrap_or(""), 200);
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
@@ -1269,7 +1269,7 @@ pub async fn send_lxmf_with_attachment(
     state: State<'_, Arc<AppState>>,
     args: SendWithAttachmentArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.dest_hash, 128);
+    let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
@@ -1741,7 +1741,7 @@ pub async fn send_lxmf_with_staged_attachment(
     state: State<'_, Arc<AppState>>,
     args: SendStagedAttachmentArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.dest_hash, 128);
+    let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
@@ -1969,7 +1969,7 @@ pub async fn cancel_lxmf_message(
 /// Marks inbound read; returns latest 100 + aggregate unread count.
 #[tauri::command]
 pub async fn get_conversation(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&hash, 128);
+    let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid identity hash"));
     }
@@ -1997,7 +1997,7 @@ pub async fn get_conversation(state: State<'_, Arc<AppState>>, hash: String) -> 
 
 #[tauri::command]
 pub async fn mark_read(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&hash, 128);
+    let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid identity hash"));
     }
@@ -2026,7 +2026,7 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, hash: String) -> AppResu
 
 #[tauri::command]
 pub async fn hide_conversation(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&hash, 128);
+    let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid identity hash"));
     }
@@ -2064,7 +2064,7 @@ pub async fn delete_conversation(
     state: State<'_, Arc<AppState>>,
     hash: String,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&hash, 128);
+    let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid identity hash"));
     }

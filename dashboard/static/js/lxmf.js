@@ -2,6 +2,8 @@ var lxmfIdentity = null;
 var lxmfContacts = [];
 var lxmfConversations = [];
 var lxmfActiveContact = null;
+var _conversationEpoch = 0;
+var _conversationIdentityGeneration = 0;
 var lxmfConversation = [];
 var lxmfPendingFile = null;
 var contactIdentityStatus = {};
@@ -37,6 +39,65 @@ var lxmfLimits = {
     image_size_prompt_bytes: 1000000,
     default_propagation_limit_kb: 256,
     propagation_transfer_limit_kb: null,
+};
+
+function _canonicalConversationHash(value) {
+    return String(value == null ? '' : value).trim().toLowerCase();
+}
+
+function _notifyConversationOwnerChanged(hash, reason) {
+    if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.onConversationChanged === 'function') {
+        RS.voiceMemos.onConversationChanged(hash || null, reason || 'navigation');
+    }
+}
+
+function _conversationOwnerSnapshot() {
+    return {
+        hash: _canonicalConversationHash(lxmfActiveContact),
+        epoch: _conversationEpoch,
+        identityGeneration: _conversationIdentityGeneration,
+    };
+}
+
+function _conversationOwnerIsCurrent(owner) {
+    return !!owner &&
+        _canonicalConversationHash(owner.hash) === _canonicalConversationHash(lxmfActiveContact) &&
+        owner.epoch === _conversationEpoch &&
+        owner.identityGeneration === _conversationIdentityGeneration;
+}
+
+function _conversationOwnerIdentityIsCurrent(owner) {
+    return !!owner && owner.identityGeneration === _conversationIdentityGeneration;
+}
+
+function _activateConversation(hash, reason) {
+    var next = _canonicalConversationHash(hash);
+    var current = _canonicalConversationHash(lxmfActiveContact);
+    if (next === current) {
+        lxmfActiveContact = next || null;
+        return _conversationOwnerSnapshot();
+    }
+    _conversationEpoch += 1;
+    lxmfActiveContact = next || null;
+    _notifyConversationOwnerChanged(next, reason || 'navigation');
+    return _conversationOwnerSnapshot();
+}
+
+function _resetConversationSession(reason) {
+    _conversationIdentityGeneration += 1;
+    _conversationEpoch += 1;
+    lxmfActiveContact = null;
+    _notifyConversationOwnerChanged(null, reason || 'identity_replaced');
+}
+
+window.RS = window.RS || {};
+RS.conversationOwner = {
+    canonicalHash: _canonicalConversationHash,
+    snapshot: _conversationOwnerSnapshot,
+    isCurrent: _conversationOwnerIsCurrent,
+    isIdentityCurrent: _conversationOwnerIdentityIsCurrent,
+    activate: _activateConversation,
+    reset: _resetConversationSession,
 };
 
 function _detachMessageLongPressHandlers() {
@@ -1000,7 +1061,7 @@ function normalizeContactRecord(c) {
     if (!c || typeof c !== 'object') return null;
     var hash = c.hash || c.dest_hash || '';
     if (hash === null || hash === undefined) hash = '';
-    hash = String(hash).trim();
+    hash = _canonicalConversationHash(hash);
     if (!hash) return null;
     var services = Array.isArray(c.services) ? c.services.slice() : [];
     return {
@@ -1644,20 +1705,48 @@ function _cancelLxmfSend(msgId) {
     });
 }
 
-function _handleLxmfSendAccepted(resp, clientMsgId) {
+function _conversationMessagesFor(hash) {
+    hash = _canonicalConversationHash(hash);
+    if (hash && hash === _canonicalConversationHash(lxmfActiveContact)) {
+        return { messages: lxmfConversation, active: true };
+    }
+    return { messages: (cacheGet(hash) || []).slice(), active: false };
+}
+
+function _commitConversationMessages(hash, target) {
+    hash = _canonicalConversationHash(hash);
+    if (target.active && hash === _canonicalConversationHash(lxmfActiveContact)) {
+        lxmfConversation = target.messages;
+        _cacheActiveConversation();
+        return;
+    }
+    if (hash) cacheSet(hash, target.messages);
+}
+
+function _appendConversationMessage(hash, message) {
+    var target = _conversationMessagesFor(hash);
+    target.messages.push(message);
+    _commitConversationMessages(hash, target);
+    return target.active;
+}
+
+function _handleLxmfSendAccepted(resp, clientMsgId, targetHash) {
+    var owner = arguments.length > 3 ? arguments[3] : null;
+    if (owner && !_conversationOwnerIdentityIsCurrent(owner)) return;
     var serverMsgId = resp && resp.msg_id;
     if (!clientMsgId) return;
     if (!serverMsgId) {
         if (resp && resp.cancelled) delete _pendingLxmfCancelByClientId[clientMsgId];
         return;
     }
-    for (var i = 0; i < lxmfConversation.length; i++) {
-        if (lxmfConversation[i].id === clientMsgId) {
-            lxmfConversation[i].id = serverMsgId;
+    var target = _conversationMessagesFor(targetHash || lxmfActiveContact);
+    for (var i = 0; i < target.messages.length; i++) {
+        if (target.messages[i].id === clientMsgId) {
+            target.messages[i].id = serverMsgId;
             break;
         }
     }
-    _cacheActiveConversation();
+    _commitConversationMessages(targetHash || lxmfActiveContact, target);
     if (resp && resp.cancelled) {
         delete _pendingLxmfCancelByClientId[clientMsgId];
     } else {
@@ -1666,6 +1755,7 @@ function _handleLxmfSendAccepted(resp, clientMsgId) {
 }
 
 function cacheGet(hash) {
+    hash = _canonicalConversationHash(hash);
     var msgs = _conversationCache[hash];
     if (msgs) {
         var idx = _cacheLru.indexOf(hash);
@@ -1674,6 +1764,8 @@ function cacheGet(hash) {
     return msgs;
 }
 function cacheSet(hash, messages) {
+    hash = _canonicalConversationHash(hash);
+    if (!hash) return;
     var size = 0;
     try { size = _utf8ByteLength(JSON.stringify(messages || [])); }
     catch (_) { size = _conversationCacheMaxBytes + 1; }
@@ -1693,6 +1785,7 @@ function cacheSet(hash, messages) {
     }
 }
 function cacheDel(hash) {
+    hash = _canonicalConversationHash(hash);
     _conversationCacheBytes = Math.max(0, _conversationCacheBytes - (_conversationCacheSizes[hash] || 0));
     delete _conversationCache[hash];
     delete _conversationCacheSizes[hash];
@@ -1705,6 +1798,7 @@ function _cacheActiveConversation() {
 }
 
 function _mergeConversationMessages(hash, serverMessages) {
+    hash = _canonicalConversationHash(hash);
     var merged = Array.isArray(serverMessages) ? serverMessages.slice() : [];
     var cached = cacheGet(hash) || [];
     if (!cached.length) return merged;
@@ -2051,26 +2145,27 @@ function _promoteGhostConversationRow(hash) {
 function _onChatDetailExit() {
     var exitingHash = lxmfActiveContact;
     _clearImageBlobUrlCache();
-    if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.onConversationChanged === 'function') {
-        RS.voiceMemos.onConversationChanged(null);
-    }
     var input = document.getElementById('lxmf-input');
     if (input && exitingHash) {
         if (input.value.trim()) { _lxmfDrafts[exitingHash] = input.value; }
         else { delete _lxmfDrafts[exitingHash]; }
     }
 
-    if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) return;
+    if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) {
+        _activateConversation(null, 'left_conversation');
+        return;
+    }
 
     if (_conversationHasVisibleMessages()) {
         _promoteGhostConversationRow(exitingHash);
         loadConversations();
+        _activateConversation(null, 'left_conversation');
         return;
     }
 
     _removeGhostRow();
     cacheDel(exitingHash);
-    lxmfActiveContact = null;
+    _activateConversation(null, 'left_conversation');
     lxmfConversation = [];
     if (input) {
         input.value = '';
@@ -2082,9 +2177,8 @@ function _onChatDetailExit() {
 
 // Cache-first render to avoid an empty-spinner flash; reconciles via fetch.
 function _loadConversation(hash) {
-    if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.onConversationChanged === 'function') {
-        RS.voiceMemos.onConversationChanged(hash);
-    }
+    hash = _canonicalConversationHash(hash);
+    var loadOwner = _conversationOwnerSnapshot();
     // Reactions are keyed per message; drop the previous conversation's
     // entries so the map doesn't accumulate across switches.
     _msgReactions = {};
@@ -2097,6 +2191,7 @@ function _loadConversation(hash) {
     renderConversation({ forceScrollBottom: true });
     // get_conversation fetches messages AND marks-read; broadcasts unread_total.
     RS.invoke('get_conversation', { hash: hash }).then(function(result) {
+        if (!_conversationOwnerIdentityIsCurrent(loadOwner)) return;
         var messages = _mergeConversationMessages(hash, (result && result.messages) || []);
         cacheSet(hash, messages);
         if (hash === lxmfActiveContact) {
@@ -2153,7 +2248,7 @@ function _ensureGhostRow(hash) {
     row.addEventListener('click', function() {
         if (_convSwipedRecently) return;
         var clickHash = this.dataset.hash;
-        lxmfActiveContact = clickHash;
+        clickHash = _activateConversation(clickHash, 'navigation').hash;
         container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
         this.classList.add('active');
         _loadConversation(clickHash);
@@ -2205,7 +2300,7 @@ function _updateConversationPreview(hash, previewText, timestamp) {
         newRow.addEventListener('click', function() {
             if (_convSwipedRecently) return;
             var clickHash = this.dataset.hash;
-            lxmfActiveContact = clickHash;
+            clickHash = _activateConversation(clickHash, 'navigation').hash;
             container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
             this.classList.add('active');
             _loadConversation(clickHash);
@@ -2318,7 +2413,7 @@ function renderDashboardRecentMessages() {
         container.querySelectorAll('.conv-row').forEach(function(el) {
             el.addEventListener('click', function() {
                 var hash = this.dataset.hash;
-                lxmfActiveContact = hash;
+                hash = _activateConversation(hash, 'navigation').hash;
                 switchView('message');
                 _loadConversation(hash);
                 loadConversations();
@@ -2411,6 +2506,11 @@ function _renderConversationsFromCache(convos) {
     if (!container) return;
 
     convos = _mergeOptimisticConversation(convos);
+    convos = convos.map(function(conversation) {
+        if (!conversation || typeof conversation !== 'object') return conversation;
+        conversation.hash = _canonicalConversationHash(conversation.hash);
+        return conversation;
+    });
 
     if (!convos || convos.length === 0) {
         if (_ghostConversationHash && _ghostConversationHash === lxmfActiveContact) {
@@ -2485,7 +2585,7 @@ function _renderConversationsFromCache(convos) {
                     if (input.value.trim()) { _lxmfDrafts[lxmfActiveContact] = input.value; }
                     else { delete _lxmfDrafts[lxmfActiveContact]; }
                 }
-                lxmfActiveContact = hash;
+                hash = _activateConversation(hash, 'navigation').hash;
                 if (input) { input.value = _lxmfDrafts[hash] || ''; input.style.height = ''; }
                 container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
                 this.classList.add('active');
@@ -2632,8 +2732,7 @@ function renderContactList() {
 
     container.querySelectorAll('.lxmf-contact').forEach(function(el) {
         function activateContact() {
-            var hash = el.dataset.hash;
-            lxmfActiveContact = hash;
+            var hash = _activateConversation(el.dataset.hash, 'navigation').hash;
             renderContactList();
             _loadConversation(hash);
         }
@@ -2656,7 +2755,7 @@ function renderContactList() {
                 if (!ok) return;
                 RS.invokeOrToast('remove_contact', { hash: hash }, 'Could not remove contact');
                 if (lxmfActiveContact === hash) {
-                    lxmfActiveContact = null;
+                    _activateConversation(null, 'contact_removed');
                     lxmfConversation = [];
                     renderConversation();
                 }
@@ -3495,11 +3594,13 @@ function _restoreLxmfComposerKeyboard(shouldRestore) {
     }, 0);
 }
 
-function _finishLxmfComposerSend(input, shouldRestoreFocus) {
+function _finishLxmfComposerSend(input, shouldRestoreFocus, targetHash) {
+    targetHash = _canonicalConversationHash(targetHash || lxmfActiveContact);
+    if (targetHash !== _canonicalConversationHash(lxmfActiveContact)) return;
     input.value = '';
     input.style.height = '';
     input.scrollTop = 0;
-    delete _lxmfDrafts[lxmfActiveContact];
+    delete _lxmfDrafts[targetHash];
     if (shouldRestoreFocus) {
         _focusLxmfComposerInput(input);
     } else if (document.activeElement === input) {
@@ -3510,23 +3611,43 @@ function _finishLxmfComposerSend(input, shouldRestoreFocus) {
     if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
 }
 
-function _markOptimisticMessageFailed(clientMsgId, error) {
-    for (var i = 0; i < lxmfConversation.length; i++) {
-        if (lxmfConversation[i] && lxmfConversation[i].id === clientMsgId) {
-            lxmfConversation[i].state = 'failed';
-            lxmfConversation[i].failure_reason = (error && (error.code || error.message)) || 'attachment_failed';
+function _markOptimisticMessageFailed(clientMsgId, error, targetHash) {
+    targetHash = _canonicalConversationHash(targetHash || lxmfActiveContact);
+    var target = _conversationMessagesFor(targetHash);
+    for (var i = 0; i < target.messages.length; i++) {
+        if (target.messages[i] && target.messages[i].id === clientMsgId) {
+            target.messages[i].state = 'failed';
+            target.messages[i].failure_reason = (error && (error.code || error.message)) || 'attachment_failed';
             break;
         }
     }
-    _cacheActiveConversation();
-    renderConversation();
+    _commitConversationMessages(targetHash, target);
+    if (target.active) renderConversation();
     if (typeof showToast === 'function') {
         showToast((error && error.message) || 'Attachment could not be sent', 'toast-red', 4500);
     }
 }
 
+function _staleConversationOperationError(message) {
+    var error = new Error(message || 'This operation no longer belongs to the active conversation.');
+    error.code = 'stale_conversation_owner';
+    error.stale_owner = true;
+    return error;
+}
+
+function _cancelStagedAttachmentToken(stageToken) {
+    if (!stageToken) return Promise.resolve(false);
+    return RS.invoke('cancel_attachment_stage', { token: stageToken }).then(function() {
+        return true;
+    }).catch(function() {
+        return false;
+    });
+}
+
 function sendLxmfMessage(deliveryMethod) {
     if (!lxmfActiveContact) return;
+    var sendOwner = _conversationOwnerSnapshot();
+    var targetHash = sendOwner.hash;
     var input = document.getElementById('lxmf-input');
     if (!input) return;
     var shouldRestoreComposerFocus = _consumeLxmfSendFocusState(input);
@@ -3540,7 +3661,7 @@ function sendLxmfMessage(deliveryMethod) {
 
     if (lxmfPendingFile) {
         var pendingAttachment = lxmfPendingFile;
-        if (pendingAttachment.destination !== lxmfActiveContact) {
+        if (_canonicalConversationHash(pendingAttachment.destination) !== targetHash) {
             clearPendingFile();
             showToast('Attach the file again for this conversation.', 'toast-blue', 3000);
             return;
@@ -3554,10 +3675,15 @@ function sendLxmfMessage(deliveryMethod) {
         var optimisticImageUrl = isImage ? pendingAttachment.preview_url : null;
         pendingAttachment.stage_promise.then(function(stageToken) {
             if (!stageToken) throw pendingAttachment.stage_error || new Error('Attachment staging failed');
+            if (!_conversationOwnerIsCurrent(sendOwner)) {
+                return _cancelStagedAttachmentToken(stageToken).then(function() {
+                    throw _staleConversationOperationError('Attachment was not sent after changing conversations.');
+                });
+            }
             pendingAttachment.staging_token = null;
             return RS.invoke('send_lxmf_with_staged_attachment', {
                 args: {
-                    dest_hash: lxmfActiveContact,
+                    dest_hash: targetHash,
                     content: text,
                     delivery_method: chosenDelivery,
                     client_msg_id: attachMsgId,
@@ -3565,9 +3691,11 @@ function sendLxmfMessage(deliveryMethod) {
                 }
             });
         }).then(function(resp) {
-            _handleLxmfSendAccepted(resp, attachMsgId);
+            _handleLxmfSendAccepted(resp, attachMsgId, targetHash, sendOwner);
         }).catch(function(error) {
-            _markOptimisticMessageFailed(attachMsgId, error);
+            if (_conversationOwnerIdentityIsCurrent(sendOwner)) {
+                _markOptimisticMessageFailed(attachMsgId, error, targetHash);
+            }
         }).finally(function() {
             if (optimisticImageUrl) {
                 setTimeout(function() {
@@ -3576,7 +3704,7 @@ function sendLxmfMessage(deliveryMethod) {
             }
         });
 
-        lxmfConversation.push({
+        var attachmentWasActive = _appendConversationMessage(targetHash, {
             id: attachMsgId,
             direction: 'outbound',
             content: text,
@@ -3591,17 +3719,16 @@ function sendLxmfMessage(deliveryMethod) {
                 object_url: pendingAttachment.preview_url,
             } : null,
         });
-        _cacheActiveConversation();
 
         // Capture before clearPendingFile() wipes pending state.
         var attachPreview = text || (isImage ? 'Photo' : pendingAttachment.name);
         pendingAttachment.preview_url = null;
         pendingAttachment.detached_for_send = true;
         clearPendingFile();
-        renderConversation({ forceScrollBottom: true });
-        _updateConversationPreview(lxmfActiveContact, attachPreview, Date.now() / 1000);
+        if (attachmentWasActive) renderConversation({ forceScrollBottom: true });
+        _updateConversationPreview(targetHash, attachPreview, Date.now() / 1000);
         loadConversations();
-        _finishLxmfComposerSend(input, shouldRestoreComposerFocus);
+        _finishLxmfComposerSend(input, shouldRestoreComposerFocus, targetHash);
         return;
     }
 
@@ -3612,7 +3739,7 @@ function sendLxmfMessage(deliveryMethod) {
     if (_replyTarget) {
         RS.invoke('send_lxmf_reply', {
             args: {
-                dest_hash: lxmfActiveContact,
+                dest_hash: targetHash,
                 content: text,
                 delivery_method: chosenDelivery,
                 reply_to_id: _replyTarget.id,
@@ -3620,9 +3747,9 @@ function sendLxmfMessage(deliveryMethod) {
                 client_msg_id: msgId,
             }
         }).then(function(resp) {
-            _handleLxmfSendAccepted(resp, msgId);
+            _handleLxmfSendAccepted(resp, msgId, targetHash, sendOwner);
         }).catch(function() {});
-        lxmfConversation.push({
+        var replyWasActive = _appendConversationMessage(targetHash, {
             id: msgId,
             direction: 'outbound',
             content: text,
@@ -3632,27 +3759,26 @@ function sendLxmfMessage(deliveryMethod) {
             reply_to_id: _replyTarget.id,
             reply_to_preview: _replyTarget.content,
         });
-        _cacheActiveConversation();
         clearReplyTarget();
-        renderConversation({ forceScrollBottom: true });
-        _updateConversationPreview(lxmfActiveContact, text, Date.now() / 1000);
+        if (replyWasActive) renderConversation({ forceScrollBottom: true });
+        _updateConversationPreview(targetHash, text, Date.now() / 1000);
         loadConversations();
-        _finishLxmfComposerSend(input, shouldRestoreComposerFocus);
+        _finishLxmfComposerSend(input, shouldRestoreComposerFocus, targetHash);
         return;
     }
 
     RS.invoke('send_lxmf_message', {
         args: {
-            dest_hash: lxmfActiveContact,
+            dest_hash: targetHash,
             content: text,
             delivery_method: chosenDelivery,
             client_msg_id: msgId,
         }
     }).then(function(resp) {
-        _handleLxmfSendAccepted(resp, msgId);
+        _handleLxmfSendAccepted(resp, msgId, targetHash, sendOwner);
     }).catch(function() {});
 
-    lxmfConversation.push({
+    var messageWasActive = _appendConversationMessage(targetHash, {
         id: msgId,
         direction: 'outbound',
         content: text,
@@ -3660,27 +3786,44 @@ function sendLxmfMessage(deliveryMethod) {
         state: 'sending',
         delivery_method: _optimisticDeliveryMethod(chosenDelivery),
     });
-    _cacheActiveConversation();
-    renderConversation({ forceScrollBottom: true });
-    _updateConversationPreview(lxmfActiveContact, text, Date.now() / 1000);
+    if (messageWasActive) renderConversation({ forceScrollBottom: true });
+    _updateConversationPreview(targetHash, text, Date.now() / 1000);
     loadConversations();
-    _finishLxmfComposerSend(input, shouldRestoreComposerFocus);
+    _finishLxmfComposerSend(input, shouldRestoreComposerFocus, targetHash);
 }
 
-function sendLxmfVoiceMemo(voiceDraft, targetHash) {
-    if (!lxmfActiveContact || targetHash !== lxmfActiveContact || !voiceDraft || !voiceDraft.data_base64) return false;
+function sendLxmfVoiceMemo(voiceDraft, targetHash, options) {
+    options = options || {};
+    targetHash = _canonicalConversationHash(targetHash);
+    var sendOwner = options.owner || _conversationOwnerSnapshot();
+    if (!targetHash || targetHash !== _canonicalConversationHash(sendOwner.hash) ||
+        !_conversationOwnerIsCurrent(sendOwner) || !voiceDraft || !voiceDraft.data_base64) {
+        return Promise.reject(new Error('Voice message no longer belongs to this conversation.'));
+    }
     var input = document.getElementById('lxmf-input');
-    if (!input) return false;
+    if (!input) return Promise.reject(new Error('Message composer is unavailable.'));
     var msgId = generateMsgId();
     var filename = voiceDraft.filename || 'Voice message.lxvm';
     var chosenDelivery = _deliveryPrefOrAuto('auto');
-    var raw = atob(voiceDraft.data_base64);
+    var raw;
+    try {
+        raw = atob(voiceDraft.data_base64);
+    } catch (_) {
+        return Promise.reject(new Error('Voice message data is invalid.'));
+    }
     var voiceBytes = new Uint8Array(raw.length);
     for (var byteIndex = 0; byteIndex < raw.length; byteIndex++) {
         voiceBytes[byteIndex] = raw.charCodeAt(byteIndex);
     }
     var voiceBlob = new Blob([voiceBytes], { type: 'audio/x-lxst-voice-memo' });
-    _stageAttachmentBlob(voiceBlob, filename, 'audio/x-lxst-voice-memo', false).then(function(stageToken) {
+    return _stageAttachmentBlob(voiceBlob, filename, 'audio/x-lxst-voice-memo', false, targetHash).then(function(stageToken) {
+        if (!_conversationOwnerIsCurrent(sendOwner) ||
+            (typeof options.isCurrent === 'function' && !options.isCurrent())) {
+            return _cancelStagedAttachmentToken(stageToken).then(function() {
+                throw _staleConversationOperationError('Voice message was not sent after changing conversations.');
+            });
+        }
+        if (typeof options.onAdmissionStart === 'function') options.onAdmissionStart();
         return RS.invoke('send_lxmf_with_staged_attachment', {
             args: {
                 dest_hash: targetHash,
@@ -3691,35 +3834,32 @@ function sendLxmfVoiceMemo(voiceDraft, targetHash) {
             }
         });
     }).then(function(resp) {
-        _handleLxmfSendAccepted(resp, msgId);
-    }).catch(function(error) {
-        _markOptimisticMessageFailed(msgId, error);
+        if (!_conversationOwnerIdentityIsCurrent(sendOwner)) return resp;
+        var acceptedId = (resp && resp.msg_id) || msgId;
+        if (window.RS && RS.voiceMemos) RS.voiceMemos.registerDraft(acceptedId, voiceDraft);
+        var isActive = _appendConversationMessage(targetHash, {
+            id: acceptedId,
+            direction: 'outbound',
+            content: '',
+            timestamp: Date.now() / 1000,
+            state: resp && resp.cancelled ? 'cancelled' : 'sending',
+            delivery_method: _optimisticDeliveryMethod(chosenDelivery),
+            attachments: [{
+                filename: filename,
+                size: voiceDraft.size || 0,
+                voice_memo_key: acceptedId,
+                voice_memo: {
+                    duration_ms: voiceDraft.duration_ms,
+                    waveform: voiceDraft.waveform || [],
+                },
+            }],
+        });
+        if (isActive) renderConversation({ forceScrollBottom: true });
+        _updateConversationPreview(targetHash, 'Voice message', Date.now() / 1000);
+        loadConversations();
+        _finishLxmfComposerSend(input, false, targetHash);
+        return resp;
     });
-
-    if (window.RS && RS.voiceMemos) RS.voiceMemos.registerDraft(msgId, voiceDraft);
-    lxmfConversation.push({
-        id: msgId,
-        direction: 'outbound',
-        content: '',
-        timestamp: Date.now() / 1000,
-        state: 'sending',
-        delivery_method: _optimisticDeliveryMethod(chosenDelivery),
-        attachments: [{
-            filename: filename,
-            size: voiceDraft.size || 0,
-            voice_memo_key: msgId,
-            voice_memo: {
-                duration_ms: voiceDraft.duration_ms,
-                waveform: voiceDraft.waveform || [],
-            },
-        }],
-    });
-    _cacheActiveConversation();
-    renderConversation({ forceScrollBottom: true });
-    _updateConversationPreview(targetHash, 'Voice message', Date.now() / 1000);
-    loadConversations();
-    _finishLxmfComposerSend(input, false);
-    return true;
 }
 
 window.sendLxmfVoiceMemo = sendLxmfVoiceMemo;
@@ -3785,14 +3925,15 @@ function _readBlobBase64(blob) {
     });
 }
 
-function _stageAttachmentBlob(blob, name, mime, isImage) {
+function _stageAttachmentBlob(blob, name, mime, isImage, destinationHash) {
     var stageToken = null;
+    destinationHash = _canonicalConversationHash(destinationHash || lxmfActiveContact);
     return RS.invoke('begin_attachment_stage', {
         args: {
             file_name: name,
             mime: mime || 'application/octet-stream',
             declared_size: blob.size,
-            dest_hash: lxmfActiveContact || null,
+            dest_hash: destinationHash || null,
             is_image: !!isImage,
         }
     }).then(function(start) {
@@ -4694,27 +4835,33 @@ RS.listen('contact_unblocked', function(data) {
 });
 
 RS.listen('conversation_update', function(data) {
-    var messages = _mergeConversationMessages(data.hash, data.messages || []);
-    cacheSet(data.hash, messages);
-    if (data.hash === lxmfActiveContact) {
+    if (!data) return;
+    var hash = _canonicalConversationHash(data.hash);
+    var messages = _mergeConversationMessages(hash, data.messages || []);
+    cacheSet(hash, messages);
+    if (hash === _canonicalConversationHash(lxmfActiveContact)) {
         lxmfConversation = messages;
         renderConversation({ stickToBottom: true });
     }
 });
 
 RS.listen('lxmf_message', function(msg) {
-    if (msg.source === lxmfActiveContact || msg.destination === lxmfActiveContact) {
+    if (!msg) return;
+    msg.source = _canonicalConversationHash(msg.source);
+    msg.destination = _canonicalConversationHash(msg.destination);
+    var activeHash = _canonicalConversationHash(lxmfActiveContact);
+    if (msg.source === activeHash || msg.destination === activeHash) {
         // Dedupe reconnect replays.
         var isDupe = msg.id && lxmfConversation.some(function(m) { return m.id === msg.id; });
         if (isDupe) return;
         lxmfConversation.push(msg);
-        cacheSet(lxmfActiveContact, lxmfConversation.slice());
+        cacheSet(activeHash, lxmfConversation.slice());
         renderConversation({ stickToBottom: true });
-        if (msg.source === lxmfActiveContact) {
+        if (msg.source === activeHash) {
             RS.invoke('mark_read', { hash: msg.source }).catch(function() {});
         }
     }
-    if (msg.source !== lxmfActiveContact) {
+    if (msg.source !== activeHash) {
         var fromLabel = _messageSourceName(msg);
         var hasAttachment = (msg.attachments && msg.attachments.length > 0) || msg.image;
         var toastMsg = hasAttachment
@@ -4872,11 +5019,10 @@ document.addEventListener('visibilitychange', function() {
 });
 
 RS.listen('contact_added', function(data) {
-    showToast('Contact added: ' + data.display_name, 'toast-green', 3000);
-    lxmfActiveContact = data.hash;
+    var addedName = data && data.display_name;
+    showToast(addedName ? 'Contact added: ' + addedName : 'Contact added', 'toast-green', 3000);
     renderContactList();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
-    RS.invoke('get_conversation', { hash: data.hash }).catch(function() {});
     if (typeof refreshPeersList === 'function') refreshPeersList();
 });
 
@@ -5058,6 +5204,7 @@ function showContactAbout(hash) {
 }
 
 function openConversationWith(hash) {
+    hash = _canonicalConversationHash(hash);
     if (_ghostConversationHash && _ghostConversationHash !== hash) {
         _removeGhostRow();
     }
@@ -5067,7 +5214,7 @@ function openConversationWith(hash) {
         else { delete _lxmfDrafts[lxmfActiveContact]; }
     }
     if (typeof switchView === 'function') switchView('message');
-    lxmfActiveContact = hash;
+    hash = _activateConversation(hash, 'navigation').hash;
     if (input) { input.value = _lxmfDrafts[hash] || ''; input.style.height = ''; }
     _loadConversation(hash);
     _ensureGhostRow(hash);
@@ -5820,25 +5967,27 @@ function showConversationDeleteDialog(hash, name) {
 
 RS.listen('conversation_hidden', function(data) {
     if (!data.ok) return;
-    cacheDel(data.hash);
-    if (lxmfActiveContact === data.hash) {
-        lxmfActiveContact = null;
+    var hash = _canonicalConversationHash(data.hash);
+    cacheDel(hash);
+    if (_canonicalConversationHash(lxmfActiveContact) === hash) {
+        _activateConversation(null, 'conversation_hidden');
         lxmfConversation = [];
         renderConversation();
     }
-    if (_ghostConversationHash === data.hash) _removeGhostRow();
+    if (_canonicalConversationHash(_ghostConversationHash) === hash) _removeGhostRow();
     loadConversations();
 });
 
 RS.listen('conversation_deleted', function(data) {
     if (!data.ok) return;
-    cacheDel(data.hash);
-    if (lxmfActiveContact === data.hash) {
-        lxmfActiveContact = null;
+    var hash = _canonicalConversationHash(data.hash);
+    cacheDel(hash);
+    if (_canonicalConversationHash(lxmfActiveContact) === hash) {
+        _activateConversation(null, 'conversation_deleted');
         lxmfConversation = [];
         renderConversation();
     }
-    if (_ghostConversationHash === data.hash) _removeGhostRow();
+    if (_canonicalConversationHash(_ghostConversationHash) === hash) _removeGhostRow();
     loadConversations();
     showToast('Conversation deleted', 'toast-green', 3000);
 });

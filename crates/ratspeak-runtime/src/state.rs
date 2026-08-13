@@ -519,6 +519,22 @@ pub struct AppState {
     pub voice_memo_recording: Mutex<Option<crate::voice_memo::VoiceMemoRecordingHandle>>,
     #[cfg(feature = "lxst-voice")]
     pub voice_memo_control_lock: tokio::sync::Mutex<()>,
+    /// Process-monotonic source for opaque voice-memo recording session IDs.
+    /// It deliberately survives identity-scoped runtime replacement so a stale
+    /// WebView callback cannot target a later recording through ABA reuse.
+    #[cfg(feature = "lxst-voice")]
+    pub(crate) voice_memo_recording_generation: AtomicU64,
+    /// Process-monotonic source and exact current owner for WebView playback.
+    /// Zero means that no playback lease is active.
+    #[cfg(feature = "lxst-voice")]
+    pub(crate) voice_memo_playback_generation: AtomicU64,
+    #[cfg(feature = "lxst-voice")]
+    pub(crate) voice_memo_playback_lease: AtomicU64,
+    /// Decoding a maximum-length memo produces roughly 14 MiB of PCM. Keep one
+    /// native decoder active at a time so concurrent WebView requests cannot
+    /// multiply that allocation.
+    #[cfg(feature = "lxst-voice")]
+    pub voice_memo_decode_lock: tokio::sync::Mutex<()>,
     /// Reserves the shared microphone for an incoming, outgoing, or active
     /// LXST call. Voice-memo startup checks this on the native side so a stale
     /// or suspended WebView cannot open a second capture stream.
@@ -766,6 +782,14 @@ impl AppState {
             voice_memo_recording: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
             voice_memo_control_lock: tokio::sync::Mutex::new(()),
+            #[cfg(feature = "lxst-voice")]
+            voice_memo_recording_generation: AtomicU64::new(0),
+            #[cfg(feature = "lxst-voice")]
+            voice_memo_playback_generation: AtomicU64::new(0),
+            #[cfg(feature = "lxst-voice")]
+            voice_memo_playback_lease: AtomicU64::new(0),
+            #[cfg(feature = "lxst-voice")]
+            voice_memo_decode_lock: tokio::sync::Mutex::new(()),
             #[cfg(feature = "lxst-voice")]
             voice_call_audio_reserved: AtomicBool::new(false),
             #[cfg(feature = "lxst-voice")]

@@ -184,7 +184,7 @@ pub async fn add_contact(
     state: State<'_, Arc<AppState>>,
     args: AddContactArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.hash, 128);
+    let dest_hash = sanitize_text(&args.hash, 128).to_ascii_lowercase();
     let display_name = args.display_name.as_deref().map(|s| sanitize_text(s, 64));
 
     if !validate_hex(&dest_hash, 16, 64) {
@@ -223,7 +223,7 @@ pub async fn add_contact(
 
 #[tauri::command]
 pub async fn remove_contact(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&hash, 128);
+    let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid hash for removal."));
     }
@@ -265,7 +265,7 @@ pub async fn block_contact(
     state: State<'_, Arc<AppState>>,
     args: BlockContactArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.hash, 128);
+    let dest_hash = sanitize_text(&args.hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid hash for blocking."));
     }
@@ -387,7 +387,7 @@ pub async fn unblock_contact(
     state: State<'_, Arc<AppState>>,
     args: UnblockContactArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.hash, 128);
+    let dest_hash = sanitize_text(&args.hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid hash for unblocking."));
     }

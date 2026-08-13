@@ -80,10 +80,21 @@ assert(voice.includes("record.addEventListener('pointerdown'"),
     'touch-and-hold recording must start immediately on pointer-down');
 assert(voice.includes("setRecorderState('review')"),
     'recordings must be reviewed before transfer');
+assert(voice.includes("announce('Voice message queued to send')") &&
+    !voice.includes("announce('Voice message sent')"),
+    'backend admission must not be announced as network delivery');
 assert(voice.includes('stop.disabled = busy'),
     'the stable stop-action slot must remain present but inert during native transitions');
-assert(voice.includes('recordingTarget !== window.lxmfActiveContact'),
-    'a draft must never cross conversation boundaries');
+assert(voice.includes('conversationOwnerIsCurrent(recordingOwner)'),
+    'a draft must never cross canonical conversation ownership');
+assert(voice.includes('recordingStartRetirement === startPromise') &&
+    voice.includes('recordingStartRetirement = pendingStart'),
+    'an unknown native start must remain owned until its returned session is exactly cancelled');
+assert(voice.includes('if (!eventSessionId || !recordingSessionId || eventSessionId !== recordingSessionId) return;'),
+    'native recording events must require an installed exact session');
+assert(messaging.includes("RS.listen('contact_added'") &&
+    !messaging.slice(messaging.indexOf("RS.listen('contact_added'"), messaging.indexOf("RS.listen('contact_error'")).includes('lxmfActiveContact ='),
+    'contact-added events must remain observational and never navigate');
 assert(voice.includes("document.addEventListener('visibilitychange'"),
     'an unseen WebView must not keep the microphone active');
 assert(voice.includes("window.addEventListener('pagehide'"),
@@ -96,14 +107,22 @@ assert(voice.includes('handleAudioInterruption'),
     'native audio interruptions must stop the recorder visibly');
 assert(voice.includes('MAX_PLAYBACK_BYTES'),
     'decoded WAV object URLs must live in a bounded cache');
+assert(voice.includes('cacheGeneration !== mediaCacheGeneration') &&
+    voice.includes('var token = ++draftExpirySequence') &&
+    voice.includes('if (draftExpiryTokenByKey[key] !== token) return;'),
+    'decode/metadata use cache generations while draft expiry uses a non-reusable ABA token');
+assert(state.includes('RS.voiceMemos.releaseInactiveMedia(!!(payload && payload.critical))'),
+    'critical native pressure must reach the active voice media owner');
 assert(voice.includes("RS.audioPlayback.ensure({ installUnlock: true })"),
     'voice playback must reuse the shared audio unlock path');
 assert(voice.includes('RS.audioPlayback.context()') && voice.includes('ctx.decodeAudioData'),
     'iOS playback must use the shared Web Audio context after native capture releases it');
 assert(voice.includes("RS.invoke('voice_memo_playback_session_start')"),
     'iOS playback must acquire a native playback-only AVAudioSession');
-assert(voice.includes("RS.invoke('voice_memo_playback_session_stop')"),
+assert(voice.includes("RS.invoke('voice_memo_playback_session_stop', { args: { lease_id: leaseId } })"),
     'iOS playback must release its native audio session on pause, end, and handoff');
+assert(voice.includes('if (!iosPlaybackLeaseId) iosPlaybackLeaseId = leaseId;'),
+    'a failed native release must retain the exact lease for a later teardown retry');
 assert(voice.includes("typeof RS.audioPlayback.isReady === 'function' && RS.audioPlayback.isReady()"),
     'iOS playback must only enter Web Audio after the shared context is ready');
 assert(voice.includes("typeof isIOS === 'function' && isIOS()"),
@@ -113,6 +132,10 @@ assert(voice.indexOf('stopAnyPlayback().then', voice.indexOf('function cancelFor
     'starting a call must stop memo playback even when the recorder is idle');
 assert(!voice.includes('voice-memo-player-speed') && !voice.includes('playbackSpeed'),
     'voice messages must not expose distracting playback-speed controls');
+assert(voice.includes("waveform.setAttribute('aria-disabled', seekAvailable ? 'false' : 'true')"),
+    'waveform seeking must only become interactive with an exact live playback handle');
+assert(voice.includes('if (!playbackAttemptIsCurrent(coordinator, audio)) return false;'),
+    'play and recovery completions must be fenced to their captured coordinator and audio handle');
 assert(!html.includes('voice-memo-icon-resume') && !html.includes('voice-memo-icon-pause'),
     'recorder actions must render one stateful icon instead of stacked play/pause glyphs');
 assert(voice.includes('class="voice-memo-player-icon"') &&

@@ -15,18 +15,70 @@
     var playbackByKey = Object.create(null);
     var playbackOrder = [];
     var playbackBytes = 0;
+    var playbackInFlightByKey = Object.create(null);
+    var metadataOrder = [];
+    var draftExpiryTokenByKey = Object.create(null);
+    var draftExpirySequence = 0;
+    var mediaCacheGeneration = 0;
     var MAX_PLAYBACK_ITEMS = 6;
     var MAX_PLAYBACK_BYTES = 36 * 1024 * 1024;
+    var MAX_METADATA_ITEMS = 128;
     var activeAudio = null;
     var activeKey = '';
     var recordingTarget = '';
+    var recordingOwner = null;
+    var recordingGeneration = 0;
+    var recordingSessionId = '';
+    var recordingStartPromise = null;
+    var recordingStartRetirement = null;
+    var recordingDiscardPromise = null;
+    var recordingSendAdmissionStarted = false;
+    var playbackGeneration = 0;
+    var playbackCoordinator = null;
+    var previewPlaybackState = 'idle';
     var pointerStartedRecording = false;
     var mobileAudioSessionActive = false;
-    var iosPlaybackSessionActive = false;
+    var iosPlaybackLeaseId = '';
     var iosPlaybackSessionTransition = Promise.resolve();
     var START_FAILURE_MESSAGE = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
     var ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
     var ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
+
+    function canonicalConversationHash(value) {
+        if (window.RS && RS.conversationOwner && typeof RS.conversationOwner.canonicalHash === 'function') {
+            return RS.conversationOwner.canonicalHash(value);
+        }
+        return String(value == null ? '' : value).trim().toLowerCase();
+    }
+    function conversationSnapshot() {
+        if (window.RS && RS.conversationOwner && typeof RS.conversationOwner.snapshot === 'function') {
+            return RS.conversationOwner.snapshot();
+        }
+        return { hash: canonicalConversationHash(window.lxmfActiveContact), epoch: 0, identityGeneration: 0 };
+    }
+    function conversationOwnerIsCurrent(owner) {
+        if (window.RS && RS.conversationOwner && typeof RS.conversationOwner.isCurrent === 'function') {
+            return RS.conversationOwner.isCurrent(owner);
+        }
+        return !!owner && canonicalConversationHash(owner.hash) === canonicalConversationHash(window.lxmfActiveContact);
+    }
+    function conversationIdentityIsCurrent(owner) {
+        if (window.RS && RS.conversationOwner && typeof RS.conversationOwner.isIdentityCurrent === 'function') {
+            return RS.conversationOwner.isIdentityCurrent(owner);
+        }
+        return conversationOwnerIsCurrent(owner);
+    }
+    function recorderOperationIsCurrent(generation, owner) {
+        return generation === recordingGeneration && conversationOwnerIsCurrent(owner);
+    }
+    function recordingCommandArgs(extra) {
+        var args = Object.assign({}, extra || {});
+        if (recordingSessionId) args.session_id = recordingSessionId;
+        return { args: args };
+    }
+    function recordingSessionFrom(result) {
+        return String(result && (result.session_id || result.recording_session_id) || '');
+    }
 
     function el(id) { return document.getElementById(id); }
     function esc(value) {
@@ -49,6 +101,12 @@
     }
     function announce(text) {
         var node = el('voice-memo-announcer');
+        if (!node) return;
+        node.textContent = '';
+        setTimeout(function() { node.textContent = text; }, 20);
+    }
+    function alertVoice(text) {
+        var node = el('voice-memo-alert');
         if (!node) return;
         node.textContent = '';
         setTimeout(function() { node.textContent = text; }, 20);
@@ -119,27 +177,41 @@
         if (recorder) {
             recorder.dataset.state = next;
             recorder.hidden = next === 'idle';
-            recorder.setAttribute('aria-busy', next === 'starting' || next === 'stopping' ? 'true' : 'false');
+            recorder.setAttribute('aria-busy', next === 'requesting_permission' || next === 'starting' || next === 'stopping' || next === 'sending' ? 'true' : 'false');
         }
         if (compose) compose.style.display = next === 'idle' && window.lxmfActiveContact ? '' : 'none';
 
-        var reviewing = next === 'review';
+        var reviewing = next === 'review' || next === 'sending';
         var capturing = next === 'recording' || next === 'paused';
-        var busy = next === 'starting' || next === 'stopping';
-        var captureFlow = capturing || busy;
+        var busy = next === 'requesting_permission' || next === 'starting' || next === 'stopping' || next === 'sending';
         var liveDot = el('voice-memo-live-dot');
         var play = el('voice-memo-play-btn');
+        var discard = el('voice-memo-discard-btn');
         var pauseButton = el('voice-memo-pause-btn');
         var stop = el('voice-memo-stop-btn');
         var send = el('voice-memo-send-btn');
-        if (liveDot) liveDot.hidden = !captureFlow;
-        if (play) play.hidden = !reviewing;
-        if (pauseButton) pauseButton.hidden = !capturing;
+        var status = el('voice-memo-inline-status');
+        if (status) {
+            if (next === 'requesting_permission') status.textContent = 'Waiting for microphone…';
+            else if (next === 'starting') status.textContent = 'Starting recording…';
+            else if (next === 'error') status.textContent = 'Couldn\'t start recording';
+            else status.textContent = '';
+        }
+        if (liveDot) liveDot.hidden = !capturing;
+        if (play) {
+            play.hidden = !reviewing;
+            play.disabled = next === 'sending';
+        }
+        if (discard) discard.disabled = next === 'sending';
+        if (pauseButton) pauseButton.hidden = !capturing || (next === 'recording' && liveWaveform.length === 0);
         if (stop) {
-            stop.hidden = reviewing;
+            stop.hidden = reviewing || next === 'requesting_permission';
             stop.disabled = busy;
         }
-        if (send) send.hidden = !reviewing;
+        if (send) {
+            send.hidden = !reviewing;
+            send.disabled = next === 'sending';
+        }
         if (next === 'idle') {
             var timer = el('voice-memo-timer');
             if (timer) timer.textContent = '0:00';
@@ -199,9 +271,9 @@
     function startIosPlaybackSession() {
         if (!(typeof isIOS === 'function' && isIOS())) return Promise.resolve(true);
         return queueIosPlaybackSession(function() {
-            if (iosPlaybackSessionActive) return true;
-            return RS.invoke('voice_memo_playback_session_start').then(function() {
-                iosPlaybackSessionActive = true;
+            if (iosPlaybackLeaseId) return true;
+            return RS.invoke('voice_memo_playback_session_start').then(function(result) {
+                iosPlaybackLeaseId = String(result && (result.lease_id || result.session_id) || '');
                 return true;
             });
         });
@@ -209,9 +281,11 @@
     function stopIosPlaybackSession() {
         if (!(typeof isIOS === 'function' && isIOS())) return Promise.resolve(true);
         return queueIosPlaybackSession(function() {
-            if (!iosPlaybackSessionActive) return true;
-            iosPlaybackSessionActive = false;
-            return RS.invoke('voice_memo_playback_session_stop').catch(function(error) {
+            if (!iosPlaybackLeaseId) return true;
+            var leaseId = iosPlaybackLeaseId;
+            iosPlaybackLeaseId = '';
+            return RS.invoke('voice_memo_playback_session_stop', { args: { lease_id: leaseId } }).catch(function(error) {
+                if (!iosPlaybackLeaseId) iosPlaybackLeaseId = leaseId;
                 window.RS.diag('warn', '[voice memo] iOS playback session release failed:', error);
                 return false;
             });
@@ -225,14 +299,17 @@
         });
     }
     function stopAnyPlayback() {
+        playbackGeneration += 1;
+        if (playbackCoordinator && playbackCoordinator.watchdog) clearTimeout(playbackCoordinator.watchdog);
         if (activeAudio) {
             try { activeAudio.pause(); } catch (_) {}
         }
         activeAudio = null;
         var previous = activeKey;
         activeKey = '';
-        if (previous) updatePlayerProgress(previous, 0, false);
-        syncPreviewPlayButton(false);
+        playbackCoordinator = null;
+        if (previous) updatePlayerProgress(previous, 0, false, 'idle');
+        syncPreviewPlayButton(false, 'idle');
         return stopIosPlaybackSession();
     }
     function startMobileAudioSession() {
@@ -274,24 +351,45 @@
             showToast('Finish the current call before recording a voice message.', 'toast-orange', 4200);
             return Promise.resolve(false);
         }
-        recordingTarget = window.lxmfActiveContact;
+        var generation = ++recordingGeneration;
+        var owner = conversationSnapshot();
+        recordingOwner = owner;
+        recordingTarget = canonicalConversationHash(owner.hash);
+        recordingSessionId = '';
+        setRecorderState('requesting_permission');
         return stopAnyPlayback().then(function() {
+            if (!recorderOperationIsCurrent(generation, owner)) return false;
             return dismissComposerForRecording();
         }).then(function() {
+            if (!recorderOperationIsCurrent(generation, owner)) return false;
             return RS.mediaPermissions.ensure({ audio: true });
         }).then(function(granted) {
+            if (!recorderOperationIsCurrent(generation, owner)) return false;
             if (!granted) {
                 recordingTarget = '';
+                recordingOwner = null;
                 showToast('Microphone access is needed to record a voice message.', 'toast-red', 4200);
+                setRecorderState('idle');
                 return false;
             }
             if (!startMobileAudioSession()) {
                 recordingTarget = '';
+                recordingOwner = null;
                 showToast('Audio is in use. Finish the current call, then try recording again.', 'toast-orange', 4200);
+                setRecorderState('idle');
                 return false;
             }
             setRecorderState('starting');
-            return RS.invoke('voice_memo_start').then(function() {
+            var startPromise = RS.invoke('voice_memo_start');
+            recordingStartPromise = startPromise;
+            return startPromise.then(function(result) {
+                var sessionId = recordingSessionFrom(result);
+                if (!sessionId) throw new Error('Recording session was not established');
+                if (!recorderOperationIsCurrent(generation, owner)) {
+                    if (recordingStartRetirement === startPromise) return false;
+                    return RS.invoke('voice_memo_cancel', { args: { session_id: sessionId } }).catch(function() {}).then(function() { return false; });
+                }
+                recordingSessionId = sessionId;
                 draft = null;
                 paused = false;
                 liveWaveform = [];
@@ -302,32 +400,46 @@
                 voiceHaptic('light');
                 return true;
             }).catch(function() {
+                if (generation !== recordingGeneration) return false;
                 stopMobileAudioSession();
                 recordingTarget = '';
+                recordingOwner = null;
+                recordingSessionId = '';
                 setRecorderState('idle');
                 showToast(START_FAILURE_MESSAGE, 'toast-red', 4500);
                 return false;
+            }).finally(function() {
+                if (recordingStartPromise === startPromise) recordingStartPromise = null;
             });
         });
     }
     function togglePause() {
         if (recorderState !== 'recording' && recorderState !== 'paused') return;
         var nextPaused = !paused;
-        RS.invoke('voice_memo_pause', { args: { paused: nextPaused } }).then(function() {
+        var generation = recordingGeneration;
+        var sessionId = recordingSessionId;
+        RS.invoke('voice_memo_pause', recordingCommandArgs({ paused: nextPaused })).then(function() {
+            if (generation !== recordingGeneration || sessionId !== recordingSessionId) return;
             paused = nextPaused;
             syncPauseButton();
             setRecorderState(paused ? 'paused' : 'recording');
             announce(paused ? 'Recording paused' : 'Recording resumed');
             voiceHaptic('light');
         }).catch(function(error) {
-            showToast((error && error.message) || 'Could not update the recording.', 'toast-red', 3500);
+            if (generation === recordingGeneration && sessionId === recordingSessionId) {
+                showToast((error && error.message) || 'Could not update the recording.', 'toast-red', 3500);
+            }
         });
     }
     function stopRecording() {
         if (recorderState !== 'recording' && recorderState !== 'paused') return;
         setRecorderState('stopping');
-        RS.invoke('voice_memo_stop').then(function(result) {
+        var generation = recordingGeneration;
+        var sessionId = recordingSessionId;
+        RS.invoke('voice_memo_stop', recordingCommandArgs()).then(function(result) {
+            if (generation !== recordingGeneration || sessionId !== recordingSessionId) return;
             stopMobileAudioSession();
+            recordingSessionId = '';
             draft = result;
             paused = false;
             var timer = el('voice-memo-timer');
@@ -337,41 +449,104 @@
             announce('Voice message ready to review');
             voiceHaptic('medium');
         }).catch(function(error) {
+            if (generation !== recordingGeneration) return;
             stopMobileAudioSession();
+            recordingSessionId = '';
+            recordingTarget = '';
+            recordingOwner = null;
             setRecorderState('idle');
             showToast((error && error.message) || 'Could not finish the voice message.', 'toast-red', 4200);
         });
     }
     function discardRecording() {
+        if (recordingDiscardPromise) return recordingDiscardPromise;
+        var generation = ++recordingGeneration;
+        var sessionId = recordingSessionId;
+        var pendingStart = recordingStartPromise;
+        recordingSessionId = '';
+        recordingSendAdmissionStarted = false;
         var playbackStopped = stopAnyPlayback();
         var wasCapturing = recorderState === 'recording' || recorderState === 'paused' || recorderState === 'starting' || recorderState === 'stopping';
-        var request = wasCapturing ? RS.invoke('voice_memo_cancel').catch(function() {}) : Promise.resolve();
-        return Promise.all([playbackStopped, request]).then(function() {
+        var request = Promise.resolve();
+        if (wasCapturing && sessionId) {
+            request = RS.invoke('voice_memo_cancel', { args: { session_id: sessionId } }).catch(function() {});
+        } else if (wasCapturing && pendingStart) {
+            recordingStartRetirement = pendingStart;
+            setRecorderState('stopping');
+            request = pendingStart.then(function(result) {
+                var retiringSessionId = recordingSessionFrom(result);
+                if (!retiringSessionId) return false;
+                return RS.invoke('voice_memo_cancel', { args: { session_id: retiringSessionId } }).catch(function() {});
+            }).catch(function() {}).finally(function() {
+                if (recordingStartRetirement === pendingStart) recordingStartRetirement = null;
+            });
+        }
+        var discardPromise = Promise.all([playbackStopped, request]).then(function() {
+            if (generation !== recordingGeneration) return;
             stopMobileAudioSession();
             draft = null;
             paused = false;
             recordingTarget = '';
+            recordingOwner = null;
             setRecorderState('idle');
             announce('Voice message discarded');
             voiceHaptic('light');
+        }).finally(function() {
+            if (recordingDiscardPromise === discardPromise) recordingDiscardPromise = null;
         });
+        recordingDiscardPromise = discardPromise;
+        return discardPromise;
     }
     function sendDraft() {
         if (recorderState !== 'review' || !draft || typeof window.sendLxmfVoiceMemo !== 'function') return;
-        if (!recordingTarget || recordingTarget !== window.lxmfActiveContact) {
-            showToast('This voice message belongs to a different conversation and was discarded.', 'toast-orange', 4200);
+        if (!recordingTarget || !recordingOwner || !conversationOwnerIsCurrent(recordingOwner)) {
+            showToast('Voice message discarded after changing conversations.', 'toast-orange', 4200);
             discardRecording();
             return;
         }
         stopAnyPlayback();
         var toSend = draft;
-        if (window.sendLxmfVoiceMemo(toSend, recordingTarget)) {
+        var generation = recordingGeneration;
+        var sendOwner = recordingOwner;
+        recordingSendAdmissionStarted = false;
+        setRecorderState('sending');
+        Promise.resolve(window.sendLxmfVoiceMemo(toSend, recordingTarget, {
+            owner: sendOwner,
+            isCurrent: function() {
+                return generation === recordingGeneration && conversationOwnerIsCurrent(sendOwner);
+            },
+            onAdmissionStart: function() {
+                if (generation === recordingGeneration && conversationIdentityIsCurrent(sendOwner)) {
+                    recordingSendAdmissionStarted = true;
+                }
+            },
+        })).then(function() {
+            if (generation !== recordingGeneration) return;
             draft = null;
             recordingTarget = '';
+            recordingOwner = null;
+            recordingSendAdmissionStarted = false;
             setRecorderState('idle');
             announce('Voice message queued to send');
             voiceHaptic('medium');
-        }
+        }).catch(function() {
+            if (generation !== recordingGeneration) return;
+            recordingSendAdmissionStarted = false;
+            setRecorderState('review');
+            showToast('Voice message wasn\'t sent. Try again.', 'toast-red', 4200);
+        });
+    }
+    function retireAdmittedSendUi() {
+        if (recorderState !== 'sending' || !recordingSendAdmissionStarted) return false;
+        recordingGeneration += 1;
+        draft = null;
+        paused = false;
+        recordingTarget = '';
+        recordingOwner = null;
+        recordingSessionId = '';
+        recordingSendAdmissionStarted = false;
+        setRecorderState('idle');
+        return true;
     }
     function base64Bytes(base64) {
         var raw = atob(base64 || '');
@@ -415,12 +590,37 @@
             if (key === activeKey) stopAnyPlayback();
         }
     }
+    function clearInactiveMediaCaches(clearDrafts, clearActive) {
+        mediaCacheGeneration += 1;
+        Object.keys(playbackByKey).forEach(function(key) {
+            if (!clearActive && key === activeKey) return;
+            var item = playbackByKey[key];
+            if (item && item.url) {
+                try { URL.revokeObjectURL(item.url); } catch (_) {}
+            }
+            delete playbackByKey[key];
+        });
+        playbackOrder = !clearActive && activeKey && playbackByKey[activeKey] ? [activeKey] : [];
+        playbackBytes = !clearActive && activeKey && playbackByKey[activeKey] ? (playbackByKey[activeKey].bytes || 0) : 0;
+        metadataByStoredName = Object.create(null);
+        metadataOrder = [];
+        playbackInFlightByKey = Object.create(null);
+        if (clearDrafts) {
+            draftByKey = Object.create(null);
+            draftExpiryTokenByKey = Object.create(null);
+        }
+    }
     function ensurePlayback(key, source) {
         if (playbackByKey[key]) {
             touchPlaybackKey(key);
             return Promise.resolve(playbackByKey[key]);
         }
-        return decodeDraftOrStored(source).then(function(result) {
+        if (playbackInFlightByKey[key]) return playbackInFlightByKey[key];
+        var cacheGeneration = mediaCacheGeneration;
+        var decode = decodeDraftOrStored(source).then(function(result) {
+            if (cacheGeneration !== mediaCacheGeneration) {
+                throw new Error('Voice message decode was superseded');
+            }
             var wavBytes = base64Bytes(result.data_base64);
             var item = {
                 url: '',
@@ -435,7 +635,11 @@
             touchPlaybackKey(key);
             trimPlaybackCache();
             return item;
+        }).finally(function() {
+            if (playbackInFlightByKey[key] === decode) delete playbackInFlightByKey[key];
         });
+        playbackInFlightByKey[key] = decode;
+        return decode;
     }
     function createEventedPlaybackHandle() {
         var listeners = Object.create(null);
@@ -583,65 +787,141 @@
         }
         return createMediaPlayback(item);
     }
+    function startPreviewAttempt(coordinator) {
+        return createPlayback(coordinator.item).then(function(audio) {
+            if (coordinator.generation !== playbackGeneration) return false;
+            coordinator.audio = audio;
+            coordinator.progressProven = false;
+            coordinator.baseline = Number(audio.currentTime || 0);
+            activeAudio = audio;
+            activeKey = coordinator.key;
+            playbackCoordinator = coordinator;
+            syncPreviewPlayButton(false, coordinator.recoveryCount ? 'recovering' : 'starting');
+            audio.addEventListener('timeupdate', function() {
+                if (!playbackAttemptIsCurrent(coordinator, audio)) return;
+                var timer = el('voice-memo-timer');
+                if (timer) timer.textContent = formatDuration(audio.currentTime * 1000);
+                if (!coordinator.progressProven && audio.currentTime > coordinator.baseline + 0.02) {
+                    coordinator.progressProven = true;
+                    clearPlaybackWatchdog(coordinator);
+                    syncPreviewPlayButton(true, 'playing');
+                }
+            });
+            audio.addEventListener('ended', function() {
+                if (!playbackAttemptIsCurrent(coordinator, audio)) return;
+                clearPlaybackWatchdog(coordinator);
+                var timer = el('voice-memo-timer');
+                if (timer) timer.textContent = formatDuration(coordinator.item.duration_ms);
+                syncPreviewPlayButton(false, 'ended');
+                activeAudio = null;
+                activeKey = '';
+                playbackCoordinator = null;
+                stopIosPlaybackSession();
+            });
+            return playWithAudioSession(audio).then(function() {
+                if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+                clearPlaybackWatchdog(coordinator);
+                coordinator.watchdog = setTimeout(function() {
+                    if (!playbackAttemptIsCurrent(coordinator, audio) || coordinator.progressProven) return;
+                    if (coordinator.recoveryCount < 1) {
+                        coordinator.recoveryCount += 1;
+                        syncPreviewPlayButton(false, 'recovering');
+                        releasePlaybackAttempt(coordinator).then(function() {
+                            if (playbackAttemptIsCurrent(coordinator, audio)) {
+                                startPreviewAttempt(coordinator).catch(function(error) {
+                                    playbackError(coordinator, audio, error);
+                                });
+                            }
+                        });
+                        return;
+                    }
+                    playbackError(coordinator, audio, new Error('Voice message playback did not start'));
+                }, (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
+                return true;
+            }).catch(function(error) {
+                if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+                playbackError(coordinator, audio, error);
+                return false;
+            });
+        });
+    }
     function togglePreviewPlayback() {
         if (!draft) return;
+        if (previewPlaybackState === 'starting' || previewPlaybackState === 'recovering') return;
         var key = '__voice_memo_draft__';
         var ready = preparePlaybackInteraction();
         if (activeAudio && activeKey === key) {
+            var coordinator = playbackCoordinator;
+            var audio = activeAudio;
             ready.then(function(canPlay) {
-                if (!canPlay) return;
-                if (activeAudio.paused) {
-                    playWithAudioSession(activeAudio).then(function() { syncPreviewPlayButton(true); }).catch(playbackError);
+                if (!canPlay || !playbackAttemptIsCurrent(coordinator, audio)) return;
+                if (audio.paused) {
+                    coordinator.baseline = Number(audio.currentTime || 0);
+                    coordinator.progressProven = false;
+                    syncPreviewPlayButton(false, 'starting');
+                    playWithAudioSession(audio).then(function() {
+                        if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+                        clearPlaybackWatchdog(coordinator);
+                        coordinator.watchdog = setTimeout(function() {
+                            if (playbackAttemptIsCurrent(coordinator, audio) && !coordinator.progressProven) {
+                                playbackError(coordinator, audio, new Error('Voice message playback did not start'));
+                            }
+                        }, (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
+                        return true;
+                    }).catch(function(error) { playbackError(coordinator, audio, error); });
                 } else {
-                    activeAudio.pause();
-                    syncPreviewPlayButton(false);
+                    audio.pause();
+                    clearPlaybackWatchdog(coordinator);
+                    syncPreviewPlayButton(false, 'paused');
                     stopIosPlaybackSession();
                 }
             });
             return;
         }
         var stopped = stopAnyPlayback();
+        var generation = playbackGeneration;
         ready.then(function(canPlay) {
             if (!canPlay) return null;
             return stopped.then(function() { return ensurePlayback(key, draft); });
         }).then(function(item) {
-            if (!item) return null;
-            return createPlayback(item).then(function(audio) { return { audio: audio, item: item }; });
-        }).then(function(prepared) {
-            if (!prepared) return;
-            var audio = prepared.audio;
-            var item = prepared.item;
-            activeAudio = audio;
-            activeKey = key;
-            audio.addEventListener('timeupdate', function() {
-                var timer = el('voice-memo-timer');
-                if (timer) timer.textContent = formatDuration(audio.currentTime * 1000);
-            });
-            audio.addEventListener('ended', function() {
-                var timer = el('voice-memo-timer');
-                if (timer) timer.textContent = formatDuration(item.duration_ms);
-                syncPreviewPlayButton(false);
-                activeAudio = null;
-                activeKey = '';
-                stopIosPlaybackSession();
-            });
-            playWithAudioSession(audio).then(function() { syncPreviewPlayButton(true); }).catch(playbackError);
+            if (!item || generation !== playbackGeneration) return null;
+            var coordinator = {
+                generation: playbackGeneration,
+                key: key,
+                item: item,
+                audio: null,
+                watchdog: 0,
+                progressProven: false,
+                recoveryCount: 0,
+                baseline: 0,
+            };
+            playbackCoordinator = coordinator;
+            return startPreviewAttempt(coordinator);
         }).catch(function(error) {
+            if (generation !== playbackGeneration) return;
             showToast((error && error.message) || 'Could not prepare voice message playback.', 'toast-red', 4000);
         });
     }
-    function playbackError(error) {
+    function playbackError(coordinator, audio, error) {
+        if (!playbackAttemptIsCurrent(coordinator, audio)) return;
         window.RS.diag('warn', '[voice memo] playback failed:', error && (error.name || error.message || error));
         stopAnyPlayback();
+        syncPreviewPlayButton(false, 'error');
         showToast('Could not play this voice message.', 'toast-red', 3500);
     }
-    function syncPreviewPlayButton(playing) {
+    function syncPreviewPlayButton(playing, state) {
+        previewPlaybackState = state || (playing ? 'playing' : 'idle');
         var button = el('voice-memo-play-btn');
         if (!button) return;
         var icon = button.querySelector('.voice-memo-state-icon');
         if (icon) icon.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
-        button.setAttribute('aria-label', playing ? 'Pause voice message' : 'Play voice message');
-        button.title = playing ? 'Pause preview' : 'Play preview';
+        var busy = previewPlaybackState === 'starting' || previewPlaybackState === 'recovering';
+        button.disabled = busy || recorderState === 'sending';
+        button.dataset.playbackState = previewPlaybackState;
+        button.setAttribute('aria-label', playing ? 'Pause voice message' :
+            busy ? (previewPlaybackState === 'recovering' ? 'Restoring voice message playback' : 'Starting voice message playback') :
+                'Play voice message');
+        button.title = playing ? 'Pause preview' : busy ? 'Preparing preview' : 'Play preview';
     }
 
     function renderAttachment(attachment, message) {
@@ -651,18 +931,26 @@
         var duration = metadata && metadata.duration_ms;
         var waveform = metadata && metadata.waveform;
         var disabled = !storedName && !draftByKey[key];
-        return '<div class="voice-memo-player' + (disabled ? ' is-loading' : '') + '" data-voice-key="' + esc(key) + '" data-stored-name="' + esc(storedName) + '">' +
+        return '<div class="voice-memo-player' + (disabled ? ' is-loading' : '') + '" data-playback-state="' + (disabled ? 'loading' : 'idle') + '" data-voice-key="' + esc(key) + '" data-stored-name="' + esc(storedName) + '">' +
             '<button class="voice-memo-player-play" type="button" aria-label="Play voice message"' + (disabled ? ' disabled' : '') + '>' +
                 '<svg class="voice-memo-player-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + ICON_PLAY + '</svg>' +
+                '<span class="loading-spinner voice-memo-player-spinner" aria-hidden="true"></span>' +
             '</button>' +
-            '<div class="voice-memo-player-waveform" role="slider" tabindex="0" aria-label="Voice message position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' + barsHtml(waveform || [], 0) + '</div>' +
-            '<span class="voice-memo-player-time">' + (duration ? formatDuration(duration) : '--:--') + '</span>' +
+            '<div class="voice-memo-player-waveform" role="slider" tabindex="-1" aria-disabled="true" aria-label="Voice message position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' + barsHtml(waveform || [], 0) + '</div>' +
+            '<span class="voice-memo-player-time">' + (duration ? formatDuration(duration) : 'Loading') + '</span>' +
+            '<span class="voice-memo-player-status" role="status" aria-live="polite">' + (disabled ? 'Loading' : '') + '</span>' +
         '</div>';
     }
     function registerDraft(key, value) {
         if (!key || !value) return;
         draftByKey[key] = value;
-        setTimeout(function() { delete draftByKey[key]; }, 15 * 60 * 1000);
+        var token = ++draftExpirySequence;
+        draftExpiryTokenByKey[key] = token;
+        setTimeout(function() {
+            if (draftExpiryTokenByKey[key] !== token) return;
+            delete draftByKey[key];
+            delete draftExpiryTokenByKey[key];
+        }, 15 * 60 * 1000);
     }
     function sourceForPlayer(player) {
         var key = player.dataset.voiceKey || '';
@@ -672,16 +960,46 @@
         if (storedName) return { stored_name: storedName };
         return null;
     }
-    function setPlayerPlaying(player, playing) {
+    function setPlayerState(player, state, statusText) {
+        if (!player) return;
+        player.dataset.playbackState = state;
+        player.classList.toggle('is-loading', state === 'loading');
+        player.classList.toggle('is-error', state === 'error');
         var icon = player.querySelector('.voice-memo-player-icon');
         var button = player.querySelector('.voice-memo-player-play');
+        var waveform = player.querySelector('.voice-memo-player-waveform');
+        var status = player.querySelector('.voice-memo-player-status');
+        var playing = state === 'playing';
         if (icon) icon.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
         if (button) {
-            button.setAttribute('aria-label', playing ? 'Pause voice message' : 'Play voice message');
-            button.title = playing ? 'Pause voice message' : 'Play voice message';
+            var label = playing ? 'Pause voice message' :
+                state === 'ended' ? 'Replay voice message' :
+                state === 'error' ? 'Try voice message again' :
+                state === 'loading' ? 'Loading voice message' :
+                state === 'starting' ? 'Starting playback' :
+                state === 'recovering' || state === 'stalled' ? 'Restoring playback' :
+                'Play voice message';
+            button.setAttribute('aria-label', label);
+            button.title = label;
+            button.disabled = state === 'loading' || state === 'starting' || state === 'recovering' || state === 'stalled';
         }
+        if (waveform) {
+            var seekAvailable = (state === 'playing' || state === 'paused') &&
+                activeAudio && activeKey === player.dataset.voiceKey && isFinite(activeAudio.duration);
+            waveform.tabIndex = seekAvailable ? 0 : -1;
+            waveform.setAttribute('aria-disabled', seekAvailable ? 'false' : 'true');
+        }
+        if (status) status.textContent = statusText || (
+            state === 'loading' ? 'Loading' :
+            state === 'starting' ? 'Starting playback' :
+            state === 'recovering' || state === 'stalled' ? 'Restoring playback' :
+            state === 'error' ? 'Couldn\'t play' : ''
+        );
     }
-    function updatePlayerProgress(key, fraction, playing) {
+    function setPlayerPlaying(player, playing) {
+        setPlayerState(player, playing ? 'playing' : 'paused');
+    }
+    function updatePlayerProgress(key, fraction, playing, explicitState) {
         var player = document.querySelector('.voice-memo-player[data-voice-key="' + cssEscape(key) + '"]');
         if (!player) return;
         var item = playbackByKey[key] || metadataByStoredName[player.dataset.storedName] || draftByKey[key] || {};
@@ -689,84 +1007,174 @@
         if (waveform) {
             waveform.innerHTML = barsHtml(item.waveform || [], fraction);
             waveform.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
+            var durationMs = Number(item.duration_ms || 0);
+            waveform.setAttribute('aria-valuetext', formatDuration(fraction * durationMs) + ' of ' + formatDuration(durationMs));
         }
-        setPlayerPlaying(player, !!playing);
+        setPlayerState(player, explicitState || (playing ? 'playing' : 'paused'));
     }
     function cssEscape(value) {
         if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value));
         return String(value).replace(/(["\\])/g, '\\$1');
+    }
+    function playbackAttemptIsCurrent(coordinator, audio) {
+        return !!coordinator && playbackCoordinator === coordinator &&
+            coordinator.generation === playbackGeneration && coordinator.audio === audio;
+    }
+    function clearPlaybackWatchdog(coordinator) {
+        if (!coordinator || !coordinator.watchdog) return;
+        clearTimeout(coordinator.watchdog);
+        coordinator.watchdog = 0;
+    }
+    function releasePlaybackAttempt(coordinator) {
+        clearPlaybackWatchdog(coordinator);
+        if (coordinator && coordinator.audio) {
+            try { coordinator.audio.pause(); } catch (_) {}
+        }
+        return stopIosPlaybackSession();
+    }
+    function failPlaybackCoordinator(coordinator, message) {
+        if (!coordinator || playbackCoordinator !== coordinator) return;
+        releasePlaybackAttempt(coordinator);
+        setPlayerState(coordinator.player, 'error', message || 'Couldn\'t play');
+        activeAudio = null;
+        activeKey = '';
+        playbackCoordinator = null;
+    }
+    function attachPlaybackEvents(coordinator, audio) {
+        audio.addEventListener('timeupdate', function() {
+            if (!playbackAttemptIsCurrent(coordinator, audio)) return;
+            var fraction = audio.duration ? audio.currentTime / audio.duration : 0;
+            if (!coordinator.progressProven && audio.currentTime > coordinator.baseline + 0.02) {
+                coordinator.progressProven = true;
+                clearPlaybackWatchdog(coordinator);
+                setPlayerState(coordinator.player, 'playing');
+            }
+            updatePlayerProgress(coordinator.key, fraction, coordinator.progressProven && !audio.paused,
+                coordinator.progressProven ? (audio.paused ? 'paused' : 'playing') : coordinator.player.dataset.playbackState);
+            var currentTime = coordinator.player.querySelector('.voice-memo-player-time');
+            if (currentTime) currentTime.textContent = formatDuration(audio.currentTime * 1000);
+        });
+        audio.addEventListener('ended', function() {
+            if (!playbackAttemptIsCurrent(coordinator, audio)) return;
+            clearPlaybackWatchdog(coordinator);
+            updatePlayerProgress(coordinator.key, 1, false, 'ended');
+            var finalTime = coordinator.player.querySelector('.voice-memo-player-time');
+            if (finalTime) finalTime.textContent = formatDuration(coordinator.item.duration_ms);
+            activeAudio = null;
+            activeKey = '';
+            playbackCoordinator = null;
+            stopIosPlaybackSession();
+        });
+    }
+    function startPlaybackAttempt(coordinator) {
+        if (!coordinator || coordinator.generation !== playbackGeneration) return Promise.resolve(false);
+        return createPlayback(coordinator.item).then(function(audio) {
+            if (coordinator.generation !== playbackGeneration) return false;
+            coordinator.audio = audio;
+            coordinator.progressProven = false;
+            coordinator.baseline = Number(audio.currentTime || 0);
+            activeAudio = audio;
+            activeKey = coordinator.key;
+            attachPlaybackEvents(coordinator, audio);
+            setPlayerState(coordinator.player, coordinator.recoveryCount ? 'recovering' : 'starting');
+            return playWithAudioSession(audio).then(function() {
+                if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+                clearPlaybackWatchdog(coordinator);
+                coordinator.watchdog = setTimeout(function() {
+                    if (!playbackAttemptIsCurrent(coordinator, audio) || coordinator.progressProven) return;
+                    if (coordinator.recoveryCount < 1) {
+                        coordinator.recoveryCount += 1;
+                        setPlayerState(coordinator.player, 'recovering', 'Restoring playback');
+                        releasePlaybackAttempt(coordinator).then(function() {
+                            if (coordinator.generation === playbackGeneration) {
+                                startPlaybackAttempt(coordinator).catch(function() {
+                                    failPlaybackCoordinator(coordinator, 'Couldn\'t play');
+                                });
+                            }
+                        });
+                        return;
+                    }
+                    failPlaybackCoordinator(coordinator, 'Couldn\'t play');
+                }, (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
+                return true;
+            }).catch(function(error) {
+                if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+                failPlaybackCoordinator(coordinator, 'Couldn\'t play');
+                window.RS.diag('warn', '[voice memo] playback failed:', error);
+                return false;
+            });
+        });
     }
     function togglePlayer(player) {
         var key = player.dataset.voiceKey || '';
         var source = sourceForPlayer(player);
         if (!source || !key) return;
         var ready = preparePlaybackInteraction();
-        if (activeAudio && activeKey === key) {
+        if (activeAudio && activeKey === key && playbackCoordinator) {
+            var coordinator = playbackCoordinator;
+            var audio = activeAudio;
             ready.then(function(canPlay) {
-                if (!canPlay) return;
-                if (activeAudio.paused) {
-                    playWithAudioSession(activeAudio).then(function() {
-                        player.classList.remove('is-error');
-                        setPlayerPlaying(player, true);
+                if (!canPlay || !playbackAttemptIsCurrent(coordinator, audio)) return;
+                if (audio.paused) {
+                    coordinator.recoveryCount = 0;
+                    coordinator.progressProven = false;
+                    coordinator.baseline = Number(audio.currentTime || 0);
+                    setPlayerState(player, 'starting');
+                    playWithAudioSession(audio).then(function() {
+                        if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+                        clearPlaybackWatchdog(coordinator);
+                        coordinator.watchdog = setTimeout(function() {
+                            if (playbackAttemptIsCurrent(coordinator, audio) && !coordinator.progressProven) {
+                                failPlaybackCoordinator(coordinator, 'Couldn\'t play');
+                            }
+                        }, (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
+                        return true;
                     }).catch(function(error) {
-                        player.classList.add('is-error');
-                        playbackError(error);
+                        if (playbackAttemptIsCurrent(coordinator, audio)) {
+                            failPlaybackCoordinator(coordinator, 'Couldn\'t play');
+                        }
                     });
                 } else {
-                    activeAudio.pause();
-                    setPlayerPlaying(player, false);
+                    audio.pause();
+                    clearPlaybackWatchdog(coordinator);
+                    setPlayerState(player, 'paused');
                     stopIosPlaybackSession();
                 }
             });
             return;
         }
         var stopped = stopAnyPlayback();
-        player.classList.add('is-loading');
+        var generation = playbackGeneration;
+        setPlayerState(player, 'loading');
         ready.then(function(canPlay) {
             if (!canPlay) return null;
             return stopped.then(function() { return ensurePlayback(key, source); });
         }).then(function(item) {
-            if (!item) {
-                player.classList.remove('is-loading');
-                return null;
-            }
-            player.classList.remove('is-loading');
+            if (!item || generation !== playbackGeneration) return null;
             var time = player.querySelector('.voice-memo-player-time');
             if (time) time.textContent = formatDuration(item.duration_ms);
-            return createPlayback(item).then(function(audio) {
-                return { audio: audio, item: item };
-            });
-        }).then(function(prepared) {
-            if (!prepared) return;
-            var audio = prepared.audio;
-            var item = prepared.item;
-            activeAudio = audio;
-            activeKey = key;
-            audio.addEventListener('timeupdate', function() {
-                var fraction = audio.duration ? audio.currentTime / audio.duration : 0;
-                updatePlayerProgress(key, fraction, !audio.paused);
-                var currentTime = player.querySelector('.voice-memo-player-time');
-                if (currentTime) currentTime.textContent = formatDuration(audio.currentTime * 1000);
-            });
-            audio.addEventListener('ended', function() {
-                updatePlayerProgress(key, 0, false);
-                var finalTime = player.querySelector('.voice-memo-player-time');
-                if (finalTime) finalTime.textContent = formatDuration(item.duration_ms);
-                activeAudio = null;
-                activeKey = '';
-                stopIosPlaybackSession();
-            });
-            playWithAudioSession(audio).then(function() {
-                player.classList.remove('is-error');
-                setPlayerPlaying(player, true);
-            }).catch(function(error) {
-                player.classList.add('is-error');
-                playbackError(error);
-            });
+            playbackCoordinator = {
+                generation: generation,
+                key: key,
+                item: item,
+                player: player,
+                audio: null,
+                watchdog: 0,
+                progressProven: false,
+                recoveryCount: 0,
+                baseline: 0,
+            };
+            return startPlaybackAttempt(playbackCoordinator);
         }).catch(function(error) {
-            player.classList.remove('is-loading');
-            player.classList.add('is-error');
-            showToast((error && error.message) || 'Could not decode this voice message.', 'toast-red', 4000);
+            if (generation !== playbackGeneration) return;
+            var unavailable = player.dataset.playbackState === 'loading';
+            if (unavailable) {
+                setPlayerState(player, 'error', 'Voice message unavailable');
+                window.RS.diag('warn', '[voice memo] decode failed:', error);
+            } else {
+                failPlaybackCoordinator(playbackCoordinator, 'Couldn\'t play');
+                window.RS.diag('warn', '[voice memo] playback failed:', error);
+            }
         });
     }
     function seekPlayer(player, fraction) {
@@ -777,20 +1185,33 @@
     function hydrateMetadata(player) {
         var storedName = player.dataset.storedName || '';
         if (!storedName || metadataByStoredName[storedName]) return;
+        var cacheGeneration = mediaCacheGeneration;
         RS.invoke('voice_memo_inspect_stored', { args: { stored_name: storedName } }).then(function(metadata) {
+            if (cacheGeneration !== mediaCacheGeneration) return;
             metadataByStoredName[storedName] = metadata;
+            var orderIndex = metadataOrder.indexOf(storedName);
+            if (orderIndex !== -1) metadataOrder.splice(orderIndex, 1);
+            metadataOrder.push(storedName);
+            while (metadataOrder.length > MAX_METADATA_ITEMS) {
+                delete metadataByStoredName[metadataOrder.shift()];
+            }
             var current = document.querySelector('.voice-memo-player[data-stored-name="' + cssEscape(storedName) + '"]');
             if (!current) return;
             var waveform = current.querySelector('.voice-memo-player-waveform');
             var time = current.querySelector('.voice-memo-player-time');
             var play = current.querySelector('.voice-memo-player-play');
-            if (waveform) waveform.innerHTML = barsHtml(metadata.waveform || [], 0);
+            if (waveform) {
+                waveform.innerHTML = barsHtml(metadata.waveform || [], 0);
+                waveform.tabIndex = -1;
+                waveform.setAttribute('aria-disabled', 'true');
+                waveform.setAttribute('aria-valuetext', '0:00 of ' + formatDuration(metadata.duration_ms));
+            }
             if (time) time.textContent = formatDuration(metadata.duration_ms);
             if (play) play.disabled = false;
-            current.classList.remove('is-loading');
+            setPlayerState(current, 'idle');
         }).catch(function() {
-            player.classList.remove('is-loading');
-            player.classList.add('is-error');
+            if (cacheGeneration !== mediaCacheGeneration) return;
+            setPlayerState(player, 'error', 'Voice message unavailable');
         });
     }
     function hydratePlayers(container) {
@@ -804,6 +1225,7 @@
             if (play) play.addEventListener('click', function() { togglePlayer(player); });
             if (waveform) {
                 function seekFromEvent(event) {
+                    if (waveform.getAttribute('aria-disabled') === 'true') return;
                     var rect = waveform.getBoundingClientRect();
                     if (!rect.width) return;
                     seekPlayer(player, (event.clientX - rect.left) / rect.width);
@@ -814,6 +1236,9 @@
                     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
                         event.preventDefault();
                         activeAudio.currentTime = Math.max(0, Math.min(activeAudio.duration, activeAudio.currentTime + (event.key === 'ArrowRight' ? 5 : -5)));
+                    } else if (event.key === 'Home' || event.key === 'End') {
+                        event.preventDefault();
+                        activeAudio.currentTime = event.key === 'Home' ? 0 : activeAudio.duration;
                     }
                 });
             }
@@ -821,6 +1246,8 @@
     }
     function onRecordingEvent(data) {
         if (!data || recorderState === 'idle' || recorderState === 'review') return;
+        var eventSessionId = String(data.session_id || data.recording_session_id || '');
+        if (!eventSessionId || !recordingSessionId || eventSessionId !== recordingSessionId) return;
         if (data.state === 'recording') {
             paused = false;
             recorderState = 'recording';
@@ -829,10 +1256,11 @@
                 if (liveWaveform.length > 240) liveWaveform.shift();
                 renderRecorderWaveform(liveWaveform, true);
             }
+            setRecorderState('recording');
         } else if (data.state === 'paused') {
             paused = true;
             recorderState = 'paused';
-            renderRecorderWaveform(liveWaveform, 'paused');
+            setRecorderState('paused');
         } else if (data.state === 'limit') {
             stopRecording();
             announce('Maximum voice message length reached');
@@ -845,6 +1273,8 @@
             draft = null;
             paused = false;
             recordingTarget = '';
+            recordingOwner = null;
+            recordingSessionId = '';
             setRecorderState('idle');
             return;
         }
@@ -889,10 +1319,17 @@
         if (preview) preview.addEventListener('click', togglePreviewPlayback);
         if (input) input.addEventListener('input', syncComposer);
         document.addEventListener('visibilitychange', function() {
-            if (document.hidden && recorderState !== 'idle') discardRecording();
+            if (document.hidden) stopAnyPlayback();
+            if (document.hidden && recorderState !== 'idle') {
+                if (retireAdmittedSendUi()) return;
+                showToast('Voice message discarded while Ratspeak was in the background.', 'toast-orange', 4200);
+                alertVoice('Voice message discarded while Ratspeak was in the background');
+                discardRecording();
+            }
         });
         window.addEventListener('pagehide', function() {
-            if (recorderState !== 'idle') discardRecording();
+            stopAnyPlayback();
+            if (recorderState !== 'idle' && !retireAdmittedSendUi()) discardRecording();
         });
         renderRecorderWaveform([], false);
         syncComposer();
@@ -900,7 +1337,9 @@
             available = true;
             if (status && status.state && status.state !== 'idle') {
                 // A WebView reload must never leave an unseen microphone live.
-                RS.invoke('voice_memo_cancel').catch(function() {});
+                if (status.session_id) {
+                    RS.invoke('voice_memo_cancel', { args: { session_id: status.session_id } }).catch(function() {});
+                }
                 stopMobileAudioSession();
             }
             syncComposer();
@@ -911,10 +1350,19 @@
         RS.listen('voice_memo_recording', onRecordingEvent).catch(function() {});
     }
 
-    function onConversationChanged(hash) {
+    function onConversationChanged(hash, reason) {
         stopAnyPlayback();
-        if (!recordingTarget || recordingTarget === hash || recorderState === 'idle') return;
-        showToast('Voice message discarded when you changed conversations.', 'toast-orange', 3600);
+        if (reason === 'identity_replaced') clearInactiveMediaCaches(true);
+        if (!recordingTarget || recorderState === 'idle') return;
+        if (canonicalConversationHash(recordingTarget) === canonicalConversationHash(hash) &&
+            recordingOwner && conversationOwnerIsCurrent(recordingOwner)) return;
+        if (retireAdmittedSendUi()) return;
+        var message = reason === 'left_conversation'
+            ? 'Voice message discarded after leaving the conversation.'
+            : reason === 'identity_replaced'
+                ? 'Voice message discarded after changing identities.'
+                : 'Voice message discarded after changing conversations.';
+        showToast(message, 'toast-orange', 3600);
         discardRecording();
     }
 
@@ -924,16 +1372,11 @@
                 stopMobileAudioSession();
                 return false;
             }
-            var wasCapturing = recorderState !== 'review';
-            return wasCapturing ? RS.invoke('voice_memo_cancel').catch(function() {}) : true;
+            if (retireAdmittedSendUi()) return false;
+            return discardRecording().then(function() { return true; });
         }).then(function(hadRecorder) {
             if (hadRecorder === false) return;
-            stopMobileAudioSession();
-            draft = null;
-            paused = false;
-            recordingTarget = '';
-            setRecorderState('idle');
-            announce('Voice message recording stopped for the call');
+            alertVoice('Voice message discarded for the call');
         });
     }
 
@@ -943,7 +1386,9 @@
                 stopMobileAudioSession();
                 return;
             }
+            if (retireAdmittedSendUi()) return;
             showToast('Recording stopped because another app needed audio.', 'toast-orange', 4200);
+            alertVoice('Recording stopped because another app needed audio');
             return discardRecording();
         });
     }
@@ -961,6 +1406,10 @@
         onConversationChanged: onConversationChanged,
         cancelForCall: cancelForCall,
         handleAudioInterruption: handleAudioInterruption,
+        releaseInactiveMedia: function(critical) {
+            if (critical) stopAnyPlayback();
+            clearInactiveMediaCaches(false, !!critical);
+        },
     };
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

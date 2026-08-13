@@ -1859,9 +1859,12 @@ RS.listen('identity_switched', function(data) {
     if (typeof _conversationCache !== 'undefined') {
         for (var k in _conversationCache) delete _conversationCache[k];
     }
+    if (typeof _conversationCacheSizes !== 'undefined') _conversationCacheSizes = {};
+    if (typeof _conversationCacheBytes !== 'undefined') _conversationCacheBytes = 0;
     if (typeof _cacheLru !== 'undefined') _cacheLru = [];
 
-    if (typeof lxmfActiveContact !== 'undefined') lxmfActiveContact = null;
+    if (typeof _resetConversationSession === 'function') _resetConversationSession('identity_replaced');
+    else if (typeof lxmfActiveContact !== 'undefined') lxmfActiveContact = null;
     if (typeof lxmfPendingFile !== 'undefined') lxmfPendingFile = null;
     if (typeof lxmfIdentity !== 'undefined') lxmfIdentity = null;
     if (typeof _ghostConversationHash !== 'undefined') _ghostConversationHash = null;

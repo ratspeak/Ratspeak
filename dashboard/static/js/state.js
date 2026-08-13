@@ -1154,4 +1154,7 @@ RS.listen('attachment_memory_pressure', function(payload) {
     if (typeof handleAttachmentMemoryPressure === 'function') {
         handleAttachmentMemoryPressure(!!(payload && payload.critical));
     }
+    if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.releaseInactiveMedia === 'function') {
+        RS.voiceMemos.releaseInactiveMedia(!!(payload && payload.critical));
+    }
 }).catch(function() {});

@@ -937,13 +937,30 @@
         min-height: 44px;
         padding: 0 var(--space-2);
         gap: var(--space-2);
+        grid-template-columns: var(--touch-target) minmax(0, 1fr) auto var(--touch-target);
+    }
+
+    .voice-memo-leading-slot,
+    .voice-memo-trailing-slot,
+    .voice-memo-primary-slot {
+        width: var(--touch-target);
+        height: var(--touch-target);
+        min-width: var(--touch-target);
+        flex-basis: var(--touch-target);
     }
 
     .voice-memo-field .voice-memo-action {
-        width: 44px;
-        height: 44px;
-        min-width: 44px;
-        flex-basis: 44px;
+        width: var(--touch-target);
+        height: var(--touch-target);
+        min-width: var(--touch-target);
+        flex-basis: var(--touch-target);
+    }
+
+    .voice-memo-send {
+        width: var(--touch-target);
+        height: var(--touch-target);
+        min-width: var(--touch-target);
+        flex-basis: var(--touch-target);
     }
 
     .voice-memo-player {

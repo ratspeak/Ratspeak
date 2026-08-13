@@ -4003,13 +4003,14 @@ fn empty_ghost_conversations_are_removed_when_leaving_chat_detail() {
     assert!(lxmf.contains("function _onChatDetailExit()"));
     assert!(lxmf.contains("function _conversationHasVisibleMessages()"));
     assert!(lxmf.contains("function _mergeOptimisticConversation(convos)"));
-    assert!(lxmf.contains(
-        "if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) return;"
-    ));
+    assert!(
+        lxmf.contains("if (!_ghostConversationHash || _ghostConversationHash !== exitingHash)")
+    );
+    assert!(lxmf.contains("_activateConversation(null, 'left_conversation');"));
     assert!(lxmf.contains("if (_conversationHasVisibleMessages())"));
     assert!(lxmf.contains("_removeGhostRow();"));
     assert!(lxmf.contains("cacheDel(exitingHash);"));
-    assert!(lxmf.contains("lxmfActiveContact = null;"));
+    assert!(lxmf.contains("_activateConversation(null, 'left_conversation');"));
     assert!(lxmf.contains("lxmfConversation = [];"));
     assert!(lxmf.contains("convos = _mergeOptimisticConversation(convos);"));
     assert!(lxmf.contains("_renderConversationsFromCache(lxmfConversations || []);"));
@@ -4037,7 +4038,9 @@ fn message_composer_send_preserves_preexisting_focus_state() {
 
     assert!(lxmf.contains("function _captureLxmfSendFocusState()"));
     assert!(lxmf.contains("function _consumeLxmfSendFocusState(input)"));
-    assert!(lxmf.contains("function _finishLxmfComposerSend(input, shouldRestoreFocus)"));
+    assert!(
+        lxmf.contains("function _finishLxmfComposerSend(input, shouldRestoreFocus, targetHash)")
+    );
     // Send button uses split touchstart/mousedown handlers with non-passive
     // preventDefault to keep the soft keyboard up while the long-press timer
     // runs. Both wire `_captureLxmfSendFocusState` so the existing focus-
@@ -4049,7 +4052,10 @@ fn message_composer_send_preserves_preexisting_focus_state() {
         send_function
             .contains("var shouldRestoreComposerFocus = _consumeLxmfSendFocusState(input);")
     );
-    assert!(send_function.contains("_finishLxmfComposerSend(input, shouldRestoreComposerFocus);"));
+    assert!(
+        send_function
+            .contains("_finishLxmfComposerSend(input, shouldRestoreComposerFocus, targetHash);")
+    );
     assert!(
         !send_function.contains("input.focus();"),
         "send must not unconditionally focus the composer after a button send"
@@ -7434,6 +7440,11 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/voice.rs"))
         .expect("voice commands");
     let messaging = read_source(root.join("dashboard/static/js/lxmf.js")).expect("messaging js");
+    let messaging_commands =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/messaging.rs"))
+            .expect("messaging commands");
+    let contact_commands = read_source(root.join("crates/ratspeak-tauri/src/commands/contacts.rs"))
+        .expect("contact commands");
     let tauri = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri entrypoint");
     let system = read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs"))
         .expect("system commands");
@@ -7468,23 +7479,56 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     );
     assert!(memo.contains("call_audio_reserved"));
     assert!(memo.contains("_platform_audio_session"));
-    assert!(memo.contains("MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE"));
+    assert!(
+        memo.contains(
+            "VOICE_MEMO_MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE"
+        )
+    );
+    assert!(memo.contains("pub fn parse_recording_session_id"));
+    assert!(memo.contains("pub fn parse_playback_lease_id"));
+    assert!(memo.contains("take_matching_recording(state, session_id)"));
+    assert!(memo.contains("compare_exchange(lease_id, 0"));
     assert!(commands.contains("VOICE_MEMO_START_UNAVAILABLE"));
     assert!(commands.contains("crate::voice_memo::cancel_recording(&app_state)"));
     assert!(commands.contains("spawn_blocking(move || crate::voice_memo::decode_voice_memo"));
+    assert!(commands.contains("pub session_id: String"));
+    assert!(commands.contains("pub lease_id: String"));
+    assert!(commands.contains("read_bounded_voice_memo"));
+    assert!(
+        commands.contains(".take((crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES as u64) + 1)")
+    );
+    assert!(commands.contains("voice_memo_decode_lock.lock().await"));
     assert!(messaging.contains("RS.invoke('send_lxmf_with_staged_attachment'"));
+    assert!(messaging.contains("_conversationOwnerIsCurrent(sendOwner)"));
+    assert!(messaging.contains("_cancelStagedAttachmentToken(stageToken)"));
+    assert!(messaging.contains("_conversationOwnerIdentityIsCurrent(sendOwner)"));
+    assert!(messaging.contains("msg.source = _canonicalConversationHash(msg.source)"));
+    assert!(messaging.contains("msg.destination = _canonicalConversationHash(msg.destination)"));
+    assert!(
+        messaging_commands.contains("sanitize_text(&args.dest_hash, 128).to_ascii_lowercase()")
+    );
+    assert!(messaging_commands.contains("sanitize_text(&hash, 128).to_ascii_lowercase()"));
+    assert!(contact_commands.contains("sanitize_text(&args.hash, 128).to_ascii_lowercase()"));
     assert!(messaging.contains("_voiceCancelMemoForCall().then(function()"));
     assert!(state_js.contains("function _rsNativeMicrophonePermission(audio)"));
     assert!(shared_ui.contains("RS.composer.dismissForReplacement"));
     assert!(voice_memos.contains("window.addEventListener('pagehide'"));
     assert!(voice_memos.contains("startVoiceMemoAudioSession"));
+    assert!(voice_memos.contains("recordingStartRetirement = pendingStart"));
+    assert!(voice_memos.contains(
+        "if (!eventSessionId || !recordingSessionId || eventSessionId !== recordingSessionId) return;"
+    ));
+    assert!(voice_memos.contains("cacheGeneration !== mediaCacheGeneration"));
+    assert!(voice_memos.contains("var token = ++draftExpirySequence"));
+    assert!(voice_memos.contains("if (!iosPlaybackLeaseId) iosPlaybackLeaseId = leaseId;"));
+    assert!(voice_memos.contains("playbackAttemptIsCurrent(coordinator, audio)"));
     assert!(voice_memos.contains("handleAudioInterruption"));
     assert!(voice_memos.contains("RS.audioPlayback.ensure({ installUnlock: true })"));
     assert!(voice_memos.contains("RS.audioPlayback.context()"));
     assert!(voice_memos.contains("RS.audioPlayback.isReady()"));
     assert!(voice_memos.contains("ctx.decodeAudioData"));
     assert!(voice_memos.contains("RS.invoke('voice_memo_playback_session_start')"));
-    assert!(voice_memos.contains("RS.invoke('voice_memo_playback_session_stop')"));
+    assert!(voice_memos.contains("'voice_memo_playback_session_stop'"));
     assert!(voice_memos.contains("classes = ['is-recorded']"));
     assert!(voice_memos.contains("classes.push('is-live')"));
     assert!(voice_memos.contains("class=\"is-empty\""));
@@ -7511,6 +7555,7 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(ios_audio.contains("AVAudioSessionCategoryPlayback"));
     assert!(ios_audio.contains("AVAudioSessionModeDefault"));
     assert!(ios_audio.contains("VOICE_MEMO_PLAYBACK_SESSION_ACTIVE"));
+    assert!(ios_audio.contains("compare_exchange(lease_id, 0"));
     for command in [
         "voice_memo_start",
         "voice_memo_status",

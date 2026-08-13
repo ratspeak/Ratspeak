@@ -60,7 +60,7 @@ assert(lxmf.includes("choice !== 'file'"),
     'unsupported and animated images require explicit file fallback');
 assert(lxmf.includes('pendingFile.destination === lxmfActiveContact'),
     'preparation must be fenced to the originating conversation');
-assert(lxmf.includes('pendingAttachment.destination !== lxmfActiveContact'),
+assert(lxmf.includes('_canonicalConversationHash(pendingAttachment.destination) !== targetHash'),
     'a prepared attachment must not drift into another conversation');
 assert(state.includes("RS.listen('attachment_memory_pressure'"));
 assert(!lxmf.includes("data_url: 'data:' + lxmfPendingFile.mime"),
@@ -116,13 +116,16 @@ var conversationContext = {
     _conversationCacheMaxBytes: 2 * 1024 * 1024,
 };
 vm.createContext(conversationContext);
-['_utf8ByteLength', 'cacheDel', 'cacheSet', 'cacheGet']
+['_canonicalConversationHash', '_utf8ByteLength', 'cacheDel', 'cacheSet', 'cacheGet']
     .forEach(function(name) { vm.runInContext(functionSource(lxmf, name), conversationContext); });
 for (var cacheIndex = 0; cacheIndex < 10; cacheIndex++) {
     conversationContext.cacheSet('conversation-' + cacheIndex, [{ content: 'bounded' }]);
 }
 assert.strictEqual(conversationContext._cacheLru.length, 8);
 assert.strictEqual(conversationContext._conversationCache['conversation-0'], undefined);
+conversationContext.cacheSet('AABBCC', [{ content: 'canonical' }]);
+assert.strictEqual(conversationContext.cacheGet('aabbcc')[0].content, 'canonical',
+    'conversation caches must not split case-equivalent destination hashes');
 
 (async function() {
     var selected = await choiceContext._chooseImageSize(

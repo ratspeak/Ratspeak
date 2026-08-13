@@ -7,6 +7,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::State;
+use tokio::io::AsyncReadExt as _;
 
 use crate::commands::shared::{hex_to_array16, resolve_identity_hash};
 use crate::error::{AppError, AppResult};
@@ -27,9 +28,12 @@ fn voice_memo_start_error(error: String) -> AppError {
     AppError::service_unavailable(VOICE_MEMO_START_UNAVAILABLE)
 }
 
-fn release_platform_voice_memo_playback_session() {
-    #[cfg(target_os = "ios")]
-    crate::platform_ios::deactivate_voice_memo_playback_session();
+fn voice_memo_session_error(error: String) -> AppError {
+    if error.contains("No matching voice memo recording") {
+        AppError::conflict(error)
+    } else {
+        AppError::service_unavailable(error)
+    }
 }
 
 #[derive(Deserialize)]
@@ -49,7 +53,18 @@ pub struct VoiceRestartSpeakerArgs {
 
 #[derive(Deserialize)]
 pub struct VoiceMemoPauseArgs {
+    pub session_id: String,
     pub paused: bool,
+}
+
+#[derive(Deserialize)]
+pub struct VoiceMemoSessionArgs {
+    pub session_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct VoiceMemoPlaybackLeaseArgs {
+    pub lease_id: String,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +79,7 @@ pub struct VoiceMemoDecodeStoredArgs {
 
 #[derive(Serialize)]
 pub struct VoiceMemoDraftResponse {
+    pub session_id: String,
     pub filename: String,
     pub mime: String,
     pub data_base64: String,
@@ -122,7 +138,6 @@ pub async fn voice_call(state: State<'_, Arc<AppState>>, args: VoiceCallArgs) ->
     // handoff natively as well as in the WebView so a stale client cannot
     // leave an unseen recorder competing for the microphone.
     crate::voice::reserve_call_audio(&app_state);
-    release_platform_voice_memo_playback_session();
     if let Err(error) = crate::voice_memo::cancel_recording(&app_state).await {
         crate::voice::release_call_audio(&app_state);
         return Err(AppError::service_unavailable(error));
@@ -152,7 +167,6 @@ pub async fn voice_call(state: State<'_, Arc<AppState>>, args: VoiceCallArgs) ->
 pub async fn voice_answer(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let app_state = state.inner().clone();
     crate::voice::reserve_call_audio(&app_state);
-    release_platform_voice_memo_playback_session();
     if let Err(error) = crate::voice_memo::cancel_recording(&app_state).await {
         crate::voice::release_call_audio(&app_state);
         return Err(AppError::service_unavailable(error));
@@ -202,7 +216,6 @@ pub async fn voice_restart_speaker(
 
 #[tauri::command]
 pub async fn voice_memo_start(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    release_platform_voice_memo_playback_session();
     crate::voice_memo::start_recording(state.inner())
         .await
         .map(|status| {
@@ -224,19 +237,27 @@ pub async fn voice_memo_pause(
     state: State<'_, Arc<AppState>>,
     args: VoiceMemoPauseArgs,
 ) -> AppResult<Value> {
-    crate::voice_memo::set_paused(&state, args.paused)
+    let session_id = crate::voice_memo::parse_recording_session_id(&args.session_id)
+        .ok_or_else(|| AppError::bad_request("Voice message recording session is invalid"))?;
+    crate::voice_memo::set_paused(&state, session_id, args.paused)
         .await
         .map(|status| serde_json::to_value(status).unwrap_or_else(|_| json!({})))
-        .map_err(AppError::service_unavailable)
+        .map_err(voice_memo_session_error)
 }
 
 #[tauri::command]
-pub async fn voice_memo_stop(state: State<'_, Arc<AppState>>) -> AppResult<VoiceMemoDraftResponse> {
-    let draft = crate::voice_memo::stop_recording(&state)
+pub async fn voice_memo_stop(
+    state: State<'_, Arc<AppState>>,
+    args: VoiceMemoSessionArgs,
+) -> AppResult<VoiceMemoDraftResponse> {
+    let session_id = crate::voice_memo::parse_recording_session_id(&args.session_id)
+        .ok_or_else(|| AppError::bad_request("Voice message recording session is invalid"))?;
+    let draft = crate::voice_memo::stop_recording(&state, session_id)
         .await
-        .map_err(AppError::service_unavailable)?;
+        .map_err(voice_memo_session_error)?;
     let size = draft.data.len();
     Ok(VoiceMemoDraftResponse {
+        session_id: args.session_id,
         filename: crate::voice_memo::VOICE_MEMO_FILENAME.to_string(),
         mime: crate::voice_memo::VOICE_MEMO_MIME.to_string(),
         data_base64: B64.encode(&draft.data),
@@ -247,56 +268,64 @@ pub async fn voice_memo_stop(state: State<'_, Arc<AppState>>) -> AppResult<Voice
 }
 
 #[tauri::command]
-pub async fn voice_memo_cancel(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    crate::voice_memo::cancel_recording(&state)
+pub async fn voice_memo_cancel(
+    state: State<'_, Arc<AppState>>,
+    args: VoiceMemoSessionArgs,
+) -> AppResult<Value> {
+    let session_id = crate::voice_memo::parse_recording_session_id(&args.session_id)
+        .ok_or_else(|| AppError::bad_request("Voice message recording session is invalid"))?;
+    crate::voice_memo::cancel_recording_session(&state, session_id)
         .await
-        .map_err(AppError::service_unavailable)?;
-    Ok(json!({ "ok": true }))
+        .map_err(voice_memo_session_error)?;
+    Ok(json!({ "ok": true, "session_id": args.session_id }))
 }
 
 #[tauri::command]
 pub async fn voice_memo_playback_session_start(
     state: State<'_, Arc<AppState>>,
 ) -> AppResult<Value> {
-    // Serialize against recorder startup. Outgoing/accepted calls reserve
-    // audio before entering this lock, so either playback wins cleanly and is
-    // then superseded by the call, or the playback request is rejected.
-    let _control = state.voice_memo_control_lock.lock().await;
-    if crate::voice::call_audio_reserved(&state) {
-        return Err(AppError::conflict("A voice call is using audio"));
-    }
-    if crate::voice_memo::recording_status(&state).state != "idle" {
-        return Err(AppError::conflict("A voice message is being recorded"));
-    }
-
-    #[cfg(target_os = "ios")]
-    crate::platform_ios::activate_voice_memo_playback_session()
-        .map_err(AppError::service_unavailable)?;
-
-    Ok(json!({ "ok": true }))
+    let lease_id = crate::voice_memo::start_playback_session(&state)
+        .await
+        .map_err(|error| {
+            if error.contains("using audio") || error.contains("being recorded") {
+                AppError::conflict(error)
+            } else {
+                AppError::service_unavailable(error)
+            }
+        })?;
+    Ok(json!({
+        "ok": true,
+        "lease_id": crate::voice_memo::format_playback_lease_id(lease_id),
+    }))
 }
 
 #[tauri::command]
-pub async fn voice_memo_playback_session_stop(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    let _control = state.voice_memo_control_lock.lock().await;
-
-    release_platform_voice_memo_playback_session();
-
-    Ok(json!({ "ok": true }))
+pub async fn voice_memo_playback_session_stop(
+    state: State<'_, Arc<AppState>>,
+    args: VoiceMemoPlaybackLeaseArgs,
+) -> AppResult<Value> {
+    let lease_id = crate::voice_memo::parse_playback_lease_id(&args.lease_id)
+        .ok_or_else(|| AppError::bad_request("Voice message playback lease is invalid"))?;
+    let released = crate::voice_memo::stop_playback_session(&state, lease_id).await;
+    Ok(json!({ "ok": true, "released": released, "lease_id": args.lease_id }))
 }
 
 #[tauri::command]
 pub async fn voice_memo_decode_data(
-    _state: State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
     args: VoiceMemoDecodeDataArgs,
 ) -> AppResult<VoiceMemoPlaybackResponse> {
-    if args.data_base64.len() > rns_protocol::resource::MAX_EFFICIENT_SIZE.saturating_mul(2) {
+    let max_encoded = crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES
+        .div_ceil(3)
+        .saturating_mul(4);
+    if args.data_base64.len() > max_encoded {
         return Err(AppError::bad_request("Voice memo data is too large"));
     }
     let data = B64
         .decode(args.data_base64)
         .map_err(|_| AppError::bad_request("Voice memo data is not valid base64"))?;
-    decode_voice_memo_response(data).await
+    ensure_voice_memo_container_size(data.len())?;
+    decode_voice_memo_response(&state, data).await
 }
 
 #[tauri::command]
@@ -314,10 +343,8 @@ pub async fn voice_memo_decode_stored(
                 .and_then(|manager| manager.get_received_file(&args.stored_name))
         })
         .ok_or_else(|| AppError::not_found("Voice memo not found"))?;
-    let data = tokio::fs::read(path)
-        .await
-        .map_err(|_| AppError::not_found("Voice memo not found"))?;
-    decode_voice_memo_response(data).await
+    let data = read_bounded_voice_memo(path).await?;
+    decode_voice_memo_response(&state, data).await
 }
 
 #[tauri::command]
@@ -335,9 +362,7 @@ pub async fn voice_memo_inspect_stored(
                 .and_then(|manager| manager.get_received_file(&args.stored_name))
         })
         .ok_or_else(|| AppError::not_found("Voice memo not found"))?;
-    let data = tokio::fs::read(path)
-        .await
-        .map_err(|_| AppError::not_found("Voice memo not found"))?;
+    let data = read_bounded_voice_memo(path).await?;
     let metadata =
         tokio::task::spawn_blocking(move || crate::voice_memo::inspect_voice_memo(&data))
             .await
@@ -346,7 +371,40 @@ pub async fn voice_memo_inspect_stored(
     Ok(serde_json::to_value(metadata).unwrap_or_else(|_| json!({})))
 }
 
-async fn decode_voice_memo_response(data: Vec<u8>) -> AppResult<VoiceMemoPlaybackResponse> {
+fn ensure_voice_memo_container_size(size: usize) -> AppResult<()> {
+    if size > crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES {
+        return Err(AppError::bad_request("Voice memo data is too large"));
+    }
+    Ok(())
+}
+
+async fn read_bounded_voice_memo(path: std::path::PathBuf) -> AppResult<Vec<u8>> {
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| AppError::not_found("Voice memo not found"))?;
+    let size = usize::try_from(metadata.len())
+        .map_err(|_| AppError::bad_request("Voice memo data is too large"))?;
+    ensure_voice_memo_container_size(size)?;
+    let mut data = Vec::with_capacity(size);
+    tokio::fs::File::open(path)
+        .await
+        .map_err(|_| AppError::not_found("Voice memo not found"))?
+        .take((crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES as u64) + 1)
+        .read_to_end(&mut data)
+        .await
+        .map_err(|_| AppError::not_found("Voice memo not found"))?;
+    // Bound the read as well as checking metadata, since the private file could
+    // have been replaced or grown between those operations.
+    ensure_voice_memo_container_size(data.len())?;
+    Ok(data)
+}
+
+async fn decode_voice_memo_response(
+    state: &AppState,
+    data: Vec<u8>,
+) -> AppResult<VoiceMemoPlaybackResponse> {
+    ensure_voice_memo_container_size(data.len())?;
+    let _decode = state.voice_memo_decode_lock.lock().await;
     let playback = tokio::task::spawn_blocking(move || crate::voice_memo::decode_voice_memo(&data))
         .await
         .map_err(|_| AppError::internal("Voice memo decoder task panicked"))?
@@ -376,5 +434,36 @@ mod tests {
         assert_eq!(error.message, VOICE_MEMO_START_UNAVAILABLE);
         assert!(!error.message.contains("CoreAudio"));
         assert!(!error.message.contains("backend"));
+    }
+
+    #[test]
+    fn voice_memo_container_limit_rejects_only_oversize() {
+        assert!(
+            ensure_voice_memo_container_size(crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES)
+                .is_ok()
+        );
+        let error =
+            ensure_voice_memo_container_size(crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES + 1)
+                .expect_err("oversized memo must be rejected before decode");
+        assert_eq!(error.code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn stored_voice_memo_is_rejected_from_metadata_before_read() {
+        let path = std::env::temp_dir().join(format!(
+            "ratspeak-voice-oversize-{}-{}.lxvm",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let file = std::fs::File::create(&path).expect("create sparse fixture");
+        file.set_len((crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES + 1) as u64)
+            .expect("set sparse fixture length");
+        drop(file);
+
+        let error = read_bounded_voice_memo(path.clone())
+            .await
+            .expect_err("metadata size must reject the file before reading it");
+        assert_eq!(error.code, "bad_request");
+        std::fs::remove_file(path).expect("remove sparse fixture");
     }
 }

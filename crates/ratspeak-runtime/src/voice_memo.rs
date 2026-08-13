@@ -5,6 +5,7 @@
 //! reuses the trusted LXST Opus implementation while giving asynchronous media
 //! a small, versioned, strictly bounded container of its own.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::Stream;
@@ -28,9 +29,11 @@ const HEADER_LEN: usize = 16;
 const FRAME_MS: u32 = 60;
 const MAX_FRAME_COUNT: usize = (VOICE_MEMO_MAX_DURATION_MS / FRAME_MS) as usize;
 const MAX_FRAME_PAYLOAD: usize = 60;
-const MAX_CONTAINER_BYTES: usize =
+pub const VOICE_MEMO_MAX_CONTAINER_BYTES: usize =
     HEADER_LEN + MAX_FRAME_COUNT * (1 + std::mem::size_of::<u16>() + MAX_FRAME_PAYLOAD);
 const MIN_FRAME_COUNT: usize = 3;
+const RECORDING_SESSION_PREFIX: &str = "vmr-";
+const PLAYBACK_LEASE_PREFIX: &str = "vmp-";
 
 pub type VoiceMemoResult<T> = Result<T, String>;
 
@@ -39,6 +42,7 @@ pub struct VoiceMemoStatus {
     pub state: String,
     pub duration_ms: u32,
     pub max_duration_ms: u32,
+    pub session_id: Option<String>,
 }
 
 impl VoiceMemoStatus {
@@ -47,6 +51,7 @@ impl VoiceMemoStatus {
             state: "idle".to_string(),
             duration_ms: 0,
             max_duration_ms: VOICE_MEMO_MAX_DURATION_MS,
+            session_id: None,
         }
     }
 }
@@ -87,12 +92,28 @@ enum RecorderCommand {
 }
 
 pub struct VoiceMemoRecordingHandle {
+    session_id: u64,
     command_tx: mpsc::Sender<RecorderCommand>,
     status: Arc<Mutex<VoiceMemoStatus>>,
     task: Option<JoinHandle<()>>,
 }
 
+struct RecordingActor {
+    state: Arc<AppState>,
+    _platform_audio_session: crate::voice::PlatformVoiceAudioSession,
+    stream: Stream,
+    capture_rx: mpsc::Receiver<RawAudioFrame>,
+    command_rx: mpsc::Receiver<RecorderCommand>,
+    encoder: OpusEncoderState,
+    status: Arc<Mutex<VoiceMemoStatus>>,
+    session_id: u64,
+}
+
 impl VoiceMemoRecordingHandle {
+    fn matches(&self, session_id: u64) -> bool {
+        self.session_id == session_id
+    }
+
     fn command_tx(&self) -> mpsc::Sender<RecorderCommand> {
         self.command_tx.clone()
     }
@@ -114,6 +135,48 @@ impl VoiceMemoRecordingHandle {
     }
 }
 
+fn next_nonzero_generation(counter: &AtomicU64) -> u64 {
+    loop {
+        let generation = counter.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        if generation != 0 {
+            return generation;
+        }
+    }
+}
+
+fn format_opaque_id(prefix: &str, id: u64) -> String {
+    format!("{prefix}{id:016x}")
+}
+
+fn parse_opaque_id(value: &str, prefix: &str) -> Option<u64> {
+    let encoded = value.strip_prefix(prefix)?;
+    if encoded.len() != 16
+        || !encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let id = u64::from_str_radix(encoded, 16).ok()?;
+    (id != 0).then_some(id)
+}
+
+pub fn format_recording_session_id(id: u64) -> String {
+    format_opaque_id(RECORDING_SESSION_PREFIX, id)
+}
+
+pub fn parse_recording_session_id(value: &str) -> Option<u64> {
+    parse_opaque_id(value, RECORDING_SESSION_PREFIX)
+}
+
+pub fn format_playback_lease_id(id: u64) -> String {
+    format_opaque_id(PLAYBACK_LEASE_PREFIX, id)
+}
+
+pub fn parse_playback_lease_id(value: &str) -> Option<u64> {
+    parse_opaque_id(value, PLAYBACK_LEASE_PREFIX)
+}
+
 impl Drop for VoiceMemoRecordingHandle {
     fn drop(&mut self) {
         if let Some(task) = self.task.take() {
@@ -127,6 +190,7 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
         return Err("A voice call is using the microphone".to_string());
     }
     let _control = state.voice_memo_control_lock.lock().await;
+    invalidate_playback_session_locked(state);
     if crate::voice::call_audio_reserved(state) {
         return Err("A voice call is using the microphone".to_string());
     }
@@ -138,11 +202,13 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
     {
         return Err("A voice memo is already being recorded".to_string());
     }
+    let session_id = next_nonzero_generation(&state.voice_memo_recording_generation);
     let (command_tx, command_rx) = mpsc::channel(4);
     let status = Arc::new(Mutex::new(VoiceMemoStatus {
         state: "starting".to_string(),
         duration_ms: 0,
         max_duration_ms: VOICE_MEMO_MAX_DURATION_MS,
+        session_id: Some(format_recording_session_id(session_id)),
     }));
     let task_state = Arc::clone(state);
     let task_status = Arc::clone(&status);
@@ -166,20 +232,22 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
                     return;
                 }
             };
-        let _ = update_status(&task_status, "recording", 0);
+        let _ = update_status(&task_status, session_id, "recording", 0);
         let _ = started_tx.send(Ok(()));
-        runtime.block_on(drive_recording(
-            task_state,
-            platform_audio_session,
+        runtime.block_on(drive_recording(RecordingActor {
+            state: task_state,
+            _platform_audio_session: platform_audio_session,
             stream,
             capture_rx,
             command_rx,
             encoder,
-            task_status,
-        ));
+            status: task_status,
+            session_id,
+        }));
     });
 
     let handle = VoiceMemoRecordingHandle {
+        session_id,
         command_tx,
         status,
         task: Some(task),
@@ -214,6 +282,7 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
             "duration_ms": 0,
             "level": 0,
             "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+            "session_id": format_recording_session_id(session_id),
         }),
     );
     Ok(response)
@@ -228,14 +297,20 @@ pub fn recording_status(state: &AppState) -> VoiceMemoStatus {
         .unwrap_or_else(VoiceMemoStatus::idle)
 }
 
-pub async fn set_paused(state: &AppState, paused: bool) -> VoiceMemoResult<VoiceMemoStatus> {
+pub async fn set_paused(
+    state: &AppState,
+    session_id: u64,
+    paused: bool,
+) -> VoiceMemoResult<VoiceMemoStatus> {
+    let _control = state.voice_memo_control_lock.lock().await;
     let command_tx = state
         .voice_memo_recording
         .lock()
         .map_err(|_| "Voice memo state is unavailable".to_string())?
         .as_ref()
+        .filter(|handle| handle.matches(session_id))
         .map(VoiceMemoRecordingHandle::command_tx)
-        .ok_or_else(|| "No voice memo is being recorded".to_string())?;
+        .ok_or_else(|| "No matching voice memo recording is active".to_string())?;
     let (reply_tx, reply_rx) = oneshot::channel();
     command_tx
         .send(RecorderCommand::SetPaused {
@@ -249,14 +324,9 @@ pub async fn set_paused(state: &AppState, paused: bool) -> VoiceMemoResult<Voice
         .map_err(|_| "Voice memo recorder stopped unexpectedly".to_string())
 }
 
-pub async fn stop_recording(state: &AppState) -> VoiceMemoResult<VoiceMemoDraft> {
+pub async fn stop_recording(state: &AppState, session_id: u64) -> VoiceMemoResult<VoiceMemoDraft> {
     let _control = state.voice_memo_control_lock.lock().await;
-    let handle = state
-        .voice_memo_recording
-        .lock()
-        .map_err(|_| "Voice memo state is unavailable".to_string())?
-        .take()
-        .ok_or_else(|| "No voice memo is being recorded".to_string())?;
+    let handle = take_matching_recording(state, session_id)?;
     let command_tx = handle.command_tx();
     let (reply_tx, reply_rx) = oneshot::channel();
     command_tx
@@ -272,6 +342,7 @@ pub async fn stop_recording(state: &AppState) -> VoiceMemoResult<VoiceMemoDraft>
 
 pub async fn cancel_recording(state: &AppState) -> VoiceMemoResult<()> {
     let _control = state.voice_memo_control_lock.lock().await;
+    invalidate_playback_session_locked(state);
     let handle = state
         .voice_memo_recording
         .lock()
@@ -293,15 +364,99 @@ pub async fn cancel_recording(state: &AppState) -> VoiceMemoResult<()> {
     Ok(())
 }
 
-async fn drive_recording(
-    state: Arc<AppState>,
-    _platform_audio_session: crate::voice::PlatformVoiceAudioSession,
-    stream: Stream,
-    mut capture_rx: mpsc::Receiver<RawAudioFrame>,
-    mut command_rx: mpsc::Receiver<RecorderCommand>,
-    mut encoder: OpusEncoderState,
-    status: Arc<Mutex<VoiceMemoStatus>>,
-) {
+pub async fn cancel_recording_session(state: &AppState, session_id: u64) -> VoiceMemoResult<()> {
+    let _control = state.voice_memo_control_lock.lock().await;
+    let handle = take_matching_recording(state, session_id)?;
+    cancel_handle(handle).await;
+    Ok(())
+}
+
+fn take_matching_recording(
+    state: &AppState,
+    session_id: u64,
+) -> VoiceMemoResult<VoiceMemoRecordingHandle> {
+    let mut slot = state
+        .voice_memo_recording
+        .lock()
+        .map_err(|_| "Voice memo state is unavailable".to_string())?;
+    if !slot
+        .as_ref()
+        .is_some_and(|handle| handle.matches(session_id))
+    {
+        return Err("No matching voice memo recording is active".to_string());
+    }
+    slot.take()
+        .ok_or_else(|| "No matching voice memo recording is active".to_string())
+}
+
+async fn cancel_handle(handle: VoiceMemoRecordingHandle) {
+    let command_tx = handle.command_tx();
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if command_tx
+        .send(RecorderCommand::Cancel { reply: reply_tx })
+        .await
+        .is_ok()
+    {
+        let _ = reply_rx.await;
+    }
+    handle.join().await;
+}
+
+pub async fn start_playback_session(state: &AppState) -> VoiceMemoResult<u64> {
+    let _control = state.voice_memo_control_lock.lock().await;
+    if crate::voice::call_audio_reserved(state) {
+        return Err("A voice call is using audio".to_string());
+    }
+    if recording_status(state).state != "idle" {
+        return Err("A voice message is being recorded".to_string());
+    }
+
+    invalidate_playback_session_locked(state);
+    let lease_id = next_nonzero_generation(&state.voice_memo_playback_generation);
+    #[cfg(target_os = "ios")]
+    crate::platform_ios::activate_voice_memo_playback_session(lease_id)?;
+    state
+        .voice_memo_playback_lease
+        .store(lease_id, Ordering::Release);
+    Ok(lease_id)
+}
+
+pub async fn stop_playback_session(state: &AppState, lease_id: u64) -> bool {
+    let _control = state.voice_memo_control_lock.lock().await;
+    if !release_playback_lease(&state.voice_memo_playback_lease, lease_id) {
+        return false;
+    }
+    #[cfg(target_os = "ios")]
+    crate::platform_ios::deactivate_voice_memo_playback_session(lease_id);
+    true
+}
+
+fn release_playback_lease(current: &AtomicU64, lease_id: u64) -> bool {
+    lease_id != 0
+        && current
+            .compare_exchange(lease_id, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+}
+
+fn invalidate_playback_session_locked(state: &AppState) {
+    let lease_id = state.voice_memo_playback_lease.swap(0, Ordering::AcqRel);
+    if lease_id != 0 {
+        #[cfg(target_os = "ios")]
+        crate::platform_ios::deactivate_voice_memo_playback_session(lease_id);
+    }
+}
+
+async fn drive_recording(actor: RecordingActor) {
+    let RecordingActor {
+        state,
+        _platform_audio_session,
+        stream,
+        mut capture_rx,
+        mut command_rx,
+        mut encoder,
+        status,
+        session_id,
+    } = actor;
     let mut stream = Some(stream);
     let mut capture_open = true;
     let mut paused = false;
@@ -317,7 +472,7 @@ async fn drive_recording(
                     RecorderCommand::SetPaused { paused: next_paused, reply } => {
                         paused = next_paused;
                         let next_state = if paused { "paused" } else { "recording" };
-                        let snapshot = update_status(&status, next_state, frames.len());
+                        let snapshot = update_status(&status, session_id, next_state, frames.len());
                         state.emit_to_all(
                             "voice_memo_recording",
                             serde_json::json!({
@@ -325,6 +480,7 @@ async fn drive_recording(
                                 "duration_ms": snapshot.duration_ms,
                                 "level": 0,
                                 "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+                                "session_id": format_recording_session_id(session_id),
                             }),
                         );
                         let _ = reply.send(snapshot);
@@ -359,7 +515,7 @@ async fn drive_recording(
                 if paused { continue; }
                 match encode_captured_frame(&mut encoder, frame, &mut frames, &mut waveform) {
                     Ok(level) => {
-                        let snapshot = update_status(&status, "recording", frames.len());
+                        let snapshot = update_status(&status, session_id, "recording", frames.len());
                         state.emit_to_all(
                             "voice_memo_recording",
                             serde_json::json!({
@@ -367,12 +523,13 @@ async fn drive_recording(
                                 "duration_ms": snapshot.duration_ms,
                                 "level": level,
                                 "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+                                "session_id": format_recording_session_id(session_id),
                             }),
                         );
                         if frames.len() >= MAX_FRAME_COUNT {
                             stream.take();
                             capture_open = false;
-                            let snapshot = update_status(&status, "limit", frames.len());
+                            let snapshot = update_status(&status, session_id, "limit", frames.len());
                             state.emit_to_all(
                                 "voice_memo_recording",
                                 serde_json::json!({
@@ -380,6 +537,7 @@ async fn drive_recording(
                                     "duration_ms": snapshot.duration_ms,
                                     "level": 0,
                                     "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+                                    "session_id": format_recording_session_id(session_id),
                                 }),
                             );
                         }
@@ -387,7 +545,7 @@ async fn drive_recording(
                     Err(message) => {
                         stream.take();
                         capture_open = false;
-                        let snapshot = update_status(&status, "error", frames.len());
+                        let snapshot = update_status(&status, session_id, "error", frames.len());
                         state.emit_to_all(
                             "voice_memo_recording",
                             serde_json::json!({
@@ -396,6 +554,7 @@ async fn drive_recording(
                                 "level": 0,
                                 "message": message,
                                 "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+                                "session_id": format_recording_session_id(session_id),
                             }),
                         );
                     }
@@ -405,7 +564,7 @@ async fn drive_recording(
     }
 
     stream.take();
-    let _ = update_status(&status, "idle", 0);
+    let _ = update_status(&status, session_id, "idle", 0);
     state.emit_to_all(
         "voice_memo_recording",
         serde_json::json!({
@@ -413,12 +572,14 @@ async fn drive_recording(
             "duration_ms": 0,
             "level": 0,
             "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+            "session_id": format_recording_session_id(session_id),
         }),
     );
 }
 
 fn update_status(
     status: &Arc<Mutex<VoiceMemoStatus>>,
+    session_id: u64,
     state: &str,
     frame_count: usize,
 ) -> VoiceMemoStatus {
@@ -426,6 +587,7 @@ fn update_status(
         state: state.to_string(),
         duration_ms: duration_for_frames(frame_count),
         max_duration_ms: VOICE_MEMO_MAX_DURATION_MS,
+        session_id: Some(format_recording_session_id(session_id)),
     };
     match status.lock() {
         Ok(mut current) => *current = snapshot.clone(),
@@ -499,7 +661,7 @@ fn encode_container(frames: &[Vec<u8>], waveform: &[u8]) -> VoiceMemoResult<Vec<
         data.extend_from_slice(&length.to_be_bytes());
         data.extend_from_slice(frame);
     }
-    if data.len() > MAX_CONTAINER_BYTES {
+    if data.len() > VOICE_MEMO_MAX_CONTAINER_BYTES {
         return Err("Voice memo exceeds the container limit".to_string());
     }
     Ok(data)
@@ -512,7 +674,7 @@ struct ParsedVoiceMemo {
 }
 
 fn parse_container(data: &[u8]) -> VoiceMemoResult<ParsedVoiceMemo> {
-    if data.len() < HEADER_LEN || data.len() > MAX_CONTAINER_BYTES {
+    if data.len() < HEADER_LEN || data.len() > VOICE_MEMO_MAX_CONTAINER_BYTES {
         return Err("Voice memo size is invalid".to_string());
     }
     if &data[..4] != MAGIC {
@@ -674,6 +836,41 @@ mod tests {
     }
 
     #[test]
+    fn opaque_session_ids_are_canonical_and_domain_separated() {
+        let recording = format_recording_session_id(0x12ab);
+        let playback = format_playback_lease_id(0x12ab);
+
+        assert_eq!(recording, "vmr-00000000000012ab");
+        assert_eq!(playback, "vmp-00000000000012ab");
+        assert_eq!(parse_recording_session_id(&recording), Some(0x12ab));
+        assert_eq!(parse_playback_lease_id(&playback), Some(0x12ab));
+        assert_eq!(parse_recording_session_id(&playback), None);
+        assert_eq!(parse_playback_lease_id(&recording), None);
+        assert_eq!(parse_recording_session_id("vmr-00000000000012AB"), None);
+        assert_eq!(parse_recording_session_id("vmr-0000000000000000"), None);
+    }
+
+    #[test]
+    fn opaque_generation_skips_zero_even_after_wraparound() {
+        let counter = AtomicU64::new(0);
+        assert_eq!(next_nonzero_generation(&counter), 1);
+        assert_eq!(next_nonzero_generation(&counter), 2);
+
+        let wrapping = AtomicU64::new(u64::MAX);
+        assert_eq!(next_nonzero_generation(&wrapping), 1);
+    }
+
+    #[test]
+    fn stale_playback_release_cannot_clear_replacement_lease() {
+        let current = AtomicU64::new(42);
+        assert!(!release_playback_lease(&current, 41));
+        assert_eq!(current.load(Ordering::Acquire), 42);
+        assert!(release_playback_lease(&current, 42));
+        assert_eq!(current.load(Ordering::Acquire), 0);
+        assert!(!release_playback_lease(&current, 0));
+    }
+
+    #[test]
     fn container_round_trip_decodes_to_bounded_wav() {
         let (frames, waveform) = synthetic_frames(8);
         let encoded = encode_container(&frames, &waveform).unwrap();
@@ -717,7 +914,7 @@ mod tests {
     #[test]
     fn encoder_keeps_max_memo_under_reticulum_efficient_resource_limit() {
         const {
-            assert!(MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE);
+            assert!(VOICE_MEMO_MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE);
         }
     }
 
