@@ -130,6 +130,31 @@ fn ble_rnode_readiness_failure_feedback(
             "startup_timeout",
             BleRnodeActivityOutcome::StartupTimedOut,
         ),
+        RnodeReadinessFailure::CapabilityAdmissionRejected(class) => {
+            use rns_interface::rnode::RNodeCapabilityAdmissionFailureClass as FailureClass;
+            match class {
+                Some(FailureClass::InvalidCapabilityImage) => (
+                    "RNode identity information is corrupted or incomplete. Re-provision the RNode and try again.",
+                    "invalid_capability_image",
+                    BleRnodeActivityOutcome::RuntimeFailed,
+                ),
+                Some(FailureClass::RadioSettingsRejected) => (
+                    "This RNode model rejects the configured frequency or TX power. Adjust the radio settings and try again.",
+                    "radio_settings_rejected",
+                    BleRnodeActivityOutcome::ConfigureFailed,
+                ),
+                Some(FailureClass::UnsupportedFirmware) => (
+                    "RNode firmware is too old for this app. Update the RNode firmware.",
+                    "unsupported_firmware",
+                    BleRnodeActivityOutcome::RuntimeFailed,
+                ),
+                _ => (
+                    "RNode failed capability checks. Reconnect or re-provision the RNode.",
+                    "capability_admission_rejected",
+                    BleRnodeActivityOutcome::RuntimeFailed,
+                ),
+            }
+        }
         RnodeReadinessFailure::ShuttingDown
         | RnodeReadinessFailure::Stopped
         | RnodeReadinessFailure::ObservationClosed
@@ -2221,6 +2246,60 @@ mod tests {
             let (status, code, outcome) = ble_rnode_readiness_failure_feedback(failure);
             assert_eq!(status, "RNode did not become ready. Try connecting again.");
             assert_eq!(code, "readiness_failed");
+            assert!(matches!(outcome, BleRnodeActivityOutcome::RuntimeFailed));
+        }
+    }
+
+    #[test]
+    fn capability_admission_rejections_surface_actionable_feedback() {
+        use rns_interface::rnode::RNodeCapabilityAdmissionFailureClass as FailureClass;
+
+        let (status, code, outcome) = ble_rnode_readiness_failure_feedback(
+            RnodeReadinessFailure::CapabilityAdmissionRejected(Some(
+                FailureClass::InvalidCapabilityImage,
+            )),
+        );
+        assert_eq!(
+            status,
+            "RNode identity information is corrupted or incomplete. Re-provision the RNode and try again."
+        );
+        assert_eq!(code, "invalid_capability_image");
+        assert!(matches!(outcome, BleRnodeActivityOutcome::RuntimeFailed));
+
+        let (status, code, outcome) = ble_rnode_readiness_failure_feedback(
+            RnodeReadinessFailure::CapabilityAdmissionRejected(Some(
+                FailureClass::RadioSettingsRejected,
+            )),
+        );
+        assert_eq!(
+            status,
+            "This RNode model rejects the configured frequency or TX power. Adjust the radio settings and try again."
+        );
+        assert_eq!(code, "radio_settings_rejected");
+        assert!(matches!(outcome, BleRnodeActivityOutcome::ConfigureFailed));
+
+        let (status, code, outcome) = ble_rnode_readiness_failure_feedback(
+            RnodeReadinessFailure::CapabilityAdmissionRejected(Some(
+                FailureClass::UnsupportedFirmware,
+            )),
+        );
+        assert_eq!(
+            status,
+            "RNode firmware is too old for this app. Update the RNode firmware."
+        );
+        assert_eq!(code, "unsupported_firmware");
+        assert!(matches!(outcome, BleRnodeActivityOutcome::RuntimeFailed));
+
+        for fallback in [
+            RnodeReadinessFailure::CapabilityAdmissionRejected(None),
+            RnodeReadinessFailure::CapabilityAdmissionRejected(Some(FailureClass::DeviceError)),
+        ] {
+            let (status, code, outcome) = ble_rnode_readiness_failure_feedback(fallback);
+            assert_eq!(
+                status,
+                "RNode failed capability checks. Reconnect or re-provision the RNode."
+            );
+            assert_eq!(code, "capability_admission_rejected");
             assert!(matches!(outcome, BleRnodeActivityOutcome::RuntimeFailed));
         }
     }

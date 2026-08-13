@@ -8,7 +8,9 @@ use std::fmt;
 use std::time::Duration;
 
 use ratspeak_runtime::{PendingRNodeActivityMonitor, RNodeActivityOrigin};
-use rns_interface::rnode::RNodeTransportClass;
+use rns_interface::rnode::{
+    RNodeCapabilityAdmissionFailureClass, RNodeRuntimeReason, RNodeTransportClass,
+};
 use rns_runtime::reticulum::{RNodeReadinessError, ReticulumHandle, SpawnedRNodeRuntime};
 
 use crate::state::AppState;
@@ -20,14 +22,19 @@ pub(crate) const RNODE_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
 /// Privacy-safe terminal classification for a bounded readiness wait.
 ///
 /// The upstream error carries a last-known snapshot. Command callers should
-/// use this classification instead of surfacing that snapshot or depending on
-/// its current fields.
+/// use this classification instead of surfacing that snapshot: no numeric or
+/// device-derived snapshot fields may cross this boundary, but the upstream
+/// closed typed classifications (runtime reason, capability admission failure
+/// class) may be consulted and carried.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RnodeReadinessFailure {
     Timeout,
     ShuttingDown,
     Stopped,
     ObservationClosed,
+    /// The driver terminally rejected the device's capability admission; the
+    /// class identifies why, when the driver published one.
+    CapabilityAdmissionRejected(Option<RNodeCapabilityAdmissionFailureClass>),
     /// Forward-compatible fallback for new non-exhaustive upstream variants.
     Unclassified,
 }
@@ -39,6 +46,7 @@ impl fmt::Display for RnodeReadinessFailure {
             Self::ShuttingDown => "RNode began shutting down before becoming ready",
             Self::Stopped => "RNode stopped before becoming ready",
             Self::ObservationClosed => "RNode readiness observation closed",
+            Self::CapabilityAdmissionRejected(_) => "RNode capability admission was rejected",
             Self::Unclassified => "RNode readiness failed",
         })
     }
@@ -52,7 +60,17 @@ pub(crate) fn classify_rnode_readiness_error(error: &RNodeReadinessError) -> Rno
     match error {
         RNodeReadinessError::Timeout { .. } => RnodeReadinessFailure::Timeout,
         RNodeReadinessError::ShuttingDown { .. } => RnodeReadinessFailure::ShuttingDown,
-        RNodeReadinessError::Stopped { .. } => RnodeReadinessFailure::Stopped,
+        RNodeReadinessError::Stopped { .. } => {
+            let class = error.capability_admission_failure();
+            if class.is_some()
+                || error.last_snapshot().reason
+                    == Some(RNodeRuntimeReason::CapabilityAdmissionRejected)
+            {
+                RnodeReadinessFailure::CapabilityAdmissionRejected(class)
+            } else {
+                RnodeReadinessFailure::Stopped
+            }
+        }
         RNodeReadinessError::ObservationClosed { .. } => RnodeReadinessFailure::ObservationClosed,
         _ => RnodeReadinessFailure::Unclassified,
     }
@@ -168,6 +186,10 @@ mod tests {
         assert_eq!(
             RnodeReadinessFailure::ObservationClosed.to_string(),
             "RNode readiness observation closed"
+        );
+        assert_eq!(
+            RnodeReadinessFailure::CapabilityAdmissionRejected(None).to_string(),
+            "RNode capability admission was rejected"
         );
         assert_eq!(
             RnodeReadinessFailure::Unclassified.to_string(),
