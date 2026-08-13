@@ -20,6 +20,8 @@ use ratspeak_runtime::activity::producer::{
     InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason, InterfaceTimeoutReason,
     InterfaceTransition,
 };
+#[cfg(target_os = "android")]
+use ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect;
 #[cfg(feature = "ble")]
 use rns_interface::rnode::RNodeStartupOptions;
 
@@ -177,10 +179,9 @@ fn complete_waiting_ble_rnode_operation(
 
 #[cfg(target_os = "android")]
 fn disconnect_native_ble_rnode_operation(state: &AppState, activity_operation: &str) {
-    state.emit_to_all(
-        "ble_rnode_disconnect_native",
-        json!({ "activity_operation": activity_operation }),
-    );
+    let _ = state
+        .mobile_platform_bridge()
+        .disconnect_ble_rnode(NativeBleRnodeDisconnect::ExactOperation(activity_operation));
 }
 
 /// Relay typed BLE pairing/product events. Call once per process.
@@ -1206,10 +1207,18 @@ pub struct BleRnodeBridgeArgs {
     pub tx_power: i8,
     #[serde(default)]
     pub mode: Option<String>,
+    #[serde(skip)]
+    pub native_mode: Option<u8>,
     #[serde(default)]
     pub airtime_limit_short: Option<f64>,
     #[serde(default)]
     pub airtime_limit_long: Option<f64>,
+    #[serde(default)]
+    pub id_interval: Option<u64>,
+    #[serde(default)]
+    pub id_callsign: Option<String>,
+    #[serde(skip)]
+    pub saved_startup: bool,
 }
 
 fn default_name() -> String {
@@ -1237,7 +1246,15 @@ pub async fn ble_rnode_bridge_ready(
     state: State<'_, Arc<AppState>>,
     args: BleRnodeBridgeArgs,
 ) -> AppResult<Value> {
-    let state_arc: Arc<AppState> = Arc::clone(&state);
+    apply_ble_rnode_bridge_ready(Arc::clone(state.inner()), args).await
+}
+
+/// Complete a native BLE listener handoff without routing platform authority
+/// through the WebView. Android JNI calls this after generation validation.
+pub async fn apply_ble_rnode_bridge_ready(
+    state_arc: Arc<AppState>,
+    args: BleRnodeBridgeArgs,
+) -> AppResult<Value> {
     let activity_operation = args.activity_operation.clone();
     let activity_fence = state_arc
         .claim_ble_rnode_activity_operation(&activity_operation)
@@ -1250,7 +1267,19 @@ pub async fn ble_rnode_bridge_ready(
     let sf = args.spreading_factor;
     let cr = args.coding_rate;
     let tx = args.tx_power;
-    let Some(mode) = crate::rns_config::rnode_interface_mode_value(args.mode.as_deref()) else {
+    #[cfg(feature = "ble")]
+    let id_interval = args.id_interval;
+    #[cfg(feature = "ble")]
+    let id_callsign = args.id_callsign.clone();
+    #[cfg(feature = "ble")]
+    let saved_startup = args.saved_startup;
+    #[cfg(not(feature = "ble"))]
+    let _ = (&args.id_interval, &args.id_callsign, args.saved_startup);
+    let mode = args
+        .native_mode
+        .and_then(rns_interface::traits::InterfaceMode::from_u8)
+        .or_else(|| crate::rns_config::rnode_interface_mode_value(args.mode.as_deref()));
+    let Some(mode) = mode else {
         #[cfg(target_os = "android")]
         disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
         if let Some((terminal_fence, rollback_context, completion)) = state_arc
@@ -1361,11 +1390,11 @@ pub async fn ble_rnode_bridge_ready(
                     Some(rnode_context) => {
                         let rns = rnode_context.handle().clone();
                         let rnode_activity_origin = rnode_context.origin();
-                        let result = rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options(
+                        let result = rns_runtime::reticulum::spawn_ble_rnode_runtime_native_with_config_and_options(
                                 &rns,
-                                rns_runtime::reticulum::BleRnodeRuntimeArgs {
-                                    name: &name,
-                                    port: &port,
+                                rns_runtime::interface_factory::BleRNodeInterfaceConfig {
+                                    name: name.clone(),
+                                    port: port.clone(),
                                     frequency: frequency as u32,
                                     bandwidth: bandwidth as u32,
                                     spreading_factor: sf,
@@ -1375,6 +1404,8 @@ pub async fn ble_rnode_bridge_ready(
                                     st_alock,
                                     lt_alock,
                                     flow_control: true,
+                                    id_interval,
+                                    id_callsign,
                                 },
                                 tcp_port,
                                 RNodeStartupOptions::require_capability_admission(),
@@ -1389,6 +1420,38 @@ pub async fn ble_rnode_bridge_ready(
 
             match spawn_result {
                 Some((rns, rnode_activity_origin, Ok(spawned))) => {
+                    if saved_startup {
+                        let terminal = state_arc
+                            .take_initializing_ble_rnode_activity_operation_with_completion(
+                                &activity_operation,
+                            );
+                        if terminal.is_some()
+                            && state_arc.cover_rnode_activity_interface(
+                                spawned.interface_id,
+                                rnode_activity_origin,
+                            )
+                        {
+                            ratspeak_runtime::spawn_startup_rnode_activity_monitor(
+                                Arc::clone(&state_arc),
+                                spawned.observer.clone(),
+                                rnode_activity_origin,
+                            );
+                            state_arc.publish_mobile_hardware_state(
+                                "ble_rnode",
+                                "reconnecting",
+                                None,
+                            );
+                        } else {
+                            teardown_spawned_rnode_exact(&rns, &spawned).await;
+                            #[cfg(target_os = "android")]
+                            disconnect_native_ble_rnode_operation(&state_arc, &activity_operation);
+                        }
+                        let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(
+                            &state_arc,
+                        ));
+                        emit_hub_interfaces(&state_arc, ifaces);
+                        return;
+                    }
                     // Keep cancellation/replacement responsive while the exact
                     // observer performs its bounded, reconnect-aware wait.
                     let readiness_result = {
@@ -1656,7 +1719,7 @@ pub async fn ble_rnode_bridge_ready(
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum BleRnodeNativeFailureCode {
+pub enum BleRnodeNativeFailureCode {
     #[default]
     ConnectFailed,
     BondTimeout,
@@ -1667,7 +1730,7 @@ enum BleRnodeNativeFailureCode {
 pub struct BleRnodeBridgeFailureArgs {
     pub activity_operation: String,
     #[serde(default)]
-    failure_code: BleRnodeNativeFailureCode,
+    pub failure_code: BleRnodeNativeFailureCode,
 }
 
 /// Records only the typed outcome of an Android native bridge failure. The
@@ -1678,8 +1741,15 @@ pub async fn ble_rnode_bridge_failed(
     state: State<'_, Arc<AppState>>,
     args: BleRnodeBridgeFailureArgs,
 ) -> AppResult<Value> {
+    apply_ble_rnode_bridge_failed(Arc::clone(state.inner()), args).await
+}
+
+pub async fn apply_ble_rnode_bridge_failed(
+    state: Arc<AppState>,
+    args: BleRnodeBridgeFailureArgs,
+) -> AppResult<Value> {
     let (activity_fence, rollback_context, completion) = state
-        .take_pending_ble_rnode_activity_operation_with_completion(&args.activity_operation)
+        .take_active_ble_rnode_activity_operation_with_completion(&args.activity_operation)
         .ok_or_else(|| AppError::bad_request("Unknown or expired BLE bridge operation"))?;
     let operation_failure = match args.failure_code {
         BleRnodeNativeFailureCode::ConnectFailed => crate::state::BleRnodeOperationFailure::Connect,
@@ -1981,7 +2051,9 @@ pub async fn disconnect_ble_rnode(
                     // New RNode mutations also begin while this lock is held,
                     // so an older disconnect event is ordered before any
                     // replacement native connect.
-                    state_arc.emit_to_all("ble_rnode_disconnect_native", json!({}));
+                    let _ = state_arc
+                        .mobile_platform_bridge()
+                        .disconnect_ble_rnode(NativeBleRnodeDisconnect::Current);
                 }
                 #[cfg(not(target_os = "android"))]
                 let _ = native_ble_disconnect;

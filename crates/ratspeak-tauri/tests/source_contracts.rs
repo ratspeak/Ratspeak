@@ -1306,7 +1306,7 @@ fn ble_rnode_runtime_spawns_enable_flow_control() {
     let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("interfaces commands");
 
-    let native_blocks = rust_struct_literal_blocks(&ble_rs, "BleRnodeRuntimeArgs");
+    let native_blocks = rust_struct_literal_blocks(&ble_rs, "BleRNodeInterfaceConfig");
     assert_eq!(
         native_blocks.len(),
         1,
@@ -1376,7 +1376,7 @@ fn all_rnode_creation_paths_require_strict_capability_admission() {
     );
     assert_strict_calls(
         &interfaces_rs,
-        "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options",
+        "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options",
         2,
     );
     assert_strict_calls(
@@ -1386,7 +1386,7 @@ fn all_rnode_creation_paths_require_strict_capability_admission() {
     );
     assert_strict_calls(
         &ble_rs,
-        "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options",
+        "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_with_config_and_options",
         1,
     );
 
@@ -1492,7 +1492,7 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
         }
         for call_path in [
             "rns_runtime::reticulum::spawn_ble_rnode_runtime_observed_with_options",
-            "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options",
+            "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options",
             "rns_runtime::reticulum::spawn_rnode_runtime_observed_with_options",
         ] {
             assert_eq!(
@@ -1545,11 +1545,11 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
         }
     }
 
-    let bridge = rust_function_block(&ble, "ble_rnode_bridge_ready");
+    let bridge = rust_function_block(&ble, "apply_ble_rnode_bridge_ready");
     assert_eq!(
         rust_call_blocks(
             bridge,
-            "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options"
+            "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_with_config_and_options"
         )
         .len(),
         1
@@ -1607,8 +1607,12 @@ fn android_ble_rnode_bridge_retries_writes_and_fallback_detaches() {
     assert!(gatt.contains("Thread.sleep(BLE_WRITE_REJECT_RETRY_MS)"));
     assert!(gatt.contains("Thread.sleep(BLE_WRITE_PACING_MS)"));
     assert!(gatt.contains("observeRustDetachBytes(readBuf, off, end)"));
-    assert!(gatt.contains("sendRnodeDetachFallbackIfNeeded(\"TCP bridge closing\")"));
+    assert!(gatt.contains("sendRnodeDetachFallbackIfNeeded(\"explicit disconnect\")"));
     assert!(gatt.contains("if (rustDetachObserved.get()) return"));
+    assert!(gatt.contains("fun forwardClientGenerations(listener: ServerSocket)"));
+    assert!(gatt.contains("rustDetachObserved.set(false)"));
+    assert!(gatt.contains("detachFrameMatch = 0"));
+    assert!(gatt.contains("closeBridgeClient(accepted.socket)"));
 }
 
 #[test]
@@ -1627,7 +1631,8 @@ fn rnode_config_edit_suppresses_next_interface_reannounce() {
     assert!(state_rs.contains("INTERFACE_REANNOUNCE_SUPPRESSION_TTL"));
 
     assert!(runtime_rs.contains("take_interface_reannounce_suppression(name)"));
-    assert!(runtime_rs.contains("!reannounce_suppressed"));
+    assert!(runtime_rs.contains("should_reannounce_for_interface_online("));
+    assert!(runtime_rs.contains("auto_announce_interval > 0"));
     assert!(runtime_rs.contains("PollActivityObservation::AnnounceSuppressed"));
     assert!(runtime_rs.contains("AnnounceSuppressionReason::InterfaceRestart"));
 
@@ -2107,6 +2112,10 @@ fn android_native_release_lint_is_strict_and_api_guarded() {
         root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
     )
     .expect("Android MainActivity");
+    let platform_supervisor = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakPlatformSupervisor.kt",
+    ))
+    .expect("Android platform supervisor");
     let service =
         read_source(root.join(
             "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt",
@@ -2140,8 +2149,8 @@ fn android_native_release_lint_is_strict_and_api_guarded() {
     assert!(manifest.contains(r#"android:banner="@mipmap/ic_launcher""#));
     assert!(manifest.contains(r#"android:roundIcon="@mipmap/ic_launcher_round""#));
     assert!(main_activity.contains("ContextCompat.startForegroundService(this, serviceIntent)"));
-    assert!(main_activity.contains("ContextCompat.registerReceiver("));
-    assert!(main_activity.contains("ContextCompat.RECEIVER_NOT_EXPORTED"));
+    assert!(platform_supervisor.contains("ContextCompat.registerReceiver("));
+    assert!(platform_supervisor.contains("ContextCompat.RECEIVER_NOT_EXPORTED"));
     assert!(main_activity.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q"));
     assert_eq!(
         service
@@ -2431,6 +2440,8 @@ fn semantic_ble_and_auto_activity_adapters_preserve_the_privacy_boundary() {
     let events = read_source(root.join("dashboard/static/js/tauri_events.js"))
         .expect("frontend event listeners");
     let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("command registration");
+    let mobile_native =
+        read_source(root.join("src-tauri/src/mobile_native.rs")).expect("mobile native bridge");
 
     assert!(adapter.contains("record_event_fenced("));
     assert!(adapter.contains("is_current_activity_origin_fence(fence)"));
@@ -2470,25 +2481,20 @@ fn semantic_ble_and_auto_activity_adapters_preserve_the_privacy_boundary() {
     assert!(state.contains("rollback_context: Option<BleRnodeRollbackContext>"));
     assert!(state.contains("pending.take().map(|operation| {"));
     assert!(state.contains("*pending = None;"));
-    assert!(shell.contains("commands::ble::ble_rnode_bridge_failed"));
-
-    let native_failure = events
-        .split("RS.invoke('ble_rnode_bridge_failed'")
-        .nth(1)
-        .and_then(|tail| tail.split("var errRaw").next())
-        .expect("typed native bridge failure callback");
-    assert!(native_failure.contains("activity_operation"));
-    assert!(native_failure.contains("failure_code: nativeFailureCode"));
-    assert!(!native_failure.contains("result.error"));
-    assert!(!native_failure.contains("cancel_ble_connect"));
+    assert!(shell.contains("mod mobile_native"));
+    assert!(mobile_native.contains("nativeBleRnodeState"));
+    assert!(mobile_native.contains("take_pending_ble_request(&activity_operation, generation)"));
+    assert!(mobile_native.contains("apply_ble_rnode_bridge_failed("));
+    assert!(mobile_native.contains("failure_code: native_ble_failure_code(&code)"));
+    assert!(!events.contains("RS.invoke('ble_rnode_bridge_failed'"));
 
     let bridge_failure = ble
-        .split("pub async fn ble_rnode_bridge_failed")
+        .split("pub async fn apply_ble_rnode_bridge_failed")
         .nth(1)
         .and_then(|tail| tail.split("pub async fn cancel_ble_connect").next())
         .expect("typed native bridge failure command");
     let token_accept = bridge_failure
-        .find("take_pending_ble_rnode_activity_operation")
+        .find("take_active_ble_rnode_activity_operation_with_completion")
         .expect("exact operation acceptance");
     let rollback = bridge_failure
         .find("rollback_ble_rnode_context")
@@ -2507,8 +2513,7 @@ fn semantic_ble_and_auto_activity_adapters_preserve_the_privacy_boundary() {
         "auto_carrier_state",
         "ble_rnode_passkey_prompt",
         "ble_rnode_pairing_finished",
-        "ble_rnode_connect_native",
-        "ble_rnode_disconnect_native",
+        "mobile_hardware_state",
     ] {
         assert!(
             ble.contains(product_event)
@@ -2539,6 +2544,14 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
             "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBleGatt.kt",
         ))
         .expect("Android GATT bridge");
+    let native_bridge = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakNativeBridge.kt",
+    ))
+    .expect("Android native bridge");
+    let supervisor = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakPlatformSupervisor.kt",
+    ))
+    .expect("Android platform supervisor");
 
     assert!(
         state.contains("BLE_RNODE_ACTIVITY_OPERATION_TTL: Duration = Duration::from_secs(240)")
@@ -2564,11 +2577,11 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
     assert!(ble.contains("claim_ble_rnode_activity_operation_completion"));
     assert!(ble.contains("take_completing_ble_rnode_activity_operation"));
     assert!(ble.contains("disconnect_native_ble_rnode_operation"));
-    assert!(ble.contains("json!({ \"activity_operation\": activity_operation })"));
+    assert!(ble.contains("apply_ble_rnode_bridge_ready("));
     assert_eq!(
         rust_call_blocks(
             &ble,
-            "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_observed_with_options",
+            "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_with_config_and_options",
         )
         .len(),
         1
@@ -2579,22 +2592,10 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
     assert!(ble.contains("teardown_spawned_rnode_exact(&rns, &spawned)"));
     assert!(!ble.contains("online.load(std::sync::atomic::Ordering::SeqCst)"));
 
-    let mut native_emissions = 0usize;
-    let mut remainder = interfaces.as_str();
-    while let Some(index) = remainder.find("\"ble_rnode_connect_native\"") {
-        native_emissions += 1;
-        let tail = &remainder[index..];
-        let nearby = &tail[..tail.len().min(1600)];
-        assert!(
-            nearby.contains("\"activity_operation\": activity_operation"),
-            "every Android BLE reconnect/resume emission must carry its operation token"
-        );
-        remainder = &tail["\"ble_rnode_connect_native\"".len()..];
-    }
-    assert!(
-        native_emissions >= 2,
-        "add and reconnect/resume paths must both emit native BLE work"
-    );
+    assert!(interfaces.contains("start_or_replace_ble_rnode(NativeBleRnodeRequest"));
+    assert!(interfaces.contains("activity_operation"));
+    assert!(interfaces.contains("native_generation: context.origin().native_generation()"));
+    assert!(!events.contains("ble_rnode_connect_native"));
     assert!(interfaces.contains("schedule_android_ble_rnode_operation_watchdog"));
     assert!(interfaces.contains("couple_android_ble_operation_to_rnode_lease"));
     assert!(interfaces.contains("begin_ble_rnode_activity_operation_owned"));
@@ -2605,14 +2606,12 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
     assert!(interfaces.contains("RnodeActivityOutcome::SetupTimedOut"));
     assert!(interfaces.contains("Some(\"setup_timeout\")"));
 
-    assert!(events.contains("result.activity_operation !== activityOperation"));
-    assert!(events.contains("progress.activity_operation !== activityOperation"));
-    assert!(events.contains("_BLE_RNODE_NATIVE_TIMEOUT_MS = 180000"));
-    assert!(events.contains("disconnectBleDeviceForOperation(activityOperation)"));
-    assert!(events.contains("data.tcp_port,\n            activityOperation"));
-    assert!(events.contains("failure_code: 'setup_timeout'"));
-    assert!(!events.contains("rollbackOnly"));
-    assert!(!events.contains("cancel_ble_connect"));
+    assert!(!events.contains("result.activity_operation !== activityOperation"));
+    assert!(!events.contains("_BLE_RNODE_NATIVE_TIMEOUT_MS"));
+    assert!(!events.contains("disconnectBleDeviceForOperation"));
+    assert!(events.contains("RS.listen('mobile_hardware_state'"));
+    assert!(!events.contains("ble_rnode_bridge_ready"));
+    assert!(!events.contains("ble_rnode_bridge_failed"));
 
     let bridge_ready = ble
         .split("pub async fn ble_rnode_bridge_ready")
@@ -2636,23 +2635,16 @@ fn android_ble_operation_nonce_is_round_tripped_scoped_and_watchdog_owned() {
     assert!(completion_claim < teardown && teardown < completion_take);
     assert!(bridge_ready.contains("clear_ble_rnode_rollback_context"));
 
-    assert!(main_activity.contains(
-        "fun connectBleDevice(address: String, localPort: Int, activityOperation: String)"
-    ));
-    assert!(main_activity.contains(".put(\"activity_operation\", activityOperation)"));
-    assert!(
-        main_activity.contains("fun disconnectBleDeviceForOperation(activityOperation: String)")
-    );
-    assert!(main_activity.contains("if (bleConnectOperation != activityOperation)"));
-    assert!(main_activity.contains(".put(\"failure_code\", \"connect_failed\")"));
-    assert!(main_activity.contains("error.contains(RatspeakBleGatt.ERR_BOND_TIMEOUT)"));
-    assert!(main_activity.contains("\"bond_timeout\""));
-    assert!(
-        main_activity
-            .contains("window.RatspeakAndroid.disconnectBleDeviceForOperation($operationJson)")
-    );
-    assert!(gatt.contains("fun attachWebView(webView: WebView?, operation: String)"));
-    assert!(gatt.contains(".put(\"activity_operation\", activityOperation)"));
+    assert!(!main_activity.contains("fun connectBleDevice("));
+    assert!(!main_activity.contains("fun disconnectBleDeviceForOperation("));
+    assert!(native_bridge.contains("fun startOrReplaceBleRnode("));
+    assert!(native_bridge.contains("operationToken: String"));
+    assert!(native_bridge.contains("installedGeneration: Long"));
+    assert!(supervisor.contains("requestUsbPermissionForSelector"));
+    assert!(native_bridge.contains("nativeBleRnodeState("));
+    assert!(native_bridge.contains("operationToken"));
+    assert!(native_bridge.contains("installedGeneration"));
+    assert!(!gatt.contains("WebView"));
     assert!(gatt.contains("const val ERR_BOND_TIMEOUT = \"ERR_BOND_TIMEOUT\""));
     assert!(gatt.contains("$ERR_PAIRING_MODE $ERR_BOND_TIMEOUT Bonding timed out"));
     assert!(ble.contains("enum BleRnodeNativeFailureCode"));
@@ -2807,7 +2799,7 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
     assert_eq!(
         rust_call_blocks(
             add_lora,
-            "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options",
+            "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options",
         )
         .len(),
         1
@@ -3787,8 +3779,9 @@ fn interface_pause_resume_is_config_backed_and_visible() {
             .contains("crate::rns_config::set_interface_enabled(&config_dir, &name, true)")
     );
     assert!(interfaces_rs.contains("teardown_live_interface_by_name(&st, &iface_name"));
-    assert!(interfaces_rs.contains("android_usb::has_usb_permission"));
-    assert!(!interfaces_rs.contains("android_usb::request_usb_permission"));
+    assert!(interfaces_rs.contains("resolve_android_usb_runtime_selector"));
+    assert!(interfaces_rs.contains("preflight_android_usb_selector_for_interface"));
+    assert!(interfaces_rs.contains("request_android_usb_permission"));
     assert!(!interfaces_rs.contains("format!(\"TCP to {}:{}\""));
 
     let rns_config_rs =
@@ -3807,12 +3800,8 @@ fn failed_lora_reconnects_keep_persisted_interface_config() {
 
     let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("interfaces commands");
-    // Resume/update reconnects never request frontend rollback; only an add
-    // that created the entry may (`fresh_add`). A hardcoded `true` regresses
-    // re-adds of existing radios into config deletion on connect failure.
-    assert!(interfaces_rs.contains("\"rollback_on_error\": false,"));
-    assert!(interfaces_rs.contains("\"rollback_on_error\": fresh_add,"));
-    assert!(!interfaces_rs.contains("\"rollback_on_error\": true"));
+    // Resume/update rollback is backend-owned and revision-guarded; only a
+    // versioned marker installed by a fresh add may delete that add.
     assert!(
         interfaces_rs
             .contains("find_config_interface_with_group(&config_dir, None, &name).is_none()")
@@ -3948,9 +3937,13 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(ble_rs.contains("pub mode: Option<String>"));
     assert!(ble_rs.contains("rnode_interface_mode_value(args.mode.as_deref())"));
     assert!(ble_rs.contains("mode,"));
-    assert!(tauri_events_js.contains("mode: data.mode"));
+    assert!(!tauri_events_js.contains("ble_rnode_connect_native"));
+    assert!(ble_rs.contains("native_mode"));
+    assert!(ble_rs.contains("InterfaceMode::from_u8"));
     assert!(rns_runtime_rs.contains("pub mode: rns_interface::traits::InterfaceMode"));
-    assert!(rns_runtime_rs.matches("config.mode = mode;").count() >= 4);
+    assert!(interfaces_rs.contains("mode: rnode_runtime_mode(mode)"));
+    assert!(ble_rs.contains("BleRNodeInterfaceConfig"));
+    assert!(ble_rs.contains("spawn_ble_rnode_runtime_native_with_config_and_options"));
     let tauri_cargo =
         read_source(root.join("crates/ratspeak-tauri/Cargo.toml")).expect("tauri cargo");
     assert!(tauri_cargo.contains("rnode-tcp = [\"ratspeak-runtime/rnode-tcp\""));
@@ -4263,6 +4256,11 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
     )
     .expect("main activity");
+    let call_audio =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakCallAudio.kt",
+        ))
+        .expect("Android call audio owner");
     assert!(activity.contains("MEDIA_PERMISSION_REQUEST_CODE"));
     assert!(activity.contains("fun hasMediaPermissions(audio: Boolean, camera: Boolean): Boolean"));
     assert!(activity.contains(
@@ -4273,30 +4271,30 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("fun playCallRingtone(mode: String)"));
     assert!(activity.contains("fun stopCallRingtone()"));
     assert!(activity.contains("fun playCallTimeoutCue(): Boolean"));
-    assert!(activity.contains("fun startCallAudioRoute(role: String)"));
+    assert!(activity.contains("fun primeCallAudioRoute(role: String)"));
+    assert!(activity.contains("fun startCallAudioRoute(role: String, sessionToken: String)"));
     assert!(activity.contains("fun stopCallAudioRoute()"));
-    assert!(activity.contains("requestCallAudioFocus()"));
+    assert!(call_audio.contains("fun startForSession("));
+    assert!(call_audio.contains("fun promoteCaptureForSession("));
+    assert!(call_audio.contains("fun demoteCaptureForSession("));
     assert!(activity.contains("fun playCallRingtone(mode: String): Boolean"));
     assert!(activity.contains("runOnMainForBoolean"));
     assert!(activity.contains("AUDIOFOCUS_REQUEST_GRANTED"));
     assert!(activity.contains("AudioManager.STREAM_RING"));
     assert!(activity.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION"));
     assert!(activity.contains("volumeControlStream = AudioManager.STREAM_VOICE_CALL"));
-    assert!(activity.contains("syncCallProximityWakeLock(preferEarpiece)"));
-    assert!(activity.contains("PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK"));
-    assert!(activity.contains("isWakeLockLevelSupported"));
-    assert!(activity.contains("PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY"));
-    assert!(activity.contains("callAudioRouteName = routeName"));
+    assert!(call_audio.contains("syncProximity(application, preferEarpiece)"));
+    assert!(call_audio.contains("PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK"));
+    assert!(call_audio.contains("isWakeLockLevelSupported"));
+    assert!(call_audio.contains("PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY"));
+    assert!(call_audio.contains("route = requestedRoute"));
     assert!(activity.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING"));
     assert!(activity.contains("AudioAttributes.USAGE_NOTIFICATION_RINGTONE"));
     assert!(activity.contains("audioManager.setCommunicationDevice(route)"));
-    assert!(activity.contains("private fun requestCallAudioFocus(): Boolean"));
-    assert!(activity.contains("callAudioRouteActive && callAudioRouteName == routeName"));
-    assert!(
-        activity.contains("if (!callAudioRouteActive) {\n            configureCommunicationRoute")
-    );
+    assert!(call_audio.contains("private fun requestFocus(manager: AudioManager): Boolean"));
+    assert!(call_audio.contains("RatspeakMobilePolicy.callSessionOwns(ownerToken, sessionToken)"));
     assert!(activity.contains("RatspeakVoiceAudio.stop()"));
-    assert!(activity.contains("stopNativeCallAudioRoute(waitForNoProximity = false)"));
+    assert!(call_audio.contains("fun stopForSession("));
 
     let voice_audio = read_source(root.join(
         "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceAudio.kt",
@@ -4479,6 +4477,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         read_source(root.join("crates/ratspeak-tauri/src/notifier.rs")).expect("notifier");
     assert!(notifier_rs.contains("NativeNotificationKind::Call => \"ratspeak_calls\""));
     assert!(notifier_rs.contains("| ratspeak_core::NativeNotificationKind::Channel"));
+    assert!(notifier_rs.contains("builder.action_type_id(thread_id)"));
+    let tauri_events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events");
+    assert!(tauri_events.contains("notification.actionTypeId"));
 
     let ringtone_js =
         read_source(root.join("dashboard/static/js/voice_ringtones.js")).expect("ringtone js");
@@ -4743,7 +4745,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.26c");
+    assert_eq!(version_file.trim(), "1.0.26d");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -4829,7 +4831,7 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000032"#));
+    assert!(tauri_conf.contains(r#""versionCode": 1000033"#));
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
@@ -4839,13 +4841,15 @@ fn settings_version_display_uses_package_version_api() {
 }
 
 #[test]
-fn release_workflows_pin_v1_0_26_and_stage_tag_builds_as_prereleases() {
+fn release_workflows_pin_v1_0_26d_and_stage_tag_builds_as_prereleases() {
     let root = repo_root();
+    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 70b739988b54c62c3e95f1e7c51c951afb825e9b";
+    let rslxmf_commit = "RATSPEAK_RSLXMF_REF: f9ed81e3aead8fc9637ea843dadf489663335066";
     let dependency_refs = [
-        "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26",
-        "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26",
-        "RATSPEAK_RSLXST_REF: ratspeak-v1.0.26",
-        "RATSPEAK_LRGP_REF: ratspeak-v1.0.26",
+        "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26d",
+        "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26d",
+        "RATSPEAK_RSLXST_REF: ratspeak-v1.0.26d",
+        "RATSPEAK_LRGP_REF: ratspeak-v1.0.26d",
     ];
 
     for workflow_path in [
@@ -4865,6 +4869,21 @@ fn release_workflows_pin_v1_0_26_and_stage_tag_builds_as_prereleases() {
         assert!(
             workflow
                 .contains("prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}")
+        );
+    }
+
+    for workflow_path in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/build-desktop.yml",
+    ] {
+        let workflow = read_source(root.join(workflow_path)).expect("build workflow");
+        assert!(
+            workflow.contains(rsreticulum_commit),
+            "{workflow_path} must build the reviewed rsReticulum commit"
+        );
+        assert!(
+            workflow.contains(rslxmf_commit),
+            "{workflow_path} must build the synchronized rsLXMF commit"
         );
     }
 
@@ -4970,11 +4989,11 @@ fn settings_information_architecture_groups_one_off_settings() {
         .nth(1)
         .and_then(|tail| tail.split(r#"id="panel-settings-identity""#).next())
         .expect("general settings panel");
-    assert!(
-        general_panel.contains(r#"<span class="settings-row-label">Desktop Notifications</span>"#)
-    );
+    assert!(general_panel.contains(r#"<span class="settings-row-label">Notifications</span>"#));
     assert!(general_panel.contains(r#"id="settings-row-notifications""#));
     assert!(general_panel.contains(r#"id="desktop-notifications-toggle""#));
+    assert!(general_panel.contains(r#"id="settings-notification-action""#));
+    assert!(general_panel.contains(r#"id="settings-row-keep-connected""#));
     assert!(general_panel.contains(r#"<span class="settings-row-label">Block List</span>"#));
     assert!(general_panel.contains(
         r#"class="selector-badge selector-badge-no-caret" id="settings-blocked-count">Manage</button>"#
@@ -5021,6 +5040,9 @@ fn settings_information_architecture_groups_one_off_settings() {
         settings_js
             .contains("var _notifRow = document.getElementById('settings-row-notifications');")
     );
+    assert!(settings_js.contains("window.RatspeakAndroid.batteryOptimizationStatus()"));
+    assert!(settings_js.contains("requestBatteryOptimizationExemption()"));
+    assert!(settings_js.contains("rs-notification-permission-changed"));
     assert!(!settings_js.contains("document.getElementById('panel-settings-notifications')"));
     assert!(settings_js.contains("function syncSettingsIdentityStatus()"));
     assert!(settings_js.contains("actionBtn.textContent = status ? 'Edit' : 'Set';"));
@@ -6772,6 +6794,62 @@ fn activity_bootstrap_is_listener_first_and_session_local() {
             .count()
             >= 3
     );
+}
+
+#[test]
+fn mobile_native_ownership_and_usb_recovery_remain_closed_and_single_flight() {
+    let root = repo_root();
+    let native = read_source(root.join("src-tauri/src/mobile_native.rs")).expect("mobile native");
+    let supervisor = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakPlatformSupervisor.kt",
+    ))
+    .expect("Android platform supervisor");
+    let activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("Android main activity");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    let shared = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
+        .expect("shared commands");
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+
+    assert!(native.contains("requestUsbPermissionForSelector"));
+    assert!(native.contains(r#""(IILjava/lang/String;)V""#));
+    assert!(supervisor.contains("@JvmStatic\n    fun requestUsbPermissionForSelector"));
+    let on_create = activity
+        .split("override fun onCreate(savedInstanceState: Bundle?)")
+        .nth(1)
+        .expect("MainActivity onCreate");
+    assert!(
+        on_create.find("RatspeakNativeBridge.initialize(applicationContext)")
+            < on_create.find("super.onCreate(savedInstanceState)"),
+        "native Application context must exist before Tauri can restore saved BLE"
+    );
+    assert!(interfaces.contains("pub async fn request_android_usb_permission("));
+    assert!(interfaces.contains("selector.serial_number.as_deref()"));
+    assert!(interfaces.contains("preflight_android_usb_selector_for_interface"));
+    assert!(interfaces.contains("id_interval: cfg_u64(entry, \"id_interval\")"));
+    assert!(interfaces.contains("id_callsign: cfg_non_empty_str(entry, \"id_callsign\")"));
+    assert!(interfaces.contains("config.id_interval = id_interval;"));
+    assert!(interfaces.contains("config.id_callsign = id_callsign.map"));
+    assert!(native.contains("requestUsbPermissionForLegacyPath"));
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
+    assert!(
+        runtime.contains("migrate_android_usb_selectors_for_startup(&state, &config_dir).await")
+    );
+    assert!(runtime.contains("enforce_android_single_ble_rnode_for_startup(&state, &config_dir)"));
+    assert!(runtime.contains("state.wait_for_mobile_platform_bridge().await;"));
+    assert!(shared.contains("fields.remove(\"usb_vendor_id\")"));
+    assert!(shared.contains("fields.remove(\"usb_product_id\")"));
+    assert!(shared.contains("fields.remove(\"usb_serial_number\")"));
+    assert!(shared.contains("state.mobile_hardware_state_snapshot()"));
+    assert!(health.contains("var _androidUsbResumePermission = null;"));
+    assert!(health.contains("return Promise.resolve(false)"));
+    assert!(health.contains("_androidUsbResumePermission.cancel("));
+    assert!(health.contains("window._onUsbSelectorPermissionResult === ownedCallback"));
+    assert!(health.contains("function applyMobileHardwareState(data)"));
+    assert!(health.contains("if (online) mobileHealth = null;"));
 }
 
 #[test]

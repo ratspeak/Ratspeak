@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value, json};
 
 use rns_interface::rnode::RNodeStartupOptions;
+#[cfg(all(feature = "ble", target_os = "android"))]
+use rns_runtime::interface_factory::BleRNodeInterfaceConfig;
 use rns_runtime::lifecycle::ShutdownSignal;
 use rns_runtime::reticulum::{
     self, InitOptions, InstanceMode, ReticulumHandle, StartupRNodeRuntime,
@@ -85,6 +87,11 @@ impl RnsManager {
     /// must not be used as current inventory or lifecycle authority.
     pub fn startup_rnode_runtimes(&self) -> &[StartupRNodeRuntime] {
         &self.startup_rnode_runtimes
+    }
+
+    #[cfg(all(feature = "ble", target_os = "android"))]
+    pub fn deferred_android_ble_rnodes(&self) -> Vec<BleRNodeInterfaceConfig> {
+        self.handle.deferred_android_ble_rnodes()
     }
 
     pub(crate) fn bind_rnode_activity_session(&mut self, session: RNodeActivityOrigin) {

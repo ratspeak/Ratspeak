@@ -1492,8 +1492,8 @@ if (_settingsTransportBadge) {
     }
 }
 
-// Network-change detection is native (NetworkCallback / NWPathMonitor invoking
-// `RS.invoke('network_type_changed', ...)`); WKWebView lacks navigator.connection.
+// Native NetworkCallback / NWPathMonitor publishes directly to Rust; the
+// WebView only observes transport-policy updates.
 
 RS.listen('transport_mode_updated', function(data) {
     applyTransportModePayload(data);
@@ -1704,33 +1704,129 @@ document.addEventListener('DOMContentLoaded', function() {
 
 RS.listen('app_settings_updated', applyAppSettingsPayload);
 
-// Keep this desktop-only until mobile has a user-facing notifications screen.
+function _settingsNotificationActionForState(state) {
+    if (state === 'granted') return { hidden: true, disabled: false, label: 'Allowed' };
+    if (state === 'prompt') return { hidden: false, disabled: false, label: 'Allow' };
+    if (state === 'denied') return { hidden: false, disabled: false, label: 'Open Settings' };
+    return { hidden: false, disabled: true, label: 'Unavailable' };
+}
+
+function _settingsNotificationPresentation(enabled, state) {
+    if (!enabled) return { hidden: true, disabled: true, label: 'Allow' };
+    return _settingsNotificationActionForState(state);
+}
+
 (function() {
     var _notifRow = document.getElementById('settings-row-notifications');
     var _notifToggle = document.getElementById('desktop-notifications-toggle');
+    var _notifAction = document.getElementById('settings-notification-action');
+    var _keepRow = document.getElementById('settings-row-keep-connected');
+    var _keepAction = document.getElementById('settings-keep-connected-action');
+    var _keepDesc = document.getElementById('settings-keep-connected-desc');
     if (!_notifRow || !_notifToggle) return;
     var _isMobile = typeof isTauriMobile === 'function'
         ? isTauriMobile()
         : !!window.__RATSPEAK_MOBILE__;
-    if (_isMobile) return;
+    var _android = typeof hasAndroidBridge === 'function' && hasAndroidBridge();
+    var _notifAuthorization = 'unavailable';
+    var _notifPreferenceEnabled = true;
     _notifRow.style.display = '';
+
+    function _refreshNotificationAuthorization() {
+        if (!_isMobile || typeof rsNotify === 'undefined') return;
+        if (!_notifPreferenceEnabled) {
+            if (_notifAction) _notifAction.style.display = 'none';
+            return;
+        }
+        rsNotify.permissionState().then(function(state) {
+            _notifAuthorization = state;
+            if (_notifAction) {
+                var action = _settingsNotificationPresentation(_notifPreferenceEnabled, state);
+                _notifAction.style.display = action.hidden ? 'none' : '';
+                _notifAction.disabled = action.disabled;
+                _notifAction.textContent = action.label;
+            }
+        });
+    }
+
+    function _refreshKeepConnected() {
+        if (!_android || !_keepRow || !_keepAction || !_keepDesc) return;
+        _keepRow.style.display = '';
+        var status = 'unavailable';
+        try { status = window.RatspeakAndroid.batteryOptimizationStatus(); } catch (_) {}
+        var allowed = status === 'exempt';
+        _keepAction.textContent = allowed ? 'Allowed' : 'Review';
+        _keepDesc.textContent = allowed
+            ? 'Android allows Ratspeak to stay connected in the background.'
+            : 'Android may pause background radio and message delivery.';
+    }
+
     RS.invoke('api_notification_settings').then(function(data) {
         if (!data || data.enabled === undefined) return;
-        _notifToggle.checked = !!data.enabled;
-        if (typeof rsNotify !== 'undefined') rsNotify.setEnabled(!!data.enabled);
-        if (data.enabled && typeof rsNotify !== 'undefined' && rsNotify.available()) {
-            rsNotify.requestPermission();
+        _notifPreferenceEnabled = !!data.enabled;
+        _notifToggle.checked = _notifPreferenceEnabled;
+        if (typeof rsNotify !== 'undefined') rsNotify.setEnabled(_notifPreferenceEnabled);
+        if (_notifPreferenceEnabled && typeof rsNotify !== 'undefined' && rsNotify.available()) {
+            _refreshNotificationAuthorization();
+        } else if (_notifAction) {
+            _notifAction.style.display = 'none';
         }
     }).catch(function() {});
 
     _notifToggle.addEventListener('change', function() {
         var enabled = !!_notifToggle.checked;
+        _notifPreferenceEnabled = enabled;
         if (typeof rsNotify !== 'undefined') rsNotify.setEnabled(enabled);
         RS.invoke('set_desktop_notifications', { enabled: enabled }).catch(function() {});
         if (enabled && typeof rsNotify !== 'undefined' && rsNotify.available()) {
-            rsNotify.requestPermission();
+            rsNotify.requestPermission().then(function() {
+                setTimeout(_refreshNotificationAuthorization, 350);
+            });
+        } else if (_notifAction) {
+            _notifAction.style.display = 'none';
         }
     });
+
+    if (_notifAction) _notifAction.addEventListener('click', function() {
+        if (_notifAuthorization === 'prompt' && typeof rsNotify !== 'undefined') {
+            rsNotify.requestPermission().then(function() {
+                setTimeout(_refreshNotificationAuthorization, 350);
+            });
+            return;
+        }
+        if (_android && typeof window.RatspeakAndroid.openNotificationSettings === 'function') {
+            try { window.RatspeakAndroid.openNotificationSettings(); } catch (_) {}
+        } else {
+            RS.invoke('open_mobile_app_settings').catch(function() {
+                showToast('Unable to open notification settings', 'toast-red', 4000);
+            });
+        }
+    });
+
+    if (_keepAction) _keepAction.addEventListener('click', function() {
+        if (!_android || typeof window.RatspeakAndroid.requestBatteryOptimizationExemption !== 'function') return;
+        try {
+            if (!window.RatspeakAndroid.requestBatteryOptimizationExemption()) {
+                showToast('Unable to open battery settings', 'toast-red', 4000);
+            }
+        } catch (_) {
+            showToast('Unable to open battery settings', 'toast-red', 4000);
+        }
+    });
+
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) {
+            _refreshNotificationAuthorization();
+            _refreshKeepConnected();
+        }
+    });
+    document.addEventListener('rs-notification-permission-changed', _refreshNotificationAuthorization);
+    window.addEventListener('focus', function() {
+        _refreshNotificationAuthorization();
+        _refreshKeepConnected();
+    });
+    _refreshNotificationAuthorization();
+    _refreshKeepConnected();
 })();
 
 RS.listen('desktop_notifications_updated', function(data) {

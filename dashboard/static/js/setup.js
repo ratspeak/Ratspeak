@@ -4,6 +4,18 @@ var setupRecoveryMnemonic = '';
 var setupConnectingDotsTimer = null;
 var setupConnectingDotCount = 1;
 
+function requestSetupNotificationPermissionIfEnabled() {
+    if (typeof isTauriMobile !== 'function' || !isTauriMobile()) return;
+    if (typeof rsNotify === 'undefined' || !rsNotify.available()) return;
+    RS.invoke('api_notification_settings').then(function(data) {
+        if (!data || data.enabled !== true) return;
+        rsNotify.setEnabled(true);
+        return rsNotify.permissionState().then(function(state) {
+            if (state === 'prompt') return rsNotify.requestPermission();
+        });
+    }).catch(function() {});
+}
+
 function setSetupBackupLayout(active) {
     document.body.classList.toggle('setup-backup-active', !!active);
 }
@@ -75,6 +87,9 @@ function checkSetupStatus() {
                 document.body.classList.remove('setup-active');
                 setSetupBackupLayout(false);
                 setSetupConnectingDotsActive(false);
+                // Existing installs upgrading to native mobile notifications
+                // get the same one-time, visible OS prompt as new identities.
+                requestSetupNotificationPermissionIfEnabled();
             }
             document.body.classList.remove('checking-setup');
         })
@@ -333,6 +348,7 @@ function resetSetupToStart() {
 
 function completeSetupAfterIdentityImport() {
     showSetupConnectingStep();
+    requestSetupNotificationPermissionIfEnabled();
     // The imported identity is already active when setup has no identity.
     // Restart the core so the dashboard opens on the imported session.
     RS.invoke('api_setup_restart').catch(function() {});
@@ -388,6 +404,7 @@ function completeSetupAfterHardwareIdentity(result, pin) {
 
     RS.invoke('hw_activate_and_unlock', { hash: hash, pin: pin }).then(function(res) {
         if (res && res.ok) {
+            requestSetupNotificationPermissionIfEnabled();
             runConnectingProgress();
             return;
         }
@@ -551,6 +568,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             RS.invoke('api_setup_complete', { args: { display_name: displayName || '' } })
             .then(function() {
+                requestSetupNotificationPermissionIfEnabled();
                 setSetupStep(3);
                 setSetupBackupLayout(false);
                 setSetupConnectingDotsActive(true);

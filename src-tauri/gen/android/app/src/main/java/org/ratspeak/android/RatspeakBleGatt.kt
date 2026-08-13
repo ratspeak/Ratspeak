@@ -19,9 +19,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.webkit.WebView
 import androidx.core.content.ContextCompat
-import org.json.JSONObject
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.ServerSocket
@@ -41,15 +39,18 @@ import java.util.concurrent.atomic.AtomicInteger
  *   4. connectGatt() over the bonded link, where encryption is automatic
  *   5. Service discovery → NUS characteristics → TCP bridge
  */
-class RatspeakBleGatt(private val context: Context) {
+class RatspeakBleGatt(
+    private val context: Context,
+    private val progress: (String) -> Unit = {},
+) {
 
     companion object {
         private const val TAG = "RatspeakBleGatt"
 
         private const val TARGET_MTU = 515
-        // Safe fallback payload if MTU negotiation never completes (BLE 4.2 floor
-        // minus the 3-byte ATT header). 20-byte default clogs the pipe.
-        private const val MTU_FALLBACK_PAYLOAD = 244
+        // The default ATT MTU is 23 bytes. Until negotiation succeeds, the
+        // only universally safe payload is therefore 20 bytes.
+        private const val MTU_FALLBACK_PAYLOAD = RatspeakMobilePolicy.DEFAULT_ATT_PAYLOAD
         private const val GATT_TIMEOUT_SEC = 15L
         // Cardputer RNode keeps first-pair/manual pairing windows open longer
         // than this; time out first so the app can cleanly roll back.
@@ -78,7 +79,15 @@ class RatspeakBleGatt(private val context: Context) {
         const val ERR_PAIRING_MODE = "ERR_PAIRING_MODE"
         const val ERR_BOND_TIMEOUT = "ERR_BOND_TIMEOUT"
         const val ERR_STALE_BOND = "ERR_STALE_BOND"
+        const val FAILURE_PAIRING_REQUIRED = "pairing_required"
+        const val FAILURE_BOND_TIMEOUT = "bond_timeout"
+        const val FAILURE_STALE_BOND = "stale_bond"
+        const val FAILURE_BLUETOOTH_OFF = "bluetooth_off"
+        const val FAILURE_PERMISSION = "permission_needed"
+        const val FAILURE_CONNECT = "connect_failed"
     }
+
+    data class ConnectFailure(val code: String, val detail: String)
 
     @Volatile private var gatt: BluetoothGatt? = null
     private var rxChar: BluetoothGattCharacteristic? = null
@@ -86,10 +95,10 @@ class RatspeakBleGatt(private val context: Context) {
     private var negotiatedMtu = MTU_FALLBACK_PAYLOAD
     private val running = AtomicBoolean(false)
 
-    private var serverSocket: ServerSocket? = null
     private var clientSocket: java.net.Socket? = null
     private var tcpOut: OutputStream? = null
     private var forwardThread: Thread? = null
+    private val bridgeClientLock = Object()
 
     private var connectLatch: CountDownLatch? = null
     private var servicesLatch: CountDownLatch? = null
@@ -104,8 +113,6 @@ class RatspeakBleGatt(private val context: Context) {
     private val descriptorStatus = AtomicBoolean(false)
     private val writeStatus = AtomicBoolean(false)
     private var bondReceiver: BroadcastReceiver? = null
-    private var webViewRef: WebView? = null
-    private var activityOperation: String = ""
     private val lastGattStatus = AtomicInteger(BluetoothGatt.GATT_SUCCESS)
     private val bleWriteLock = Object()
     private val cleanupLock = Object()
@@ -114,16 +121,25 @@ class RatspeakBleGatt(private val context: Context) {
 
     private val handler = Handler(Looper.getMainLooper())
 
-    /** Register the WebView and opaque operation token for scoped progress updates. */
-    fun attachWebView(webView: WebView?, operation: String) {
-        webViewRef = webView
-        activityOperation = operation
+    @SuppressLint("MissingPermission")
+    fun connect(address: String): ConnectFailure? {
+        return connectDetail(address)?.let { detail ->
+            val code = when {
+                detail.startsWith(ERR_STALE_BOND) -> FAILURE_STALE_BOND
+                detail.contains(ERR_BOND_TIMEOUT) -> FAILURE_BOND_TIMEOUT
+                detail.startsWith(ERR_PAIRING_MODE) -> FAILURE_PAIRING_REQUIRED
+                detail.contains("turned off", ignoreCase = true) -> FAILURE_BLUETOOTH_OFF
+                detail.contains("permission", ignoreCase = true) -> FAILURE_PERMISSION
+                else -> FAILURE_CONNECT
+            }
+            ConnectFailure(code, detail)
+        }
     }
 
     @SuppressLint("MissingPermission")
-    fun connect(address: String, localPort: Int): String? {
+    private fun connectDetail(address: String): String? {
         try {
-            Log.i(TAG, "=== BLE CONNECT START === address=$address tcpPort=$localPort")
+            Log.i(TAG, "=== BLE CONNECT START === address=$address")
             rustDetachObserved.set(false)
             detachFrameMatch = 0
             emitProgress("starting")
@@ -208,15 +224,18 @@ class RatspeakBleGatt(private val context: Context) {
             }
             if (gattError != null) {
                 cleanup()
-                val prefix = if (alreadyBonded) "$ERR_STALE_BOND " else ""
+                // Error 133 and timeouts are routine Android stack failures,
+                // not evidence that the saved bond is stale. Only explicit
+                // authentication/encryption rejection requires user repair.
+                val authenticationRejected = gattError.contains("status=5") ||
+                    gattError.contains("status=15")
+                val prefix = if (alreadyBonded && authenticationRejected) "$ERR_STALE_BOND " else ""
                 return err(prefix + gattError)
             }
 
-            // ── Phase 6: TCP bridge ──
-            emitProgress("bridge")
+            // The process supervisor owns the stable TCP listener. This
+            // physical generation owns only GATT and the exact accepted client.
             running.set(true)
-            serverSocket = ServerSocket(localPort, 1, java.net.InetAddress.getByName("127.0.0.1"))
-            Log.i(TAG, "Phase 6 COMPLETE: TCP bridge on 127.0.0.1:$localPort")
             Log.i(TAG, "=== BLE CONNECT SUCCESS ===")
             emitProgress("ready")
             return null
@@ -372,21 +391,52 @@ class RatspeakBleGatt(private val context: Context) {
         return servicesStatus.get()
     }
 
-    fun startForwarding() {
-        try {
-            serverSocket?.soTimeout = 15000
-            clientSocket = serverSocket?.accept()
-            tcpOut = clientSocket?.getOutputStream()
-            val tcpIn = clientSocket?.getInputStream() ?: return
-            Log.i(TAG, "Rust TCP connected — forwarding active")
+    fun startForwarding(listener: ServerSocket) {
+        forwardThread = Thread({ forwardClientGenerations(listener) }, "ble-tcp-fwd").apply {
+            isDaemon = true
+            start()
+        }
+    }
 
-            forwardThread = Thread({ forwardTcpToBle(tcpIn) }, "ble-tcp-fwd").apply {
-                isDaemon = true
-                start()
+    private fun forwardClientGenerations(listener: ServerSocket) {
+        try {
+            while (running.get()) {
+                val accepted = RatspeakBleSocketQueue.acceptUsable(
+                    listener,
+                    shouldContinue = { running.get() },
+                ) ?: break
+                if (!running.get()) {
+                    try { accepted.socket.close() } catch (_: Throwable) {}
+                    break
+                }
+                // Detach evidence belongs to one Rust TCP generation only.
+                rustDetachObserved.set(false)
+                detachFrameMatch = 0
+                synchronized(bridgeClientLock) {
+                    clientSocket = accepted.socket
+                    tcpOut = accepted.socket.getOutputStream()
+                }
+                Log.i(TAG, "Rust TCP generation connected — forwarding active")
+                forwardTcpToBle(accepted.input)
+                closeBridgeClient(accepted.socket)
+                if (running.get()) {
+                    Log.i(TAG, "Rust TCP generation closed — retaining GATT and stable listener")
+                }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "TCP accept failed: ${e.javaClass.simpleName}: ${e.message}")
+        } catch (error: Throwable) {
+            if (running.get()) {
+                Log.e(TAG, "TCP bridge failed: ${error.javaClass.simpleName}: ${error.message}")
+                running.set(false)
+            }
+        } finally {
             cleanup()
+        }
+    }
+
+    fun awaitStopped() {
+        val active = forwardThread ?: return
+        if (active !== Thread.currentThread()) {
+            try { active.join() } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }
     }
 
@@ -401,7 +451,7 @@ class RatspeakBleGatt(private val context: Context) {
                 if (n <= 0) break
                 val rxC = rxChar ?: break
                 var off = 0
-                val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
+                val chunkSize = negotiatedMtu.coerceAtLeast(1)
                 while (off < n && running.get()) {
                     val end = minOf(off + chunkSize, n)
                     val activeGatt = gatt ?: break
@@ -423,14 +473,22 @@ class RatspeakBleGatt(private val context: Context) {
         } catch (e: Exception) {
             if (running.get()) Log.e(TAG, "TCP→BLE error: ${e.javaClass.simpleName}: ${e.message}")
         }
-        sendRnodeDetachFallbackIfNeeded("TCP bridge closing")
-        Log.i(TAG, "TCP→BLE stopped")
-        running.set(false)
-        cleanup()
+        Log.i(TAG, "TCP→BLE generation stopped")
+    }
+
+    private fun closeBridgeClient(expected: java.net.Socket? = null) {
+        synchronized(bridgeClientLock) {
+            val active = clientSocket
+            if (expected != null && active !== expected) return
+            try { active?.close() } catch (_: Throwable) {}
+            clientSocket = null
+            tcpOut = null
+        }
     }
 
     @SuppressLint("MissingPermission")
-    fun disconnect() {
+    fun disconnect(graceful: Boolean = true) {
+        if (graceful) sendRnodeDetachFallbackIfNeeded("explicit disconnect")
         cleanup()
     }
     fun isRunning(): Boolean = running.get()
@@ -460,7 +518,7 @@ class RatspeakBleGatt(private val context: Context) {
             synchronized(bleWriteLock) {
                 Log.i(TAG, "Sending fallback RNode detach before BLE close ($reason)")
                 var off = 0
-                val chunkSize = negotiatedMtu.coerceAtLeast(MTU_FALLBACK_PAYLOAD)
+                val chunkSize = negotiatedMtu.coerceAtLeast(1)
                 while (off < RNODE_DETACH_FRAME.size) {
                     val end = minOf(off + chunkSize, RNODE_DETACH_FRAME.size)
                     val chunk = RNODE_DETACH_FRAME.copyOfRange(off, end)
@@ -490,14 +548,13 @@ class RatspeakBleGatt(private val context: Context) {
             Log.i(TAG, "cleanup()")
             running.set(false)
             unregisterBondReceiver()
-            try { clientSocket?.close() } catch (e: Exception) { logEx("clientSocket.close", e) }
-            try { serverSocket?.close() } catch (e: Exception) { logEx("serverSocket.close", e) }
+            closeBridgeClient()
             val fwd = forwardThread
             if (fwd != null && fwd !== Thread.currentThread()) {
                 fwd.interrupt()
             }
             closeGattOnly("cleanup")
-            rxChar = null; txChar = null; clientSocket = null; serverSocket = null; tcpOut = null
+            rxChar = null; txChar = null
             forwardThread = null
         }
     }
@@ -624,18 +681,9 @@ class RatspeakBleGatt(private val context: Context) {
         Log.d(TAG, "cleanup($where): ${e.javaClass.simpleName}: ${e.message}")
     }
 
-    /** Push a connection-phase update to JS for UI progress. */
+    /** Publish a closed connection phase to the process supervisor. */
     private fun emitProgress(phase: String) {
-        val wv = webViewRef ?: return
-        val payload = JSONObject()
-            .put("activity_operation", activityOperation)
-            .put("phase", phase)
-        handler.post {
-            wv.evaluateJavascript(
-                "if(typeof window._onBleConnectProgress==='function')window._onBleConnectProgress($payload);",
-                null
-            )
-        }
+        progress(phase)
     }
 
     private fun bondStr(s: Int) = when (s) {
@@ -785,11 +833,14 @@ class RatspeakBleGatt(private val context: Context) {
 
     private fun handleCharacteristicChanged(ch: BluetoothGattCharacteristic, data: ByteArray) {
         if (ch.uuid == BleUuids.NUS_TX_CHAR) {
-            try { tcpOut?.write(data); tcpOut?.flush() }
+            val output = synchronized(bridgeClientLock) { tcpOut }
+            try { output?.write(data); output?.flush() }
             catch (e: Exception) {
                 if (running.get()) {
                     Log.e(TAG, "BLE→TCP: ${e.javaClass.simpleName}: ${e.message}")
-                    running.set(false)
+                    synchronized(bridgeClientLock) {
+                        if (tcpOut === output) closeBridgeClient()
+                    }
                 }
             }
         }
@@ -821,8 +872,7 @@ class RatspeakBleGatt(private val context: Context) {
                     }
                     if (running.getAndSet(false)) {
                         Log.w(TAG, "BLE disconnected while bridge active")
-                        try { clientSocket?.close() }
-                        catch (e: Exception) { logEx("clientSocket.close on disconnect", e) }
+                        closeBridgeClient()
                     }
                 }
             }
@@ -830,7 +880,10 @@ class RatspeakBleGatt(private val context: Context) {
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             if (!isActiveGatt(gatt, "onMtuChanged")) return
-            if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu - 3
+            negotiatedMtu = RatspeakMobilePolicy.attPayload(
+                mtu,
+                status == BluetoothGatt.GATT_SUCCESS,
+            )
             Log.i(TAG, "MTU: $mtu (payload=$negotiatedMtu) status=$status")
             mtuLatch?.countDown()
         }

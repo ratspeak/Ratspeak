@@ -17,6 +17,7 @@ use crate::activity::emitter::EmitterBatchSink;
 use crate::channels::ChannelsManagerHandle;
 use crate::config::DashboardConfig;
 use crate::lxmf::LxmfManager;
+use crate::mobile_platform::{MobilePlatformBridge, NoopMobilePlatformBridge};
 use crate::rns::RnsManager;
 
 pub use ratspeak_core::types::{
@@ -174,6 +175,12 @@ impl RNodeActivityOrigin {
 
     pub(crate) fn identity_generation(self) -> u64 {
         self.identity_generation
+    }
+
+    /// Opaque process-monotonic identifier for one installed RNS manager.
+    /// Native platform callbacks must echo it; it carries no authority alone.
+    pub fn native_generation(self) -> u64 {
+        self.rns_generation
     }
 }
 
@@ -371,6 +378,14 @@ pub struct AppState {
     /// restarts that do not advance `identity_session_generation`.
     activity_boundary_generation: AtomicU64,
     pub notifier: Arc<dyn NativeNotifier>,
+    /// Application-scoped native platform owner installed by the mobile shell.
+    /// Commands call this directly; WebView JavaScript is never an authority
+    /// for Android GATT lifecycle or installed-RNS generations.
+    mobile_platform: RwLock<Arc<dyn MobilePlatformBridge>>,
+    /// Closes the mobile cold-start ordering gap between `init_core` spawning
+    /// runtime initialization and the shell installing its native bridge.
+    mobile_platform_installed: AtomicBool,
+    mobile_platform_installed_notify: tokio::sync::Notify,
     /// Keyed by dest_hash hex; IndexMap insertion-order drives FIFO eviction.
     pub announce_history: RwLock<IndexMap<String, serde_json::Value>>,
     pub alerts: Mutex<Vec<serde_json::Value>>,
@@ -425,11 +440,20 @@ pub struct AppState {
     /// Monotonic ticket used to discard a stale asynchronous foreground
     /// transition after a newer background/foreground edge has arrived.
     foreground_transition_generation: AtomicU64,
+    /// Monotonic ticket used to discard stale platform connectivity callbacks.
+    /// The corresponding async lock serializes interface reconciliation,
+    /// persistence, and transport-policy publication as one transition.
+    network_transition_generation: AtomicU64,
+    pub network_transition_lock: tokio::sync::Mutex<()>,
     /// Edge-trigger wake for long-sleeping background loops.
     pub foreground_changed: Arc<tokio::sync::Notify>,
     pub propagation_node: Mutex<Option<Arc<Mutex<lxmf_core::propagation_node::PropagationNode>>>>,
     pub last_stats: RwLock<Option<serde_json::Value>>,
     pub last_hub_interfaces: RwLock<Option<serde_json::Value>>,
+    /// Latest closed native hardware state, retained across WebView reloads.
+    /// Native callbacks must pass their generation/sequence fences before
+    /// updating this map, so stale physical generations cannot overwrite it.
+    mobile_hardware_state: RwLock<std::collections::BTreeMap<String, serde_json::Value>>,
     pub lxmf_notify: Arc<tokio::sync::Notify>,
     pub discovered_propagation_nodes: Mutex<HashMap<String, serde_json::Value>>,
     pub network_log_enabled: AtomicBool,
@@ -601,6 +625,9 @@ impl AppState {
             activity_control_lock: tokio::sync::Mutex::new(()),
             activity_boundary_generation: AtomicU64::new(0),
             notifier,
+            mobile_platform: RwLock::new(Arc::new(NoopMobilePlatformBridge)),
+            mobile_platform_installed: AtomicBool::new(false),
+            mobile_platform_installed_notify: tokio::sync::Notify::new(),
             announce_history: RwLock::new(IndexMap::new()),
             alerts: Mutex::new(Vec::new()),
             rns: RwLock::new(None),
@@ -632,10 +659,13 @@ impl AppState {
             session_shutdown: RwLock::new(ShutdownSignal::new()),
             is_foreground: Arc::new(AtomicBool::new(true)),
             foreground_transition_generation: AtomicU64::new(0),
+            network_transition_generation: AtomicU64::new(0),
+            network_transition_lock: tokio::sync::Mutex::new(()),
             foreground_changed: Arc::new(tokio::sync::Notify::new()),
             propagation_node: Mutex::new(None),
             last_stats: RwLock::new(None),
             last_hub_interfaces: RwLock::new(None),
+            mobile_hardware_state: RwLock::new(std::collections::BTreeMap::new()),
             lxmf_notify: Arc::new(tokio::sync::Notify::new()),
             discovered_propagation_nodes: Mutex::new(HashMap::new()),
             network_log_enabled: AtomicBool::new(false),
@@ -728,8 +758,44 @@ impl AppState {
             == generation
     }
 
+    pub fn begin_network_transition(&self) -> u64 {
+        self.network_transition_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
+
+    pub fn is_current_network_transition(&self, generation: u64) -> bool {
+        self.network_transition_generation.load(Ordering::Acquire) == generation
+    }
+
     pub fn native_notifications_enabled(&self) -> bool {
         self.native_notifications_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn install_mobile_platform_bridge(&self, bridge: Arc<dyn MobilePlatformBridge>) {
+        if let Ok(mut installed) = self.mobile_platform.write() {
+            *installed = bridge;
+            self.mobile_platform_installed
+                .store(true, Ordering::Release);
+            self.mobile_platform_installed_notify.notify_waiters();
+        }
+    }
+
+    pub async fn wait_for_mobile_platform_bridge(&self) {
+        while !self.mobile_platform_installed.load(Ordering::Acquire) {
+            let notified = self.mobile_platform_installed_notify.notified();
+            if self.mobile_platform_installed.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+    }
+
+    pub fn mobile_platform_bridge(&self) -> Arc<dyn MobilePlatformBridge> {
+        self.mobile_platform
+            .read()
+            .map(|bridge| Arc::clone(&bridge))
+            .unwrap_or_else(|_| Arc::new(NoopMobilePlatformBridge))
     }
 
     pub fn set_native_notifications_enabled(&self, enabled: bool) {
@@ -1340,6 +1406,48 @@ impl AppState {
         )
     }
 
+    /// Atomically terminate an exact native operation before or after its
+    /// listener handoff. Used for native failures that can race Rust runtime
+    /// initialization; later callbacks observe absence and cannot complete it
+    /// twice.
+    pub fn take_active_ble_rnode_activity_operation_with_completion(
+        &self,
+        token_hex: &str,
+    ) -> Option<BleRnodeActivityTakeWithCompletion> {
+        let token: [u8; 16] = hex::decode(token_hex).ok()?.try_into().ok()?;
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending.as_ref().is_some_and(|operation| {
+            operation.started_at.elapsed() > BLE_RNODE_ACTIVITY_OPERATION_TTL
+        }) {
+            *pending = None;
+            return None;
+        }
+        if pending.as_ref().is_some_and(|operation| {
+            operation.token == token
+                && matches!(
+                    operation.phase,
+                    BleRnodeActivityOperationPhase::PendingNative
+                        | BleRnodeActivityOperationPhase::Initializing
+                )
+                && self.ble_rnode_lifecycle_is_current(operation)
+        }) {
+            return pending.take().map(|operation| {
+                let rollback_context = operation
+                    .rollback_context
+                    .map(|rollback| (rollback.config_dir, rollback.name, rollback.marker));
+                (
+                    operation.activity_fence,
+                    rollback_context,
+                    operation.completion,
+                )
+            });
+        }
+        None
+    }
+
     pub fn take_initializing_ble_rnode_activity_operation(
         &self,
         token_hex: &str,
@@ -1747,6 +1855,29 @@ impl AppState {
         }
     }
 
+    pub fn publish_mobile_hardware_state(
+        &self,
+        kind: &'static str,
+        state: &'static str,
+        reason: Option<&'static str>,
+    ) {
+        let mut payload = serde_json::json!({ "kind": kind, "state": state });
+        if let Some(reason) = reason {
+            payload["reason"] = serde_json::json!(reason);
+        }
+        if let Ok(mut latest) = self.mobile_hardware_state.write() {
+            latest.insert(kind.to_string(), payload.clone());
+        }
+        self.emit_to_all("mobile_hardware_state", payload);
+    }
+
+    pub fn mobile_hardware_state_snapshot(&self) -> serde_json::Value {
+        self.mobile_hardware_state
+            .read()
+            .map(|latest| serde_json::json!(&*latest))
+            .unwrap_or_else(|_| serde_json::json!({}))
+    }
+
     pub fn set_lxmf(&self, lxmf: LxmfManager) {
         let identity_hash = lxmf.identity_hash.clone();
         let public_key = lxmf.identity.get_public_key();
@@ -1897,6 +2028,31 @@ mod tests {
 
     fn make_state() -> AppState {
         make_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    #[tokio::test]
+    async fn mobile_platform_startup_waits_until_bridge_install() {
+        let state = Arc::new(make_state());
+        let waiting = Arc::clone(&state);
+        let (completed_tx, mut completed_rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            waiting.wait_for_mobile_platform_bridge().await;
+            let _ = completed_tx.send(()).await;
+        });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), completed_rx.recv())
+                .await
+                .is_err(),
+            "cold-start work must not consume the deferred manifest through the no-op bridge"
+        );
+        state.install_mobile_platform_bridge(Arc::new(NoopMobilePlatformBridge));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), completed_rx.recv())
+                .await
+                .expect("bridge install should wake startup")
+                .is_some()
+        );
     }
 
     #[test]
@@ -2340,6 +2496,42 @@ mod tests {
         assert_eq!(
             state.take_initializing_ble_rnode_activity_operation(&second),
             None
+        );
+    }
+
+    #[test]
+    fn native_failure_atomically_takes_pending_or_initializing_once() {
+        let state = make_state();
+        let pending_fence = state.activity_request_fence();
+        let pending = state.begin_ble_rnode_activity_operation(pending_fence, None);
+        assert_eq!(
+            state
+                .take_active_ble_rnode_activity_operation_with_completion(&pending)
+                .map(|taken| taken.0),
+            Some(pending_fence)
+        );
+        assert!(
+            state
+                .take_active_ble_rnode_activity_operation_with_completion(&pending)
+                .is_none()
+        );
+
+        let initializing_fence = state.activity_request_fence();
+        let initializing = state.begin_ble_rnode_activity_operation(initializing_fence, None);
+        assert_eq!(
+            state.claim_ble_rnode_activity_operation(&initializing),
+            Some(initializing_fence)
+        );
+        assert_eq!(
+            state
+                .take_active_ble_rnode_activity_operation_with_completion(&initializing)
+                .map(|taken| taken.0),
+            Some(initializing_fence)
+        );
+        assert!(
+            state
+                .take_active_ble_rnode_activity_operation_with_completion(&initializing)
+                .is_none()
         );
     }
 

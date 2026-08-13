@@ -1290,13 +1290,21 @@
                             </div>
                             <div class="settings-row" id="settings-row-notifications" style="display:none;">
                                 <div class="settings-row-info">
-                                    <span class="settings-row-label">Desktop Notifications</span>
+                                    <span class="settings-row-label">Notifications</span>
                                     <span class="settings-row-desc">Show a system notification when a new message arrives while Ratspeak is in the background</span>
                                 </div>
-                                <label class="prop-toggle" aria-label="Desktop Notifications">
+                                <button class="selector-badge selector-badge-no-caret" id="settings-notification-action" type="button" style="display:none;">Open Settings</button>
+                                <label class="prop-toggle" aria-label="Notifications">
                                     <input type="checkbox" id="desktop-notifications-toggle" checked>
                                     <span class="prop-slider"></span>
                                 </label>
+                            </div>
+                            <div class="settings-row" id="settings-row-keep-connected" style="display:none;">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Keep Ratspeak connected</span>
+                                    <span class="settings-row-desc" id="settings-keep-connected-desc">Android may pause background radio and message delivery.</span>
+                                </div>
+                                <button class="selector-badge selector-badge-no-caret" id="settings-keep-connected-action" type="button" aria-describedby="settings-keep-connected-desc">Review</button>
                             </div>
                             <div class="settings-row">
                                 <div class="settings-row-info">

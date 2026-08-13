@@ -77,7 +77,9 @@ async function main() {
     assert.deepStrictEqual(Array.from(channelRoutes[0]), [hub, room]);
     tapContext._routeNotificationTap({ extra: { route: 'lxmf:abc123' } });
     tapContext._routeNotificationTap({ extra: { route: 'lrgp:game-7' } });
-    assert.deepStrictEqual(lxmfRoutes, ['abc123']);
+    tapContext._routeNotificationTap({ notification: { actionTypeId: 'lxmf:ios123' } });
+    assert.deepStrictEqual(lxmfRoutes, ['abc123', 'ios123'],
+        'iOS actionTypeId must retain the same validated route behavior as Android extra');
     assert.deepStrictEqual(gameRoutes, ['game-7']);
 
     tapContext._routeNotificationTap({

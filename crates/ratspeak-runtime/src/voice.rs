@@ -1680,6 +1680,10 @@ struct VoiceAudioSession {
     _input_stream: Option<cpal::Stream>,
     _output_stream: Option<VoiceOutputStream>,
     sink_task: Option<JoinHandle<()>>,
+    // Call routing/focus lifetime is owned by the exact Rust LXST session.
+    // Android microphone-FGS promotion is tracked separately on this guard so
+    // denied capture never prevents receive-only call audio.
+    call_audio_session: PlatformCallAudioSession,
     // Declared after the streams so iOS deactivates AVAudioSession only after
     // RemoteIO input/output have been dropped.
     _platform_audio_session: PlatformVoiceAudioSession,
@@ -1700,6 +1704,27 @@ pub(crate) fn start_platform_voice_audio_session() -> VoiceResult<PlatformVoiceA
     #[cfg(not(target_os = "ios"))]
     {
         Ok(PlatformVoiceAudioSession)
+    }
+}
+
+#[cfg(target_os = "android")]
+type PlatformCallAudioSession = android_voice_audio::CallAudioSessionGuard;
+
+#[cfg(not(target_os = "android"))]
+struct PlatformCallAudioSession;
+
+#[cfg(not(target_os = "android"))]
+impl PlatformCallAudioSession {
+    fn start(_link_id: [u8; 16]) -> VoiceResult<Self> {
+        Ok(Self)
+    }
+
+    fn promote_capture(&mut self) -> VoiceResult<()> {
+        Ok(())
+    }
+
+    fn demote_capture(&mut self) -> bool {
+        true
     }
 }
 
@@ -1763,7 +1788,14 @@ impl VoiceAudioSession {
                 .is_some_and(|retry_at| now >= retry_at)
         {
             let host = cpal::default_host();
-            match start_microphone_side(&host, self.profile, control_tx.clone()).await {
+            match start_microphone_side(
+                &host,
+                self.profile,
+                control_tx.clone(),
+                &mut self.call_audio_session,
+            )
+            .await
+            {
                 Ok(stream) => {
                     tracing::info!(
                         link_id = %crate::short_id(&hex::encode(self.link_id)),
@@ -1846,6 +1878,7 @@ impl VoiceAudioSession {
         }
         self._output_stream.take();
         self._input_stream.take();
+        let _ = self.call_audio_session.demote_capture();
         self.microphone = false;
         self.speaker = false;
 
@@ -1853,7 +1886,14 @@ impl VoiceAudioSession {
         let target_sample_rate = self.profile.sample_rate_hz();
         let mut restart_warnings = Vec::new();
 
-        match start_microphone_side(&host, self.profile, control_tx.clone()).await {
+        match start_microphone_side(
+            &host,
+            self.profile,
+            control_tx.clone(),
+            &mut self.call_audio_session,
+        )
+        .await
+        {
             Ok(stream) => {
                 self._input_stream = Some(stream);
                 self.microphone = true;
@@ -1900,12 +1940,20 @@ impl VoiceAudioSession {
         control_tx: mpsc::Sender<TelephonyControl>,
     ) -> VoiceResult<Self> {
         VOICE_MICROPHONE_MUTED.store(false, Ordering::Relaxed);
+        let mut call_audio_session = PlatformCallAudioSession::start(link_id)?;
         let platform_audio_session = start_platform_voice_audio_session()?;
         let host = cpal::default_host();
         let target_sample_rate = profile.sample_rate_hz();
 
         let mut warnings = Vec::new();
-        let input_stream = match start_microphone_side(&host, profile, control_tx.clone()).await {
+        let input_stream = match start_microphone_side(
+            &host,
+            profile,
+            control_tx.clone(),
+            &mut call_audio_session,
+        )
+        .await
+        {
             Ok(stream) => Some(stream),
             Err(message) => {
                 warnings.push(message);
@@ -1944,6 +1992,7 @@ impl VoiceAudioSession {
             _input_stream: input_stream,
             _output_stream: output_stream,
             sink_task,
+            call_audio_session,
             _platform_audio_session: platform_audio_session,
         };
         if !session.microphone {
@@ -1960,8 +2009,16 @@ async fn start_microphone_side(
     host: &cpal::Host,
     profile: Profile,
     control_tx: mpsc::Sender<TelephonyControl>,
+    call_audio_session: &mut PlatformCallAudioSession,
 ) -> VoiceResult<cpal::Stream> {
-    let (input_stream, capture_rx) = open_microphone_capture(host, profile)?;
+    call_audio_session.promote_capture()?;
+    let (input_stream, capture_rx) = match open_microphone_capture(host, profile) {
+        Ok(capture) => capture,
+        Err(error) => {
+            let _ = call_audio_session.demote_capture();
+            return Err(error);
+        }
+    };
 
     if let Err(e) = control_tx
         .send(TelephonyControl::StartOpusStream {
@@ -1970,6 +2027,7 @@ async fn start_microphone_side(
         })
         .await
     {
+        let _ = call_audio_session.demote_capture();
         return Err(format!("Failed to start LXST microphone stream: {e}"));
     }
 
@@ -2911,7 +2969,124 @@ mod android_voice_audio {
     use super::VoiceResult;
 
     const CLASS_NAME: &str = "org.ratspeak.android.RatspeakVoiceAudio";
+    const CALL_CLASS_NAME: &str = "org.ratspeak.android.RatspeakCallAudio";
     static APP_CLASS_LOADER: OnceLock<GlobalRef> = OnceLock::new();
+
+    pub struct CallAudioSessionGuard {
+        token: String,
+        capture_promoted: bool,
+    }
+
+    impl Drop for CallAudioSessionGuard {
+        fn drop(&mut self) {
+            let token = self.token.clone();
+            let _ = with_env(|env| {
+                let class = find_app_class(env, CALL_CLASS_NAME)?;
+                let context = get_app_context(env)?;
+                let token = env
+                    .new_string(token)
+                    .map_err(|e| format!("call session token: {e}"))?;
+                env.call_static_method(
+                    class,
+                    "stopForSession",
+                    "(Landroid/content/Context;Ljava/lang/String;)Z",
+                    &[JValue::Object(context), JValue::Object(token.into())],
+                )
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("RatspeakCallAudio.stopForSession: {e}")
+                })?;
+                Ok(())
+            });
+        }
+    }
+
+    impl CallAudioSessionGuard {
+        pub fn start(link_id: [u8; 16]) -> VoiceResult<Self> {
+            let token = hex::encode(link_id);
+            with_env(|env| {
+                let class = find_app_class(env, CALL_CLASS_NAME)?;
+                let context = get_app_context(env)?;
+                let native_token = env
+                    .new_string(&token)
+                    .map_err(|e| format!("call session token: {e}"))?;
+                let route = env
+                    .new_string("earpiece")
+                    .map_err(|e| format!("call initial route: {e}"))?;
+                let started = env
+                    .call_static_method(
+                        class,
+                        "startForSession",
+                        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z",
+                        &[
+                            JValue::Object(context),
+                            JValue::Object(native_token.into()),
+                            JValue::Object(route.into()),
+                        ],
+                    )
+                    .map_err(|e| {
+                        clear_exception(env);
+                        format!("RatspeakCallAudio.startForSession: {e}")
+                    })?
+                    .z()
+                    .map_err(|e| format!("RatspeakCallAudio.startForSession result: {e}"))?;
+                if started {
+                    Ok(Self {
+                        token,
+                        capture_promoted: false,
+                    })
+                } else {
+                    Err("Android call audio session could not start".to_string())
+                }
+            })
+        }
+
+        pub fn promote_capture(&mut self) -> VoiceResult<()> {
+            // Always reassert the exact native owner. A previous JNI demotion
+            // can fail and later succeed asynchronously; the Rust cleanup bit
+            // intentionally stays true until the direct call succeeds.
+            let promoted = call_capture_method(&self.token, "promoteCaptureForSession")?;
+            if !promoted {
+                return Err("Android microphone capture is unavailable".to_string());
+            }
+            self.capture_promoted = true;
+            Ok(())
+        }
+
+        pub fn demote_capture(&mut self) -> bool {
+            if !self.capture_promoted {
+                return true;
+            }
+            let demoted =
+                call_capture_method(&self.token, "demoteCaptureForSession").unwrap_or(false);
+            if demoted {
+                self.capture_promoted = false;
+            }
+            demoted
+        }
+    }
+
+    fn call_capture_method(token: &str, method: &str) -> VoiceResult<bool> {
+        with_env(|env| {
+            let class = find_app_class(env, CALL_CLASS_NAME)?;
+            let context = get_app_context(env)?;
+            let token = env
+                .new_string(token)
+                .map_err(|e| format!("call session token: {e}"))?;
+            env.call_static_method(
+                class,
+                method,
+                "(Landroid/content/Context;Ljava/lang/String;)Z",
+                &[JValue::Object(context), JValue::Object(token.into())],
+            )
+            .map_err(|e| {
+                clear_exception(env);
+                format!("RatspeakCallAudio.{method}: {e}")
+            })?
+            .z()
+            .map_err(|e| format!("RatspeakCallAudio.{method} result: {e}"))
+        })
+    }
 
     pub fn start(sample_rate_hz: u32, channels: usize) -> VoiceResult<()> {
         with_env(|env| {

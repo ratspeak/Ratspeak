@@ -216,19 +216,35 @@ pub async fn api_set_foreground(
     state: State<'_, Arc<AppState>>,
     args: SetForegroundArgs,
 ) -> AppResult<Value> {
-    let fg = args.foreground.unwrap_or(true);
+    apply_foreground_state(Arc::clone(state.inner()), args.foreground.unwrap_or(true)).await
+}
+
+/// Apply a native or IPC foreground transition through one ordered lifecycle
+/// boundary. Platform callbacks call this directly instead of depending on a
+/// running WebView JavaScript event loop.
+pub async fn apply_foreground_state(state: Arc<AppState>, fg: bool) -> AppResult<Value> {
+    let transition = state.begin_foreground_transition();
+    apply_foreground_transition(state, fg, transition).await
+}
+
+/// Apply a foreground edge whose authority was allocated synchronously when
+/// the platform event arrived. This prevents executor scheduling from
+/// reordering a fast suspend/resume pair.
+pub async fn apply_foreground_transition(
+    state: Arc<AppState>,
+    fg: bool,
+    transition: u64,
+) -> AppResult<Value> {
+    if !state.is_current_foreground_transition(transition) {
+        return Ok(json!({ "foreground": state.is_foreground() }));
+    }
     #[cfg(all(feature = "lxst-voice", any(target_os = "android", target_os = "ios")))]
-    if !fg
-        && crate::voice_memo::cancel_recording(state.inner())
-            .await
-            .is_err()
-    {
+    if !fg && crate::voice_memo::cancel_recording(&state).await.is_err() {
         tracing::warn!(
             reason = "mobile_background_voice_memo_cancel_failed",
             "could not release voice memo capture while backgrounding"
         );
     }
-    let transition = state.begin_foreground_transition();
     if fg {
         let _identity_lifecycle = state.identity_switch_lock.lock().await;
         let _activity_control = state.activity_control_lock.lock().await;

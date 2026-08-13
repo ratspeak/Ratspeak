@@ -236,6 +236,7 @@ function _voiceTrackEstablished(active) {
 
 function _androidCallRouteBridge() {
     if (!window.RatspeakAndroid) return null;
+    if (typeof window.RatspeakAndroid.primeCallAudioRoute !== 'function') return null;
     if (typeof window.RatspeakAndroid.startCallAudioRoute !== 'function') return null;
     if (typeof window.RatspeakAndroid.stopCallAudioRoute !== 'function') return null;
     return window.RatspeakAndroid;
@@ -252,7 +253,7 @@ function _voicePrimeNativeCallRoute() {
     _voiceNativeAudioRoutePrimed = true;
     _voiceNativeAudioRouteToken = 'pending:' + route;
     try {
-        bridge.startCallAudioRoute(route);
+        bridge.primeCallAudioRoute(route);
         _voiceNativeAudioRouteLastSyncAt = Date.now();
     } catch (_) {
         _voiceNativeAudioRouteLastSyncAt = 0;
@@ -286,7 +287,10 @@ function _voiceSyncNativeAudioRoute(force) {
     if (!force && _voiceNativeAudioRouteToken === token && (now - _voiceNativeAudioRouteLastSyncAt) < 10000) return;
     _voiceNativeAudioRouteToken = token;
     _voiceNativeAudioRouteLastSyncAt = now;
-    try { bridge.startCallAudioRoute(route); } catch (_) {}
+    try {
+        if (active && active.link_id) bridge.startCallAudioRoute(route, active.link_id);
+        else bridge.primeCallAudioRoute(route);
+    } catch (_) {}
 }
 
 function _voiceEnsureMicrophonePermission() {
@@ -591,10 +595,10 @@ function _voiceStartCall(hash) {
     _voiceResetCallControls();
     lxstVoiceState.lastDialHash = hash;
     _voiceSetOptimisticOutgoing(hash);
-    _voicePrimeNativeCallRoute();
     renderVoiceUi();
     return _voiceCancelMemoForCall().then(_voiceAfterNextPaint).then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission).then(function() {
         if (dialToken !== _voiceDialToken || !_voiceActiveMatchesContact(hash)) return;
+        _voicePrimeNativeCallRoute();
         return RS.invoke('voice_call', { args: { hash: hash } }).then(function(result) {
             if (dialToken !== _voiceDialToken || !_voiceActiveMatchesContact(hash)) return;
             if (result && result.requested_hash) lxstVoiceState.lastDialHash = result.requested_hash;

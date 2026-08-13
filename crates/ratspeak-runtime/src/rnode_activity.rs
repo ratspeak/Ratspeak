@@ -269,7 +269,7 @@ fn spawn_ready_rnode_activity_monitor_for_origin(
     true
 }
 
-pub(crate) fn spawn_startup_rnode_activity_monitor(
+pub fn spawn_startup_rnode_activity_monitor(
     state: Arc<AppState>,
     observer: RNodeRuntimeObserver,
     origin: RNodeActivityOrigin,

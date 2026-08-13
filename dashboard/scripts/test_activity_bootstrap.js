@@ -757,6 +757,7 @@ test('foreground notification fires only after successful backend lifecycle hand
         dispatchEvent: function(value) { calls.push(value); }
     };
     var context = {
+        window: { __RATSPEAK_DESKTOP__: true },
         RS: {
             invoke: function() {
                 var gate = deferred();

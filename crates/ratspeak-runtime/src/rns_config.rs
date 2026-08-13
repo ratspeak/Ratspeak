@@ -417,6 +417,38 @@ pub fn rnode_names_with_port_prefix(config_dir: &Path, prefix: &str) -> Vec<Stri
     names
 }
 
+/// Enabled RNode entries matching `prefix`, in configuration order.
+/// Android uses this to enforce its single native Bluetooth-radio owner.
+pub fn enabled_rnode_names_with_port_prefix(config_dir: &Path, prefix: &str) -> Vec<String> {
+    get_all_interfaces(config_dir)
+        .get("rnode")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .get("port")
+                .and_then(Value::as_str)
+                .is_some_and(|port| port.starts_with(prefix))
+                && entry
+                    .get("enabled")
+                    .and_then(Value::as_str)
+                    .is_none_or(|enabled| {
+                        !matches!(
+                            enabled.trim().to_ascii_lowercase().as_str(),
+                            "false" | "no" | "0" | "off"
+                        )
+                    })
+        })
+        .filter_map(|entry| {
+            entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 pub fn get_all_interfaces(config_dir: &Path) -> Value {
     let content = match read_config(config_dir) {
         Some(c) => c,
@@ -526,6 +558,108 @@ pub fn get_all_interfaces(config_dir: &Path) -> Value {
         "backbone_client": backbone_client,
         "backbone_server": backbone_server,
     })
+}
+
+#[derive(Clone, Debug)]
+pub struct AndroidUsbSelectorMigrationCandidate {
+    pub name: String,
+    pub device_name: String,
+    pub vendor_id: Option<u16>,
+    pub product_id: Option<u16>,
+    pub serial_number: Option<String>,
+    revision: InterfaceBlockRevision,
+}
+
+/// Snapshot enabled Android USB blocks while the caller owns the app config
+/// lock. Native device resolution then occurs without holding that lock.
+pub fn android_usb_selector_migration_candidates(
+    config_dir: &Path,
+) -> Vec<AndroidUsbSelectorMigrationCandidate> {
+    let mut candidates = Vec::new();
+    let entries = get_all_interfaces(config_dir)
+        .get("rnode")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for entry in entries {
+        let enabled = entry
+            .get("enabled")
+            .map(|value| {
+                value.as_bool().unwrap_or_else(|| {
+                    value
+                        .as_str()
+                        .is_none_or(|value| !matches!(value, "false" | "no" | "0" | "off"))
+                })
+            })
+            .unwrap_or(true);
+        if !enabled {
+            continue;
+        }
+        let Some(name) = entry.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(device_name) = entry
+            .get("port")
+            .and_then(Value::as_str)
+            .and_then(|port| port.strip_prefix("androidusb://"))
+            .filter(|device_name| !device_name.is_empty())
+        else {
+            continue;
+        };
+        let parsed_u16 = |key: &str| {
+            entry
+                .get(key)
+                .and_then(|value| {
+                    value
+                        .as_u64()
+                        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+                })
+                .and_then(|value| u16::try_from(value).ok())
+        };
+        let current_vendor = parsed_u16("usb_vendor_id");
+        let current_product = parsed_u16("usb_product_id");
+        let current_serial = entry
+            .get("usb_serial_number")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let Ok(revision) = snapshot_interface_block(config_dir, name) else {
+            continue;
+        };
+        candidates.push(AndroidUsbSelectorMigrationCandidate {
+            name: name.to_string(),
+            device_name: device_name.to_string(),
+            vendor_id: current_vendor,
+            product_id: current_product,
+            serial_number: current_serial,
+            revision,
+        });
+    }
+    candidates
+}
+
+/// Persist a native-resolved selector only if the snapshotted block is still
+/// exact. Callers must hold the app config lock around this CAS.
+pub fn apply_android_usb_selector_migration(
+    config_dir: &Path,
+    candidate: &AndroidUsbSelectorMigrationCandidate,
+    vendor_id: u16,
+    product_id: u16,
+    serial_number: Option<&str>,
+) -> InterfaceBlockCasOutcome {
+    if candidate.vendor_id == Some(vendor_id)
+        && candidate.product_id == Some(product_id)
+        && candidate.serial_number.as_deref() == serial_number
+    {
+        return InterfaceBlockCasOutcome::Applied;
+    }
+    set_rnode_usb_selector_if_revision(
+        config_dir,
+        &candidate.revision,
+        vendor_id,
+        product_id,
+        serial_number,
+    )
 }
 
 fn parse_key_value(line: &str) -> Option<(String, String)> {
@@ -656,11 +790,39 @@ fn safe_ifac_args(args: InterfaceIfacArgs<'_>) -> bool {
 
 /// Removes any existing block with the same `name` before insertion.
 pub fn add_rnode_interface(config_dir: &Path, args: RnodeInterfaceArgs<'_>) -> bool {
+    add_rnode_interface_with_usb_selector(config_dir, args, None)
+}
+
+pub fn add_rnode_interface_with_usb_selector(
+    config_dir: &Path,
+    args: RnodeInterfaceArgs<'_>,
+    usb_selector: Option<RnodeUsbSelectorArgs<'_>>,
+) -> bool {
     if normalize_rnode_interface_mode(args.mode).is_none() || !safe_rnode_args(args) {
         return false;
     }
-    let block = rnode_interface_block(args);
+    if usb_selector.is_some_and(|selector| {
+        !args.port.starts_with("androidusb://") || !safe_optional_scalar(selector.serial_number)
+    }) {
+        return false;
+    }
+    let mut block = rnode_interface_block(args);
+    if let Some(selector) = usb_selector {
+        block = interface_block_with_usb_selector(
+            &block,
+            selector.vendor_id,
+            selector.product_id,
+            selector.serial_number,
+        );
+    }
     upsert_interface_block(config_dir, &[args.name], &block)
+}
+
+#[derive(Clone, Copy)]
+pub struct RnodeUsbSelectorArgs<'a> {
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub serial_number: Option<&'a str>,
 }
 
 #[derive(Clone, Copy)]
@@ -973,6 +1135,51 @@ pub fn set_interface_enabled_if_revision(
     }
 }
 
+/// Persist a stable Android USB selector only while the exact RNode block is
+/// unchanged. The transient device path remains in `port` solely as a legacy
+/// migration hint; VID/PID and optional serial are restart-grade identity.
+pub fn set_rnode_usb_selector_if_revision(
+    config_dir: &Path,
+    expected_current: &InterfaceBlockRevision,
+    vendor_id: u16,
+    product_id: u16,
+    serial_number: Option<&str>,
+) -> InterfaceBlockCasOutcome {
+    if !safe_optional_scalar(serial_number) {
+        return InterfaceBlockCasOutcome::WriteFailed;
+    }
+    let config_path = config_dir.join("config");
+    if expected_current.config_path != config_path {
+        return InterfaceBlockCasOutcome::Stale;
+    }
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return InterfaceBlockCasOutcome::NotFound;
+        }
+        Err(_) => return InterfaceBlockCasOutcome::WriteFailed,
+    };
+    let current = match unique_interface_block_range(&content, &expected_current.name) {
+        Ok(Some(range)) => range,
+        Ok(None) => return InterfaceBlockCasOutcome::NotFound,
+        Err(()) => return InterfaceBlockCasOutcome::Stale,
+    };
+    if content[current.start..current.end] != expected_current.block {
+        return InterfaceBlockCasOutcome::Stale;
+    }
+    let updated_block = interface_block_with_usb_selector(
+        &expected_current.block,
+        vendor_id,
+        product_id,
+        serial_number,
+    );
+    let updated = replace_interface_block_range(&content, &current, &updated_block);
+    match write_config_result(config_dir, &updated) {
+        Ok(()) => InterfaceBlockCasOutcome::Applied,
+        Err(_) => InterfaceBlockCasOutcome::WriteFailed,
+    }
+}
+
 #[derive(Clone, Debug)]
 struct InterfaceBlockRange {
     start: usize,
@@ -1080,6 +1287,48 @@ fn interface_block_with_enabled(block: &str, enabled: bool) -> String {
         );
     }
 
+    let mut updated = lines.join("\n");
+    if had_trailing_newline {
+        updated.push('\n');
+    }
+    updated
+}
+
+fn interface_block_with_usb_selector(
+    block: &str,
+    vendor_id: u16,
+    product_id: u16,
+    serial_number: Option<&str>,
+) -> String {
+    let had_trailing_newline = block.ends_with('\n');
+    let mut lines = block
+        .lines()
+        .filter(|line| {
+            parse_ini_key_value(line).is_none_or(|(key, _)| {
+                !matches!(
+                    key.as_str(),
+                    "usb_vendor_id" | "usb_product_id" | "usb_serial_number"
+                )
+            })
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let insert_idx = lines
+        .iter()
+        .position(|line| parse_ini_key_value(line).is_some_and(|(key, _)| key == "port"))
+        .map_or(1usize.min(lines.len()), |index| index + 1);
+    let indent = lines
+        .get(insert_idx.saturating_sub(1))
+        .map(|line| line.chars().take_while(|ch| ch.is_whitespace()).collect())
+        .unwrap_or_else(|| "    ".to_string());
+    let mut selector = vec![
+        format!("{indent}usb_vendor_id = {vendor_id}"),
+        format!("{indent}usb_product_id = {product_id}"),
+    ];
+    if let Some(serial_number) = serial_number {
+        selector.push(format!("{indent}usb_serial_number = {serial_number}"));
+    }
+    lines.splice(insert_idx..insert_idx, selector);
     let mut updated = lines.join("\n");
     if had_trailing_newline {
         updated.push('\n');
@@ -1298,6 +1547,9 @@ const RNODE_OWNED_KEYS: &[&str] = &[
     "discovery_name",
     "ratspeak_region",
     "ratspeak_preset",
+    "usb_vendor_id",
+    "usb_product_id",
+    "usb_serial_number",
 ];
 const TCP_CLIENT_OWNED_KEYS: &[&str] = &["target_host", "target_port"];
 const TCP_SERVER_OWNED_KEYS: &[&str] = &["listen_ip", "listen_port"];
@@ -1678,10 +1930,32 @@ pub fn update_rnode_interface(
     old_name: &str,
     args: RnodeInterfaceArgs<'_>,
 ) -> bool {
+    update_rnode_interface_with_usb_selector(config_dir, old_name, args, None)
+}
+
+pub fn update_rnode_interface_with_usb_selector(
+    config_dir: &Path,
+    old_name: &str,
+    args: RnodeInterfaceArgs<'_>,
+    usb_selector: Option<RnodeUsbSelectorArgs<'_>>,
+) -> bool {
     if !safe_interface_name(old_name) || !safe_rnode_args(args) {
         return false;
     }
-    let block = rnode_interface_block(args);
+    if usb_selector.is_some_and(|selector| {
+        !args.port.starts_with("androidusb://") || !safe_optional_scalar(selector.serial_number)
+    }) {
+        return false;
+    }
+    let mut block = rnode_interface_block(args);
+    if let Some(selector) = usb_selector {
+        block = interface_block_with_usb_selector(
+            &block,
+            selector.vendor_id,
+            selector.product_id,
+            selector.serial_number,
+        );
+    }
     replace_interface_block(
         config_dir,
         old_name,
@@ -2474,6 +2748,155 @@ mod tests {
         assert!(content.contains("spreadingfactor = 9"));
         assert!(content.contains("ratspeak_region = americas"));
         assert!(!content.contains("ratspeak_preset = short_fast"));
+    }
+
+    #[test]
+    fn android_usb_selector_persists_with_exact_revision_and_optional_serial() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("USB Radio", "androidusb://legacy", 915_000_000),
+        ));
+        let revision = snapshot_interface_block(&dir, "USB Radio").expect("revision");
+        assert_eq!(
+            set_rnode_usb_selector_if_revision(
+                &dir,
+                &revision,
+                0x1a86,
+                0x7523,
+                Some("stable-serial"),
+            ),
+            InterfaceBlockCasOutcome::Applied
+        );
+        let content = read_config(&dir).expect("config");
+        assert!(content.contains("usb_vendor_id = 6790"));
+        assert!(content.contains("usb_product_id = 29987"));
+        assert!(content.contains("usb_serial_number = stable-serial"));
+        assert_eq!(
+            set_rnode_usb_selector_if_revision(&dir, &revision, 1, 2, None),
+            InterfaceBlockCasOutcome::Stale
+        );
+    }
+
+    #[test]
+    fn startup_android_usb_selector_migration_is_enabled_only_and_cas_safe() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[interfaces]\n  [[Legacy USB]]\n    type = RNodeInterface\n    enabled = true\n    port = androidusb://old-path\n    frequency = 915000000\n  [[Paused USB]]\n    type = RNodeInterface\n    enabled = false\n    port = androidusb://paused-path\n",
+        );
+        let candidates = android_usb_selector_migration_candidates(&dir);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "Legacy USB");
+        assert_eq!(candidates[0].device_name, "old-path");
+
+        assert_eq!(
+            apply_android_usb_selector_migration(
+                &dir,
+                &candidates[0],
+                0x303a,
+                0x1001,
+                Some("stable-radio"),
+            ),
+            InterfaceBlockCasOutcome::Applied
+        );
+        let persisted = read_config(&dir).expect("config");
+        assert!(persisted.contains("usb_vendor_id = 12346"));
+        assert!(persisted.contains("usb_product_id = 4097"));
+        assert!(persisted.contains("usb_serial_number = stable-radio"));
+        assert!(!persisted.contains("paused-path\n    usb_vendor_id"));
+
+        let stable = android_usb_selector_migration_candidates(&dir);
+        assert_eq!(stable[0].vendor_id, Some(0x303a));
+        assert_eq!(stable[0].product_id, Some(0x1001));
+        assert_eq!(stable[0].serial_number.as_deref(), Some("stable-radio"));
+
+        assert!(set_interface_enabled(&dir, "Legacy USB", false));
+        assert_eq!(
+            apply_android_usb_selector_migration(
+                &dir,
+                &stable[0],
+                0x303a,
+                0x1001,
+                Some("replacement"),
+            ),
+            InterfaceBlockCasOutcome::Stale,
+            "a concurrent edit must never be overwritten by startup migration"
+        );
+        let concurrent = read_config(&dir).expect("concurrent config");
+        assert!(concurrent.contains("enabled = false"));
+        assert!(concurrent.contains("usb_serial_number = stable-radio"));
+        assert!(!concurrent.contains("usb_serial_number = replacement"));
+    }
+
+    #[test]
+    fn update_rnode_replaces_or_removes_android_usb_selector_as_one_unit() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface_with_usb_selector(
+            &dir,
+            test_rnode_args("USB Radio", "androidusb://first", 915_000_000),
+            Some(RnodeUsbSelectorArgs {
+                vendor_id: 0x1a86,
+                product_id: 0x7523,
+                serial_number: Some("radio-a"),
+            }),
+        ));
+
+        assert!(update_rnode_interface_with_usb_selector(
+            &dir,
+            "USB Radio",
+            test_rnode_args("USB Radio", "androidusb://second", 917_000_000),
+            Some(RnodeUsbSelectorArgs {
+                vendor_id: 0x303a,
+                product_id: 0x1001,
+                serial_number: Some("radio-b"),
+            }),
+        ));
+        let replaced = read_config(&dir).expect("config");
+        assert!(replaced.contains("usb_vendor_id = 12346"));
+        assert!(replaced.contains("usb_product_id = 4097"));
+        assert!(replaced.contains("usb_serial_number = radio-b"));
+        assert!(!replaced.contains("radio-a"));
+
+        assert!(update_rnode_interface(
+            &dir,
+            "USB Radio",
+            test_rnode_args("BLE Radio", "ble://00:11:22:33:44:55", 917_000_000),
+        ));
+        let switched = read_config(&dir).expect("config");
+        assert!(!switched.contains("usb_vendor_id"));
+        assert!(!switched.contains("usb_product_id"));
+        assert!(!switched.contains("usb_serial_number"));
+    }
+
+    #[test]
+    fn enabled_ble_rnode_inventory_is_ordered_and_ignores_paused_rows() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("First BLE", "ble://00:11:22:33:44:55", 915_000_000),
+        ));
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Paused BLE", "ble://11:22:33:44:55:66", 916_000_000),
+        ));
+        assert!(set_interface_enabled(&dir, "Paused BLE", false));
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("Second BLE", "ble://22:33:44:55:66:77", 917_000_000),
+        ));
+        assert!(add_rnode_interface(
+            &dir,
+            test_rnode_args("USB", "androidusb://opaque", 918_000_000),
+        ));
+
+        assert_eq!(
+            enabled_rnode_names_with_port_prefix(&dir, "ble://"),
+            vec!["First BLE".to_string(), "Second BLE".to_string()]
+        );
     }
 
     fn test_rnode_args<'a>(name: &'a str, port: &'a str, frequency: u64) -> RnodeInterfaceArgs<'a> {

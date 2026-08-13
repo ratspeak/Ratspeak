@@ -584,8 +584,20 @@ window.RS.openSupportEmail = function(subject, body) {
     return Promise.resolve(false);
 };
 
-// Mobile uses native RatspeakService channel; rsNotify is desktop-only.
+// Native notifications share one app preference. Android permission recovery
+// uses its Activity bridge; iOS and desktop use Tauri's notification plugin.
 var _desktopNotifEnabled = true;
+var _mobileNotificationPermissionKey = 'ratspeak_notification_permission_requested';
+
+function _mobileNotificationPermissionWasRequested() {
+    try { return localStorage.getItem(_mobileNotificationPermissionKey) === '1'; }
+    catch (_) { return false; }
+}
+
+function _markMobileNotificationPermissionRequested() {
+    try { localStorage.setItem(_mobileNotificationPermissionKey, '1'); }
+    catch (_) {}
+}
 
 function _rsNotifyInvoke(cmd, payload) {
     return window.__TAURI_INTERNALS__.invoke('plugin:notification|' + cmd, payload || {});
@@ -606,15 +618,44 @@ window.rsNotify = {
     setEnabled: function(enabled) { _desktopNotifEnabled = !!enabled; },
     isEnabled: function() { return _desktopNotifEnabled; },
     available: function() {
-        if (isTauriMobile()) return false;
+        if (hasAndroidBridge()) return true;
         if (window.__TAURI_INTERNALS__) return true;
         return 'Notification' in window;
     },
-    requestPermission: function() {
-        if (isTauriMobile()) return Promise.resolve('default');
+    permissionState: function() {
+        if (hasAndroidBridge() && typeof window.RatspeakAndroid.notificationAuthorizationStatus === 'function') {
+            try { return Promise.resolve(window.RatspeakAndroid.notificationAuthorizationStatus()); }
+            catch (_) { return Promise.resolve('unavailable'); }
+        }
         if (window.__TAURI_INTERNALS__) {
             return _rsNotifyInvoke('is_permission_granted').then(function(granted) {
-                return granted ? 'granted' : _rsNotifyInvoke('request_permission');
+                if (granted === true) return 'granted';
+                if (granted === false && isTauriMobile()) {
+                    return _mobileNotificationPermissionWasRequested() ? 'denied' : 'prompt';
+                }
+                return granted === false ? 'denied' : 'prompt';
+            }).catch(function() { return 'unavailable'; });
+        }
+        if ('Notification' in window) return Promise.resolve(Notification.permission);
+        return Promise.resolve('unavailable');
+    },
+    requestPermission: function() {
+        if (hasAndroidBridge() && typeof window.RatspeakAndroid.requestNotificationPermission === 'function') {
+            try {
+                _markMobileNotificationPermissionRequested();
+                window.RatspeakAndroid.requestNotificationPermission();
+            }
+            catch (_) { return Promise.resolve('unavailable'); }
+            return Promise.resolve('prompt');
+        }
+        if (window.__TAURI_INTERNALS__) {
+            return _rsNotifyInvoke('is_permission_granted').then(function(granted) {
+                if (granted === true) return 'granted';
+                if (granted === false && (!isTauriMobile() || _mobileNotificationPermissionWasRequested())) {
+                    return 'denied';
+                }
+                if (isTauriMobile()) _markMobileNotificationPermissionRequested();
+                return _rsNotifyInvoke('request_permission');
             }).catch(function(err) {
                 window.RS.diag('warn', '[rsNotify] permission probe failed:', err);
                 return 'default';
@@ -917,6 +958,16 @@ function animateCountUp(element, target, duration) {
 var _lifecycleWasHidden = false;
 
 function _postLifecycleForeground(foreground, detail) {
+    if (!window.__RATSPEAK_DESKTOP__) {
+        if (foreground) {
+            var mobileDetail = detail || {};
+            mobileDetail.foreground = true;
+            try {
+                document.dispatchEvent(new CustomEvent('rs-lifecycle-foreground-handled', { detail: mobileDetail }));
+            } catch (_) {}
+        }
+        return Promise.resolve(true);
+    }
     return RS.invoke('api_set_foreground', { args: { foreground: foreground } }).then(function() {
         if (foreground) {
             var eventDetail = detail || {};

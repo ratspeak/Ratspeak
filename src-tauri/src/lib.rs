@@ -1,4 +1,10 @@
 mod channel_deep_link;
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+#[cfg_attr(
+    all(test, not(any(target_os = "android", target_os = "ios"))),
+    allow(dead_code)
+)]
+mod mobile_native;
 mod paths;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -15,12 +21,6 @@ const TRAY_SHOW_ID: &str = "ratspeak_tray_show";
     not(target_os = "macos")
 ))]
 const TRAY_QUIT_ID: &str = "ratspeak_tray_quit";
-
-// WKWebView pointer used by iOS network-path + lifecycle JS injection.
-// Process-lifetime ObjC object; only passed back to objc_msgSend, never deref'd.
-#[cfg(target_os = "ios")]
-static WEBVIEW_PTR: std::sync::atomic::AtomicPtr<objc2::runtime::AnyObject> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 // SAFETY: without this init, btleplug's global_adapter() panics on first use
 // and panic=abort terminates the app. Also stashes the JavaVM for BLE peer
@@ -352,6 +352,18 @@ fn open_external_url_ios(url: &str) -> Result<(), String> {
         } else {
             Err("No application can open this link".into())
         }
+    }
+}
+
+#[tauri::command]
+fn open_mobile_app_settings() -> Result<(), String> {
+    #[cfg(target_os = "ios")]
+    {
+        open_external_url_ios("app-settings:")
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        Err("Mobile app settings are unavailable on this platform".to_string())
     }
 }
 
@@ -823,11 +835,13 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::set_text_scale,
             ratspeak_tauri::commands::interfaces::api_notification_settings,
             ratspeak_tauri::commands::interfaces::set_desktop_notifications,
+            open_mobile_app_settings,
             ratspeak_tauri::commands::interfaces::add_lora_interface,
             ratspeak_tauri::commands::interfaces::update_lora_interface,
             ratspeak_tauri::commands::interfaces::remove_lora_interface,
             ratspeak_tauri::commands::interfaces::pause_interface,
             ratspeak_tauri::commands::interfaces::resume_interface,
+            ratspeak_tauri::commands::interfaces::request_android_usb_permission,
             ratspeak_tauri::commands::interfaces::enable_auto_interface,
             ratspeak_tauri::commands::interfaces::disable_auto_interface,
             ratspeak_tauri::commands::interfaces::api_list_network_interfaces,
@@ -1000,7 +1014,9 @@ pub fn run() {
 
             std::mem::forget(rt);
 
-            app.manage(state);
+            app.manage(std::sync::Arc::clone(&state));
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            mobile_native::install(&state);
 
             // Programmatic window construction so we can attach on_download.
             let platform_script = if cfg!(any(target_os = "android", target_os = "ios")) {
@@ -1129,8 +1145,6 @@ pub fn run() {
                     }
                 }
 
-                // Stash the WKWebView pointer for nw_path_monitor + lifecycle
-                // JS injection without plumbing the Tauri handle through.
                 let _ = _window.with_webview(|webview| unsafe {
                     use objc2::rc::Retained;
                     use objc2::runtime::AnyObject;
@@ -1138,8 +1152,6 @@ pub fn run() {
                     use objc2_ui_kit::UIScrollViewContentInsetAdjustmentBehavior;
 
                     let wk_webview_ptr = webview.inner() as *mut AnyObject;
-                    WEBVIEW_PTR.store(wk_webview_ptr, std::sync::atomic::Ordering::Release);
-
                     let wk_webview: &AnyObject = &*(wk_webview_ptr as *const AnyObject);
                     let scroll_view: Retained<UIScrollView> =
                         objc2::msg_send![wk_webview, scrollView];
@@ -1147,11 +1159,6 @@ pub fn run() {
                         UIScrollViewContentInsetAdjustmentBehavior::Never,
                     );
                 });
-
-                // NSNotificationCenter UIApplicationDidEnterBackground /
-                // DidBecomeActive — fires before the WKWebView JS event loop,
-                // so is_foreground stays accurate during paused fetches.
-                unsafe { register_ios_lifecycle_observers() };
 
                 // nw_path_monitor for wifi↔cellular handoff (WKWebView lacks
                 // navigator.connection).
@@ -1177,7 +1184,17 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         #[cfg(any(target_os = "ios", target_os = "android"))]
-        let _ = (&app_handle, &event);
+        match event {
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::Suspended,
+                ..
+            } => mobile_native::submit_lifecycle(false),
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::Resumed,
+                ..
+            } => mobile_native::submit_lifecycle(true),
+            _ => {}
+        }
 
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         match event {
@@ -1325,111 +1342,6 @@ fn shutdown_desktop_core_for_exit(app: &tauri::AppHandle) {
     });
 }
 
-/// Drive foreground/background transitions through `api_set_foreground` so the
-/// Rust core is the single entry point for lifecycle changes.
-#[cfg(target_os = "ios")]
-fn post_ios_lifecycle(foreground: bool) {
-    let js = format!(
-        "if (typeof RS !== 'undefined' && RS.invoke) {{ \
-         RS.invoke('api_set_foreground', {{ args: {{ foreground: {foreground} }} }}).catch(function() {{}}); }}"
-    );
-    inject_js(&js);
-}
-
-#[cfg(target_os = "ios")]
-fn inject_js(js: &str) {
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
-    use std::ffi::CString;
-    use std::sync::atomic::Ordering;
-
-    let webview = WEBVIEW_PTR.load(Ordering::Acquire);
-    if webview.is_null() {
-        return;
-    }
-    let cstring = match CString::new(js) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    unsafe {
-        let ns_string_class = match AnyClass::get(c"NSString") {
-            Some(c) => c,
-            None => return,
-        };
-        let js_nsstring: *mut AnyObject =
-            msg_send![ns_string_class, stringWithUTF8String: cstring.as_ptr()];
-        if js_nsstring.is_null() {
-            return;
-        }
-
-        // SAFETY: WKWebView is main-thread-only; both callers
-        // (nw_path_monitor main queue, NSNotificationCenter main run loop)
-        // already run on the main thread.
-        let _: () = msg_send![
-            webview,
-            evaluateJavaScript: js_nsstring,
-            completionHandler: std::ptr::null::<AnyObject>(),
-        ];
-    }
-}
-
-#[cfg(target_os = "ios")]
-unsafe fn register_ios_lifecycle_observers() {
-    use block2::RcBlock;
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
-    use std::ffi::CStr;
-    use std::ptr;
-
-    let nc_class = match AnyClass::get(c"NSNotificationCenter") {
-        Some(c) => c,
-        None => {
-            tracing::debug!("NSNotificationCenter class not found");
-            return;
-        }
-    };
-    let center: *mut AnyObject = msg_send![nc_class, defaultCenter];
-    if center.is_null() {
-        return;
-    }
-
-    let ns_string_class = match AnyClass::get(c"NSString") {
-        Some(c) => c,
-        None => return,
-    };
-
-    let make_name = |name: &CStr| -> *mut AnyObject {
-        msg_send![ns_string_class, stringWithUTF8String: name.as_ptr()]
-    };
-
-    let bg_name = make_name(c"UIApplicationDidEnterBackgroundNotification");
-    let fg_name = make_name(c"UIApplicationDidBecomeActiveNotification");
-    if bg_name.is_null() || fg_name.is_null() {
-        return;
-    }
-
-    // NSNotificationCenter retains the block; RcBlock can drop at end of fn.
-    let bg_block = RcBlock::new(|_n: *mut AnyObject| post_ios_lifecycle(false));
-    let fg_block = RcBlock::new(|_n: *mut AnyObject| post_ios_lifecycle(true));
-
-    // Observers live for process lifetime; token discarded.
-    let _: *mut AnyObject = msg_send![
-        center,
-        addObserverForName: bg_name,
-        object: ptr::null::<AnyObject>(),
-        queue: ptr::null::<AnyObject>(),
-        usingBlock: &*bg_block,
-    ];
-    let _: *mut AnyObject = msg_send![
-        center,
-        addObserverForName: fg_name,
-        object: ptr::null::<AnyObject>(),
-        queue: ptr::null::<AnyObject>(),
-        usingBlock: &*fg_block,
-    ];
-}
-
 // NWPathMonitor is Swift-only (no ObjC class); bind the C ABI directly.
 // nw_path_monitor_t / nw_path_t are opaque libdispatch-backed handles.
 #[cfg(target_os = "ios")]
@@ -1481,16 +1393,6 @@ unsafe fn classify_path(path: *mut std::ffi::c_void) -> &'static str {
 }
 
 #[cfg(target_os = "ios")]
-fn inject_network_type_change_js(network_type: &str) {
-    // typeof guard covers the early-boot window before state.js loads.
-    let js = format!(
-        "if (typeof RS !== 'undefined' && RS.invoke) {{ \
-         RS.invoke('network_type_changed', {{ args: {{ network_type: '{network_type}' }} }}).catch(function() {{}}); }}"
-    );
-    inject_js(&js);
-}
-
-#[cfg(target_os = "ios")]
 unsafe fn register_ios_network_observer() {
     use block2::RcBlock;
 
@@ -1506,11 +1408,11 @@ unsafe fn register_ios_network_observer() {
             return;
         }
         let network_type = unsafe { classify_path(path) };
-        inject_network_type_change_js(network_type);
+        mobile_native::submit_native_network(network_type);
     });
     nw_path_monitor_set_update_handler(monitor, &*block as *const _ as *const std::ffi::c_void);
 
-    // Main queue so evaluateJavaScript runs on the main thread directly.
+    // Main queue keeps Network.framework callback ordering deterministic.
     let main_queue = std::ptr::addr_of!(_dispatch_main_q) as *mut std::ffi::c_void;
     nw_path_monitor_set_queue(monitor, main_queue);
 

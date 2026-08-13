@@ -342,6 +342,19 @@ pub(crate) fn hub_interfaces_payload(state: &AppState, mut ifaces: Value) -> Val
     let enabled = configured_enabled && !suppressed;
 
     if let Some(obj) = ifaces.as_object_mut() {
+        if let Some(rnodes) = obj.get_mut("rnode").and_then(Value::as_array_mut) {
+            for rnode in rnodes {
+                if let Some(fields) = rnode.as_object_mut() {
+                    // Stable USB selectors are private runtime identity. The
+                    // WebView only receives the opaque configured port needed
+                    // by the existing device picker; recovery is keyed by the
+                    // sanitized interface name through a Rust command.
+                    fields.remove("usb_vendor_id");
+                    fields.remove("usb_product_id");
+                    fields.remove("usb_serial_number");
+                }
+            }
+        }
         obj.insert(
             "transport".to_string(),
             json!({
@@ -350,6 +363,10 @@ pub(crate) fn hub_interfaces_payload(state: &AppState, mut ifaces: Value) -> Val
                 "configured_enabled": configured_enabled,
                 "suppressed": suppressed,
             }),
+        );
+        obj.insert(
+            "mobile_hardware".to_string(),
+            state.mobile_hardware_state_snapshot(),
         );
     }
     ifaces

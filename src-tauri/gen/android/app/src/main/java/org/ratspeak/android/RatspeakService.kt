@@ -3,10 +3,13 @@ package org.ratspeak.android
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 
 class RatspeakService : Service() {
@@ -27,6 +30,20 @@ class RatspeakService : Service() {
         const val ACTION_REFRESH = "REFRESH"
         const val ACTION_ENABLE_MULTICAST = "ENABLE_MULTICAST"
         const val ACTION_DISABLE_MULTICAST = "DISABLE_MULTICAST"
+        @Volatile private var activeService: RatspeakService? = null
+
+        /** Promote the running service before opening user-authorized call capture. */
+        internal fun setCallCaptureActive(context: Context, active: Boolean): Boolean {
+            val service = activeService
+            if (service != null) return service.setCallCaptureActive(active)
+            if (!active) return true
+            return try {
+                ContextCompat.startForegroundService(context, Intent(context, RatspeakService::class.java))
+                false
+            } catch (_: Throwable) {
+                false
+            }
+        }
     }
 
     private var lastKnownPeerCount: Int = -1
@@ -34,13 +51,16 @@ class RatspeakService : Service() {
     private val senderState = HashMap<String, Pair<Int, Int>>()
     private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile private var running = true
+    @Volatile private var callCaptureActive = false
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         createMessageNotificationChannel()
         createCallNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        activeService = this
+        startForegroundTyped(callCapture = false)
+        RatspeakPlatformSupervisor.start(this)
         // Message and call notifications are driven by the Rust/Tauri notification backend.
     }
 
@@ -66,11 +86,17 @@ class RatspeakService : Service() {
 
     override fun onDestroy() {
         running = false
+        RatspeakPlatformSupervisor.stop(this)
         releaseMulticastLock()
+        if (activeService === this) activeService = null
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    internal fun setMulticastNeeded(enable: Boolean) {
+        if (enable) acquireMulticastLock() else releaseMulticastLock()
+    }
 
     private fun acquireMulticastLock() {
         if (multicastLock?.isHeld == true) return
@@ -132,10 +158,11 @@ class RatspeakService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val text = when {
-            peerCount < 0 -> "Mesh network active"
-            peerCount == 0 -> "Mesh active · no peers connected"
-            peerCount == 1 -> "Mesh active · 1 peer connected"
-            else -> "Mesh active · $peerCount peers connected"
+            callCaptureActive -> "Call active"
+            peerCount < 0 -> "Ratspeak is running"
+            peerCount == 0 -> "Active · no peers connected"
+            peerCount == 1 -> "Active · 1 peer connected"
+            else -> "Active · $peerCount peers connected"
         }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Ratspeak")
@@ -145,6 +172,41 @@ class RatspeakService : Service() {
             .setOngoing(true)
             .setContentIntent(pendingIntent)
             .build()
+    }
+
+    private fun setCallCaptureActive(active: Boolean): Boolean {
+        if (active == callCaptureActive) return true
+        val previous = callCaptureActive
+        callCaptureActive = active
+        return try {
+            startForegroundTyped(callCapture = active)
+            true
+        } catch (error: Throwable) {
+            callCaptureActive = previous
+            // Preserve the last known-good foreground type and truthful card
+            // if Android rejects a promotion (for example, permission denied).
+            try { startForegroundTyped(callCapture = previous) } catch (_: Throwable) {}
+            Log.w(TAG, "Foreground call capture transition failed: ${error.message}")
+            false
+        }
+    }
+
+    private fun startForegroundTyped(callCapture: Boolean) {
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            var value = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            if (callCapture && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                value = value or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            value
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(),
+            type,
+        )
     }
 
     // Kept for a future foreground-card peer-count bridge.

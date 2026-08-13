@@ -16,6 +16,10 @@ use ratspeak_runtime::activity::producer::{
     InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback,
     InterfaceTimeoutReason, InterfaceTransition, TcpEndpoint,
 };
+#[cfg(target_os = "android")]
+use ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect;
+#[cfg(all(feature = "ble", target_os = "android"))]
+use ratspeak_runtime::mobile_platform::NativeBleRnodeRequest;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tauri::State;
@@ -846,32 +850,77 @@ pub async fn network_type_changed(
     state: State<'_, Arc<AppState>>,
     args: NetworkTypeArgs,
 ) -> AppResult<Value> {
-    // Android: tear down + respawn AutoInterface on WiFi change because
-    // multicast joins are scoped to the NIC's scope_id at creation time.
-    #[cfg(target_os = "android")]
-    if matches!(args.network_type.as_str(), "wifi" | "ethernet") {
-        let st: Arc<AppState> = Arc::clone(&state);
-        tokio::spawn(async move {
-            respawn_android_auto_interfaces(st).await;
-        });
+    apply_network_type_change(Arc::clone(state.inner()), args.network_type).await
+}
+
+/// Apply a native or IPC network transition through the same persistence and
+/// transport-policy path. Native platform code validates the closed network
+/// vocabulary before calling this helper.
+pub async fn apply_network_type_change(
+    state: Arc<AppState>,
+    network_type: String,
+) -> AppResult<Value> {
+    let transition = state.begin_network_transition();
+    apply_network_type_change_transition(state, network_type, transition).await
+}
+
+/// Apply a connectivity edge whose authority was allocated synchronously at
+/// event receipt. The lock keeps Android interface reconciliation, persisted
+/// state, and transport policy in one ordered transition.
+pub async fn apply_network_type_change_transition(
+    state: Arc<AppState>,
+    network_type: String,
+    transition: u64,
+) -> AppResult<Value> {
+    if !matches!(
+        network_type.as_str(),
+        "wifi" | "cellular" | "ethernet" | "none" | "unknown"
+    ) {
+        return Err(AppError::bad_request("Invalid network type"));
+    }
+    let _network_transition = state.network_transition_lock.lock().await;
+    if !state.is_current_network_transition(transition) {
+        return Ok(json!({ "updated": false, "stale": true }));
     }
 
-    let network_type_for_db = args.network_type.clone();
+    // Android multicast membership is tied to the NIC scope at creation.
+    // Reconcile on every edge: non-LAN transitions tear the old runtime down,
+    // while Wi-Fi/Ethernet replace it on the current scope.
+    #[cfg(target_os = "android")]
+    {
+        reconcile_android_auto_interfaces(
+            Arc::clone(&state),
+            matches!(network_type.as_str(), "wifi" | "ethernet"),
+            transition,
+        )
+        .await;
+        if !state.is_current_network_transition(transition) {
+            return Ok(json!({ "updated": false, "stale": true }));
+        }
+    }
+
+    let network_type_for_db = network_type.clone();
     db::spawn_db(state.db.clone(), move |p| {
         db::try_set_setting(&p, "transport_network_type", &network_type_for_db)
     })
     .await
     .map_err(|_| AppError::internal("network_type_changed db task panicked"))?
     .map_err(|e| AppError::database_unavailable(format!("Failed to save network type: {e}")))?;
+    if !state.is_current_network_transition(transition) {
+        return Ok(json!({ "updated": false, "stale": true }));
+    }
     let mode = persisted_transport_mode(&state);
     if mode != "auto" {
         return Ok(json!({ "mode": mode, "updated": false }));
     }
 
     let config_dir = active_rns_config_dir(&state);
-    let configured_enable = auto_transport_enabled(&config_dir, &args.network_type);
+    let configured_enable = auto_transport_enabled(&config_dir, &network_type);
     let runtime_allowed = local_transport_runtime_allowed(&state);
     let enable = configured_enable && runtime_allowed;
+    if !state.is_current_network_transition(transition) {
+        return Ok(json!({ "updated": false, "stale": true }));
+    }
     let payload = apply_transport_runtime_update(&state, "auto", configured_enable, enable)
         .map_err(AppError::internal)?;
     state.emit_to_all("transport_mode_updated", payload.clone());
@@ -879,7 +928,11 @@ pub async fn network_type_changed(
 }
 
 #[cfg(target_os = "android")]
-async fn respawn_android_auto_interfaces(state: Arc<AppState>) {
+async fn reconcile_android_auto_interfaces(
+    state: Arc<AppState>,
+    should_spawn: bool,
+    transition: u64,
+) {
     let auto_configs: Vec<rns_interface::auto::AutoInterfaceConfig> = {
         let config_dir = active_rns_config_dir(&state);
         let v = crate::rns_config::get_all_interfaces(&config_dir);
@@ -909,6 +962,9 @@ async fn respawn_android_auto_interfaces(state: Arc<AppState>) {
     };
 
     for config in auto_configs {
+        if !state.is_current_network_transition(transition) {
+            return;
+        }
         let name = config.name.clone();
         if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) = handle
             .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
@@ -920,6 +976,10 @@ async fn respawn_android_auto_interfaces(state: Arc<AppState>) {
                     break;
                 }
             }
+        }
+
+        if !should_spawn || !state.is_current_network_transition(transition) {
+            continue;
         }
 
         let spawn_res = tokio::time::timeout(
@@ -946,6 +1006,9 @@ async fn respawn_android_auto_interfaces(state: Arc<AppState>) {
         }
     }
 
+    if !state.is_current_network_transition(transition) {
+        return;
+    }
     let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state));
     emit_hub_interfaces(&state, ifaces);
 }
@@ -1394,7 +1457,7 @@ pub async fn set_announce_ratspeak_usage(
 pub async fn api_notification_settings(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     Ok(json!({
         "enabled": state.native_notifications_enabled(),
-        "ios_stubbed": cfg!(target_os = "ios"),
+        "ios_stubbed": false,
     }))
 }
 
@@ -1808,6 +1871,9 @@ enum EditableInterfaceConfig {
         tx_power: i8,
         airtime_limit_short: Option<f64>,
         airtime_limit_long: Option<f64>,
+        id_interval: Option<u64>,
+        id_callsign: Option<String>,
+        usb_selector: Option<RnodeUsbSelectorSettings>,
         public_map: RnodePublicMapSettings,
     },
     TcpClient {
@@ -1848,6 +1914,13 @@ struct RnodePublicMapSettings {
     latitude: Option<f64>,
     longitude: Option<f64>,
     discovery_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RnodeUsbSelectorSettings {
+    vendor_id: u16,
+    product_id: u16,
+    serial_number: Option<String>,
 }
 
 impl RnodePublicMapSettings {
@@ -2170,6 +2243,15 @@ fn rnode_config_from_entry(entry: &Value) -> Option<EditableInterfaceConfig> {
         tx_power: cfg_i8(entry, "txpower").unwrap_or_else(default_tx),
         airtime_limit_short: cfg_f64(entry, "airtime_limit_short"),
         airtime_limit_long: cfg_f64(entry, "airtime_limit_long"),
+        id_interval: cfg_u64(entry, "id_interval"),
+        id_callsign: cfg_non_empty_str(entry, "id_callsign"),
+        usb_selector: cfg_u16(entry, "usb_vendor_id")
+            .zip(cfg_u16(entry, "usb_product_id"))
+            .map(|(vendor_id, product_id)| RnodeUsbSelectorSettings {
+                vendor_id,
+                product_id,
+                serial_number: cfg_non_empty_str(entry, "usb_serial_number"),
+            }),
         public_map: RnodePublicMapSettings {
             discoverable: cfg_bool(entry, "discoverable"),
             latitude: cfg_f64(entry, "latitude"),
@@ -2457,9 +2539,8 @@ fn cancel_pending_ble_rnode_activity(state: &AppState) -> bool {
         );
     }
     #[cfg(target_os = "android")]
-    state.emit_to_all(
-        "ble_rnode_disconnect_native",
-        json!({ "activity_operation": activity_operation }),
+    let _ = state.mobile_platform_bridge().disconnect_ble_rnode(
+        NativeBleRnodeDisconnect::ExactOperation(&activity_operation),
     );
     #[cfg(not(target_os = "android"))]
     let _ = activity_operation;
@@ -2490,9 +2571,8 @@ fn schedule_android_ble_rnode_operation_watchdog(state: &Arc<AppState>, activity
             let _ = completion.send(crate::state::BleRnodeOperationResult::Failed(
                 crate::state::BleRnodeOperationFailure::Setup,
             ));
-            state.emit_to_all(
-                "ble_rnode_disconnect_native",
-                json!({ "activity_operation": activity_operation }),
+            let _ = state.mobile_platform_bridge().disconnect_ble_rnode(
+                NativeBleRnodeDisconnect::ExactOperation(&activity_operation),
             );
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             emit_hub_interfaces(&state, ifaces);
@@ -2506,9 +2586,8 @@ fn schedule_android_ble_rnode_operation_watchdog(state: &Arc<AppState>, activity
             rnode_activity_transition(RnodeActivityOutcome::SetupTimedOut),
             None,
         );
-        state.emit_to_all(
-            "ble_rnode_disconnect_native",
-            json!({ "activity_operation": activity_operation }),
+        let _ = state.mobile_platform_bridge().disconnect_ble_rnode(
+            NativeBleRnodeDisconnect::ExactOperation(&activity_operation),
         );
 
         if let Some((rollback_config_dir, rollback_name, marker)) = rollback_context {
@@ -2557,9 +2636,8 @@ fn couple_android_ble_operation_to_rnode_lease(
                     .invalidate_ble_rnode_activity_operation_if_token(&activity_operation)
                     .is_some()
                 {
-                    state.emit_to_all(
-                        "ble_rnode_disconnect_native",
-                        json!({ "activity_operation": activity_operation }),
+                    let _ = state.mobile_platform_bridge().disconnect_ble_rnode(
+                        NativeBleRnodeDisconnect::ExactOperation(&activity_operation),
                     );
                 }
                 return;
@@ -2717,12 +2795,193 @@ fn disconnect_native_ble_if_owned(
             if !state.is_current_rnode_lifecycle_operation(lease) {
                 return false;
             }
-            state.emit_to_all("ble_rnode_disconnect_native", json!({}));
-            true
+            state
+                .mobile_platform_bridge()
+                .disconnect_ble_rnode(NativeBleRnodeDisconnect::Current)
         });
     }
-    state.emit_to_all("ble_rnode_disconnect_native", json!({}));
-    true
+    state
+        .mobile_platform_bridge()
+        .disconnect_ble_rnode(NativeBleRnodeDisconnect::Current)
+}
+
+#[cfg(all(feature = "ble", target_os = "android"))]
+#[allow(clippy::too_many_arguments)]
+fn start_native_ble_rnode(
+    state: &Arc<AppState>,
+    activity_fence: ActivityRequestFence,
+    address: String,
+    tcp_port: u16,
+    activity_operation: String,
+    name: String,
+    port: String,
+    radio: ResolvedLoraRadio,
+    mode: String,
+    id_interval: Option<u64>,
+    id_callsign: Option<String>,
+) -> bool {
+    let Some(context) = state
+        .rnode_activity_runtime_context_for_identity(activity_fence.identity_session_generation())
+    else {
+        return false;
+    };
+    state
+        .mobile_platform_bridge()
+        .start_or_replace_ble_rnode(NativeBleRnodeRequest {
+            address,
+            tcp_port,
+            activity_operation,
+            native_generation: context.origin().native_generation(),
+            name,
+            port,
+            frequency: radio.frequency,
+            bandwidth: radio.bandwidth,
+            spreading_factor: radio.spreading_factor,
+            coding_rate: radio.coding_rate,
+            tx_power: radio.tx_power,
+            mode_value: crate::rns_config::rnode_interface_mode_value(Some(&mode))
+                .map_or(0, |mode| mode as u8),
+            mode: Some(mode),
+            airtime_limit_short: radio.airtime_limit_short,
+            airtime_limit_long: radio.airtime_limit_long,
+            id_interval,
+            id_callsign,
+            saved_startup: false,
+        })
+}
+
+#[cfg(target_os = "android")]
+#[allow(clippy::too_many_arguments)]
+fn android_usb_runtime_config(
+    name: &str,
+    device_name: &str,
+    mode: rns_interface::traits::InterfaceMode,
+    radio: ResolvedLoraRadio,
+    selector: Option<&RnodeUsbSelectorSettings>,
+    id_interval: Option<u64>,
+    id_callsign: Option<&str>,
+) -> rns_interface::android_usb::AndroidUsbConfig {
+    let mut config = rns_interface::android_usb::AndroidUsbConfig::new(name, device_name);
+    if let Some(selector) = selector {
+        config.set_device_selector(rns_interface::android_usb::AndroidUsbDeviceSelector {
+            device_name: device_name.to_string(),
+            vendor_id: Some(selector.vendor_id),
+            product_id: Some(selector.product_id),
+            serial_number: selector.serial_number.clone(),
+        });
+    }
+    config.frequency = radio.frequency as u32;
+    config.bandwidth = radio.bandwidth as u32;
+    config.spreading_factor = radio.spreading_factor;
+    config.coding_rate = radio.coding_rate;
+    config.tx_power = radio.tx_power.max(0) as u8;
+    config.mode = mode;
+    config.st_alock = radio.airtime_limit_short.map(|value| value as f32);
+    config.lt_alock = radio.airtime_limit_long.map(|value| value as f32);
+    config.id_interval = id_interval;
+    config.id_callsign = id_callsign.map(|value| value.as_bytes().to_vec());
+    config
+}
+
+#[cfg(target_os = "android")]
+async fn resolve_android_usb_runtime_selector(
+    port: &str,
+    selector: Option<&RnodeUsbSelectorSettings>,
+) -> Result<rns_interface::android_usb::AndroidUsbDeviceSelector, String> {
+    let device_name = port
+        .strip_prefix("androidusb://")
+        .filter(|device_name| !device_name.is_empty())
+        .ok_or_else(|| "Empty USB device name".to_string())?;
+    let requested = rns_interface::android_usb::AndroidUsbDeviceSelector {
+        device_name: device_name.to_string(),
+        vendor_id: selector.map(|selector| selector.vendor_id),
+        product_id: selector.map(|selector| selector.product_id),
+        serial_number: selector.and_then(|selector| selector.serial_number.clone()),
+    };
+    rns_interface::android_usb::resolve_android_usb_device_selector(&requested)
+        .await
+        .map_err(|error| match error {
+            rns_interface::android_usb::AndroidUsbDeviceResolveError::PermissionRequired => {
+                "USB permission is required".to_string()
+            }
+            rns_interface::android_usb::AndroidUsbDeviceResolveError::Ambiguous => {
+                "More than one matching USB radio is attached".to_string()
+            }
+            rns_interface::android_usb::AndroidUsbDeviceResolveError::NotFound => {
+                "USB radio is not attached".to_string()
+            }
+        })
+}
+
+#[cfg(target_os = "android")]
+async fn preflight_android_usb_selector_for_interface(
+    state: &AppState,
+    config_dir: &std::path::Path,
+    name: &str,
+) -> AppResult<()> {
+    let preflight = with_rns_config_lock(state, || {
+        let entry = find_config_interface(config_dir, "rnode", name)
+            .ok_or_else(|| AppError::bad_request("Radio interface not found"))?;
+        let port = cfg_str(&entry, "port").unwrap_or_default();
+        if !port.starts_with("androidusb://") {
+            return Ok(None);
+        }
+        let selector = cfg_u16(&entry, "usb_vendor_id")
+            .zip(cfg_u16(&entry, "usb_product_id"))
+            .map(|(vendor_id, product_id)| RnodeUsbSelectorSettings {
+                vendor_id,
+                product_id,
+                serial_number: cfg_non_empty_str(&entry, "usb_serial_number"),
+            });
+        let revision = crate::rns_config::snapshot_interface_block(config_dir, name)
+            .map_err(|_| AppError::internal("Config revision read error"))?;
+        Ok::<_, AppError>(Some((port, selector, revision)))
+    })?;
+    let Some((port, previous, revision)) = preflight else {
+        return Ok(());
+    };
+    let resolved = resolve_android_usb_runtime_selector(&port, previous.as_ref())
+        .await
+        .map_err(AppError::bad_request)?;
+    let resolved = usb_selector_settings(&resolved).map_err(AppError::bad_request)?;
+    if previous.as_ref() == Some(&resolved) {
+        return Ok(());
+    }
+    match with_rns_config_lock(state, || {
+        crate::rns_config::set_rnode_usb_selector_if_revision(
+            config_dir,
+            &revision,
+            resolved.vendor_id,
+            resolved.product_id,
+            resolved.serial_number.as_deref(),
+        )
+    }) {
+        crate::rns_config::InterfaceBlockCasOutcome::Applied => Ok(()),
+        crate::rns_config::InterfaceBlockCasOutcome::Stale => Err(AppError::conflict(
+            "Radio settings changed before USB reconnect",
+        )),
+        crate::rns_config::InterfaceBlockCasOutcome::NotFound => {
+            Err(AppError::bad_request("Radio interface not found"))
+        }
+        crate::rns_config::InterfaceBlockCasOutcome::WriteFailed => {
+            Err(AppError::internal("Failed to save USB radio identity"))
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn usb_selector_settings(
+    selector: &rns_interface::android_usb::AndroidUsbDeviceSelector,
+) -> Result<RnodeUsbSelectorSettings, String> {
+    Ok(RnodeUsbSelectorSettings {
+        vendor_id: selector
+            .vendor_id
+            .ok_or_else(|| "USB radio vendor ID unavailable".to_string())?,
+        product_id: selector
+            .product_id
+            .ok_or_else(|| "USB radio product ID unavailable".to_string())?,
+        serial_number: selector.serial_number.clone(),
+    })
 }
 
 async fn teardown_live_interface_by_name(
@@ -2836,6 +3095,91 @@ fn rnode_handoff_prefix_for_port(port: &str) -> Option<&'static str> {
     None
 }
 
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn reject_android_ble_owner_conflict(
+    config_dir: &std::path::Path,
+    requested_name: &str,
+    requested_port: &str,
+) -> AppResult<()> {
+    if !requested_port.starts_with("ble://") {
+        return Ok(());
+    }
+    if crate::rns_config::enabled_rnode_names_with_port_prefix(config_dir, "ble://")
+        .into_iter()
+        .any(|name| name != requested_name)
+    {
+        return Err(AppError::bad_request(
+            "Pause, edit, or remove the existing Bluetooth RNode first",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod android_ble_owner_policy_tests {
+    use super::*;
+
+    #[test]
+    fn one_enabled_ble_owner_allows_same_or_paused_rows_and_rejects_another() {
+        let temp = tempfile::tempdir().expect("temp config");
+        crate::rns_config::write_config(
+            temp.path(),
+            "[interfaces]\n\
+             [[Existing BLE]]\n\
+             type = RNodeInterface\n\
+             port = ble://00:11:22:33:44:55\n\
+             enabled = true\n\
+             [[Paused BLE]]\n\
+             type = RNodeInterface\n\
+             port = ble://11:22:33:44:55:66\n\
+             enabled = false\n",
+        );
+
+        assert!(
+            reject_android_ble_owner_conflict(
+                temp.path(),
+                "Existing BLE",
+                "ble://00:11:22:33:44:55",
+            )
+            .is_ok()
+        );
+        assert!(
+            reject_android_ble_owner_conflict(temp.path(), "USB", "androidusb://opaque",).is_ok()
+        );
+        let error =
+            reject_android_ble_owner_conflict(temp.path(), "New BLE", "ble://22:33:44:55:66:77")
+                .expect_err("another enabled BLE owner must fail closed");
+        assert!(error.to_string().contains("existing Bluetooth RNode"));
+    }
+
+    #[test]
+    fn resumable_rnode_retains_station_id_fields() {
+        let entry = json!({
+            "name": "Field Radio",
+            "port": "androidusb://opaque",
+            "frequency": "915000000",
+            "bandwidth": "125000",
+            "spreadingfactor": "7",
+            "codingrate": "5",
+            "txpower": "14",
+            "id_interval": "600",
+            "id_callsign": "N0CALL-7",
+        });
+        let config = rnode_config_from_entry(&entry).expect("resumable RNode config");
+        match config {
+            EditableInterfaceConfig::RNode {
+                id_interval,
+                id_callsign,
+                ..
+            } => {
+                assert_eq!(id_interval, Some(600));
+                assert_eq!(id_callsign.as_deref(), Some("N0CALL-7"));
+            }
+            _ => panic!("expected RNode"),
+        }
+    }
+}
+
 impl InterfaceSpawnOutcome {
     fn configured_only(status: impl Into<String>) -> Self {
         Self {
@@ -2906,8 +3250,13 @@ async fn spawn_editable_interface(
             tx_power,
             airtime_limit_short,
             airtime_limit_long,
+            id_interval,
+            id_callsign,
+            usb_selector,
             public_map: _,
         } => {
+            #[cfg(not(target_os = "android"))]
+            let _ = (usb_selector, id_interval, id_callsign);
             #[cfg(any(
                 feature = "ble",
                 feature = "serial",
@@ -2976,24 +3325,34 @@ async fn spawn_editable_interface(
                         rnode_lease,
                         false,
                     );
-                    state.emit_to_all(
-                        "ble_rnode_connect_native",
-                        json!({
-                            "address": address,
-                            "tcp_port": tcp_port,
-                            "name": name,
-                            "frequency": frequency,
-                            "bandwidth": bandwidth,
-                            "spreading_factor": spreading_factor,
-                            "coding_rate": coding_rate,
-                            "tx_power": tx_power,
-                            "mode": mode,
-                            "airtime_limit_short": airtime_limit_short,
-                            "airtime_limit_long": airtime_limit_long,
-                            "rollback_on_error": false,
-                            "activity_operation": activity_operation,
-                        }),
+                    let started = start_native_ble_rnode(
+                        state,
+                        activity_fence,
+                        address.to_string(),
+                        tcp_port,
+                        activity_operation.clone(),
+                        name.to_string(),
+                        port.to_string(),
+                        ResolvedLoraRadio {
+                            frequency,
+                            bandwidth,
+                            spreading_factor,
+                            coding_rate,
+                            tx_power,
+                            region_key: None,
+                            preset_key: None,
+                            airtime_limit_short,
+                            airtime_limit_long,
+                        },
+                        mode.to_string(),
+                        *id_interval,
+                        id_callsign.clone(),
                     );
+                    if !started {
+                        let _ = state
+                            .invalidate_ble_rnode_activity_operation_if_token(&activity_operation);
+                        return Err("Android BLE supervisor unavailable".to_string());
+                    }
                     return match completion.await {
                         Ok(crate::state::BleRnodeOperationResult::Ready {
                             interface_id,
@@ -3005,9 +3364,8 @@ async fn spawn_editable_interface(
                                     interface_id,
                                 )
                                 .await;
-                                state.emit_to_all(
-                                    "ble_rnode_disconnect_native",
-                                    json!({ "activity_operation": activity_operation }),
+                                let _ = state.mobile_platform_bridge().disconnect_ble_rnode(
+                                    NativeBleRnodeDisconnect::ExactOperation(&activity_operation),
                                 );
                                 return Err("RNode operation was superseded".to_string());
                             }
@@ -3088,29 +3446,32 @@ async fn spawn_editable_interface(
             if port.starts_with("androidusb://") {
                 #[cfg(target_os = "android")]
                 {
-                    let device_name = port.strip_prefix("androidusb://").unwrap_or("");
-                    if device_name.is_empty() {
-                        return Err("Empty USB device name".to_string());
-                    }
-                    match rns_interface::android_usb::has_usb_permission(device_name).await {
-                        Ok(true) => {}
-                        Ok(false) => return Err("USB permission is required".to_string()),
-                        Err(e) => return Err(format!("USB permission probe failed: {e}")),
-                    }
+                    let resolved =
+                        resolve_android_usb_runtime_selector(port, usb_selector.as_ref()).await?;
+                    let resolved_settings = usb_selector_settings(&resolved)?;
+                    let config = android_usb_runtime_config(
+                        name,
+                        &resolved.device_name,
+                        rnode_runtime_mode(mode),
+                        ResolvedLoraRadio {
+                            frequency: *frequency,
+                            bandwidth: *bandwidth,
+                            spreading_factor: *spreading_factor,
+                            coding_rate: *coding_rate,
+                            tx_power: *tx_power,
+                            region_key: None,
+                            preset_key: None,
+                            airtime_limit_short: *airtime_limit_short,
+                            airtime_limit_long: *airtime_limit_long,
+                        },
+                        Some(&resolved_settings),
+                        *id_interval,
+                        id_callsign.as_deref(),
+                    );
                     let spawned =
-                        rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options(
+                        rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options(
                             &handle,
-                            name,
-                            device_name,
-                            *frequency as u32,
-                            *bandwidth as u32,
-                            *spreading_factor,
-                            *coding_rate,
-                            *tx_power,
-                            rnode_runtime_mode(mode),
-                            airtime_limit_short.map(|v| v as f32),
-                            airtime_limit_long.map(|v| v as f32),
-                            false,
+                            config,
                             RNodeStartupOptions::require_capability_admission(),
                         )
                         .await
@@ -3701,12 +4062,18 @@ pub async fn resume_interface(
     }
 
     let config_dir = active_rns_config_dir(&state_arc);
+    #[cfg(target_os = "android")]
+    preflight_android_usb_selector_for_interface(&state_arc, &config_dir, &name).await?;
     let (runtime, operation_lease, enabled_revision) = with_rns_config_lock(&state_arc, || {
         let (group, entry) =
             find_config_interface_with_group(&config_dir, iface_type.as_deref(), &name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
         let runtime = resumable_config_from_entry(&group, &entry)
             .ok_or_else(|| AppError::bad_request("Unsupported interface"))?;
+        #[cfg(target_os = "android")]
+        if let Some(port) = runtime.rnode_port() {
+            reject_android_ble_owner_conflict(&config_dir, &name, port)?;
+        }
         let operation_lease = if group == "rnode" {
             Some(
                 state_arc
@@ -3883,6 +4250,70 @@ pub async fn resume_interface(
     Ok(json!({ "queued": true }))
 }
 
+/// Begin Android's visible USB permission flow using the persisted stable
+/// selector for `name`. VID/PID/serial never cross the WebView boundary.
+#[tauri::command]
+pub async fn request_android_usb_permission(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> AppResult<Value> {
+    let name = sanitize_text(&name, 64);
+    if name.is_empty() {
+        return Err(AppError::bad_request("Interface name required"));
+    }
+    #[cfg(target_os = "android")]
+    {
+        let config_dir = active_rns_config_dir(&state);
+        let (legacy_device_name, selector) = with_rns_config_lock(&state, || {
+            let entry = find_config_interface(&config_dir, "rnode", &name)
+                .ok_or_else(|| AppError::bad_request("Radio interface not found"))?;
+            let port = cfg_str(&entry, "port").unwrap_or_default();
+            let Some(device_name) = port.strip_prefix("androidusb://") else {
+                return Err(AppError::bad_request(
+                    "Interface is not an Android USB radio",
+                ));
+            };
+            if device_name.is_empty() {
+                return Err(AppError::bad_request("USB radio identity is unavailable"));
+            }
+            let selector = cfg_u16(&entry, "usb_vendor_id")
+                .zip(cfg_u16(&entry, "usb_product_id"))
+                .map(|(vendor_id, product_id)| RnodeUsbSelectorSettings {
+                    vendor_id,
+                    product_id,
+                    serial_number: cfg_non_empty_str(&entry, "usb_serial_number"),
+                });
+            Ok::<_, AppError>((device_name.to_string(), selector))
+        })?;
+        let requested = if let Some(selector) = selector {
+            state
+                .mobile_platform_bridge()
+                .request_android_usb_permission(
+                    selector.vendor_id,
+                    selector.product_id,
+                    selector.serial_number.as_deref(),
+                )
+        } else {
+            state
+                .mobile_platform_bridge()
+                .request_android_usb_permission_legacy(&legacy_device_name)
+        };
+        if !requested {
+            return Err(AppError::internal(
+                "Android USB permission flow is unavailable",
+            ));
+        }
+        Ok(json!({ "queued": true }))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = state;
+        Err(AppError::bad_request(
+            "Android USB permission is unavailable on this platform",
+        ))
+    }
+}
+
 #[tauri::command]
 pub async fn add_lora_interface(
     state: State<'_, Arc<AppState>>,
@@ -3906,6 +4337,32 @@ pub async fn add_lora_interface(
     })?;
     let mode = normalize_lora_interface_mode(args.mode.as_deref())?;
     let runtime_mode = rnode_runtime_mode(mode);
+    #[cfg(target_os = "android")]
+    let android_usb_selector = if let Some(device_name) = port.strip_prefix("androidusb://") {
+        if device_name.is_empty() {
+            return Err(AppError::bad_request("Empty USB device name"));
+        }
+        match rns_interface::android_usb::resolve_android_usb_device_selector(
+            &rns_interface::android_usb::AndroidUsbDeviceSelector::legacy(device_name),
+        )
+        .await
+        {
+            Ok(selector) => Some(selector),
+            Err(rns_interface::android_usb::AndroidUsbDeviceResolveError::PermissionRequired) => {
+                return Err(AppError::bad_request("USB permission is required"));
+            }
+            Err(rns_interface::android_usb::AndroidUsbDeviceResolveError::Ambiguous) => {
+                return Err(AppError::bad_request(
+                    "More than one matching USB radio is attached",
+                ));
+            }
+            Err(rns_interface::android_usb::AndroidUsbDeviceResolveError::NotFound) => {
+                return Err(AppError::bad_request("USB radio is no longer attached"));
+            }
+        }
+    } else {
+        None
+    };
     #[cfg(not(any(
         target_os = "android",
         feature = "ble",
@@ -3926,6 +4383,8 @@ pub async fn add_lora_interface(
 
     let (operation_lease, fresh_marker, existing_rnode_port, handoff_targets, config_written) =
         with_rns_config_lock(&state_arc, || {
+            #[cfg(target_os = "android")]
+            reject_android_ble_owner_conflict(&config_dir, &name, &port)?;
             let handoff_targets = rnode_handoff_prefix_for_port(&port)
                 .map(|prefix| {
                     crate::rns_config::rnode_names_with_port_prefix(&config_dir, prefix)
@@ -3958,7 +4417,22 @@ pub async fn add_lora_interface(
             let existing_rnode_port = find_config_interface(&config_dir, "rnode", &name)
                 .and_then(|entry| rnode_config_from_entry(&entry))
                 .and_then(|config| config.rnode_port().map(str::to_string));
-            let config_written = crate::rns_config::add_rnode_interface(
+            #[cfg(target_os = "android")]
+            let usb_selector_args = android_usb_selector.as_ref().and_then(|selector| {
+                selector
+                    .vendor_id
+                    .zip(selector.product_id)
+                    .map(
+                        |(vendor_id, product_id)| crate::rns_config::RnodeUsbSelectorArgs {
+                            vendor_id,
+                            product_id,
+                            serial_number: selector.serial_number.as_deref(),
+                        },
+                    )
+            });
+            #[cfg(not(target_os = "android"))]
+            let usb_selector_args = None;
+            let config_written = crate::rns_config::add_rnode_interface_with_usb_selector(
                 &config_dir,
                 crate::rns_config::RnodeInterfaceArgs {
                     name: &name,
@@ -3975,6 +4449,7 @@ pub async fn add_lora_interface(
                     airtime_limit_long: radio.airtime_limit_long,
                     public_map: crate::rns_config::RnodePublicMapArgs::default(),
                 },
+                usb_selector_args,
             );
             let fresh_marker = (config_written
                 && cfg!(feature = "ble")
@@ -4046,6 +4521,7 @@ pub async fn add_lora_interface(
         let iface_name = name.clone();
         let config_dir = config_dir.clone();
         let existing_rnode_port = existing_rnode_port.clone();
+        let usb_selector = android_usb_selector.expect("USB selector resolved before config write");
         tokio::spawn(async move {
             if !teardown_rnode_handoff_broadcast(
                 &st,
@@ -4086,53 +4562,7 @@ pub async fn add_lora_interface(
                 false,
                 None,
             );
-            match rns_interface::android_usb::has_usb_permission(&device_name).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    if !st.is_current_rnode_lifecycle_operation(&operation_lease) {
-                        return;
-                    }
-                    emit_op_status_broadcast(
-                        &st,
-                        "add_lora",
-                        "hub",
-                        "USB permission is required for this device",
-                        true,
-                        Some("Permission required"),
-                    );
-                    record_interface_activity(
-                        &st,
-                        activity_fence,
-                        InterfaceClass::RNode,
-                        rnode_activity_transition(RnodeActivityOutcome::ConnectFailed),
-                        None,
-                    );
-                    let _ = st.finish_rnode_lifecycle_operation(&operation_lease);
-                    return;
-                }
-                Err(e) => {
-                    if !st.is_current_rnode_lifecycle_operation(&operation_lease) {
-                        return;
-                    }
-                    emit_op_status_broadcast(
-                        &st,
-                        "add_lora",
-                        "hub",
-                        &format!("USB permission probe failed: {e}"),
-                        true,
-                        Some("JNI error"),
-                    );
-                    record_interface_activity(
-                        &st,
-                        activity_fence,
-                        InterfaceClass::RNode,
-                        rnode_activity_transition(RnodeActivityOutcome::RuntimeFailed),
-                        None,
-                    );
-                    let _ = st.finish_rnode_lifecycle_operation(&operation_lease);
-                    return;
-                }
-            }
+            let selector = usb_selector;
 
             if let Some(rnode_context) = st.rnode_activity_runtime_context_for_identity(
                 activity_fence.identity_session_generation(),
@@ -4147,19 +4577,23 @@ pub async fn add_lora_interface(
                     false,
                     None,
                 );
-                match rns_runtime::reticulum::spawn_android_usb_rnode_runtime_observed_with_options(
-                    &rns,
+                let selector_settings = RnodeUsbSelectorSettings {
+                    vendor_id: selector.vendor_id.expect("resolved USB vendor ID"),
+                    product_id: selector.product_id.expect("resolved USB product ID"),
+                    serial_number: selector.serial_number.clone(),
+                };
+                let config = android_usb_runtime_config(
                     &iface_name,
-                    &device_name,
-                    radio.frequency as u32,
-                    radio.bandwidth as u32,
-                    radio.spreading_factor,
-                    radio.coding_rate,
-                    radio.tx_power,
+                    &selector.device_name,
                     runtime_mode,
-                    radio.airtime_limit_short.map(|v| v as f32),
-                    radio.airtime_limit_long.map(|v| v as f32),
-                    false,
+                    radio,
+                    Some(&selector_settings),
+                    None,
+                    None,
+                );
+                match rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options(
+                    &rns,
+                    config,
                     RNodeStartupOptions::require_capability_admission(),
                 )
                 .await
@@ -4282,9 +4716,9 @@ pub async fn add_lora_interface(
         let name = name.clone();
         let port_str = port.clone();
 
-        // Android: native Kotlin BLE bridge handles GATT. Emit
-        // `ble_rnode_connect_native`; frontend invokes `ble_rnode_bridge_ready`
-        // once the TCP bridge socket is up.
+        // Android: the application-scoped Kotlin supervisor owns GATT. Rust
+        // starts it directly and completes setup from generation-fenced native
+        // callbacks; the WebView is observation-only.
         #[cfg(target_os = "android")]
         {
             if runtime_handle(&st).is_none() {
@@ -4419,24 +4853,31 @@ pub async fn add_lora_interface(
                     rnode_activity_transition(RnodeActivityOutcome::Connecting),
                     None,
                 );
-                st_a.emit_to_all(
-                    "ble_rnode_connect_native",
-                    json!({
-                        "address": ble_address,
-                        "tcp_port": tcp_port,
-                        "name": name_a,
-                        "frequency": radio.frequency,
-                        "bandwidth": radio.bandwidth,
-                        "spreading_factor": radio.spreading_factor,
-                        "coding_rate": radio.coding_rate,
-                        "tx_power": radio.tx_power,
-                        "mode": mode,
-                        "airtime_limit_short": radio.airtime_limit_short,
-                        "airtime_limit_long": radio.airtime_limit_long,
-                        "rollback_on_error": fresh_add,
-                        "activity_operation": activity_operation,
-                    }),
-                );
+                if !start_native_ble_rnode(
+                    &st_a,
+                    activity_fence,
+                    ble_address,
+                    tcp_port,
+                    activity_operation.clone(),
+                    name_a.clone(),
+                    port_str,
+                    radio,
+                    mode,
+                    None,
+                    None,
+                ) {
+                    let _ =
+                        st_a.invalidate_ble_rnode_activity_operation_if_token(&activity_operation);
+                    emit_op_status_broadcast(
+                        &st_a,
+                        "add_lora",
+                        "hub",
+                        "BLE service unavailable",
+                        true,
+                        Some("native_supervisor_unavailable"),
+                    );
+                    return;
+                }
                 emit_op_status_broadcast(
                     &st_a,
                     "add_lora",
@@ -5111,6 +5552,21 @@ pub async fn update_lora_interface(
         .transpose()?;
     let public_map_update =
         resolve_rnode_public_map_update(&state_arc, args.public_map.as_ref()).await?;
+    #[cfg(target_os = "android")]
+    let android_usb_selector = if port.starts_with("androidusb://") {
+        Some(
+            usb_selector_settings(
+                &resolve_android_usb_runtime_selector(&port, None)
+                    .await
+                    .map_err(AppError::bad_request)?,
+            )
+            .map_err(AppError::bad_request)?,
+        )
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "android"))]
+    let android_usb_selector: Option<RnodeUsbSelectorSettings> = None;
 
     let config_dir = active_rns_config_dir(&state_arc);
     let update_result = with_rns_config_lock(&state_arc, || {
@@ -5126,6 +5582,8 @@ pub async fn update_lora_interface(
                 "Another interface already uses that name",
             ));
         }
+        #[cfg(target_os = "android")]
+        reject_android_ble_owner_conflict(&config_dir, &old_name, &port)?;
         let old_runtime = rnode_config_from_entry(&old_entry)
             .ok_or_else(|| AppError::bad_request("Invalid radio config"))?;
         let previous_revision = crate::rns_config::snapshot_interface_block(&config_dir, &old_name)
@@ -5145,7 +5603,15 @@ pub async fn update_lora_interface(
             .begin_rnode_lifecycle_operation([&old_name, &name])
             .ok_or_else(|| AppError::internal("Failed to begin radio update"))?;
         let old_config_content = crate::rns_config::read_config(&config_dir);
-        if !crate::rns_config::update_rnode_interface(
+        let usb_selector_args =
+            android_usb_selector
+                .as_ref()
+                .map(|selector| crate::rns_config::RnodeUsbSelectorArgs {
+                    vendor_id: selector.vendor_id,
+                    product_id: selector.product_id,
+                    serial_number: selector.serial_number.as_deref(),
+                });
+        if !crate::rns_config::update_rnode_interface_with_usb_selector(
             &config_dir,
             &old_name,
             crate::rns_config::RnodeInterfaceArgs {
@@ -5163,6 +5629,7 @@ pub async fn update_lora_interface(
                 airtime_limit_long: radio.airtime_limit_long,
                 public_map: public_map.config_args(),
             },
+            usb_selector_args,
         ) {
             let _ = state_arc.finish_rnode_lifecycle_operation(&operation_lease);
             return Err(AppError::internal("Config write error"));
@@ -5213,6 +5680,15 @@ pub async fn update_lora_interface(
         tx_power: radio.tx_power,
         airtime_limit_short: radio.airtime_limit_short,
         airtime_limit_long: radio.airtime_limit_long,
+        id_interval: match &old_runtime {
+            EditableInterfaceConfig::RNode { id_interval, .. } => *id_interval,
+            _ => None,
+        },
+        id_callsign: match &old_runtime {
+            EditableInterfaceConfig::RNode { id_callsign, .. } => id_callsign.clone(),
+            _ => None,
+        },
+        usb_selector: android_usb_selector,
         public_map: match public_map_update {
             RnodePublicMapUpdate::Preserve => match &old_runtime {
                 EditableInterfaceConfig::RNode { public_map, .. } => public_map.clone(),

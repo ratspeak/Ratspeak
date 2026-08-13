@@ -30,8 +30,8 @@ pub use ratspeak_runtime::voice;
 #[cfg(feature = "lxst-voice")]
 pub use ratspeak_runtime::voice_memo;
 pub use ratspeak_runtime::{
-    announce_handlers, channel_hub, channels, helpers, identity_prune, lxmf, propagation, rns,
-    rns_config, state,
+    announce_handlers, channel_hub, channels, helpers, identity_prune, lxmf, mobile_platform,
+    propagation, rns, rns_config, state,
 };
 pub use ratspeak_runtime::{
     any_interface_online_cached, apply_lxmf_settings_from_state, init_rns_lxmf,

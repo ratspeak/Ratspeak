@@ -1,10 +1,7 @@
 use ratspeak_core::{NativeNotification, NativeNotifier};
-#[cfg(not(target_os = "ios"))]
 use tauri_plugin_notification::NotificationExt;
 
 pub struct TauriNotifier {
-    // iOS: unused until the notification stub in `notify` is lifted.
-    #[cfg_attr(target_os = "ios", allow(dead_code))]
     handle: tauri::AppHandle,
 }
 
@@ -16,74 +13,68 @@ impl TauriNotifier {
 
 impl NativeNotifier for TauriNotifier {
     fn notify(&self, notification: NativeNotification) {
-        #[cfg(target_os = "ios")]
-        {
-            let _ = notification;
-            // TODO(iOS release): enable after App Store/TestFlight signing and
-            // notification entitlement review are finalized. When unstubbed, also
-            // wire the `route` extra for tap deep-linking (see non-iOS branch).
-            tracing::debug!("iOS native notifications are stubbed until release signing is ready");
+        let NativeNotification {
+            kind: _kind,
+            title,
+            body,
+            thread_id,
+            notification_id,
+        } = notification;
+        let state = match self.handle.notification().permission_state() {
+            Ok(state) => state,
+            Err(_) => {
+                tracing::warn!(
+                    reason = "permission_check_failed",
+                    "notification permission check failed"
+                );
+                return;
+            }
+        };
+        if state != tauri_plugin_notification::PermissionState::Granted {
+            tracing::debug!(?state, "native notification skipped without permission");
             return;
         }
 
-        #[cfg(not(target_os = "ios"))]
-        {
-            let NativeNotification {
-                kind: _kind,
-                title,
-                body,
-                thread_id,
-                notification_id,
-            } = notification;
-            let state = match self.handle.notification().permission_state() {
-                Ok(state) => state,
-                Err(_) => {
-                    tracing::warn!(
-                        reason = "permission_check_failed",
-                        "notification permission check failed"
-                    );
-                    return;
-                }
-            };
-            if state != tauri_plugin_notification::PermissionState::Granted {
-                tracing::debug!(?state, "native notification skipped without permission");
-                return;
-            }
+        let mut builder = self
+            .handle
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .auto_cancel();
 
-            let mut builder = self
-                .handle
-                .notification()
-                .builder()
-                .title(title)
-                .body(body)
-                .auto_cancel();
-
-            if let Some(id) = notification_id {
-                builder = builder.id(id);
-            }
-            if let Some(thread_id) = thread_id {
-                // `route` lets the frontend `onAction` handler deep-link a tapped
-                // notification to the right view (lxmf:<hash> /
-                // lrgp:<session> / channels:<hub>:<hex-room>).
-                // Recoverable on Android via the serialized notification payload.
-                // TODO(desktop): notify-rust has no tap/action callback, so taps
-                // only focus the window; investigate a richer backend later.
-                builder = builder.extra("route", thread_id.clone()).group(thread_id);
-            }
-            #[cfg(target_os = "android")]
+        if let Some(id) = notification_id {
+            builder = builder.id(id);
+        }
+        if let Some(thread_id) = thread_id {
+            // `route` lets the frontend `onAction` handler deep-link a tapped
+            // notification to the right view (lxmf:<hash> /
+            // lrgp:<session> / channels:<hub>:<hex-room>).
+            // Recoverable on Android via the serialized notification payload.
+            // TODO(desktop): notify-rust has no tap/action callback, so taps
+            // only focus the window; investigate a richer backend later.
+            builder = builder.extra("route", thread_id.clone()).group(thread_id);
+            #[cfg(target_os = "ios")]
             {
-                let channel_id = match _kind {
-                    ratspeak_core::NativeNotificationKind::Message
-                    | ratspeak_core::NativeNotificationKind::Channel
-                    | ratspeak_core::NativeNotificationKind::Game => "ratspeak_messages",
-                    ratspeak_core::NativeNotificationKind::Call => "ratspeak_calls",
-                };
-                builder = builder.channel_id(channel_id);
+                // notification 2.3.3 drops `extra` when reconstructing an iOS
+                // tap, but preserves actionTypeId. Route validation remains in
+                // the frontend before this value can cause navigation.
+                builder = builder.action_type_id(thread_id);
             }
+        }
+        #[cfg(target_os = "android")]
+        {
+            let channel_id = match _kind {
+                ratspeak_core::NativeNotificationKind::Message
+                | ratspeak_core::NativeNotificationKind::Channel
+                | ratspeak_core::NativeNotificationKind::Game => "ratspeak_messages",
+                ratspeak_core::NativeNotificationKind::Call => "ratspeak_calls",
+            };
+            builder = builder.channel_id(channel_id);
+        }
 
-            if builder.show().is_err() {
-                tracing::warn!(reason = "show_failed", "native notification failed");
-            }
+        if builder.show().is_err() {
+            tracing::warn!(reason = "show_failed", "native notification failed");
         }
     }
 }

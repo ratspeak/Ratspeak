@@ -17,6 +17,7 @@ pub mod helpers;
 pub mod identity_prune;
 pub mod lxmf;
 pub mod messaging;
+pub mod mobile_platform;
 pub mod propagation;
 mod rnode_activity;
 pub mod rns;
@@ -50,9 +51,13 @@ use serde_json::{Value, json};
 
 use activity::ActivityRecorderError;
 use activity::producer::{self, ProducerEvent};
+#[cfg(all(feature = "ble", target_os = "android"))]
+use mobile_platform::{NativeBleRnodeDisconnect, NativeBleRnodeRequest};
 use state::{ActivityRequestFence, AppState};
 
-pub use rnode_activity::{PendingRNodeActivityMonitor, RNodeActivityRuntimeContext};
+pub use rnode_activity::{
+    PendingRNodeActivityMonitor, RNodeActivityRuntimeContext, spawn_startup_rnode_activity_monitor,
+};
 pub use state::RNodeActivityOrigin;
 
 const CHANNEL_BUFFER_SIZE: usize = 64;
@@ -61,6 +66,84 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
+
+#[cfg(all(feature = "ble", target_os = "android"))]
+fn interface_mode_name(mode: rns_interface::traits::InterfaceMode) -> &'static str {
+    use rns_interface::traits::InterfaceMode;
+    match mode {
+        InterfaceMode::Full => "full",
+        InterfaceMode::PointToPoint => "point_to_point",
+        InterfaceMode::AccessPoint => "access_point",
+        InterfaceMode::Roaming => "roaming",
+        InterfaceMode::Boundary => "boundary",
+        InterfaceMode::Gateway => "gateway",
+        InterfaceMode::Internal => "internal",
+    }
+}
+
+#[cfg(all(feature = "ble", target_os = "android"))]
+fn start_deferred_android_ble_rnode(
+    state: &Arc<AppState>,
+    origin: Option<RNodeActivityOrigin>,
+    deferred: Vec<rns_runtime::interface_factory::BleRNodeInterfaceConfig>,
+) {
+    let Some(origin) = origin else {
+        return;
+    };
+    let mut deferred = deferred.into_iter();
+    let Some(config) = deferred.next() else {
+        return;
+    };
+    if deferred.next().is_some() {
+        state.publish_mobile_hardware_state(
+            "ble_rnode",
+            "conflict",
+            Some("multiple_configured_radios"),
+        );
+        tracing::warn!(
+            reason = "multiple_android_ble_rnodes",
+            "only the first configured Android BLE RNode can own the native radio"
+        );
+    }
+
+    let address = config.port.strip_prefix("ble://").unwrap_or(&config.port);
+    let Ok(tcp_port) = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr().map(|address| address.port()))
+    else {
+        state.publish_mobile_hardware_state("ble_rnode", "failed", Some("bridge_unavailable"));
+        return;
+    };
+    let activity_fence = state.activity_request_fence();
+    let activity_operation = state.begin_ble_rnode_activity_operation(activity_fence, None);
+    let request = NativeBleRnodeRequest {
+        address: address.to_string(),
+        tcp_port,
+        activity_operation: activity_operation.clone(),
+        native_generation: origin.native_generation(),
+        name: config.name,
+        port: config.port,
+        frequency: u64::from(config.frequency),
+        bandwidth: u64::from(config.bandwidth),
+        spreading_factor: config.spreading_factor,
+        coding_rate: config.coding_rate,
+        tx_power: config.tx_power,
+        mode: Some(interface_mode_name(config.mode).to_string()),
+        mode_value: config.mode as u8,
+        airtime_limit_short: config.st_alock.map(f64::from),
+        airtime_limit_long: config.lt_alock.map(f64::from),
+        id_interval: config.id_interval,
+        id_callsign: config.id_callsign,
+        saved_startup: true,
+    };
+    if !state
+        .mobile_platform_bridge()
+        .start_or_replace_ble_rnode(request)
+    {
+        let _ = state.invalidate_ble_rnode_activity_operation_if_token(&activity_operation);
+        state.publish_mobile_hardware_state("ble_rnode", "failed", Some("bridge_unavailable"));
+        return;
+    }
+}
 
 fn accepts_inbound_lxmf_resource(data_size: usize, limit_bytes: usize) -> bool {
     data_size <= limit_bytes
@@ -329,6 +412,15 @@ fn compact_hash_label(hash: &str) -> String {
     } else {
         hash.to_string()
     }
+}
+
+fn should_reannounce_for_interface_online(
+    online: bool,
+    suppressed: bool,
+    auto_announce_interval: u64,
+    cooldown_elapsed: bool,
+) -> bool {
+    online && !suppressed && auto_announce_interval > 0 && cooldown_elapsed
 }
 
 pub(crate) fn stable_notification_id(key: &str, offset: i32) -> i32 {
@@ -775,6 +867,10 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
     if let Ok(sig) = state.session_shutdown.read() {
         sig.trigger();
     }
+    #[cfg(all(feature = "ble", target_os = "android"))]
+    let _ = state
+        .mobile_platform_bridge()
+        .disconnect_ble_rnode(NativeBleRnodeDisconnect::Current);
     // Hold a backend-preserving clone of a hardware identity so we can re-lock the
     // token AFTER the signing loops stop — locking earlier would leave a window of
     // failed/garbage signatures.
@@ -1333,6 +1429,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         }
     }
     reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
+    #[cfg(target_os = "android")]
+    enforce_android_single_ble_rnode_for_startup(&state, &config_dir);
+    #[cfg(target_os = "android")]
+    migrate_android_usb_selectors_for_startup(&state, &config_dir).await;
     let config_str = config_dir.to_string_lossy().to_string();
 
     // Android sandbox blocks /tmp — keep UDS under data_dir/cache.
@@ -1920,6 +2020,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 .clone();
             let channels_transport = rns_mgr.handle.transport_tx.clone();
             let startup_rnode_activity = rns_mgr.startup_rnode_runtimes().to_vec();
+            #[cfg(all(feature = "ble", target_os = "android"))]
+            let deferred_android_ble_rnodes = rns_mgr.deferred_android_ble_rnodes();
             let rnode_activity_origin = state.set_rns(rns_mgr);
             if let Some(origin) = rnode_activity_origin {
                 for runtime in startup_rnode_activity {
@@ -1929,6 +2031,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         origin,
                     );
                 }
+            }
+            #[cfg(all(feature = "ble", target_os = "android"))]
+            {
+                state.wait_for_mobile_platform_bridge().await;
+                start_deferred_android_ble_rnode(
+                    &state,
+                    rnode_activity_origin,
+                    deferred_android_ble_rnodes,
+                );
             }
             if let Some(identity) = channels_identity {
                 state.set_channels(channels::ChannelsManagerHandle::start(
@@ -2552,6 +2663,90 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     identity_prune::spawn_scheduler(prune_state, prune_shutdown);
+}
+
+#[cfg(target_os = "android")]
+fn enforce_android_single_ble_rnode_for_startup(state: &AppState, config_dir: &std::path::Path) {
+    let disabled = {
+        let _config_guard = state
+            .rns_config_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut enabled =
+            rns_config::enabled_rnode_names_with_port_prefix(config_dir, "ble://").into_iter();
+        let _selected = enabled.next();
+        enabled
+            .filter(|name| rns_config::set_interface_enabled(config_dir, name, false))
+            .count()
+    };
+    if disabled > 0 {
+        state.publish_mobile_hardware_state(
+            "ble_rnode",
+            "conflict",
+            Some("multiple_configured_radios"),
+        );
+        tracing::warn!(
+            disabled,
+            reason = "multiple_android_ble_rnodes",
+            "paused additional Android BLE RNodes to preserve one native radio owner"
+        );
+    }
+}
+
+#[cfg(target_os = "android")]
+async fn migrate_android_usb_selectors_for_startup(state: &AppState, config_dir: &std::path::Path) {
+    let candidates = {
+        let _config_guard = state
+            .rns_config_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        rns_config::android_usb_selector_migration_candidates(config_dir)
+    };
+    for candidate in candidates {
+        let requested = rns_interface::android_usb::AndroidUsbDeviceSelector {
+            device_name: candidate.device_name.clone(),
+            vendor_id: candidate.vendor_id,
+            product_id: candidate.product_id,
+            serial_number: candidate.serial_number.clone(),
+        };
+        let Ok(resolved) =
+            rns_interface::android_usb::resolve_android_usb_device_selector(&requested).await
+        else {
+            continue;
+        };
+        let (Some(vendor_id), Some(product_id)) = (resolved.vendor_id, resolved.product_id) else {
+            continue;
+        };
+        let outcome = {
+            let _config_guard = state
+                .rns_config_lock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            rns_config::apply_android_usb_selector_migration(
+                config_dir,
+                &candidate,
+                vendor_id,
+                product_id,
+                resolved.serial_number.as_deref(),
+            )
+        };
+        match outcome {
+            rns_config::InterfaceBlockCasOutcome::Applied => tracing::info!(
+                interface = candidate.name,
+                "saved stable Android USB radio identity"
+            ),
+            rns_config::InterfaceBlockCasOutcome::Stale => tracing::info!(
+                interface = candidate.name,
+                "skipped Android USB identity migration after concurrent config change"
+            ),
+            rns_config::InterfaceBlockCasOutcome::NotFound
+            | rns_config::InterfaceBlockCasOutcome::WriteFailed => tracing::warn!(
+                interface = candidate.name,
+                reason = "selector_persist_failed",
+                "could not save Android USB radio identity"
+            ),
+        }
+    }
 }
 
 /// `None` until the first poll completes; callers should allow the attempt.
@@ -4268,13 +4463,14 @@ async fn poll_stats_loop(
                                 activity_observations
                                     .push(PollActivityObservation::AnnounceSuppressed);
                             }
-                            // Re-announce on interface up; gated by auto-announce + 30s cooldown.
-                            let auto_announce_on = *state.announce_interval_rx.borrow() > 0;
-                            if online
-                                && !reannounce_suppressed
-                                && auto_announce_on
-                                && last_interface_announce.elapsed() >= Duration::from_secs(30)
-                            {
+                            // Re-announce on interface up; governed by the
+                            // user's announce schedule and 30-second cooldown.
+                            if should_reannounce_for_interface_online(
+                                online,
+                                reannounce_suppressed,
+                                *state.announce_interval_rx.borrow(),
+                                last_interface_announce.elapsed() >= Duration::from_secs(30),
+                            ) {
                                 last_interface_announce = std::time::Instant::now();
                                 let announce_state = state.clone();
                                 let announce_activity_origin = poll_activity_origin;
@@ -6956,5 +7152,24 @@ mod notification_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn interface_reannounce_respects_never_suppression_and_cooldown() {
+        assert!(!should_reannounce_for_interface_online(
+            true, false, 0, true
+        ));
+        assert!(!should_reannounce_for_interface_online(
+            true, true, 1800, true
+        ));
+        assert!(!should_reannounce_for_interface_online(
+            true, false, 1800, false
+        ));
+        assert!(!should_reannounce_for_interface_online(
+            false, false, 1800, true
+        ));
+        assert!(should_reannounce_for_interface_online(
+            true, false, 1800, true
+        ));
     }
 }
