@@ -657,6 +657,14 @@ pub struct LxmfQueuedMessage {
     pub method: DeliveryMethod,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LxmfDeliveryFailureUpdate {
+    pub msg_id: String,
+    pub code: &'static str,
+    pub actual_bytes: usize,
+    pub limit_bytes: usize,
+}
+
 /// Curated local failure surface. Detailed build/sign/pack failures remain in
 /// local diagnostics and never cross into Activity as arbitrary prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -922,9 +930,11 @@ pub struct LxmfManager {
         Option<mpsc::Receiver<rns_runtime::link_manager::LinkResourceProof>>,
     pub propagation_sync: Option<lxmf_core::propagation_sync::PropagationSyncTask>,
     pub propagation_client: Option<lxmf_core::propagation_client::PropagationClient>,
+    delivery_limit_kb: f64,
     last_propagation_check: f64,
     pub client_propagation_enabled: bool,
     pub configured_propagation_node: Option<[u8; 16]>,
+    propagation_transfer_limits_kb: HashMap<[u8; 16], u64>,
     last_ratchet_clean: f64,
     last_router_cull: f64,
     pub received_ratchets_dir: PathBuf,
@@ -940,6 +950,7 @@ pub struct LxmfManager {
     failed_propagation_syncs: Vec<([u8; 16], String)>,
     downloaded_propagation_messages: Vec<Vec<u8>>,
     delivery_progress_updates: Vec<LxmfDeliveryProgressUpdate>,
+    delivery_failure_updates: Vec<LxmfDeliveryFailureUpdate>,
     ephemeral_outbound: HashSet<[u8; 32]>,
     last_reported_steps: HashMap<String, &'static str>,
     auto_direct_fallback: HashSet<[u8; 32]>,
@@ -1263,10 +1274,12 @@ impl LxmfManager {
             lxmf_link_resource_proof_rx: None,
             propagation_sync: None,
             propagation_client: None,
+            delivery_limit_kb: lxmf_core::constants::DELIVERY_LIMIT as f64,
             last_propagation_check: 0.0,
             last_router_cull: 0.0,
             client_propagation_enabled: false,
             configured_propagation_node: None,
+            propagation_transfer_limits_kb: HashMap::new(),
             last_ratchet_clean: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1279,6 +1292,7 @@ impl LxmfManager {
             failed_propagation_syncs: Vec::new(),
             downloaded_propagation_messages: Vec::new(),
             delivery_progress_updates: Vec::new(),
+            delivery_failure_updates: Vec::new(),
             ephemeral_outbound: HashSet::new(),
             last_reported_steps: HashMap::new(),
             auto_direct_fallback: HashSet::new(),
@@ -1882,6 +1896,23 @@ impl LxmfManager {
         &mut self,
         request: AttachmentMessageRequest<'_>,
     ) -> Option<String> {
+        self.send_message_with_attachment_fields_preference_report(request)
+            .ok()
+            .map(|queued| queued.message_id)
+    }
+
+    pub fn send_message_with_attachment_fields_preference_report(
+        &mut self,
+        request: AttachmentMessageRequest<'_>,
+    ) -> Result<LxmfQueuedMessage, LxmfSubmissionFailure> {
+        self.send_message_with_attachment_fields_preference_internal(request)
+            .ok_or(LxmfSubmissionFailure::PreparationFailed)
+    }
+
+    fn send_message_with_attachment_fields_preference_internal(
+        &mut self,
+        request: AttachmentMessageRequest<'_>,
+    ) -> Option<LxmfQueuedMessage> {
         let AttachmentMessageRequest {
             dest_hash_hex,
             content,
@@ -1995,7 +2026,10 @@ impl LxmfManager {
             "",
             Some(delivery_method_name(method)),
         );
-        Some(msg_id)
+        Some(LxmfQueuedMessage {
+            message_id: msg_id,
+            method,
+        })
     }
 
     /// LRGP send. Default is `Direct` (real LXMF link receipt + 5 built-in
@@ -2398,11 +2432,19 @@ impl LxmfManager {
                 self.identity.get_signing_key(),
             );
             client.set_propagation_node(dest);
+            client.set_delivery_limit(self.delivery_limit_kb);
             self.propagation_client = Some(client);
             tracing::info!(
                 node = %crate::short_id(&hex::encode(dest)),
                 "propagation client created for message download"
             );
+        }
+    }
+
+    pub fn set_delivery_limit_kb(&mut self, limit_kb: usize) {
+        self.delivery_limit_kb = limit_kb as f64;
+        if let Some(client) = self.propagation_client.as_mut() {
+            client.set_delivery_limit(self.delivery_limit_kb);
         }
     }
 
@@ -3400,8 +3442,12 @@ impl LxmfManager {
 
         if name_hash == rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME) {
             if let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(app_data) {
-                let changed = self.router.get_stamp_cost(&dest_hash) != Some(pn.stamp_cost);
+                let mut changed = self.router.get_stamp_cost(&dest_hash) != Some(pn.stamp_cost);
                 self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
+                changed |= self
+                    .propagation_transfer_limits_kb
+                    .insert(dest_hash, pn.transfer_limit)
+                    != Some(pn.transfer_limit);
                 return changed;
             }
         } else if name_hash == rns_identity::name_hash::name_hash(LXMF_APP_NAME) {
@@ -3486,6 +3532,7 @@ impl LxmfManager {
     pub fn propagation_node_ready_for_send(&self, prop_hash: &[u8; 16]) -> bool {
         self.known_identities.contains_key(&hex::encode(prop_hash))
             && self.router.get_stamp_cost(prop_hash).is_some()
+            && self.propagation_transfer_limits_kb.contains_key(prop_hash)
     }
 
     pub fn verify_inbound_signature(&self, msg: &mut LxMessage) -> Option<bool> {
@@ -3786,6 +3833,10 @@ impl LxmfManager {
 
     pub fn take_delivery_progress_updates(&mut self) -> Vec<LxmfDeliveryProgressUpdate> {
         std::mem::take(&mut self.delivery_progress_updates)
+    }
+
+    pub fn take_delivery_failure_updates(&mut self) -> Vec<LxmfDeliveryFailureUpdate> {
+        std::mem::take(&mut self.delivery_failure_updates)
     }
 
     pub fn cancel_outbound_message(&mut self, msg_id: &str) -> bool {
@@ -4116,6 +4167,16 @@ impl LxmfManager {
             return;
         }
 
+        if !self.propagation_transfer_limits_kb.contains_key(&prop_hash) {
+            tracing::warn!(
+                prop = %crate::short_id(&prop_hex),
+                attempts = message.delivery_attempts,
+                "cannot propagate LXMF before propagation node transfer limit is known; requesting path"
+            );
+            self.defer_propagation_delivery(message, prop_hash);
+            return;
+        }
+
         if !self.known_identities.contains_key(&dest_hex) {
             tracing::warn!(
                 dest = %crate::short_id(&dest_hex),
@@ -4141,6 +4202,34 @@ impl LxmfManager {
             }
             return;
         };
+
+        if let Some(limit_kb) = self.propagation_transfer_limits_kb.get(&prop_hash).copied() {
+            let limit_bytes = usize::try_from(limit_kb)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(lxmf_core::constants::BYTES_PER_KILOBYTE);
+            if packed.len() > limit_bytes {
+                tracing::warn!(
+                    dest = %crate::short_id(&dest_hex),
+                    prop = %crate::short_id(&prop_hex),
+                    actual_bytes = packed.len(),
+                    limit_bytes,
+                    reason = "propagation_limit_exceeded",
+                    "propagation node cannot accept packed LXMF message"
+                );
+                if let Some(hash) = msg_hash {
+                    let msg_id = hex::encode(hash);
+                    self.delivery_failure_updates
+                        .push(LxmfDeliveryFailureUpdate {
+                            msg_id: msg_id.clone(),
+                            code: "propagation_limit_exceeded",
+                            actual_bytes: packed.len(),
+                            limit_bytes,
+                        });
+                    results.push((msg_id, "failed"));
+                }
+                return;
+            }
+        }
 
         let _ = self.ensure_link_delivery_manager();
 
@@ -7042,6 +7131,7 @@ mod tests {
         mgr.known_identities
             .insert(node_hex, relay.get_public_key());
         mgr.router.set_stamp_cost(node, 0);
+        mgr.propagation_transfer_limits_kb.insert(node, 256);
         mgr.router.set_outbound_propagation_node(Some(node));
         mgr.configured_propagation_node = Some(node);
         mgr.client_propagation_enabled = true;
@@ -7096,6 +7186,7 @@ mod tests {
         mgr.known_identities
             .insert(node_hex, relay.get_public_key());
         mgr.router.set_stamp_cost(node, 0);
+        mgr.propagation_transfer_limits_kb.insert(node, 256);
         mgr.router.set_outbound_propagation_node(Some(node));
         mgr.configured_propagation_node = Some(node);
         mgr.client_propagation_enabled = true;
@@ -8155,6 +8246,29 @@ mod tests {
             Some(&pn_app_data),
         ));
         assert_eq!(mgr.router.get_stamp_cost(&propagation_dest), Some(23));
+        assert_eq!(
+            mgr.propagation_transfer_limits_kb.get(&propagation_dest),
+            Some(&1024)
+        );
+        assert!(!mgr.update_lxmf_announce_app_data(
+            propagation_dest,
+            rns_identity::name_hash::name_hash("lxmf.propagation"),
+            Some(&pn_app_data),
+        ));
+
+        let smaller_pn_data =
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 1, 1, 23, 3, 0);
+        assert!(mgr.update_lxmf_announce_app_data(
+            propagation_dest,
+            rns_identity::name_hash::name_hash("lxmf.propagation"),
+            Some(&lxmf_core::handlers::get_propagation_node_app_data(
+                &smaller_pn_data,
+            )),
+        ));
+        assert_eq!(
+            mgr.propagation_transfer_limits_kb.get(&propagation_dest),
+            Some(&1)
+        );
 
         assert!(!mgr.update_lxmf_announce_app_data(
             unrelated_dest,
@@ -8162,6 +8276,49 @@ mod tests {
             Some(&delivery_data),
         ));
         assert_eq!(mgr.router.get_stamp_cost(&unrelated_dest), None);
+    }
+
+    #[test]
+    fn propagated_send_fails_locally_above_announced_decimal_limit() {
+        let mut mgr = test_manager();
+        let destination = Identity::new();
+        let relay = Identity::new();
+        let destination_hash = [0x31; 16];
+        let relay_hash = [0x32; 16];
+        mgr.known_identities
+            .insert(hex::encode(destination_hash), destination.get_public_key());
+        mgr.known_identities
+            .insert(hex::encode(relay_hash), relay.get_public_key());
+
+        let announce = lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 0, 0, 0, 0, 0);
+        assert!(mgr.update_lxmf_announce_app_data(
+            relay_hash,
+            rns_identity::name_hash::name_hash("lxmf.propagation"),
+            Some(&lxmf_core::handlers::get_propagation_node_app_data(
+                &announce,
+            )),
+        ));
+
+        let message = mgr
+            .create_message(
+                &hex::encode(destination_hash),
+                "cannot fit in a zero-byte relay transfer",
+                "",
+                DeliveryMethod::Propagated,
+            )
+            .unwrap();
+        let message_id = hex::encode(message.hash.unwrap());
+        let mut results = Vec::new();
+        mgr.start_propagation_delivery(message, relay_hash, &mut results);
+
+        assert_eq!(results, vec![(message_id.clone(), "failed")]);
+        let failures = mgr.take_delivery_failure_updates();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].msg_id, message_id);
+        assert_eq!(failures[0].code, "propagation_limit_exceeded");
+        assert!(failures[0].actual_bytes > 0);
+        assert_eq!(failures[0].limit_bytes, 0);
+        assert!(mgr.link_delivery.is_none());
     }
 
     #[test]
@@ -8218,13 +8375,32 @@ mod tests {
         let mut mgr = LxmfManager::load_or_create(&tmp, None, None).unwrap();
         let identity_hash = mgr.identity_hash.clone();
         let propagation_node = [0x66; 16];
+        let remote = Identity::new();
 
         mgr.router.set_stamp_cost(propagation_node, 19);
+        mgr.known_identities
+            .insert(hex::encode(propagation_node), remote.get_public_key());
+        mgr.propagation_transfer_limits_kb
+            .insert(propagation_node, 256);
         mgr.save_crypto_state();
         drop(mgr);
 
-        let restored = LxmfManager::load_or_create(&tmp, Some(&identity_hash), None).unwrap();
+        let mut restored = LxmfManager::load_or_create(&tmp, Some(&identity_hash), None).unwrap();
         assert_eq!(restored.router.get_stamp_cost(&propagation_node), Some(19));
+        assert!(
+            !restored.propagation_node_ready_for_send(&propagation_node),
+            "restart must wait for a fresh transfer-limit announce instead of bypassing admission"
+        );
+        let announce =
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 256, 10240, 19, 0, 0);
+        assert!(restored.update_lxmf_announce_app_data(
+            propagation_node,
+            rns_identity::name_hash::name_hash("lxmf.propagation"),
+            Some(&lxmf_core::handlers::get_propagation_node_app_data(
+                &announce,
+            )),
+        ));
+        assert!(restored.propagation_node_ready_for_send(&propagation_node));
     }
 
     #[test]
@@ -8302,6 +8478,8 @@ mod tests {
         mgr.known_identities
             .insert(prop_hex, prop_identity.get_public_key());
         mgr.router.set_stamp_cost(propagation_node, 19);
+        mgr.propagation_transfer_limits_kb
+            .insert(propagation_node, 256);
         mgr.router
             .set_outbound_propagation_node(Some(propagation_node));
 
@@ -8386,19 +8564,21 @@ mod tests {
         let mut mgr = test_manager();
         let dest = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
-        mgr.send_message_with_attachment_fields_preference(AttachmentMessageRequest {
-            dest_hash_hex: dest,
-            content: "file attached",
-            title: "",
-            file_name: "note.txt",
-            file_bytes: b"hello",
-            is_image: false,
-            image_mime: "",
-            db_pool: &pool,
-            identity_id: "me",
-            preference: DeliveryPreference::Direct,
-        })
-        .expect("message queued");
+        let queued = mgr
+            .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                dest_hash_hex: dest,
+                content: "file attached",
+                title: "",
+                file_name: "note.txt",
+                file_bytes: b"hello",
+                is_image: false,
+                image_mime: "",
+                db_pool: &pool,
+                identity_id: "me",
+                preference: DeliveryPreference::Direct,
+            })
+            .expect("message queued");
+        assert_eq!(queued.method, DeliveryMethod::Direct);
 
         let message = mgr
             .router

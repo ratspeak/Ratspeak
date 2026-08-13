@@ -34,6 +34,10 @@ const BLE_RNODE_ACTIVITY_OPERATION_TTL: Duration = Duration::from_secs(240);
 // while still reclaiming abandoned session-local leases.
 const RNODE_LIFECYCLE_OPERATION_TTL: Duration = Duration::from_secs(15 * 60);
 const MAX_PENDING_LXMF_CLIENT_SENDS: usize = 256;
+pub const LXMF_DELIVERY_LIMIT_1_MB_KB: usize = 1000;
+pub const LXMF_DELIVERY_LIMIT_1_MB_BYTES: usize = LXMF_DELIVERY_LIMIT_1_MB_KB * 1000;
+pub const LXMF_DELIVERY_LIMIT_MAX_KB: usize = 128 * 1000;
+pub const LXMF_DELIVERY_LIMIT_MAX_BYTES: usize = LXMF_DELIVERY_LIMIT_MAX_KB * 1000;
 
 /// Snapshot used to reject an Activity command that was queued before either
 /// an identity transition or a same-identity runtime privacy reset. Callers
@@ -489,6 +493,10 @@ pub struct AppState {
     /// Lifetime count of `lxmf.propagation` announces with unparseable app_data.
     pub pn_parse_failures: AtomicU64,
     pub native_notifications_enabled: AtomicBool,
+    /// Sideband-compatible receive policy: enabled limits complete inbound
+    /// Direct LXMF Resources to one decimal megabyte; disabled retains the
+    /// 128 MB application maximum below Reticulum's structural ceiling.
+    pub lxmf_limit_1mb: AtomicBool,
     /// Serializes read-modify-write edits to the active Reticulum config file.
     pub rns_config_lock: Mutex<()>,
     pub identity_switch_lock: IdentitySwitchLock,
@@ -578,6 +586,8 @@ impl AppState {
                 .and_then(|v| v.parse::<u8>().ok())
                 .map(|v| v != 0)
                 .unwrap_or(true);
+        let initial_lxmf_limit_1mb =
+            crate::db::get_setting(&db, "lxmf_limit_1mb").is_none_or(|value| value != "false");
         let activity = ActivityRecorder::with_batch_sink(Arc::new(EmitterBatchSink::new(
             Arc::clone(&emitter),
         )));
@@ -654,6 +664,7 @@ impl AppState {
             auto_failure_counts: Mutex::new(HashMap::new()),
             pn_parse_failures: AtomicU64::new(0),
             native_notifications_enabled: AtomicBool::new(initial_notifications_enabled),
+            lxmf_limit_1mb: AtomicBool::new(initial_lxmf_limit_1mb),
             rns_config_lock: Mutex::new(()),
             identity_switch_lock: IdentitySwitchLock::new(),
             ble_peer_enable_lock: tokio::sync::Mutex::new(()),
@@ -724,6 +735,30 @@ impl AppState {
     pub fn set_native_notifications_enabled(&self, enabled: bool) {
         self.native_notifications_enabled
             .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn lxmf_limit_1mb_enabled(&self) -> bool {
+        self.lxmf_limit_1mb.load(Ordering::Relaxed)
+    }
+
+    pub fn set_lxmf_limit_1mb_enabled(&self, enabled: bool) {
+        self.lxmf_limit_1mb.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn lxmf_delivery_limit_kb(&self) -> usize {
+        if self.lxmf_limit_1mb_enabled() {
+            LXMF_DELIVERY_LIMIT_1_MB_KB
+        } else {
+            LXMF_DELIVERY_LIMIT_MAX_KB
+        }
+    }
+
+    pub fn lxmf_delivery_limit_bytes(&self) -> usize {
+        if self.lxmf_limit_1mb_enabled() {
+            LXMF_DELIVERY_LIMIT_1_MB_BYTES
+        } else {
+            LXMF_DELIVERY_LIMIT_MAX_BYTES
+        }
     }
 
     pub fn announce_ratspeak_usage_enabled(&self) -> bool {
@@ -1880,6 +1915,18 @@ mod tests {
         expected.sort();
 
         assert_eq!(registered, expected);
+    }
+
+    #[test]
+    fn incoming_lxmf_limit_defaults_to_one_mb_and_switches_to_128_mb() {
+        let state = make_state();
+        assert!(state.lxmf_limit_1mb_enabled());
+        assert_eq!(state.lxmf_delivery_limit_kb(), 1_000);
+        assert_eq!(state.lxmf_delivery_limit_bytes(), 1_000_000);
+
+        state.set_lxmf_limit_1mb_enabled(false);
+        assert_eq!(state.lxmf_delivery_limit_kb(), 128_000);
+        assert_eq!(state.lxmf_delivery_limit_bytes(), 128_000_000);
     }
 
     #[test]

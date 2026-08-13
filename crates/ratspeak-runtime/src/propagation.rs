@@ -2042,7 +2042,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_send_metadata_requires_identity_and_stamp_cost() {
+    fn relay_send_metadata_requires_identity_stamp_cost_and_transfer_limit() {
         let state = make_state();
         let node = sync_hub_hash();
         let node_hex = hex::encode(node);
@@ -2057,6 +2057,16 @@ mod tests {
         assert!(!mgr.propagation_node_ready_for_send(&node));
 
         mgr.router.set_stamp_cost(node, 0);
+        assert!(!mgr.propagation_node_ready_for_send(&node));
+        let announce =
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 256, 10240, 0, 0, 0);
+        assert!(mgr.update_lxmf_announce_app_data(
+            node,
+            rns_identity::name_hash::name_hash(ratspeak_core::LXMF_PROPAGATION_APP_NAME),
+            Some(&lxmf_core::handlers::get_propagation_node_app_data(
+                &announce,
+            )),
+        ));
         assert!(mgr.propagation_node_ready_for_send(&node));
 
         *state.lxmf.lock().unwrap() = Some(mgr);

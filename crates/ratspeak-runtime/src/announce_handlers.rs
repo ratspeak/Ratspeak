@@ -384,8 +384,13 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
             if let Some(ref public_key) = event.public_key {
                 mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
             }
-            mgr.router
-                .set_stamp_cost(event.destination_hash, pn.stamp_cost);
+            if mgr.update_lxmf_announce_app_data(
+                event.destination_hash,
+                rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME),
+                event.app_data.as_deref(),
+            ) {
+                mgr.save_router_state();
+            }
         }
     }
 

@@ -183,6 +183,23 @@ fn record_lxmf_submission_failed(
     );
 }
 
+fn emit_lxmf_send_error(
+    state: &AppState,
+    client_msg_id: Option<&str>,
+    code: &'static str,
+    message: &'static str,
+) {
+    state.emit_to_all(
+        "lxmf_step",
+        json!({
+            "step": "error",
+            "code": code,
+            "message": message,
+            "client_msg_id": client_msg_id,
+        }),
+    );
+}
+
 fn base64_decoded_len_upper_bound(encoded_len: usize) -> Option<usize> {
     encoded_len.checked_add(3)?.checked_div(4)?.checked_mul(3)
 }
@@ -484,11 +501,16 @@ pub async fn send_lxmf_message(
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
 
     if !validate_hex(&dest_hash, 16, 64) {
-        state.emit_to_all(
-            "lxmf_step",
-            json!({ "step": "error", "message": "Invalid identity hash" }),
+        emit_lxmf_send_error(
+            &state,
+            client_msg_id.as_deref(),
+            "invalid_destination",
+            "Invalid identity hash",
         );
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::new(
+            "invalid_destination",
+            "Invalid identity hash",
+        ));
     }
     if content.is_empty() {
         state.emit_to_all(
@@ -847,11 +869,16 @@ pub async fn send_lxmf_propagated(
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
 
     if !validate_hex(&dest_hash, 16, 64) {
-        state.emit_to_all(
-            "lxmf_step",
-            json!({ "step": "error", "message": "Invalid identity hash" }),
+        emit_lxmf_send_error(
+            &state,
+            client_msg_id.as_deref(),
+            "invalid_destination",
+            "Invalid identity hash",
         );
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::new(
+            "invalid_destination",
+            "Invalid identity hash",
+        ));
     }
     if content.is_empty() {
         state.emit_to_all(
@@ -1010,28 +1037,38 @@ pub async fn send_lxmf_with_attachment(
     };
 
     if !validate_hex(&dest_hash, 16, 64) {
-        state.emit_to_all(
-            "lxmf_step",
-            json!({ "step": "error", "message": "Invalid identity hash" }),
+        emit_lxmf_send_error(
+            &state,
+            client_msg_id.as_deref(),
+            "invalid_destination",
+            "Invalid identity hash",
         );
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::new(
+            "invalid_destination",
+            "Invalid identity hash",
+        ));
     }
     validate_delivery_preference(&state, delivery_pref)?;
     if file_data_b64.is_empty() {
-        state.emit_to_all(
-            "lxmf_step",
-            json!({ "step": "error", "message": "No file data provided" }),
+        emit_lxmf_send_error(
+            &state,
+            client_msg_id.as_deref(),
+            "attachment_missing",
+            "No file data provided",
         );
-        return Err(AppError::bad_request("No file data provided"));
+        return Err(AppError::new("attachment_missing", "No file data provided"));
     }
     if base64_decoded_len_upper_bound(file_data_b64.len()).unwrap_or(usize::MAX)
         > rns_protocol::resource::MAX_RESOURCE_SIZE
     {
-        state.emit_to_all(
-            "lxmf_step",
-            json!({ "step": "error", "message": "Attachment exceeds protocol resource limit" }),
+        emit_lxmf_send_error(
+            &state,
+            client_msg_id.as_deref(),
+            "attachment_too_large",
+            "Attachment exceeds protocol resource limit",
         );
-        return Err(AppError::bad_request(
+        return Err(AppError::new(
+            "attachment_too_large",
             "Attachment exceeds protocol resource limit",
         ));
     }
@@ -1039,18 +1076,23 @@ pub async fn send_lxmf_with_attachment(
     let client_send = begin_lxmf_client_send(&state_arc, client_msg_id.as_ref())?;
 
     let file_bytes = B64.decode(file_data_b64).map_err(|_| {
-        state.emit_to_all(
-            "lxmf_step",
-            json!({ "step": "error", "message": "Invalid base64 file data" }),
+        emit_lxmf_send_error(
+            &state,
+            client_msg_id.as_deref(),
+            "attachment_invalid",
+            "Invalid base64 file data",
         );
-        AppError::bad_request("Invalid base64 file data")
+        AppError::new("attachment_invalid", "Invalid base64 file data")
     })?;
     if file_bytes.len() > rns_protocol::resource::MAX_RESOURCE_SIZE {
-        state.emit_to_all(
-            "lxmf_step",
-            json!({ "step": "error", "message": "Attachment exceeds protocol resource limit" }),
+        emit_lxmf_send_error(
+            &state,
+            client_msg_id.as_deref(),
+            "attachment_too_large",
+            "Attachment exceeds protocol resource limit",
         );
-        return Err(AppError::bad_request(
+        return Err(AppError::new(
+            "attachment_too_large",
             "Attachment exceeds protocol resource limit",
         ));
     }
@@ -1082,7 +1124,7 @@ pub async fn send_lxmf_with_attachment(
     let cancellation = client_send
         .as_ref()
         .map(LxmfClientSendGuard::cancellation_probe);
-    let msg_id = tokio::task::spawn_blocking(move || {
+    let send_result = tokio::task::spawn_blocking(move || {
         // Append "[File: …]" so non-attachment clients see the name.
         let msg_content = if ct.is_empty() {
             format!("[File: {}]", fn_c)
@@ -1090,25 +1132,28 @@ pub async fn send_lxmf_with_attachment(
             format!("{}\n[File: {}]", ct, fn_c)
         };
         queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
-            manager.send_message_with_attachment_fields_preference(AttachmentMessageRequest {
-                dest_hash_hex: &dh,
-                content: &msg_content,
-                title: "",
-                file_name: &fn_c,
-                file_bytes: &file_bytes,
-                is_image,
-                image_mime: &im,
-                db_pool: &st.db,
-                identity_id: &id_c,
-                preference: delivery_pref,
-            })
+            manager
+                .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                    dest_hash_hex: &dh,
+                    content: &msg_content,
+                    title: "",
+                    file_name: &fn_c,
+                    file_bytes: &file_bytes,
+                    is_image,
+                    image_mime: &im,
+                    db_pool: &st.db,
+                    identity_id: &id_c,
+                    preference: delivery_pref,
+                })
+                .ok()
         })
     })
     .await
     .map_err(|_| AppError::internal("send_attachment task panicked"))?;
 
-    match msg_id {
-        LxmfClientSendAttempt::Queued(id) => {
+    match send_result {
+        LxmfClientSendAttempt::Queued(queued) => {
+            let id = queued.message_id;
             if finalize_lxmf_client_send(&state_arc, client_send.as_ref(), &id).await? {
                 return Ok(json!({
                     "msg_id": id,
@@ -1117,6 +1162,7 @@ pub async fn send_lxmf_with_attachment(
                 }));
             }
             schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
+            record_lxmf_delivery_queued(&state, activity_fence, &id, &dest_hash, queued.method);
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -1134,12 +1180,22 @@ pub async fn send_lxmf_with_attachment(
             &state,
             client_msg_id.as_deref().unwrap_or_default(),
         )),
-        LxmfClientSendAttempt::Failed(_) => {
-            state.emit_to_all(
-                "lxmf_step",
-                json!({ "step": "error", "message": "LXMF not initialized" }),
-            );
-            Err(AppError::lxmf_not_initialized("LXMF not initialized"))
+        LxmfClientSendAttempt::Failed(reason) => {
+            record_lxmf_submission_failed(&state, activity_fence, &dest_hash, reason);
+            let (code, message, error) = match reason {
+                producer::LxmfSubmissionFailureReason::RouterUnavailable => (
+                    "lxmf_not_initialized",
+                    "LXMF not initialized",
+                    AppError::lxmf_not_initialized("LXMF not initialized"),
+                ),
+                producer::LxmfSubmissionFailureReason::PreparationFailed => (
+                    "lxmf_preparation_failed",
+                    "Attachment could not be queued",
+                    AppError::new("lxmf_preparation_failed", "Attachment could not be queued"),
+                ),
+            };
+            emit_lxmf_send_error(&state, client_msg_id.as_deref(), code, message);
+            Err(error)
         }
     }
 }
@@ -1169,6 +1225,7 @@ async fn cancel_canonical_lxmf_message(
     msg_id: &str,
     client_msg_id: Option<&str>,
 ) -> AppResult<bool> {
+    let activity_fence = state.activity_request_fence();
     let st = Arc::clone(state);
     let msg_id_for_cancel = msg_id.to_string();
     let transport_cancelled = tokio::task::spawn_blocking(move || {
@@ -1208,8 +1265,26 @@ async fn cancel_canonical_lxmf_message(
                 "step": "cancelled",
                 "msg_id": msg_id,
                 "client_msg_id": client_msg_id,
-                "method": method,
+                "method": method.clone(),
             }),
+        );
+        state.activity.record_event_fenced(
+            || state.is_current_activity_origin_fence(activity_fence),
+            || {
+                let message = producer::MessageId::from_hex(msg_id)?;
+                let method = method
+                    .as_deref()
+                    .and_then(producer::LxmfDeliveryMethod::from_code);
+                Ok(producer::lxmf_delivery_state_changed(
+                    producer::LxmfDeliveryStateChanged {
+                        message,
+                        state: producer::LxmfDeliveryState::Cancelled,
+                        method,
+                        rtt_ms: None,
+                        failure_reason: None,
+                    },
+                ))
+            },
         );
         broadcast_conversations(Arc::clone(state));
         state.lxmf_notify.notify_one();

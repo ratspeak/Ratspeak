@@ -62,6 +62,30 @@ const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
 
+fn accepts_inbound_lxmf_resource(data_size: usize, limit_bytes: usize) -> bool {
+    data_size <= limit_bytes
+}
+
+#[cfg(test)]
+mod lxmf_delivery_admission_tests {
+    use super::*;
+
+    #[test]
+    fn incoming_resource_limit_has_exact_boundaries_and_safe_maximum() {
+        assert!(accepts_inbound_lxmf_resource(1_000_000, 1_000_000));
+        assert!(!accepts_inbound_lxmf_resource(1_000_001, 1_000_000));
+        assert!(accepts_inbound_lxmf_resource(
+            state::LXMF_DELIVERY_LIMIT_MAX_BYTES,
+            state::LXMF_DELIVERY_LIMIT_MAX_BYTES,
+        ));
+        const {
+            assert!(
+                state::LXMF_DELIVERY_LIMIT_MAX_BYTES < rns_protocol::resource::MAX_RESOURCE_SIZE
+            );
+        }
+    }
+}
+
 fn lxmf_progress_activity_step(
     update: &lxmf::LxmfDeliveryProgressUpdate,
 ) -> Option<producer::LxmfProgressStep> {
@@ -282,6 +306,7 @@ pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfMana
         None
     };
     mgr.announce_ratspeak_usage = state.announce_ratspeak_usage_enabled();
+    mgr.set_delivery_limit_kb(state.lxmf_delivery_limit_kb());
 
     let hosting = state
         .propagation_node_hosting_enabled
@@ -1740,6 +1765,34 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             LXMF_DELIVERY_APP_NAME,
                             signing_key,
                         );
+                    let admission_state = state.clone();
+                    lxmf_link_mgr
+                        .set_resource_strategy(rns_runtime::prelude::ResourceStrategy::AcceptApp);
+                    lxmf_link_mgr.set_resource_accept_handler(move |link_id, advertisement| {
+                        let limit = admission_state.lxmf_delivery_limit_bytes();
+                        if accepts_inbound_lxmf_resource(advertisement.data_size, limit) {
+                            return true;
+                        }
+
+                        let activity_origin = admission_state.activity_request_fence();
+                        record_activity_if_current(&admission_state, activity_origin, || {
+                            Ok(producer::lxmf_inbound_rejected(
+                                producer::LxmfInboundRejected {
+                                    link: producer::LinkId::new(link_id),
+                                    encoded_bytes: advertisement.data_size as u64,
+                                    max_message_bytes: limit as u64,
+                                },
+                            ))
+                        });
+                        tracing::warn!(
+                            link = %short_id(&hex::encode(link_id)),
+                            encoded_bytes = advertisement.data_size,
+                            max_message_bytes = limit,
+                            reason = "size_limit",
+                            "rejected inbound LXMF Resource advertisement"
+                        );
+                        false
+                    });
                     let lxmf_link_identities = lxmf_link_mgr.link_identities_handle();
 
                     let (link_pkt_tx, mut link_pkt_rx) =
@@ -1989,6 +2042,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                Vec::new(),
                             )
                         };
                         let lock_wait_started = std::time::Instant::now();
@@ -2016,6 +2070,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             );
                         }
                         let delivery_progress = mgr.take_delivery_progress_updates();
+                        let delivery_failures = mgr.take_delivery_failure_updates();
                         let downloaded = mgr.take_downloaded_propagation_messages();
                         let (completed_deposits, failed_deposits, completed_syncs, failed_syncs) =
                             mgr.take_propagation_health();
@@ -2026,6 +2081,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         (
                             results,
                             delivery_progress,
+                            delivery_failures,
                             downloaded,
                             completed_deposits,
                             failed_deposits,
@@ -2037,6 +2093,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     let (
                         results,
                         delivery_progress,
+                        delivery_failures,
                         downloaded_propagation_messages,
                         completed_propagation_deposits,
                         failed_propagation_deposits,
@@ -2050,6 +2107,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 "lxmf tick worker failed; skipping this tick"
                             );
                             (
+                                Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
@@ -2124,9 +2182,17 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     } else {
                         helpers::active_identity_id(&tick_state)
                     };
-                    let mut persisted: Vec<(String, &'static str, Option<String>)> =
-                        Vec::with_capacity(results.len());
+                    let mut persisted: Vec<(
+                        String,
+                        &'static str,
+                        Option<String>,
+                        Option<lxmf::LxmfDeliveryFailureUpdate>,
+                    )> = Vec::with_capacity(results.len());
                     for (msg_id, new_state) in &results {
+                        let failure = delivery_failures
+                            .iter()
+                            .find(|failure| failure.msg_id == *msg_id)
+                            .cloned();
                         let msg_id_for_db = msg_id.clone();
                         let identity_for_db = identity_for_db.clone();
                         let new_state_for_db = new_state.to_string();
@@ -2155,7 +2221,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         })
                         .await
                         {
-                            Ok(method) => persisted.push((msg_id.clone(), *new_state, method)),
+                            Ok(method) => {
+                                persisted.push((msg_id.clone(), *new_state, method, failure))
+                            }
                             Err(_) => tracing::error!(
                                 msg_id = %short_id(msg_id),
                                 new_state = %new_state,
@@ -2164,21 +2232,32 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             ),
                         }
                     }
-                    for (msg_id, new_state, method) in &persisted {
+                    for (msg_id, new_state, method, failure) in &persisted {
                         let client_msg_id = tick_state
                             .msg_id_map
                             .lock()
                             .ok()
                             .and_then(|map| map.get(msg_id).cloned());
-                        tick_state.emit_to_all(
-                            "lxmf_step",
+                        let step_payload = if let Some(failure) = failure {
+                            json!({
+                                "step": "error",
+                                "code": failure.code,
+                                "message": "Message exceeds propagation node limit",
+                                "actual_bytes": failure.actual_bytes,
+                                "limit_bytes": failure.limit_bytes,
+                                "msg_id": msg_id,
+                                "client_msg_id": client_msg_id,
+                                "method": method,
+                            })
+                        } else {
                             json!({
                                 "step": new_state,
                                 "msg_id": msg_id,
                                 "client_msg_id": client_msg_id,
                                 "method": method,
-                            }),
-                        );
+                            })
+                        };
+                        tick_state.emit_to_all("lxmf_step", step_payload);
                         let activity_state = match *new_state {
                             "routing" => Some(producer::LxmfDeliveryState::Routing),
                             "propagating" => Some(producer::LxmfDeliveryState::Propagating),
@@ -2198,6 +2277,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         }) {
                             record_activity_if_current(&tick_state, tick_activity_origin, || {
                                 let message = producer::MessageId::from_hex(msg_id)?;
+                                if let Some(failure) = failure {
+                                    return Ok(producer::lxmf_propagation_limit_exceeded(
+                                        producer::LxmfPropagationLimitExceeded {
+                                            message,
+                                            encoded_bytes: failure.actual_bytes as u64,
+                                            max_message_bytes: failure.limit_bytes as u64,
+                                        },
+                                    ));
+                                }
                                 let method = method
                                     .as_deref()
                                     .and_then(producer::LxmfDeliveryMethod::from_code);

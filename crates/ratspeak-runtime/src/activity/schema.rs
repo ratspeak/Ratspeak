@@ -724,6 +724,7 @@ pub(super) mod kinds {
         Messages
     );
     kind!(LXMF_DELIVERY_DELIVERED, "lxmf.delivery.delivered", Messages);
+    kind!(LXMF_DELIVERY_CANCELLED, "lxmf.delivery.cancelled", Messages);
     kind!(LXMF_DELIVERY_REJECTED, "lxmf.delivery.rejected", Messages);
     kind!(LXMF_DELIVERY_DEFERRED, "lxmf.delivery.deferred", Messages);
     kind!(LXMF_DELIVERY_RETRYING, "lxmf.delivery.retrying", Messages);

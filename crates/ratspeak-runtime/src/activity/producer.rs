@@ -46,6 +46,8 @@ enum Payload {
     LxmfDeliveryStateChanged(LxmfDeliveryStateChanged),
     LxmfDeliveryProgress(LxmfDeliveryProgress),
     LxmfInboundAccepted(LxmfInboundAccepted),
+    LxmfInboundRejected(LxmfInboundRejected),
+    LxmfPropagationLimitExceeded(LxmfPropagationLimitExceeded),
     LxmfDeliveryFailed(LxmfDeliveryFailed),
     Lxst(LxstTransition),
 }
@@ -189,6 +191,22 @@ impl ProducerEvent {
                     source: input.source,
                     method: input.method,
                     encoded_bytes: input.encoded_bytes,
+                })
+            }
+            Payload::LxmfInboundRejected(input) => {
+                catalog::lxmf_inbound_rejected(catalog::LxmfInboundRejected {
+                    time,
+                    link: input.link,
+                    encoded_bytes: input.encoded_bytes,
+                    max_message_bytes: input.max_message_bytes,
+                })
+            }
+            Payload::LxmfPropagationLimitExceeded(input) => {
+                catalog::lxmf_propagation_limit_exceeded(catalog::LxmfPropagationLimitExceeded {
+                    time,
+                    message: input.message,
+                    encoded_bytes: input.encoded_bytes,
+                    max_message_bytes: input.max_message_bytes,
                 })
             }
             Payload::LxmfDeliveryFailed(input) => {
@@ -403,6 +421,26 @@ pub struct LxmfInboundAccepted {
 
 pub fn lxmf_inbound_accepted(input: LxmfInboundAccepted) -> ProducerEvent {
     ProducerEvent(Payload::LxmfInboundAccepted(input))
+}
+
+pub struct LxmfInboundRejected {
+    pub link: LinkId,
+    pub encoded_bytes: u64,
+    pub max_message_bytes: u64,
+}
+
+pub fn lxmf_inbound_rejected(input: LxmfInboundRejected) -> ProducerEvent {
+    ProducerEvent(Payload::LxmfInboundRejected(input))
+}
+
+pub struct LxmfPropagationLimitExceeded {
+    pub message: MessageId,
+    pub encoded_bytes: u64,
+    pub max_message_bytes: u64,
+}
+
+pub fn lxmf_propagation_limit_exceeded(input: LxmfPropagationLimitExceeded) -> ProducerEvent {
+    ProducerEvent(Payload::LxmfPropagationLimitExceeded(input))
 }
 
 pub struct LxmfDeliveryFailed {

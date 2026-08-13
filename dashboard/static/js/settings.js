@@ -1585,6 +1585,10 @@ function applyAppSettingsPayload(data) {
     if (data.hide_known_spam_peers !== undefined) {
         adoptHideKnownSpamPeersFromBackend(data.hide_known_spam_peers);
     }
+    var lxmfLimitToggle = document.getElementById('lxmf-limit-1mb-toggle');
+    if (lxmfLimitToggle && data.lxmf_limit_1mb !== undefined) {
+        lxmfLimitToggle.checked = !!data.lxmf_limit_1mb;
+    }
     if (data.text_scale_percent !== undefined && RS.textScale) {
         RS.textScale.commit(data.text_scale_percent);
     }
@@ -1669,9 +1673,21 @@ document.addEventListener('DOMContentLoaded', function() {
 
 (function() {
     var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
+    var lxmfLimitToggle = document.getElementById('lxmf-limit-1mb-toggle');
     initActivityIdentityProtectionToggle();
     initHideKnownSpamPeersToggle();
     RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {});
+    if (lxmfLimitToggle) {
+        lxmfLimitToggle.addEventListener('change', function() {
+            var enabled = !!lxmfLimitToggle.checked;
+            RS.invoke('set_lxmf_limit_1mb', { enabled: enabled })
+                .then(applyAppSettingsPayload)
+                .catch(function(error) {
+                    lxmfLimitToggle.checked = !enabled;
+                    showToast((error && error.message) || 'Failed to update message limit', 'toast-red', 8000);
+                });
+        });
+    }
     if (!usageToggle) return;
     usageToggle.addEventListener('change', function() {
         var enabled = !!usageToggle.checked;

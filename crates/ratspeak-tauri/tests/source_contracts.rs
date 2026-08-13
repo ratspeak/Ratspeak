@@ -1155,6 +1155,27 @@ fn privacy_announce_usage_setting_is_wired() {
 }
 
 #[test]
+fn incoming_lxmf_limit_setting_is_normal_default_on_and_backend_authoritative() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    assert!(index.contains("Limit incoming messages to 1 MB"));
+    assert!(index.contains("id=\"lxmf-limit-1mb-toggle\" checked"));
+
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    assert!(settings.contains("data.lxmf_limit_1mb"));
+    assert!(settings.contains("RS.invoke('set_lxmf_limit_1mb', { enabled: enabled })"));
+
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    assert!(interfaces.contains("pub async fn set_lxmf_limit_1mb"));
+    assert!(interfaces.contains("db::get_setting(&p, \"lxmf_limit_1mb\")"));
+    assert!(interfaces.contains("state.set_lxmf_limit_1mb_enabled(enabled)"));
+
+    let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
+    assert!(tauri_lib.contains("set_lxmf_limit_1mb"));
+}
+
+#[test]
 fn activity_identity_protection_is_default_on_durable_and_event_scoped() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
@@ -7342,7 +7363,8 @@ fn bundled_ratspeak_propagation_nodes_are_destination_hashes_with_sync_hub_prior
     assert!(propagation.contains("static_probe_prefers_sync_hub_first"));
     assert!(announce_handlers.contains("let hash_hex = hex::encode(event.destination_hash);"));
     assert!(announce_handlers.contains("mgr.router"));
-    assert!(announce_handlers.contains("set_stamp_cost(event.destination_hash"));
+    assert!(announce_handlers.contains("mgr.update_lxmf_announce_app_data("));
+    assert!(announce_handlers.contains("LXMF_PROPAGATION_APP_NAME"));
 }
 
 #[test]

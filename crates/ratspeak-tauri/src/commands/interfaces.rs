@@ -987,6 +987,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         text_scale_percent,
         theme_family,
         theme_mode,
+        lxmf_limit_1mb,
         public_channel_consent_version,
     ) = db::spawn_db(state.db.clone(), |p| {
         let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
@@ -1011,6 +1012,8 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         let theme_mode = db::get_setting(&p, "theme_mode")
             .and_then(|value| normalize_theme_mode(&value).map(str::to_string))
             .unwrap_or_else(|| DEFAULT_THEME_MODE.to_string());
+        let lxmf_limit_1mb =
+            db::get_setting(&p, "lxmf_limit_1mb").is_none_or(|value| value != "false");
         let public_channel_consent_version =
             db::get_setting(&p, db::PUBLIC_CHANNEL_CONSENT_SETTING)
                 .filter(|value| db::public_channel_consent_is_current(Some(value)))
@@ -1026,6 +1029,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             text_scale_percent,
             theme_family,
             theme_mode,
+            lxmf_limit_1mb,
             public_channel_consent_version,
         )
     })
@@ -1040,6 +1044,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         100,
         DEFAULT_THEME_FAMILY.to_string(),
         DEFAULT_THEME_MODE.to_string(),
+        true,
         0,
     ));
     Ok(json!({
@@ -1055,6 +1060,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "text_scale_percent": text_scale_percent,
         "theme_family": theme_family,
         "theme_mode": theme_mode,
+        "lxmf_limit_1mb": lxmf_limit_1mb,
         "public_channel_consent_version": public_channel_consent_version,
         "public_channel_consent_required_version": db::PUBLIC_CHANNEL_CONSENT_VERSION,
     }))
@@ -1255,6 +1261,31 @@ pub async fn set_hide_known_spam_peers(
         json!({ "hide_known_spam_peers": enabled }),
     );
     Ok(json!({ "enabled": enabled }))
+}
+
+#[tauri::command]
+pub async fn set_lxmf_limit_1mb(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> AppResult<Value> {
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, "lxmf_limit_1mb", if enabled { "true" } else { "false" })
+    })
+    .await
+    .map_err(|_| AppError::internal("set_lxmf_limit_1mb db task panicked"))?
+    .map_err(|error| {
+        AppError::database_unavailable(format!("Failed to save message limit: {error}"))
+    })?;
+
+    state.set_lxmf_limit_1mb_enabled(enabled);
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(manager) = lxmf.as_mut() {
+            manager.set_delivery_limit_kb(state.lxmf_delivery_limit_kb());
+        }
+    }
+    let payload = json!({ "lxmf_limit_1mb": enabled });
+    state.emit_to_all("app_settings_updated", payload.clone());
+    Ok(payload)
 }
 
 /// Developer mode lives in SQLite, not WebView localStorage: WKWebView does

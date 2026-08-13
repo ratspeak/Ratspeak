@@ -197,6 +197,7 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         "lxmf.delivery.progress" => "Resource transfer progress",
         "lxmf.delivery.awaiting_proof" => "Waiting for delivery proof",
         "lxmf.delivery.delivered" => "Message delivered",
+        "lxmf.delivery.cancelled" => "Message delivery cancelled",
         "lxmf.delivery.rejected" => "Message delivery rejected",
         "lxmf.delivery.deferred" => "Message delivery deferred",
         "lxmf.delivery.retrying" => "Message delivery retrying",
@@ -621,23 +622,22 @@ fn legacy_detail(event: &ActivityEventV1) -> String {
                 "Message",
             );
             push_code(&mut fragments, event, ActivityAttributeKey::Method);
+            if kind.ends_with(".failed") || kind.ends_with(".rejected") {
+                push_code(&mut fragments, event, ActivityAttributeKey::Reason);
+            }
         }
-        "lxmf.inbound.accepted" | "lxmf.inbound.rejected" => {
+        "lxmf.inbound.accepted" => {
             push_ordinal(
                 &mut fragments,
                 event,
                 ActivityAttributeKey::Destination,
                 "Peer",
             );
-            push_code(
-                &mut fragments,
-                event,
-                if event.kind() == "lxmf.inbound.accepted" {
-                    ActivityAttributeKey::Method
-                } else {
-                    ActivityAttributeKey::Reason
-                },
-            );
+            push_code(&mut fragments, event, ActivityAttributeKey::Method);
+        }
+        "lxmf.inbound.rejected" => {
+            push_ordinal(&mut fragments, event, ActivityAttributeKey::Link, "Link");
+            push_code(&mut fragments, event, ActivityAttributeKey::Reason);
         }
         kind if kind.starts_with("lxst.call.") => {
             push_ordinal(

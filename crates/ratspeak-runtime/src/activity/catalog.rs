@@ -1982,6 +1982,7 @@ pub enum LxmfDeliveryState {
     Sent,
     Delivered,
     Propagated,
+    Cancelled,
     Rejected,
     Failed,
 }
@@ -2036,6 +2037,11 @@ pub fn lxmf_delivery_state_changed(
         ),
         LxmfDeliveryState::Propagated => (
             kinds::LXMF_PROPAGATION_SUCCEEDED,
+            ActivitySeverity::Info,
+            ActivityOutcome::Success,
+        ),
+        LxmfDeliveryState::Cancelled => (
+            kinds::LXMF_DELIVERY_CANCELLED,
             ActivitySeverity::Info,
             ActivityOutcome::Success,
         ),
@@ -2235,6 +2241,78 @@ pub fn lxmf_inbound_accepted(
         ExactValue::Unsigned(u64::from(input.encoded_bytes)),
     );
     Ok(draft)
+}
+
+pub struct LxmfInboundRejected {
+    pub time: ObservationTime,
+    pub link: LinkId,
+    pub encoded_bytes: u64,
+    pub max_message_bytes: u64,
+}
+
+pub fn lxmf_inbound_rejected(
+    input: LxmfInboundRejected,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    let draft = ActivityDraft::new(
+        kinds::LXMF_INBOUND_REJECTED,
+        ActivitySeverity::Warning,
+        ActivityDirection::Inbound,
+        ActivityOutcome::Rejected,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .protocol_identifier(
+        ActivityAttributeKey::Link,
+        IdentifierKind::Link,
+        &input.link.0,
+    )?
+    .operational_code(ActivityAttributeKey::Reason, "size_limit")?
+    .exact(
+        ActivityAttributeKey::ByteLength,
+        ExactValue::Unsigned(input.encoded_bytes),
+    )
+    .exact(
+        ActivityAttributeKey::MaxMessageBytes,
+        ExactValue::Unsigned(input.max_message_bytes),
+    );
+    Ok(draft)
+}
+
+pub struct LxmfPropagationLimitExceeded {
+    pub time: ObservationTime,
+    pub message: MessageId,
+    pub encoded_bytes: u64,
+    pub max_message_bytes: u64,
+}
+
+pub fn lxmf_propagation_limit_exceeded(
+    input: LxmfPropagationLimitExceeded,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    Ok(ActivityDraft::new(
+        kinds::LXMF_PROPAGATION_FAILED,
+        ActivitySeverity::Error,
+        ActivityDirection::Outbound,
+        ActivityOutcome::Failed,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .protocol_identifier(
+        ActivityAttributeKey::Message,
+        IdentifierKind::Message,
+        &input.message.0,
+    )?
+    .operational_code(ActivityAttributeKey::Method, "propagated")?
+    .operational_code(ActivityAttributeKey::Reason, "propagation_limit_exceeded")?
+    .exact(
+        ActivityAttributeKey::ByteLength,
+        ExactValue::Unsigned(input.encoded_bytes),
+    )
+    .exact(
+        ActivityAttributeKey::MaxMessageBytes,
+        ExactValue::Unsigned(input.max_message_bytes),
+    ))
 }
 
 pub struct LxmfDeliveryFailed {
@@ -3341,5 +3419,101 @@ mod tests {
         })
         .unwrap();
         assert!(matches!(draft.coalescing_policy(), CoalescingPolicy::Never));
+    }
+
+    #[test]
+    fn inbound_size_rejection_records_only_protocol_and_operational_metadata() {
+        let validated = lxmf_inbound_rejected(LxmfInboundRejected {
+            time: ObservationTime::new(2, 2),
+            link: LinkId::new([6; 16]),
+            encoded_bytes: 1_000_001,
+            max_message_bytes: 1_000_000,
+        })
+        .unwrap()
+        .validate(super::super::classified::DraftContext {
+            capture_session: "11".repeat(16),
+            capture_generation: 1,
+            capture_profile: super::super::schema::CaptureProfile::Normal,
+        })
+        .unwrap();
+
+        assert_eq!(validated.kind.code(), "lxmf.inbound.rejected");
+        assert_eq!(validated.outcome, ActivityOutcome::Rejected);
+        let keys = validated
+            .attributes
+            .iter()
+            .map(|attribute| attribute.key)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            keys,
+            std::collections::HashSet::from([
+                ActivityAttributeKey::Link,
+                ActivityAttributeKey::Reason,
+                ActivityAttributeKey::ByteLength,
+                ActivityAttributeKey::MaxMessageBytes,
+            ])
+        );
+        assert!(validated.attributes.iter().all(|attribute| matches!(
+            attribute.value,
+            super::super::classified::DraftValue::Exact(_)
+                | super::super::classified::DraftValue::OperationalCode(_)
+                | super::super::classified::DraftValue::ProtocolIdentifier { .. }
+        )));
+    }
+
+    #[test]
+    fn canonical_lxmf_cancellation_has_a_terminal_activity_kind() {
+        let draft = lxmf_delivery_state_changed(LxmfDeliveryStateChanged {
+            time: ObservationTime::new(3, 3),
+            message: MessageId::new([8; 32]),
+            state: LxmfDeliveryState::Cancelled,
+            method: Some(LxmfDeliveryMethod::Direct),
+            rtt_ms: None,
+            failure_reason: None,
+        })
+        .unwrap();
+        assert!(matches!(draft.coalescing_policy(), CoalescingPolicy::Never));
+        let validated = draft
+            .validate(super::super::classified::DraftContext {
+                capture_session: "22".repeat(16),
+                capture_generation: 1,
+                capture_profile: super::super::schema::CaptureProfile::Normal,
+            })
+            .unwrap();
+        assert_eq!(validated.kind.code(), "lxmf.delivery.cancelled");
+    }
+
+    #[test]
+    fn propagation_limit_failure_carries_exact_sizes_without_content() {
+        let validated = lxmf_propagation_limit_exceeded(LxmfPropagationLimitExceeded {
+            time: ObservationTime::new(4, 4),
+            message: MessageId::new([9; 32]),
+            encoded_bytes: 256_001,
+            max_message_bytes: 256_000,
+        })
+        .unwrap()
+        .validate(super::super::classified::DraftContext {
+            capture_session: "33".repeat(16),
+            capture_generation: 1,
+            capture_profile: super::super::schema::CaptureProfile::Normal,
+        })
+        .unwrap();
+
+        assert_eq!(validated.kind.code(), "lxmf.propagation.failed");
+        let keys = validated
+            .attributes
+            .iter()
+            .map(|attribute| attribute.key)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            keys,
+            std::collections::HashSet::from([
+                ActivityAttributeKey::Message,
+                ActivityAttributeKey::Method,
+                ActivityAttributeKey::Reason,
+                ActivityAttributeKey::ByteLength,
+                ActivityAttributeKey::MaxMessageBytes,
+            ])
+        );
     }
 }
