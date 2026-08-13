@@ -7,6 +7,12 @@ object RatspeakMobilePolicy {
     const val DEFAULT_ATT_PAYLOAD = 20
     private const val MAX_ATT_PAYLOAD = 514
 
+    /** Null means the callback is lifecycle-only, not allocator pressure. */
+    fun attachmentMemoryPressure(level: Int): Boolean? {
+        if (level == 20 || level < 10) return null
+        return level == 15 || level >= 60
+    }
+
     /** ATT payload is MTU minus the three-byte ATT header. */
     fun attPayload(mtu: Int, negotiationSucceeded: Boolean): Int {
         if (!negotiationSucceeded) return DEFAULT_ATT_PAYLOAD

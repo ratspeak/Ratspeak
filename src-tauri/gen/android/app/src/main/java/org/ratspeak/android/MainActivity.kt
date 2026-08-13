@@ -50,6 +50,8 @@ import androidx.webkit.WebViewCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.PI
@@ -149,7 +151,8 @@ class MainActivity : TauriActivity() {
     private data class PendingFileSave(
         val requestId: String,
         val fileName: String,
-        val bytes: ByteArray,
+        val bytes: ByteArray?,
+        val privateFile: File?,
         val mimeType: String
     )
 
@@ -299,6 +302,20 @@ class MainActivity : TauriActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleNavigateIntent(intent)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // UI_HIDDEN (20) is a lifecycle edge, not memory pressure; treating
+        // it as pressure would cancel staging while the system picker opens.
+        RatspeakMobilePolicy.attachmentMemoryPressure(level)?.let {
+            RatspeakNativeBridge.publishMemoryPressure(it)
+        }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        RatspeakNativeBridge.publishMemoryPressure(true)
     }
 
     override fun onResume() {
@@ -1260,7 +1277,7 @@ class MainActivity : TauriActivity() {
         val safeName = sanitizeDownloadFileName(fileName, mimeType)
         handler.post {
             try {
-                pendingGenericFileSave = PendingFileSave(requestId, safeName, bytes, mimeType)
+                pendingGenericFileSave = PendingFileSave(requestId, safeName, bytes, null, mimeType)
                 val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = mimeType.takeIf { it.isNotBlank() } ?: "application/octet-stream"
@@ -1297,7 +1314,15 @@ class MainActivity : TauriActivity() {
             try {
                 val stream = contentResolver.openOutputStream(uri)
                     ?: throw IllegalStateException("Could not open selected destination")
-                stream.use { it.write(pending.bytes) }
+                stream.use { output ->
+                    val bytes = pending.bytes
+                    if (bytes != null) {
+                        output.write(bytes)
+                    } else {
+                        FileInputStream(pending.privateFile ?: error("Private file is unavailable"))
+                            .use { input -> input.copyTo(output, 64 * 1024) }
+                    }
+                }
                 dispatchFileSaveResult(pending.requestId, true, uri.toString(), null)
             } catch (e: Throwable) {
                 dispatchFileSaveResult(
@@ -1357,6 +1382,92 @@ class MainActivity : TauriActivity() {
                 )
             }
         }, "ratspeak-photo-save").start()
+    }
+
+    internal fun onSaveStoredFile(
+        privatePath: String,
+        fileName: String,
+        mimeType: String,
+        preferPhotos: Boolean,
+        requestId: String,
+    ): Boolean {
+        if (!Regex("^[A-Za-z0-9._-]{1,128}$").matches(requestId)) return false
+        if (mimeType.length > 200 || mimeType.any { it < ' ' }) return false
+        val source = try { File(privatePath).canonicalFile } catch (_: Throwable) { return false }
+        val privateRoot = try { filesDir.canonicalFile } catch (_: Throwable) { return false }
+        val privatePrefix = privateRoot.path + File.separator
+        if (!source.isFile || !source.path.startsWith(privatePrefix)) return false
+        val safeName = sanitizeDownloadFileName(fileName, mimeType)
+        if (preferPhotos && mimeType.startsWith("image/", ignoreCase = true)) {
+            saveStoredImageToMediaStore(requestId, safeName, source, mimeType)
+        } else {
+            launchGenericStoredFileSave(requestId, safeName, source, mimeType)
+        }
+        return true
+    }
+
+    private fun launchGenericStoredFileSave(
+        requestId: String,
+        fileName: String,
+        source: File,
+        mimeType: String,
+    ) {
+        handler.post {
+            try {
+                pendingGenericFileSave = PendingFileSave(requestId, fileName, null, source, mimeType)
+                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = mimeType.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+                    putExtra(Intent.EXTRA_TITLE, fileName)
+                }
+                genericFileDocumentLauncher.launch(intent)
+            } catch (_: ActivityNotFoundException) {
+                pendingGenericFileSave = null
+                dispatchFileSaveResult(requestId, false, null, "No file picker available on this device")
+            } catch (_: Throwable) {
+                pendingGenericFileSave = null
+                dispatchFileSaveResult(requestId, false, null, "Unable to open save picker")
+            }
+        }
+    }
+
+    private fun saveStoredImageToMediaStore(
+        requestId: String,
+        fileName: String,
+        source: File,
+        mimeType: String,
+    ) {
+        Thread({
+            var uri: Uri? = null
+            try {
+                val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                } else {
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                }
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Ratspeak")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                }
+                uri = contentResolver.insert(collection, values)
+                    ?: throw IllegalStateException("Could not create image in Photos")
+                contentResolver.openOutputStream(uri)?.use { output ->
+                    FileInputStream(source).use { input -> input.copyTo(output, 64 * 1024) }
+                } ?: throw IllegalStateException("Could not open image destination")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val done = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
+                    contentResolver.update(uri, done, null, null)
+                }
+                dispatchFileSaveResult(requestId, true, uri.toString(), null)
+            } catch (_: Throwable) {
+                if (uri != null) try { contentResolver.delete(uri, null, null) } catch (_: Throwable) {}
+                dispatchFileSaveResult(requestId, false, null, "Failed to save image")
+            }
+        }, "ratspeak-photo-stream-save").start()
     }
 
     private fun dispatchFileSaveResult(

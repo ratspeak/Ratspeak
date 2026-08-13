@@ -421,21 +421,95 @@ window.RS.listen = function(eventName, handler, options) {
     });
 };
 
-// Fetch an LXMF file attachment over IPC; returns a blob-URL. Caller must
-// URL.revokeObjectURL when done — `RS.saveFile` does this on a timer.
-window.RS.fileDownload = function(storedName) {
-    return window.RS.invoke('api_file_download', { storedName: storedName }).then(function(result) {
-        var raw = atob(result.data_base64);
-        var arr = new Uint8Array(raw.length);
-        for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-        var blob = new Blob([arr], { type: result.mime || 'application/octet-stream' });
-        return {
-            url: URL.createObjectURL(blob),
-            filename: result.filename || storedName,
-            mime: result.mime || 'application/octet-stream',
-            data_base64: result.data_base64 || '',
-        };
+function _rsRawIpcBytes(value) {
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+        return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    throw new Error('Attachment chunk response was not binary');
+}
+
+// Fetch an LXMF file attachment as bounded raw IPC chunks. This deliberately
+// avoids retaining whole-file base64/JSON strings in either WebView or Rust.
+// Caller must URL.revokeObjectURL when done — `RS.saveFile` does this on a timer.
+window.RS.fileMetadata = function(storedName) {
+    return window.RS.invoke('api_file_metadata', { storedName: storedName });
+};
+
+var _rsFileDownloadInFlight = {};
+var _rsLargeFileDownloadActive = false;
+var _rsSmallFileDownloadBytes = 0;
+
+window.RS.fileDownload = function(storedName, knownMeta) {
+    if (_rsFileDownloadInFlight[storedName]) return _rsFileDownloadInFlight[storedName];
+    var metadata = knownMeta
+        ? Promise.resolve(knownMeta)
+        : window.RS.fileMetadata(storedName);
+    var lane = null;
+    var admittedBytes = 0;
+    var download = metadata.then(function(meta) {
+        var size = Number(meta && meta.size) || 0;
+        if (size > (1024 * 1024 - 1)) {
+            if (_rsLargeFileDownloadActive) {
+                var busy = new Error('Another large attachment is being loaded');
+                busy.code = 'attachment_busy';
+                throw busy;
+            }
+            _rsLargeFileDownloadActive = true;
+            lane = 'large';
+        } else {
+            if (_rsSmallFileDownloadBytes + size > 8 * 1024 * 1024) {
+                var pressure = new Error('Attachment memory budget is currently full');
+                pressure.code = 'attachment_memory_pressure';
+                throw pressure;
+            }
+            _rsSmallFileDownloadBytes += size;
+            admittedBytes = size;
+            lane = 'small';
+        }
+        var chunkBytes = Math.min(Number(meta && meta.chunk_bytes) || (256 * 1024), 256 * 1024);
+        var chunks = [];
+        var offset = 0;
+
+        function readNext() {
+            if (offset >= size) return Promise.resolve();
+            var length = Math.min(chunkBytes, size - offset);
+            return window.RS.invoke('api_file_read_chunk', {
+                storedName: storedName,
+                offset: offset,
+                length: length,
+            }).then(function(raw) {
+                var bytes = _rsRawIpcBytes(raw);
+                if (bytes.byteLength !== length) throw new Error('Attachment chunk was truncated');
+                chunks.push(bytes);
+                offset += length;
+                return readNext();
+            });
+        }
+
+        return readNext().then(function() {
+            var mime = (meta && meta.mime) || 'application/octet-stream';
+            var blob = new Blob(chunks, { type: mime });
+            return {
+                url: URL.createObjectURL(blob),
+                blob: blob,
+                size: blob.size,
+                filename: (meta && meta.filename) || storedName,
+                mime: mime,
+            };
+        });
+    }).finally(function() {
+        if (lane === 'large') _rsLargeFileDownloadActive = false;
+        if (lane === 'small') {
+            _rsSmallFileDownloadBytes = Math.max(0, _rsSmallFileDownloadBytes - admittedBytes);
+        }
+        if (_rsFileDownloadInFlight[storedName] === download) {
+            delete _rsFileDownloadInFlight[storedName];
+        }
     });
+    _rsFileDownloadInFlight[storedName] = download;
+    return download;
 };
 
 var _rsAndroidFileSaveSeq = 0;
@@ -458,7 +532,7 @@ window._onAndroidFileSaveResult = function(data) {
 
 function _rsNativeAndroidSave(file, opts) {
     opts = opts || {};
-    if (!hasAndroidBridge()) return null;
+    if (!hasAndroidBridge() || !file.data_base64) return null;
     var bridge = window.RatspeakAndroid;
     var image = /^image\//i.test(file.mime || '');
     var method = image && opts.preferPhotos && typeof bridge.saveImageToPhotos === 'function'
@@ -486,7 +560,7 @@ function _rsNativeAndroidSave(file, opts) {
 
 function _rsNativeIosSavePhoto(file, opts) {
     opts = opts || {};
-    if (!isIOS() || !opts.preferPhotos || !/^image\//i.test(file.mime || '')) return null;
+    if (!isIOS() || !file.data_base64 || !opts.preferPhotos || !/^image\//i.test(file.mime || '')) return null;
     if (typeof window.RS.invoke !== 'function') return null;
     return window.RS.invoke('save_image_to_photos', {
         filename: file.filename || 'image',
@@ -495,13 +569,46 @@ function _rsNativeIosSavePhoto(file, opts) {
     });
 }
 
+function _rsSaveStoredFileNative(storedName, opts) {
+    if (!(isTauriMobile() || isTauriDesktop()) || typeof window.RS.invoke !== 'function') return null;
+    opts = opts || {};
+    var requestId = 'stored-save-' + Date.now() + '-' + (++_rsAndroidFileSaveSeq);
+    var callbackPromise = null;
+    if (isAndroid()) {
+        callbackPromise = new Promise(function(resolve, reject) {
+            _rsAndroidFileSaveWaiters[requestId] = { resolve: resolve, reject: reject };
+            setTimeout(function() {
+                if (!_rsAndroidFileSaveWaiters[requestId]) return;
+                delete _rsAndroidFileSaveWaiters[requestId];
+                var timeout = new Error('Save timed out');
+                timeout.code = 'native_save_timeout';
+                reject(timeout);
+            }, 60000);
+        });
+    }
+    return window.RS.invoke('save_stored_attachment_native', {
+        storedName: storedName,
+        preferPhotos: !!opts.preferPhotos,
+        requestId: requestId,
+    }).then(function(status) {
+        if (status === 'complete') return true;
+        if (status === 'cancelled') return false;
+        if (status === 'pending' && callbackPromise) return callbackPromise;
+        delete _rsAndroidFileSaveWaiters[requestId];
+        var unsupported = new Error('Native stored-file save is unavailable');
+        unsupported.code = 'native_save_unsupported';
+        throw unsupported;
+    }, function(error) {
+        delete _rsAndroidFileSaveWaiters[requestId];
+        throw error;
+    });
+}
+
 function _rsShareFile(file) {
     if (!navigator.share || typeof File === 'undefined') return null;
     try {
-        var raw = atob(file.data_base64 || '');
-        var bytes = new Uint8Array(raw.length);
-        for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-        var shareFile = new File([bytes], file.filename || 'download', {
+        if (!file.blob) return null;
+        var shareFile = new File([file.blob], file.filename || 'download', {
             type: file.mime || 'application/octet-stream'
         });
         if (navigator.canShare && !navigator.canShare({ files: [shareFile] })) return null;
@@ -536,6 +643,15 @@ window.RS.saveDownloadedFile = function(file, opts) {
 };
 
 window.RS.saveFile = function(storedName, opts) {
+    var nativeSave = _rsSaveStoredFileNative(storedName, opts || {});
+    if (nativeSave) {
+        return nativeSave.catch(function(error) {
+            if (!error || error.code !== 'native_save_unsupported') throw error;
+            return window.RS.fileDownload(storedName).then(function(f) {
+                return window.RS.saveDownloadedFile(f, opts || {});
+            });
+        });
+    }
     return window.RS.fileDownload(storedName).then(function(f) {
         return window.RS.saveDownloadedFile(f, opts || {});
     });
@@ -1033,3 +1149,9 @@ if (!window.__RATSPEAK_DESKTOP__) {
         }
     });
 }
+
+RS.listen('attachment_memory_pressure', function(payload) {
+    if (typeof handleAttachmentMemoryPressure === 'function') {
+        handleAttachmentMemoryPressure(!!(payload && payload.critical));
+    }
+}).catch(function() {});

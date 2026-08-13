@@ -119,7 +119,8 @@ assert(voice.includes('class="voice-memo-player-icon"') &&
     !voice.includes('voice-memo-player-icon-play') &&
     !voice.includes('voice-memo-player-icon-pause'),
     'message playback must render exactly one stateful play/pause glyph');
-assert(messaging.includes("RS.invoke('send_lxmf_with_attachment'"));
+assert(messaging.includes("_stageAttachmentBlob(voiceBlob"));
+assert(messaging.includes("RS.invoke('send_lxmf_with_staged_attachment'"));
 assert(messaging.includes("_updateConversationPreview(targetHash, 'Voice message'"));
 assert(messaging.includes('RS.voiceMemos.hydratePlayers(container)'));
 

@@ -149,6 +149,24 @@ fn accepts_inbound_lxmf_resource(data_size: usize, limit_bytes: usize) -> bool {
     data_size <= limit_bytes
 }
 
+fn inbound_resource_admission_bytes(
+    data_size: usize,
+    total_segments: usize,
+    limit_bytes: usize,
+) -> Option<usize> {
+    if !accepts_inbound_lxmf_resource(data_size, limit_bytes) {
+        return None;
+    }
+    if total_segments <= 1 {
+        return Some(data_size);
+    }
+    let max_segments = limit_bytes.div_ceil(rns_protocol::resource::MAX_EFFICIENT_SIZE);
+    if total_segments > max_segments {
+        return None;
+    }
+    Some(limit_bytes.max(rns_protocol::resource::MAX_EFFICIENT_SIZE + 1))
+}
+
 #[cfg(test)]
 mod lxmf_delivery_admission_tests {
     use super::*;
@@ -161,6 +179,26 @@ mod lxmf_delivery_admission_tests {
             state::LXMF_DELIVERY_LIMIT_MAX_BYTES,
             state::LXMF_DELIVERY_LIMIT_MAX_BYTES,
         ));
+        assert_eq!(
+            inbound_resource_admission_bytes(1_000_000, 1, 1_000_000),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            inbound_resource_admission_bytes(
+                rns_protocol::resource::MAX_EFFICIENT_SIZE,
+                2,
+                rns_protocol::resource::MAX_EFFICIENT_SIZE + 1,
+            ),
+            Some(rns_protocol::resource::MAX_EFFICIENT_SIZE + 1)
+        );
+        assert_eq!(
+            inbound_resource_admission_bytes(
+                rns_protocol::resource::MAX_EFFICIENT_SIZE,
+                3,
+                rns_protocol::resource::MAX_EFFICIENT_SIZE + 1,
+            ),
+            None
+        );
         const {
             assert!(
                 state::LXMF_DELIVERY_LIMIT_MAX_BYTES < rns_protocol::resource::MAX_RESOURCE_SIZE
@@ -1870,8 +1908,50 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .set_resource_strategy(rns_runtime::prelude::ResourceStrategy::AcceptApp);
                     lxmf_link_mgr.set_resource_accept_handler(move |link_id, advertisement| {
                         let limit = admission_state.lxmf_delivery_limit_bytes();
-                        if accepts_inbound_lxmf_resource(advertisement.data_size, limit) {
-                            return true;
+                        if let Some(admission_bytes) = inbound_resource_admission_bytes(
+                            advertisement.data_size,
+                            advertisement.total_segments,
+                            limit,
+                        ) {
+                            match admission_state.admit_inbound_attachment_resource(
+                                link_id,
+                                advertisement.resource_hash,
+                                advertisement.original_hash,
+                                admission_bytes,
+                            ) {
+                                Ok(()) => return true,
+                                Err(error) => {
+                                    let activity_origin =
+                                        admission_state.activity_request_fence();
+                                    let reason = match error {
+                                        state::AttachmentTransferAdmissionError::MemoryPressure => {
+                                            producer::LxmfInboundRejectionReason::AttachmentMemoryPressure
+                                        }
+                                        _ => producer::LxmfInboundRejectionReason::AttachmentBusy,
+                                    };
+                                    record_activity_if_current(
+                                        &admission_state,
+                                        activity_origin,
+                                        || {
+                                            Ok(producer::lxmf_inbound_rejected(
+                                                producer::LxmfInboundRejected {
+                                                    link: producer::LinkId::new(link_id),
+                                                    encoded_bytes: advertisement.data_size as u64,
+                                                    max_message_bytes: limit as u64,
+                                                    reason,
+                                                },
+                                            ))
+                                        },
+                                    );
+                                    tracing::warn!(
+                                        link = %short_id(&hex::encode(link_id)),
+                                        encoded_bytes = advertisement.data_size,
+                                        reason = ?error,
+                                        "rejected inbound LXMF Resource for bounded memory admission"
+                                    );
+                                    return false;
+                                }
+                            }
                         }
 
                         let activity_origin = admission_state.activity_request_fence();
@@ -1881,6 +1961,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                     link: producer::LinkId::new(link_id),
                                     encoded_bytes: advertisement.data_size as u64,
                                     max_message_bytes: limit as u64,
+                                    reason: producer::LxmfInboundRejectionReason::SizeLimit,
                                 },
                             ))
                         });
@@ -1899,6 +1980,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
                     let (link_res_tx, mut link_res_rx) =
                         tokio::sync::mpsc::channel::<(Vec<u8>, [u8; 16])>(CHANNEL_BUFFER_SIZE);
+                    let (link_accounting_tx, mut link_accounting_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<
+                            rns_runtime::link_manager::LinkManagerAccountingEvent,
+                        >();
                     let (link_command_tx, link_command_rx) = tokio::sync::mpsc::channel::<
                         rns_runtime::link_manager::LinkManagerCommand,
                     >(
@@ -1917,7 +2002,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             CHANNEL_BUFFER_SIZE,
                         );
                     lxmf_link_mgr.set_link_packet_channel(link_pkt_tx.clone());
-                    lxmf_link_mgr.set_resource_completed_channel(link_res_tx);
+                    // Use the single-owner accounting stream instead of also
+                    // installing the legacy completion channel. Installing
+                    // both would clone every completed Resource Vec.
+                    lxmf_link_mgr.set_accounting_event_channel(link_accounting_tx);
                     lxmf_link_mgr.set_link_identified_channel(link_identified_tx);
                     lxmf_link_mgr.set_link_closed_channel(link_closed_tx);
                     lxmf_link_mgr.set_link_packet_proof_channel(link_packet_proof_tx);
@@ -1935,6 +2023,58 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             );
                         }
                     }
+
+                    let accounting_state = state.clone();
+                    let accounting_shutdown = state
+                        .session_shutdown
+                        .read()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .clone();
+                    tokio::spawn(async move {
+                        use rns_runtime::link_manager::{
+                            LinkManagerAccountingEvent, LinkResourceConclusion,
+                            LinkResourceDirection, LinkResourceEvent,
+                        };
+                        loop {
+                            let event = tokio::select! {
+                                biased;
+                                _ = accounting_shutdown.wait() => break,
+                                event = link_accounting_rx.recv() => match event {
+                                    Some(event) => event,
+                                    None => break,
+                                },
+                            };
+                            match event {
+                                LinkManagerAccountingEvent::ResourceCompletion(completion) => {
+                                    accounting_state.complete_inbound_attachment_resource(
+                                        completion.resource_hash,
+                                    );
+                                    if link_res_tx
+                                        .send((completion.data, completion.link_id))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                LinkManagerAccountingEvent::ResourceEvent(
+                                    LinkResourceEvent::Concluded {
+                                        resource_id,
+                                        direction: LinkResourceDirection::Inbound,
+                                        conclusion,
+                                        ..
+                                    },
+                                ) if !matches!(conclusion, LinkResourceConclusion::Complete) => {
+                                    accounting_state
+                                        .complete_inbound_attachment_resource(resource_id);
+                                }
+                                LinkManagerAccountingEvent::LinkClosed { link_id } => {
+                                    accounting_state.release_inbound_attachment_link(link_id);
+                                }
+                                _ => {}
+                            }
+                        }
+                    });
 
                     let lxmf_link_shutdown = state
                         .session_shutdown
@@ -2300,6 +2440,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         Option<lxmf::LxmfDeliveryFailureUpdate>,
                     )> = Vec::with_capacity(results.len());
                     for (msg_id, new_state) in &results {
+                        if matches!(
+                            *new_state,
+                            "delivered" | "propagated" | "rejected" | "failed"
+                        ) {
+                            tick_state.release_attachment_delivery_lease(msg_id);
+                        }
                         let failure = delivery_failures
                             .iter()
                             .find(|failure| failure.msg_id == *msg_id)
@@ -3131,80 +3277,70 @@ fn extract_and_save_attachment(
     state: &AppState,
     msg: &lxmf_core::message::LxMessage,
 ) -> Option<ExtractedAttachment> {
-    if let Some(field_bytes) = msg.get_field(lxmf_core::constants::FIELD_FILE_ATTACHMENTS) {
-        let mut cursor = std::io::Cursor::new(field_bytes);
-        let attachment = rmpv::decode::read_value(&mut cursor)
-            .ok()
-            .and_then(|value| match value {
-                rmpv::Value::Array(attachments) => attachments.into_iter().next(),
-                _ => None,
-            })
-            .and_then(|value| match value {
-                rmpv::Value::Array(pair) if pair.len() >= 2 => Some(pair),
-                _ => None,
-            });
-        if let Some(pair) = attachment {
-            let file_name = match &pair[0] {
-                rmpv::Value::Binary(b) => String::from_utf8_lossy(b).to_string(),
-                rmpv::Value::String(s) => s.as_str().unwrap_or("attachment").to_string(),
-                _ => "attachment".to_string(),
-            };
-            let file_data = match &pair[1] {
-                rmpv::Value::Binary(b) => b.as_slice(),
-                _ => return None,
-            };
-            if let Ok(mut lxmf) = state.lxmf.lock() {
-                if let Some(mgr) = lxmf.as_mut() {
-                    let stored = mgr.save_attachment(&file_name, file_data);
-                    tracing::info!(
-                        size = file_data.len(),
-                        kind = "file",
-                        "extracted inbound attachment"
-                    );
-                    return Some(ExtractedAttachment {
-                        file_name,
-                        stored_name: stored,
-                        is_image: false,
-                    });
-                }
+    if let Ok(Some((file_name, file_data))) = msg.first_file_attachment() {
+        if let Ok(mut lxmf) = state.lxmf.lock() {
+            if let Some(mgr) = lxmf.as_mut() {
+                let stored = match mgr.save_attachment(&file_name, file_data) {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        tracing::warn!(
+                            error_kind = ?error.kind(),
+                            size = file_data.len(),
+                            kind = "file",
+                            "failed to persist inbound attachment"
+                        );
+                        return Some(ExtractedAttachment {
+                            file_name,
+                            stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.to_string(),
+                            is_image: false,
+                        });
+                    }
+                };
+                tracing::info!(
+                    size = file_data.len(),
+                    kind = "file",
+                    "extracted inbound attachment"
+                );
+                return Some(ExtractedAttachment {
+                    file_name,
+                    stored_name: stored,
+                    is_image: false,
+                });
             }
         }
     }
 
-    if let Some(field_bytes) = msg.get_field(lxmf_core::constants::FIELD_IMAGE) {
-        let mut cursor = std::io::Cursor::new(field_bytes);
-        if let Some(pair) = rmpv::decode::read_value(&mut cursor)
-            .ok()
-            .and_then(|value| match value {
-                rmpv::Value::Array(pair) if pair.len() >= 2 => Some(pair),
-                _ => None,
-            })
-        {
-            let mime_type = match &pair[0] {
-                rmpv::Value::Binary(b) => String::from_utf8_lossy(b).to_string(),
-                rmpv::Value::String(s) => s.as_str().unwrap_or("image/png").to_string(),
-                _ => "image/png".to_string(),
-            };
-            let image_data = match &pair[1] {
-                rmpv::Value::Binary(b) => b.as_slice(),
-                _ => return None,
-            };
-            let ext = mime_type.rsplit('/').next().unwrap_or("png");
-            let file_name = format!("image.{ext}");
-            if let Ok(mut lxmf) = state.lxmf.lock() {
-                if let Some(mgr) = lxmf.as_mut() {
-                    let stored = mgr.save_attachment(&file_name, image_data);
-                    tracing::info!(
-                        size = image_data.len(),
-                        kind = "image",
-                        "extracted inbound attachment"
-                    );
-                    return Some(ExtractedAttachment {
-                        file_name,
-                        stored_name: stored,
-                        is_image: true,
-                    });
-                }
+    if let Ok(Some((mime_type, image_data))) = msg.image_attachment() {
+        let ext = mime_type.rsplit('/').next().unwrap_or("png");
+        let file_name = format!("image.{ext}");
+        if let Ok(mut lxmf) = state.lxmf.lock() {
+            if let Some(mgr) = lxmf.as_mut() {
+                let stored = match mgr.save_attachment(&file_name, image_data) {
+                    Ok(stored) => stored,
+                    Err(error) => {
+                        tracing::warn!(
+                            error_kind = ?error.kind(),
+                            size = image_data.len(),
+                            kind = "image",
+                            "failed to persist inbound attachment"
+                        );
+                        return Some(ExtractedAttachment {
+                            file_name,
+                            stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.to_string(),
+                            is_image: true,
+                        });
+                    }
+                };
+                tracing::info!(
+                    size = image_data.len(),
+                    kind = "image",
+                    "extracted inbound attachment"
+                );
+                return Some(ExtractedAttachment {
+                    file_name,
+                    stored_name: stored,
+                    is_image: true,
+                });
             }
         }
     }
@@ -3717,6 +3853,30 @@ async fn handle_decrypted_lxmf_from_origin(
     source: InboundLxmfSource,
     activity_origin: ActivityRequestFence,
 ) {
+    if let InboundLxmfSource::Link { link_id, .. } = &source {
+        let limit = state.lxmf_delivery_limit_bytes();
+        if data.len() > limit {
+            if let Some(link_id) = link_id {
+                record_activity_if_current(state, activity_origin, || {
+                    Ok(producer::lxmf_inbound_rejected(
+                        producer::LxmfInboundRejected {
+                            link: producer::LinkId::new(*link_id),
+                            encoded_bytes: data.len() as u64,
+                            max_message_bytes: limit as u64,
+                            reason: producer::LxmfInboundRejectionReason::SizeLimit,
+                        },
+                    ))
+                });
+            }
+            tracing::warn!(
+                data_len = data.len(),
+                max_message_bytes = limit,
+                reason = "reassembled_size_limit",
+                "rejected reassembled inbound LXMF Resource"
+            );
+            return;
+        }
+    }
     let msg = match lxmf_core::message::LxMessage::unpack(&data) {
         Ok(m) => m,
         Err(_) => {

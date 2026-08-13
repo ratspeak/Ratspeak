@@ -670,6 +670,11 @@ pub struct LxmfDeliveryFailureUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LxmfSubmissionFailure {
     PreparationFailed,
+    StorageFailed,
+    ResourceLimitExceeded {
+        actual_bytes: usize,
+        limit_bytes: usize,
+    },
 }
 
 /// Stable string identifier for the chosen `DeliveryMethod`. Persisted in the
@@ -705,6 +710,17 @@ fn message_within_resource_limit(msg: &LxMessage) -> bool {
     }
 }
 
+fn validate_attachment_envelope_size(actual_bytes: usize) -> Result<(), LxmfSubmissionFailure> {
+    if actual_bytes <= MAX_LXMF_RESOURCE_BYTES {
+        Ok(())
+    } else {
+        Err(LxmfSubmissionFailure::ResourceLimitExceeded {
+            actual_bytes,
+            limit_bytes: MAX_LXMF_RESOURCE_BYTES,
+        })
+    }
+}
+
 fn normalize_protocol_delivery_method(msg: &mut LxMessage) {
     if msg.method == DeliveryMethod::Opportunistic {
         if let Ok(packed) = msg.pack_payload() {
@@ -736,6 +752,9 @@ pub struct AttachmentMessageRequest<'a> {
     pub title: &'a str,
     pub file_name: &'a str,
     pub file_bytes: &'a [u8],
+    /// Private app-owned staging file to atomically adopt into message
+    /// storage, avoiding a second full-size filesystem copy.
+    pub staged_path: Option<&'a Path>,
     pub is_image: bool,
     pub image_mime: &'a str,
     pub db_pool: &'a DbPool,
@@ -1871,19 +1890,19 @@ impl LxmfManager {
         request: AttachmentMessageRequest<'_>,
     ) -> Result<LxmfQueuedMessage, LxmfSubmissionFailure> {
         self.send_message_with_attachment_fields_preference_internal(request)
-            .ok_or(LxmfSubmissionFailure::PreparationFailed)
     }
 
     fn send_message_with_attachment_fields_preference_internal(
         &mut self,
         request: AttachmentMessageRequest<'_>,
-    ) -> Option<LxmfQueuedMessage> {
+    ) -> Result<LxmfQueuedMessage, LxmfSubmissionFailure> {
         let AttachmentMessageRequest {
             dest_hash_hex,
             content,
             title,
             file_name,
             file_bytes,
+            staged_path,
             is_image,
             image_mime,
             db_pool,
@@ -1891,9 +1910,10 @@ impl LxmfManager {
             preference,
         } = request;
 
-        let dest_bytes = hex::decode(dest_hash_hex).ok()?;
+        let dest_bytes =
+            hex::decode(dest_hash_hex).map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         if dest_bytes.len() != 16 {
-            return None;
+            return Err(LxmfSubmissionFailure::PreparationFailed);
         }
         let mut dest = [0u8; 16];
         dest.copy_from_slice(&dest_bytes);
@@ -1913,39 +1933,35 @@ impl LxmfManager {
                 .next()
                 .filter(|s| !s.is_empty())
                 .unwrap_or("png");
-            let value = rmpv::Value::Array(vec![
-                rmpv::Value::String(image_format.into()),
-                rmpv::Value::Binary(file_bytes.to_vec()),
-            ]);
-            let mut bytes = Vec::new();
-            if rmpv::encode::write_value(&mut bytes, &value).is_ok() {
-                msg.set_msgpack_field(lxmf_core::constants::FIELD_IMAGE, bytes)
-                    .ok()?;
-            }
+            msg.set_image_field(image_format, file_bytes)
+                .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         } else {
-            let attachment = rmpv::Value::Array(vec![
-                rmpv::Value::String(file_name.into()),
-                rmpv::Value::Binary(file_bytes.to_vec()),
-            ]);
-            let value = rmpv::Value::Array(vec![attachment]);
-            let mut bytes = Vec::new();
-            if rmpv::encode::write_value(&mut bytes, &value).is_ok() {
-                msg.set_msgpack_field(lxmf_core::constants::FIELD_FILE_ATTACHMENTS, bytes)
-                    .ok()?;
-            }
+            msg.set_file_attachment_field(file_name, file_bytes)
+                .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         }
 
         msg.include_ticket = true;
-        self.router.prepare_outbound(&mut msg).ok()?;
+        self.router
+            .prepare_outbound(&mut msg)
+            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         if let Some(prv_key) = self.identity.get_private_key() {
             let mut ed_seed = [0u8; 32];
             ed_seed.copy_from_slice(&prv_key[32..64]);
             let signing_key = rns_crypto::ed25519::Ed25519PrivateKey::from_bytes(&ed_seed);
-            msg.sign(&signing_key).ok()?;
+            msg.sign(&signing_key)
+                .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         }
         normalize_protocol_delivery_method(&mut msg);
-        if !message_within_resource_limit(&msg) {
-            return None;
+        let packed_len = msg
+            .packed_len()
+            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        if let Err(error) = validate_attachment_envelope_size(packed_len) {
+            tracing::warn!(
+                packed_len,
+                max_len = MAX_LXMF_RESOURCE_BYTES,
+                "LXMF attachment message exceeds RNS resource limit"
+            );
+            return Err(error);
         }
 
         let msg_id = msg
@@ -1962,12 +1978,14 @@ impl LxmfManager {
         self.preempt_opportunistic_path(&mut msg);
         let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
         let method = msg.method;
-        self.router.try_send(msg).ok()?;
-        self.auto_live_fallback.extend(auto_fallback);
-
-        // Persist the blob only after the router has accepted the message, so
-        // an immediate propagated-routing rejection cannot orphan a file.
-        let stored_name = self.save_attachment(file_name, file_bytes);
+        // Persist before queueing so the database can never reference a file
+        // that failed to reach durable storage. A router rejection removes the
+        // just-created file before returning.
+        let stored_name = match staged_path {
+            Some(path) => self.adopt_staged_attachment(file_name, path),
+            None => self.save_attachment(file_name, file_bytes),
+        }
+        .map_err(|_| LxmfSubmissionFailure::StorageFailed)?;
         let (attachment_name_col, attachment_stored_col, image_name_col, image_stored_col) =
             if is_image {
                 ("", "", file_name, stored_name.as_str())
@@ -1975,7 +1993,7 @@ impl LxmfManager {
                 (file_name, stored_name.as_str(), "", "")
             };
 
-        db::save_message(
+        if db::try_save_message(
             db_pool,
             &msg_id,
             &self.lxmf_hash,
@@ -1993,8 +2011,20 @@ impl LxmfManager {
             "",
             "",
             Some(delivery_method_name(method)),
-        );
-        Some(LxmfQueuedMessage {
+        )
+        .is_err()
+        {
+            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
+            return Err(LxmfSubmissionFailure::StorageFailed);
+        }
+
+        if self.router.try_send(msg).is_err() {
+            let _ = db::delete_message_for_identity(db_pool, &msg_id, identity_id);
+            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
+            return Err(LxmfSubmissionFailure::PreparationFailed);
+        }
+        self.auto_live_fallback.extend(auto_fallback);
+        Ok(LxmfQueuedMessage {
             message_id: msg_id,
             method,
         })
@@ -2250,24 +2280,57 @@ impl LxmfManager {
 
     pub fn get_received_file(&self, stored_name: &str) -> Option<PathBuf> {
         let sanitized = sanitize_stored_file_name(stored_name)?;
-        let path = self.files_dir().join(&sanitized);
-        if path.exists() && path.is_file() {
-            Some(path)
-        } else {
-            None
-        }
+        let files_dir = self.files_dir().canonicalize().ok()?;
+        let path = files_dir.join(&sanitized).canonicalize().ok()?;
+        (path.starts_with(&files_dir) && path.is_file()).then_some(path)
     }
 
-    pub fn save_attachment(&self, file_name: &str, data: &[u8]) -> String {
+    pub fn save_attachment(&self, file_name: &str, data: &[u8]) -> std::io::Result<String> {
+        use std::io::Write;
+
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
         let safe_name = sanitize_stored_file_name(file_name).unwrap_or_else(|| "file".to_string());
-        let stored_name = format!("{ts}_{safe_name}");
+        let stored_name = format!("{ts}-{}_{safe_name}", uuid::Uuid::new_v4().simple());
         let path = self.files_dir().join(&stored_name);
-        std::fs::write(&path, data).ok();
-        stored_name
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        if let Err(error) = file.write_all(data).and_then(|_| file.sync_all()) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(stored_name)
+    }
+
+    fn adopt_staged_attachment(
+        &self,
+        file_name: &str,
+        staged_path: &Path,
+    ) -> std::io::Result<String> {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let safe_name = sanitize_stored_file_name(file_name).unwrap_or_else(|| "file".to_string());
+        let stored_name = format!("{ts}-{}_{safe_name}", uuid::Uuid::new_v4().simple());
+        let files_dir = self.files_dir();
+        let path = files_dir.join(&stored_name);
+        std::fs::rename(staged_path, &path)?;
+        if let Err(error) = std::fs::File::open(&path).and_then(|file| file.sync_all()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        #[cfg(unix)]
+        if let Err(error) = std::fs::File::open(&files_dir).and_then(|dir| dir.sync_all()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(stored_name)
     }
 
     pub fn add_contact(
@@ -5094,7 +5157,7 @@ mod tests {
     fn attachment_with_spaces_round_trips_save_get_delete() {
         let mgr = test_manager();
 
-        let stored = mgr.save_attachment("my report final.pdf", b"data");
+        let stored = mgr.save_attachment("my report final.pdf", b"data").unwrap();
         assert!(stored.ends_with("_my report final.pdf"));
 
         let listed = mgr.list_received_files();
@@ -5112,6 +5175,22 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
         assert!(mgr.get_received_file(&stored).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn received_attachment_resolution_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let mgr = test_manager();
+        let outside = mgr.data_dir.join("outside-private-file");
+        std::fs::write(&outside, b"secret").unwrap();
+        let link = mgr.files_dir().join("escaped.bin");
+        symlink(&outside, &link).unwrap();
+
+        assert!(mgr.get_received_file("escaped.bin").is_none());
+        std::fs::remove_file(link).unwrap();
+        std::fs::remove_file(outside).unwrap();
     }
 
     #[test]
@@ -8320,6 +8399,7 @@ mod tests {
                 title: "",
                 file_name: "proof.txt",
                 file_bytes: b"attachment bytes",
+                staged_path: None,
                 is_image: false,
                 image_mime: "application/octet-stream",
                 db_pool: &pool,
@@ -8412,6 +8492,21 @@ mod tests {
         });
 
         assert_eq!(result, Err(LxmfSubmissionFailure::PreparationFailed));
+    }
+
+    #[test]
+    fn attachment_envelope_limit_reports_exact_encoded_size() {
+        assert_eq!(
+            validate_attachment_envelope_size(MAX_LXMF_RESOURCE_BYTES),
+            Ok(())
+        );
+        assert_eq!(
+            validate_attachment_envelope_size(MAX_LXMF_RESOURCE_BYTES + 1),
+            Err(LxmfSubmissionFailure::ResourceLimitExceeded {
+                actual_bytes: MAX_LXMF_RESOURCE_BYTES + 1,
+                limit_bytes: MAX_LXMF_RESOURCE_BYTES,
+            })
+        );
     }
 
     #[test]
@@ -8876,6 +8971,7 @@ mod tests {
                 title: "",
                 file_name: "note.txt",
                 file_bytes: b"hello",
+                staged_path: None,
                 is_image: false,
                 image_mime: "",
                 db_pool: &pool,
@@ -8899,5 +8995,78 @@ mod tests {
 
         assert_eq!(attachment[0].as_str(), Some("note.txt"));
         assert_eq!(attachment[1].as_slice(), Some(&b"hello"[..]));
+    }
+
+    #[test]
+    fn staged_attachment_is_atomically_adopted_without_a_second_file_copy() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "ab".repeat(16);
+        let staging = mgr.data_dir.join("private-staging-test");
+        std::fs::write(&staging, b"staged bytes").unwrap();
+
+        let queued = mgr
+            .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                dest_hash_hex: &dest,
+                content: "staged file",
+                title: "",
+                file_name: "staged.txt",
+                file_bytes: b"staged bytes",
+                staged_path: Some(&staging),
+                is_image: false,
+                image_mime: "",
+                db_pool: &pool,
+                identity_id: "me",
+                preference: DeliveryPreference::Direct,
+            })
+            .expect("staged message queued");
+
+        assert!(!staging.exists());
+        let conversation = db::get_conversation(&pool, &dest, "me", 10);
+        let stored = conversation
+            .iter()
+            .find(|message| {
+                message.get("id").and_then(|value| value.as_str()) == Some(&queued.message_id)
+            })
+            .and_then(|message| message.get("attachments"))
+            .and_then(|attachments| attachments.as_array())
+            .and_then(|attachments| attachments.first())
+            .and_then(|attachment| attachment.get("stored_name"))
+            .and_then(|value| value.as_str())
+            .expect("stored attachment name");
+        let path = mgr.get_received_file(stored).expect("adopted file");
+        assert_eq!(std::fs::read(path).unwrap(), b"staged bytes");
+    }
+
+    #[test]
+    fn rejected_attachment_queue_rolls_back_history_and_durable_file() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "bc".repeat(16);
+
+        let result =
+            mgr.send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                dest_hash_hex: &dest,
+                content: "must roll back",
+                title: "",
+                file_name: "rollback.bin",
+                file_bytes: b"attachment bytes",
+                staged_path: None,
+                is_image: false,
+                image_mime: "application/octet-stream",
+                db_pool: &pool,
+                identity_id: "me",
+                preference: DeliveryPreference::Propagated,
+            });
+
+        assert_eq!(result, Err(LxmfSubmissionFailure::PreparationFailed));
+        assert!(db::get_conversation(&pool, &dest, "me", 10).is_empty());
+        assert_eq!(
+            std::fs::read_dir(mgr.files_dir())
+                .unwrap()
+                .filter_map(Result::ok)
+                .count(),
+            0
+        );
     }
 }

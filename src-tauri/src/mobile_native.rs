@@ -297,6 +297,40 @@ fn android_disconnect_ble_rnode(activity_operation: Option<&str>, generation: u6
 }
 
 #[cfg(target_os = "android")]
+pub(crate) fn save_stored_file(
+    private_path: &std::path::Path,
+    file_name: &str,
+    mime_type: &str,
+    prefer_photos: bool,
+    request_id: &str,
+) -> bool {
+    let Some(private_path) = private_path.to_str() else {
+        return false;
+    };
+    with_android_bridge(|env, class| {
+        use jni::objects::{JObject, JValue};
+        let private_path = env.new_string(private_path)?;
+        let file_name = env.new_string(file_name)?;
+        let mime_type = env.new_string(mime_type)?;
+        let request_id = env.new_string(request_id)?;
+        env.call_static_method(
+            class,
+            "saveStoredFile",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)Z",
+            &[
+                JValue::Object(JObject::from(private_path)),
+                JValue::Object(JObject::from(file_name)),
+                JValue::Object(JObject::from(mime_type)),
+                JValue::Bool(u8::from(prefer_photos)),
+                JValue::Object(JObject::from(request_id)),
+            ],
+        )?
+        .z()
+    })
+    .unwrap_or(false)
+}
+
+#[cfg(target_os = "android")]
 fn android_request_usb_permission(
     vendor_id: u16,
     product_id: u16,
@@ -714,6 +748,12 @@ fn installed_state() -> Option<Arc<AppState>> {
         .and_then(|state| state.upgrade())
 }
 
+pub(crate) fn submit_memory_pressure(critical: bool) {
+    if let Some(state) = installed_state() {
+        state.handle_attachment_memory_pressure(critical);
+    }
+}
+
 fn accept_sequence(sequence: u64) -> bool {
     accept_monotonic_sequence(&LAST_NETWORK_SEQUENCE, sequence)
 }
@@ -814,6 +854,16 @@ pub extern "system" fn Java_org_ratspeak_android_RatspeakNativeBridge_nativeSetN
         return;
     };
     submit_network(&value, sequence);
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_org_ratspeak_android_RatspeakNativeBridge_nativeMemoryPressure(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    critical: jni::sys::jboolean,
+) {
+    submit_memory_pressure(critical != 0);
 }
 
 #[cfg(test)]

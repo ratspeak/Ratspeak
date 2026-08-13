@@ -18,8 +18,9 @@ pub use super::catalog::{
     HubSessionCloseReason, HubSessionRejection, HubTransition, HubTrustChange, IdentityHash,
     InboundLxmfMethod, InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason,
     InterfaceRollback, InterfaceTimeoutReason, InterfaceTransition, LinkId, LxmfDeliveryMethod,
-    LxmfDeliveryState, LxmfProgressStep, LxmfSubmissionFailureReason, LxstCallReason,
-    LxstTransition, MessageId, PathEvidence, PathRequestMethod, SourceValidation, TcpEndpoint,
+    LxmfDeliveryState, LxmfInboundRejectionReason, LxmfProgressStep, LxmfSubmissionFailureReason,
+    LxstCallReason, LxstTransition, MessageId, PathEvidence, PathRequestMethod, SourceValidation,
+    TcpEndpoint,
 };
 
 /// Opaque timeless event accepted by [`super::ActivityRecorder::record_event`].
@@ -199,6 +200,7 @@ impl ProducerEvent {
                     link: input.link,
                     encoded_bytes: input.encoded_bytes,
                     max_message_bytes: input.max_message_bytes,
+                    reason: input.reason,
                 })
             }
             Payload::LxmfPropagationLimitExceeded(input) => {
@@ -427,6 +429,7 @@ pub struct LxmfInboundRejected {
     pub link: LinkId,
     pub encoded_bytes: u64,
     pub max_message_bytes: u64,
+    pub reason: catalog::LxmfInboundRejectionReason,
 }
 
 pub fn lxmf_inbound_rejected(input: LxmfInboundRejected) -> ProducerEvent {

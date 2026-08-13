@@ -1844,9 +1844,9 @@ fn frontend_shared_helpers_are_adopted() {
     assert!(!build_css.contains("perl -0777 -pi"));
     assert!(!build_css.contains("sed -i"));
 
-    // Peer-controlled data URL is escaped at the image render site.
+    // Every local optimistic image URL is escaped at the image render site.
     let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf_js.contains("escapeHtml(msg.image.data_url)"));
+    assert!(lxmf_js.contains("escapeHtml(localImageUrl)"));
 }
 
 #[test]
@@ -4157,8 +4157,10 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
     assert!(lxmf.contains("Could not remove image metadata; image not attached"));
     assert!(lxmf.contains("pending-file-thumbnail"));
     assert!(lxmf.contains(
-        "src=\"data:' + escapeHtml(lxmfPendingFile.mime) + ';base64,' + lxmfPendingFile.data"
+        "pendingFile.preview_url = isImage ? URL.createObjectURL(pendingFile.blob) : null;"
     ));
+    assert!(lxmf.contains("escapeHtml(lxmfPendingFile.preview_url || '')"));
+    assert!(lxmf.contains("URL.revokeObjectURL(pending.preview_url)"));
     assert!(lxmf.contains("container.classList.toggle('pending-file-has-image', isImage);"));
 
     let messaging_css =
@@ -4205,7 +4207,8 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("saveImageToPhotos"));
     assert!(state_js.contains("saveFileDocument"));
-    assert!(state_js.contains("data_base64: result.data_base64 || ''"));
+    assert!(state_js.contains("window.RS.invoke('save_stored_attachment_native'"));
+    assert!(!state_js.contains("data_base64: result.data_base64 || ''"));
     assert!(state_js.contains("window.RS.openExternalUrl"));
     assert!(state_js.contains("open_external_url"));
 
@@ -4843,8 +4846,8 @@ fn settings_version_display_uses_package_version_api() {
 #[test]
 fn release_workflows_pin_v1_0_26d_and_stage_tag_builds_as_prereleases() {
     let root = repo_root();
-    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 70b739988b54c62c3e95f1e7c51c951afb825e9b";
-    let rslxmf_commit = "RATSPEAK_RSLXMF_REF: f9ed81e3aead8fc9637ea843dadf489663335066";
+    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: a1b78564e08988c11f8ecac80c3ea6d596b22cab";
+    let rslxmf_commit = "RATSPEAK_RSLXMF_REF: 681c0f5961acce637183efc9a4047bf25ead56bf";
     let dependency_refs = [
         "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26d",
         "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26d",
@@ -6853,6 +6856,41 @@ fn mobile_native_ownership_and_usb_recovery_remain_closed_and_single_flight() {
 }
 
 #[test]
+fn mobile_memory_pressure_reaches_bounded_attachment_owners_without_webview_authority() {
+    let root = repo_root();
+    let native = read_source(root.join("src-tauri/src/mobile_native.rs")).expect("mobile native");
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("Android main activity");
+    let bridge = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakNativeBridge.kt",
+    ))
+    .expect("Android native bridge");
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("mobile shell");
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("messaging js");
+    let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
+
+    assert!(activity.contains("override fun onTrimMemory(level: Int)"));
+    assert!(activity.contains("RatspeakMobilePolicy.attachmentMemoryPressure(level)"));
+    assert!(activity.contains("RatspeakNativeBridge.publishMemoryPressure(it)"));
+    assert!(bridge.contains("private external fun nativeMemoryPressure(critical: Boolean)"));
+    assert!(native.contains("RatspeakNativeBridge_nativeMemoryPressure"));
+    assert!(native.contains("state.handle_attachment_memory_pressure(critical)"));
+    assert!(shell.contains("UIApplicationDidReceiveMemoryWarningNotification"));
+    assert!(shell.contains("register_ios_memory_warning_observer"));
+    assert!(state.contains("Active router\n    /// deliveries retain their exact lease"));
+    assert!(lxmf.contains("function handleAttachmentMemoryPressure(critical)"));
+    assert!(state_js.contains("RS.listen('attachment_memory_pressure'"));
+    assert!(state_js.contains("window.RS.invoke('save_stored_attachment_native'"));
+    assert!(bridge.contains("fun saveStoredFile("));
+    assert!(activity.contains("FileInputStream(pending.privateFile"));
+    assert!(activity.contains("input.copyTo(output, 64 * 1024)"));
+}
+
+#[test]
 fn transport_mode_defaults_and_auto_policy_are_explicit() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
@@ -7247,7 +7285,6 @@ fn propagated_send_paths_run_relay_readiness_preflight() {
         "send_reaction",
         "send_lxmf_reply",
         "send_lxmf_propagated",
-        "send_lxmf_with_attachment",
     ] {
         let marker = format!("pub async fn {fn_name}");
         let start = messaging.find(&marker).expect("send function exists");
@@ -7259,6 +7296,12 @@ fn propagated_send_paths_run_relay_readiness_preflight() {
             "{fn_name} must not bypass propagation relay readiness checks"
         );
     }
+    let attachment_helper = messaging
+        .split("async fn queue_prepared_attachment")
+        .nth(1)
+        .and_then(|source| source.split("\n#[tauri::command]").next())
+        .expect("shared attachment queue helper");
+    assert!(attachment_helper.contains("ensure_propagation_ready_for_send("));
     assert!(messaging.contains("destination_identity_known(state, dest_hash)"));
     assert!(messaging.contains("Recipient identity key is not known yet"));
     assert!(shared.contains("hydrate_contact_identity_for_send"));
@@ -7383,7 +7426,7 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(commands.contains("VOICE_MEMO_START_UNAVAILABLE"));
     assert!(commands.contains("crate::voice_memo::cancel_recording(&app_state)"));
     assert!(commands.contains("spawn_blocking(move || crate::voice_memo::decode_voice_memo"));
-    assert!(messaging.contains("RS.invoke('send_lxmf_with_attachment'"));
+    assert!(messaging.contains("RS.invoke('send_lxmf_with_staged_attachment'"));
     assert!(messaging.contains("_voiceCancelMemoForCall().then(function()"));
     assert!(state_js.contains("function _rsNativeMicrophonePermission(audio)"));
     assert!(shared_ui.contains("RS.composer.dismissForReplacement"));

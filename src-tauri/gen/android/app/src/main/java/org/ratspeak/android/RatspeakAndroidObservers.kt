@@ -28,4 +28,15 @@ object RatspeakAndroidObservers {
     fun usbSelectorPermission(granted: Boolean, errorCode: String?) {
         synchronized(lock) { activity.get() }?.onNativeUsbSelectorPermission(granted, errorCode)
     }
+
+    fun saveStoredFile(
+        privatePath: String,
+        fileName: String,
+        mimeType: String,
+        preferPhotos: Boolean,
+        requestId: String,
+    ): Boolean {
+        val owner = synchronized(lock) { activity.get() } ?: return false
+        return owner.onSaveStoredFile(privatePath, fileName, mimeType, preferPhotos, requestId)
+    }
 }

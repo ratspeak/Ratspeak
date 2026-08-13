@@ -17,6 +17,7 @@ pub const PEER_SERVICE_RATSPEAK_GAMES: &str = "ratspeak.games";
 pub const PEER_SERVICE_RATSPEAK_CHAT: &str = "ratspeak.chat";
 pub const LXMF_COMPRESSION_SUPPORT_SUPPORTED: &str = "supported";
 pub const LXMF_COMPRESSION_SUPPORT_UNSUPPORTED: &str = "unsupported";
+pub const ATTACHMENT_UNAVAILABLE_STORED_NAME: &str = "!unavailable";
 
 const IDENTITY_SELECT_COLUMNS: &str = "hash,
     lxmf_hash,
@@ -2591,17 +2592,59 @@ pub fn save_message(
     reply_to_preview: &str,
     delivery_method: Option<&str>,
 ) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+    if let Err(error) = try_save_message(
+        pool,
+        msg_id,
+        source,
+        destination,
+        content,
+        title,
+        timestamp,
+        state,
+        direction,
+        identity_id,
+        attachment_name,
+        attachment_stored_name,
+        image_name,
+        image_stored_name,
+        reply_to_id,
+        reply_to_preview,
+        delivery_method,
+    ) {
+        tracing::warn!(error, "failed to persist message");
+    }
+}
+
+/// Fallible message persistence for operations that must not enter the
+/// network queue unless their local history row is durable.
+#[allow(clippy::too_many_arguments)]
+pub fn try_save_message(
+    pool: &DbPool,
+    msg_id: &str,
+    source: &str,
+    destination: &str,
+    content: &str,
+    title: &str,
+    timestamp: f64,
+    state: &str,
+    direction: &str,
+    identity_id: &str,
+    attachment_name: &str,
+    attachment_stored_name: &str,
+    image_name: &str,
+    image_stored_name: &str,
+    reply_to_id: &str,
+    reply_to_preview: &str,
+    delivery_method: Option<&str>,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
     let exists: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM messages WHERE id = ?1 AND identity_id = ?2",
             params![msg_id, identity_id],
             |row| row.get::<_, i64>(0),
         )
-        .unwrap_or(0)
+        .map_err(|error| error.to_string())?
         > 0;
 
     if exists {
@@ -2609,13 +2652,30 @@ pub fn save_message(
             "UPDATE messages SET state = ?1 WHERE id = ?2 AND identity_id = ?3",
             params![state, msg_id, identity_id],
         )
-        .ok();
+        .map_err(|error| error.to_string())?;
     } else {
         conn.execute(
             "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![msg_id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method],
-        ).ok();
+        ).map_err(|error| error.to_string())?;
     }
+    Ok(())
+}
+
+/// Remove only the exact identity-scoped row created for a send that failed
+/// admission after persistence.
+pub fn delete_message_for_identity(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+) -> Result<bool, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.execute(
+        "DELETE FROM messages WHERE id = ?1 AND identity_id = ?2",
+        params![msg_id, identity_id],
+    )
+    .map(|changed| changed > 0)
+    .map_err(|error| error.to_string())
 }
 
 /// One-way lattice: terminal states (delivered/propagated/failed/cancelled/rejected)
@@ -8781,16 +8841,30 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
 
     // Reshape flat columns to nested `msg.image` / `msg.attachments`.
     let image_json = (!image_stored_name.is_empty()).then(|| {
-        serde_json::json!({
-            "stored_name": image_stored_name,
-            "filename": image_name,
-        })
+        if image_stored_name == ATTACHMENT_UNAVAILABLE_STORED_NAME {
+            serde_json::json!({
+                "filename": image_name,
+                "unavailable": true,
+            })
+        } else {
+            serde_json::json!({
+                "stored_name": image_stored_name,
+                "filename": image_name,
+            })
+        }
     });
     let attachments_json = (!attachment_stored_name.is_empty()).then(|| {
-        serde_json::json!([{
-            "filename": attachment_name,
-            "stored_name": attachment_stored_name,
-        }])
+        if attachment_stored_name == ATTACHMENT_UNAVAILABLE_STORED_NAME {
+            serde_json::json!([{
+                "filename": attachment_name,
+                "unavailable": true,
+            }])
+        } else {
+            serde_json::json!([{
+                "filename": attachment_name,
+                "stored_name": attachment_stored_name,
+            }])
+        }
     });
 
     Ok(serde_json::json!({
@@ -8874,6 +8948,47 @@ fn row_to_app_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::V
     }
 
     Ok(obj)
+}
+
+#[cfg(test)]
+mod attachment_unavailable_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_attachment_sentinel_survives_conversation_round_trip() {
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        init_schema(&pool).unwrap();
+        save_message(
+            &pool,
+            "unavailable-message",
+            "source",
+            "destination",
+            "file",
+            "",
+            1.0,
+            "delivered",
+            "inbound",
+            "identity",
+            "report.bin",
+            ATTACHMENT_UNAVAILABLE_STORED_NAME,
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+
+        let messages = get_conversation(&pool, "source", "identity", 10);
+        let attachment = messages[0]["attachments"][0].as_object().unwrap();
+        assert_eq!(
+            attachment
+                .get("unavailable")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert!(attachment.get("stored_name").is_none());
+    }
 }
 
 #[cfg(test)]

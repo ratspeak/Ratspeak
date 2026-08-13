@@ -2,7 +2,8 @@
 //! read-heavy caches, `Mutex` for write-heavy maps, `AtomicBool` for single flags.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::io::{Seek, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -35,10 +36,19 @@ const BLE_RNODE_ACTIVITY_OPERATION_TTL: Duration = Duration::from_secs(240);
 // while still reclaiming abandoned session-local leases.
 const RNODE_LIFECYCLE_OPERATION_TTL: Duration = Duration::from_secs(15 * 60);
 const MAX_PENDING_LXMF_CLIENT_SENDS: usize = 256;
+pub const LXMF_SMALL_ATTACHMENT_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 pub const LXMF_DELIVERY_LIMIT_1_MB_KB: usize = 1000;
 pub const LXMF_DELIVERY_LIMIT_1_MB_BYTES: usize = LXMF_DELIVERY_LIMIT_1_MB_KB * 1000;
 pub const LXMF_DELIVERY_LIMIT_MAX_KB: usize = 128 * 1000;
 pub const LXMF_DELIVERY_LIMIT_MAX_BYTES: usize = LXMF_DELIVERY_LIMIT_MAX_KB * 1000;
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
 
 /// Snapshot used to reject an Activity command that was queued before either
 /// an identity transition or a same-identity runtime privacy reset. Callers
@@ -56,6 +66,84 @@ pub struct ActivityRequestFence {
 pub enum LxmfClientSendAdmissionError {
     Duplicate,
     Capacity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentTransferAdmissionError {
+    Busy,
+    MemoryPressure,
+    TooLarge,
+    Storage,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttachmentTransferLane {
+    Small,
+    Large,
+}
+
+#[derive(Default)]
+struct AttachmentTransferBudgetState {
+    small_bytes: usize,
+    large_active: bool,
+}
+
+struct InboundAttachmentTransfer {
+    link_id: [u8; 16],
+    resource_ids: HashSet<[u8; 32]>,
+    _lease: AttachmentTransferLease,
+}
+
+/// RAII ownership for the application-level attachment working-set budget.
+/// This admission is independent of Reticulum's structural size ceiling.
+pub struct AttachmentTransferLease {
+    state: std::sync::Weak<AppState>,
+    lane: AttachmentTransferLane,
+    bytes: usize,
+}
+
+impl Drop for AttachmentTransferLease {
+    fn drop(&mut self) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let mut budget = state
+            .attachment_transfer_budget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match self.lane {
+            AttachmentTransferLane::Small => {
+                budget.small_bytes = budget.small_bytes.saturating_sub(self.bytes);
+            }
+            AttachmentTransferLane::Large => budget.large_active = false,
+        }
+    }
+}
+
+pub struct StagedAttachment {
+    pub path: PathBuf,
+    pub file_name: String,
+    pub mime: String,
+    pub declared_size: usize,
+    pub is_image: bool,
+    written: usize,
+    write_in_progress: bool,
+    identity_generation: u64,
+    lease: Option<AttachmentTransferLease>,
+}
+
+impl StagedAttachment {
+    pub fn into_transfer_lease(mut self) -> AttachmentTransferLease {
+        self.lease
+            .take()
+            .expect("staged attachment owns its admission lease")
+    }
+}
+
+impl Drop for StagedAttachment {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Result of cancelling an identity-scoped outbound operation by the
@@ -433,6 +521,17 @@ pub struct AppState {
     /// Identity-scoped optimistic client IDs that have entered native send
     /// preparation but may not have a canonical LXMF message hash yet.
     lxmf_client_sends: Mutex<HashMap<String, LxmfClientSendOperation>>,
+    attachment_transfer_budget: Mutex<AttachmentTransferBudgetState>,
+    attachment_pressure_until_ms: AtomicU64,
+    attachment_staging: Mutex<HashMap<String, StagedAttachment>>,
+    /// Canonical LXMF message hash to the admission permit retained until the
+    /// router reports a terminal delivery state. This keeps a queued split
+    /// Resource inside the same one-large-transfer budget as its staging and
+    /// packing work instead of releasing admission as soon as IPC returns.
+    attachment_delivery_leases: Mutex<HashMap<String, AttachmentTransferLease>>,
+    /// Original split-Resource hash to exact receive-side admission. Segment
+    /// hashes are retained only for terminal failure/cancellation lookup.
+    inbound_attachment_transfers: Mutex<HashMap<[u8; 32], InboundAttachmentTransfer>>,
     /// LRGP msg_id → originating session for delivery-state routing.
     pub lrgp_msg_to_session: Mutex<HashMap<String, LrgpMsgMeta>>,
     pub session_shutdown: RwLock<ShutdownSignal>,
@@ -616,6 +715,8 @@ impl AppState {
             Arc::clone(&emitter),
         )));
 
+        cleanup_attachment_staging_dir(&config.data_dir.join("attachment-staging"));
+
         Self {
             config,
             db,
@@ -655,6 +756,11 @@ impl AppState {
             announce_activity_baselined: AtomicBool::new(false),
             msg_id_map: Mutex::new(HashMap::new()),
             lxmf_client_sends: Mutex::new(HashMap::new()),
+            attachment_transfer_budget: Mutex::new(AttachmentTransferBudgetState::default()),
+            attachment_pressure_until_ms: AtomicU64::new(0),
+            attachment_staging: Mutex::new(HashMap::new()),
+            attachment_delivery_leases: Mutex::new(HashMap::new()),
+            inbound_attachment_transfers: Mutex::new(HashMap::new()),
             lrgp_msg_to_session: Mutex::new(HashMap::new()),
             session_shutdown: RwLock::new(ShutdownSignal::new()),
             is_foreground: Arc::new(AtomicBool::new(true)),
@@ -889,6 +995,288 @@ impl AppState {
             identity_generation,
             cancelled,
         })
+    }
+
+    pub fn reserve_attachment_transfer(
+        self: &Arc<Self>,
+        bytes: usize,
+    ) -> Result<AttachmentTransferLease, AttachmentTransferAdmissionError> {
+        if bytes == 0 {
+            return Err(AttachmentTransferAdmissionError::TooLarge);
+        }
+        if bytes > rns_protocol::resource::MAX_RESOURCE_SIZE {
+            return Err(AttachmentTransferAdmissionError::TooLarge);
+        }
+
+        let lane = if bytes > rns_protocol::resource::MAX_EFFICIENT_SIZE {
+            AttachmentTransferLane::Large
+        } else {
+            AttachmentTransferLane::Small
+        };
+        if lane == AttachmentTransferLane::Large
+            && unix_time_ms() < self.attachment_pressure_until_ms.load(Ordering::Acquire)
+        {
+            return Err(AttachmentTransferAdmissionError::MemoryPressure);
+        }
+        let mut budget = self
+            .attachment_transfer_budget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match lane {
+            AttachmentTransferLane::Large if budget.large_active => {
+                return Err(AttachmentTransferAdmissionError::Busy);
+            }
+            AttachmentTransferLane::Large => budget.large_active = true,
+            AttachmentTransferLane::Small => {
+                budget.small_bytes = budget
+                    .small_bytes
+                    .checked_add(bytes)
+                    .ok_or(AttachmentTransferAdmissionError::MemoryPressure)?;
+                if budget.small_bytes > LXMF_SMALL_ATTACHMENT_BUDGET_BYTES {
+                    budget.small_bytes -= bytes;
+                    return Err(AttachmentTransferAdmissionError::MemoryPressure);
+                }
+            }
+        }
+        drop(budget);
+        Ok(AttachmentTransferLease {
+            state: Arc::downgrade(self),
+            lane,
+            bytes,
+        })
+    }
+
+    pub fn begin_attachment_staging(
+        self: &Arc<Self>,
+        file_name: String,
+        mime: String,
+        declared_size: usize,
+        is_image: bool,
+    ) -> Result<String, AttachmentTransferAdmissionError> {
+        let lease = self.reserve_attachment_transfer(declared_size)?;
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let dir = self.config.data_dir.join("attachment-staging");
+        std::fs::create_dir_all(&dir).map_err(|_| AttachmentTransferAdmissionError::Storage)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .map_err(|_| AttachmentTransferAdmissionError::Storage)?;
+        let path = dir.join(&token);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
+            .open(&path)
+            .map_err(|_| AttachmentTransferAdmissionError::Storage)?;
+
+        let staged = StagedAttachment {
+            path,
+            file_name,
+            mime,
+            declared_size,
+            is_image,
+            written: 0,
+            write_in_progress: false,
+            identity_generation: self.current_identity_session_generation(),
+            lease: Some(lease),
+        };
+        self.attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(token.clone(), staged);
+        Ok(token)
+    }
+
+    pub fn append_attachment_staging(
+        &self,
+        token: &str,
+        offset: usize,
+        bytes: &[u8],
+    ) -> std::io::Result<usize> {
+        let path = {
+            let mut staging = self
+                .attachment_staging
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let staged = staging.get_mut(token).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "staging expired")
+            })?;
+            if staged.identity_generation != self.current_identity_session_generation()
+                || staged.write_in_progress
+                || offset != staged.written
+                || bytes.is_empty()
+                || staged
+                    .written
+                    .checked_add(bytes.len())
+                    .is_none_or(|end| end > staged.declared_size)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid staging chunk",
+                ));
+            }
+            staged.write_in_progress = true;
+            staged.path.clone()
+        };
+
+        let write_result = (|| {
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path)?;
+            file.seek(std::io::SeekFrom::Start(offset as u64))?;
+            file.write_all(bytes)
+        })();
+
+        let mut staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(staged) = staging.get_mut(token) else {
+            drop(staging);
+            let _ = std::fs::remove_file(path);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "staging expired",
+            ));
+        };
+        staged.write_in_progress = false;
+        write_result?;
+        if staged.written != offset {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "staging offset changed",
+            ));
+        }
+        staged.written += bytes.len();
+        Ok(staged.written)
+    }
+
+    pub fn take_completed_attachment_staging(&self, token: &str) -> Option<StagedAttachment> {
+        let mut staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let complete = staging.get(token).is_some_and(|staged| {
+            staged.identity_generation == self.current_identity_session_generation()
+                && !staged.write_in_progress
+                && staged.written == staged.declared_size
+        });
+        complete.then(|| staging.remove(token)).flatten()
+    }
+
+    pub fn cancel_attachment_staging(&self, token: &str) -> bool {
+        let staged = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(token);
+        if let Some(staged) = staged {
+            let _ = std::fs::remove_file(&staged.path);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drop only disposable, not-yet-queued attachment state. Active router
+    /// deliveries retain their exact lease and are never aborted solely due
+    /// to an OS memory warning.
+    pub fn handle_attachment_memory_pressure(&self, critical: bool) {
+        let pause_ms = if critical { 30_000 } else { 5_000 };
+        self.attachment_pressure_until_ms
+            .store(unix_time_ms().saturating_add(pause_ms), Ordering::Release);
+        let staged = if let Ok(mut staging) = self.attachment_staging.lock() {
+            staging
+                .drain()
+                .map(|(_, staged)| staged)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for staged in staged {
+            let _ = std::fs::remove_file(&staged.path);
+        }
+        self.emit_to_all(
+            "attachment_memory_pressure",
+            serde_json::json!({ "critical": critical }),
+        );
+    }
+
+    pub fn hold_attachment_delivery_lease(
+        &self,
+        message_id: String,
+        lease: AttachmentTransferLease,
+    ) {
+        self.attachment_delivery_leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(message_id, lease);
+    }
+
+    pub fn release_attachment_delivery_lease(&self, message_id: &str) -> bool {
+        self.attachment_delivery_leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(message_id)
+            .is_some()
+    }
+
+    pub fn admit_inbound_attachment_resource(
+        self: &Arc<Self>,
+        link_id: [u8; 16],
+        resource_id: [u8; 32],
+        original_id: [u8; 32],
+        bytes: usize,
+    ) -> Result<(), AttachmentTransferAdmissionError> {
+        let mut inbound = self
+            .inbound_attachment_transfers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = inbound.get_mut(&original_id) {
+            if existing.link_id != link_id {
+                return Err(AttachmentTransferAdmissionError::Busy);
+            }
+            existing.resource_ids.insert(resource_id);
+            return Ok(());
+        }
+        let lease = self.reserve_attachment_transfer(bytes)?;
+        inbound.insert(
+            original_id,
+            InboundAttachmentTransfer {
+                link_id,
+                resource_ids: HashSet::from([resource_id]),
+                _lease: lease,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn complete_inbound_attachment_resource(&self, resource_id: [u8; 32]) -> bool {
+        let mut inbound = self
+            .inbound_attachment_transfers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if inbound.remove(&resource_id).is_some() {
+            return true;
+        }
+        let original = inbound.iter().find_map(|(original, transfer)| {
+            transfer
+                .resource_ids
+                .contains(&resource_id)
+                .then_some(*original)
+        });
+        original.and_then(|id| inbound.remove(&id)).is_some()
+    }
+
+    pub fn release_inbound_attachment_link(&self, link_id: [u8; 16]) -> usize {
+        let mut inbound = self
+            .inbound_attachment_transfers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = inbound.len();
+        inbound.retain(|_, transfer| transfer.link_id != link_id);
+        before - inbound.len()
     }
 
     /// Cancel a client-ID-bearing operation whether it is still preparing or
@@ -1646,6 +2034,31 @@ impl AppState {
             map.clear();
         }
         self.clear_lxmf_client_sends();
+        let staged = if let Ok(mut staging) = self.attachment_staging.lock() {
+            staging
+                .drain()
+                .map(|(_, staged)| staged)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for staged in staged {
+            let _ = std::fs::remove_file(&staged.path);
+        }
+        if let Ok(mut leases) = self.attachment_delivery_leases.lock() {
+            leases.clear();
+        }
+        if let Ok(mut inbound) = self.inbound_attachment_transfers.lock() {
+            inbound.clear();
+        }
+        if let Ok(mut budget) = self.attachment_transfer_budget.lock() {
+            // Existing leases remain exact owners and release through
+            // saturating accounting when their cancelled work unwinds.
+            budget.small_bytes = 0;
+            budget.large_active = false;
+        }
+        self.attachment_pressure_until_ms
+            .store(0, Ordering::Release);
         if let Ok(mut sessions) = self.lrgp_msg_to_session.lock() {
             sessions.clear();
         }
@@ -1963,6 +2376,20 @@ impl AppState {
     }
 }
 
+fn cleanup_attachment_staging_dir(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_type()
+            .is_ok_and(|kind| kind.is_file() || kind.is_symlink())
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn json_number_as_f64(value: &serde_json::Value) -> Option<f64> {
     value
         .as_f64()
@@ -2152,6 +2579,218 @@ mod tests {
             LxmfClientSendCancellation::Preparing
         );
         assert!(replacement.is_cancelled());
+    }
+
+    #[test]
+    fn attachment_budget_serializes_large_transfers_and_releases_on_drop() {
+        let state = Arc::new(make_state());
+        let large_bytes = rns_protocol::resource::MAX_EFFICIENT_SIZE + 1;
+        let first = state.reserve_attachment_transfer(large_bytes).unwrap();
+        assert!(matches!(
+            state.reserve_attachment_transfer(large_bytes),
+            Err(AttachmentTransferAdmissionError::Busy)
+        ));
+        drop(first);
+        assert!(state.reserve_attachment_transfer(large_bytes).is_ok());
+    }
+
+    #[test]
+    fn attachment_delivery_lease_holds_large_admission_until_terminal_release() {
+        let state = Arc::new(make_state());
+        let large_bytes = rns_protocol::resource::MAX_EFFICIENT_SIZE + 1;
+        let lease = state.reserve_attachment_transfer(large_bytes).unwrap();
+        state.hold_attachment_delivery_lease("message-a".to_string(), lease);
+
+        assert!(matches!(
+            state.reserve_attachment_transfer(large_bytes),
+            Err(AttachmentTransferAdmissionError::Busy)
+        ));
+        assert!(!state.release_attachment_delivery_lease("other-message"));
+        assert!(state.release_attachment_delivery_lease("message-a"));
+        assert!(state.reserve_attachment_transfer(large_bytes).is_ok());
+    }
+
+    #[test]
+    fn attachment_budget_keeps_small_lane_independent_and_byte_bounded() {
+        let state = Arc::new(make_state());
+        let large = state
+            .reserve_attachment_transfer(rns_protocol::resource::MAX_EFFICIENT_SIZE + 1)
+            .unwrap();
+        let mut small = Vec::new();
+        for _ in 0..8 {
+            small.push(
+                state
+                    .reserve_attachment_transfer(rns_protocol::resource::MAX_EFFICIENT_SIZE)
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(
+            state.reserve_attachment_transfer(9),
+            Err(AttachmentTransferAdmissionError::MemoryPressure)
+        ));
+        drop(small);
+        drop(large);
+        assert!(state.reserve_attachment_transfer(1024).is_ok());
+    }
+
+    #[test]
+    fn attachment_staging_requires_ordered_exact_chunks_and_releases_owner() {
+        let state = Arc::new(make_state());
+        let token = state
+            .begin_attachment_staging(
+                "report.bin".to_string(),
+                "application/octet-stream".to_string(),
+                6,
+                false,
+            )
+            .unwrap();
+        assert!(state.append_attachment_staging(&token, 1, b"bad").is_err());
+        assert_eq!(
+            state.append_attachment_staging(&token, 0, b"abc").unwrap(),
+            3
+        );
+        assert_eq!(
+            state.append_attachment_staging(&token, 3, b"def").unwrap(),
+            6
+        );
+        let staged = state.take_completed_attachment_staging(&token).unwrap();
+        assert_eq!(std::fs::read(&staged.path).unwrap(), b"abcdef");
+        std::fs::remove_file(&staged.path).unwrap();
+        drop(staged);
+        assert!(state.reserve_attachment_transfer(1024).is_ok());
+    }
+
+    #[test]
+    fn attachment_staging_cancel_removes_file_and_large_permit() {
+        let state = Arc::new(make_state());
+        let size = rns_protocol::resource::MAX_EFFICIENT_SIZE + 1;
+        let token = state
+            .begin_attachment_staging(
+                "large.bin".to_string(),
+                "application/octet-stream".to_string(),
+                size,
+                false,
+            )
+            .unwrap();
+        let path = state
+            .attachment_staging
+            .lock()
+            .unwrap()
+            .get(&token)
+            .unwrap()
+            .path
+            .clone();
+        assert!(path.exists());
+        assert!(state.cancel_attachment_staging(&token));
+        assert!(!path.exists());
+        assert!(state.reserve_attachment_transfer(size).is_ok());
+    }
+
+    #[test]
+    fn attachment_memory_pressure_clears_staging_but_not_queued_delivery() {
+        let state = Arc::new(make_state());
+        let size = rns_protocol::resource::MAX_EFFICIENT_SIZE + 1;
+        let token = state
+            .begin_attachment_staging(
+                "large.bin".to_string(),
+                "application/octet-stream".to_string(),
+                size,
+                false,
+            )
+            .unwrap();
+        let path = state
+            .attachment_staging
+            .lock()
+            .unwrap()
+            .get(&token)
+            .unwrap()
+            .path
+            .clone();
+        state.handle_attachment_memory_pressure(true);
+        assert!(!path.exists());
+        assert!(matches!(
+            state.reserve_attachment_transfer(size),
+            Err(AttachmentTransferAdmissionError::MemoryPressure)
+        ));
+        state
+            .attachment_pressure_until_ms
+            .store(0, Ordering::Release);
+        assert!(state.reserve_attachment_transfer(size).is_ok());
+
+        let queued = state.reserve_attachment_transfer(size).unwrap();
+        state.hold_attachment_delivery_lease("queued".to_string(), queued);
+        state.handle_attachment_memory_pressure(true);
+        state
+            .attachment_pressure_until_ms
+            .store(0, Ordering::Release);
+        assert!(matches!(
+            state.reserve_attachment_transfer(size),
+            Err(AttachmentTransferAdmissionError::Busy)
+        ));
+        assert!(state.release_attachment_delivery_lease("queued"));
+    }
+
+    #[test]
+    fn inbound_split_attachment_owns_one_large_lane_until_original_completes() {
+        let state = Arc::new(make_state());
+        let link = [1u8; 16];
+        let original = [2u8; 32];
+        let first = [3u8; 32];
+        let second = [4u8; 32];
+        let other = [5u8; 32];
+        let segment_bytes = rns_protocol::resource::MAX_EFFICIENT_SIZE + 1;
+
+        state
+            .admit_inbound_attachment_resource(link, first, original, segment_bytes)
+            .unwrap();
+        state
+            .admit_inbound_attachment_resource(link, second, original, segment_bytes)
+            .unwrap();
+        assert!(matches!(
+            state.admit_inbound_attachment_resource(link, other, other, segment_bytes),
+            Err(AttachmentTransferAdmissionError::Busy)
+        ));
+        assert!(state.complete_inbound_attachment_resource(original));
+        assert!(
+            state
+                .admit_inbound_attachment_resource(link, other, other, segment_bytes)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn inbound_attachment_failure_or_link_close_releases_exact_admission() {
+        let state = Arc::new(make_state());
+        let size = rns_protocol::resource::MAX_EFFICIENT_SIZE + 1;
+        state
+            .admit_inbound_attachment_resource([1; 16], [2; 32], [3; 32], size)
+            .unwrap();
+        assert!(state.complete_inbound_attachment_resource([2; 32]));
+        state
+            .admit_inbound_attachment_resource([4; 16], [5; 32], [6; 32], size)
+            .unwrap();
+        assert_eq!(state.release_inbound_attachment_link([4; 16]), 1);
+        assert!(
+            state
+                .admit_inbound_attachment_resource([7; 16], [8; 32], [8; 32], size)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn attachment_staging_startup_cleanup_removes_only_owned_files() {
+        let root = std::env::temp_dir().join(format!(
+            "ratspeak-staging-cleanup-{}-{}",
+            std::process::id(),
+            TEMP_STATE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let staging = root.join("attachment-staging");
+        std::fs::create_dir_all(staging.join("nested")).unwrap();
+        std::fs::write(staging.join("orphan"), b"bytes").unwrap();
+        cleanup_attachment_staging_dir(&staging);
+        assert!(!staging.join("orphan").exists());
+        assert!(staging.join("nested").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

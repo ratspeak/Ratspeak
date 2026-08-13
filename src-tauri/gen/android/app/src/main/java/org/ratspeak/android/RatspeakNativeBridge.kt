@@ -71,6 +71,21 @@ object RatspeakNativeBridge {
         return RatspeakBleRnodeSupervisor.disconnect(operationToken, installedGeneration)
     }
 
+    @JvmStatic
+    fun saveStoredFile(
+        privatePath: String,
+        fileName: String,
+        mimeType: String,
+        preferPhotos: Boolean,
+        requestId: String,
+    ): Boolean = RatspeakAndroidObservers.saveStoredFile(
+        privatePath,
+        fileName,
+        mimeType,
+        preferPhotos,
+        requestId,
+    )
+
     internal fun publishNetworkType(networkType: String) {
         val sequence = platformSequence.incrementAndGet()
         try {
@@ -125,6 +140,14 @@ object RatspeakNativeBridge {
             )
         } catch (error: UnsatisfiedLinkError) {
             Log.d("RatspeakNative", "BLE bridge unavailable: ${error.message}")
+        }
+    }
+
+    internal fun publishMemoryPressure(critical: Boolean) {
+        try {
+            nativeMemoryPressure(critical)
+        } catch (error: UnsatisfiedLinkError) {
+            Log.d("RatspeakNative", "memory-pressure bridge unavailable: ${error.message}")
         }
     }
 
@@ -215,4 +238,5 @@ object RatspeakNativeBridge {
         localPort: Int,
         errorCode: String?,
     )
+    private external fun nativeMemoryPressure(critical: Boolean)
 }

@@ -272,4 +272,15 @@ class RatspeakMobilePolicyTest {
         assertEquals("ethernet", RatspeakMobilePolicy.networkType(true, false, false, true))
         assertEquals("unknown", RatspeakMobilePolicy.networkType(true, false, false, false))
     }
+
+    @Test
+    fun attachmentMemoryPressureDoesNotTreatPickerLifecycleAsPressure() {
+        assertNull(RatspeakMobilePolicy.attachmentMemoryPressure(5))
+        assertEquals(false, RatspeakMobilePolicy.attachmentMemoryPressure(10))
+        assertEquals(true, RatspeakMobilePolicy.attachmentMemoryPressure(15))
+        assertNull(RatspeakMobilePolicy.attachmentMemoryPressure(20))
+        assertEquals(false, RatspeakMobilePolicy.attachmentMemoryPressure(40))
+        assertEquals(true, RatspeakMobilePolicy.attachmentMemoryPressure(60))
+        assertEquals(true, RatspeakMobilePolicy.attachmentMemoryPressure(80))
+    }
 }

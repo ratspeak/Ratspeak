@@ -382,6 +382,92 @@ fn save_image_to_photos(filename: String, mime: String, data_base64: String) -> 
 }
 
 #[tauri::command]
+async fn save_stored_attachment_native(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, std::sync::Arc<ratspeak_tauri::state::AppState>>,
+    stored_name: String,
+    prefer_photos: bool,
+    request_id: String,
+) -> Result<String, String> {
+    if request_id.len() > 128
+        || request_id.is_empty()
+        || !request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("Invalid native save request".into());
+    }
+    let (path, filename, mime) =
+        ratspeak_tauri::commands::messaging::received_file_export(&state, &stored_name)
+            .map_err(|_| "Stored attachment is unavailable".to_string())?;
+
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        if mobile_native::save_stored_file(
+            &path,
+            &filename,
+            &mime,
+            prefer_photos,
+            &request_id,
+        ) {
+            Ok("pending".into())
+        } else {
+            Ok("unsupported".into())
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        if prefer_photos && mime.starts_with("image/") {
+            save_image_file_to_photos_ios(&path)?;
+            return Ok("complete".into());
+        }
+        let export_path = prepare_file_export_ios(&path, &filename)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(present_file_export_ios(&export_path));
+        })
+        .map_err(|error| format!("Could not open the file exporter: {error}"))?;
+        tauri::async_runtime::spawn_blocking(move || {
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+        })
+        .await
+        .map_err(|_| "File exporter task failed".to_string())?
+        .map_err(|_| "File exporter did not open".to_string())??;
+        Ok("complete".into())
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (mime, prefer_photos);
+        let dialog_filename = filename.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let selection = rfd::FileDialog::new()
+                .set_file_name(dialog_filename)
+                .save_file();
+            let _ = tx.send(selection);
+        })
+        .map_err(|error| format!("Could not open the save dialog: {error}"))?;
+        let selection = tauri::async_runtime::spawn_blocking(move || {
+            rx.recv_timeout(std::time::Duration::from_secs(600))
+        })
+        .await
+        .map_err(|_| "Save dialog task failed".to_string())?
+        .map_err(|_| "Save dialog did not respond".to_string())?;
+        let Some(destination) = selection else {
+            return Ok("cancelled".into());
+        };
+        tauri::async_runtime::spawn_blocking(move || std::fs::copy(path, destination))
+            .await
+            .map_err(|_| "File export task failed".to_string())?
+            .map_err(|_| "Could not save the stored file".to_string())?;
+        Ok("complete".into())
+    }
+}
+
+#[tauri::command]
 async fn request_microphone_permission(_app: tauri::AppHandle) -> Result<bool, String> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
@@ -531,6 +617,56 @@ fn save_image_to_photos_ios(_filename: &str, mime: &str, data_base64: &str) -> R
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "ios")]
+fn save_image_file_to_photos_ios(path: &std::path::Path) -> Result<(), String> {
+    use block2::RcBlock;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use std::ffi::CString;
+    use std::ptr;
+
+    let path = path
+        .to_str()
+        .ok_or_else(|| "Stored image path is unavailable".to_string())?;
+    let path = CString::new(path).map_err(|_| "Stored image path is invalid".to_string())?;
+    unsafe {
+        let string_class =
+            AnyClass::get(c"NSString").ok_or_else(|| "NSString class not found".to_string())?;
+        let url_class =
+            AnyClass::get(c"NSURL").ok_or_else(|| "NSURL class not found".to_string())?;
+        let library_class = AnyClass::get(c"PHPhotoLibrary")
+            .ok_or_else(|| "PHPhotoLibrary class not found".to_string())?;
+        let request_class = AnyClass::get(c"PHAssetChangeRequest")
+            .ok_or_else(|| "PHAssetChangeRequest class not found".to_string())?;
+        let string: *mut AnyObject = msg_send![
+            string_class,
+            stringWithUTF8String: path.as_ptr()
+        ];
+        let url: *mut AnyObject = msg_send![url_class, fileURLWithPath: string];
+        let library: *mut AnyObject = msg_send![library_class, sharedPhotoLibrary];
+        if string.is_null() || url.is_null() || library.is_null() {
+            return Err("Photo library unavailable".into());
+        }
+        let changes = RcBlock::new(move || {
+            let _: *mut AnyObject = msg_send![
+                request_class,
+                creationRequestForAssetFromImageAtFileURL: url
+            ];
+        });
+        let mut error: *mut AnyObject = ptr::null_mut();
+        let ok: bool = msg_send![
+            library,
+            performChangesAndWait: &*changes,
+            error: &mut error
+        ];
+        if ok {
+            Ok(())
+        } else {
+            Err("Photo library denied or failed the save".into())
+        }
+    }
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -725,6 +861,7 @@ pub fn run() {
             open_support_email,
             set_window_decorations,
             save_image_to_photos,
+            save_stored_attachment_native,
             request_microphone_permission,
             channel_deep_link::take_native_channel_share,
             ratspeak_tauri::commands::system::api_version,
@@ -780,12 +917,17 @@ pub fn run() {
             ratspeak_tauri::commands::messaging::api_search_messages,
             ratspeak_tauri::commands::messaging::api_files,
             ratspeak_tauri::commands::messaging::api_lxmf_limits,
-            ratspeak_tauri::commands::messaging::api_file_download,
+            ratspeak_tauri::commands::messaging::api_file_metadata,
+            ratspeak_tauri::commands::messaging::api_file_read_chunk,
             ratspeak_tauri::commands::messaging::send_lxmf_message,
             ratspeak_tauri::commands::messaging::send_reaction,
             ratspeak_tauri::commands::messaging::send_lxmf_reply,
             ratspeak_tauri::commands::messaging::send_lxmf_propagated,
             ratspeak_tauri::commands::messaging::send_lxmf_with_attachment,
+            ratspeak_tauri::commands::messaging::begin_attachment_stage,
+            ratspeak_tauri::commands::messaging::append_attachment_stage,
+            ratspeak_tauri::commands::messaging::cancel_attachment_stage,
+            ratspeak_tauri::commands::messaging::send_lxmf_with_staged_attachment,
             ratspeak_tauri::commands::messaging::cancel_lxmf_message,
             ratspeak_tauri::commands::messaging::get_conversation,
             ratspeak_tauri::commands::messaging::mark_read,
@@ -1163,6 +1305,7 @@ pub fn run() {
                 // nw_path_monitor for wifi↔cellular handoff (WKWebView lacks
                 // navigator.connection).
                 unsafe { register_ios_network_observer() };
+                unsafe { register_ios_memory_warning_observer() };
             }
 
             Ok(())
@@ -1266,6 +1409,113 @@ fn install_desktop_tray(app: &mut tauri::App) -> tauri::Result<()> {
         tray = tray.icon(icon);
     }
     tray.build(app)?;
+    Ok(())
+}
+
+#[cfg(target_os = "ios")]
+fn prepare_file_export_ios(
+    source: &std::path::Path,
+    filename: &str,
+) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = std::env::temp_dir().join("ratspeak-native-exports");
+    std::fs::create_dir_all(&root)
+        .map_err(|_| "Could not prepare the file exporter".to_string())?;
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "Could not secure the file exporter".to_string())?;
+
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(24 * 60 * 60));
+        for entry in entries.flatten() {
+            let stale = cutoff.is_some_and(|cutoff| {
+                entry
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .is_ok_and(|modified| modified < cutoff)
+            });
+            if stale {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let export_dir = root.join(format!("{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&export_dir)
+        .map_err(|_| "Could not prepare the file exporter".to_string())?;
+    std::fs::set_permissions(&export_dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "Could not secure the file exporter".to_string())?;
+    let export_path = export_dir.join(filename);
+    if std::fs::hard_link(source, &export_path).is_err() {
+        std::fs::copy(source, &export_path)
+            .map_err(|_| "Could not prepare the stored file for export".to_string())?;
+    }
+    std::fs::set_permissions(&export_path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|_| "Could not secure the exported file".to_string())?;
+    Ok(export_path)
+}
+
+#[cfg(target_os = "ios")]
+fn present_file_export_ios(path: &std::path::Path) -> Result<(), String> {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use std::ffi::CString;
+    use std::ptr;
+
+    let path = path
+        .to_str()
+        .ok_or_else(|| "Stored file path is unavailable".to_string())?;
+    let path = CString::new(path).map_err(|_| "Stored file path is invalid".to_string())?;
+    unsafe {
+        let string_class =
+            AnyClass::get(c"NSString").ok_or_else(|| "NSString class not found".to_string())?;
+        let url_class =
+            AnyClass::get(c"NSURL").ok_or_else(|| "NSURL class not found".to_string())?;
+        let array_class =
+            AnyClass::get(c"NSArray").ok_or_else(|| "NSArray class not found".to_string())?;
+        let picker_class = AnyClass::get(c"UIDocumentPickerViewController")
+            .ok_or_else(|| "File exporter is unavailable".to_string())?;
+        let application_class = AnyClass::get(c"UIApplication")
+            .ok_or_else(|| "UIApplication class not found".to_string())?;
+
+        let string: *mut AnyObject = msg_send![string_class, stringWithUTF8String: path.as_ptr()];
+        let url: *mut AnyObject = msg_send![url_class, fileURLWithPath: string];
+        let urls: *mut AnyObject = msg_send![array_class, arrayWithObject: url];
+        let allocated: *mut AnyObject = msg_send![picker_class, alloc];
+        let picker: *mut AnyObject =
+            msg_send![allocated, initForExportingURLs: urls, asCopy: true];
+        let application: *mut AnyObject = msg_send![application_class, sharedApplication];
+        let windows: *mut AnyObject = msg_send![application, windows];
+        let window: *mut AnyObject = msg_send![windows, firstObject];
+        let mut controller: *mut AnyObject = msg_send![window, rootViewController];
+        if string.is_null()
+            || url.is_null()
+            || urls.is_null()
+            || picker.is_null()
+            || controller.is_null()
+        {
+            return Err("File exporter is unavailable".to_string());
+        }
+        for _ in 0..8 {
+            let presented: *mut AnyObject = msg_send![controller, presentedViewController];
+            if presented.is_null() {
+                break;
+            }
+            controller = presented;
+        }
+        let completion: *mut AnyObject = ptr::null_mut();
+        let _: () = msg_send![
+            controller,
+            presentViewController: picker,
+            animated: true,
+            completion: completion
+        ];
+    }
     Ok(())
 }
 
@@ -1421,4 +1671,47 @@ unsafe fn register_ios_network_observer() {
 
     nw_path_monitor_start(monitor);
     // Dispatch queue retains the monitor; no nw_release needed.
+}
+
+#[cfg(target_os = "ios")]
+unsafe fn register_ios_memory_warning_observer() {
+    use block2::RcBlock;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    let Some(center_class) = AnyClass::get(c"NSNotificationCenter") else {
+        tracing::debug!(
+            reason = "notification_center_unavailable",
+            "iOS memory observer unavailable"
+        );
+        return;
+    };
+    let Some(string_class) = AnyClass::get(c"NSString") else {
+        tracing::debug!(reason = "nsstring_unavailable", "iOS memory observer unavailable");
+        return;
+    };
+    let center: *mut AnyObject = msg_send![center_class, defaultCenter];
+    let name: *mut AnyObject = msg_send![
+        string_class,
+        stringWithUTF8String: c"UIApplicationDidReceiveMemoryWarningNotification".as_ptr()
+    ];
+    if center.is_null() || name.is_null() {
+        return;
+    }
+    let block = RcBlock::new(|_notification: *mut AnyObject| {
+        mobile_native::submit_memory_pressure(true);
+    });
+    let observer: *mut AnyObject = msg_send![
+        center,
+        addObserverForName: name,
+        object: std::ptr::null_mut::<AnyObject>(),
+        queue: std::ptr::null_mut::<AnyObject>(),
+        usingBlock: &*block
+    ];
+    if observer.is_null() {
+        tracing::debug!(
+            reason = "observer_registration_failed",
+            "iOS memory observer unavailable"
+        );
+    }
 }

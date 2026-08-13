@@ -205,7 +205,7 @@ function makeImmediateController(invoke, opts) {
 
 test('RS.listen required mode rejects a static bridge error and legacy mode remains compatible', async function() {
     var start = stateSource.indexOf('window.RS.listen = function');
-    var end = stateSource.indexOf('\n};\n\n// Fetch an LXMF file attachment', start);
+    var end = stateSource.indexOf('\n};\n\nfunction _rsRawIpcBytes', start);
     assert(start !== -1 && end !== -1, 'RS.listen source markers must exist');
     var intervals = [];
     var window = { RS: { diag: function() {} } };

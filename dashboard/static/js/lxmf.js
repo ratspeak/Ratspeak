@@ -10,17 +10,28 @@ var _replyTarget = null;
 var _msgReactions = {};
 var _lxmfDrafts = {};
 var _conversationCache = {};
+var _conversationCacheSizes = {};
+var _conversationCacheBytes = 0;
 var _cacheLru = [];
-var _cacheMax = 30;
+var _cacheMax = 8;
+var _conversationCacheMaxBytes = 2 * 1024 * 1024;
 var _imageBlobUrlCache = {};
 var _imageBlobUrlLru = [];
 var _imageBlobUrlMax = 64;
+var _imageBlobUrlBytes = 0;
+var _imageCacheGeneration = 0;
+var _imageHydrationInFlight = {};
+var _imageHydrationQueue = [];
+var _imageHydrationActive = 0;
+var _imageHydrationMax = 3;
+var _imageHydrationObserver = null;
+var _imageCacheIdentityHash = null;
 var _lxmfMessageScrollStates = new WeakMap();
 var _messageLongPressDetachFns = [];
 var _pendingAttachmentToken = 0;
 var _pendingLxmfCancelByClientId = {};
 var lxmfLimits = {
-    max_attachment_bytes: 134217727,
+    max_attachment_bytes: 128000000,
     max_message_bytes: 134217727,
     efficient_resource_bytes: 1048575,
     default_propagation_limit_kb: 256,
@@ -1662,17 +1673,28 @@ function cacheGet(hash) {
     return msgs;
 }
 function cacheSet(hash, messages) {
+    var size = 0;
+    try { size = _utf8ByteLength(JSON.stringify(messages || [])); }
+    catch (_) { size = _conversationCacheMaxBytes + 1; }
+    cacheDel(hash);
+    if (size > _conversationCacheMaxBytes) return;
     var idx = _cacheLru.indexOf(hash);
     if (idx !== -1) _cacheLru.splice(idx, 1);
     _cacheLru.push(hash);
     _conversationCache[hash] = messages;
-    while (_cacheLru.length > _cacheMax) {
+    _conversationCacheSizes[hash] = size;
+    _conversationCacheBytes += size;
+    while (_cacheLru.length > _cacheMax || _conversationCacheBytes > _conversationCacheMaxBytes) {
         var evict = _cacheLru.shift();
+        _conversationCacheBytes = Math.max(0, _conversationCacheBytes - (_conversationCacheSizes[evict] || 0));
         delete _conversationCache[evict];
+        delete _conversationCacheSizes[evict];
     }
 }
 function cacheDel(hash) {
+    _conversationCacheBytes = Math.max(0, _conversationCacheBytes - (_conversationCacheSizes[hash] || 0));
     delete _conversationCache[hash];
+    delete _conversationCacheSizes[hash];
     var idx = _cacheLru.indexOf(hash);
     if (idx !== -1) _cacheLru.splice(idx, 1);
 }
@@ -1728,23 +1750,72 @@ function _mergeConversationMessages(hash, serverMessages) {
     return merged;
 }
 
-function _rememberImageBlobUrl(name, url, file) {
-    var existing = _imageBlobUrlCache[name];
-    if (existing && existing.url !== url) {
-        try { URL.revokeObjectURL(existing.url); } catch (_) {}
+function _imageBlobUrlBudget() {
+    var mobile = (typeof isTauriMobile === 'function' && isTauriMobile()) ||
+        (typeof isMobile === 'function' && isMobile());
+    return mobile ? (16 * 1024 * 1024) : (32 * 1024 * 1024);
+}
+
+function _evictImageBlobUrl(name) {
+    var entry = _imageBlobUrlCache[name];
+    if (!entry) return;
+    delete _imageBlobUrlCache[name];
+    var idx = _imageBlobUrlLru.indexOf(name);
+    if (idx !== -1) _imageBlobUrlLru.splice(idx, 1);
+    _imageBlobUrlBytes = Math.max(0, _imageBlobUrlBytes - (entry.size || 0));
+    if (entry.url) {
+        try { URL.revokeObjectURL(entry.url); } catch (_) {}
     }
+}
+
+function _clearImageBlobUrlCache() {
+    _imageCacheGeneration++;
+    Object.keys(_imageBlobUrlCache).forEach(_evictImageBlobUrl);
+    _imageBlobUrlCache = {};
+    _imageBlobUrlLru = [];
+    _imageBlobUrlBytes = 0;
+    _imageHydrationQueue = [];
+    if (_imageHydrationObserver) _imageHydrationObserver.disconnect();
+}
+
+function handleAttachmentMemoryPressure(critical) {
+    _clearImageBlobUrlCache();
+    if (critical) {
+        _conversationCache = {};
+        _conversationCacheSizes = {};
+        _conversationCacheBytes = 0;
+        _cacheLru = [];
+        if (lxmfPendingFile) clearPendingFile();
+    }
+}
+
+function _rememberImageBlobUrl(name, url, file) {
+    var size = Number(file && file.size) || Number(file && file.blob && file.blob.size) || 0;
+    var budget = _imageBlobUrlBudget();
+    if (size > budget) return false;
+    var existing = _imageBlobUrlCache[name];
+    if (existing) _evictImageBlobUrl(name);
     var idx = _imageBlobUrlLru.indexOf(name);
     if (idx !== -1) _imageBlobUrlLru.splice(idx, 1);
     _imageBlobUrlLru.push(name);
-    _imageBlobUrlCache[name] = { url: url, ts: Date.now(), file: file || null };
-    while (_imageBlobUrlLru.length > _imageBlobUrlMax) {
+    _imageBlobUrlCache[name] = {
+        url: url,
+        ts: Date.now(),
+        size: size,
+        file: file ? {
+            url: url,
+            blob: file.blob || null,
+            size: size,
+            filename: file.filename || name,
+            mime: file.mime || 'application/octet-stream',
+        } : null,
+    };
+    _imageBlobUrlBytes += size;
+    while (_imageBlobUrlLru.length > _imageBlobUrlMax || _imageBlobUrlBytes > budget) {
         var evict = _imageBlobUrlLru.shift();
-        var entry = _imageBlobUrlCache[evict];
-        delete _imageBlobUrlCache[evict];
-        if (entry && entry.url) {
-            try { URL.revokeObjectURL(entry.url); } catch (_) {}
-        }
+        _evictImageBlobUrl(evict);
     }
+    return !!_imageBlobUrlCache[name];
 }
 
 function _getImageBlobUrl(name) {
@@ -1761,6 +1832,121 @@ function _getImageBlobUrl(name) {
 function _getImageDownloadFile(name) {
     var entry = _imageBlobUrlCache[name];
     return entry && entry.file ? entry.file : null;
+}
+
+function _makeImageBlobUrlRoom(name, incomingBytes) {
+    var budget = _imageBlobUrlBudget();
+    if (incomingBytes > budget) return false;
+    while (_imageBlobUrlBytes + incomingBytes > budget && _imageBlobUrlLru.length) {
+        var evict = _imageBlobUrlLru[0];
+        if (evict === name) {
+            _imageBlobUrlLru.shift();
+            _imageBlobUrlLru.push(evict);
+            if (_imageBlobUrlLru.length === 1) return false;
+            continue;
+        }
+        _evictImageBlobUrl(evict);
+    }
+    return _imageBlobUrlBytes + incomingBytes <= budget;
+}
+
+function _imageHydrationPromise(name) {
+    if (_imageHydrationInFlight[name]) return _imageHydrationInFlight[name];
+    var generation = _imageCacheGeneration;
+    var promise = RS.fileMetadata(name).then(function(meta) {
+        var size = Number(meta && meta.size) || 0;
+        if (!meta || !meta.inline_image) {
+            var unsafe = new Error('Image is available as a file');
+            unsafe.code = 'inline_image_unsafe';
+            throw unsafe;
+        }
+        if (size > _imageBlobUrlBudget()) {
+            var large = new Error('Image is too large for inline display');
+            large.code = 'inline_image_memory_limit';
+            throw large;
+        }
+        if (!_makeImageBlobUrlRoom(name, size)) {
+            var pressure = new Error('Image cache is full');
+            pressure.code = 'inline_image_memory_limit';
+            throw pressure;
+        }
+        return RS.fileDownload(name, meta);
+    }).then(function(file) {
+        if (generation !== _imageCacheGeneration) {
+            try { URL.revokeObjectURL(file.url); } catch (_) {}
+            var stale = new Error('Image request was superseded');
+            stale.code = 'inline_image_stale';
+            throw stale;
+        }
+        if (!_rememberImageBlobUrl(name, file.url, file)) {
+            try { URL.revokeObjectURL(file.url); } catch (_) {}
+            var pressure = new Error('Image cache is full');
+            pressure.code = 'inline_image_memory_limit';
+            throw pressure;
+        }
+        return _getImageDownloadFile(name);
+    });
+    var tracked = promise.finally(function() {
+        if (_imageHydrationInFlight[name] === tracked) delete _imageHydrationInFlight[name];
+    });
+    _imageHydrationInFlight[name] = tracked;
+    return tracked;
+}
+
+function _drainImageHydrationQueue() {
+    while (_imageHydrationActive < _imageHydrationMax && _imageHydrationQueue.length) {
+        var task = _imageHydrationQueue.shift();
+        if (!task.img || !task.img.isConnected) continue;
+        _imageHydrationActive++;
+        (function(activeTask) {
+            _imageHydrationPromise(activeTask.name).then(function(file) {
+                var img = activeTask.img;
+                if (!img.isConnected || img.getAttribute('data-stored-name') !== activeTask.name) return;
+                if (file.filename) img.setAttribute('data-filename', file.filename);
+                if (file.mime) img.setAttribute('data-mime', file.mime);
+                var btn = img.closest('.lxmf-image-button');
+                if (btn) {
+                    if (file.filename) btn.setAttribute('data-filename', file.filename);
+                    if (file.mime) btn.setAttribute('data-mime', file.mime);
+                }
+                img.src = file.url;
+            }).catch(function(err) {
+                var img = activeTask.img;
+                if (!img || !img.isConnected || (err && err.code === 'inline_image_stale')) return;
+                img.classList.add('is-error');
+                img.setAttribute('alt', (err && err.code === 'inline_image_unsafe')
+                    ? 'Image available as a file'
+                    : 'Image not loaded');
+            }).finally(function() {
+                _imageHydrationActive = Math.max(0, _imageHydrationActive - 1);
+                _drainImageHydrationQueue();
+            });
+        })(task);
+    }
+}
+
+function _queueImageHydration(img, name) {
+    if (img.getAttribute('data-hydration-queued') === 'true') return;
+    img.setAttribute('data-hydration-queued', 'true');
+    _imageHydrationQueue.push({ img: img, name: name });
+    _drainImageHydrationQueue();
+}
+
+function _observeImageHydration(img, name) {
+    if (typeof IntersectionObserver !== 'function') {
+        _queueImageHydration(img, name);
+        return;
+    }
+    if (!_imageHydrationObserver) {
+        _imageHydrationObserver = new IntersectionObserver(function(entries) {
+            entries.forEach(function(entry) {
+                if (!entry.isIntersecting) return;
+                _imageHydrationObserver.unobserve(entry.target);
+                _queueImageHydration(entry.target, entry.target.getAttribute('data-stored-name'));
+            });
+        }, { rootMargin: '400px 0px' });
+    }
+    _imageHydrationObserver.observe(img);
 }
 
 function _formatDateLabel(timestamp) {
@@ -1863,6 +2049,7 @@ function _promoteGhostConversationRow(hash) {
 
 function _onChatDetailExit() {
     var exitingHash = lxmfActiveContact;
+    _clearImageBlobUrlCache();
     if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.onConversationChanged === 'function') {
         RS.voiceMemos.onConversationChanged(null);
     }
@@ -2963,7 +3150,9 @@ function renderConversation(options) {
                     return RS.voiceMemos.renderAttachment(att, msg);
                 }
                 var sizeStr = att.size ? prettySize(att.size) : '';
-                var nameHtml = att.stored_name
+                var nameHtml = att.unavailable
+                    ? '<span class="file-name">Attachment unavailable</span>'
+                    : att.stored_name
                     ? '<a href="#" class="file-name rs-file-download" data-stored-name="' + escapeHtml(att.stored_name) + '">' + escapeHtml(att.filename || 'file') + '</a>'
                     : '<span class="file-name">' + escapeHtml(att.filename || 'file') + '</span>';
                 return '<div class="file-transfer-info">' +
@@ -2980,8 +3169,11 @@ function renderConversation(options) {
             var imageMime = msg.image.mime_type || msg.image.mime || '';
             var imageSendingClass = canCancelTransfer ? ' is-sending' : '';
             imageSendOverlay = canCancelTransfer ? _messageSendCancelOverlayHtml(msg, progressPercent) : '';
-            // stored_name \u2192 async fetch via RS.fileDownload; data_url \u2192 embed direct.
-            if (msg.image.stored_name) {
+            // stored_name \u2192 async fetch; object_url/data_url \u2192 local optimistic preview.
+            if (msg.image.unavailable) {
+                imageHtml = '<div class="file-transfer-info"><span class="file-icon">\ud83d\udcce</span>' +
+                    '<span class="file-name">Attachment unavailable</span></div>';
+            } else if (msg.image.stored_name) {
                 imageHtml = '<div class="lxmf-msg-image' + imageSendingClass + '">' +
                     '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
                     'data-stored-name="' + escapeHtml(msg.image.stored_name) + '" ' +
@@ -2994,12 +3186,13 @@ function renderConversation(options) {
                     '</button>' +
                     imageSendOverlay +
                 '</div>';
-            } else if (msg.image.data_url) {
+            } else if (msg.image.object_url || msg.image.data_url) {
+                var localImageUrl = msg.image.object_url || msg.image.data_url;
                 imageHtml = '<div class="lxmf-msg-image' + imageSendingClass + '">' +
                     '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
                     'data-filename="' + escapeHtml(imageFilename) + '" ' +
                     'data-mime="' + escapeHtml(imageMime) + '">' +
-                    '<img src="' + escapeHtml(msg.image.data_url) + '" alt="Image" class="lxmf-clickable-img" ' +
+                    '<img src="' + escapeHtml(localImageUrl) + '" alt="Image" class="lxmf-clickable-img" ' +
                     'data-filename="' + escapeHtml(imageFilename) + '" ' +
                     'data-mime="' + escapeHtml(imageMime) + '">' +
                     '</button>' +
@@ -3060,7 +3253,8 @@ function renderConversation(options) {
     var shouldPinMessages = _applyLxmfMessageScrollAfterRender(container, scrollState, options);
     _watchLxmfImagesForBottomPin(container, shouldPinMessages);
 
-    // Async swap blob URL into the data-stored-name placeholders.
+    // Swap cached images immediately; hydrate uncached media only when it is
+    // near the viewport. Fetches are single-flight and globally bounded.
     container.querySelectorAll('img.rs-lazy-image[data-stored-name]').forEach(function(img) {
         var name = img.getAttribute('data-stored-name');
         if (!name) return;
@@ -3074,21 +3268,7 @@ function renderConversation(options) {
             img.src = cachedUrl;
             return;
         }
-        RS.fileDownload(name).then(function(f) {
-            _rememberImageBlobUrl(name, f.url, f);
-            if (f.filename) img.setAttribute('data-filename', f.filename);
-            if (f.mime) img.setAttribute('data-mime', f.mime);
-            var btn = img.closest('.lxmf-image-button');
-            if (btn) {
-                if (f.filename) btn.setAttribute('data-filename', f.filename);
-                if (f.mime) btn.setAttribute('data-mime', f.mime);
-            }
-            img.src = f.url;
-        }).catch(function(err) {
-            window.RS.diag('warn', '[lxmf] inline image fetch failed:', name, err);
-            img.classList.add('is-error');
-            img.setAttribute('alt', 'Image failed to load');
-        });
+        _observeImageHydration(img, name);
     });
 
     // Attachment click → save via IPC (no HTTP endpoint to download from).
@@ -3097,8 +3277,8 @@ function renderConversation(options) {
             e.preventDefault();
             var name = this.getAttribute('data-stored-name');
             if (!name) return;
-            RS.saveFile(name).then(function() {
-                if (typeof showToast === 'function') showToast('Saved', 'toast-green', 2200);
+            RS.saveFile(name).then(function(saved) {
+                if (saved !== false && typeof showToast === 'function') showToast('Saved', 'toast-green', 2200);
             }).catch(function(err) {
                 if (typeof showToast === 'function') {
                     showToast('Download failed: ' + (err.message || err.code || 'error'), 'toast-red', 4000);
@@ -3329,6 +3509,21 @@ function _finishLxmfComposerSend(input, shouldRestoreFocus) {
     if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
 }
 
+function _markOptimisticMessageFailed(clientMsgId, error) {
+    for (var i = 0; i < lxmfConversation.length; i++) {
+        if (lxmfConversation[i] && lxmfConversation[i].id === clientMsgId) {
+            lxmfConversation[i].state = 'failed';
+            lxmfConversation[i].failure_reason = (error && (error.code || error.message)) || 'attachment_failed';
+            break;
+        }
+    }
+    _cacheActiveConversation();
+    renderConversation();
+    if (typeof showToast === 'function') {
+        showToast((error && error.message) || 'Attachment could not be sent', 'toast-red', 4500);
+    }
+}
+
 function sendLxmfMessage(deliveryMethod) {
     if (!lxmfActiveContact) return;
     var input = document.getElementById('lxmf-input');
@@ -3343,22 +3538,33 @@ function sendLxmfMessage(deliveryMethod) {
     }
 
     if (lxmfPendingFile) {
+        var pendingAttachment = lxmfPendingFile;
         var attachMsgId = generateMsgId();
-        var isImage = lxmfPendingFile.mime && lxmfPendingFile.mime.startsWith('image/');
-        RS.invoke('send_lxmf_with_attachment', {
-            args: {
-                dest_hash: lxmfActiveContact,
-                content: text,
-                delivery_method: chosenDelivery,
-                client_msg_id: attachMsgId,
-                file_data: isImage ? null : lxmfPendingFile.data,
-                file_name: lxmfPendingFile.name,
-                image_data: isImage ? lxmfPendingFile.data : null,
-                image_mime: isImage ? lxmfPendingFile.mime : null,
-            }
+        var isImage = pendingAttachment.mime && pendingAttachment.mime.startsWith('image/');
+        var optimisticImageUrl = isImage ? pendingAttachment.preview_url : null;
+        pendingAttachment.stage_promise.then(function(stageToken) {
+            if (!stageToken) throw pendingAttachment.stage_error || new Error('Attachment staging failed');
+            pendingAttachment.staging_token = null;
+            return RS.invoke('send_lxmf_with_staged_attachment', {
+                args: {
+                    dest_hash: lxmfActiveContact,
+                    content: text,
+                    delivery_method: chosenDelivery,
+                    client_msg_id: attachMsgId,
+                    staging_token: stageToken,
+                }
+            });
         }).then(function(resp) {
             _handleLxmfSendAccepted(resp, attachMsgId);
-        }).catch(function() {});
+        }).catch(function(error) {
+            _markOptimisticMessageFailed(attachMsgId, error);
+        }).finally(function() {
+            if (optimisticImageUrl) {
+                setTimeout(function() {
+                    try { URL.revokeObjectURL(optimisticImageUrl); } catch (_) {}
+                }, 60000);
+            }
+        });
 
         lxmfConversation.push({
             id: attachMsgId,
@@ -3367,18 +3573,20 @@ function sendLxmfMessage(deliveryMethod) {
             timestamp: Date.now() / 1000,
             state: 'sending',
             delivery_method: _optimisticDeliveryMethod(chosenDelivery),
-            attachments: isImage ? [] : [{ filename: lxmfPendingFile.name, size: lxmfPendingFile.size }],
+            attachments: isImage ? [] : [{ filename: pendingAttachment.name, size: pendingAttachment.size }],
             image: isImage ? {
-                mime_type: lxmfPendingFile.mime,
-                size: lxmfPendingFile.size,
-                filename: lxmfPendingFile.name,
-                data_url: 'data:' + lxmfPendingFile.mime + ';base64,' + lxmfPendingFile.data,
+                mime_type: pendingAttachment.mime,
+                size: pendingAttachment.size,
+                filename: pendingAttachment.name,
+                object_url: pendingAttachment.preview_url,
             } : null,
         });
         _cacheActiveConversation();
 
         // Capture before clearPendingFile() wipes pending state.
-        var attachPreview = text || (isImage ? 'Photo' : lxmfPendingFile.name);
+        var attachPreview = text || (isImage ? 'Photo' : pendingAttachment.name);
+        pendingAttachment.preview_url = null;
+        pendingAttachment.detached_for_send = true;
         clearPendingFile();
         renderConversation({ forceScrollBottom: true });
         _updateConversationPreview(lxmfActiveContact, attachPreview, Date.now() / 1000);
@@ -3456,20 +3664,27 @@ function sendLxmfVoiceMemo(voiceDraft, targetHash) {
     var msgId = generateMsgId();
     var filename = voiceDraft.filename || 'Voice message.lxvm';
     var chosenDelivery = _deliveryPrefOrAuto('auto');
-    RS.invoke('send_lxmf_with_attachment', {
-        args: {
-            dest_hash: targetHash,
-            content: '',
-            delivery_method: chosenDelivery,
-            client_msg_id: msgId,
-            file_data: voiceDraft.data_base64,
-            file_name: filename,
-            image_data: null,
-            image_mime: null,
-        }
+    var raw = atob(voiceDraft.data_base64);
+    var voiceBytes = new Uint8Array(raw.length);
+    for (var byteIndex = 0; byteIndex < raw.length; byteIndex++) {
+        voiceBytes[byteIndex] = raw.charCodeAt(byteIndex);
+    }
+    var voiceBlob = new Blob([voiceBytes], { type: 'audio/x-lxst-voice-memo' });
+    _stageAttachmentBlob(voiceBlob, filename, 'audio/x-lxst-voice-memo', false).then(function(stageToken) {
+        return RS.invoke('send_lxmf_with_staged_attachment', {
+            args: {
+                dest_hash: targetHash,
+                content: '',
+                delivery_method: chosenDelivery,
+                client_msg_id: msgId,
+                staging_token: stageToken,
+            }
+        });
     }).then(function(resp) {
         _handleLxmfSendAccepted(resp, msgId);
-    }).catch(function() {});
+    }).catch(function(error) {
+        _markOptimisticMessageFailed(msgId, error);
+    });
 
     if (window.RS && RS.voiceMemos) RS.voiceMemos.registerDraft(msgId, voiceDraft);
     lxmfConversation.push({
@@ -3579,9 +3794,111 @@ function _readBlobBase64(blob) {
     });
 }
 
-function _decodeImageForCanvas(file) {
+function _stageAttachmentBlob(blob, name, mime, isImage) {
+    var stageToken = null;
+    return RS.invoke('begin_attachment_stage', {
+        args: {
+            file_name: name,
+            mime: mime || 'application/octet-stream',
+            declared_size: blob.size,
+            dest_hash: lxmfActiveContact || null,
+            is_image: !!isImage,
+        }
+    }).then(function(start) {
+        stageToken = start.token;
+        var chunkBytes = Math.min(Number(start.chunk_bytes) || (256 * 1024), 256 * 1024);
+        var offset = 0;
+        function appendNext() {
+            if (offset >= blob.size) return Promise.resolve(stageToken);
+            var chunk = blob.slice(offset, Math.min(offset + chunkBytes, blob.size));
+            return _readBlobBase64(chunk).then(function(base64) {
+                return RS.invoke('append_attachment_stage', {
+                    args: {
+                        token: stageToken,
+                        offset: offset,
+                        data_base64: base64,
+                    }
+                });
+            }).then(function(result) {
+                offset = Number(result && result.written);
+                if (!Number.isFinite(offset) || offset <= 0 || offset > blob.size) {
+                    throw new Error('Attachment staging returned an invalid offset');
+                }
+                return appendNext();
+            });
+        }
+        return appendNext();
+    }).catch(function(error) {
+        if (stageToken) {
+            RS.invoke('cancel_attachment_stage', { token: stageToken }).catch(function() {});
+        }
+        throw error;
+    });
+}
+
+function _attachmentImageDimensions(file) {
+    return file.slice(0, Math.min(file.size, 256 * 1024)).arrayBuffer().then(function(buffer) {
+        var b = new Uint8Array(buffer);
+        var view = new DataView(buffer);
+        function be32(offset) { return view.getUint32(offset, false); }
+        function le16(offset) { return view.getUint16(offset, true); }
+        function le32(offset) { return view.getUint32(offset, true); }
+        if (b.length >= 24 && b[0] === 0x89 && String.fromCharCode.apply(null, b.slice(1, 4)) === 'PNG') {
+            return { width: be32(16), height: be32(20) };
+        }
+        if (b.length >= 10 && String.fromCharCode.apply(null, b.slice(0, 6)).match(/^GIF8[79]a$/)) {
+            return { width: le16(6), height: le16(8) };
+        }
+        if (b.length >= 26 && b[0] === 0x42 && b[1] === 0x4d) {
+            return { width: Math.abs(view.getInt32(18, true)), height: Math.abs(view.getInt32(22, true)) };
+        }
+        if (b.length >= 30 && String.fromCharCode.apply(null, b.slice(0, 4)) === 'RIFF' &&
+            String.fromCharCode.apply(null, b.slice(8, 12)) === 'WEBP') {
+            var kind = String.fromCharCode.apply(null, b.slice(12, 16));
+            if (kind === 'VP8X') return {
+                width: 1 + b[24] + (b[25] << 8) + (b[26] << 16),
+                height: 1 + b[27] + (b[28] << 8) + (b[29] << 16)
+            };
+            if (kind === 'VP8L' && b[20] === 0x2f) return {
+                width: 1 + b[21] + ((b[22] & 0x3f) << 8),
+                height: 1 + (b[22] >> 6) + (b[23] << 2) + ((b[24] & 0x0f) << 10)
+            };
+            if (kind === 'VP8 ' && b[23] === 0x9d && b[24] === 0x01 && b[25] === 0x2a) return {
+                width: le16(26) & 0x3fff,
+                height: le16(28) & 0x3fff
+            };
+        }
+        if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
+            var offset = 2;
+            while (offset + 8 <= b.length) {
+                if (b[offset] !== 0xff) { offset++; continue; }
+                while (offset < b.length && b[offset] === 0xff) offset++;
+                var marker = b[offset++];
+                if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+                if (offset + 2 > b.length) break;
+                var length = view.getUint16(offset, false);
+                if (length < 2 || offset + length > b.length) break;
+                if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].indexOf(marker) !== -1) {
+                    return { height: view.getUint16(offset + 3, false), width: view.getUint16(offset + 5, false) };
+                }
+                offset += length;
+            }
+        }
+        var error = new Error('Unsupported or malformed image');
+        error.code = 'attachment_image_unsafe';
+        throw error;
+    });
+}
+
+function _decodeImageForCanvas(file, target) {
     if (typeof createImageBitmap === 'function') {
-        return createImageBitmap(file, { imageOrientation: 'from-image' }).then(function(bitmap) {
+        var options = { imageOrientation: 'from-image' };
+        if (target && (target.width || target.height)) {
+            options.resizeWidth = target.width;
+            options.resizeHeight = target.height;
+            options.resizeQuality = 'high';
+        }
+        return createImageBitmap(file, options).then(function(bitmap) {
             return {
                 source: bitmap,
                 width: bitmap.width,
@@ -3590,7 +3907,8 @@ function _decodeImageForCanvas(file) {
                     if (typeof bitmap.close === 'function') bitmap.close();
                 }
             };
-        }).catch(function() {
+        }).catch(function(error) {
+            if (target) throw error;
             return _decodeImageElementForCanvas(file);
         });
     }
@@ -3636,7 +3954,21 @@ function _canvasToBlob(canvas, mime) {
 
 function _stripImageMetadataForShare(file) {
     var targetMime = _imageShareMime(file && file.type);
-    return _decodeImageForCanvas(file).then(function(decoded) {
+    return _attachmentImageDimensions(file).then(function(dimensions) {
+        if (!dimensions.width || !dimensions.height) throw new Error('Image has no readable pixels');
+        var scale = Math.min(1, 8192 / dimensions.width, 8192 / dimensions.height,
+            Math.sqrt(16000000 / (dimensions.width * dimensions.height)));
+        var target = scale < 1 ? {
+            width: Math.max(1, Math.floor(dimensions.width * scale)),
+            height: Math.max(1, Math.floor(dimensions.height * scale))
+        } : null;
+        if (target && typeof createImageBitmap !== 'function') {
+            var unsupported = new Error('This image is too large to safely prepare on this device');
+            unsupported.code = 'attachment_image_memory_limit';
+            throw unsupported;
+        }
+        return _decodeImageForCanvas(file, target);
+    }).then(function(decoded) {
         if (!decoded.width || !decoded.height) {
             if (decoded.close) decoded.close();
             throw new Error('Image has no readable pixels');
@@ -3657,26 +3989,42 @@ function _stripImageMetadataForShare(file) {
         if (decoded.close) decoded.close();
         return _canvasToBlob(canvas, targetMime);
     }).then(function(blob) {
-        return _readBlobBase64(blob).then(function(base64) {
-            return {
-                name: _metadataStrippedImageName(file, targetMime),
-                data: base64,
-                size: blob.size,
-                mime: targetMime,
-                metadata_stripped: true
-            };
-        });
+        return {
+            name: _metadataStrippedImageName(file, targetMime),
+            blob: blob,
+            size: blob.size,
+            mime: targetMime,
+            metadata_stripped: true
+        };
     });
 }
 
 function _readGenericAttachment(file) {
-    return _readBlobBase64(file).then(function(base64) {
-        return {
-            name: _pendingAttachmentName(file),
-            data: base64,
-            size: file.size,
-            mime: file.type || 'application/octet-stream',
-        };
+    return Promise.resolve({
+        name: _pendingAttachmentName(file),
+        blob: file,
+        size: file.size,
+        mime: file.type || 'application/octet-stream',
+    });
+}
+
+function _prepareSelectedAttachment(file) {
+    var inlineImage = /^image\//i.test(file.type || '');
+    if (!inlineImage) {
+        return _readGenericAttachment(file).then(function(attachment) {
+            return { attachment: attachment, inline_image: false, fell_back_to_file: false };
+        });
+    }
+    return _stripImageMetadataForShare(file).then(function(attachment) {
+        return { attachment: attachment, inline_image: true, fell_back_to_file: false };
+    }).catch(function(error) {
+        if (!error || (error.code !== 'attachment_image_unsafe' &&
+            error.code !== 'attachment_image_memory_limit')) {
+            throw error;
+        }
+        return _readGenericAttachment(file).then(function(attachment) {
+            return { attachment: attachment, inline_image: false, fell_back_to_file: true };
+        });
     });
 }
 
@@ -3684,7 +4032,7 @@ function handleFileSelected(inputEl) {
     var file = inputEl.files[0];
     if (!file) return;
 
-    var maxSize = lxmfLimits.max_attachment_bytes || 134217727;
+    var maxSize = lxmfLimits.max_attachment_bytes || 128000000;
     if (file.size > maxSize) {
         showToast('File exceeds protocol limit (' + prettySize(file.size) + ' > ' + prettySize(maxSize) + '). Choose a smaller file.', 'toast-red', 5000);
         inputEl.value = '';
@@ -3697,11 +4045,16 @@ function handleFileSelected(inputEl) {
 
     var token = ++_pendingAttachmentToken;
     var isImage = /^image\//i.test(file.type || '');
-    var prepare = isImage ? _stripImageMetadataForShare(file) : _readGenericAttachment(file);
+    var prepare = _prepareSelectedAttachment(file);
     if (isImage) showToast('Removing image metadata...', 'toast-blue', 1800);
 
-    prepare.then(function(pendingFile) {
+    prepare.then(function(prepared) {
         if (token !== _pendingAttachmentToken) return;
+        var pendingFile = prepared.attachment;
+        isImage = prepared.inline_image;
+        if (prepared.fell_back_to_file) {
+            showToast('Image attached as a file.', 'toast-blue', 2500);
+        }
         if (pendingFile.size > maxSize) {
             showToast('Sanitized image exceeds protocol limit (' + prettySize(pendingFile.size) + ' > ' + prettySize(maxSize) + '). Choose a smaller image.', 'toast-red', 5000);
             clearPendingFile();
@@ -3710,6 +4063,26 @@ function handleFileSelected(inputEl) {
         if (pendingFile.size > (lxmfLimits.efficient_resource_bytes || 1048575) && file.size <= (lxmfLimits.efficient_resource_bytes || 1048575)) {
             showToast('Large attachment - transfer may take a while on slow links.', 'toast-blue', 3500);
         }
+        pendingFile.preview_url = isImage ? URL.createObjectURL(pendingFile.blob) : null;
+        pendingFile.stage_promise = _stageAttachmentBlob(
+            pendingFile.blob,
+            pendingFile.name,
+            pendingFile.mime,
+            isImage
+        ).then(function(stageToken) {
+            if (pendingFile.cancelled) {
+                RS.invoke('cancel_attachment_stage', { token: stageToken }).catch(function() {});
+                return null;
+            }
+            pendingFile.staging_token = stageToken;
+            return stageToken;
+        }).catch(function(error) {
+            pendingFile.stage_error = error;
+            if (!pendingFile.cancelled && lxmfPendingFile === pendingFile) {
+                showToast((error && error.message) || 'Could not stage attachment', 'toast-red', 4500);
+            }
+            return null;
+        });
         lxmfPendingFile = pendingFile;
         renderPendingFile();
     }).catch(function(err) {
@@ -3739,7 +4112,7 @@ function renderPendingFile() {
     var isImage = lxmfPendingFile.mime.startsWith('image/');
     container.classList.toggle('pending-file-has-image', isImage);
     var previewHtml = isImage
-        ? '<span class="pending-file-thumbnail"><img src="data:' + escapeHtml(lxmfPendingFile.mime) + ';base64,' + lxmfPendingFile.data + '" alt=""></span>'
+        ? '<span class="pending-file-thumbnail"><img src="' + escapeHtml(lxmfPendingFile.preview_url || '') + '" alt=""></span>'
         : '<span class="pending-file-thumbnail pending-file-thumbnail-file"><span class="file-icon">\ud83d\udcce</span></span>';
     container.innerHTML =
         previewHtml +
@@ -3754,7 +4127,17 @@ function renderPendingFile() {
 
 function clearPendingFile() {
     _pendingAttachmentToken++;
+    var pending = lxmfPendingFile;
     lxmfPendingFile = null;
+    if (pending) {
+        pending.cancelled = !pending.detached_for_send;
+        if (pending.staging_token && !pending.detached_for_send) {
+            RS.invoke('cancel_attachment_stage', { token: pending.staging_token }).catch(function() {});
+        }
+        if (pending.preview_url) {
+            try { URL.revokeObjectURL(pending.preview_url); } catch (_) {}
+        }
+    }
     var container = document.getElementById('lxmf-pending-file');
     if (container) {
         container.innerHTML = '';
@@ -4004,6 +4387,9 @@ function _messageMediaContextAction(msgData) {
             label: canCopyImage ? 'Copy' : 'Save',
             icon: canCopyImage ? 'copy' : 'save',
             run: function() {
+                if (!canCopyImage && image.stored_name && typeof isTauriMobile === 'function' && isTauriMobile()) {
+                    return RS.saveFile(image.stored_name, { preferPhotos: true });
+                }
                 return _resolveMessageImageFile(msgData).then(function(file) {
                     if (canCopyImage) {
                         return _copyDownloadedImage(file).then(function() {
@@ -4022,6 +4408,11 @@ function _messageMediaContextAction(msgData) {
             label: 'Save',
             icon: 'save',
             run: function() {
+                if (attachment.stored_name &&
+                    ((typeof isTauriMobile === 'function' && isTauriMobile()) ||
+                     (typeof isTauriDesktop === 'function' && isTauriDesktop()))) {
+                    return RS.saveFile(attachment.stored_name);
+                }
                 return _resolveMessageAttachmentFile(attachment).then(function(file) {
                     return _saveDownloadedMediaFile(file);
                 });
@@ -4250,6 +4641,11 @@ function addLxmfContact() {
 }
 
 RS.listen('lxmf_identity', function(data) {
+    var nextIdentityHash = (data && (data.hash || data.identity_hash)) || null;
+    if (_imageCacheIdentityHash && nextIdentityHash !== _imageCacheIdentityHash) {
+        _clearImageBlobUrlCache();
+    }
+    _imageCacheIdentityHash = nextIdentityHash;
     lxmfIdentity = data;
     var el = document.getElementById('lxmf-own-hash');
     if (el && data.hash) {
@@ -5511,6 +5907,8 @@ function _fileFromDataUrl(src, filename, mime) {
     var blob = new Blob([bytes], { type: resolvedMime });
     return {
         url: URL.createObjectURL(blob),
+        blob: blob,
+        size: blob.size,
         filename: resolvedName,
         mime: resolvedMime,
         data_base64: match[2]
@@ -5537,6 +5935,7 @@ function _fileFromImageElement(img) {
 }
 
 function _blobFromDownloadedFile(file) {
+    if (file && file.blob) return file.blob;
     var raw = atob(file.data_base64 || '');
     var bytes = new Uint8Array(raw.length);
     for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
@@ -5618,6 +6017,16 @@ function _ensureImageViewer() {
     viewer.querySelector('#image-viewer-save').addEventListener('click', function(e) {
         e.stopPropagation();
         var source = viewer._sourceImage;
+        var stored = source && (source.getAttribute('data-stored-name') ||
+            (source.closest('.lxmf-image-button') && source.closest('.lxmf-image-button').getAttribute('data-stored-name')));
+        if (stored) {
+            RS.saveFile(stored, { preferPhotos: true }).then(function(saved) {
+                if (saved !== false) showToast('Saved', 'toast-green', 2500);
+            }).catch(function(err) {
+                showToast('Save failed: ' + ((err && err.message) || 'error'), 'toast-red', 4000);
+            });
+            return;
+        }
         _fileFromImageElement(source).then(function(file) {
             return _saveDownloadedMediaFile(file, { preferPhotos: true });
         }).catch(function(err) {

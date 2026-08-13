@@ -1936,6 +1936,11 @@ pub fn lxmf_delivery_queued(
 pub enum LxmfSubmissionFailureReason {
     RouterUnavailable,
     PreparationFailed,
+    AttachmentBusy,
+    AttachmentMemoryPressure,
+    AttachmentTooLarge,
+    AttachmentEnvelopeTooLarge,
+    AttachmentStorageFailed,
 }
 
 impl LxmfSubmissionFailureReason {
@@ -1943,6 +1948,11 @@ impl LxmfSubmissionFailureReason {
         match self {
             Self::RouterUnavailable => "router_unavailable",
             Self::PreparationFailed => "preparation_failed",
+            Self::AttachmentBusy => "attachment_busy",
+            Self::AttachmentMemoryPressure => "attachment_memory_pressure",
+            Self::AttachmentTooLarge => "attachment_too_large",
+            Self::AttachmentEnvelopeTooLarge => "attachment_envelope_too_large",
+            Self::AttachmentStorageFailed => "attachment_storage_failed",
         }
     }
 }
@@ -2248,6 +2258,24 @@ pub struct LxmfInboundRejected {
     pub link: LinkId,
     pub encoded_bytes: u64,
     pub max_message_bytes: u64,
+    pub reason: LxmfInboundRejectionReason,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LxmfInboundRejectionReason {
+    SizeLimit,
+    AttachmentBusy,
+    AttachmentMemoryPressure,
+}
+
+impl LxmfInboundRejectionReason {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::SizeLimit => "size_limit",
+            Self::AttachmentBusy => "attachment_busy",
+            Self::AttachmentMemoryPressure => "attachment_memory_pressure",
+        }
+    }
 }
 
 pub fn lxmf_inbound_rejected(
@@ -2267,7 +2295,7 @@ pub fn lxmf_inbound_rejected(
         IdentifierKind::Link,
         &input.link.0,
     )?
-    .operational_code(ActivityAttributeKey::Reason, "size_limit")?
+    .operational_code(ActivityAttributeKey::Reason, input.reason.code())?
     .exact(
         ActivityAttributeKey::ByteLength,
         ExactValue::Unsigned(input.encoded_bytes),
@@ -3428,6 +3456,7 @@ mod tests {
             link: LinkId::new([6; 16]),
             encoded_bytes: 1_000_001,
             max_message_bytes: 1_000_000,
+            reason: LxmfInboundRejectionReason::SizeLimit,
         })
         .unwrap()
         .validate(super::super::classified::DraftContext {
