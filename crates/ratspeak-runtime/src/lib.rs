@@ -15,6 +15,7 @@ pub mod channels;
 pub mod hardware;
 pub mod helpers;
 pub mod identity_prune;
+pub mod image_attachment;
 pub mod lxmf;
 pub mod messaging;
 pub mod mobile_platform;

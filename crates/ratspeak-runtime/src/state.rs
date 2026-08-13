@@ -128,8 +128,27 @@ pub struct StagedAttachment {
     pub is_image: bool,
     written: usize,
     write_in_progress: bool,
+    image_source: bool,
+    image_prepared: bool,
+    image_preparing: bool,
+    image_preparation_revision: u64,
     identity_generation: u64,
     lease: Option<AttachmentTransferLease>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StagedImageAttachmentSnapshot {
+    pub path: PathBuf,
+    pub file_name: String,
+    pub source_size: usize,
+    pub preparation_revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImageAttachmentStagingError {
+    NotFound,
+    InvalidState,
+    Admission(AttachmentTransferAdmissionError),
 }
 
 impl StagedAttachment {
@@ -524,6 +543,9 @@ pub struct AppState {
     attachment_transfer_budget: Mutex<AttachmentTransferBudgetState>,
     attachment_pressure_until_ms: AtomicU64,
     attachment_staging: Mutex<HashMap<String, StagedAttachment>>,
+    /// Serializes bounded still-image decoding/encoding across all WebViews.
+    /// The staging registry remains the lifecycle and cancellation authority.
+    pub image_preparation_lock: tokio::sync::Mutex<()>,
     /// Canonical LXMF message hash to the admission permit retained until the
     /// router reports a terminal delivery state. This keeps a queued split
     /// Resource inside the same one-large-transfer budget as its staging and
@@ -759,6 +781,7 @@ impl AppState {
             attachment_transfer_budget: Mutex::new(AttachmentTransferBudgetState::default()),
             attachment_pressure_until_ms: AtomicU64::new(0),
             attachment_staging: Mutex::new(HashMap::new()),
+            image_preparation_lock: tokio::sync::Mutex::new(()),
             attachment_delivery_leases: Mutex::new(HashMap::new()),
             inbound_attachment_transfers: Mutex::new(HashMap::new()),
             lrgp_msg_to_session: Mutex::new(HashMap::new()),
@@ -1080,6 +1103,10 @@ impl AppState {
             is_image,
             written: 0,
             write_in_progress: false,
+            image_source: is_image,
+            image_prepared: !is_image,
+            image_preparing: false,
+            image_preparation_revision: 0,
             identity_generation: self.current_identity_session_generation(),
             lease: Some(lease),
         };
@@ -1160,9 +1187,225 @@ impl AppState {
         let complete = staging.get(token).is_some_and(|staged| {
             staged.identity_generation == self.current_identity_session_generation()
                 && !staged.write_in_progress
+                && !staged.image_preparing
+                && (!staged.image_source || staged.image_prepared)
                 && staged.written == staged.declared_size
         });
         complete.then(|| staging.remove(token)).flatten()
+    }
+
+    pub fn inspect_staged_image_attachment(
+        &self,
+        token: &str,
+    ) -> Result<StagedImageAttachmentSnapshot, ImageAttachmentStagingError> {
+        let staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let staged = staging
+            .get(token)
+            .ok_or(ImageAttachmentStagingError::NotFound)?;
+        if staged.identity_generation != self.current_identity_session_generation()
+            || !staged.image_source
+            || staged.image_prepared
+            || staged.image_preparing
+            || staged.write_in_progress
+            || staged.written != staged.declared_size
+        {
+            return Err(ImageAttachmentStagingError::InvalidState);
+        }
+        Ok(StagedImageAttachmentSnapshot {
+            path: staged.path.clone(),
+            file_name: staged.file_name.clone(),
+            source_size: staged.declared_size,
+            preparation_revision: staged.image_preparation_revision,
+        })
+    }
+
+    pub fn begin_staged_image_preparation(
+        &self,
+        token: &str,
+    ) -> Result<StagedImageAttachmentSnapshot, ImageAttachmentStagingError> {
+        let mut staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let staged = staging
+            .get_mut(token)
+            .ok_or(ImageAttachmentStagingError::NotFound)?;
+        if staged.identity_generation != self.current_identity_session_generation()
+            || !staged.image_source
+            || staged.image_prepared
+            || staged.image_preparing
+            || staged.write_in_progress
+            || staged.written != staged.declared_size
+        {
+            return Err(ImageAttachmentStagingError::InvalidState);
+        }
+        staged.image_preparing = true;
+        staged.image_preparation_revision =
+            staged.image_preparation_revision.wrapping_add(1).max(1);
+        Ok(StagedImageAttachmentSnapshot {
+            path: staged.path.clone(),
+            file_name: staged.file_name.clone(),
+            source_size: staged.declared_size,
+            preparation_revision: staged.image_preparation_revision,
+        })
+    }
+
+    pub fn finish_staged_image_preparation(
+        &self,
+        token: &str,
+        preparation_revision: u64,
+        prepared_path: PathBuf,
+        file_name: String,
+        mime: String,
+        prepared_size: usize,
+    ) -> Result<(), ImageAttachmentStagingError> {
+        if prepared_size == 0 || prepared_size > rns_protocol::resource::MAX_RESOURCE_SIZE {
+            return Err(ImageAttachmentStagingError::Admission(
+                AttachmentTransferAdmissionError::TooLarge,
+            ));
+        }
+        if std::fs::metadata(&prepared_path)
+            .ok()
+            .and_then(|metadata| usize::try_from(metadata.len()).ok())
+            != Some(prepared_size)
+        {
+            return Err(ImageAttachmentStagingError::Admission(
+                AttachmentTransferAdmissionError::Storage,
+            ));
+        }
+        let mut staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let staged = staging
+            .get_mut(token)
+            .ok_or(ImageAttachmentStagingError::NotFound)?;
+        if staged.identity_generation != self.current_identity_session_generation()
+            || !staged.image_source
+            || staged.image_prepared
+            || !staged.image_preparing
+            || staged.image_preparation_revision != preparation_revision
+        {
+            return Err(ImageAttachmentStagingError::InvalidState);
+        }
+
+        let lease = staged
+            .lease
+            .as_mut()
+            .ok_or(ImageAttachmentStagingError::InvalidState)?;
+        let new_lane = if prepared_size > rns_protocol::resource::MAX_EFFICIENT_SIZE {
+            AttachmentTransferLane::Large
+        } else {
+            AttachmentTransferLane::Small
+        };
+        let mut budget = self
+            .attachment_transfer_budget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match (lease.lane, new_lane) {
+            (AttachmentTransferLane::Small, AttachmentTransferLane::Small) => {
+                let without_old = budget.small_bytes.saturating_sub(lease.bytes);
+                let Some(updated) = without_old.checked_add(prepared_size) else {
+                    return Err(ImageAttachmentStagingError::Admission(
+                        AttachmentTransferAdmissionError::MemoryPressure,
+                    ));
+                };
+                if updated > LXMF_SMALL_ATTACHMENT_BUDGET_BYTES {
+                    return Err(ImageAttachmentStagingError::Admission(
+                        AttachmentTransferAdmissionError::MemoryPressure,
+                    ));
+                }
+                budget.small_bytes = updated;
+                lease.bytes = prepared_size;
+            }
+            (AttachmentTransferLane::Small, AttachmentTransferLane::Large) => {
+                if budget.large_active {
+                    return Err(ImageAttachmentStagingError::Admission(
+                        AttachmentTransferAdmissionError::Busy,
+                    ));
+                }
+                if unix_time_ms() < self.attachment_pressure_until_ms.load(Ordering::Acquire) {
+                    return Err(ImageAttachmentStagingError::Admission(
+                        AttachmentTransferAdmissionError::MemoryPressure,
+                    ));
+                }
+                budget.small_bytes = budget.small_bytes.saturating_sub(lease.bytes);
+                budget.large_active = true;
+                lease.lane = AttachmentTransferLane::Large;
+                lease.bytes = prepared_size;
+            }
+            (AttachmentTransferLane::Large, AttachmentTransferLane::Large) => {
+                lease.bytes = prepared_size;
+            }
+            (AttachmentTransferLane::Large, AttachmentTransferLane::Small) => {
+                if let Some(updated) = budget.small_bytes.checked_add(prepared_size) {
+                    if updated <= LXMF_SMALL_ATTACHMENT_BUDGET_BYTES {
+                        budget.small_bytes = updated;
+                        budget.large_active = false;
+                        lease.lane = AttachmentTransferLane::Small;
+                    }
+                }
+                lease.bytes = prepared_size;
+            }
+        }
+        drop(budget);
+
+        let old_path = std::mem::replace(&mut staged.path, prepared_path);
+        staged.file_name = file_name;
+        staged.mime = mime;
+        staged.declared_size = prepared_size;
+        staged.written = prepared_size;
+        staged.is_image = true;
+        staged.image_source = false;
+        staged.image_prepared = true;
+        staged.image_preparing = false;
+        drop(staging);
+        let _ = std::fs::remove_file(old_path);
+        Ok(())
+    }
+
+    pub fn abort_staged_image_preparation(&self, token: &str, preparation_revision: u64) {
+        let mut staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(staged) = staging.get_mut(token) {
+            if staged.image_source
+                && staged.image_preparing
+                && staged.image_preparation_revision == preparation_revision
+            {
+                staged.image_preparing = false;
+            }
+        }
+    }
+
+    pub fn mark_staged_image_as_file(
+        &self,
+        token: &str,
+    ) -> Result<(), ImageAttachmentStagingError> {
+        let mut staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let staged = staging
+            .get_mut(token)
+            .ok_or(ImageAttachmentStagingError::NotFound)?;
+        if staged.identity_generation != self.current_identity_session_generation()
+            || !staged.image_source
+            || staged.image_prepared
+            || staged.image_preparing
+            || staged.write_in_progress
+            || staged.written != staged.declared_size
+        {
+            return Err(ImageAttachmentStagingError::InvalidState);
+        }
+        staged.is_image = false;
+        staged.image_source = false;
+        staged.image_prepared = true;
+        Ok(())
     }
 
     pub fn cancel_attachment_staging(&self, token: &str) -> bool {
@@ -2684,6 +2927,87 @@ mod tests {
         assert!(state.cancel_attachment_staging(&token));
         assert!(!path.exists());
         assert!(state.reserve_attachment_transfer(size).is_ok());
+    }
+
+    #[test]
+    fn image_staging_requires_one_exact_preparation_before_send() {
+        let state = Arc::new(make_state());
+        let token = state
+            .begin_attachment_staging("camera.jpg".to_string(), "image/jpeg".to_string(), 6, true)
+            .unwrap();
+        state
+            .append_attachment_staging(&token, 0, b"source")
+            .unwrap();
+        assert!(state.take_completed_attachment_staging(&token).is_none());
+
+        let snapshot = state.begin_staged_image_preparation(&token).unwrap();
+        assert!(matches!(
+            state.begin_staged_image_preparation(&token),
+            Err(ImageAttachmentStagingError::InvalidState)
+        ));
+        let prepared_path = snapshot.path.with_file_name("prepared-image");
+        std::fs::write(&prepared_path, b"done").unwrap();
+        state
+            .finish_staged_image_preparation(
+                &token,
+                snapshot.preparation_revision,
+                prepared_path.clone(),
+                "camera.jpg".to_string(),
+                "image/jpeg".to_string(),
+                4,
+            )
+            .unwrap();
+        assert!(!snapshot.path.exists());
+
+        let staged = state.take_completed_attachment_staging(&token).unwrap();
+        assert_eq!(staged.declared_size, 4);
+        assert_eq!(std::fs::read(&staged.path).unwrap(), b"done");
+        assert!(staged.is_image);
+        drop(staged);
+        assert!(!prepared_path.exists());
+    }
+
+    #[test]
+    fn animated_or_unsupported_image_can_be_explicitly_sent_as_file() {
+        let state = Arc::new(make_state());
+        let token = state
+            .begin_attachment_staging(
+                "animation.gif".to_string(),
+                "image/gif".to_string(),
+                3,
+                true,
+            )
+            .unwrap();
+        state.append_attachment_staging(&token, 0, b"gif").unwrap();
+        state.mark_staged_image_as_file(&token).unwrap();
+        let staged = state.take_completed_attachment_staging(&token).unwrap();
+        assert!(!staged.is_image);
+        assert_eq!(staged.mime, "image/gif");
+    }
+
+    #[test]
+    fn cancelled_image_preparation_cannot_publish_stale_output() {
+        let state = Arc::new(make_state());
+        let token = state
+            .begin_attachment_staging("photo.png".to_string(), "image/png".to_string(), 3, true)
+            .unwrap();
+        state.append_attachment_staging(&token, 0, b"png").unwrap();
+        let snapshot = state.begin_staged_image_preparation(&token).unwrap();
+        assert!(state.cancel_attachment_staging(&token));
+        let prepared_path = snapshot.path.with_file_name("stale-output");
+        std::fs::write(&prepared_path, b"stale").unwrap();
+        assert!(matches!(
+            state.finish_staged_image_preparation(
+                &token,
+                snapshot.preparation_revision,
+                prepared_path.clone(),
+                "photo.png".to_string(),
+                "image/png".to_string(),
+                5,
+            ),
+            Err(ImageAttachmentStagingError::NotFound)
+        ));
+        std::fs::remove_file(prepared_path).unwrap();
     }
 
     #[test]

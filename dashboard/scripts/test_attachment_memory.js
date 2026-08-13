@@ -42,30 +42,38 @@ assert(!state.slice(downloadStart, downloadEnd).includes('data_base64'),
 assert(lxmf.includes("RS.invoke('begin_attachment_stage'"));
 assert(lxmf.includes("RS.invoke('append_attachment_stage'"));
 assert(lxmf.includes("RS.invoke('send_lxmf_with_staged_attachment'"));
+assert(lxmf.includes("RS.invoke('inspect_image_attachment_stage'"));
+assert(lxmf.includes("RS.invoke('prepare_image_attachment_stage'"));
+assert(lxmf.includes("RS.invoke('mark_image_attachment_stage_as_file'"));
 assert(lxmf.includes('var _imageHydrationMax = 3;'));
 assert(lxmf.includes("new IntersectionObserver"));
 assert(lxmf.includes("return mobile ? (16 * 1024 * 1024) : (32 * 1024 * 1024);"));
 assert(lxmf.includes('var _cacheMax = 8;'));
 assert(lxmf.includes('var _conversationCacheMaxBytes = 2 * 1024 * 1024;'));
 assert(lxmf.includes('function handleAttachmentMemoryPressure(critical)'));
-assert(lxmf.includes("error.code !== 'attachment_image_unsafe'"));
-assert(lxmf.includes("error.code !== 'attachment_image_memory_limit'"));
-assert(lxmf.includes("inline_image: false, fell_back_to_file: true"),
-    'unsupported image formats must remain transferable as ordinary files');
+assert(!lxmf.includes('createImageBitmap('),
+    'large source photos must not decode in the WebView');
+assert(!lxmf.includes("document.createElement('canvas')"),
+    'image transformation must stay in bounded Rust staging');
+assert(lxmf.includes("inspection.disposition !== 'still'"));
+assert(lxmf.includes("choice !== 'file'"),
+    'unsupported and animated images require explicit file fallback');
+assert(lxmf.includes('pendingFile.destination === lxmfActiveContact'),
+    'preparation must be fenced to the originating conversation');
+assert(lxmf.includes('pendingAttachment.destination !== lxmfActiveContact'),
+    'a prepared attachment must not drift into another conversation');
 assert(state.includes("RS.listen('attachment_memory_pressure'"));
 assert(!lxmf.includes("data_url: 'data:' + lxmfPendingFile.mime"),
     'optimistic image rows must not retain base64 data URLs');
 
-var dimensionContext = {
-    Uint8Array: Uint8Array,
-    DataView: DataView,
-    Math: Math,
-    String: String,
-    Error: Error,
-    Promise: Promise,
+var choicePayload = null;
+var choiceContext = {
+    prettySize: function(bytes) { return bytes + ' B'; },
+    rsChoice: function(payload) { choicePayload = payload; return Promise.resolve('medium'); },
 };
-vm.createContext(dimensionContext);
-vm.runInContext(functionSource(lxmf, '_attachmentImageDimensions'), dimensionContext);
+vm.createContext(choiceContext);
+['_pendingAttachmentName', '_imageProfileHint', '_imageProfileLabel', '_chooseImageSize']
+    .forEach(function(name) { vm.runInContext(functionSource(lxmf, name), choiceContext); });
 
 var revoked = [];
 var cacheContext = {
@@ -116,22 +124,29 @@ for (var cacheIndex = 0; cacheIndex < 10; cacheIndex++) {
 assert.strictEqual(conversationContext._cacheLru.length, 8);
 assert.strictEqual(conversationContext._conversationCache['conversation-0'], undefined);
 
-function png(width, height) {
-    var bytes = Buffer.alloc(24);
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes, 0);
-    bytes.writeUInt32BE(width, 16);
-    bytes.writeUInt32BE(height, 20);
-    return new Blob([bytes]);
-}
-
 (async function() {
-    var dimensions = await dimensionContext._attachmentImageDimensions(png(4000, 3000));
-    assert.strictEqual(dimensions.width, 4000);
-    assert.strictEqual(dimensions.height, 3000);
-    await assert.rejects(
-        dimensionContext._attachmentImageDimensions(new Blob(['<svg></svg>'])),
-        /Unsupported or malformed image/
+    var selected = await choiceContext._chooseImageSize(
+        { name: 'mountain.jpg', size: 6400000 },
+        {
+            width: 4032,
+            height: 3024,
+            source_bytes: 6400000,
+            options: [
+                { profile: 'small', label: 'Small', max_edge: 960, estimated_bytes: 240000 },
+                { profile: 'medium', label: 'Medium', max_edge: 1600, estimated_bytes: 720000, recommended: true },
+                { profile: 'large', label: 'Large', max_edge: 2560, estimated_bytes: 1900000 },
+                { profile: 'actual', label: 'Actual size', estimated_bytes: 6400000 },
+            ],
+        }
     );
+    assert.strictEqual(selected, 'medium');
+    assert.strictEqual(choicePayload.sheetClass, 'image-size-sheet');
+    assert.strictEqual(choicePayload.choices.length, 4);
+    assert.deepStrictEqual(choicePayload.choices.map(function(choice) { return choice.meta; }), [
+        '~240000 B', '~720000 B', '~1900000 B', '~6400000 B'
+    ]);
+    assert.strictEqual(choicePayload.choices[1].recommended, true);
+    assert.strictEqual(choicePayload.summary.secondary, '4032 × 3024 · 6400000 B');
     console.log('Attachment memory tests passed');
 })().catch(function(error) {
     console.error(error);

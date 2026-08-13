@@ -4151,14 +4151,15 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
         lxmf.contains("{ label: 'Video', icon: ICON_VIDEO, onSelect: triggerVideoAttachment }")
     );
     assert!(lxmf.contains("function _pendingAttachmentName(file)"));
-    assert!(lxmf.contains("function _stripImageMetadataForShare(file)"));
-    assert!(lxmf.contains("ctx.drawImage(decoded.source"));
-    assert!(lxmf.contains("metadata_stripped: true"));
-    assert!(lxmf.contains("Could not remove image metadata; image not attached"));
+    assert!(lxmf.contains("function _chooseImageSize(file, inspection)"));
+    assert!(lxmf.contains("RS.invoke('inspect_image_attachment_stage'"));
+    assert!(lxmf.contains("RS.invoke('prepare_image_attachment_stage'"));
+    assert!(lxmf.contains("meta: '~' + prettySize(estimate)"));
+    assert!(lxmf.contains("Location and camera details are removed."));
+    assert!(!lxmf.contains("createImageBitmap("));
+    assert!(!lxmf.contains("document.createElement('canvas')"));
     assert!(lxmf.contains("pending-file-thumbnail"));
-    assert!(lxmf.contains(
-        "pendingFile.preview_url = isImage ? URL.createObjectURL(pendingFile.blob) : null;"
-    ));
+    assert!(lxmf.contains("pendingFile.preview_url = _imagePreviewUrl("));
     assert!(lxmf.contains("escapeHtml(lxmfPendingFile.preview_url || '')"));
     assert!(lxmf.contains("URL.revokeObjectURL(pending.preview_url)"));
     assert!(lxmf.contains("container.classList.toggle('pending-file-has-image', isImage);"));
@@ -4169,6 +4170,51 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
     assert!(messaging_css.contains(".pending-file-thumbnail img"));
     assert!(messaging_css.contains("object-fit: cover;"));
     assert!(messaging_css.contains(".pending-file-copy"));
+}
+
+#[test]
+fn image_size_choices_are_bounded_shared_and_outcome_level() {
+    let root = repo_root();
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/image_attachment.rs"))
+        .expect("image attachment runtime");
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let messaging = read_source(root.join("crates/ratspeak-tauri/src/commands/messaging.rs"))
+        .expect("messaging commands");
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri shell");
+    let dialogs = read_source(root.join("dashboard/static/js/dialogs.js")).expect("shared dialogs");
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("messaging js");
+
+    assert!(runtime.contains("pub const IMAGE_SIZE_PROMPT_BYTES: usize = 1_000_000;"));
+    assert!(runtime.contains("Self::Small => Some(250_000)"));
+    assert!(runtime.contains("Self::Medium => Some(750_000)"));
+    assert!(runtime.contains("Self::Large => Some(2_000_000)"));
+    assert!(runtime.contains("pub const IMAGE_MAX_PIXELS: u64 = 16_000_000;"));
+    assert!(runtime.contains("pub const IMAGE_PREVIEW_MAX_EDGE: u32 = 192;"));
+    assert!(runtime.contains("Animated images must be sent as files"));
+    assert!(runtime.contains("original.apply_orientation(orientation)"));
+    assert!(state.contains("pub image_preparation_lock: tokio::sync::Mutex<()>"));
+    assert!(state.contains("!staged.image_preparing"));
+    assert!(state.contains("finish_staged_image_preparation"));
+    assert!(messaging.contains("tokio::task::spawn_blocking(move ||"));
+    assert!(messaging.contains("prepare_image_attachment("));
+    assert!(messaging.contains("\"image_size_prompt_bytes\""));
+    for command in [
+        "inspect_image_attachment_stage",
+        "prepare_image_attachment_stage",
+        "mark_image_attachment_stage_as_file",
+    ] {
+        assert!(shell.contains(command));
+    }
+    assert!(dialogs.contains("function rsChoice(opts)"));
+    assert!(dialogs.contains("opts.sheetClass"));
+    assert!(dialogs.contains("rs-dialog-choice-meta"));
+    assert!(lxmf.contains("sheetClass: 'image-size-sheet'"));
+    assert!(lxmf.contains("title: 'Photo size'"));
+    assert!(lxmf.contains("meta: '~' + prettySize(estimate)"));
+    assert!(lxmf.contains("if (pendingAttachment.preparing)"));
+    assert!(!lxmf.contains("createImageBitmap("));
+    assert!(!lxmf.contains("document.createElement('canvas')"));
 }
 
 #[test]

@@ -144,6 +144,7 @@ function _rsBuildSheet(opts, onClose) {
     overlay.style.zIndex = '99999';
 
     var sheet = shell.sheet;
+    if (opts.sheetClass) sheet.classList.add(opts.sheetClass);
     sheet.setAttribute('role', 'dialog');
     sheet.setAttribute('aria-modal', 'true');
     sheet.setAttribute('aria-label', opts.ariaLabel || opts.title || 'Dialog');
@@ -349,7 +350,8 @@ function rsChoice(opts) {
             titleIcon: opts.titleIcon || '',
             titleIconType: opts.titleIconType || '',
             showTitle: opts.showTitle !== false,
-            ariaLabel: opts.ariaLabel || opts.title || 'Choose an action'
+            ariaLabel: opts.ariaLabel || opts.title || 'Choose an action',
+            sheetClass: opts.sheetClass || ''
         }, resolve);
 
         built.overlay.addEventListener('click', function(e) {
@@ -363,12 +365,38 @@ function rsChoice(opts) {
             built.body.appendChild(msg);
         }
 
+        if (opts.summary) {
+            var summary = document.createElement('div');
+            summary.className = 'rs-dialog-summary';
+            if (opts.summary.primary) {
+                var summaryPrimary = document.createElement('div');
+                summaryPrimary.className = 'rs-dialog-summary-primary';
+                summaryPrimary.textContent = opts.summary.primary;
+                summary.appendChild(summaryPrimary);
+            }
+            if (opts.summary.secondary) {
+                var summarySecondary = document.createElement('div');
+                summarySecondary.className = 'rs-dialog-summary-secondary';
+                summarySecondary.textContent = opts.summary.secondary;
+                summary.appendChild(summarySecondary);
+            }
+            if (opts.summary.note) {
+                var summaryNote = document.createElement('div');
+                summaryNote.className = 'rs-dialog-summary-note';
+                summaryNote.textContent = opts.summary.note;
+                summary.appendChild(summaryNote);
+            }
+            built.body.appendChild(summary);
+        }
+
         var choicesWrap = document.createElement('div');
         choicesWrap.className = 'rs-dialog-choices';
         (opts.choices || []).forEach(function(choice) {
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'rs-dialog-choice' + (choice.danger ? ' rs-dialog-danger' : '');
+            if (choice.recommended) btn.classList.add('is-recommended');
+            btn.disabled = !!choice.disabled;
 
             if (choice.icon) {
                 var icon = document.createElement('span');
@@ -379,10 +407,19 @@ function rsChoice(opts) {
 
             var text = document.createElement('span');
             text.className = 'rs-dialog-choice-text';
+            var labelLine = document.createElement('span');
+            labelLine.className = 'rs-dialog-choice-label-line';
             var label = document.createElement('span');
             label.className = 'rs-dialog-choice-label';
             label.textContent = choice.label;
-            text.appendChild(label);
+            labelLine.appendChild(label);
+            if (choice.recommended) {
+                var recommended = document.createElement('span');
+                recommended.className = 'rs-dialog-recommended';
+                recommended.textContent = 'Recommended';
+                labelLine.appendChild(recommended);
+            }
+            text.appendChild(labelLine);
             if (choice.hint) {
                 var hint = document.createElement('span');
                 hint.className = 'rs-dialog-choice-hint';
@@ -390,6 +427,12 @@ function rsChoice(opts) {
                 text.appendChild(hint);
             }
             btn.appendChild(text);
+            if (choice.meta) {
+                var meta = document.createElement('span');
+                meta.className = 'rs-dialog-choice-meta';
+                meta.textContent = choice.meta;
+                btn.appendChild(meta);
+            }
             btn.addEventListener('click', function() { built.dismiss(choice.value); });
             choicesWrap.appendChild(btn);
         });
@@ -426,7 +469,8 @@ function rsChoice(opts) {
 
         built.present();
 
-        var firstBtn = choicesWrap.querySelector('button');
+        var firstBtn = choicesWrap.querySelector('.is-recommended:not(:disabled)') ||
+            choicesWrap.querySelector('button:not(:disabled)');
         if (firstBtn) firstBtn.focus();
     });
 }

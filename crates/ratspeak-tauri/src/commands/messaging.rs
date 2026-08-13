@@ -20,10 +20,14 @@ use crate::lxmf::{
 };
 use crate::state::{
     AppState, AttachmentTransferAdmissionError, AttachmentTransferLease,
-    LxmfClientSendAdmissionError, LxmfClientSendCancellation, LxmfClientSendCancellationProbe,
-    LxmfClientSendGuard, StagedAttachment,
+    ImageAttachmentStagingError, LxmfClientSendAdmissionError, LxmfClientSendCancellation,
+    LxmfClientSendCancellationProbe, LxmfClientSendGuard, StagedAttachment,
 };
 use ratspeak_runtime::activity::producer;
+use ratspeak_runtime::image_attachment::{
+    ImageAttachmentDisposition, ImageAttachmentError, ImageSizeProfile, inspect_image_attachment,
+    prepare_image_attachment, unavailable_image_inspection,
+};
 
 const MAX_LXMF_MESSAGE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
 const ATTACHMENT_IPC_CHUNK_BYTES: usize = 256 * 1024;
@@ -1527,6 +1531,199 @@ pub async fn cancel_attachment_stage(
     Ok(json!({ "cancelled": removed }))
 }
 
+fn map_image_staging_error(error: ImageAttachmentStagingError) -> AppError {
+    match error {
+        ImageAttachmentStagingError::NotFound => AppError::not_found("Image staging expired"),
+        ImageAttachmentStagingError::InvalidState => {
+            AppError::conflict("Image staging is not ready")
+        }
+        ImageAttachmentStagingError::Admission(error) => match error {
+            AttachmentTransferAdmissionError::Busy => {
+                AppError::conflict("Another large attachment is being prepared")
+            }
+            AttachmentTransferAdmissionError::MemoryPressure => {
+                AppError::service_unavailable("Attachment memory budget is currently full")
+            }
+            AttachmentTransferAdmissionError::TooLarge => AppError::new(
+                "attachment_too_large",
+                "Prepared image exceeds the supported attachment limit",
+            ),
+            AttachmentTransferAdmissionError::Storage => AppError::new(
+                "attachment_storage_failed",
+                "Could not update private attachment staging",
+            ),
+        },
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ImageAttachmentStageArgs {
+    pub token: String,
+}
+
+#[tauri::command]
+pub async fn inspect_image_attachment_stage(
+    state: State<'_, Arc<AppState>>,
+    args: ImageAttachmentStageArgs,
+) -> AppResult<Value> {
+    let _preparation = state.image_preparation_lock.lock().await;
+    let snapshot = state
+        .inspect_staged_image_attachment(&args.token)
+        .map_err(map_image_staging_error)?;
+    let source_size = snapshot.source_size;
+    let inspection = tokio::task::spawn_blocking(move || inspect_image_attachment(&snapshot.path))
+        .await
+        .map_err(|_| AppError::internal("image inspection task panicked"))?;
+    let inspection = match inspection {
+        Ok(inspection) => inspection,
+        Err(ImageAttachmentError::TooLarge) => {
+            unavailable_image_inspection(source_size, ImageAttachmentDisposition::TooLarge)
+        }
+        Err(ImageAttachmentError::Io(_)) => {
+            return Err(AppError::new(
+                "attachment_storage_failed",
+                "Could not inspect private image staging",
+            ));
+        }
+        Err(_) => {
+            unavailable_image_inspection(source_size, ImageAttachmentDisposition::Unsupported)
+        }
+    };
+    Ok(json!(inspection))
+}
+
+#[derive(Deserialize)]
+pub struct PrepareImageAttachmentStageArgs {
+    pub token: String,
+    pub profile: ImageSizeProfile,
+}
+
+#[tauri::command]
+pub async fn prepare_image_attachment_stage(
+    state: State<'_, Arc<AppState>>,
+    args: PrepareImageAttachmentStageArgs,
+) -> AppResult<Value> {
+    let _preparation = state.image_preparation_lock.lock().await;
+    let snapshot = state
+        .begin_staged_image_preparation(&args.token)
+        .map_err(map_image_staging_error)?;
+    let output_path = snapshot.path.with_file_name(format!(
+        "{}.prepared.{}",
+        args.token, snapshot.preparation_revision
+    ));
+    let source_path = snapshot.path.clone();
+    let source_name = snapshot.file_name.clone();
+    let profile = args.profile;
+    let prepared_path = output_path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        prepare_image_attachment(
+            &source_path,
+            &prepared_path,
+            &source_name,
+            profile,
+            ratspeak_runtime::state::LXMF_DELIVERY_LIMIT_MAX_BYTES,
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("image preparation task panicked"));
+
+    let prepared = match result {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(error)) => {
+            let _ = tokio::fs::remove_file(&output_path).await;
+            state.abort_staged_image_preparation(&args.token, snapshot.preparation_revision);
+            return Err(match error {
+                ImageAttachmentError::Animated => AppError::new(
+                    "attachment_image_animated",
+                    "Animated images can be sent as files",
+                ),
+                ImageAttachmentError::TooLarge => AppError::new(
+                    "attachment_image_too_large",
+                    "This image is too large to resize safely",
+                ),
+                ImageAttachmentError::CannotMeetProfile => AppError::new(
+                    "attachment_image_profile_failed",
+                    "Could not prepare the selected photo size",
+                ),
+                ImageAttachmentError::OutputTooLarge => AppError::new(
+                    "attachment_too_large",
+                    "Prepared image exceeds the supported attachment limit",
+                ),
+                ImageAttachmentError::Io(_) => AppError::new(
+                    "attachment_storage_failed",
+                    "Could not prepare private image staging",
+                ),
+                ImageAttachmentError::Unsupported | ImageAttachmentError::Codec(_) => {
+                    AppError::new(
+                        "attachment_image_unsupported",
+                        "This image format can be sent as a file",
+                    )
+                }
+            });
+        }
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&output_path).await;
+            state.abort_staged_image_preparation(&args.token, snapshot.preparation_revision);
+            return Err(error);
+        }
+    };
+
+    let finish_state = Arc::clone(&state);
+    let finish_token = args.token.clone();
+    let finish_path = prepared.path.clone();
+    let finish_name = prepared.file_name.clone();
+    let finish_mime = prepared.mime.to_string();
+    let finish_size = prepared.size;
+    let finish_revision = snapshot.preparation_revision;
+    let finish_result = tokio::task::spawn_blocking(move || {
+        finish_state.finish_staged_image_preparation(
+            &finish_token,
+            finish_revision,
+            finish_path,
+            finish_name,
+            finish_mime,
+            finish_size,
+        )
+    })
+    .await;
+    let finish_result = match finish_result {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&prepared.path).await;
+            state.abort_staged_image_preparation(&args.token, snapshot.preparation_revision);
+            return Err(AppError::internal("image staging task panicked"));
+        }
+    };
+    if let Err(error) = finish_result {
+        let _ = tokio::fs::remove_file(&prepared.path).await;
+        state.abort_staged_image_preparation(&args.token, snapshot.preparation_revision);
+        return Err(map_image_staging_error(error));
+    }
+
+    Ok(json!({
+        "token": args.token,
+        "file_name": prepared.file_name,
+        "mime": prepared.mime,
+        "size": prepared.size,
+        "width": prepared.width,
+        "height": prepared.height,
+        "profile": prepared.profile,
+        "preview_mime": prepared.preview_mime,
+        "preview_base64": B64.encode(prepared.preview_bytes),
+    }))
+}
+
+#[tauri::command]
+pub async fn mark_image_attachment_stage_as_file(
+    state: State<'_, Arc<AppState>>,
+    args: ImageAttachmentStageArgs,
+) -> AppResult<Value> {
+    state
+        .mark_staged_image_as_file(&args.token)
+        .map_err(map_image_staging_error)?;
+    Ok(json!({ "token": args.token, "as_file": true }))
+}
+
 #[derive(Deserialize)]
 pub struct SendStagedAttachmentArgs {
     pub dest_hash: String,
@@ -1938,6 +2135,7 @@ pub async fn api_lxmf_limits(state: State<'_, Arc<AppState>>) -> AppResult<Value
     });
     Ok(json!({
         "max_attachment_bytes": ratspeak_runtime::state::LXMF_DELIVERY_LIMIT_MAX_BYTES,
+        "image_size_prompt_bytes": ratspeak_runtime::image_attachment::IMAGE_SIZE_PROMPT_BYTES,
         "max_message_bytes": MAX_LXMF_MESSAGE_BYTES,
         "efficient_resource_bytes": rns_protocol::resource::MAX_EFFICIENT_SIZE,
         "default_propagation_limit_kb": lxmf_core::constants::PROPAGATION_LIMIT,
