@@ -22,7 +22,7 @@ concurrency:
 env:
   # Keep these ordinary CI/manual-build pins aligned with ci.yml. The
   # release-*.yml workflows intentionally use coordinated release tags.
-  RATSPEAK_RSRETICULUM_REF: 140d0ae8d620566418f781516ae1981747465e17
+  RATSPEAK_RSRETICULUM_REF: 140d0aeed45facdfbf19c555bc74ed5568b6a6ee
   RATSPEAK_RSLXMF_REF: 326022cae8034609f35f729bd92111561cb28e1b
   RATSPEAK_RSLXST_REF: 47827c9e2adb1fbdff84b12e687581f9c8991344
   RATSPEAK_LRGP_REF: 58909b23b1ea0657e7668274e9c3bee4a511e353
