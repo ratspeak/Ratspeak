@@ -3017,34 +3017,6 @@ fn extract_and_save_attachment(
     None
 }
 
-fn decode_lxmf_ticket_field(ticket_data: &[u8]) -> Option<([u8; 16], f64)> {
-    let value = rmpv::decode::read_value(&mut &ticket_data[..]).ok()?;
-    let arr = value.as_array()?;
-    if arr.len() < 2 {
-        return None;
-    }
-
-    let parse_token = |value: &rmpv::Value| -> Option<[u8; 16]> {
-        let bytes = value.as_slice()?;
-        if bytes.len() != 16 {
-            return None;
-        }
-        let mut token = [0u8; 16];
-        token.copy_from_slice(bytes);
-        Some(token)
-    };
-
-    // Python emits `[expires_f64, token:16]`; older Ratspeak builds emitted
-    // `[token:16, expires_f64]`. Accept both on inbound.
-    if let (Some(expires), Some(token)) = (arr[0].as_f64(), parse_token(&arr[1])) {
-        return Some((token, expires));
-    }
-    if let (Some(token), Some(expires)) = (parse_token(&arr[0]), arr[1].as_f64()) {
-        return Some((token, expires));
-    }
-    None
-}
-
 fn clamp_chat_field(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
@@ -3230,6 +3202,14 @@ async fn handle_inbound_lxmf(
             ref rtt,
         } = event
         {
+            // Reticulum has already authenticated this proof. Rejoin it with
+            // the retained Opportunistic LXMF message so callbacks and ticket
+            // last-delivery accounting advance only on actual delivery.
+            if let Ok(mut lxmf) = state.lxmf.lock() {
+                if let Some(manager) = lxmf.as_mut() {
+                    manager.complete_opportunistic_delivery(msg_id);
+                }
+            }
             let rtt_ms = rtt.map(|d| d.as_secs_f64() * 1000.0);
             let msg_id_for_db = msg_id.clone();
             let identity_for_db = helpers::active_identity_id(&state);
@@ -3608,23 +3588,15 @@ async fn process_inbound_lxmf(
         return;
     }
 
-    // FIELD_TICKET 0x0C: `[expires_f64, token:16]` for stamp bypass.
-    if let Some((token, expires)) = msg
-        .fields
-        .get(&lxmf_core::constants::FIELD_TICKET)
-        .and_then(|ticket_data| decode_lxmf_ticket_field(ticket_data))
-    {
+    if sig_valid == Some(true) {
         if let Ok(mut lxmf) = state.lxmf.lock() {
             if let Some(mgr) = lxmf.as_mut() {
-                mgr.router.ticket_store.add(lxmf_core::ticket::Ticket::new(
-                    token,
-                    msg.source_hash,
-                    expires,
-                ));
-                tracing::debug!(
-                    from = %short_id(&hex::encode(msg.source_hash)),
-                    "stored inbound ticket for future stamp bypass"
-                );
+                if mgr.router.learn_ticket_from_inbound(&msg) {
+                    tracing::debug!(
+                        from = %short_id(&hex::encode(msg.source_hash)),
+                        "stored signed inbound ticket for future stamp bypass"
+                    );
+                }
             }
         }
     }
