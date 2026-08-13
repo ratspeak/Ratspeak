@@ -1106,6 +1106,13 @@ fn activity_lxmf_progress_is_typed_and_content_free() {
     assert!(!progress_adapter.contains("update.reason"));
     assert!(!progress_adapter.contains("from_code(update.method)"));
     assert!(runtime.contains("lxmf_progress_supersedes_state"));
+    assert!(
+        runtime.contains("matches!(*new_state, \"propagating\" | \"propagated\")")
+            && runtime.contains(".then_some(\"propagated\".to_string())"),
+        "an Auto fallback must persist the observable Propagated method before UI emission"
+    );
+    assert!(runtime.contains("producer::LxmfDeliveryState::Propagating"));
+    assert!(runtime.contains("producer::LxmfDeliveryState::Propagated"));
 
     for typed_field in [
         "pub kind: LxmfDeliveryProgressKind",
@@ -7242,8 +7249,12 @@ fn lxmf_tick_runs_blocking_work_off_async_runtime() {
         runtime.contains("tick_with_auto_propagation_download_ready(auto_inbox_download_ready)")
     );
     assert!(runtime.contains("lxmf tick worker failed; skipping this tick"));
-    assert!(lxmf.contains("OutboundAction::Failed(message) | OutboundAction::Expired(message)"));
-    assert!(lxmf.contains("expired_or_attempt_exhausted_outbound_surfaces_failed_state"));
+    assert!(lxmf.contains("OutboundAction::Failed(message) =>"));
+    assert!(lxmf.contains("try_auto_propagation_fallback("));
+    assert!(lxmf.contains("OutboundAction::Expired(message) =>"));
+    assert!(lxmf.contains("Do not reinterpret expiry as an"));
+    assert!(lxmf.contains("attempt_exhausted_outbound_surfaces_failed_state"));
+    assert!(lxmf.contains("expired_auto_live_send_does_not_fall_back_to_offline_inbox"));
 }
 
 #[test]

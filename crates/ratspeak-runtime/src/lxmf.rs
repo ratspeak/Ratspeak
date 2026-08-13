@@ -770,7 +770,7 @@ pub enum DeliveryProfile {
     Message,
     /// Payloads that usually need proof-backed link/resource delivery.
     Attachment,
-    /// LRGP game actions should be proof-backed unless routed to a relay.
+    /// LRGP game actions start with proof-backed live Link delivery.
     Lrgp,
 }
 
@@ -859,21 +859,6 @@ pub struct ReactionSendRequest<'a> {
     pub preference: DeliveryPreference,
 }
 
-/// Matches the JS PeersCache "recent" tier. This is intentionally a
-/// last-heard heuristic, not a claim that a peer is online now.
-pub const RECENT_PEER_SECS: f64 = 2.0 * 60.0 * 60.0;
-const DIRECT_LINK_FALLBACK_AFTER_SECS: f64 = 45.0;
-
-pub fn peer_last_seen(db_pool: &DbPool, dest_hash_hex: &str) -> Option<f64> {
-    let conn = db_pool.get().ok()?;
-    conn.query_row(
-        "SELECT last_seen FROM identity_activity WHERE dest_hash = ?1",
-        rusqlite::params![dest_hash_hex],
-        |row| row.get::<_, f64>(0),
-    )
-    .ok()
-}
-
 pub fn lxmf_compression_support_db_value(support: CompressionSupport) -> Option<&'static str> {
     match support {
         CompressionSupport::Unknown => None,
@@ -959,8 +944,9 @@ pub struct LxmfManager {
     delivery_failure_updates: Vec<LxmfDeliveryFailureUpdate>,
     ephemeral_outbound: HashSet<[u8; 32]>,
     last_reported_steps: HashMap<String, ReportedStep>,
-    auto_direct_fallback: HashSet<[u8; 32]>,
-    direct_retry_started_at: HashMap<[u8; 32], f64>,
+    /// Auto sends that began over a live LXMF method and may be retried once
+    /// through the configured Offline Inbox after live delivery fails.
+    auto_live_fallback: HashSet<[u8; 32]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1318,8 +1304,7 @@ impl LxmfManager {
             delivery_failure_updates: Vec::new(),
             ephemeral_outbound: HashSet::new(),
             last_reported_steps: HashMap::new(),
-            auto_direct_fallback: HashSet::new(),
-            direct_retry_started_at: HashMap::new(),
+            auto_live_fallback: HashSet::new(),
         })
     }
 
@@ -1508,21 +1493,6 @@ impl LxmfManager {
         contact_card_public_key_from_profile(&self.data_dir, hash_hex)
     }
 
-    fn peer_recently_seen(&self, db_pool: &DbPool, dest_hash_hex: &str) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        let Some(last_seen) = peer_last_seen(db_pool, dest_hash_hex) else {
-            return false;
-        };
-        now - last_seen <= RECENT_PEER_SECS
-    }
-
-    fn should_use_propagation_fallback(&self, db_pool: &DbPool, dest_hash_hex: &str) -> bool {
-        self.client_propagation_enabled && !self.peer_recently_seen(db_pool, dest_hash_hex)
-    }
-
     fn peer_lxmf_compression_support(
         &self,
         db_pool: Option<&DbPool>,
@@ -1590,15 +1560,13 @@ impl LxmfManager {
                     && self.peer_explicitly_lacks_lxmf_compression(db_pool, dest_hash_hex)
                 {
                     DeliveryMethod::Opportunistic
-                } else if self.should_use_propagation_fallback(db_pool, dest_hash_hex) {
-                    DeliveryMethod::Propagated
                 } else {
-                    match profile {
-                        DeliveryProfile::Message => DeliveryMethod::Direct,
-                        DeliveryProfile::Attachment | DeliveryProfile::Lrgp => {
-                            DeliveryMethod::Direct
-                        }
-                    }
+                    // Reachability is established by Reticulum paths, Links,
+                    // and authenticated proofs, never by a wall-clock
+                    // last-heard heuristic. Auto therefore starts live for
+                    // every profile and falls back to propagation only after
+                    // the live method reaches a real terminal failure.
+                    DeliveryMethod::Direct
                 }
             }
         }
@@ -1822,9 +1790,10 @@ impl LxmfManager {
         );
 
         self.preempt_opportunistic_path(&mut msg);
-        self.track_direct_retry_policy(&msg, preference);
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
         let method = msg.method;
         self.router.try_send(msg).ok()?;
+        self.auto_live_fallback.extend(auto_fallback);
 
         // The manager lock is still held here, so the router cannot advance
         // this freshly accepted message before its local history row exists.
@@ -1991,9 +1960,10 @@ impl LxmfManager {
         );
 
         self.preempt_opportunistic_path(&mut msg);
-        self.track_direct_retry_policy(&msg, preference);
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
         let method = msg.method;
         self.router.try_send(msg).ok()?;
+        self.auto_live_fallback.extend(auto_fallback);
 
         // Persist the blob only after the router has accepted the message, so
         // an immediate propagated-routing rejection cannot orphan a file.
@@ -2030,9 +2000,9 @@ impl LxmfManager {
         })
     }
 
-    /// LRGP send. Default is `Direct` (real LXMF link receipt + 5 built-in
-    /// retries); `Propagated` is the unknown-peer fallback chosen by
-    /// `pick_delivery_method_for_lrgp`.
+    /// LRGP send. Auto starts `Direct` (real LXMF Link proof plus the core
+    /// retry policy) and may use the same terminal Offline Inbox fallback as
+    /// messages and attachments.
     pub fn send_message_with_lrgp_fields(
         &mut self,
         dest_hash_hex: &str,
@@ -2142,8 +2112,9 @@ impl LxmfManager {
         let _ = (db_pool, identity_id, fallback_text);
 
         self.preempt_opportunistic_path(&mut msg);
-        self.track_direct_retry_policy(&msg, preference);
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
         self.router.try_send(msg).ok()?;
+        self.auto_live_fallback.extend(auto_fallback);
         let msg_id_short: String = msg_id.chars().take(8).collect();
         tracing::info!(
             target: "ttt_trace",
@@ -2514,10 +2485,11 @@ impl LxmfManager {
         }
 
         self.preempt_opportunistic_path(&mut msg);
-        self.track_direct_retry_policy(&msg, request.preference);
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, request.preference);
         if self.router.try_send(msg).is_err() {
             return false;
         }
+        self.auto_live_fallback.extend(auto_fallback);
 
         if action == "remove" {
             db::remove_reaction(
@@ -2971,7 +2943,7 @@ impl LxmfManager {
         results: &mut Vec<(String, &'static str)>,
     ) {
         if let Some(hash) = msg_hash {
-            self.clear_direct_retry_policy(&hash);
+            self.clear_auto_live_fallback(&hash);
             if self.ephemeral_outbound.remove(&hash) {
                 return;
             }
@@ -2979,28 +2951,25 @@ impl LxmfManager {
         }
     }
 
-    fn track_direct_retry_policy(&mut self, msg: &LxMessage, preference: DeliveryPreference) {
-        let Some(hash) = msg.hash else {
-            return;
-        };
-        if msg.method != DeliveryMethod::Direct {
-            return;
-        }
-        self.direct_retry_started_at
-            .entry(hash)
-            .or_insert(msg.timestamp);
-        if preference == DeliveryPreference::Auto {
-            self.auto_direct_fallback.insert(hash);
-        }
+    fn auto_live_fallback_hash(
+        msg: &LxMessage,
+        preference: DeliveryPreference,
+    ) -> Option<[u8; 32]> {
+        (preference == DeliveryPreference::Auto
+            && matches!(
+                msg.method,
+                DeliveryMethod::Direct | DeliveryMethod::Opportunistic
+            ))
+        .then_some(msg.hash)
+        .flatten()
     }
 
-    fn clear_direct_retry_policy(&mut self, hash: &[u8; 32]) {
-        self.auto_direct_fallback.remove(hash);
-        self.direct_retry_started_at.remove(hash);
+    fn clear_auto_live_fallback(&mut self, hash: &[u8; 32]) {
+        self.auto_live_fallback.remove(hash);
         self.last_reported_steps.remove(&hex::encode(hash));
     }
 
-    fn prepare_direct_message_for_propagation(message: &mut LxMessage) {
+    fn prepare_live_message_for_propagation(message: &mut LxMessage) {
         message.method = DeliveryMethod::Propagated;
         message.delivery_attempts = 0;
         message.last_delivery_attempt = 0.0;
@@ -3008,164 +2977,50 @@ impl LxmfManager {
         message.progress = 0.0;
     }
 
-    fn elevate_direct_to_propagation_or_fail(
+    /// Retry an Auto-selected live delivery once through the configured
+    /// Offline Inbox. The caller must invoke this only after the live method
+    /// has reached a terminal failure; rejection, cancellation and expiry are
+    /// intentionally not fallback triggers.
+    fn try_auto_propagation_fallback(
         &mut self,
-        message: LxMessage,
+        mut message: LxMessage,
         dest_hash: [u8; 16],
-        _reason: &str,
+        reason: &str,
         results: &mut Vec<(String, &'static str)>,
     ) -> bool {
         let Some(hash) = message.hash else {
             return false;
         };
-        let Some(started_at) = self.direct_retry_started_at.get(&hash).copied() else {
+        if !self.auto_live_fallback.contains(&hash) {
+            return false;
+        }
+        let Some(prop_hash) = self
+            .client_propagation_enabled
+            .then_some(self.router.outbound_propagation_node)
+            .flatten()
+        else {
+            tracing::warn!(
+                dest = %crate::short_id(&hex::encode(dest_hash)),
+                reason,
+                propagation_enabled = self.client_propagation_enabled,
+                propagation_ready = self.router.outbound_propagation_node.is_some(),
+                "Auto live delivery failed without an available Offline Inbox fallback"
+            );
             return false;
         };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        let age = now - started_at;
-        if age < DIRECT_LINK_FALLBACK_AFTER_SECS {
-            return false;
-        }
-
-        let router_pos = self
-            .router
-            .pending_outbound
-            .iter()
-            .position(|pending| pending.hash == Some(hash));
-
-        let mut message = router_pos
-            .map(|pos| self.router.pending_outbound.remove(pos))
-            .unwrap_or(message);
-
-        let prop_hash = self.router.outbound_propagation_node;
-        if self.client_propagation_enabled && self.auto_direct_fallback.contains(&hash) {
-            if let Some(prop_hash) = prop_hash {
-                tracing::warn!(
-                    dest = %crate::short_id(&hex::encode(dest_hash)),
-                    prop = %crate::short_id(&hex::encode(prop_hash)),
-                    reason = "retry_window_exceeded",
-                    attempts = message.delivery_attempts,
-                    age_secs = age,
-                    "direct link retry window exceeded; elevating Auto send to propagation"
-                );
-                Self::prepare_direct_message_for_propagation(&mut message);
-                self.clear_direct_retry_policy(&hash);
-                self.start_propagation_delivery(message, prop_hash, results);
-                return true;
-            }
-        }
 
         tracing::warn!(
             dest = %crate::short_id(&hex::encode(dest_hash)),
-            reason = "retry_window_exceeded",
+            prop = %crate::short_id(&hex::encode(prop_hash)),
+            reason,
+            live_method = ?message.method,
             attempts = message.delivery_attempts,
-            age_secs = age,
-            propagation_enabled = self.client_propagation_enabled,
-            propagation_ready = prop_hash.is_some(),
-            auto_fallback = self.auto_direct_fallback.contains(&hash),
-            "direct link retry window exceeded; failing outbound message"
+            "Auto live delivery failed; retrying through Offline Inbox"
         );
-        self.clear_direct_retry_policy(&hash);
-        results.push((hex::encode(hash), "failed"));
+        Self::prepare_live_message_for_propagation(&mut message);
+        self.clear_auto_live_fallback(&hash);
+        self.start_propagation_delivery(message, prop_hash, results);
         true
-    }
-
-    fn expire_direct_retry_window(&mut self, now: f64, results: &mut Vec<(String, &'static str)>) {
-        let expired = self
-            .direct_retry_started_at
-            .iter()
-            .filter_map(|(hash, started_at)| {
-                (now - *started_at >= DIRECT_LINK_FALLBACK_AFTER_SECS).then_some(*hash)
-            })
-            .collect::<Vec<_>>();
-
-        for hash in expired {
-            if !self.direct_retry_started_at.contains_key(&hash) {
-                continue;
-            }
-
-            if self.defer_direct_retry_expiry_for_link_delivery(hash, now) {
-                continue;
-            }
-
-            let reason = "direct fallback timeout";
-            let forced_results = self
-                .link_delivery
-                .as_mut()
-                .map(|ld| ld.fail_delivery_by_message_hash(hash, reason))
-                .unwrap_or_default();
-
-            if !forced_results.is_empty() {
-                tracing::warn!(
-                    msg = %crate::short_id(&hex::encode(hash)),
-                    "direct retry window exceeded; aborting in-flight Link delivery"
-                );
-                for result in forced_results {
-                    self.handle_link_delivery_result(result, results);
-                }
-                continue;
-            }
-
-            if let Some(message) = self
-                .router
-                .pending_outbound
-                .iter()
-                .find(|message| message.hash == Some(hash))
-                .cloned()
-            {
-                let dest_hash = message.destination_hash;
-                let _ =
-                    self.elevate_direct_to_propagation_or_fail(message, dest_hash, reason, results);
-            }
-        }
-    }
-
-    fn defer_direct_retry_expiry_for_link_delivery(&mut self, hash: [u8; 32], now: f64) -> bool {
-        let Some(snapshot) = self
-            .link_delivery
-            .as_ref()
-            .and_then(|ld| ld.message_delivery_snapshot(hash))
-        else {
-            return false;
-        };
-
-        let resource_in_progress = !snapshot.queued
-            && snapshot.representation == DeliveryRepresentation::Resource
-            && matches!(
-                snapshot.delivery_state,
-                DeliveryState::Transferring | DeliveryState::AwaitingProof
-            );
-        if resource_in_progress {
-            tracing::trace!(
-                msg = %crate::short_id(&hex::encode(hash)),
-                link_id = %crate::short_id(&hex::encode(snapshot.link_id)),
-                progress = snapshot.progress,
-                "direct retry window expired, but an active resource transfer owns the message"
-            );
-            return true;
-        }
-
-        let queued_behind_active_delivery = snapshot.queued
-            && snapshot.in_flight_deliveries > 0
-            && matches!(
-                snapshot.delivery_state,
-                DeliveryState::Transferring | DeliveryState::AwaitingProof
-            );
-        if queued_behind_active_delivery {
-            self.direct_retry_started_at.insert(hash, now);
-            tracing::trace!(
-                msg = %crate::short_id(&hex::encode(hash)),
-                link_id = %crate::short_id(&hex::encode(snapshot.link_id)),
-                queued = snapshot.queued_deliveries,
-                "direct retry window extended while queued behind an active Link delivery"
-            );
-            return true;
-        }
-
-        false
     }
 
     fn start_direct_link_delivery_with_results(
@@ -3210,6 +3065,7 @@ impl LxmfManager {
                 }
                 Err(err) => {
                     let reason = err.error.to_string();
+                    let failed_message = *err.message;
                     tracing::warn!(
                         dest = %crate::short_id(&dest_hex),
                         attempts,
@@ -3219,18 +3075,27 @@ impl LxmfManager {
                     );
                     let requeued = if router_owned {
                         self.requeue_or_defer_direct_after_link_failure(
-                            *err.message,
+                            failed_message.clone(),
                             dest_hash,
                             &reason,
                         )
                     } else {
-                        self.requeue_direct_after_link_failure(*err.message, dest_hash, &reason)
+                        self.requeue_direct_after_link_failure(
+                            failed_message.clone(),
+                            dest_hash,
+                            &reason,
+                        )
                     };
                     if requeued {
                         if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                             results.push((hex::encode(hash), "routing"));
                         }
-                    } else {
+                    } else if !self.try_auto_propagation_fallback(
+                        failed_message,
+                        dest_hash,
+                        &reason,
+                        results,
+                    ) {
                         self.push_failed_outbound_state(msg_hash, results);
                     }
                 }
@@ -3334,7 +3199,7 @@ impl LxmfManager {
         if !matches!(
             message.method,
             DeliveryMethod::Direct | DeliveryMethod::Opportunistic
-        ) || message.delivery_attempts > MAX_DELIVERY_ATTEMPTS
+        ) || message.delivery_attempts >= MAX_DELIVERY_ATTEMPTS
             || !retryable
         {
             return false;
@@ -3392,7 +3257,7 @@ impl LxmfManager {
         if !matches!(
             message.method,
             DeliveryMethod::Direct | DeliveryMethod::Opportunistic
-        ) || message.delivery_attempts > MAX_DELIVERY_ATTEMPTS
+        ) || message.delivery_attempts >= MAX_DELIVERY_ATTEMPTS
             || !retryable
         {
             let _ = self.router.mark_outbound_failed(&hash);
@@ -3713,8 +3578,6 @@ impl LxmfManager {
             self.drain_link_delivery_progress_updates();
         }
 
-        self.expire_direct_retry_window(now, &mut results);
-
         if let Some(ref mut ps) = self.propagation_sync {
             ps.drain_events(&self.known_identities);
             ps.tick();
@@ -3896,6 +3759,7 @@ impl LxmfManager {
             return false;
         };
 
+        self.clear_auto_live_fallback(&hash);
         self.ephemeral_outbound.remove(&hash);
         self.router.complete_outbound_message(pending.message);
         true
@@ -3922,6 +3786,7 @@ impl LxmfManager {
                     %error,
                     "failed to schedule opportunistic delivery retry"
                 );
+                self.clear_auto_live_fallback(&hash);
                 if !self.ephemeral_outbound.remove(&hash) {
                     results.push((hex::encode(hash), "failed"));
                 }
@@ -3938,7 +3803,7 @@ impl LxmfManager {
         };
 
         let mut cancelled = false;
-        self.clear_direct_retry_policy(&hash);
+        self.clear_auto_live_fallback(&hash);
         cancelled |= self.ephemeral_outbound.remove(&hash);
         cancelled |= self.in_flight_propagation.remove(&hash).is_some();
         cancelled |= self.opportunistic_in_flight.remove(&hash).is_some();
@@ -3965,7 +3830,7 @@ impl LxmfManager {
         match result {
             DeliveryResult::Complete { msg_hash, .. } => {
                 if let Some(hash) = msg_hash {
-                    self.clear_direct_retry_policy(&hash);
+                    self.clear_auto_live_fallback(&hash);
                     if self.ephemeral_outbound.remove(&hash) {
                         return;
                     }
@@ -3993,7 +3858,7 @@ impl LxmfManager {
                     "link delivery rejected"
                 );
                 if let Some(hash) = msg_hash {
-                    self.clear_direct_retry_policy(&hash);
+                    self.clear_auto_live_fallback(&hash);
                     if self.ephemeral_outbound.remove(&hash) {
                         return;
                     }
@@ -4023,26 +3888,24 @@ impl LxmfManager {
                         return;
                     }
                     if let Some(prop_hash) = self.in_flight_propagation.remove(&hash) {
-                        self.clear_direct_retry_policy(&hash);
+                        self.clear_auto_live_fallback(&hash);
                         self.failed_propagation_deposits
                             .push((prop_hash, reason.clone()));
                         results.push((hex::encode(hash), "failed"));
                         return;
                     }
-                    if self.elevate_direct_to_propagation_or_fail(
+                    if self.requeue_or_defer_direct_after_link_failure(
                         message.clone(),
                         dest_hash,
                         &reason,
-                        results,
                     ) {
-                        return;
-                    }
-                    if self.requeue_or_defer_direct_after_link_failure(message, dest_hash, &reason)
-                    {
                         results.push((hex::encode(hash), "routing"));
                         return;
                     }
-                    self.clear_direct_retry_policy(&hash);
+                    if self.try_auto_propagation_fallback(message, dest_hash, &reason, results) {
+                        return;
+                    }
+                    self.clear_auto_live_fallback(&hash);
                     results.push((hex::encode(hash), "failed"));
                 } else {
                     let _ = self
@@ -4530,13 +4393,24 @@ impl LxmfManager {
                     self.start_propagation_delivery(message, prop_hash, &mut results);
                     continue;
                 }
-                OutboundAction::Failed(message) | OutboundAction::Expired(message) => {
-                    if let Some(hash) = message.hash {
-                        if self.ephemeral_outbound.remove(&hash) {
-                            continue;
-                        }
-                        results.push((hex::encode(hash), "failed"));
+                OutboundAction::Failed(message) => {
+                    let msg_hash = message.hash;
+                    let dest_hash = message.destination_hash;
+                    if !self.try_auto_propagation_fallback(
+                        message,
+                        dest_hash,
+                        "live delivery attempt budget exhausted",
+                        &mut results,
+                    ) {
+                        self.push_failed_outbound_state(msg_hash, &mut results);
                     }
+                    continue;
+                }
+                OutboundAction::Expired(message) => {
+                    // An expired message is no longer timely enough to deposit
+                    // for later pickup. Do not reinterpret expiry as an
+                    // Offline Inbox retry.
+                    self.push_failed_outbound_state(message.hash, &mut results);
                     continue;
                 }
             };
@@ -4796,6 +4670,7 @@ impl LxmfManager {
                         reason = "pack_failed",
                         "outbound LXMF: failed to pack opportunistic message"
                     );
+                    self.push_failed_outbound_state(msg_hash, &mut results);
                     continue;
                 }
             };
@@ -4934,12 +4809,7 @@ impl LxmfManager {
 
             let Some(ref transport_tx) = self.router.transport_tx else {
                 tracing::error!(dest = %crate::short_id(&dest_hex), reason = "transport_unavailable", "transport unavailable; message dropped");
-                if let Some(hash) = msg_hash {
-                    if self.ephemeral_outbound.remove(&hash) {
-                        continue;
-                    }
-                    results.push((hex::encode(hash), "failed"));
-                }
+                self.push_failed_outbound_state(msg_hash, &mut results);
                 continue;
             };
 
@@ -5074,6 +4944,27 @@ mod tests {
                 .as_nanos()
         ));
         LxmfManager::load_or_create(&tmp, None, None).unwrap()
+    }
+
+    fn ready_auto_propagation_fallback(
+        mgr: &mut LxmfManager,
+        dest: [u8; 16],
+        node: [u8; 16],
+    ) -> tokio::sync::mpsc::Receiver<TransportMessage> {
+        let remote = Identity::new();
+        let relay = Identity::new();
+        mgr.known_identities
+            .insert(hex::encode(dest), remote.get_public_key());
+        mgr.known_identities
+            .insert(hex::encode(node), relay.get_public_key());
+        mgr.router.set_stamp_cost(node, 0);
+        mgr.propagation_transfer_limits_kb.insert(node, 256);
+        mgr.router.set_outbound_propagation_node(Some(node));
+        mgr.configured_propagation_node = Some(node);
+        mgr.client_propagation_enabled = true;
+        let (tx, rx) = tokio::sync::mpsc::channel::<TransportMessage>(64);
+        mgr.router.set_transport(tx);
+        rx
     }
 
     #[test]
@@ -6726,6 +6617,7 @@ mod tests {
         );
         msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
         let msg_hash = msg.hash.unwrap();
+        mgr.auto_live_fallback.insert(msg_hash);
         assert!(mgr.ensure_link_delivery_manager());
         mgr.link_delivery
             .as_mut()
@@ -6783,6 +6675,7 @@ mod tests {
         assert_eq!(delivered.progress, Some(1.0));
         assert_eq!(delivered.representation, "packet");
         assert_eq!(mgr.link_delivery.as_ref().unwrap().pending_count(), 0);
+        assert!(!mgr.auto_live_fallback.contains(&msg_hash));
     }
 
     #[test]
@@ -6802,8 +6695,7 @@ mod tests {
             .unwrap();
         let hash = message.hash.unwrap();
         mgr.in_flight_propagation.insert(hash, relay);
-        mgr.auto_direct_fallback.insert(hash);
-        mgr.direct_retry_started_at.insert(hash, 1.0);
+        mgr.auto_live_fallback.insert(hash);
 
         let mut results = Vec::new();
         mgr.handle_link_delivery_result(
@@ -6819,8 +6711,7 @@ mod tests {
 
         assert_eq!(results, vec![(hex::encode(hash), "failed")]);
         assert!(!mgr.in_flight_propagation.contains_key(&hash));
-        assert!(!mgr.auto_direct_fallback.contains(&hash));
-        assert!(!mgr.direct_retry_started_at.contains_key(&hash));
+        assert!(!mgr.auto_live_fallback.contains(&hash));
         let (_, failed, _, _) = mgr.take_propagation_health();
         assert_eq!(failed, vec![(relay, "resource rejected".to_string())]);
     }
@@ -7304,10 +7195,28 @@ mod tests {
             rx.try_recv().is_err(),
             "pending reusable Direct Link must not emit another LinkRequest"
         );
+
+        mgr.router.pending_outbound[0].delivery_attempts = MAX_DELIVERY_ATTEMPTS;
+        mgr.auto_live_fallback.insert(second_hash);
+        let terminal_results = mgr.tick();
+        assert!(
+            !terminal_results
+                .iter()
+                .any(|(message, step)| message == &hex::encode(second_hash)
+                    && *step == "propagating"),
+            "a queued message must keep waiting for the Link that already owns its destination"
+        );
+        assert!(
+            mgr.router
+                .pending_outbound
+                .iter()
+                .any(|message| message.hash == Some(second_hash))
+        );
+        assert!(mgr.auto_live_fallback.contains(&second_hash));
     }
 
     #[test]
-    fn auto_direct_retry_window_escalates_to_propagation_when_ready() {
+    fn auto_direct_terminal_failure_escalates_to_propagation_when_ready() {
         let mut mgr = test_manager();
         let dest = [0x49; 16];
         let node = [0x4A; 16];
@@ -7327,7 +7236,7 @@ mod tests {
         mgr.configured_propagation_node = Some(node);
         mgr.client_propagation_enabled = true;
 
-        let mut msg = mgr
+        let msg = mgr
             .create_message(
                 &dest_hex,
                 "fallback to propagation",
@@ -7336,33 +7245,17 @@ mod tests {
             )
             .expect("message created");
         let hash = msg.hash.expect("message hash");
-        msg.delivery_attempts = 2;
-        mgr.router.try_send(msg.clone()).unwrap();
-        mgr.auto_direct_fallback.insert(hash);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        mgr.direct_retry_started_at
-            .insert(hash, now - DIRECT_LINK_FALLBACK_AFTER_SECS - 1.0);
+        mgr.auto_live_fallback.insert(hash);
 
-        let mut results = Vec::new();
-        assert!(mgr.elevate_direct_to_propagation_or_fail(
-            msg,
-            dest,
-            "link establishment timeout",
-            &mut results,
-        ));
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::Failed(msg)]);
 
         assert_eq!(results, vec![(hex::encode(hash), "propagating")]);
-        assert!(mgr.router.pending_outbound.is_empty());
         assert_eq!(mgr.in_flight_propagation.get(&hash), Some(&node));
-        assert!(!mgr.auto_direct_fallback.contains(&hash));
-        assert!(!mgr.direct_retry_started_at.contains_key(&hash));
+        assert!(!mgr.auto_live_fallback.contains(&hash));
     }
 
     #[test]
-    fn direct_retry_window_aborts_in_flight_link_and_falls_back() {
+    fn terminal_budget_does_not_abort_in_flight_link() {
         let mut mgr = test_manager();
         let dest = [0x59; 16];
         let node = [0x5A; 16];
@@ -7408,37 +7301,39 @@ mod tests {
             .expect("message created");
         let hash = msg.hash.expect("message hash");
         mgr.router.try_send(msg).unwrap();
-        mgr.auto_direct_fallback.insert(hash);
-        mgr.direct_retry_started_at.insert(hash, now);
+        mgr.auto_live_fallback.insert(hash);
 
         assert_eq!(mgr.tick(), vec![(hex::encode(hash), "link_establishing")]);
         assert_eq!(mgr.link_delivery.as_ref().unwrap().pending_count(), 1);
 
-        mgr.direct_retry_started_at
-            .insert(hash, now - DIRECT_LINK_FALLBACK_AFTER_SECS - 1.0);
+        mgr.router.pending_outbound[0].delivery_attempts = MAX_DELIVERY_ATTEMPTS;
         let results = mgr.tick();
 
         assert!(
-            results
+            !results
                 .iter()
-                .any(|(msg, step)| msg == &hex::encode(hash) && *step == "propagating"),
-            "stale in-flight Direct link should be elevated through the normal fallback policy"
+                .any(|(message, step)| message == &hex::encode(hash) && *step == "propagating"),
+            "an attempt budget must not terminate an in-flight Link operation"
         );
         assert!(
             mgr.link_delivery
                 .as_ref()
                 .unwrap()
                 .direct_link_snapshot(dest)
-                .is_none()
+                .is_some()
         );
-        assert!(mgr.router.pending_outbound.is_empty());
-        assert_eq!(mgr.in_flight_propagation.get(&hash), Some(&node));
-        assert!(!mgr.auto_direct_fallback.contains(&hash));
-        assert!(!mgr.direct_retry_started_at.contains_key(&hash));
+        assert!(
+            mgr.router
+                .pending_outbound
+                .iter()
+                .any(|message| message.hash == Some(hash))
+        );
+        assert_eq!(mgr.in_flight_propagation.get(&hash), None);
+        assert!(mgr.auto_live_fallback.contains(&hash));
     }
 
     #[test]
-    fn direct_retry_window_does_not_abort_active_resource_delivery() {
+    fn terminal_budget_does_not_abort_active_resource_delivery() {
         let mut mgr = test_manager();
         let dest = [0x69; 16];
         let node = [0x6A; 16];
@@ -7524,16 +7419,20 @@ mod tests {
         assert_eq!(snapshot.representation, DeliveryRepresentation::Resource);
         assert_eq!(snapshot.delivery_state, DeliveryState::Transferring);
 
-        mgr.auto_direct_fallback.insert(hash);
-        mgr.direct_retry_started_at
-            .insert(hash, now - DIRECT_LINK_FALLBACK_AFTER_SECS - 1.0);
+        mgr.auto_live_fallback.insert(hash);
+        mgr.router
+            .pending_outbound
+            .iter_mut()
+            .find(|message| message.hash == Some(hash))
+            .expect("pending Resource message")
+            .delivery_attempts = MAX_DELIVERY_ATTEMPTS;
         let results = mgr.tick();
 
         assert!(
             !results
                 .iter()
                 .any(|(msg, step)| msg == &hex::encode(hash) && *step == "propagating"),
-            "active resource delivery must not be aborted by the fixed Direct fallback window"
+            "active Resource delivery must not be aborted by the live retry budget"
         );
         assert!(
             mgr.link_delivery
@@ -7549,8 +7448,7 @@ mod tests {
                 .any(|m| m.hash == Some(hash))
         );
         assert_eq!(mgr.in_flight_propagation.get(&hash), None);
-        assert!(mgr.auto_direct_fallback.contains(&hash));
-        assert!(mgr.direct_retry_started_at.contains_key(&hash));
+        assert!(mgr.auto_live_fallback.contains(&hash));
     }
 
     #[test]
@@ -7638,9 +7536,7 @@ mod tests {
                 .is_some()
         );
 
-        mgr.auto_direct_fallback.insert(hash);
-        mgr.direct_retry_started_at
-            .insert(hash, now - DIRECT_LINK_FALLBACK_AFTER_SECS - 1.0);
+        mgr.auto_live_fallback.insert(hash);
         assert!(mgr.cancel_outbound_message(&hex::encode(hash)));
 
         assert!(
@@ -7666,8 +7562,7 @@ mod tests {
                 .any(|m| m.hash == Some(hash))
         );
         assert_eq!(mgr.in_flight_propagation.get(&hash), None);
-        assert!(!mgr.auto_direct_fallback.contains(&hash));
-        assert!(!mgr.direct_retry_started_at.contains_key(&hash));
+        assert!(!mgr.auto_live_fallback.contains(&hash));
 
         let results = mgr.tick();
         assert!(
@@ -7678,7 +7573,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_retry_window_without_ready_propagation_fails_message() {
+    fn terminal_direct_without_ready_propagation_fails_message() {
         let mut mgr = test_manager();
         let dest = [0x4B; 16];
         let dest_hex = hex::encode(dest);
@@ -7695,27 +7590,90 @@ mod tests {
             )
             .expect("message created");
         let hash = msg.hash.expect("message hash");
-        mgr.router.try_send(msg.clone()).unwrap();
-        mgr.auto_direct_fallback.insert(hash);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        mgr.direct_retry_started_at
-            .insert(hash, now - DIRECT_LINK_FALLBACK_AFTER_SECS - 1.0);
+        mgr.auto_live_fallback.insert(hash);
 
-        let mut results = Vec::new();
-        assert!(mgr.elevate_direct_to_propagation_or_fail(
-            msg,
-            dest,
-            "link establishment timeout",
-            &mut results,
-        ));
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::Failed(msg)]);
 
         assert_eq!(results, vec![(hex::encode(hash), "failed")]);
-        assert!(mgr.router.pending_outbound.is_empty());
-        assert!(!mgr.auto_direct_fallback.contains(&hash));
-        assert!(!mgr.direct_retry_started_at.contains_key(&hash));
+        assert!(!mgr.auto_live_fallback.contains(&hash));
+    }
+
+    #[test]
+    fn auto_opportunistic_terminal_failure_escalates_to_propagation() {
+        let mut mgr = test_manager();
+        let dest = [0x7A; 16];
+        let node = [0x7B; 16];
+        let dest_hex = hex::encode(dest);
+        let _transport_rx = ready_auto_propagation_fallback(&mut mgr, dest, node);
+        let message = mgr
+            .create_message(
+                &dest_hex,
+                "opportunistic fallback",
+                "",
+                DeliveryMethod::Opportunistic,
+            )
+            .expect("message created");
+        let hash = message.hash.expect("message hash");
+        mgr.auto_live_fallback.insert(hash);
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::Failed(message)]);
+
+        assert_eq!(results, vec![(hex::encode(hash), "propagating")]);
+        assert_eq!(mgr.in_flight_propagation.get(&hash), Some(&node));
+        assert!(!mgr.auto_live_fallback.contains(&hash));
+    }
+
+    #[test]
+    fn explicit_opportunistic_terminal_failure_does_not_propagate() {
+        let mut mgr = test_manager();
+        let dest = [0x7C; 16];
+        let node = [0x7D; 16];
+        let dest_hex = hex::encode(dest);
+        let _transport_rx = ready_auto_propagation_fallback(&mut mgr, dest, node);
+        let message = mgr
+            .create_message(
+                &dest_hex,
+                "manual opportunistic",
+                "",
+                DeliveryMethod::Opportunistic,
+            )
+            .expect("message created");
+        let hash = message.hash.expect("message hash");
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::Failed(message)]);
+
+        assert_eq!(results, vec![(hex::encode(hash), "failed")]);
+        assert!(!mgr.in_flight_propagation.contains_key(&hash));
+    }
+
+    #[test]
+    fn auto_live_rejection_is_terminal_without_propagation() {
+        let mut mgr = test_manager();
+        let dest = [0x7E; 16];
+        let node = [0x7F; 16];
+        let dest_hex = hex::encode(dest);
+        let _transport_rx = ready_auto_propagation_fallback(&mut mgr, dest, node);
+        let message = mgr
+            .create_message(&dest_hex, "rejected live send", "", DeliveryMethod::Direct)
+            .expect("message created");
+        let hash = message.hash.expect("message hash");
+        mgr.auto_live_fallback.insert(hash);
+
+        let mut results = Vec::new();
+        mgr.handle_link_delivery_result(
+            DeliveryResult::Rejected {
+                link_id: [0x70; 16],
+                msg_hash: Some(hash),
+                dest_hash: dest,
+                message,
+                reason: "recipient rejected transfer".to_string(),
+            },
+            &mut results,
+        );
+
+        assert_eq!(results, vec![(hex::encode(hash), "rejected")]);
+        assert!(!mgr.in_flight_propagation.contains_key(&hash));
+        assert!(!mgr.auto_live_fallback.contains(&hash));
     }
 
     /// D2: Python `handle_outbound` pre-emptively requests an unknown path for
@@ -8032,11 +7990,7 @@ mod tests {
         );
 
         mgr.client_propagation_enabled = true;
-        assert!(db::touch_identity_last_heard(
-            &pool,
-            dest,
-            now - RECENT_PEER_SECS - 10.0
-        ));
+        assert!(db::touch_identity_last_heard(&pool, dest, 1.0));
         assert_eq!(
             mgr.pick_delivery_method(
                 &pool,
@@ -8078,7 +8032,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_delivery_uses_relay_for_not_recent_peer_when_configured() {
+    fn auto_delivery_starts_live_when_relay_is_configured_and_peer_is_unseen() {
         let pool = test_pool();
         let mut mgr = test_manager();
         let dest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -8096,7 +8050,7 @@ mod tests {
                 DeliveryPreference::Auto,
                 DeliveryProfile::Attachment
             ),
-            DeliveryMethod::Propagated
+            DeliveryMethod::Direct
         );
 
         let now = SystemTime::now()
@@ -8117,7 +8071,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_delivery_requests_relay_for_not_recent_peer_even_before_selection() {
+    fn auto_delivery_starts_live_before_relay_selection() {
         let pool = test_pool();
         let mut mgr = test_manager();
         let dest = "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc";
@@ -8131,8 +8085,8 @@ mod tests {
                 DeliveryPreference::Auto,
                 DeliveryProfile::Message
             ),
-            DeliveryMethod::Propagated,
-            "Auto should let the send preflight select a live relay instead of silently falling back to direct"
+            DeliveryMethod::Direct,
+            "Auto must attempt live delivery without treating last-seen metadata as reachability"
         );
     }
 
@@ -8322,6 +8276,126 @@ mod tests {
     }
 
     #[test]
+    fn every_auto_send_builder_registers_live_fallback_after_router_admission() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let identity_id = mgr.identity_hash.clone();
+        let dest = "cf".repeat(16);
+
+        let normal = mgr
+            .send_message_with_preference_report(MessageSendRequest {
+                dest_hash_hex: &dest,
+                content: "normal",
+                title: "",
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Auto,
+                profile: DeliveryProfile::Message,
+            })
+            .expect("normal Auto send");
+        assert_eq!(normal.method, DeliveryMethod::Direct);
+        assert_eq!(mgr.auto_live_fallback.len(), 1);
+
+        let reply = mgr
+            .send_reply_with_preference(ReplyMessageSendRequest {
+                dest_hash_hex: &dest,
+                content: "reply",
+                title: "",
+                reply_to_id: &"01".repeat(32),
+                reply_to_preview: "original",
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Auto,
+                profile: DeliveryProfile::Message,
+            })
+            .expect("reply Auto send");
+        let reply_hash: [u8; 32] = hex::decode(reply).unwrap().try_into().expect("reply hash");
+        assert!(mgr.auto_live_fallback.contains(&reply_hash));
+        assert_eq!(mgr.auto_live_fallback.len(), 2);
+
+        let attachment = mgr
+            .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                dest_hash_hex: &dest,
+                content: "attachment",
+                title: "",
+                file_name: "proof.txt",
+                file_bytes: b"attachment bytes",
+                is_image: false,
+                image_mime: "application/octet-stream",
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Auto,
+            })
+            .expect("attachment Auto send");
+        assert_eq!(attachment.method, DeliveryMethod::Direct);
+        assert_eq!(mgr.auto_live_fallback.len(), 3);
+
+        let mut lrgp_fields = HashMap::new();
+        lrgp_fields.insert(
+            lrgp::constants::FIELD_CUSTOM_TYPE,
+            rmpv::Value::String(lrgp::constants::PROTOCOL_TYPE.into()),
+        );
+        assert!(
+            mgr.send_message_with_lrgp_fields_preference(
+                &dest,
+                "game action",
+                &lrgp_fields,
+                &pool,
+                &identity_id,
+                DeliveryPreference::Auto,
+            )
+            .is_some()
+        );
+        assert_eq!(mgr.auto_live_fallback.len(), 4);
+
+        assert!(mgr.send_reaction_with_preference(ReactionSendRequest {
+            dest_hash_hex: &dest,
+            message_id: &"02".repeat(32),
+            emoji: "👍",
+            action: "add",
+            db_pool: &pool,
+            identity_id: &identity_id,
+            preference: DeliveryPreference::Auto,
+        }));
+        assert_eq!(mgr.auto_live_fallback.len(), 5);
+
+        assert!(
+            mgr.send_message_with_preference_report(MessageSendRequest {
+                dest_hash_hex: &dest,
+                content: "manual direct",
+                title: "",
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Direct,
+                profile: DeliveryProfile::Message,
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            mgr.auto_live_fallback.len(),
+            5,
+            "explicit delivery must not inherit Auto fallback provenance"
+        );
+
+        let dest_hash: [u8; 16] = hex::decode(&dest).unwrap().try_into().unwrap();
+        mgr.peer_lxmf_compression_support
+            .insert(dest_hash, CompressionSupport::Unsupported);
+        let no_compression = mgr
+            .send_message_with_preference_report(MessageSendRequest {
+                dest_hash_hex: &dest,
+                content: "short no-compression peer message",
+                title: "",
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Auto,
+                profile: DeliveryProfile::Message,
+            })
+            .expect("no-compression Auto send");
+        assert_eq!(no_compression.method, DeliveryMethod::Opportunistic);
+        assert_eq!(mgr.auto_live_fallback.len(), 6);
+    }
+
+    #[test]
     fn queued_report_uses_a_curated_failure_for_local_preparation_errors() {
         let pool = test_pool();
         let mut mgr = test_manager();
@@ -8408,8 +8482,14 @@ mod tests {
         ));
         assert!(matches!(rx.try_recv(), Ok(TransportMessage::Outbound(_))));
         assert_eq!(mgr.opportunistic_in_flight.len(), 1);
+        let hash: [u8; 32] = hex::decode(&msg_id).unwrap().try_into().unwrap();
+        mgr.auto_live_fallback.insert(hash);
         assert!(mgr.complete_opportunistic_delivery(&msg_id));
         assert!(mgr.opportunistic_in_flight.is_empty());
+        assert!(
+            !mgr.auto_live_fallback.contains(&hash),
+            "authenticated Opportunistic proof must end the Auto fallback lifecycle"
+        );
         assert!(
             !mgr.complete_opportunistic_delivery(&msg_id),
             "duplicate proof completion must be ignored"
@@ -8737,7 +8817,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_or_attempt_exhausted_outbound_surfaces_failed_state() {
+    fn attempt_exhausted_outbound_surfaces_failed_state() {
         let mut mgr = test_manager();
         let dest_hex = hex::encode([0x88; 16]);
         let mut message = mgr
@@ -8759,6 +8839,28 @@ mod tests {
             mgr.router.pending_outbound.is_empty(),
             "failed outbound messages should not stay queued indefinitely"
         );
+    }
+
+    #[test]
+    fn expired_auto_live_send_does_not_fall_back_to_offline_inbox() {
+        let mut mgr = test_manager();
+        let dest = [0x89; 16];
+        let node = [0x8A; 16];
+        let dest_hex = hex::encode(dest);
+        let _transport_rx = ready_auto_propagation_fallback(&mut mgr, dest, node);
+        let mut message = mgr
+            .create_message(&dest_hex, "expired Auto send", "", DeliveryMethod::Direct)
+            .expect("message created");
+        let message_id = message.hash.expect("message hash");
+        message.timestamp = 0.0;
+        mgr.router.try_send(message).unwrap();
+        mgr.auto_live_fallback.insert(message_id);
+
+        let states = mgr.tick();
+
+        assert_eq!(states, vec![(hex::encode(message_id), "failed")]);
+        assert!(!mgr.in_flight_propagation.contains_key(&message_id));
+        assert!(!mgr.auto_live_fallback.contains(&message_id));
     }
 
     #[test]
