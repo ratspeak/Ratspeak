@@ -52,6 +52,35 @@ impl Drop for VoiceAudioSessionGuard {
 #[link(name = "AVFAudio", kind = "framework")]
 unsafe extern "C" {}
 
+// AVAudioSessionErrorCode values from CoreAudioTypes/AudioSessionTypes.h.
+// Keep these local rather than adding an FFI header dependency for two closed
+// classifications. The raw NSError description may contain platform details
+// and must not cross the application boundary.
+const AV_AUDIO_SESSION_ERROR_SIRI_IS_RECORDING: isize = 0x7369_7269;
+const AV_AUDIO_SESSION_ERROR_INSUFFICIENT_PRIORITY: isize = 0x2170_7269;
+
+fn audio_session_error_code(error: *mut objc2::runtime::AnyObject) -> Option<isize> {
+    if error.is_null() {
+        return None;
+    }
+    // SAFETY: AVAudioSession methods populate `error` with an NSError. `-code`
+    // is a synchronous NSInteger getter available on every supported iOS.
+    Some(unsafe { objc2::msg_send![error, code] })
+}
+
+fn microphone_session_failure(
+    error: *mut objc2::runtime::AnyObject,
+    fallback: &'static str,
+) -> String {
+    match audio_session_error_code(error) {
+        Some(AV_AUDIO_SESSION_ERROR_INSUFFICIENT_PRIORITY)
+        | Some(AV_AUDIO_SESSION_ERROR_SIRI_IS_RECORDING) => {
+            "Another app or call is using the microphone".to_string()
+        }
+        _ => fallback.to_string(),
+    }
+}
+
 fn configure_voice_audio_session() -> Result<(), String> {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
@@ -90,13 +119,19 @@ fn configure_voice_audio_session() -> Result<(), String> {
             error: &mut error
         ];
         if !configured.as_bool() {
-            return Err("iOS could not configure the voice audio session".to_string());
+            return Err(microphone_session_failure(
+                error,
+                "iOS could not configure the voice audio session",
+            ));
         }
 
         error = std::ptr::null_mut();
         let active: Bool = msg_send![session, setActive: true, error: &mut error];
         if !active.as_bool() {
-            return Err("iOS could not activate the voice audio session".to_string());
+            return Err(microphone_session_failure(
+                error,
+                "iOS could not activate the voice audio session",
+            ));
         }
     }
     Ok(())

@@ -15,9 +15,14 @@ use crate::helpers::validate_hex;
 use crate::state::AppState;
 
 const VOICE_MEMO_START_UNAVAILABLE: &str = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
+const VOICE_MEMO_AUDIO_BUSY: &str =
+    "Another app or call is using the microphone. End it, then try recording again.";
 
 fn voice_memo_start_error(error: String) -> AppError {
-    let reason = if error.contains("codec") {
+    let audio_busy = error.contains("using the microphone");
+    let reason = if audio_busy {
+        "microphone_in_use"
+    } else if error.contains("codec") {
         "codec_start_failed"
     } else if error.contains("microphone") || error.contains("Microphone") {
         "microphone_start_failed"
@@ -25,7 +30,11 @@ fn voice_memo_start_error(error: String) -> AppError {
         "recorder_start_failed"
     };
     tracing::warn!(reason, "voice message recorder could not start");
-    AppError::service_unavailable(VOICE_MEMO_START_UNAVAILABLE)
+    if audio_busy {
+        AppError::conflict(VOICE_MEMO_AUDIO_BUSY)
+    } else {
+        AppError::service_unavailable(VOICE_MEMO_START_UNAVAILABLE)
+    }
 }
 
 fn voice_memo_session_error(error: String) -> AppError {
@@ -434,6 +443,15 @@ mod tests {
         assert_eq!(error.message, VOICE_MEMO_START_UNAVAILABLE);
         assert!(!error.message.contains("CoreAudio"));
         assert!(!error.message.contains("backend"));
+    }
+
+    #[test]
+    fn voice_memo_start_reports_reviewed_microphone_contention() {
+        let error =
+            voice_memo_start_error("Another app or call is using the microphone".to_string());
+
+        assert_eq!(error.code, "conflict");
+        assert_eq!(error.message, VOICE_MEMO_AUDIO_BUSY);
     }
 
     #[test]

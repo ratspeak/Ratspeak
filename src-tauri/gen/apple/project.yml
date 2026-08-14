@@ -32,6 +32,8 @@ targets:
       - path: Sources
       - path: Assets.xcassets
       - path: Externals
+        excludes:
+          - "**/*.a"
       - path: ratspeak_iOS
       - path: ratspeak_iOS/PrivacyInfo.xcprivacy
         buildPhase: resources
@@ -93,6 +95,7 @@ targets:
     dependencies:
       - framework: libapp.a
         embed: false
+      - sdk: AVFAudio.framework
       - sdk: CoreBluetooth.framework
       - sdk: CoreGraphics.framework
       - sdk: Metal.framework

@@ -399,14 +399,16 @@
                 announce('Recording voice message');
                 voiceHaptic('light');
                 return true;
-            }).catch(function() {
+            }).catch(function(error) {
                 if (generation !== recordingGeneration) return false;
                 stopMobileAudioSession();
                 recordingTarget = '';
                 recordingOwner = null;
                 recordingSessionId = '';
                 setRecorderState('idle');
-                showToast(START_FAILURE_MESSAGE, 'toast-red', 4500);
+                var audioBusy = error && error.code === 'conflict';
+                showToast(audioBusy && error.message ? error.message : START_FAILURE_MESSAGE,
+                    audioBusy ? 'toast-orange' : 'toast-red', 4500);
                 return false;
             }).finally(function() {
                 if (recordingStartPromise === startPromise) recordingStartPromise = null;

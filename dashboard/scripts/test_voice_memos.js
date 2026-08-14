@@ -74,8 +74,9 @@ assert(state.includes("ctx.state !== 'interrupted' &&") && state.includes("ctx.s
     'shared audio readiness must exclude interrupted and closed contexts');
 assert(state.includes('isTauriMobile() &&') && state.includes('isIOS()'),
     'iOS must request permission through the same native API used for capture');
-assert(voice.includes('showToast(START_FAILURE_MESSAGE'),
-    'native audio diagnostics must not leak into the user-facing toast');
+assert(voice.includes("error.code === 'conflict'") &&
+    voice.includes('audioBusy && error.message ? error.message : START_FAILURE_MESSAGE'),
+    'only the reviewed microphone-contention error may replace the generic start toast');
 assert(voice.includes("record.addEventListener('pointerdown'"),
     'touch-and-hold recording must start immediately on pointer-down');
 assert(voice.includes("setRecorderState('review')"),

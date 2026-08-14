@@ -4679,6 +4679,38 @@ fn ios_project_model_owns_app_store_info_declarations() {
 }
 
 #[test]
+fn ios_voice_capture_classifies_higher_priority_microphone_ownership() {
+    let root = repo_root();
+    let platform = read_source(root.join("crates/ratspeak-runtime/src/platform_ios.rs"))
+        .expect("iOS platform audio bridge");
+    let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/voice.rs"))
+        .expect("voice commands");
+
+    assert!(platform.contains("AV_AUDIO_SESSION_ERROR_INSUFFICIENT_PRIORITY"));
+    assert!(platform.contains("AV_AUDIO_SESSION_ERROR_SIRI_IS_RECORDING"));
+    assert!(platform.contains("msg_send![error, code]"));
+    assert!(platform.contains("Another app or call is using the microphone"));
+    assert!(commands.contains("microphone_in_use"));
+    assert!(commands.contains("AppError::conflict(VOICE_MEMO_AUDIO_BUSY)"));
+    assert!(!commands.contains("tracing::warn!(error"));
+}
+
+#[test]
+fn ios_project_links_runtime_resolved_audio_without_copying_rust_archives() {
+    let root = repo_root();
+    let model =
+        read_source(root.join("src-tauri/gen/apple/project.yml")).expect("iOS project model");
+    let generated =
+        read_source(root.join("src-tauri/gen/apple/ratspeak.xcodeproj/project.pbxproj"))
+            .expect("generated iOS project");
+
+    assert!(model.contains("- path: Externals\n        excludes:\n          - \"**/*.a\""));
+    assert!(model.contains("- sdk: AVFAudio.framework"));
+    assert!(generated.contains("AVFAudio.framework in Frameworks"));
+    assert!(!generated.contains("libapp.a in Resources"));
+}
+
+#[test]
 fn apple_bundle_identifier_is_consistent_without_migrating_desktop() {
     let root = repo_root();
     let ios_config: serde_json::Value = serde_json::from_str(

@@ -8,7 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		090776E6170ADE7C67826358 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1761BAEB380B3C49A6C61EE0 /* WebKit.framework */; };
-		B1C2D3E4F5061728394A5B6C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* PrivacyInfo.xcprivacy */; };
+		09C27D23537F7E8933DC3383 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 0813F626C37D7804C9580E65 /* PrivacyInfo.xcprivacy */; };
+		1790D148B2BA41781B6BAC8E /* AVFAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7914A6377DBE88D26C76F5EC /* AVFAudio.framework */; };
 		2E0F5B881FADDBAB4BB805C6 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 2E9BF6B30D57306E023AF667 /* assets */; };
 		3AFECF06DB3749B719B25A9F /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C1D65839F75EF5BD851F181C /* MetalKit.framework */; };
 		3C69065B8E97EFD9386FC636 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 7FCB0EE758931AA0239C1C7A /* LaunchScreen.storyboard */; };
@@ -18,34 +19,36 @@
 		8612DFB69562FAA3FBBF9545 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 45BBA91CDD9674470E0F1DD0 /* Metal.framework */; };
 		8B8DCEACFDBAED3012F5CDE9 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B8C9CE60798EA62A840BDD55 /* CoreGraphics.framework */; };
 		B3C47F4975300869405BE078 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E3E4819C932708665B9470C1 /* Security.framework */; };
-		CB01BT00AAAA000000000001 /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CB01BT00AAAA000000000002 /* CoreBluetooth.framework */; };
+		F66D60BB7597C1DEC5FA787E /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EA3ED5ADAA5DC1FDB0BD2533 /* CoreBluetooth.framework */; };
 		F72579E305F7882D70E46D8E /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = E8738DFE9AC232CFFBA9F4D6 /* main.mm */; };
 		FD58DD1D74D7F7863EC8EABD /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 8A62DE8120B0F8E5EE6C74A4 /* libapp.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0DEA56EFD94DD906484BF35A /* port.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = port.rs; sourceTree = "<group>"; };
-		A1B2C3D4E5F60718293A4B5C /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		0813F626C37D7804C9580E65 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		1761BAEB380B3C49A6C61EE0 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		1934C7564E789311F6605A72 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		1CB7D0B71AC0A8D943A2083E /* Ratspeak.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ratspeak.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1CB7D0B71AC0A8D943A2083E /* ratspeak_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ratspeak_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2E9BF6B30D57306E023AF667 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		32362064E80F2706EC43B0EA /* ratspeak_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ratspeak_iOS.entitlements; sourceTree = "<group>"; };
 		45BBA91CDD9674470E0F1DD0 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		75C65A680D786481FE105B96 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		7914A6377DBE88D26C76F5EC /* AVFAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFAudio.framework; path = System/Library/Frameworks/AVFAudio.framework; sourceTree = SDKROOT; };
 		7FCB0EE758931AA0239C1C7A /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		8A62DE8120B0F8E5EE6C74A4 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
-		98A18E62D0EE7313D0EC8E7F /* lib.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = lib.rs; sourceTree = "<group>"; };
+		8E32467EA2D2A28E3472E90E /* mobile_native.rs */ = {isa = PBXFileReference; path = mobile_native.rs; sourceTree = "<group>"; };
+		98A18E62D0EE7313D0EC8E7F /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		9A05A8D3A03FAC7FAFC23A88 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		9CCB26DE2A3C7D1976D8B80A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		9D91C96973BFBFA3C545EE9C /* main.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = main.rs; sourceTree = "<group>"; };
+		9D91C96973BFBFA3C545EE9C /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		AA8750F9A2DCE53BF3001203 /* channel_deep_link.rs */ = {isa = PBXFileReference; path = channel_deep_link.rs; sourceTree = "<group>"; };
 		B080072DC109BB3FF77063B6 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 		B8C9CE60798EA62A840BDD55 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		C1D65839F75EF5BD851F181C /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
-		CB01BT00AAAA000000000002 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
-		CEF9A030F51E35C31DE6F180 /* paths.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = paths.rs; sourceTree = "<group>"; };
+		CEF9A030F51E35C31DE6F180 /* paths.rs */ = {isa = PBXFileReference; path = paths.rs; sourceTree = "<group>"; };
 		E3E4819C932708665B9470C1 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		E8738DFE9AC232CFFBA9F4D6 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		EA3ED5ADAA5DC1FDB0BD2533 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,7 +57,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				FD58DD1D74D7F7863EC8EABD /* libapp.a in Frameworks */,
-				CB01BT00AAAA000000000001 /* CoreBluetooth.framework in Frameworks */,
+				1790D148B2BA41781B6BAC8E /* AVFAudio.framework in Frameworks */,
+				F66D60BB7597C1DEC5FA787E /* CoreBluetooth.framework in Frameworks */,
 				8B8DCEACFDBAED3012F5CDE9 /* CoreGraphics.framework in Frameworks */,
 				8612DFB69562FAA3FBBF9545 /* Metal.framework in Frameworks */,
 				3AFECF06DB3749B719B25A9F /* MetalKit.framework in Frameworks */,
@@ -104,7 +108,7 @@
 			isa = PBXGroup;
 			children = (
 				1934C7564E789311F6605A72 /* Info.plist */,
-				A1B2C3D4E5F60718293A4B5C /* PrivacyInfo.xcprivacy */,
+				0813F626C37D7804C9580E65 /* PrivacyInfo.xcprivacy */,
 				32362064E80F2706EC43B0EA /* ratspeak_iOS.entitlements */,
 			);
 			path = ratspeak_iOS;
@@ -113,7 +117,8 @@
 		AA4B2E669CB237F5C2BA00A9 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				CB01BT00AAAA000000000002 /* CoreBluetooth.framework */,
+				7914A6377DBE88D26C76F5EC /* AVFAudio.framework */,
+				EA3ED5ADAA5DC1FDB0BD2533 /* CoreBluetooth.framework */,
 				B8C9CE60798EA62A840BDD55 /* CoreGraphics.framework */,
 				8A62DE8120B0F8E5EE6C74A4 /* libapp.a */,
 				45BBA91CDD9674470E0F1DD0 /* Metal.framework */,
@@ -144,10 +149,11 @@
 		BFB660D4B7171DF552D7E866 /* src */ = {
 			isa = PBXGroup;
 			children = (
+				AA8750F9A2DCE53BF3001203 /* channel_deep_link.rs */,
 				98A18E62D0EE7313D0EC8E7F /* lib.rs */,
 				9D91C96973BFBFA3C545EE9C /* main.rs */,
+				8E32467EA2D2A28E3472E90E /* mobile_native.rs */,
 				CEF9A030F51E35C31DE6F180 /* paths.rs */,
-				0DEA56EFD94DD906484BF35A /* port.rs */,
 			);
 			name = src;
 			path = ../../src;
@@ -156,9 +162,23 @@
 		D07F499BC987DDEF443F4A7B /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				1CB7D0B71AC0A8D943A2083E /* Ratspeak.app */,
+				1CB7D0B71AC0A8D943A2083E /* ratspeak_iOS.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		"TEMP_F1BB3159-F533-43EF-BDC9-F148043E1875" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
+			sourceTree = "<group>";
+		};
+		"TEMP_F9F03C55-5878-4D0E-A1A4-9081332FEA13" /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = arm64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -181,7 +201,7 @@
 			packageProductDependencies = (
 			);
 			productName = ratspeak_iOS;
-			productReference = 1CB7D0B71AC0A8D943A2083E /* Ratspeak.app */;
+			productReference = 1CB7D0B71AC0A8D943A2083E /* ratspeak_iOS.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -192,6 +212,11 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					27A2A129950C241B9FA293B5 = {
+						DevelopmentTeam = X92A7KF9SP;
+					};
+				};
 			};
 			buildConfigurationList = D2D0855E28A8325CBE1D2919 /* Build configuration list for PBXProject "ratspeak" */;
 			developmentRegion = en;
@@ -219,7 +244,7 @@
 			files = (
 				3CE461FDA76AB792DA3F1DDF /* Assets.xcassets in Resources */,
 				3C69065B8E97EFD9386FC636 /* LaunchScreen.storyboard in Resources */,
-				B1C2D3E4F5061728394A5B6C /* PrivacyInfo.xcprivacy in Resources */,
+				09C27D23537F7E8933DC3383 /* PrivacyInfo.xcprivacy in Resources */,
 				2E0F5B881FADDBAB4BB805C6 /* assets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -246,7 +271,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export PATH=\"$HOME/.cargo/bin:$PATH\"\ncargo tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+			shellScript = "cargo tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -385,7 +410,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = arm64;
+				ARCHS = (
+					arm64,
+				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_TEAM = X92A7KF9SP;
@@ -400,20 +427,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = org.ratspeak.apple;
 				PRODUCT_NAME = "Ratspeak";
 				SDKROOT = iphoneos;
@@ -426,7 +441,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = arm64;
+				ARCHS = (
+					arm64,
+				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_TEAM = X92A7KF9SP;
@@ -441,20 +458,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = org.ratspeak.apple;
 				PRODUCT_NAME = "Ratspeak";
 				SDKROOT = iphoneos;
