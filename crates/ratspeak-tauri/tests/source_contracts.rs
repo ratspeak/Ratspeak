@@ -4931,7 +4931,7 @@ fn settings_version_display_uses_package_version_api() {
 #[test]
 fn release_workflows_pin_v1_0_26d_and_stage_tag_builds_as_prereleases() {
     let root = repo_root();
-    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: a1b78564e08988c11f8ecac80c3ea6d596b22cab";
+    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 27352fd0d4ea67e2a35bcf798cdb4606630d4055";
     let rslxmf_commit = "RATSPEAK_RSLXMF_REF: 681c0f5961acce637183efc9a4047bf25ead56bf";
     let dependency_refs = [
         "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26d",
