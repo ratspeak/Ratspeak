@@ -9,15 +9,17 @@ var vm = require('vm');
 var root = path.join(__dirname, '..', '..');
 var source = fs.readFileSync(path.join(root, 'dashboard/static/js/voice_memos.js'), 'utf8');
 var clickHandler = null;
+var seekHandler = null;
+var nativeEvents = null;
 var decodeCalls = 0;
-var sourceStarts = 0;
-var sourceStops = 0;
+var mediaConstructs = 0;
+var audioUnlockCalls = 0;
+var nativeStarts = [];
+var nativeStops = [];
 var toasts = [];
-var sessionCalls = [];
-var failSessionStart = false;
-var failSessionStopOnce = false;
-var stoppedLeaseIds = [];
-var rafCallback = null;
+var failNativeStart = false;
+var failNativeStopOnce = false;
+var nextLease = 1;
 var scheduledTimeouts = [];
 
 function classList() {
@@ -44,12 +46,16 @@ var playButton = {
 };
 var waveform = {
     innerHTML: '',
-    addEventListener: function() {},
+    tabIndex: -1,
+    addEventListener: function(name, callback) {
+        if (name === 'click') seekHandler = callback;
+    },
     setAttribute: function(name, value) { this[name] = value; },
     getAttribute: function(name) { return this[name]; },
     getBoundingClientRect: function() { return { left: 0, width: 100 }; },
 };
 var time = { textContent: '' };
+var status = { textContent: '' };
 var player = {
     dataset: { voiceKey: 'memo-test', storedName: '' },
     classList: classList(),
@@ -58,6 +64,7 @@ var player = {
         if (selector === '.voice-memo-player-waveform') return waveform;
         if (selector === '.voice-memo-player-time') return time;
         if (selector === '.voice-memo-player-icon') return icon;
+        if (selector === '.voice-memo-player-status') return status;
         return null;
     },
 };
@@ -67,30 +74,15 @@ var container = {
     },
 };
 
-var audioContext = {
-    currentTime: 0,
-    destination: {},
-    decodeAudioData: function(_data, success) {
-        decodeCalls += 1;
-        success({ duration: 4 });
-        return Promise.resolve({ duration: 4 });
-    },
-    createBufferSource: function() {
-        return {
-            buffer: null,
-            onended: null,
-            connect: function() {},
-            disconnect: function() {},
-            start: function() { sourceStarts += 1; },
-            stop: function() { sourceStops += 1; },
-        };
-    },
-};
+function leaseId(value) {
+    return 'vmp-' + String(value).padStart(16, '0');
+}
 
 var context = {
     window: null,
     document: {
-        readyState: 'loading',
+        readyState: 'complete',
+        hidden: false,
         addEventListener: function() {},
         getElementById: function() { return null; },
         querySelector: function(selector) {
@@ -110,19 +102,35 @@ var context = {
     atob: atob,
     Blob: Blob,
     URL: URL,
-    setTimeout: function(callback) { scheduledTimeouts.push(callback); return scheduledTimeouts.length; },
-    clearTimeout: function() {},
-    requestAnimationFrame: function(callback) { rafCallback = callback; return 1; },
+    setTimeout: function(callback) {
+        var timer = { callback: callback, cleared: false };
+        scheduledTimeouts.push(timer);
+        return timer;
+    },
+    clearTimeout: function(timer) { if (timer) timer.cleared = true; },
+    requestAnimationFrame: function() { return 1; },
     cancelAnimationFrame: function() {},
     CustomEvent: function() {},
     CSS: { escape: function(value) { return value; } },
     escapeHtml: function(value) { return value; },
     isIOS: function() { return true; },
     showToast: function(message) { toasts.push(message); },
+    addEventListener: function() {},
+    Audio: function() {
+        mediaConstructs += 1;
+        throw new Error('iOS voice messages must not construct a WebView media element');
+    },
     RS: {
+        config: { VOICE_PLAYBACK_START_TIMEOUT: 2000 },
         diag: function() {},
+        listen: function(name, callback) {
+            if (name === 'voice_memo_playback') nativeEvents = callback;
+            return Promise.resolve(function() {});
+        },
         invoke: function(command, payload) {
-            if (command === 'voice_memo_decode_data') {
+            if (command === 'voice_memo_status') return Promise.resolve({ state: 'idle' });
+            if (command === 'voice_memo_decode_data' || command === 'voice_memo_decode_stored') {
+                decodeCalls += 1;
                 return Promise.resolve({
                     mime: 'audio/wav',
                     data_base64: 'AQIDBA==',
@@ -130,27 +138,28 @@ var context = {
                     waveform: [30, 80, 120],
                 });
             }
-            if (command === 'voice_memo_playback_session_start') {
-                sessionCalls.push('start');
-                return failSessionStart
-                    ? Promise.reject(new Error('audio session unavailable'))
-                    : Promise.resolve({ ok: true, lease_id: 'vmp-0000000000000001' });
+            if (command === 'voice_memo_playback_start') {
+                nativeStarts.push(payload.args);
+                if (failNativeStart) return Promise.reject(new Error('native output unavailable'));
+                return Promise.resolve({
+                    lease_id: leaseId(nextLease++),
+                    position_ms: payload.args.position_ms,
+                    duration_ms: 4000,
+                    waveform: [30, 80, 120],
+                });
             }
             if (command === 'voice_memo_playback_session_stop') {
-                sessionCalls.push('stop');
-                stoppedLeaseIds.push(payload && payload.args && payload.args.lease_id);
-                if (failSessionStopOnce) {
-                    failSessionStopOnce = false;
+                nativeStops.push(payload.args.lease_id);
+                if (failNativeStopOnce) {
+                    failNativeStopOnce = false;
                     return Promise.reject(new Error('temporary release failure'));
                 }
-                return Promise.resolve({ ok: true });
+                return Promise.resolve({ ok: true, released: true, position_ms: 1200 });
             }
             return Promise.reject(new Error('Unexpected command: ' + command));
         },
         audioPlayback: {
-            ensure: function() { return Promise.resolve(true); },
-            context: function() { return audioContext; },
-            isReady: function() { return true; },
+            ensure: function() { audioUnlockCalls += 1; return Promise.resolve(true); },
         },
     },
 };
@@ -161,7 +170,21 @@ async function flush() {
     for (var i = 0; i < 100; i++) await Promise.resolve();
 }
 
+async function runLatestTimeout() {
+    for (var i = scheduledTimeouts.length - 1; i >= 0; i--) {
+        var timer = scheduledTimeouts[i];
+        if (!timer.cleared) {
+            timer.cleared = true;
+            timer.callback();
+            await flush();
+            return;
+        }
+    }
+    throw new Error('No live timeout was scheduled');
+}
+
 (async function() {
+    assert(nativeEvents, 'iOS must subscribe to exact native playback progress events');
     var html = context.RS.voiceMemos.renderAttachment({
         voice_memo_key: 'memo-test',
         voice_memo: { duration_ms: 4000, waveform: [30, 80, 120] },
@@ -169,83 +192,112 @@ async function flush() {
     assert.equal((html.match(/<svg/g) || []).length, 1,
         'the voice player must render one stateful play/pause icon');
     assert(!html.includes('voice-memo-player-speed'));
-    assert(!html.includes('1×'));
 
-    context.RS.voiceMemos.registerDraft('memo-test', { data_base64: 'container' });
+    context.RS.voiceMemos.registerDraft('memo-test', {
+        data_base64: 'container',
+        duration_ms: 4000,
+        waveform: [30, 80, 120],
+    });
     var draftExpiry = scheduledTimeouts[scheduledTimeouts.length - 1];
     context.RS.voiceMemos.hydratePlayers(container);
     assert(clickHandler, 'the player must bind its play action');
+    assert(seekHandler, 'the player must bind its seek action');
 
     clickHandler();
     await flush();
-    assert.equal(decodeCalls, 1, 'iOS must decode through the shared Web Audio context');
-    assert.equal(sourceStarts, 1, 'the decoded voice message must begin playback');
-    assert.deepEqual(sessionCalls, ['start'],
-        'iOS must activate its playback-only audio session before starting PCM');
+    assert.equal(nativeStarts.length, 1, 'iOS must start one native playback worker');
+    assert.equal(nativeStarts[0].data_base64, 'container');
+    assert.equal(nativeStarts[0].position_ms, 0);
+    assert.equal(decodeCalls, 0, 'iOS must not expand LXVM into WAV/base64 IPC');
+    assert.equal(mediaConstructs, 0, 'iOS must not use WKWebView media output');
+    assert.equal(audioUnlockCalls, 0, 'native iOS output must not depend on Web Audio readiness');
+    assert.equal(player.dataset.playbackState, 'starting');
     assert.equal(playButton['aria-label'], 'Starting playback',
-        'a resolved start request must not claim playback before time advances');
-    assert(icon.innerHTML.includes('M8 5v14l11-7z'), 'starting must not show pause');
+        'a successful start command must not claim playback before the audio clock advances');
+    assert(icon.innerHTML.includes('M8 5v14l11-7z'));
     assert.equal(waveform['aria-disabled'], 'true');
-    assert.equal(waveform.tabIndex, -1,
-        'seeking must remain unavailable until an exact playback handle is active');
 
-    scheduledTimeouts[scheduledTimeouts.length - 1]();
-    await flush();
-    assert.equal(sourceStarts, 2, 'a frozen first start gets one fresh bounded recovery');
-    assert.equal(player.dataset.playbackState, 'recovering');
-    scheduledTimeouts[scheduledTimeouts.length - 1]();
-    await flush();
-    assert.equal(player.dataset.playbackState, 'error',
-        'a second frozen start must settle on an honest retryable error');
-    assert.equal(sourceStarts, 2, 'recovery must not loop');
-    assert.equal(waveform['aria-disabled'], 'true', 'failed playback must not expose a no-op slider');
+    nativeEvents({
+        lease_id: leaseId(99),
+        state: 'playing',
+        position_ms: 100,
+        duration_ms: 4000,
+    });
+    assert.equal(player.dataset.playbackState, 'starting', 'stale native leases must be ignored');
 
-    failSessionStopOnce = true;
-    clickHandler();
+    nativeEvents({
+        lease_id: leaseId(1),
+        state: 'playing',
+        position_ms: 80,
+        duration_ms: 4000,
+    });
     await flush();
-    assert.equal(sourceStarts, 3, 'the explicit retry creates one new attempt');
-    audioContext.currentTime = 0.08;
-    rafCallback();
-    await flush();
+    assert.equal(player.dataset.playbackState, 'playing');
     assert.equal(playButton['aria-label'], 'Pause voice message');
-    assert(icon.innerHTML.includes('M6 5h4v14H6z'), 'proven playback must show pause');
+    assert(icon.innerHTML.includes('M6 5h4v14H6z'));
     assert.equal(waveform['aria-disabled'], 'false');
-    assert.equal(waveform.tabIndex, 0, 'proven playback may expose exact-handle seeking');
-    assert.deepEqual(toasts, []);
+    assert.equal(waveform.tabIndex, 0);
 
     clickHandler();
     await flush();
-    assert(sourceStops >= 3, 'recovery and pause must close their exact buffer sources');
-    assert.equal(sessionCalls[sessionCalls.length - 1], 'stop',
-        'pausing must release the iOS playback session');
-    assert.equal(playButton['aria-label'], 'Play voice message');
-    assert(icon.innerHTML.includes('M8 5v14l11-7z'), 'the paused state must show only play');
-    assert.equal(waveform['aria-disabled'], 'false', 'the retained paused handle must remain seekable');
-    var stopCountAfterFailure = stoppedLeaseIds.length;
+    assert.equal(nativeStops[nativeStops.length - 1], leaseId(1),
+        'pause must stop only the exact native playback lease');
+    assert.equal(player.dataset.playbackState, 'paused');
+    seekHandler({ clientX: 50 });
+    await flush();
+    clickHandler();
+    await flush();
+    assert.equal(nativeStarts[nativeStarts.length - 1].position_ms, 2000,
+        'resume after a paused seek must restart native output at the requested position');
+
+    nativeEvents({ lease_id: leaseId(2), state: 'playing', position_ms: 2080, duration_ms: 4000 });
+    await flush();
+    failNativeStopOnce = true;
+    clickHandler();
+    await flush();
+    var failedStopCount = nativeStops.length;
     await context.RS.voiceMemos.stopPlayback();
     await flush();
-    assert.equal(stoppedLeaseIds.length, stopCountAfterFailure + 1,
-        'a failed exact native release must retain its lease for teardown retry');
-    assert.equal(stoppedLeaseIds[stoppedLeaseIds.length - 1], 'vmp-0000000000000001');
+    assert.equal(nativeStops.length, failedStopCount + 1,
+        'a failed exact stop must retain its lease for teardown retry');
+    assert.equal(nativeStops[nativeStops.length - 1], leaseId(2));
 
+    clickHandler();
+    await flush();
+    var frozenFirstLease = leaseId(3);
+    assert.equal(nativeStarts.length, 3);
+    await runLatestTimeout();
+    assert.equal(player.dataset.playbackState, 'recovering');
+    assert.equal(nativeStops[nativeStops.length - 1], frozenFirstLease,
+        'bounded recovery must close its exact frozen worker');
+    assert.equal(nativeStarts.length, 4, 'a frozen native start gets one fresh recovery');
+    await runLatestTimeout();
+    assert.equal(player.dataset.playbackState, 'error',
+        'a second frozen native start must settle on an honest retry state');
+    assert.equal(nativeStarts.length, 4, 'native recovery must not loop');
+
+    clickHandler();
+    await flush();
+    nativeEvents({ lease_id: leaseId(5), state: 'playing', position_ms: 80, duration_ms: 4000 });
+    clickHandler();
+    await flush();
+    var startsBeforeCall = nativeStarts.length;
     context.lxstVoiceState = { active: true, incoming: false };
     clickHandler();
     await flush();
-    assert.equal(sourceStarts, 3, 'an active call must prevent paused memo playback from resuming');
-    assert(toasts.some(function(message) { return message.includes('current call'); }),
-        'call-owned audio must explain why memo playback is unavailable');
+    assert.equal(nativeStarts.length, startsBeforeCall,
+        'an active LXST call must prevent memo playback from acquiring output');
+    assert(toasts.some(function(message) { return message.includes('current call'); }));
 
     context.lxstVoiceState = { active: false, incoming: false };
-    failSessionStart = true;
+    failNativeStart = true;
     clickHandler();
     await flush();
-    assert.equal(sourceStarts, 3,
-        'visual playback must not begin when iOS cannot acquire an audible session');
     assert.equal(player.dataset.playbackState, 'error',
-        'an unavailable native output session must surface a retryable playback error');
+        'native output startup failure must surface a retryable playback error');
 
     context.RS.voiceMemos.releaseInactiveMedia(false);
-    draftExpiry();
+    draftExpiry.callback();
     var expiredHtml = context.RS.voiceMemos.renderAttachment({
         voice_memo_key: 'memo-test',
         voice_memo: { duration_ms: 4000, waveform: [30, 80, 120] },

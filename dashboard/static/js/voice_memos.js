@@ -38,8 +38,7 @@
     var previewPlaybackState = 'idle';
     var pointerStartedRecording = false;
     var mobileAudioSessionActive = false;
-    var iosPlaybackLeaseId = '';
-    var iosPlaybackSessionTransition = Promise.resolve();
+    var nativeIosPlaybackByLease = Object.create(null);
     var START_FAILURE_MESSAGE = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
     var ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
     var ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
@@ -251,6 +250,10 @@
             showToast('Finish the current call before playing a voice message.', 'toast-orange', 4200);
             return Promise.resolve(false);
         }
+        // iOS voice messages use the same native CPAL/RemoteIO output layer as
+        // LXST calls. Web Audio readiness is neither required nor evidence
+        // that the hardware route is audible.
+        if (typeof isIOS === 'function' && isIOS()) return Promise.resolve(true);
         if (!window.RS || !RS.audioPlayback || typeof RS.audioPlayback.ensure !== 'function') {
             return Promise.resolve(true);
         }
@@ -264,45 +267,15 @@
             return true;
         });
     }
-    function queueIosPlaybackSession(action) {
-        iosPlaybackSessionTransition = iosPlaybackSessionTransition.catch(function() {}).then(action);
-        return iosPlaybackSessionTransition;
-    }
-    function startIosPlaybackSession() {
-        if (!(typeof isIOS === 'function' && isIOS())) return Promise.resolve(true);
-        return queueIosPlaybackSession(function() {
-            if (iosPlaybackLeaseId) return true;
-            return RS.invoke('voice_memo_playback_session_start').then(function(result) {
-                iosPlaybackLeaseId = String(result && (result.lease_id || result.session_id) || '');
-                return true;
-            });
-        });
-    }
-    function stopIosPlaybackSession() {
-        if (!(typeof isIOS === 'function' && isIOS())) return Promise.resolve(true);
-        return queueIosPlaybackSession(function() {
-            if (!iosPlaybackLeaseId) return true;
-            var leaseId = iosPlaybackLeaseId;
-            iosPlaybackLeaseId = '';
-            return RS.invoke('voice_memo_playback_session_stop', { args: { lease_id: leaseId } }).catch(function(error) {
-                if (!iosPlaybackLeaseId) iosPlaybackLeaseId = leaseId;
-                window.RS.diag('warn', '[voice memo] iOS playback session release failed:', error);
-                return false;
-            });
-        });
-    }
     function playWithAudioSession(audio) {
-        return startIosPlaybackSession().then(function() {
-            return audio.play();
-        }).catch(function(error) {
-            return stopIosPlaybackSession().then(function() { throw error; });
-        });
+        return Promise.resolve(audio.play());
     }
     function stopAnyPlayback() {
         playbackGeneration += 1;
         if (playbackCoordinator && playbackCoordinator.watchdog) clearTimeout(playbackCoordinator.watchdog);
+        var stopping = Promise.resolve(true);
         if (activeAudio) {
-            try { activeAudio.pause(); } catch (_) {}
+            try { stopping = Promise.resolve(activeAudio.pause()); } catch (_) {}
         }
         activeAudio = null;
         var previous = activeKey;
@@ -310,7 +283,10 @@
         playbackCoordinator = null;
         if (previous) updatePlayerProgress(previous, 0, false, 'idle');
         syncPreviewPlayButton(false, 'idle');
-        return stopIosPlaybackSession();
+        return stopping.catch(function(error) {
+            window.RS.diag('warn', '[voice memo] playback release failed:', error);
+            return false;
+        });
     }
     function startMobileAudioSession() {
         if (!window.RatspeakAndroid || typeof window.RatspeakAndroid.startVoiceMemoAudioSession !== 'function') {
@@ -618,6 +594,22 @@
             return Promise.resolve(playbackByKey[key]);
         }
         if (playbackInFlightByKey[key]) return playbackInFlightByKey[key];
+        if (typeof isIOS === 'function' && isIOS()) {
+            var nativeMetadata = source || {};
+            var nativeItem = {
+                nativeSource: {
+                    data_base64: source && source.data_base64 || '',
+                    stored_name: source && source.stored_name || '',
+                },
+                duration_ms: Number(nativeMetadata.duration_ms || 0),
+                waveform: nativeMetadata.waveform || [],
+                bytes: 0,
+            };
+            playbackByKey[key] = nativeItem;
+            touchPlaybackKey(key);
+            trimPlaybackCache();
+            return Promise.resolve(nativeItem);
+        }
         var cacheGeneration = mediaCacheGeneration;
         var decode = decodeDraftOrStored(source).then(function(result) {
             if (cacheGeneration !== mediaCacheGeneration) {
@@ -657,118 +649,128 @@
             },
         };
     }
-    function decodeWebAudioBuffer(ctx, item) {
-        var data = item.wavBytes.buffer.slice(
-            item.wavBytes.byteOffset,
-            item.wavBytes.byteOffset + item.wavBytes.byteLength
-        );
-        return new Promise(function(resolve, reject) {
-            var settled = false;
-            function done(buffer) {
-                if (settled) return;
-                settled = true;
-                resolve(buffer);
-            }
-            function failed(error) {
-                if (settled) return;
-                settled = true;
-                reject(error || new Error('Web Audio could not decode the voice message'));
-            }
-            try {
-                var result = ctx.decodeAudioData(data, done, failed);
-                if (result && typeof result.then === 'function') result.then(done, failed);
-            } catch (error) {
-                failed(error);
-            }
-        });
+    function onNativeIosPlaybackEvent(data) {
+        var leaseId = String(data && (data.lease_id || data.session_id) || '');
+        var handle = leaseId && nativeIosPlaybackByLease[leaseId];
+        if (handle && typeof handle._nativeUpdate === 'function') handle._nativeUpdate(data);
     }
-    function createWebAudioPlayback(item) {
-        var ctx = window.RS && RS.audioPlayback && typeof RS.audioPlayback.context === 'function'
-            ? RS.audioPlayback.context()
-            : null;
-        if (!ctx) return Promise.reject(new Error('Web Audio is unavailable'));
-        return decodeWebAudioBuffer(ctx, item).then(function(buffer) {
-            var handle = createEventedPlaybackHandle();
-            var source = null;
-            var animationFrame = 0;
-            var offset = 0;
-            var startedAt = 0;
-            var intentionallyStopped = false;
-            handle.paused = true;
-            handle.duration = buffer.duration;
+    function createNativeIosPlayback(item) {
+        var handle = createEventedPlaybackHandle();
+        var source = item.nativeSource || {};
+        var leaseId = '';
+        var positionMs = 0;
+        var desiredPlaying = false;
+        var transition = Promise.resolve();
+        handle.nativeVoiceMemo = true;
+        handle.paused = true;
+        handle.duration = Math.max(0, Number(item.duration_ms || 0) / 1000);
 
-            function currentTime() {
-                if (handle.paused) return offset;
-                return Math.max(0, Math.min(buffer.duration, ctx.currentTime - startedAt));
-            }
-            function cancelProgress() {
-                if (!animationFrame) return;
-                cancelAnimationFrame(animationFrame);
-                animationFrame = 0;
-            }
-            function tick() {
-                if (handle.paused) return;
-                handle._emit('timeupdate');
-                animationFrame = requestAnimationFrame(tick);
-            }
-            function stopSource() {
-                if (!source) return;
-                intentionallyStopped = true;
-                source.onended = null;
-                try { source.stop(); } catch (_) {}
-                try { source.disconnect(); } catch (_) {}
-                source = null;
-            }
-            function startSource() {
-                stopSource();
-                intentionallyStopped = false;
-                if (offset >= buffer.duration) offset = 0;
-                source = ctx.createBufferSource();
-                source.buffer = buffer;
-                source.connect(ctx.destination);
-                source.onended = function() {
-                    var wasIntentional = intentionallyStopped;
-                    source = null;
-                    if (wasIntentional || handle.paused) return;
-                    cancelProgress();
-                    offset = 0;
-                    handle.paused = true;
+        function queueTransition(action) {
+            transition = transition.catch(function() {}).then(action);
+            return transition;
+        }
+        function stopLease() {
+            if (!leaseId) return Promise.resolve(true);
+            var stoppingLease = leaseId;
+            delete nativeIosPlaybackByLease[stoppingLease];
+            leaseId = '';
+            return RS.invoke('voice_memo_playback_session_stop', {
+                args: { lease_id: stoppingLease },
+            }).then(function(result) {
+                if (result && Number.isFinite(Number(result.position_ms))) {
+                    positionMs = Math.max(0, Number(result.position_ms));
                     handle._emit('timeupdate');
-                    handle._emit('ended');
-                };
-                startedAt = ctx.currentTime - offset;
-                handle.paused = false;
-                source.start(0, offset);
-                cancelProgress();
-                tick();
-            }
-            handle.play = function() {
-                var ready = window.RS && RS.audioPlayback && typeof RS.audioPlayback.ensure === 'function'
-                    ? RS.audioPlayback.ensure({ installUnlock: true })
-                    : Promise.resolve(true);
-                return Promise.resolve(ready).then(function(canPlay) {
-                    if (canPlay === false) throw new Error('Web Audio is not ready');
-                    startSource();
-                });
-            };
-            handle.pause = function() {
-                if (handle.paused) return;
-                offset = currentTime();
-                handle.paused = true;
-                cancelProgress();
-                stopSource();
-                handle._emit('timeupdate');
-            };
-            Object.defineProperty(handle, 'currentTime', {
-                get: currentTime,
-                set: function(value) {
-                    offset = Math.max(0, Math.min(buffer.duration, Number(value) || 0));
-                    if (!handle.paused) startSource();
-                    handle._emit('timeupdate');
-                },
+                }
+                return true;
+            }).catch(function(error) {
+                if (!leaseId) {
+                    leaseId = stoppingLease;
+                    nativeIosPlaybackByLease[stoppingLease] = handle;
+                }
+                throw error;
             });
-            return handle;
+        }
+        function startLease() {
+            if (!desiredPlaying) return false;
+            if (handle.duration && positionMs >= handle.duration * 1000) positionMs = 0;
+            var args = { position_ms: Math.max(0, Math.round(positionMs)) };
+            if (source.data_base64) args.data_base64 = source.data_base64;
+            else if (source.stored_name) args.stored_name = source.stored_name;
+            else return Promise.reject(new Error('Voice message playback source is unavailable'));
+            return RS.invoke('voice_memo_playback_start', { args: args }).then(function(result) {
+                var startedLease = String(result && result.lease_id || '');
+                if (!startedLease) throw new Error('Native voice message playback did not return a lease');
+                leaseId = startedLease;
+                nativeIosPlaybackByLease[startedLease] = handle;
+                positionMs = Math.max(0, Number(result.position_ms || positionMs));
+                if (Number(result.duration_ms) > 0) {
+                    item.duration_ms = Number(result.duration_ms);
+                    handle.duration = item.duration_ms / 1000;
+                }
+                if (Array.isArray(result.waveform) && result.waveform.length) {
+                    item.waveform = result.waveform;
+                }
+                if (!desiredPlaying) return stopLease().then(function() { return false; });
+                return true;
+            });
+        }
+        handle.play = function() {
+            desiredPlaying = true;
+            return queueTransition(function() {
+                return stopLease().then(startLease);
+            });
+        };
+        handle.pause = function() {
+            desiredPlaying = false;
+            handle.paused = true;
+            handle._emit('timeupdate');
+            return queueTransition(stopLease).catch(function(error) {
+                window.RS.diag('warn', '[voice memo] native playback release failed:', error);
+                return false;
+            });
+        };
+        handle._nativeUpdate = function(data) {
+            positionMs = Math.max(0, Number(data && data.position_ms || positionMs));
+            if (Number(data && data.duration_ms) > 0) {
+                item.duration_ms = Number(data.duration_ms);
+                handle.duration = item.duration_ms / 1000;
+            }
+            if (data && data.state === 'playing') {
+                handle.paused = false;
+                handle._emit('timeupdate');
+            } else if (data && data.state === 'ended') {
+                if (leaseId) delete nativeIosPlaybackByLease[leaseId];
+                leaseId = '';
+                desiredPlaying = false;
+                handle.paused = true;
+                positionMs = Number(data.duration_ms || item.duration_ms || positionMs);
+                handle._emit('timeupdate');
+                handle._emit('ended');
+            } else if (data && data.state === 'error') {
+                if (leaseId) delete nativeIosPlaybackByLease[leaseId];
+                leaseId = '';
+                desiredPlaying = false;
+                handle.paused = true;
+                handle._emit('timeupdate');
+                handle._emit('error');
+            }
+        };
+        Object.defineProperty(handle, 'currentTime', {
+            get: function() { return positionMs / 1000; },
+            set: function(value) {
+                positionMs = Math.max(0, Math.min(handle.duration || Infinity, Number(value) || 0)) * 1000;
+                handle._emit('timeupdate');
+                if (!leaseId) return;
+                queueTransition(function() {
+                    return stopLease().then(function() {
+                        return desiredPlaying ? startLease() : true;
+                    });
+                }).catch(function(error) {
+                    window.RS.diag('warn', '[voice memo] native playback seek failed:', error);
+                });
+            },
         });
+        return Promise.resolve(handle);
     }
     function createMediaPlayback(item) {
         var audio = new Audio(ensureMediaUrl(item));
@@ -776,17 +778,7 @@
         return Promise.resolve(audio);
     }
     function createPlayback(item) {
-        // WKWebView is materially more reliable when PCM decoded by Ratspeak is
-        // handed to the already-unlocked Web Audio context. Keep Android and
-        // desktop on their established HTMLMediaElement path.
-        var sharedAudioReady = window.RS && RS.audioPlayback &&
-            typeof RS.audioPlayback.isReady === 'function' && RS.audioPlayback.isReady();
-        if (typeof isIOS === 'function' && isIOS() && sharedAudioReady) {
-            return createWebAudioPlayback(item).catch(function(error) {
-                window.RS.diag('warn', '[voice memo] Web Audio playback unavailable, using media element:', error);
-                return createMediaPlayback(item);
-            });
-        }
+        if (typeof isIOS === 'function' && isIOS()) return createNativeIosPlayback(item);
         return createMediaPlayback(item);
     }
     function startPreviewAttempt(coordinator) {
@@ -818,7 +810,6 @@
                 activeAudio = null;
                 activeKey = '';
                 playbackCoordinator = null;
-                stopIosPlaybackSession();
             });
             return playWithAudioSession(audio).then(function() {
                 if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
@@ -875,7 +866,6 @@
                     audio.pause();
                     clearPlaybackWatchdog(coordinator);
                     syncPreviewPlayButton(false, 'paused');
-                    stopIosPlaybackSession();
                 }
             });
             return;
@@ -958,8 +948,21 @@
         var key = player.dataset.voiceKey || '';
         var storedName = player.dataset.storedName || '';
         var local = draftByKey[key];
-        if (local) return { data_base64: local.data_base64 };
-        if (storedName) return { stored_name: storedName };
+        if (local) {
+            return {
+                data_base64: local.data_base64,
+                duration_ms: local.duration_ms,
+                waveform: local.waveform || [],
+            };
+        }
+        if (storedName) {
+            var metadata = metadataByStoredName[storedName] || {};
+            return {
+                stored_name: storedName,
+                duration_ms: metadata.duration_ms,
+                waveform: metadata.waveform || [],
+            };
+        }
         return null;
     }
     function setPlayerState(player, state, statusText) {
@@ -1030,9 +1033,9 @@
     function releasePlaybackAttempt(coordinator) {
         clearPlaybackWatchdog(coordinator);
         if (coordinator && coordinator.audio) {
-            try { coordinator.audio.pause(); } catch (_) {}
+            try { return Promise.resolve(coordinator.audio.pause()); } catch (_) {}
         }
-        return stopIosPlaybackSession();
+        return Promise.resolve(true);
     }
     function failPlaybackCoordinator(coordinator, message) {
         if (!coordinator || playbackCoordinator !== coordinator) return;
@@ -1065,7 +1068,10 @@
             activeAudio = null;
             activeKey = '';
             playbackCoordinator = null;
-            stopIosPlaybackSession();
+        });
+        audio.addEventListener('error', function() {
+            if (!playbackAttemptIsCurrent(coordinator, audio)) return;
+            failPlaybackCoordinator(coordinator, 'Couldn\'t play');
         });
     }
     function startPlaybackAttempt(coordinator) {
@@ -1140,7 +1146,6 @@
                     audio.pause();
                     clearPlaybackWatchdog(coordinator);
                     setPlayerState(player, 'paused');
-                    stopIosPlaybackSession();
                 }
             });
             return;
@@ -1350,6 +1355,9 @@
             syncComposer();
         });
         RS.listen('voice_memo_recording', onRecordingEvent).catch(function() {});
+        if (typeof isIOS === 'function' && isIOS()) {
+            RS.listen('voice_memo_playback', onNativeIosPlaybackEvent).catch(function() {});
+        }
     }
 
     function onConversationChanged(hash, reason) {

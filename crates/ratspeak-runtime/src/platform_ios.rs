@@ -26,14 +26,18 @@ pub fn bluetooth_authorization() -> &'static str {
 /// not configure AVAudioSession; iOS' default session is playback-only.
 pub struct VoiceAudioSessionGuard;
 
+/// Exact owner of a playback-only audio session used by native voice-message
+/// output. The lease check in `Drop` prevents delayed teardown from
+/// deactivating a replacement memo, call, or recorder session.
+pub struct VoiceMemoPlaybackSessionGuard {
+    lease_id: u64,
+}
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Memo playback is driven by WKWebView, while calls and recording are driven
-/// by the native audio stack. Track only the playback lease here so a delayed
-/// WebView cleanup cannot deactivate a newer call/recording session.
-/// Exact process-local owner of the playback-only AVAudioSession. Zero means
-/// there is no playback lease. A delayed WebView stop may release only the
-/// lease it acquired, never a replacement call, recorder, or playback attempt.
+/// Exact process-local owner of the native playback-only AVAudioSession. Zero
+/// means there is no playback lease. A delayed worker stop may release only
+/// the lease it acquired, never a replacement call, recorder, or playback.
 static VOICE_MEMO_PLAYBACK_SESSION_ACTIVE: AtomicU64 = AtomicU64::new(0);
 
 impl VoiceAudioSessionGuard {
@@ -46,6 +50,19 @@ impl VoiceAudioSessionGuard {
 impl Drop for VoiceAudioSessionGuard {
     fn drop(&mut self) {
         deactivate_voice_audio_session();
+    }
+}
+
+impl VoiceMemoPlaybackSessionGuard {
+    pub fn activate(lease_id: u64) -> Result<Self, String> {
+        activate_voice_memo_playback_session(lease_id)?;
+        Ok(Self { lease_id })
+    }
+}
+
+impl Drop for VoiceMemoPlaybackSessionGuard {
+    fn drop(&mut self) {
+        deactivate_voice_memo_playback_session(self.lease_id);
     }
 }
 

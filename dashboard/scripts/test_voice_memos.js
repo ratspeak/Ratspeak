@@ -48,7 +48,7 @@ for (var command of [
     'voice_memo_pause',
     'voice_memo_stop',
     'voice_memo_cancel',
-    'voice_memo_playback_session_start',
+    'voice_memo_playback_start',
     'voice_memo_playback_session_stop',
     'voice_memo_decode_data',
     'voice_memo_decode_stored',
@@ -115,19 +115,20 @@ assert(voice.includes('cacheGeneration !== mediaCacheGeneration') &&
 assert(state.includes('RS.voiceMemos.releaseInactiveMedia(!!(payload && payload.critical))'),
     'critical native pressure must reach the active voice media owner');
 assert(voice.includes("RS.audioPlayback.ensure({ installUnlock: true })"),
-    'voice playback must reuse the shared audio unlock path');
-assert(voice.includes('RS.audioPlayback.context()') && voice.includes('ctx.decodeAudioData'),
-    'iOS playback must use the shared Web Audio context after native capture releases it');
-assert(voice.includes("RS.invoke('voice_memo_playback_session_start')"),
-    'iOS playback must acquire a native playback-only AVAudioSession');
-assert(voice.includes("RS.invoke('voice_memo_playback_session_stop', { args: { lease_id: leaseId } })"),
-    'iOS playback must release its native audio session on pause, end, and handoff');
-assert(voice.includes('if (!iosPlaybackLeaseId) iosPlaybackLeaseId = leaseId;'),
-    'a failed native release must retain the exact lease for a later teardown retry');
-assert(voice.includes("typeof RS.audioPlayback.isReady === 'function' && RS.audioPlayback.isReady()"),
-    'iOS playback must only enter Web Audio after the shared context is ready');
-assert(voice.includes("typeof isIOS === 'function' && isIOS()"),
-    'the Web Audio compatibility path must remain scoped to iOS');
+    'Android and desktop media playback must retain the shared audio unlock path');
+assert(voice.includes("RS.invoke('voice_memo_playback_start'"),
+    'iOS playback must start native PCM output from the bounded LXVM source');
+assert(voice.includes("RS.invoke('voice_memo_playback_session_stop'"),
+    'iOS playback must stop its exact native worker on pause, end, and handoff');
+assert(voice.includes('leaseId = stoppingLease') &&
+    voice.includes('nativeIosPlaybackByLease[stoppingLease] = handle'),
+    'a failed native stop must retain the exact lease for a later teardown retry');
+assert(voice.includes("if (typeof isIOS === 'function' && isIOS()) return createNativeIosPlayback(item);") &&
+    voice.includes('return createMediaPlayback(item);'),
+    'playback dispatch must use native iOS output without changing Android or desktop media output');
+assert(voice.includes('if (typeof isIOS === \'function\' && isIOS()) {') &&
+    voice.includes('var decode = decodeDraftOrStored(source).then'),
+    'only iOS may bypass WAV decoding while established Android and desktop paths retain it');
 assert(voice.indexOf('stopAnyPlayback().then', voice.indexOf('function cancelForCall()')) <
     voice.indexOf("if (recorderState === 'idle')", voice.indexOf('function cancelForCall()')),
     'starting a call must stop memo playback even when the recorder is idle');
@@ -154,11 +155,21 @@ assert(runtime.includes('const PROFILE: Profile = Profile::QualityMedium'));
 assert(runtime.includes('VOICE_MEMO_MAX_DURATION_MS: u32 = 5 * 60 * 1_000'));
 assert(runtime.includes('MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE'));
 assert(runtime.includes('parser_rejects_unbounded_counts_before_allocating'));
+assert(runtime.includes('struct NativeVoiceMemoSource') &&
+    runtime.includes('NATIVE_PLAYBACK_REFILL_TARGET_MS'),
+    'native playback must incrementally decode the bounded LXVM frame table');
+assert(runtime.includes('runtime.block_on(drive_native_playback(') &&
+    runtime.includes('command_tx: mpsc::Sender<PlaybackCommand>'),
+    'non-Send iOS audio objects must remain inside their dedicated blocking worker');
 assert(capture.includes('MICROPHONE_CAPTURE_RETRY_DELAYS'));
 assert(capture.includes('host.input_devices()'),
     'capture startup must fall back from a stale CoreAudio default device');
 assert(capture.includes('reserve_call_audio'));
 assert(capture.includes('release_call_audio'));
+assert(capture.includes('VOICE_MEMO_OUTPUT_BUFFER_MS') &&
+    capture.includes('FiniteAudioOutput::bounded(max_samples)') &&
+    capture.includes('.try_lock()'),
+    'native memo output must use a fixed PCM ring without blocking its realtime callback');
 assert(runtime.includes('call_audio_reserved'));
 assert(runtime.includes('_platform_audio_session'));
 assert(commands.includes('VOICE_MEMO_START_UNAVAILABLE'));

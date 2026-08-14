@@ -34,6 +34,8 @@ pub const VOICE_MEMO_MAX_CONTAINER_BYTES: usize =
 const MIN_FRAME_COUNT: usize = 3;
 const RECORDING_SESSION_PREFIX: &str = "vmr-";
 const PLAYBACK_LEASE_PREFIX: &str = "vmp-";
+#[cfg(target_os = "ios")]
+const NATIVE_PLAYBACK_REFILL_TARGET_MS: u32 = 1_500;
 
 pub type VoiceMemoResult<T> = Result<T, String>;
 
@@ -72,6 +74,21 @@ pub struct VoiceMemoPlayback {
     pub channels: u8,
 }
 
+struct DecodedVoiceMemo {
+    frames: Vec<RawAudioFrame>,
+    duration_ms: u32,
+    waveform: Vec<u8>,
+}
+
+#[cfg(target_os = "ios")]
+#[derive(Debug, Serialize)]
+pub struct VoiceMemoNativePlaybackStarted {
+    pub lease_id: String,
+    pub duration_ms: u32,
+    pub waveform: Vec<u8>,
+    pub position_ms: u32,
+}
+
 #[derive(Debug, Serialize)]
 pub struct VoiceMemoMetadata {
     pub duration_ms: u32,
@@ -96,6 +113,123 @@ pub struct VoiceMemoRecordingHandle {
     command_tx: mpsc::Sender<RecorderCommand>,
     status: Arc<Mutex<VoiceMemoStatus>>,
     task: Option<JoinHandle<()>>,
+}
+
+#[cfg(target_os = "ios")]
+pub struct VoiceMemoPlaybackHandle {
+    lease_id: u64,
+    command_tx: mpsc::Sender<PlaybackCommand>,
+    monitor: crate::voice::NativeVoiceMemoOutputMonitor,
+    task: Option<JoinHandle<()>>,
+}
+
+#[cfg(target_os = "ios")]
+impl VoiceMemoPlaybackHandle {
+    fn matches(&self, lease_id: u64) -> bool {
+        self.lease_id == lease_id
+    }
+
+    fn position_ms(&self) -> u32 {
+        self.monitor.position_ms()
+    }
+
+    async fn stop(mut self) -> u32 {
+        let fallback_position_ms = self.position_ms();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let position_ms = if self
+            .command_tx
+            .send(PlaybackCommand::Stop { reply: reply_tx })
+            .await
+            .is_ok()
+        {
+            tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(fallback_position_ms)
+        } else {
+            fallback_position_ms
+        };
+        self.join().await;
+        position_ms
+    }
+
+    async fn join(&mut self) {
+        if let Some(mut task) = self.task.take() {
+            tokio::select! {
+                _ = &mut task => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                    // A started spawn_blocking task cannot be force-aborted.
+                    // Dropping the join handle merely detaches an unexpectedly
+                    // stuck platform worker without blocking app lifecycle.
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+enum PlaybackCommand {
+    Stop { reply: oneshot::Sender<u32> },
+}
+
+#[cfg(any(target_os = "ios", test))]
+struct NativeVoiceMemoSource {
+    decoder: OpusDecoderState,
+    frames: std::vec::IntoIter<Vec<u8>>,
+    first_frame_skip_ms: u32,
+    exhausted: bool,
+}
+
+#[cfg(any(target_os = "ios", test))]
+impl NativeVoiceMemoSource {
+    fn new(frames: Vec<Vec<u8>>, position_ms: u32) -> VoiceMemoResult<Self> {
+        let mut decoder = OpusDecoderState::new(PROFILE)
+            .map_err(|error| format!("Could not initialize voice memo playback: {error}"))?;
+        let mut frames = frames.into_iter();
+        for _ in 0..(position_ms / FRAME_MS) {
+            let payload = frames
+                .next()
+                .ok_or_else(|| "Voice message seek position is invalid".to_string())?;
+            decode_native_frame(&mut decoder, payload)?;
+        }
+        Ok(Self {
+            decoder,
+            frames,
+            first_frame_skip_ms: position_ms % FRAME_MS,
+            exhausted: false,
+        })
+    }
+
+    fn next_decoded(&mut self) -> VoiceMemoResult<Option<(RawAudioFrame, u32)>> {
+        let Some(payload) = self.frames.next() else {
+            self.exhausted = true;
+            return Ok(None);
+        };
+        let frame = decode_native_frame(&mut self.decoder, payload)?;
+        Ok(Some((frame, std::mem::take(&mut self.first_frame_skip_ms))))
+    }
+
+    #[cfg(target_os = "ios")]
+    fn refill(&mut self, output: &crate::voice::NativeVoiceMemoOutput) -> VoiceMemoResult<()> {
+        while !self.exhausted && output.buffered_duration_ms() < NATIVE_PLAYBACK_REFILL_TARGET_MS {
+            let Some((frame, skip_ms)) = self.next_decoded()? else {
+                break;
+            };
+            output.enqueue_frame(&frame, skip_ms)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "ios", test))]
+fn decode_native_frame(
+    decoder: &mut OpusDecoderState,
+    payload: Vec<u8>,
+) -> VoiceMemoResult<RawAudioFrame> {
+    decoder
+        .decode_frame(&Frame::new(CodecKind::Opus, payload))
+        .map_err(|error| format!("Could not decode voice memo audio: {error}"))
 }
 
 struct RecordingActor {
@@ -190,7 +324,7 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
         return Err("A voice call is using the microphone".to_string());
     }
     let _control = state.voice_memo_control_lock.lock().await;
-    invalidate_playback_session_locked(state);
+    invalidate_playback_session_locked(state).await;
     if crate::voice::call_audio_reserved(state) {
         return Err("A voice call is using the microphone".to_string());
     }
@@ -342,7 +476,7 @@ pub async fn stop_recording(state: &AppState, session_id: u64) -> VoiceMemoResul
 
 pub async fn cancel_recording(state: &AppState) -> VoiceMemoResult<()> {
     let _control = state.voice_memo_control_lock.lock().await;
-    invalidate_playback_session_locked(state);
+    invalidate_playback_session_locked(state).await;
     let handle = state
         .voice_memo_recording
         .lock()
@@ -402,7 +536,36 @@ async fn cancel_handle(handle: VoiceMemoRecordingHandle) {
     handle.join().await;
 }
 
-pub async fn start_playback_session(state: &AppState) -> VoiceMemoResult<u64> {
+async fn invalidate_playback_session_locked(state: &AppState) {
+    #[cfg(target_os = "ios")]
+    {
+        let playback = state
+            .voice_memo_playback
+            .lock()
+            .ok()
+            .and_then(|mut playback| playback.take());
+        if let Some(playback) = playback {
+            playback.stop().await;
+        }
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    let _ = state;
+}
+
+#[cfg(target_os = "ios")]
+pub async fn start_native_playback(
+    state: &Arc<AppState>,
+    data: Vec<u8>,
+    requested_position_ms: u32,
+) -> VoiceMemoResult<VoiceMemoNativePlaybackStarted> {
+    let parsed = {
+        let _decode = state.voice_memo_decode_lock.lock().await;
+        tokio::task::spawn_blocking(move || parse_container(&data))
+            .await
+            .map_err(|_| "Voice message decoder task panicked".to_string())??
+    };
+
     let _control = state.voice_memo_control_lock.lock().await;
     if crate::voice::call_audio_reserved(state) {
         return Err("A voice call is using audio".to_string());
@@ -410,39 +573,215 @@ pub async fn start_playback_session(state: &AppState) -> VoiceMemoResult<u64> {
     if recording_status(state).state != "idle" {
         return Err("A voice message is being recorded".to_string());
     }
+    invalidate_playback_session_locked(state).await;
 
-    invalidate_playback_session_locked(state);
     let lease_id = next_nonzero_generation(&state.voice_memo_playback_generation);
-    #[cfg(target_os = "ios")]
-    crate::platform_ios::activate_voice_memo_playback_session(lease_id)?;
-    state
-        .voice_memo_playback_lease
-        .store(lease_id, Ordering::Release);
-    Ok(lease_id)
-}
+    let duration_ms = parsed.duration_ms;
+    let position_ms = if requested_position_ms >= duration_ms {
+        0
+    } else {
+        requested_position_ms
+    };
+    let waveform = parsed.waveform;
+    let frames = parsed.frames;
+    let (command_tx, command_rx) = mpsc::channel(1);
+    let (started_tx, started_rx) = oneshot::channel();
+    let (committed_tx, committed_rx) = oneshot::channel();
+    let runtime = tokio::runtime::Handle::current();
+    let worker_state = Arc::clone(state);
+    let task = tokio::task::spawn_blocking(move || {
+        let mut source = match NativeVoiceMemoSource::new(frames, position_ms) {
+            Ok(source) => source,
+            Err(error) => {
+                let _ = started_tx.send(Err(error));
+                return;
+            }
+        };
+        let platform_audio_session =
+            match crate::platform_ios::VoiceMemoPlaybackSessionGuard::activate(lease_id) {
+                Ok(session) => session,
+                Err(error) => {
+                    let _ = started_tx.send(Err(error));
+                    return;
+                }
+            };
+        let output = match crate::voice::start_voice_memo_output(
+            PROFILE.sample_rate_hz(),
+            position_ms,
+            duration_ms,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = started_tx.send(Err(error));
+                return;
+            }
+        };
+        if let Err(error) = source.refill(&output).and_then(|()| output.play()) {
+            let _ = started_tx.send(Err(error));
+            return;
+        }
+        let monitor = output.monitor();
+        if started_tx.send(Ok(monitor)).is_err() {
+            return;
+        }
+        if runtime.block_on(committed_rx).is_err() {
+            return;
+        }
+        runtime.block_on(drive_native_playback(
+            worker_state,
+            lease_id,
+            position_ms,
+            duration_ms,
+            output,
+            platform_audio_session,
+            source,
+            command_rx,
+        ));
+    });
+    let monitor = match started_rx.await {
+        Ok(Ok(monitor)) => monitor,
+        Ok(Err(error)) => {
+            let mut task = task;
+            let _ = (&mut task).await;
+            return Err(error);
+        }
+        Err(_) => {
+            let mut task = task;
+            let _ = (&mut task).await;
+            return Err("Voice message output stopped while starting".to_string());
+        }
+    };
 
-pub async fn stop_playback_session(state: &AppState, lease_id: u64) -> bool {
-    let _control = state.voice_memo_control_lock.lock().await;
-    if !release_playback_lease(&state.voice_memo_playback_lease, lease_id) {
-        return false;
+    {
+        let mut slot = state
+            .voice_memo_playback
+            .lock()
+            .map_err(|_| "Voice message playback state is unavailable".to_string())?;
+        *slot = Some(VoiceMemoPlaybackHandle {
+            lease_id,
+            command_tx,
+            monitor,
+            task: Some(task),
+        });
     }
-    #[cfg(target_os = "ios")]
-    crate::platform_ios::deactivate_voice_memo_playback_session(lease_id);
-    true
+    if committed_tx.send(()).is_err() {
+        let mut failed = state.voice_memo_playback.lock().ok().and_then(|mut slot| {
+            if slot.as_ref().is_some_and(|handle| handle.matches(lease_id)) {
+                slot.take()
+            } else {
+                None
+            }
+        });
+        if let Some(handle) = failed.as_mut() {
+            handle.join().await;
+        }
+        return Err("Voice message output stopped while starting".to_string());
+    }
+
+    Ok(VoiceMemoNativePlaybackStarted {
+        lease_id: format_playback_lease_id(lease_id),
+        duration_ms,
+        waveform,
+        position_ms,
+    })
 }
 
-fn release_playback_lease(current: &AtomicU64, lease_id: u64) -> bool {
-    lease_id != 0
-        && current
-            .compare_exchange(lease_id, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+#[cfg(target_os = "ios")]
+pub async fn stop_native_playback(state: &AppState, lease_id: u64) -> VoiceMemoResult<Option<u32>> {
+    let _control = state.voice_memo_control_lock.lock().await;
+    let handle = {
+        let mut slot = state
+            .voice_memo_playback
+            .lock()
+            .map_err(|_| "Voice message playback state is unavailable".to_string())?;
+        if !slot.as_ref().is_some_and(|handle| handle.matches(lease_id)) {
+            return Ok(None);
+        }
+        slot.take()
+    };
+    match handle {
+        Some(handle) => Ok(Some(handle.stop().await)),
+        None => Ok(None),
+    }
 }
 
-fn invalidate_playback_session_locked(state: &AppState) {
-    let lease_id = state.voice_memo_playback_lease.swap(0, Ordering::AcqRel);
-    if lease_id != 0 {
-        #[cfg(target_os = "ios")]
-        crate::platform_ios::deactivate_voice_memo_playback_session(lease_id);
+#[cfg(target_os = "ios")]
+async fn drive_native_playback(
+    state: Arc<AppState>,
+    lease_id: u64,
+    start_position_ms: u32,
+    duration_ms: u32,
+    output: crate::voice::NativeVoiceMemoOutput,
+    platform_audio_session: crate::platform_ios::VoiceMemoPlaybackSessionGuard,
+    mut source: NativeVoiceMemoSource,
+    mut command_rx: mpsc::Receiver<PlaybackCommand>,
+) {
+    let mut last_position_ms = start_position_ms;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+    loop {
+        tokio::select! {
+            biased;
+            command = command_rx.recv() => {
+                match command {
+                    Some(PlaybackCommand::Stop { reply }) => {
+                        let _ = reply.send(output.position_ms());
+                    }
+                    None => {}
+                }
+                break;
+            }
+            _ = interval.tick() => {
+                if source.refill(&output).is_err() {
+                    tracing::warn!(reason = "native_decode_failed", "voice message playback failed");
+                    state.emit_to_all(
+                        "voice_memo_playback",
+                        serde_json::json!({
+                            "lease_id": format_playback_lease_id(lease_id),
+                            "state": "error",
+                            "position_ms": output.position_ms(),
+                            "duration_ms": duration_ms,
+                        }),
+                    );
+                    break;
+                }
+                let current = output.position_ms();
+                if current > last_position_ms {
+                    last_position_ms = current;
+                    state.emit_to_all(
+                        "voice_memo_playback",
+                        serde_json::json!({
+                            "lease_id": format_playback_lease_id(lease_id),
+                            "state": "playing",
+                            "position_ms": current,
+                            "duration_ms": duration_ms,
+                        }),
+                    );
+                }
+                if output.finished() {
+                    state.emit_to_all(
+                        "voice_memo_playback",
+                        serde_json::json!({
+                            "lease_id": format_playback_lease_id(lease_id),
+                            "state": "ended",
+                            "position_ms": duration_ms,
+                            "duration_ms": duration_ms,
+                        }),
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    // RemoteIO must be destroyed before its exact AVAudioSession lease is
+    // released. Keeping both objects local also preserves CPAL's iOS !Send
+    // contract instead of contaminating shared Tauri application state.
+    drop(output);
+    drop(platform_audio_session);
+    if let Ok(mut slot) = state.voice_memo_playback.lock() {
+        if slot.as_ref().is_some_and(|handle| handle.matches(lease_id)) {
+            slot.take();
+        }
     }
 }
 
@@ -737,19 +1076,33 @@ fn parse_container(data: &[u8]) -> VoiceMemoResult<ParsedVoiceMemo> {
     })
 }
 
-pub fn decode_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoPlayback> {
+fn decode_voice_memo_frames(data: &[u8]) -> VoiceMemoResult<DecodedVoiceMemo> {
     let parsed = parse_container(data)?;
     let mut decoder = OpusDecoderState::new(PROFILE)
         .map_err(|error| format!("Could not initialize voice memo playback: {error}"))?;
-    let mut pcm = Vec::<i16>::with_capacity(
-        parsed.frames.len() * PROFILE.sample_frames_per_packet() * usize::from(PROFILE.channels()),
-    );
+    let mut frames = Vec::with_capacity(parsed.frames.len());
     for payload in &parsed.frames {
-        let decoded = decoder
-            .decode_frame(&Frame::new(CodecKind::Opus, payload.clone()))
-            .map_err(|error| format!("Could not decode voice memo audio: {error}"))?;
+        frames.push(
+            decoder
+                .decode_frame(&Frame::new(CodecKind::Opus, payload.clone()))
+                .map_err(|error| format!("Could not decode voice memo audio: {error}"))?,
+        );
+    }
+    Ok(DecodedVoiceMemo {
+        frames,
+        duration_ms: parsed.duration_ms,
+        waveform: parsed.waveform,
+    })
+}
+
+pub fn decode_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoPlayback> {
+    let decoded = decode_voice_memo_frames(data)?;
+    let mut pcm = Vec::<i16>::with_capacity(
+        decoded.frames.len() * PROFILE.sample_frames_per_packet() * usize::from(PROFILE.channels()),
+    );
+    for frame in &decoded.frames {
         pcm.extend(
-            decoded
+            frame
                 .samples
                 .iter()
                 .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16),
@@ -758,8 +1111,8 @@ pub fn decode_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoPlayback> {
     let wav_data = encode_pcm16_wav(&pcm, PROFILE.sample_rate_hz(), PROFILE.channels())?;
     Ok(VoiceMemoPlayback {
         wav_data,
-        duration_ms: parsed.duration_ms,
-        waveform: parsed.waveform,
+        duration_ms: decoded.duration_ms,
+        waveform: decoded.waveform,
         sample_rate_hz: PROFILE.sample_rate_hz(),
         channels: PROFILE.channels(),
     })
@@ -861,13 +1214,37 @@ mod tests {
     }
 
     #[test]
-    fn stale_playback_release_cannot_clear_replacement_lease() {
-        let current = AtomicU64::new(42);
-        assert!(!release_playback_lease(&current, 41));
-        assert_eq!(current.load(Ordering::Acquire), 42);
-        assert!(release_playback_lease(&current, 42));
-        assert_eq!(current.load(Ordering::Acquire), 0);
-        assert!(!release_playback_lease(&current, 0));
+    fn container_round_trip_retains_lxst_frames_for_native_output() {
+        let (frames, waveform) = synthetic_frames(8);
+        let encoded = encode_container(&frames, &waveform).unwrap();
+        let decoded = decode_voice_memo_frames(&encoded).unwrap();
+
+        assert_eq!(decoded.duration_ms, 8 * FRAME_MS);
+        assert_eq!(decoded.waveform, waveform);
+        assert_eq!(decoded.frames.len(), 8);
+        assert!(decoded.frames.iter().all(|frame| {
+            frame.channels == PROFILE.channels()
+                && frame.sample_frames() == PROFILE.sample_frames_per_packet()
+                && frame.samples.iter().any(|sample| sample.abs() > 0.001)
+        }));
+    }
+
+    #[test]
+    fn incremental_native_source_primes_opus_state_and_keeps_exact_seek_offset() {
+        let (frames, _) = synthetic_frames(8);
+        let mut source = NativeVoiceMemoSource::new(frames, 150).unwrap();
+
+        let (first, skip_ms) = source.next_decoded().unwrap().unwrap();
+        assert_eq!(skip_ms, 30);
+        assert_eq!(first.channels, PROFILE.channels());
+        assert_eq!(first.sample_frames(), PROFILE.sample_frames_per_packet());
+
+        let mut remaining = 0;
+        while source.next_decoded().unwrap().is_some() {
+            remaining += 1;
+        }
+        assert_eq!(remaining, 5);
+        assert!(source.exhausted);
     }
 
     #[test]

@@ -524,12 +524,14 @@ pub struct AppState {
     /// WebView callback cannot target a later recording through ABA reuse.
     #[cfg(feature = "lxst-voice")]
     pub(crate) voice_memo_recording_generation: AtomicU64,
-    /// Process-monotonic source and exact current owner for WebView playback.
-    /// Zero means that no playback lease is active.
-    #[cfg(feature = "lxst-voice")]
+    /// Process-monotonic source for exact native voice-message playback IDs.
+    #[cfg(all(feature = "lxst-voice", target_os = "ios"))]
     pub(crate) voice_memo_playback_generation: AtomicU64,
-    #[cfg(feature = "lxst-voice")]
-    pub(crate) voice_memo_playback_lease: AtomicU64,
+    /// iOS owns voice-message output in the same native CPAL/RemoteIO layer as
+    /// LXST calls. Other platforms retain their existing media backend until
+    /// an equivalent native implementation is proven on that platform.
+    #[cfg(all(feature = "lxst-voice", target_os = "ios"))]
+    pub voice_memo_playback: Mutex<Option<crate::voice_memo::VoiceMemoPlaybackHandle>>,
     /// Decoding a maximum-length memo produces roughly 14 MiB of PCM. Keep one
     /// native decoder active at a time so concurrent WebView requests cannot
     /// multiply that allocation.
@@ -784,10 +786,10 @@ impl AppState {
             voice_memo_control_lock: tokio::sync::Mutex::new(()),
             #[cfg(feature = "lxst-voice")]
             voice_memo_recording_generation: AtomicU64::new(0),
-            #[cfg(feature = "lxst-voice")]
+            #[cfg(all(feature = "lxst-voice", target_os = "ios"))]
             voice_memo_playback_generation: AtomicU64::new(0),
-            #[cfg(feature = "lxst-voice")]
-            voice_memo_playback_lease: AtomicU64::new(0),
+            #[cfg(all(feature = "lxst-voice", target_os = "ios"))]
+            voice_memo_playback: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
             voice_memo_decode_lock: tokio::sync::Mutex::new(()),
             #[cfg(feature = "lxst-voice")]

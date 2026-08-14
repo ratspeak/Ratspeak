@@ -17,6 +17,9 @@ use crate::state::AppState;
 const VOICE_MEMO_START_UNAVAILABLE: &str = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
 const VOICE_MEMO_AUDIO_BUSY: &str =
     "Another app or call is using the microphone. End it, then try recording again.";
+#[cfg(target_os = "ios")]
+const VOICE_MEMO_PLAYBACK_UNAVAILABLE: &str =
+    "Ratspeak couldn't play this voice message. Check the selected audio output, then try again.";
 
 fn voice_memo_start_error(error: String) -> AppError {
     let audio_busy = error.contains("using the microphone");
@@ -74,6 +77,14 @@ pub struct VoiceMemoSessionArgs {
 #[derive(Deserialize)]
 pub struct VoiceMemoPlaybackLeaseArgs {
     pub lease_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct VoiceMemoPlaybackStartArgs {
+    pub data_base64: Option<String>,
+    pub stored_name: Option<String>,
+    #[serde(default)]
+    pub position_ms: u32,
 }
 
 #[derive(Deserialize)]
@@ -290,22 +301,69 @@ pub async fn voice_memo_cancel(
 }
 
 #[tauri::command]
-pub async fn voice_memo_playback_session_start(
+pub async fn voice_memo_playback_start(
     state: State<'_, Arc<AppState>>,
+    args: VoiceMemoPlaybackStartArgs,
 ) -> AppResult<Value> {
-    let lease_id = crate::voice_memo::start_playback_session(&state)
-        .await
-        .map_err(|error| {
-            if error.contains("using audio") || error.contains("being recorded") {
-                AppError::conflict(error)
-            } else {
-                AppError::service_unavailable(error)
+    #[cfg(target_os = "ios")]
+    {
+        let data = match (args.data_base64, args.stored_name) {
+            (Some(encoded), None) => {
+                let max_encoded = crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES
+                    .div_ceil(3)
+                    .saturating_mul(4);
+                if encoded.len() > max_encoded {
+                    return Err(AppError::bad_request("Voice memo data is too large"));
+                }
+                let data = B64
+                    .decode(encoded)
+                    .map_err(|_| AppError::bad_request("Voice memo data is not valid base64"))?;
+                ensure_voice_memo_container_size(data.len())?;
+                data
             }
-        })?;
-    Ok(json!({
-        "ok": true,
-        "lease_id": crate::voice_memo::format_playback_lease_id(lease_id),
-    }))
+            (None, Some(stored_name)) => {
+                let path = state
+                    .lxmf
+                    .lock()
+                    .ok()
+                    .and_then(|manager| {
+                        manager
+                            .as_ref()
+                            .and_then(|manager| manager.get_received_file(&stored_name))
+                    })
+                    .ok_or_else(|| AppError::not_found("Voice memo not found"))?;
+                read_bounded_voice_memo(path).await?
+            }
+            _ => {
+                return Err(AppError::bad_request(
+                    "Voice message playback requires exactly one native source",
+                ));
+            }
+        };
+        let app_state = state.inner().clone();
+        let started = crate::voice_memo::start_native_playback(&app_state, data, args.position_ms)
+            .await
+            .map_err(|error| {
+                if error.contains("using audio") || error.contains("being recorded") {
+                    AppError::conflict(error)
+                } else {
+                    tracing::warn!(
+                        reason = "native_output_failed",
+                        "voice message playback failed"
+                    );
+                    AppError::service_unavailable(VOICE_MEMO_PLAYBACK_UNAVAILABLE)
+                }
+            })?;
+        return Ok(serde_json::to_value(started).unwrap_or_else(|_| json!({})));
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = (state, args);
+        Err(AppError::service_unavailable(
+            "Native voice message playback is unavailable on this platform",
+        ))
+    }
 }
 
 #[tauri::command]
@@ -315,8 +373,24 @@ pub async fn voice_memo_playback_session_stop(
 ) -> AppResult<Value> {
     let lease_id = crate::voice_memo::parse_playback_lease_id(&args.lease_id)
         .ok_or_else(|| AppError::bad_request("Voice message playback lease is invalid"))?;
-    let released = crate::voice_memo::stop_playback_session(&state, lease_id).await;
-    Ok(json!({ "ok": true, "released": released, "lease_id": args.lease_id }))
+    #[cfg(target_os = "ios")]
+    {
+        let position_ms = crate::voice_memo::stop_native_playback(&state, lease_id)
+            .await
+            .map_err(AppError::service_unavailable)?;
+        return Ok(json!({
+            "ok": true,
+            "released": position_ms.is_some(),
+            "position_ms": position_ms,
+            "lease_id": args.lease_id,
+        }));
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = (state, lease_id);
+        Ok(json!({ "ok": true, "released": false, "lease_id": args.lease_id }))
+    }
 }
 
 #[tauri::command]

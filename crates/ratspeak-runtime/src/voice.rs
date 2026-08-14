@@ -1,6 +1,8 @@
 //! LXST voice service and native audio bridge.
 
 use std::collections::{HashSet, VecDeque};
+#[cfg(target_os = "ios")]
+use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -61,6 +63,8 @@ const VOICE_PROFILE_DOWNGRADE_COOLDOWN: Duration = Duration::from_secs(20);
 const VOICE_PROFILE_UPGRADE_LOCKOUT_AFTER_DOWNGRADE: Duration = Duration::from_secs(60);
 const VOICE_PROFILE_DROPPED_FRAME_THRESHOLD: usize = 4;
 const VOICE_AUDIO_FADE_IN_MS: usize = 20;
+#[cfg(target_os = "ios")]
+const VOICE_MEMO_OUTPUT_BUFFER_MS: usize = 2_100;
 #[cfg_attr(target_os = "android", allow(dead_code))]
 const VOICE_AUDIO_OUTPUT_PREBUFFER_MS: usize = 120;
 const VOICE_AUDIO_RECOVERY_TICK: Duration = Duration::from_millis(1500);
@@ -2766,6 +2770,354 @@ fn build_output_stream(
     }
 }
 
+/// Finite native PCM output used by iOS voice messages.
+///
+/// LXST calls and voice messages deliberately share CPAL's default output
+/// device selection, sample-format negotiation, resampling, and output
+/// leveling. The distinction is only ownership: a call receives frames from
+/// the LXST stream while a memo incrementally fills one bounded PCM ring.
+#[cfg(target_os = "ios")]
+pub(crate) struct NativeVoiceMemoOutput {
+    _stream: cpal::Stream,
+    queue: Arc<Mutex<FiniteAudioOutput>>,
+    progress: Arc<NativeVoiceMemoOutputProgress>,
+    source_sample_rate: u32,
+    output_sample_rate: u32,
+    output_channels: usize,
+}
+
+#[cfg(target_os = "ios")]
+#[derive(Clone)]
+pub(crate) struct NativeVoiceMemoOutputMonitor {
+    progress: Arc<NativeVoiceMemoOutputProgress>,
+}
+
+#[cfg(target_os = "ios")]
+impl NativeVoiceMemoOutput {
+    pub(crate) fn position_ms(&self) -> u32 {
+        self.progress.position_ms()
+    }
+
+    pub(crate) fn finished(&self) -> bool {
+        self.progress.finished()
+    }
+
+    pub(crate) fn monitor(&self) -> NativeVoiceMemoOutputMonitor {
+        NativeVoiceMemoOutputMonitor {
+            progress: Arc::clone(&self.progress),
+        }
+    }
+
+    pub(crate) fn buffered_duration_ms(&self) -> u32 {
+        let buffered_samples = self
+            .queue
+            .lock()
+            .map(|queue| queue.len())
+            .unwrap_or_default();
+        let samples_per_second =
+            u64::from(self.output_sample_rate) * self.output_channels.max(1) as u64;
+        if samples_per_second == 0 {
+            return 0;
+        }
+        ((buffered_samples as u64 * 1_000) / samples_per_second).min(u64::from(u32::MAX)) as u32
+    }
+
+    pub(crate) fn enqueue_frame(&self, frame: &RawAudioFrame, skip_ms: u32) -> VoiceResult<()> {
+        let mut samples = resample_output_frame(
+            frame,
+            self.source_sample_rate,
+            self.output_sample_rate,
+            self.output_channels,
+        );
+        apply_voice_output_leveling(&mut samples);
+        let skip_samples = (u64::from(skip_ms)
+            * u64::from(self.output_sample_rate)
+            * self.output_channels.max(1) as u64
+            / 1_000)
+            .min(samples.len() as u64) as usize;
+        if skip_samples > 0 {
+            samples.drain(..skip_samples);
+        }
+        self.queue
+            .lock()
+            .map_err(|_| "Voice message output queue is unavailable".to_string())?
+            .push_samples(samples)
+    }
+
+    pub(crate) fn play(&self) -> VoiceResult<()> {
+        if self
+            .queue
+            .lock()
+            .map(|queue| queue.is_empty())
+            .unwrap_or(true)
+        {
+            return Err("Voice message decoded to empty PCM".to_string());
+        }
+        self._stream
+            .play()
+            .map_err(|error| format!("Failed to start voice message speaker stream: {error}"))
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl NativeVoiceMemoOutputMonitor {
+    pub(crate) fn position_ms(&self) -> u32 {
+        self.progress.position_ms()
+    }
+}
+
+#[cfg(target_os = "ios")]
+struct NativeVoiceMemoOutputProgress {
+    rendered_samples: AtomicU64,
+    total_samples: u64,
+    output_sample_rate: u32,
+    output_channels: usize,
+    start_position_ms: u32,
+    duration_ms: u32,
+}
+
+#[cfg(target_os = "ios")]
+impl NativeVoiceMemoOutputProgress {
+    fn position_ms(&self) -> u32 {
+        let samples_per_second =
+            u64::from(self.output_sample_rate) * self.output_channels.max(1) as u64;
+        let rendered_ms = if samples_per_second == 0 {
+            0
+        } else {
+            self.rendered_samples.load(Ordering::Acquire) * 1_000 / samples_per_second
+        };
+        self.start_position_ms
+            .saturating_add(rendered_ms.min(u64::from(u32::MAX)) as u32)
+            .min(self.duration_ms)
+    }
+
+    fn finished(&self) -> bool {
+        self.rendered_samples.load(Ordering::Acquire) >= self.total_samples
+    }
+}
+
+#[cfg(any(target_os = "ios", test))]
+struct FiniteAudioOutput {
+    samples: VecDeque<f32>,
+    max_samples: usize,
+}
+
+#[cfg(any(target_os = "ios", test))]
+impl FiniteAudioOutput {
+    #[cfg(test)]
+    fn new(samples: Vec<f32>, start_sample: usize) -> Self {
+        let remaining = samples
+            .len()
+            .saturating_sub(start_sample.min(samples.len()));
+        Self {
+            samples: samples.into_iter().skip(start_sample).collect(),
+            max_samples: remaining,
+        }
+    }
+
+    fn bounded(max_samples: usize) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(max_samples),
+            max_samples,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    fn push_samples(&mut self, samples: Vec<f32>) -> VoiceResult<()> {
+        if self.samples.len().saturating_add(samples.len()) > self.max_samples {
+            return Err("Voice message output exceeded its bounded PCM queue".to_string());
+        }
+        self.samples.extend(samples);
+        Ok(())
+    }
+
+    fn fill_f32(&mut self, output: &mut [f32]) -> usize {
+        let mut consumed = 0;
+        for target in output.iter_mut() {
+            let Some(sample) = self.samples.pop_front() else {
+                break;
+            };
+            *target = sample;
+            consumed += 1;
+        }
+        output[consumed..].fill(0.0);
+        consumed
+    }
+
+    fn fill_i16(&mut self, output: &mut [i16]) -> usize {
+        let mut consumed = 0;
+        for target in output.iter_mut() {
+            let Some(sample) = self.samples.pop_front() else {
+                break;
+            };
+            *target = (sample * i16::MAX as f32) as i16;
+            consumed += 1;
+        }
+        output[consumed..].fill(0);
+        consumed
+    }
+
+    fn fill_u16(&mut self, output: &mut [u16]) -> usize {
+        let mut consumed = 0;
+        for target in output.iter_mut() {
+            let Some(sample) = self.samples.pop_front() else {
+                break;
+            };
+            *target = ((sample * 0.5 + 0.5) * u16::MAX as f32) as u16;
+            consumed += 1;
+        }
+        output[consumed..].fill(u16::MAX / 2);
+        consumed
+    }
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn start_voice_memo_output(
+    source_sample_rate: u32,
+    start_position_ms: u32,
+    duration_ms: u32,
+) -> VoiceResult<NativeVoiceMemoOutput> {
+    let host = cpal::default_host();
+    let output_device = host
+        .default_output_device()
+        .ok_or_else(|| "No default speaker is available".to_string())?;
+    let output_config = select_output_config(&output_device, source_sample_rate)?;
+    let output_channels = usize::from(output_config.channels());
+    let output_sample_rate = output_config.sample_rate().0;
+    let start_position_ms = start_position_ms.min(duration_ms);
+    let total_samples = u64::from(duration_ms.saturating_sub(start_position_ms))
+        * u64::from(output_sample_rate)
+        * output_channels.max(1) as u64
+        / 1_000;
+    let progress = Arc::new(NativeVoiceMemoOutputProgress {
+        rendered_samples: AtomicU64::new(0),
+        total_samples,
+        output_sample_rate,
+        output_channels,
+        start_position_ms,
+        duration_ms,
+    });
+    let max_samples = (output_sample_rate as usize)
+        .saturating_mul(output_channels.max(1))
+        .saturating_mul(VOICE_MEMO_OUTPUT_BUFFER_MS)
+        / 1_000;
+    let queue = Arc::new(Mutex::new(FiniteAudioOutput::bounded(max_samples)));
+    let stream = build_finite_output_stream(
+        &output_device,
+        &output_config,
+        Arc::clone(&queue),
+        Arc::clone(&progress),
+    )?;
+    Ok(NativeVoiceMemoOutput {
+        _stream: stream,
+        queue,
+        progress,
+        source_sample_rate,
+        output_sample_rate,
+        output_channels,
+    })
+}
+
+#[cfg(target_os = "ios")]
+fn build_finite_output_stream(
+    device: &cpal::Device,
+    supported: &cpal::SupportedStreamConfig,
+    queue: Arc<Mutex<FiniteAudioOutput>>,
+    progress: Arc<NativeVoiceMemoOutputProgress>,
+) -> VoiceResult<cpal::Stream> {
+    let config = supported.config();
+    match supported.sample_format() {
+        cpal::SampleFormat::F32 => device
+            .build_output_stream(
+                &config,
+                move |data: &mut [f32], _| fill_finite_output_f32(data, &queue, &progress),
+                log_output_stream_error,
+                None,
+            )
+            .map_err(|error| format!("Failed to build f32 voice message stream: {error}")),
+        cpal::SampleFormat::I16 => device
+            .build_output_stream(
+                &config,
+                move |data: &mut [i16], _| fill_finite_output_i16(data, &queue, &progress),
+                log_output_stream_error,
+                None,
+            )
+            .map_err(|error| format!("Failed to build i16 voice message stream: {error}")),
+        cpal::SampleFormat::U16 => device
+            .build_output_stream(
+                &config,
+                move |data: &mut [u16], _| fill_finite_output_u16(data, &queue, &progress),
+                log_output_stream_error,
+                None,
+            )
+            .map_err(|error| format!("Failed to build u16 voice message stream: {error}")),
+        other => Err(format!(
+            "Unsupported voice message speaker sample format: {other:?}"
+        )),
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn fill_finite_output_f32(
+    data: &mut [f32],
+    queue: &Arc<Mutex<FiniteAudioOutput>>,
+    progress: &Arc<NativeVoiceMemoOutputProgress>,
+) {
+    let consumed = queue
+        .try_lock()
+        .map(|mut queue| queue.fill_f32(data))
+        .unwrap_or_else(|_| {
+            data.fill(0.0);
+            0
+        });
+    progress
+        .rendered_samples
+        .fetch_add(consumed as u64, Ordering::AcqRel);
+}
+
+#[cfg(target_os = "ios")]
+fn fill_finite_output_i16(
+    data: &mut [i16],
+    queue: &Arc<Mutex<FiniteAudioOutput>>,
+    progress: &Arc<NativeVoiceMemoOutputProgress>,
+) {
+    let consumed = queue
+        .try_lock()
+        .map(|mut queue| queue.fill_i16(data))
+        .unwrap_or_else(|_| {
+            data.fill(0);
+            0
+        });
+    progress
+        .rendered_samples
+        .fetch_add(consumed as u64, Ordering::AcqRel);
+}
+
+#[cfg(target_os = "ios")]
+fn fill_finite_output_u16(
+    data: &mut [u16],
+    queue: &Arc<Mutex<FiniteAudioOutput>>,
+    progress: &Arc<NativeVoiceMemoOutputProgress>,
+) {
+    let consumed = queue
+        .try_lock()
+        .map(|mut queue| queue.fill_u16(data))
+        .unwrap_or_else(|_| {
+            data.fill(u16::MAX / 2);
+            0
+        });
+    progress
+        .rendered_samples
+        .fetch_add(consumed as u64, Ordering::AcqRel);
+}
+
 fn push_input_samples(
     samples: &[f32],
     builder: &Arc<Mutex<InputFrameBuilder>>,
@@ -3573,5 +3925,42 @@ mod tests {
         assert_eq!(queue.pop_sample(), 0.4);
         assert_eq!(queue.pop_sample(), 0.5);
         assert_eq!(queue.pop_sample(), 0.0);
+    }
+
+    #[test]
+    fn finite_memo_output_reports_only_pcm_consumed_by_the_device_callback() {
+        let mut queue = FiniteAudioOutput::new(vec![0.25, -0.5, 0.75], 1);
+        let mut output = [9.0; 4];
+
+        let consumed = queue.fill_f32(&mut output);
+
+        assert_eq!(consumed, 2);
+        assert_eq!(output, [-0.5, 0.75, 0.0, 0.0]);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn finite_memo_output_converts_without_allocating_in_the_audio_callback() {
+        let mut signed = FiniteAudioOutput::new(vec![-1.0, 0.0, 1.0], 0);
+        let mut signed_output = [7i16; 4];
+        assert_eq!(signed.fill_i16(&mut signed_output), 3);
+        assert_eq!(signed_output, [i16::MIN + 1, 0, i16::MAX, 0]);
+
+        let mut unsigned = FiniteAudioOutput::new(vec![-1.0, 0.0, 1.0], 0);
+        let mut unsigned_output = [7u16; 4];
+        assert_eq!(unsigned.fill_u16(&mut unsigned_output), 3);
+        assert_eq!(unsigned_output[0], 0);
+        assert_eq!(unsigned_output[1], u16::MAX / 2);
+        assert_eq!(unsigned_output[2], u16::MAX);
+        assert_eq!(unsigned_output[3], u16::MAX / 2);
+    }
+
+    #[test]
+    fn finite_memo_output_rejects_growth_past_its_pcm_budget() {
+        let mut queue = FiniteAudioOutput::bounded(3);
+        queue.push_samples(vec![0.1, 0.2]).unwrap();
+
+        assert!(queue.push_samples(vec![0.3, 0.4]).is_err());
+        assert_eq!(queue.len(), 2);
     }
 }

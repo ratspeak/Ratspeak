@@ -7519,7 +7519,13 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(memo.contains("pub fn parse_recording_session_id"));
     assert!(memo.contains("pub fn parse_playback_lease_id"));
     assert!(memo.contains("take_matching_recording(state, session_id)"));
-    assert!(memo.contains("compare_exchange(lease_id, 0"));
+    assert!(memo.contains("command_tx: mpsc::Sender<PlaybackCommand>"));
+    assert!(memo.contains("runtime.block_on(drive_native_playback("));
+    assert!(memo.contains("struct NativeVoiceMemoSource"));
+    assert!(memo.contains("NATIVE_PLAYBACK_REFILL_TARGET_MS"));
+    assert!(voice.contains("VOICE_MEMO_OUTPUT_BUFFER_MS"));
+    assert!(voice.contains("FiniteAudioOutput::bounded(max_samples)"));
+    assert!(voice.contains(".try_lock()"));
     assert!(commands.contains("VOICE_MEMO_START_UNAVAILABLE"));
     assert!(commands.contains("crate::voice_memo::cancel_recording(&app_state)"));
     assert!(commands.contains("spawn_blocking(move || crate::voice_memo::decode_voice_memo"));
@@ -7552,15 +7558,15 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     ));
     assert!(voice_memos.contains("cacheGeneration !== mediaCacheGeneration"));
     assert!(voice_memos.contains("var token = ++draftExpirySequence"));
-    assert!(voice_memos.contains("if (!iosPlaybackLeaseId) iosPlaybackLeaseId = leaseId;"));
+    assert!(voice_memos.contains("leaseId = stoppingLease"));
+    assert!(voice_memos.contains("nativeIosPlaybackByLease[stoppingLease] = handle"));
     assert!(voice_memos.contains("playbackAttemptIsCurrent(coordinator, audio)"));
     assert!(voice_memos.contains("handleAudioInterruption"));
     assert!(voice_memos.contains("RS.audioPlayback.ensure({ installUnlock: true })"));
-    assert!(voice_memos.contains("RS.audioPlayback.context()"));
-    assert!(voice_memos.contains("RS.audioPlayback.isReady()"));
-    assert!(voice_memos.contains("ctx.decodeAudioData"));
-    assert!(voice_memos.contains("RS.invoke('voice_memo_playback_session_start')"));
+    assert!(voice_memos.contains("RS.invoke('voice_memo_playback_start'"));
     assert!(voice_memos.contains("'voice_memo_playback_session_stop'"));
+    assert!(voice_memos.contains("return createNativeIosPlayback(item)"));
+    assert!(voice_memos.contains("return createMediaPlayback(item)"));
     assert!(voice_memos.contains("classes = ['is-recorded']"));
     assert!(voice_memos.contains("classes.push('is-live')"));
     assert!(voice_memos.contains("class=\"is-empty\""));
@@ -7594,7 +7600,7 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
         "voice_memo_pause",
         "voice_memo_stop",
         "voice_memo_cancel",
-        "voice_memo_playback_session_start",
+        "voice_memo_playback_start",
         "voice_memo_playback_session_stop",
         "voice_memo_decode_data",
         "voice_memo_decode_stored",
