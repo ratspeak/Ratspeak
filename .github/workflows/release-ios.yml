@@ -20,8 +20,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26d
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26d
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26i
+  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26i
   RATSPEAK_RSLXST_REF: ratspeak-v1.0.26d
   RATSPEAK_LRGP_REF: ratspeak-v1.0.26d
   TOOLCHAINS: com.apple.dt.toolchain.XcodeDefault

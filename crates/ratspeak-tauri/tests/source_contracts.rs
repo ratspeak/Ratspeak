@@ -4975,14 +4975,14 @@ fn settings_version_display_uses_package_version_api() {
 }
 
 #[test]
-fn release_workflows_pin_v1_0_26d_and_stage_tag_builds_as_prereleases() {
+fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleases() {
     let root = repo_root();
-    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 6c77c9e69d0c5c6c60396335cb1d02eb8ccb7c28";
-    let rslxmf_commit = "RATSPEAK_RSLXMF_REF: 681c0f5961acce637183efc9a4047bf25ead56bf";
+    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 2e0d0a688881040a0a12639490f494b162466be1";
+    let rslxmf_commit = "RATSPEAK_RSLXMF_REF: b40dcd37f2e9961ef5fdae535ecafe823f98255a";
     let rslxst_commit = "RATSPEAK_RSLXST_REF: fd81d7155c6e0af799aaa398aee21028ce535924";
     let dependency_refs = [
-        "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26d",
-        "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26d",
+        "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26i",
+        "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26i",
         "RATSPEAK_RSLXST_REF: ratspeak-v1.0.26d",
         "RATSPEAK_LRGP_REF: ratspeak-v1.0.26d",
     ];
