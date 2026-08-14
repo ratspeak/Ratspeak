@@ -24,7 +24,7 @@
       "icons/icon.ico"
     ],
     "android": {
-      "versionCode": 1000038
+      "versionCode": 1000039
     },
     "linux": {
       "appimage": {

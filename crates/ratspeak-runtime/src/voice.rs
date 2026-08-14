@@ -2790,8 +2790,10 @@ fn select_input_configs(
             candidates.push(range.with_sample_rate(cpal::SampleRate(sample_rate)));
         }
     }
-    if let Ok(default) = device.default_input_config()
-        && supported_sample_format(default.sample_format())
+    if let Some(default) = device
+        .default_input_config()
+        .ok()
+        .filter(|default| supported_sample_format(default.sample_format()))
     {
         candidates.push(default);
     }
@@ -2817,16 +2819,21 @@ fn select_input_configs(
     preferred_sample_rate: u32,
 ) -> VoiceResult<Vec<cpal::SupportedStreamConfig>> {
     let mut candidates = Vec::new();
-    if let Ok(default) = device.default_input_config()
-        && supported_sample_format(default.sample_format())
+    if let Some(default) = device
+        .default_input_config()
+        .ok()
+        .filter(|default| supported_sample_format(default.sample_format()))
     {
         candidates.push(default);
     }
-    if let Ok(fallback) = fallback_input_config(device, preferred_sample_rate)
-        && !candidates.iter().any(|candidate| {
-            candidate.channels() == fallback.channels()
-                && candidate.sample_rate() == fallback.sample_rate()
-                && candidate.sample_format() == fallback.sample_format()
+    if let Some(fallback) = fallback_input_config(device, preferred_sample_rate)
+        .ok()
+        .filter(|fallback| {
+            !candidates.iter().any(|candidate| {
+                candidate.channels() == fallback.channels()
+                    && candidate.sample_rate() == fallback.sample_rate()
+                    && candidate.sample_format() == fallback.sample_format()
+            })
         })
     {
         candidates.push(fallback);
