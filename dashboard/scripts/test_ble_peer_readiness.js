@@ -47,7 +47,7 @@ assert(events.includes("routable: !!identity && data.routable !== false"));
 assert(events.includes("p.routable !== true"));
 assert(!health.includes("return { label: addr, title: addr }"));
 assert(backend.includes('BLE_IDENTITY_ANNOUNCE_RETRY_DELAYS_SECS'));
-assert(backend.includes('"readiness": "connected"'));
+assert(backend.includes('"readiness": if routable { "routable" } else { "connected" }'));
 assert(backend.includes('"readiness": "routable"'));
 assert(backend.includes('verified_ble_peer_rows(address_to_identity)'));
 

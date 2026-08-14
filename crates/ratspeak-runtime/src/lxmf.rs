@@ -2364,7 +2364,14 @@ impl LxmfManager {
         let files_dir = self.files_dir();
         let path = files_dir.join(&stored_name);
         std::fs::rename(staged_path, &path)?;
-        if let Err(error) = std::fs::File::open(&path).and_then(|file| file.sync_all()) {
+        // Windows requires a writable handle for FlushFileBuffers. Opening the
+        // adopted file read-only makes the otherwise-successful atomic rename
+        // look like a storage failure on that platform.
+        if let Err(error) = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.sync_all())
+        {
             let _ = std::fs::remove_file(&path);
             return Err(error);
         }
