@@ -1696,7 +1696,12 @@ struct VoiceAudioSession {
 #[cfg(target_os = "ios")]
 pub(crate) type PlatformVoiceAudioSession = crate::platform_ios::VoiceAudioSessionGuard;
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+pub(crate) struct PlatformVoiceAudioSession {
+    _guard: Option<android_voice_audio::VoiceMemoAudioSessionGuard>,
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub(crate) struct PlatformVoiceAudioSession;
 
 pub(crate) fn start_platform_voice_audio_session() -> VoiceResult<PlatformVoiceAudioSession> {
@@ -1705,8 +1710,38 @@ pub(crate) fn start_platform_voice_audio_session() -> VoiceResult<PlatformVoiceA
         crate::platform_ios::VoiceAudioSessionGuard::activate()
     }
 
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(target_os = "android")]
     {
+        Ok(PlatformVoiceAudioSession { _guard: None })
+    }
+
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        Ok(PlatformVoiceAudioSession)
+    }
+}
+
+fn start_platform_voice_memo_audio_session(
+    session_token: &str,
+) -> VoiceResult<PlatformVoiceAudioSession> {
+    #[cfg(target_os = "ios")]
+    {
+        let _ = session_token;
+        crate::platform_ios::VoiceAudioSessionGuard::activate()
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        android_voice_audio::VoiceMemoAudioSessionGuard::start(session_token).map(|guard| {
+            PlatformVoiceAudioSession {
+                _guard: Some(guard),
+            }
+        })
+    }
+
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let _ = session_token;
         Ok(PlatformVoiceAudioSession)
     }
 }
@@ -2044,12 +2079,13 @@ async fn start_microphone_side(
 /// capture/resampling path instead of drifting into platform-specific codecs.
 pub(crate) fn start_microphone_capture(
     profile: Profile,
+    session_token: &str,
 ) -> VoiceResult<(
     PlatformVoiceAudioSession,
     cpal::Stream,
     mpsc::Receiver<RawAudioFrame>,
 )> {
-    let platform_audio_session = start_platform_voice_audio_session()?;
+    let platform_audio_session = start_platform_voice_memo_audio_session(session_token)?;
     let mut last_error = "No microphone is available".to_string();
     for delay in MICROPHONE_CAPTURE_RETRY_DELAYS {
         if !delay.is_zero() {
@@ -3322,7 +3358,79 @@ mod android_voice_audio {
 
     const CLASS_NAME: &str = "org.ratspeak.android.RatspeakVoiceAudio";
     const CALL_CLASS_NAME: &str = "org.ratspeak.android.RatspeakCallAudio";
+    const VOICE_MEMO_CLASS_NAME: &str = "org.ratspeak.android.RatspeakVoiceMemoAudio";
     static APP_CLASS_LOADER: OnceLock<GlobalRef> = OnceLock::new();
+
+    pub struct VoiceMemoAudioSessionGuard {
+        token: String,
+    }
+
+    impl VoiceMemoAudioSessionGuard {
+        pub fn start(token: &str) -> VoiceResult<Self> {
+            match start_voice_memo_session(token)? {
+                0 => {}
+                1 => {
+                    return Err("Another app or call is using the microphone".to_string());
+                }
+                _ => {
+                    return Err("Android microphone audio session is unavailable".to_string());
+                }
+            }
+            Ok(Self {
+                token: token.to_string(),
+            })
+        }
+    }
+
+    impl Drop for VoiceMemoAudioSessionGuard {
+        fn drop(&mut self) {
+            let _ = voice_memo_session_method(&self.token, "stopForSession");
+        }
+    }
+
+    fn voice_memo_session_method(token: &str, method: &str) -> VoiceResult<bool> {
+        with_env(|env| {
+            let class = find_app_class(env, VOICE_MEMO_CLASS_NAME)?;
+            let context = get_app_context(env)?;
+            let token = env
+                .new_string(token)
+                .map_err(|e| format!("voice memo session token: {e}"))?;
+            env.call_static_method(
+                class,
+                method,
+                "(Landroid/content/Context;Ljava/lang/String;)Z",
+                &[JValue::Object(context), JValue::Object(token.into())],
+            )
+            .map_err(|e| {
+                clear_exception(env);
+                format!("RatspeakVoiceMemoAudio.{method}: {e}")
+            })?
+            .z()
+            .map_err(|e| format!("RatspeakVoiceMemoAudio.{method} result: {e}"))
+        })
+    }
+
+    fn start_voice_memo_session(token: &str) -> VoiceResult<i32> {
+        with_env(|env| {
+            let class = find_app_class(env, VOICE_MEMO_CLASS_NAME)?;
+            let context = get_app_context(env)?;
+            let token = env
+                .new_string(token)
+                .map_err(|e| format!("voice memo session token: {e}"))?;
+            env.call_static_method(
+                class,
+                "startForSession",
+                "(Landroid/content/Context;Ljava/lang/String;)I",
+                &[JValue::Object(context), JValue::Object(token.into())],
+            )
+            .map_err(|e| {
+                clear_exception(env);
+                format!("RatspeakVoiceMemoAudio.startForSession: {e}")
+            })?
+            .i()
+            .map_err(|e| format!("RatspeakVoiceMemoAudio.startForSession result: {e}"))
+        })
+    }
 
     pub struct CallAudioSessionGuard {
         token: String,

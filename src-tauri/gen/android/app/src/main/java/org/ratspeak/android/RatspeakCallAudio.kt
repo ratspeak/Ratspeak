@@ -75,6 +75,7 @@ object RatspeakCallAudio {
         sessionToken: String,
         initialRoute: String,
     ): Boolean {
+        if (RatspeakVoiceMemoAudio.isActive()) return false
         val application = context.applicationContext
         val manager = application.getSystemService(AudioManager::class.java)
             ?: return false
@@ -116,7 +117,11 @@ object RatspeakCallAudio {
                 RatspeakMobilePolicy.CapturePromotionPlan.REJECT -> return false
                 RatspeakMobilePolicy.CapturePromotionPlan.PROMOTE -> Unit
             }
-            if (!RatspeakService.setCallCaptureActive(context.applicationContext, true)) return false
+            if (!RatspeakService.setMicrophoneCaptureActive(
+                    context.applicationContext,
+                    sessionToken,
+                    true,
+                )) return false
             captureOwnerToken = sessionToken
             true
         }
@@ -128,7 +133,11 @@ object RatspeakCallAudio {
             if (!RatspeakMobilePolicy.validCallSessionToken(sessionToken) ||
                 !RatspeakMobilePolicy.callSessionOwns(captureOwnerToken, sessionToken)
             ) return false
-            val demoted = RatspeakService.setCallCaptureActive(context.applicationContext, false)
+            val demoted = RatspeakService.setMicrophoneCaptureActive(
+                context.applicationContext,
+                sessionToken,
+                false,
+            )
             captureOwnerToken = RatspeakMobilePolicy.captureOwnerAfterDemotion(
                 captureOwnerToken,
                 sessionToken,
@@ -179,16 +188,20 @@ object RatspeakCallAudio {
             return false
         }
         val application = context.applicationContext
-        if (captureOwnerToken == candidateToken) {
-            val demoted = RatspeakService.setCallCaptureActive(application, false)
+        if (candidateToken != null && captureOwnerToken == candidateToken) {
+            val demoted = RatspeakService.setMicrophoneCaptureActive(
+                application,
+                candidateToken,
+                false,
+            )
             captureOwnerToken = RatspeakMobilePolicy.captureOwnerAfterDemotion(
                 captureOwnerToken,
-                candidateToken ?: "",
+                candidateToken,
                 demoted,
             )
             if (demoted) {
                 captureDemotionRetryToken = null
-            } else if (candidateToken != null) {
+            } else {
                 scheduleCaptureDemotion(application, candidateToken)
             }
         }
@@ -234,7 +247,11 @@ object RatspeakCallAudio {
                         }
                         return
                     }
-                    val demoted = RatspeakService.setCallCaptureActive(application, false)
+                    val demoted = RatspeakService.setMicrophoneCaptureActive(
+                        application,
+                        sessionToken,
+                        false,
+                    )
                     captureOwnerToken = RatspeakMobilePolicy.captureOwnerAfterDemotion(
                         captureOwnerToken,
                         sessionToken,

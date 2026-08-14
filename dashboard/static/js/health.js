@@ -734,14 +734,10 @@ function classifyInterface(iface) {
 // the same Ratspeak peer.
 window._blePeers = window._blePeers || {};
 
-// Grace window: render 'Identifying peer\u2026' before the first signed
-// announce arrives, then fall back to the BLE address.
-var BLE_PEER_IDENTIFYING_GRACE_MS = 5000;
-
-// Identity-aware label: contact name > truncated hash > grace placeholder >
-// raw BLE address. Returns { label, title } for tooltip preservation.
+// Identity-aware label. A BLE address is transport metadata, never a peer
+// identity; persisted identity is only a provisional reconnect hint until a
+// fresh signed announce makes the row routable.
 function _resolveBlePeerLabel(peer) {
-    var addr = peer.address || '';
     var idHash = peer.identity_hash || '';
     if (idHash) {
         if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.get === 'function') {
@@ -752,12 +748,14 @@ function _resolveBlePeerLabel(peer) {
         }
         return { label: typeof shortHash === 'function' ? shortHash(idHash, 8, 4) : idHash.substring(0, 12) + '\u2026', title: idHash };
     }
-    // Defer raw BLE address until grace window elapses to avoid a 1-2s UUID flash.
-    var connectedAt = peer.connected_at || 0;
-    if (connectedAt && Date.now() - connectedAt < BLE_PEER_IDENTIFYING_GRACE_MS) {
-        return { label: 'Identifying peer\u2026', title: addr || 'Identifying peer' };
+    var provisional = peer.provisional_identity_hash || '';
+    if (provisional && typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.get === 'function') {
+        var provisionalEntry = PeersCache.get(provisional);
+        if (provisionalEntry && provisionalEntry.display_name && provisionalEntry.display_name !== provisional) {
+            return { label: 'Verifying ' + provisionalEntry.display_name + '\u2026', title: 'Awaiting a signed identity announce' };
+        }
     }
-    return { label: addr, title: addr };
+    return { label: 'Identifying peer\u2026', title: 'Awaiting a signed identity announce' };
 }
 
 function _blePeerRepresentativeScore(peer) {
@@ -781,7 +779,9 @@ function _betterBlePeerRepresentative(current, candidate) {
 function _bleVisiblePeersFromCache() {
     var raw = Object.keys(window._blePeers || {})
         .map(function(k) { return window._blePeers[k]; })
-        .filter(function(p) { return p && p.connected === true; });
+        .filter(function(p) {
+            return p && p.connected === true && p.routable === true && !!p.identity_hash;
+        });
     var byIdentity = {};
     var unidentified = [];
 
@@ -856,7 +856,15 @@ function _renderBleSection(bodyEl, sectionEl, countEl) {
     }
     if (count === 0) {
         var msg;
-        if (window._blePeerEnabled && window._blePeerPeripheralUnavailable) {
+        var verifyingCount = Object.keys(window._blePeers || {}).filter(function(key) {
+            var peer = window._blePeers[key];
+            return peer && peer.connected === true && peer.routable !== true;
+        }).length;
+        if (verifyingCount > 0) {
+            msg = verifyingCount === 1
+                ? 'Connected \u00b7 verifying peer identity\u2026'
+                : 'Connected \u00b7 verifying ' + verifyingCount + ' peer identities\u2026';
+        } else if (window._blePeerEnabled && window._blePeerPeripheralUnavailable) {
             msg = 'Central-only \u2014 scanning for peers\u2026';
         } else if (window._blePeerEnabled) {
             msg = 'Scanning for peers\u2026';

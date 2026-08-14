@@ -2468,20 +2468,31 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                     method,
                                 );
                             }
-                            db::update_message_state(
+                            let updated = db::update_message_state(
                                 &p,
                                 &msg_id_for_db,
                                 &identity_for_db,
                                 &new_state_for_db,
                                 None,
                             );
-                            db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db)
+                            let method = db::get_message_delivery_method(
+                                &p,
+                                &msg_id_for_db,
+                                &identity_for_db,
+                            );
+                            (updated, method)
                         })
                         .await
                         {
-                            Ok(method) => {
+                            Ok((true, method)) => {
                                 persisted.push((msg_id.clone(), *new_state, method, failure))
                             }
+                            Ok((false, _)) => tracing::debug!(
+                                msg_id = %short_id(msg_id),
+                                new_state = %new_state,
+                                reason = "terminal_state_preserved",
+                                "lxmf_tick: suppressed a late state regression"
+                            ),
                             Err(_) => tracing::error!(
                                 msg_id = %short_id(msg_id),
                                 new_state = %new_state,
@@ -2566,15 +2577,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 ))
                             });
                         }
-                        if *new_state == "sent" {
+                        if lxmf_step_starts_delivery_timeout(new_state) {
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
                                 .as_secs_f64();
                             if let Ok(mut times) = tick_state.message_send_times.lock() {
-                                times.insert(msg_id.clone(), now);
+                                times.entry(msg_id.clone()).or_insert(now);
                             }
-                        } else if *new_state == "failed" {
+                        } else if lxmf_step_ends_delivery_timeout(new_state) {
                             if let Ok(mut times) = tick_state.message_send_times.lock() {
                                 times.remove(msg_id);
                             }
@@ -3557,12 +3568,27 @@ async fn handle_inbound_lxmf(
             let msg_id_for_db = msg_id.clone();
             let identity_for_db = helpers::active_identity_id(&state);
             // One hop: flip the state and read the method back for the emit.
-            let method = db::spawn_db(state.db.clone(), move |p| {
-                db::update_message_state(&p, &msg_id_for_db, &identity_for_db, "delivered", rtt_ms);
-                db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db)
+            let (updated, method) = db::spawn_db(state.db.clone(), move |p| {
+                let updated = db::update_message_state(
+                    &p,
+                    &msg_id_for_db,
+                    &identity_for_db,
+                    "delivered",
+                    rtt_ms,
+                );
+                let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
+                (updated, method)
             })
             .await
             .expect("db task panicked");
+            if !updated {
+                tracing::debug!(
+                    msg_id = %short_id(msg_id),
+                    reason = "terminal_state_preserved",
+                    "suppressed a late delivery proof state regression"
+                );
+                continue;
+            }
             if let Ok(mut times) = state.message_send_times.lock() {
                 times.remove(msg_id);
             }
@@ -5165,6 +5191,63 @@ async fn poll_stats_loop(
 // LXMF send → "failed" if no delivery proof within this window.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 
+fn lxmf_step_starts_delivery_timeout(step: &str) -> bool {
+    matches!(
+        step,
+        "sent"
+            | "routing"
+            | "propagating"
+            | "resolving"
+            | "link_establishing"
+            | "sending_via_link"
+            | "resource_link_ready"
+            | "resource_advertised"
+            | "resource_transferring"
+            | "resource_waiting_for_proof"
+            | "reusing_direct_link"
+            | "reusing_backchannel"
+    )
+}
+
+fn lxmf_step_ends_delivery_timeout(step: &str) -> bool {
+    matches!(
+        step,
+        "delivered" | "propagated" | "failed" | "cancelled" | "rejected" | "timeout"
+    )
+}
+
+#[cfg(test)]
+mod delivery_timeout_policy_tests {
+    use super::{lxmf_step_ends_delivery_timeout, lxmf_step_starts_delivery_timeout};
+
+    #[test]
+    fn direct_link_setup_starts_the_bounded_delivery_clock() {
+        for step in [
+            "routing",
+            "link_establishing",
+            "sending_via_link",
+            "resource_waiting_for_proof",
+            "sent",
+        ] {
+            assert!(lxmf_step_starts_delivery_timeout(step), "{step}");
+        }
+    }
+
+    #[test]
+    fn every_terminal_outcome_retires_the_delivery_clock() {
+        for step in [
+            "delivered",
+            "propagated",
+            "failed",
+            "cancelled",
+            "rejected",
+            "timeout",
+        ] {
+            assert!(lxmf_step_ends_delivery_timeout(step), "{step}");
+        }
+    }
+}
+
 // The process-local LRGP message-to-session map is intentionally ephemeral.
 // After a restart, use the same proof timeout as ordinary Direct messages to
 // recover a durable action left in flight and expose its preserved envelope
@@ -5194,40 +5277,58 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
         return;
     }
 
-    // One blocking-pool hop for the whole sweep: state flips + method reads.
+    // One blocking-pool hop for the whole sweep. Only rows that win the
+    // one-way terminal-state race may emit timeout or cancel live owners.
     let identity_id = helpers::active_identity_id(state);
     let ids_for_db = timed_out.clone();
-    let methods = db::spawn_db(state.db.clone(), move |p| {
+    let transitioned = db::spawn_db(state.db.clone(), move |p| {
         ids_for_db
             .iter()
-            .map(|msg_id| {
-                db::update_message_state(&p, msg_id, &identity_id, "failed", None);
-                db::get_message_delivery_method(&p, msg_id, &identity_id)
+            .filter_map(|msg_id| {
+                if db::update_message_state(&p, msg_id, &identity_id, "timeout", None) {
+                    Some((
+                        msg_id.clone(),
+                        db::get_message_delivery_method(&p, msg_id, &identity_id),
+                    ))
+                } else {
+                    None
+                }
             })
-            .collect::<Vec<Option<String>>>()
+            .collect::<Vec<(String, Option<String>)>>()
     })
     .await
     .unwrap_or_default();
 
-    for (msg_id, method) in timed_out.iter().zip(methods) {
+    // Stop every remaining local retry/Link/Resource owner after timeout is
+    // durable. This cannot recall a packet already handed to the network.
+    if let Ok(mut lxmf) = state.lxmf.lock() {
+        if let Some(manager) = lxmf.as_mut() {
+            for (msg_id, _) in &transitioned {
+                let _ = manager.cancel_outbound_message(msg_id);
+            }
+        }
+    }
+
+    for (msg_id, method) in transitioned {
+        state.release_attachment_delivery_lease(&msg_id);
         let client_msg_id = state
             .msg_id_map
             .lock()
             .ok()
-            .and_then(|mut map| map.remove(msg_id));
+            .and_then(|mut map| map.remove(&msg_id));
         state.emit_to_all(
             "lxmf_step",
             json!({
-                "step": "failed",
+                "step": "timeout",
                 "msg_id": msg_id,
                 "client_msg_id": client_msg_id,
                 "reason": "timeout",
                 "method": method,
             }),
         );
-        tracing::debug!(msg_id = %short_id(msg_id), timeout_secs = MESSAGE_TIMEOUT_SECS, "Message timed out");
+        tracing::debug!(msg_id = %short_id(&msg_id), timeout_secs = MESSAGE_TIMEOUT_SECS, "Message timed out");
         record_activity_if_current(state, activity_origin, || {
-            let message = producer::MessageId::from_hex(msg_id)?;
+            let message = producer::MessageId::from_hex(&msg_id)?;
             let method = method
                 .as_deref()
                 .and_then(producer::LxmfDeliveryMethod::from_code);
@@ -5249,7 +5350,7 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
             .lrgp_msg_to_session
             .lock()
             .ok()
-            .and_then(|mut map| map.remove(msg_id));
+            .and_then(|mut map| map.remove(&msg_id));
         if let Some(meta) = lrgp_meta {
             update_game_session_delivery_state(
                 state,

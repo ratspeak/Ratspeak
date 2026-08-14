@@ -64,6 +64,12 @@ var failed = icon('failed', 'opportunistic');
 assert(failed.includes('msg-state-failed'));
 assert(failed.includes('aria-label="Failed"'));
 
+var stopped = icon('cancelled', 'direct');
+assert(stopped.includes('aria-label="Stopped retrying"'));
+assert(source.includes('aria-label="Stop retrying message">Stop</button>'));
+assert(source.includes('A copy already handed to the network may still arrive.'));
+assert(source.includes("title: 'Stop retrying?'"));
+
 var css = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '09-messaging.css'), 'utf8');
 assert(/\.msg-state-sent svg\s*\{[^}]*var\(--text-muted\)/s.test(css),
     'sent checks must use the muted foreground');

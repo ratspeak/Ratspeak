@@ -4253,7 +4253,8 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("lxmfLimits.efficient_resource_bytes || 1048575"));
     assert!(lxmf.contains("if (!_messageShowsTransferPercent(msg)) return null;"));
     assert!(lxmf.contains("if (!_messageCanCancelSend(msg)) return '';"));
-    assert!(lxmf.contains("aria-label=\"Cancel send\">Cancel</button>"));
+    assert!(lxmf.contains("aria-label=\"Stop retrying message\">Stop</button>"));
+    assert!(lxmf.contains("A copy already handed to the network may still arrive."));
     assert!(lxmf.contains("canCancelSend ? _messageInlineCancelHtml(msg) : '<span class=\"msg-time\">' + time + '</span>'"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
@@ -6073,6 +6074,11 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn)"));
     assert!(lxmf.contains("_bindMessageFocusPreservingActivation(btn, function()"));
     assert!(lxmf.contains("_cancelLxmfSend(btn.getAttribute('data-msg-id'));"));
+    assert!(lxmf.contains("title: 'Stop retrying?'"));
+    assert!(messaging.contains("\"may_have_left_device\": cancelled"));
+    assert!(inbound.contains("lxmf_step_starts_delivery_timeout"));
+    assert!(inbound.contains("manager.cancel_outbound_message(msg_id)"));
+    assert!(inbound.contains("\"step\": \"timeout\""));
     assert!(lxmf.contains("_suppressImageOpenUntil = Date.now() + 900;"));
     assert!(lxmf.contains("if (Date.now() < _suppressImageOpenUntil)"));
     assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));
@@ -6127,7 +6133,8 @@ fn optimistic_lxmf_cancel_is_native_before_canonical_reconciliation() {
     assert!(messaging.contains("LxmfClientSendCancellation::Preparing"));
     assert!(messaging.contains("LxmfClientSendCancellation::Queued"));
     assert!(lxmf.contains("_pendingLxmfCancelByClientId[msgId] = true;"));
-    assert!(lxmf.contains("_invokeLxmfCancel(msgId).catch(function(err)"));
+    assert!(lxmf.contains("return _invokeLxmfCancel(msgId).then(function(resp)"));
+    assert!(lxmf.contains("title: 'Stop retrying?'"));
     assert!(lxmf.contains("var eventMsgId = data.msg_id || data.client_msg_id;"));
 }
 
@@ -7491,11 +7498,22 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
         root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
     )
     .expect("android activity");
+    let android_memo_audio = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceMemoAudio.kt",
+    ))
+    .expect("android memo audio");
+    let android_service =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt",
+        ))
+        .expect("android service");
     let ios_audio = read_source(root.join("crates/ratspeak-runtime/src/platform_ios.rs"))
         .expect("ios audio session");
 
     assert!(memo.contains("const PROFILE: Profile = Profile::QualityMedium"));
-    assert!(memo.contains("crate::voice::start_microphone_capture(PROFILE)"));
+    assert!(
+        memo.contains("crate::voice::start_microphone_capture(PROFILE, &native_session_token)")
+    );
     assert!(voice.contains("pub(crate) fn start_microphone_capture"));
     assert!(voice.contains("MICROPHONE_CAPTURE_RETRY_DELAYS"));
     assert!(voice.contains("host.input_devices()"));
@@ -7554,7 +7572,7 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(state_js.contains("function _rsNativeMicrophonePermission(audio)"));
     assert!(shared_ui.contains("RS.composer.dismissForReplacement"));
     assert!(voice_memos.contains("window.addEventListener('pagehide'"));
-    assert!(voice_memos.contains("startVoiceMemoAudioSession"));
+    assert!(!voice_memos.contains("startVoiceMemoAudioSession"));
     assert!(voice_memos.contains("recordingStartRetirement = pendingStart"));
     assert!(voice_memos.contains(
         "if (!eventSessionId || !recordingSessionId || eventSessionId !== recordingSessionId) return;"
@@ -7589,8 +7607,20 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
         .expect("call handoff handles an idle recorder");
     assert!(stop_playback < idle_branch);
     assert!(system.contains("mobile_background_voice_memo_cancel_failed"));
-    assert!(android.contains("AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE"));
-    assert!(android.contains("fun startVoiceMemoAudioSession(): Boolean"));
+    assert!(!android.contains("startVoiceMemoAudioSession"));
+    assert!(android_memo_audio.contains("AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE"));
+    assert!(android_memo_audio.contains("MODE_IN_COMMUNICATION"));
+    assert!(
+        android_memo_audio
+            .contains("fun startForSession(context: Context, sessionToken: String): Int")
+    );
+    assert!(android_memo_audio.contains("START_BUSY"));
+    assert!(
+        android_memo_audio
+            .contains("fun stopForSession(context: Context, sessionToken: String): Boolean")
+    );
+    assert!(android_service.contains("setMicrophoneCaptureActive"));
+    assert!(android_service.contains("FOREGROUND_SERVICE_TYPE_MICROPHONE"));
     assert!(ios_audio.contains("AVAudioSessionCategoryPlayAndRecord"));
     assert!(ios_audio.contains("AVAudioSessionModeVoiceChat"));
     assert!(ios_audio.contains("AVAudioSessionCategoryPlayback"));

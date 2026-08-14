@@ -134,16 +134,9 @@ class MainActivity : TauriActivity() {
     private var callRingtoneMode: String? = null
     private var callRingtoneTrack: AudioTrack? = null
     private var callRingtoneFocusRequest: Any? = null
-    private var voiceMemoAudioFocusRequest: Any? = null
     private val callRingtoneFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
         if (change == AudioManager.AUDIOFOCUS_LOSS || change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
             handler.post { stopNativeCallRingtone() }
-        }
-    }
-    private val voiceMemoAudioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
-        if (change == AudioManager.AUDIOFOCUS_LOSS ||
-            change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-            handler.post { dispatchVoiceMemoAudioInterruption() }
         }
     }
 
@@ -329,7 +322,6 @@ class MainActivity : TauriActivity() {
 
     override fun onPause() {
         super.onPause()
-        stopNativeVoiceMemoAudioSession()
         refreshServicePoll()
     }
 
@@ -368,11 +360,9 @@ class MainActivity : TauriActivity() {
 
     override fun onDestroy() {
         RatspeakAndroidObservers.detach(this)
-        // Ringtone and voice-memo sessions are UI-owned. Established-call
-        // routing and playback are process-owned and intentionally survive an
-        // Activity recreation.
+        // Ringtone is UI-owned. Rust-owned call and voice-memo sessions survive
+        // Activity recreation and clean up only through their exact tokens.
         stopNativeCallRingtone()
-        stopNativeVoiceMemoAudioSession()
         RatspeakCallAudio.cancelInteractivePrime(this)
         if (!RatspeakCallAudio.isActive()) RatspeakVoiceAudio.stop()
         super.onDestroy()
@@ -608,57 +598,6 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    private fun startNativeVoiceMemoAudioSession(): Boolean {
-        if (RatspeakCallAudio.isActive() || callRingtoneMode != null) return false
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
-        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val attributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build()
-            val existing = voiceMemoAudioFocusRequest as? AudioFocusRequest
-            if (existing != null) return true
-            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
-                .setAudioAttributes(attributes)
-                .setOnAudioFocusChangeListener(voiceMemoAudioFocusListener, handler)
-                .build()
-            val focusResult = audioManager.requestAudioFocus(request)
-            if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                voiceMemoAudioFocusRequest = request
-            }
-            focusResult
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(
-                voiceMemoAudioFocusListener,
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
-            )
-        }
-        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-    }
-
-    private fun stopNativeVoiceMemoAudioSession() {
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val request = voiceMemoAudioFocusRequest as? AudioFocusRequest
-            if (request != null) {
-                audioManager.abandonAudioFocusRequest(request)
-                voiceMemoAudioFocusRequest = null
-                return
-            }
-        }
-        @Suppress("DEPRECATION")
-        audioManager.abandonAudioFocus(voiceMemoAudioFocusListener)
-    }
-
-    private fun dispatchVoiceMemoAudioInterruption() {
-        webViewRef?.evaluateJavascript(
-            "window.RS && window.RS.voiceMemos && window.RS.voiceMemos.handleAudioInterruption && window.RS.voiceMemos.handleAudioInterruption();",
-            null
-        )
-    }
-
     private fun callRingtoneAudioAttributes(mode: String): AudioAttributes {
         val usage = if (mode == "incoming") {
             AudioAttributes.USAGE_NOTIFICATION_RINGTONE
@@ -686,7 +625,6 @@ class MainActivity : TauriActivity() {
     }
 
     private fun primeNativeCallAudioRoute(role: String) {
-        stopNativeVoiceMemoAudioSession()
         volumeControlStream = AudioManager.STREAM_VOICE_CALL
         if (!RatspeakCallAudio.primeInteractive(applicationContext, role)) {
             volumeControlStream = AudioManager.USE_DEFAULT_STREAM_TYPE
@@ -1882,20 +1820,6 @@ class MainActivity : TauriActivity() {
         fun stopCallAudioRoute() {
             handler.post {
                 this@MainActivity.stopNativeCallAudioRoute()
-            }
-        }
-
-        @JavascriptInterface
-        fun startVoiceMemoAudioSession(): Boolean {
-            return this@MainActivity.runOnMainForBoolean {
-                this@MainActivity.startNativeVoiceMemoAudioSession()
-            }
-        }
-
-        @JavascriptInterface
-        fun stopVoiceMemoAudioSession() {
-            handler.post {
-                this@MainActivity.stopNativeVoiceMemoAudioSession()
             }
         }
 

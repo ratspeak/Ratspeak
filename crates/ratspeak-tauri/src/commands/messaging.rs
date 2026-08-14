@@ -117,12 +117,14 @@ fn emit_prequeue_lxmf_cancellation(state: &AppState, client_msg_id: &str) -> Val
         json!({
             "step": "cancelled",
             "client_msg_id": client_msg_id,
+            "may_have_left_device": false,
         }),
     );
     json!({
         "ok": true,
         "cancelled": true,
         "client_msg_id": client_msg_id,
+        "may_have_left_device": false,
     })
 }
 
@@ -1872,6 +1874,7 @@ async fn cancel_canonical_lxmf_message(
                 "msg_id": msg_id,
                 "client_msg_id": client_msg_id,
                 "method": method.clone(),
+                "may_have_left_device": true,
             }),
         );
         state.activity.record_event_fenced(
@@ -1950,6 +1953,7 @@ pub async fn cancel_lxmf_message(
                     "ok": true,
                     "cancelled": false,
                     "msg_id": requested_msg_id,
+                    "may_have_left_device": false,
                 }));
             };
             resolved
@@ -1963,6 +1967,7 @@ pub async fn cancel_lxmf_message(
         "cancelled": cancelled,
         "msg_id": msg_id,
         "client_msg_id": client_msg_id,
+        "may_have_left_device": cancelled,
     }))
 }
 

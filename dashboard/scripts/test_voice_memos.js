@@ -24,6 +24,8 @@ var sharedUi = read('dashboard/static/js/ui_shared.js');
 var systemCommands = read('crates/ratspeak-tauri/src/commands/system.rs');
 var iosPlatform = read('crates/ratspeak-runtime/src/platform_ios.rs');
 var androidActivity = read('src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt');
+var androidMemoAudio = read('src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceMemoAudio.kt');
+var androidService = read('src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt');
 var androidManifest = read('src-tauri/gen/android/app/src/main/AndroidManifest.xml');
 var iosInfo = read('src-tauri/Info.plist');
 
@@ -100,12 +102,11 @@ assert(voice.includes("document.addEventListener('visibilitychange'"),
     'an unseen WebView must not keep the microphone active');
 assert(voice.includes("window.addEventListener('pagehide'"),
     'a replaced mobile WebView must not keep the microphone active');
-assert(voice.includes('startVoiceMemoAudioSession'),
-    'Android recording must acquire transient audio focus');
-assert(voice.includes('stopVoiceMemoAudioSession'),
-    'Android recording must release transient audio focus');
-assert(voice.includes('handleAudioInterruption'),
-    'native audio interruptions must stop the recorder visibly');
+assert(!voice.includes('startVoiceMemoAudioSession') && !voice.includes('stopVoiceMemoAudioSession'),
+    'Android memo audio lifetime must not be owned by the replaceable WebView');
+assert(runtime.includes('format_recording_session_id(session_id)') &&
+    capture.includes('VoiceMemoAudioSessionGuard::start(session_token)'),
+    'Rust recording generations must own exact Android native sessions');
 assert(voice.includes('MAX_PLAYBACK_BYTES'),
     'decoded WAV object URLs must live in a bounded cache');
 assert(voice.includes('cacheGeneration !== mediaCacheGeneration') &&
@@ -203,10 +204,14 @@ assert(/\.voice-memo-field\s*\{[\s\S]*?min-height:\s*44px/.test(responsive),
 assert(/\.voice-memo-player-play\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px/.test(responsive),
     'mobile voice-message playback must retain a 44px touch target');
 assert(androidManifest.includes('android.permission.RECORD_AUDIO'));
-assert(androidActivity.includes('AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE'));
-assert(androidActivity.includes('fun startVoiceMemoAudioSession(): Boolean'));
-assert(androidActivity.includes('fun stopVoiceMemoAudioSession()'));
-assert(androidActivity.includes('dispatchVoiceMemoAudioInterruption'));
+assert(!androidActivity.includes('startVoiceMemoAudioSession'));
+assert(androidMemoAudio.includes('AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE'));
+assert(androidMemoAudio.includes('MODE_IN_COMMUNICATION'));
+assert(androidMemoAudio.includes('fun startForSession(context: Context, sessionToken: String): Int'));
+assert(androidMemoAudio.includes('START_BUSY'));
+assert(androidMemoAudio.includes('fun stopForSession(context: Context, sessionToken: String): Boolean'));
+assert(androidService.includes('setMicrophoneCaptureActive') &&
+    androidService.includes('FOREGROUND_SERVICE_TYPE_MICROPHONE'));
 assert(iosInfo.includes('voice messages'));
 
 console.log('Voice memo tests passed');

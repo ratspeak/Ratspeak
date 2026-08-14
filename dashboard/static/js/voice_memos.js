@@ -37,7 +37,6 @@
     var playbackCoordinator = null;
     var previewPlaybackState = 'idle';
     var pointerStartedRecording = false;
-    var mobileAudioSessionActive = false;
     var nativeIosPlaybackByLease = Object.create(null);
     var START_FAILURE_MESSAGE = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
     var ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
@@ -288,31 +287,6 @@
             return false;
         });
     }
-    function startMobileAudioSession() {
-        if (!window.RatspeakAndroid || typeof window.RatspeakAndroid.startVoiceMemoAudioSession !== 'function') {
-            return true;
-        }
-        try {
-            mobileAudioSessionActive = !!window.RatspeakAndroid.startVoiceMemoAudioSession();
-            return mobileAudioSessionActive;
-        } catch (error) {
-            window.RS.diag('warn', '[voice memo] Android audio focus failed:', error);
-            mobileAudioSessionActive = false;
-            return false;
-        }
-    }
-    function stopMobileAudioSession() {
-        if (!mobileAudioSessionActive && (!window.RatspeakAndroid ||
-            typeof window.RatspeakAndroid.stopVoiceMemoAudioSession !== 'function')) return;
-        mobileAudioSessionActive = false;
-        try {
-            if (window.RatspeakAndroid && typeof window.RatspeakAndroid.stopVoiceMemoAudioSession === 'function') {
-                window.RatspeakAndroid.stopVoiceMemoAudioSession();
-            }
-        } catch (error) {
-            window.RS.diag('warn', '[voice memo] Android audio focus release failed:', error);
-        }
-    }
     function dismissComposerForRecording() {
         var input = el('lxmf-input');
         if (window.RS && RS.composer && typeof RS.composer.dismissForReplacement === 'function') {
@@ -348,13 +322,6 @@
                 setRecorderState('idle');
                 return false;
             }
-            if (!startMobileAudioSession()) {
-                recordingTarget = '';
-                recordingOwner = null;
-                showToast('Audio is in use. Finish the current call, then try recording again.', 'toast-orange', 4200);
-                setRecorderState('idle');
-                return false;
-            }
             setRecorderState('starting');
             var startPromise = RS.invoke('voice_memo_start');
             recordingStartPromise = startPromise;
@@ -377,7 +344,6 @@
                 return true;
             }).catch(function(error) {
                 if (generation !== recordingGeneration) return false;
-                stopMobileAudioSession();
                 recordingTarget = '';
                 recordingOwner = null;
                 recordingSessionId = '';
@@ -416,7 +382,6 @@
         var sessionId = recordingSessionId;
         RS.invoke('voice_memo_stop', recordingCommandArgs()).then(function(result) {
             if (generation !== recordingGeneration || sessionId !== recordingSessionId) return;
-            stopMobileAudioSession();
             recordingSessionId = '';
             draft = result;
             paused = false;
@@ -428,7 +393,6 @@
             voiceHaptic('medium');
         }).catch(function(error) {
             if (generation !== recordingGeneration) return;
-            stopMobileAudioSession();
             recordingSessionId = '';
             recordingTarget = '';
             recordingOwner = null;
@@ -461,7 +425,6 @@
         }
         var discardPromise = Promise.all([playbackStopped, request]).then(function() {
             if (generation !== recordingGeneration) return;
-            stopMobileAudioSession();
             draft = null;
             paused = false;
             recordingTarget = '';
@@ -1276,7 +1239,6 @@
             discardRecording();
             return;
         } else if (data.state === 'idle' && recorderState !== 'stopping') {
-            stopMobileAudioSession();
             draft = null;
             paused = false;
             recordingTarget = '';
@@ -1347,7 +1309,6 @@
                 if (status.session_id) {
                     RS.invoke('voice_memo_cancel', { args: { session_id: status.session_id } }).catch(function() {});
                 }
-                stopMobileAudioSession();
             }
             syncComposer();
         }).catch(function() {
@@ -1379,7 +1340,6 @@
     function cancelForCall() {
         return stopAnyPlayback().then(function() {
             if (recorderState === 'idle') {
-                stopMobileAudioSession();
                 return false;
             }
             if (retireAdmittedSendUi()) return false;
@@ -1393,7 +1353,6 @@
     function handleAudioInterruption() {
         return stopAnyPlayback().then(function() {
             if (recorderState === 'idle') {
-                stopMobileAudioSession();
                 return;
             }
             if (retireAdmittedSendUi()) return;

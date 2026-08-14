@@ -2678,7 +2678,7 @@ pub fn delete_message_for_identity(
     .map_err(|error| error.to_string())
 }
 
-/// One-way lattice: terminal states (delivered/propagated/failed/cancelled/rejected)
+/// One-way lattice: terminal states (delivered/propagated/failed/cancelled/rejected/timeout)
 /// cannot be regressed by later updates. `propagated` is terminal at the LXMF
 /// layer because the propagation path only confirms node-deposit, not end-to-end
 /// recipient delivery — there is no later signal that upgrades it to `delivered`.
@@ -2688,26 +2688,27 @@ pub fn update_message_state(
     identity_id: &str,
     state: &str,
     rtt_ms: Option<f64>,
-) {
+) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => return false,
     };
-    if let Some(rtt) = rtt_ms {
+    let result = if let Some(rtt) = rtt_ms {
         conn.execute(
             "UPDATE messages SET state = ?1, rtt_ms = ?2 \
-             WHERE id = ?3 AND identity_id = ?4 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+             WHERE id = ?3 AND identity_id = ?4 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout')",
             params![state, rtt, msg_id, identity_id],
         )
-        .ok();
+        .map(|updated| updated > 0)
     } else {
         conn.execute(
             "UPDATE messages SET state = ?1 \
-             WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+             WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout')",
             params![state, msg_id, identity_id],
         )
-        .ok();
-    }
+        .map(|updated| updated > 0)
+    };
+    result.unwrap_or(false)
 }
 
 pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &str) -> bool {
@@ -2717,7 +2718,7 @@ pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &
     };
     conn.execute(
         "UPDATE messages SET state = 'cancelled' \
-         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected')",
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout')",
         params![msg_id, identity_id],
     )
     .map(|n| n > 0)
@@ -2971,7 +2972,12 @@ pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
         Err(_) => return,
     };
     let result = conn.execute(
-        "UPDATE messages SET state = 'failed' WHERE state IN ('sending', 'routing', 'propagating', 'sent') AND direction = 'outbound' AND identity_id = ?1",
+        "UPDATE messages SET state = 'failed' WHERE state IN (\
+         'pending', 'outbound', 'generating', 'sending', 'routing', 'resolving', \
+         'propagating', 'resending', 'link_establishing', 'sending_via_link', \
+         'resource_link_ready', 'resource_advertised', 'resource_transferring', \
+         'resource_waiting_for_proof', 'reusing_direct_link', 'reusing_backchannel', \
+         'sent') AND direction = 'outbound' AND identity_id = ?1",
         params![identity_id],
     );
     if let Some(count) = result.ok().filter(|count| *count > 0) {
@@ -10058,6 +10064,107 @@ mod unread_breakdown_tests {
         assert_eq!(cancel_state, "cancelled");
         assert_eq!(done_state, "delivered");
         assert_eq!(inbound_state, "received");
+    }
+
+    #[test]
+    fn cleanup_stale_outbound_covers_every_durable_in_flight_state() {
+        let pool = test_pool();
+        let in_flight = [
+            "pending",
+            "outbound",
+            "generating",
+            "sending",
+            "routing",
+            "resolving",
+            "propagating",
+            "resending",
+            "link_establishing",
+            "sending_via_link",
+            "resource_link_ready",
+            "resource_advertised",
+            "resource_transferring",
+            "resource_waiting_for_proof",
+            "reusing_direct_link",
+            "reusing_backchannel",
+            "sent",
+        ];
+        for (index, state) in in_flight.iter().enumerate() {
+            save_message(
+                &pool,
+                &format!("stale-{index}"),
+                "me",
+                "peer",
+                "stale",
+                "",
+                index as f64,
+                state,
+                "outbound",
+                "identity-a",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Some("direct"),
+            );
+        }
+        cleanup_stale_outbound(&pool, "identity-a");
+        let conn = pool.get().unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE identity_id = 'identity-a' AND state != 'failed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn timeout_is_terminal_against_late_delivery_and_cancel_updates() {
+        let pool = test_pool();
+        save_message(
+            &pool,
+            "timed-out",
+            "me",
+            "peer",
+            "possibly left device",
+            "",
+            10.0,
+            "timeout",
+            "outbound",
+            "identity-a",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+        assert!(!update_message_state(
+            &pool,
+            "timed-out",
+            "identity-a",
+            "delivered",
+            Some(3.0)
+        ));
+        assert!(!cancel_outbound_message_state(
+            &pool,
+            "timed-out",
+            "identity-a"
+        ));
+        let state: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM messages WHERE id = 'timed-out'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "timeout");
     }
 
     #[test]

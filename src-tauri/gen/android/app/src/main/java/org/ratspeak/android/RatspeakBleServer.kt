@@ -266,12 +266,17 @@ object RatspeakBleServer {
             return false
         }
 
-        // Wait for the previous notification to be taken by the stack. Bounded
-        // so a missing onNotificationSent degrades to best-effort rather than
-        // wedging the fan-out. On a successful enqueue the gate is released by
-        // onNotifySent; on failure we release it here since no callback comes.
+        // Wait for the previous notification to be taken by the stack. Android
+        // requires onNotificationSent before another server notification is
+        // queued. A timeout is therefore backpressure, not permission to send
+        // concurrently; return false so Rust stops this fragmented packet and
+        // Reticulum can retry it intact.
         val gate = notifyGate(deviceAddress)
         val acquired = gate.tryAcquire(NOTIFY_GATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!RatspeakMobilePolicy.mayQueueGattNotification(acquired)) {
+            Log.w(TAG, "notifyTx backpressure timeout for $deviceAddress")
+            return false
+        }
 
         val ok = try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -286,7 +291,7 @@ object RatspeakBleServer {
             false
         }
 
-        if (!ok && acquired) {
+        if (!ok) {
             gate.release()
         }
         return ok

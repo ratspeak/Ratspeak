@@ -1547,7 +1547,7 @@ function _messageStateIconHtml(msg) {
 
     if (state === 'read') return wrap('msg-state-read', 'Read', ICON.read);
     if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Failed', ICON.x);
-    if (state === 'cancelled') return wrap('msg-state-cancelled', 'Cancelled', ICON.x);
+    if (state === 'cancelled') return wrap('msg-state-cancelled', 'Stopped retrying', ICON.x);
     if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
     if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.check);
@@ -1643,7 +1643,7 @@ function _messageSendCancelOverlayHtml(msg, percent) {
     var pct = percent === null ? 0 : percent;
     return '<button type="button" class="lxmf-send-cancel" ' +
         'data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
-        'style="--send-progress:' + pct + '%" aria-label="Cancel send">' +
+        'style="--send-progress:' + pct + '%" aria-label="Stop retrying message">' +
         '<span aria-hidden="true">&times;</span>' +
     '</button>';
 }
@@ -1651,7 +1651,7 @@ function _messageSendCancelOverlayHtml(msg, percent) {
 function _messageInlineCancelHtml(msg) {
     if (!_messageCanCancelSend(msg)) return '';
     return '<button type="button" class="msg-send-cancel-inline" ' +
-        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel send">Cancel</button>';
+        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Stop retrying message">Stop</button>';
 }
 
 function _findLxmfMessageById(msgId) {
@@ -1681,27 +1681,38 @@ function _invokeLxmfCancel(msgId) {
 function _flushPendingLxmfCancel(clientMsgId, serverMsgId) {
     if (!clientMsgId || !serverMsgId || !_pendingLxmfCancelByClientId[clientMsgId]) return;
     delete _pendingLxmfCancelByClientId[clientMsgId];
-    _invokeLxmfCancel(serverMsgId).catch(function(err) {
-        showToast('Cancel failed: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+    _invokeLxmfCancel(serverMsgId).then(function(resp) {
+        if (resp && resp.cancelled) {
+            _markLxmfMessageCancelled(serverMsgId);
+            showToast('Stopped retrying. A copy already handed to the network may still arrive.', 'toast-orange', 5000);
+        }
+    }).catch(function(err) {
+        showToast('Could not stop retries: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
     });
 }
 
 function _cancelLxmfSend(msgId) {
     msgId = String(msgId || '');
     if (!msgId) return;
-    _markLxmfMessageCancelled(msgId);
-    if (!_isCanonicalLxmfMsgId(msgId)) {
-        _pendingLxmfCancelByClientId[msgId] = true;
-        // Native tracks optimistic IDs before a canonical LXMF hash exists.
-        // Keep the pending fallback as well: an extremely fast click can race
-        // command admission, in which case canonical reconciliation retries.
-        _invokeLxmfCancel(msgId).catch(function(err) {
-            showToast('Cancel failed: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+    rsConfirm({
+        title: 'Stop retrying?',
+        message: 'Ratspeak will stop local retries. A copy already handed to the network may still arrive.',
+        confirmText: 'Stop retrying'
+    }).then(function(confirmed) {
+        if (!confirmed) return;
+        if (!_isCanonicalLxmfMsgId(msgId)) {
+            _pendingLxmfCancelByClientId[msgId] = true;
+        }
+        return _invokeLxmfCancel(msgId).then(function(resp) {
+            if (!resp || !resp.cancelled) return;
+            _markLxmfMessageCancelled(resp.msg_id || resp.client_msg_id || msgId);
+            showToast(resp.may_have_left_device
+                ? 'Stopped retrying. A copy already handed to the network may still arrive.'
+                : 'Stopped before the message entered the network.',
+                'toast-orange', 5000);
         });
-        return;
-    }
-    _invokeLxmfCancel(msgId).catch(function(err) {
-        showToast('Cancel failed: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+    }).catch(function(err) {
+        showToast('Could not stop retries: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
     });
 }
 
@@ -4901,7 +4912,7 @@ RS.listen('lxmf_step', function(data) {
         var resolvedState = (data.step === 'error') ? 'failed' : data.step;
         // `propagated` is terminal alongside `delivered`/`failed`/`cancelled`/
         // `rejected` — see db::update_message_state for the matching guard.
-        var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected'];
+        var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'];
         var matched = false;
         var eventMsgId = data.msg_id || data.client_msg_id;
         lxmfConversation.forEach(function(msg) {
@@ -4986,7 +4997,7 @@ RS.listen('lxmf_delivery_progress', function(data) {
         'reusing_direct_link',
         'reusing_backchannel'
     ];
-    var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected'];
+    var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'];
     var changed = false;
     lxmfConversation.forEach(function(msg) {
         if (data.msg_id && msg.id === data.msg_id) {

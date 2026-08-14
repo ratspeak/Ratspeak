@@ -22,6 +22,12 @@ class RatspeakMobilePolicyTest {
     }
 
     @Test
+    fun gattNotificationNeverQueuesPastOutstandingCallback() {
+        assertTrue(RatspeakMobilePolicy.mayQueueGattNotification(true))
+        assertFalse(RatspeakMobilePolicy.mayQueueGattNotification(false))
+    }
+
+    @Test
     fun reconnectIsFastThenBoundedLowDuty() {
         val delays = (0..12).map { RatspeakMobilePolicy.bleReconnectDelayMs(it, 7) }
         assertTrue(delays.zipWithNext().all { (a, b) -> b >= a })
@@ -195,6 +201,32 @@ class RatspeakMobilePolicyTest {
                 "interactive_route_0001",
                 "interactive_route_0001",
             ),
+        )
+    }
+
+    @Test
+    fun microphoneCaptureLeaseRejectsCrossSessionPromotionAndCleanup() {
+        val call = "call_session_A_0001"
+        val memo = "vmr-0000000000000001"
+        assertEquals(
+            RatspeakMobilePolicy.MicrophoneCapturePlan.PROMOTE,
+            RatspeakMobilePolicy.microphoneCapturePlan(null, memo, true),
+        )
+        assertEquals(
+            RatspeakMobilePolicy.MicrophoneCapturePlan.ALREADY_ACTIVE,
+            RatspeakMobilePolicy.microphoneCapturePlan(memo, memo, true),
+        )
+        assertEquals(
+            RatspeakMobilePolicy.MicrophoneCapturePlan.REJECT,
+            RatspeakMobilePolicy.microphoneCapturePlan(memo, call, true),
+        )
+        assertEquals(
+            RatspeakMobilePolicy.MicrophoneCapturePlan.REJECT,
+            RatspeakMobilePolicy.microphoneCapturePlan(memo, call, false),
+        )
+        assertEquals(
+            RatspeakMobilePolicy.MicrophoneCapturePlan.DEMOTE,
+            RatspeakMobilePolicy.microphoneCapturePlan(memo, memo, false),
         )
     }
 

@@ -32,10 +32,14 @@ class RatspeakService : Service() {
         const val ACTION_DISABLE_MULTICAST = "DISABLE_MULTICAST"
         @Volatile private var activeService: RatspeakService? = null
 
-        /** Promote the running service before opening user-authorized call capture. */
-        internal fun setCallCaptureActive(context: Context, active: Boolean): Boolean {
+        /** Promote the running service before opening exact-session microphone capture. */
+        internal fun setMicrophoneCaptureActive(
+            context: Context,
+            ownerToken: String,
+            active: Boolean,
+        ): Boolean {
             val service = activeService
-            if (service != null) return service.setCallCaptureActive(active)
+            if (service != null) return service.setMicrophoneCaptureActive(ownerToken, active)
             if (!active) return true
             return try {
                 ContextCompat.startForegroundService(context, Intent(context, RatspeakService::class.java))
@@ -51,7 +55,7 @@ class RatspeakService : Service() {
     private val senderState = HashMap<String, Pair<Int, Int>>()
     private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile private var running = true
-    @Volatile private var callCaptureActive = false
+    @Volatile private var microphoneCaptureOwner: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -59,7 +63,7 @@ class RatspeakService : Service() {
         createMessageNotificationChannel()
         createCallNotificationChannel()
         activeService = this
-        startForegroundTyped(callCapture = false)
+        startForegroundTyped(microphoneCapture = false)
         RatspeakPlatformSupervisor.start(this)
         // Message and call notifications are driven by the Rust/Tauri notification backend.
     }
@@ -158,7 +162,7 @@ class RatspeakService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val text = when {
-            callCaptureActive -> "Call active"
+            microphoneCaptureOwner != null -> "Microphone active"
             peerCount < 0 -> "Ratspeak is running"
             peerCount == 0 -> "Active · no peers connected"
             peerCount == 1 -> "Active · 1 peer connected"
@@ -174,27 +178,38 @@ class RatspeakService : Service() {
             .build()
     }
 
-    private fun setCallCaptureActive(active: Boolean): Boolean {
-        if (active == callCaptureActive) return true
-        val previous = callCaptureActive
-        callCaptureActive = active
+    @Synchronized
+    private fun setMicrophoneCaptureActive(ownerToken: String, active: Boolean): Boolean {
+        if (!RatspeakMobilePolicy.validCallSessionToken(ownerToken)) return false
+        val previous = microphoneCaptureOwner
+        when (RatspeakMobilePolicy.microphoneCapturePlan(previous, ownerToken, active)) {
+            RatspeakMobilePolicy.MicrophoneCapturePlan.ALREADY_ACTIVE,
+            RatspeakMobilePolicy.MicrophoneCapturePlan.ALREADY_INACTIVE -> return true
+            RatspeakMobilePolicy.MicrophoneCapturePlan.REJECT -> return false
+            RatspeakMobilePolicy.MicrophoneCapturePlan.PROMOTE -> {
+                microphoneCaptureOwner = ownerToken
+            }
+            RatspeakMobilePolicy.MicrophoneCapturePlan.DEMOTE -> {
+                microphoneCaptureOwner = null
+            }
+        }
         return try {
-            startForegroundTyped(callCapture = active)
+            startForegroundTyped(microphoneCapture = active)
             true
         } catch (error: Throwable) {
-            callCaptureActive = previous
+            microphoneCaptureOwner = previous
             // Preserve the last known-good foreground type and truthful card
             // if Android rejects a promotion (for example, permission denied).
-            try { startForegroundTyped(callCapture = previous) } catch (_: Throwable) {}
-            Log.w(TAG, "Foreground call capture transition failed: ${error.message}")
+            try { startForegroundTyped(microphoneCapture = previous != null) } catch (_: Throwable) {}
+            Log.w(TAG, "Foreground microphone transition failed: ${error.message}")
             false
         }
     }
 
-    private fun startForegroundTyped(callCapture: Boolean) {
+    private fun startForegroundTyped(microphoneCapture: Boolean) {
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             var value = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            if (callCapture && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (microphoneCapture && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 value = value or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
             value

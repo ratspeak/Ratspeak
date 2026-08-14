@@ -890,6 +890,9 @@ window.refreshBlePeerStatus = function() {
                 window._blePeers[p.address] = {
                     address: p.address,
                     identity_hash: p.identity_hash || prior.identity_hash || '',
+                    provisional_identity_hash: '',
+                    readiness: 'routable',
+                    routable: true,
                     protocol: prior.protocol || 'Ratspeak',
                     rssi: prior.rssi,
                     connected: true,

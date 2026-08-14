@@ -19,6 +19,11 @@ object RatspeakMobilePolicy {
         return (mtu - 3).coerceIn(1, MAX_ATT_PAYLOAD)
     }
 
+    /** Android permits only one outstanding server notification per peer. */
+    fun mayQueueGattNotification(previousSendCompleted: Boolean): Boolean {
+        return previousSendCompleted
+    }
+
     /**
      * Fast retries handle Android's transient GATT failures; later retries
      * become low duty but never give up on an explicitly configured radio.
@@ -115,6 +120,34 @@ object RatspeakMobilePolicy {
 
     fun callSessionOwns(current: String?, candidate: String): Boolean {
         return current != null && current == candidate
+    }
+
+    enum class MicrophoneCapturePlan {
+        PROMOTE,
+        ALREADY_ACTIVE,
+        DEMOTE,
+        ALREADY_INACTIVE,
+        REJECT,
+    }
+
+    fun microphoneCapturePlan(
+        currentOwner: String?,
+        candidate: String,
+        activate: Boolean,
+    ): MicrophoneCapturePlan {
+        return if (activate) {
+            when (currentOwner) {
+                null -> MicrophoneCapturePlan.PROMOTE
+                candidate -> MicrophoneCapturePlan.ALREADY_ACTIVE
+                else -> MicrophoneCapturePlan.REJECT
+            }
+        } else {
+            when (currentOwner) {
+                null -> MicrophoneCapturePlan.ALREADY_INACTIVE
+                candidate -> MicrophoneCapturePlan.DEMOTE
+                else -> MicrophoneCapturePlan.REJECT
+            }
+        }
     }
 
     enum class CapturePromotionPlan {

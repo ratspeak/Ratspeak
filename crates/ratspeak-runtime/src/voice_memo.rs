@@ -358,8 +358,9 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
                 return;
             }
         };
+        let native_session_token = format_recording_session_id(session_id);
         let (platform_audio_session, stream, capture_rx) =
-            match crate::voice::start_microphone_capture(PROFILE) {
+            match crate::voice::start_microphone_capture(PROFILE, &native_session_token) {
                 Ok(capture) => capture,
                 Err(error) => {
                     let _ = started_tx.send(Err(error));

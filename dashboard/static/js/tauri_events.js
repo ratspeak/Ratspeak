@@ -606,27 +606,23 @@ if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.subscri
     });
 }
 
-// Counts unique logical peers, deduping bidirectional connections by
-// identity_hash. On Apple-without-bonding the central/peripheral identifiers
-// diverge for the same physical peer, so address-only counting double-counts.
+// Counts only signed-identity-verified peers. A live GATT connection is not
+// message-ready until its announce has authenticated the Reticulum identity.
 function _bleConnectedPeerCount() {
     if (typeof window._bleVisiblePeersFromCache === 'function') {
         return window._bleVisiblePeersFromCache().length;
     }
     if (!window._blePeers) return 0;
     var seenIdentities = {};
-    var unidentified = 0;
     var addrs = Object.keys(window._blePeers);
     for (var i = 0; i < addrs.length; i++) {
         var p = window._blePeers[addrs[i]];
-        if (!p || !p.connected) continue;
+        if (!p || !p.connected || p.routable !== true) continue;
         if (p.identity_hash) {
             seenIdentities[p.identity_hash] = true;
-        } else {
-            unidentified += 1;
         }
     }
-    return Object.keys(seenIdentities).length + unidentified;
+    return Object.keys(seenIdentities).length;
 }
 window._bleConnectedPeerCount = _bleConnectedPeerCount;
 
@@ -760,21 +756,21 @@ RS.listen('ble_peer_connected', function(data) {
     window._blePeers = window._blePeers || {};
     _pruneBleOrphanIdentities();
     var prior = window._blePeers[data.address] || {};
-    var identity = data.identity_hash || prior.identity_hash || '';
+    var identity = data.identity_hash || '';
+    var provisionalIdentity = data.provisional_identity_hash ||
+        prior.provisional_identity_hash || '';
     // Adopt the orphan identity only when exactly one is alive (avoids
     // mis-attribution when multiple peers rotate inside the TTL window).
-    if (!identity && window._bleOrphanIdentities.length === 1) {
-        identity = window._bleOrphanIdentities[0].identity_hash;
+    if (!identity && !provisionalIdentity && window._bleOrphanIdentities.length === 1) {
+        provisionalIdentity = window._bleOrphanIdentities[0].identity_hash;
         window._bleOrphanIdentities = [];
-        if (!window._blePeersByIdentity) window._blePeersByIdentity = {};
-        if (!window._blePeersByIdentity[identity]) {
-            window._blePeersByIdentity[identity] = {};
-        }
-        window._blePeersByIdentity[identity][data.address] = true;
     }
     window._blePeers[data.address] = {
         address: data.address,
         identity_hash: identity,
+        provisional_identity_hash: provisionalIdentity,
+        readiness: identity ? 'routable' : (data.readiness || 'connected'),
+        routable: !!identity && data.routable !== false,
         protocol: data.protocol || prior.protocol || 'Ratspeak',
         rssi: prior.rssi,
         connected: true,
@@ -820,6 +816,9 @@ RS.listen('ble_peer_identity_resolved', function(data) {
     var peer = window._blePeers[data.address];
     if (peer) {
         peer.identity_hash = data.identity_hash;
+        peer.provisional_identity_hash = '';
+        peer.readiness = data.readiness || 'routable';
+        peer.routable = data.routable !== false;
     }
     if (!window._blePeersByIdentity) {
         window._blePeersByIdentity = {};
