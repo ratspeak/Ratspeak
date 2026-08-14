@@ -153,6 +153,19 @@ assert.strictEqual(routeContext._resolveInitialView(), 'peers',
 routeContext.isCompactLayout = function() { return false; };
 assert.strictEqual(routeContext._resolveInitialView(), 'network',
     'wide layouts normalize the saved route before falling back');
+var setupSource = read('static/js/setup.js');
+var setupRouteContext = { isCompactLayout: function() { return true; } };
+vm.createContext(setupRouteContext);
+vm.runInContext(functionSource(setupSource, 'setupCompletionView'), setupRouteContext);
+assert.strictEqual(setupRouteContext.setupCompletionView(), 'peers',
+    'fresh compact setups must enter the real Peers view');
+setupRouteContext.isCompactLayout = function() { return false; };
+assert.strictEqual(setupRouteContext.setupCompletionView(), 'dashboard',
+    'fresh wide setups retain the desktop Dashboard landing view');
+assert(setupSource.includes("window.location.href = '/#' + setupCompletionView()"),
+    'setup completion must route through the responsive landing-view policy');
+assert(!setupSource.includes("window.location.href = '/#dashboard'"),
+    'setup completion must not force the desktop-only Dashboard route');
 var shared = read('static/js/ui_shared.js');
 assert(shared.includes('modal._ratspeakDismiss = function()'));
 assert(shared.includes('RS.composer.resize = function'));

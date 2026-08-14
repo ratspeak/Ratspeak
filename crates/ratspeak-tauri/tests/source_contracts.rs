@@ -6390,6 +6390,9 @@ fn identity_management_is_first_class_tab() {
     let setup_js = read_source(root.join("dashboard/static/js/setup.js")).expect("setup js");
     assert!(setup_js.contains("function completeSetupAfterIdentityImport()"));
     assert!(setup_js.contains("runConnectingProgress();"));
+    assert!(setup_js.contains("function setupCompletionView()"));
+    assert!(setup_js.contains("window.location.href = '/#' + setupCompletionView()"));
+    assert!(!setup_js.contains("window.location.href = '/#dashboard'"));
 
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     assert!(tauri_lib.contains("api_export_identity_reticulum_base64"));

@@ -249,7 +249,7 @@ function runConnectingProgress() {
         var elapsed = Date.now() - startedAt;
         var remaining = Math.max(0, 2000 - elapsed);
         setTimeout(function() {
-            window.location.href = '/#dashboard';
+            window.location.href = '/#' + setupCompletionView();
             window.location.reload();
         }, remaining);
     }
@@ -295,6 +295,12 @@ function runConnectingProgress() {
     }
 
     pollAlive();
+}
+
+function setupCompletionView() {
+    return typeof isCompactLayout === 'function' && isCompactLayout()
+        ? 'peers'
+        : 'dashboard';
 }
 
 function showSetupConnectingStep() {
