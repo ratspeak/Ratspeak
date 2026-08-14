@@ -130,13 +130,16 @@ var _voiceNativeAudioRoutePrimed = false;
 var _voiceNativeAudioRouteLastSyncAt = 0;
 var _voiceSpeakerRestartToken = 0;
 var _voiceDialToken = 0;
+var _voiceAnswerToken = 0;
 
 function _voiceStatusLabel(status) {
     switch (status) {
         case 'calling': return 'Calling';
         case 'available': return 'Calling';
         case 'ringing': return 'Ringing';
+        case 'answering': return 'Answering';
         case 'connecting': return 'Connecting';
+        case 'ending': return 'Ending call';
         case 'established': return 'In call';
         case 'busy': return 'Busy';
         case 'rejected': return 'Rejected';
@@ -166,7 +169,9 @@ function _voiceIcon(name, size) {
 }
 
 function _voicePrimaryActionLabel(hash) {
-    if (_voiceIncomingMatchesContact(hash)) return 'Answer call';
+    if (_voiceIncomingMatchesContact(hash)) {
+        return lxstVoiceState.incoming.status === 'ringing' ? 'Answer call' : 'Hang up';
+    }
     if (_voiceActiveMatchesContact(hash)) {
         var active = lxstVoiceState.active;
         return active && active.status === 'established' ? 'Hang up' : 'Cancel call';
@@ -181,7 +186,9 @@ function _voicePrimaryActionIcon(hash) {
 }
 
 function _voiceRunPrimaryAction(hash) {
-    if (_voiceIncomingMatchesContact(hash)) return _voiceAnswerCall();
+    if (_voiceIncomingMatchesContact(hash)) {
+        return lxstVoiceState.incoming.status === 'ringing' ? _voiceAnswerCall() : _voiceHangupCall();
+    }
     if (_voiceActiveMatchesContact(hash)) return _voiceHangupCall();
     return _voiceStartCall(hash);
 }
@@ -196,7 +203,7 @@ function _voiceActionState(hash) {
     return {
         available: true,
         disabled: busyElsewhere,
-        danger: activeMatches,
+        danger: activeMatches || (incomingMatches && lxstVoiceState.incoming.status !== 'ringing'),
         label: busyElsewhere ? 'Call in Progress' : _voicePrimaryActionLabel(hash),
         icon: busyElsewhere ? _voiceIcon('phone', 18) : _voicePrimaryActionIcon(hash)
     };
@@ -532,7 +539,10 @@ function _voiceRenderCallSurface(ids) {
     surface.hidden = !peer;
     surface.classList.toggle('is-incoming', !!incoming && !active);
     surface.classList.toggle('is-active', !!(active && active.status === 'established'));
-    surface.classList.toggle('is-connecting', !!(active && active.status !== 'established'));
+    surface.classList.toggle('is-connecting', !!(
+        (active && active.status !== 'established') ||
+        (incoming && incoming.status !== 'ringing')
+    ));
     if (!peer) return;
 
     if (avatarEl) {
@@ -545,17 +555,18 @@ function _voiceRenderCallSurface(ids) {
     if (statusEl) {
         var status = active
             ? (ids.global ? _voiceGlobalStatusLabel(active) : _voiceActiveStatusLabel(active))
-            : 'Incoming call';
+            : (incoming.status === 'ringing' ? 'Incoming call' : _voiceStatusLabel(incoming.status));
         var audioIssue = active && !ids.global ? _voiceAudioIssueLabel() : '';
         if (audioIssue) status += ' - ' + audioIssue;
         statusEl.textContent = status;
     }
 
-    var showIncomingActions = !!incoming && !active;
+    var showIncomingActions = !!incoming && !active && incoming.status === 'ringing';
+    var showIncomingHangup = !!incoming && !active && incoming.status !== 'ringing';
     if (answerBtn) answerBtn.style.display = showIncomingActions ? '' : 'none';
     if (rejectBtn) rejectBtn.style.display = showIncomingActions ? '' : 'none';
     if (hangupBtn) {
-        hangupBtn.style.display = active ? '' : 'none';
+        hangupBtn.style.display = active || showIncomingHangup ? '' : 'none';
         hangupBtn.innerHTML = _voiceIcon('phone', 16) + '<span>Hang up</span>';
     }
 
@@ -636,6 +647,10 @@ function _voiceCancelPendingDial() {
     _voiceDialToken++;
 }
 
+function _voiceIncomingIsExact(linkId) {
+    return !!(linkId && lxstVoiceState.incoming && lxstVoiceState.incoming.link_id === linkId);
+}
+
 function _voiceSetOptimisticOutgoing(hash) {
     lxstVoiceState.active = {
         link_id: null,
@@ -705,20 +720,41 @@ function _voiceStartCall(hash) {
 }
 
 function _voiceAnswerCall() {
+    var incoming = lxstVoiceState.incoming;
+    if (!incoming || !incoming.link_id || incoming.status !== 'ringing') return Promise.resolve();
+    var expectedLinkId = incoming.link_id;
+    var answerToken = ++_voiceAnswerToken;
     _voiceStopRingtone();
     _voiceHaptic('selection');
+    incoming.status = 'answering';
+    renderVoiceUi();
     return _voiceCancelMemoForCall().then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission).then(function() {
+        if (answerToken !== _voiceAnswerToken || !_voiceIncomingIsExact(expectedLinkId)) return;
         _voiceResetCallControls();
         _voicePrimeNativeCallRoute();
-        return RS.invoke('voice_answer').then(function() {
+        return RS.invoke('voice_answer', { args: { link_id: expectedLinkId } }).then(function(result) {
+            if (answerToken !== _voiceAnswerToken || !_voiceIncomingIsExact(expectedLinkId)) return;
             _voiceHaptic('success');
-            lxstVoiceState.incoming = null;
+            // Command completion confirms exact call admission, not remote
+            // establishment. Keep the call visible until the authoritative
+            // same-link snapshot observes the peer's Established response.
+            lxstVoiceState.incoming.status = (result && result.status) || 'connecting';
             renderVoiceUi();
         }).catch(function(err) {
+            if (answerToken !== _voiceAnswerToken || !_voiceIncomingIsExact(expectedLinkId)) return;
+            lxstVoiceState.incoming.status = 'ringing';
             _voiceReleaseNativeCallRoutePrime();
             _voiceHaptic('error');
             _voiceNotify((err && err.message) || 'Could not answer call');
+            renderVoiceUi();
         });
+    }).catch(function(err) {
+        if (answerToken !== _voiceAnswerToken || !_voiceIncomingIsExact(expectedLinkId)) return;
+        lxstVoiceState.incoming.status = 'ringing';
+        _voiceReleaseNativeCallRoutePrime();
+        _voiceHaptic('error');
+        _voiceNotify((err && err.message) || 'Could not answer call');
+        renderVoiceUi();
     });
 }
 
@@ -727,31 +763,25 @@ function _voiceRejectCall() {
     _voiceCancelPendingDial();
     _voiceHaptic('warning');
     _voiceSuppressNoAnswerCueUntil = Date.now() + 2000;
-    return RS.invoke('voice_reject').catch(function() {}).then(function() {
-        lxstVoiceState.incoming = null;
-        renderVoiceUi();
-    });
+    return RS.invoke('voice_reject').catch(function() {});
 }
 
 function _voiceHangupCall() {
     _voiceStopRingtone();
     _voiceCancelPendingDial();
+    _voiceAnswerToken++;
     _voiceHaptic('warning');
     _voiceSuppressNoAnswerCueUntil = Date.now() + 2000;
+    var previousActiveStatus = lxstVoiceState.active && lxstVoiceState.active.status;
+    var previousIncomingStatus = lxstVoiceState.incoming && lxstVoiceState.incoming.status;
+    if (lxstVoiceState.active) lxstVoiceState.active.status = 'ending';
+    if (lxstVoiceState.incoming) lxstVoiceState.incoming.status = 'ending';
+    renderVoiceUi();
     return RS.invoke('voice_hangup').catch(function(err) {
+        if (lxstVoiceState.active && previousActiveStatus) lxstVoiceState.active.status = previousActiveStatus;
+        if (lxstVoiceState.incoming && previousIncomingStatus) lxstVoiceState.incoming.status = previousIncomingStatus;
         _voiceHaptic('error');
         _voiceNotify((err && err.message) || 'Could not hang up call');
-    }).then(function() {
-        lxstVoiceState.active = null;
-        lxstVoiceState.incoming = null;
-        lxstVoiceState.audioRunning = false;
-        lxstVoiceState.audioMicrophone = false;
-        lxstVoiceState.audioSpeaker = false;
-        _voiceReleaseNativeCallRoutePrime();
-        _voiceResetCallControls();
-        lxstVoiceState.lastDialHash = null;
-        lxstVoiceState.establishedAtMs = null;
-        lxstVoiceState.establishedLinkId = null;
         renderVoiceUi();
     });
 }
@@ -856,7 +886,7 @@ function renderVoiceIncomingSheet() {
     var incoming = lxstVoiceState.incoming;
     var existing = document.getElementById('lxst-incoming-call-overlay');
     var sheet = document.getElementById('lxst-incoming-call-sheet');
-    if (!incoming) {
+    if (!incoming || incoming.status !== 'ringing') {
         if (existing) existing.remove();
         if (sheet) sheet.remove();
         return;
@@ -937,12 +967,14 @@ function _voiceHandleUpdate(data) {
             _voiceResetCallControls();
         }
     } else if (data.type === 'incoming') {
-        lxstVoiceState.incoming = {
-            link_id: data.link_id,
-            remote_identity: data.remote_identity,
-            remote_lxmf_destination: data.remote_lxmf_destination || null,
-            status: 'ringing'
-        };
+        if (!_voiceIncomingIsExact(data.link_id)) {
+            lxstVoiceState.incoming = {
+                link_id: data.link_id,
+                remote_identity: data.remote_identity,
+                remote_lxmf_destination: data.remote_lxmf_destination || null,
+                status: 'ringing'
+            };
+        }
     } else if (data.type === 'outgoing_pending') {
         lxstVoiceState.active = {
             link_id: data.link_id || null,
@@ -1032,6 +1064,11 @@ function _voiceHandleUpdate(data) {
             lxstVoiceState.microphoneMuted = data.microphone_muted;
         }
     } else if (data.type === 'terminated') {
+        var terminatedMatches = (!data.link_id) ||
+            (lxstVoiceState.active && lxstVoiceState.active.link_id === data.link_id) ||
+            (lxstVoiceState.incoming && lxstVoiceState.incoming.link_id === data.link_id);
+        if (!terminatedMatches) return;
+        _voiceAnswerToken++;
         shouldPlayNoAnswerCue = !!(previousActive
             && previousActive.role === 'outgoing'
             && previousActive.status !== 'established'
@@ -1547,7 +1584,7 @@ function _messageStateIconHtml(msg) {
 
     if (state === 'read') return wrap('msg-state-read', 'Read', ICON.read);
     if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Failed', ICON.x);
-    if (state === 'cancelled') return wrap('msg-state-cancelled', 'Stopped retrying', ICON.x);
+    if (state === 'cancelled') return wrap('msg-state-cancelled', 'Delivery cancelled', ICON.x);
     if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
     if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.check);
@@ -1643,7 +1680,7 @@ function _messageSendCancelOverlayHtml(msg, percent) {
     var pct = percent === null ? 0 : percent;
     return '<button type="button" class="lxmf-send-cancel" ' +
         'data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
-        'style="--send-progress:' + pct + '%" aria-label="Stop retrying message">' +
+        'style="--send-progress:' + pct + '%" aria-label="Cancel message delivery">' +
         '<span aria-hidden="true">&times;</span>' +
     '</button>';
 }
@@ -1651,7 +1688,7 @@ function _messageSendCancelOverlayHtml(msg, percent) {
 function _messageInlineCancelHtml(msg) {
     if (!_messageCanCancelSend(msg)) return '';
     return '<button type="button" class="msg-send-cancel-inline" ' +
-        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Stop retrying message">Stop</button>';
+        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel message delivery">Cancel</button>';
 }
 
 function _findLxmfMessageById(msgId) {
@@ -1684,10 +1721,10 @@ function _flushPendingLxmfCancel(clientMsgId, serverMsgId) {
     _invokeLxmfCancel(serverMsgId).then(function(resp) {
         if (resp && resp.cancelled) {
             _markLxmfMessageCancelled(serverMsgId);
-            showToast('Stopped retrying. A copy already handed to the network may still arrive.', 'toast-orange', 5000);
+            showToast('Delivery cancelled.', 'toast-orange', 3000);
         }
     }).catch(function(err) {
-        showToast('Could not stop retries: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+        showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
     });
 }
 
@@ -1695,9 +1732,9 @@ function _cancelLxmfSend(msgId) {
     msgId = String(msgId || '');
     if (!msgId) return;
     rsConfirm({
-        title: 'Stop retrying?',
-        message: 'Ratspeak will stop local retries. A copy already handed to the network may still arrive.',
-        confirmText: 'Stop retrying'
+        title: 'Cancel delivery?',
+        message: 'Cancel this message?',
+        confirmText: 'Cancel delivery'
     }).then(function(confirmed) {
         if (!confirmed) return;
         if (!_isCanonicalLxmfMsgId(msgId)) {
@@ -1706,13 +1743,10 @@ function _cancelLxmfSend(msgId) {
         return _invokeLxmfCancel(msgId).then(function(resp) {
             if (!resp || !resp.cancelled) return;
             _markLxmfMessageCancelled(resp.msg_id || resp.client_msg_id || msgId);
-            showToast(resp.may_have_left_device
-                ? 'Stopped retrying. A copy already handed to the network may still arrive.'
-                : 'Stopped before the message entered the network.',
-                'toast-orange', 5000);
+            showToast('Delivery cancelled.', 'toast-orange', 3000);
         });
     }).catch(function(err) {
-        showToast('Could not stop retries: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+        showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
     });
 }
 
@@ -5528,7 +5562,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (status && typeof status.microphone_muted === 'boolean') {
             lxstVoiceState.microphoneMuted = status.microphone_muted;
         }
-        renderVoiceUi();
+        if (status && status.snapshot) {
+            _voiceHandleUpdate(status.snapshot);
+        } else {
+            renderVoiceUi();
+        }
     }).catch(function() {
         lxstVoiceState.available = false;
         renderVoiceUi();

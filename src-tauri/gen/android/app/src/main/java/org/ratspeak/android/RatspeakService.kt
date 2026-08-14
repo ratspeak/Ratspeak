@@ -7,10 +7,13 @@ import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class RatspeakService : Service() {
     companion object {
@@ -30,7 +33,86 @@ class RatspeakService : Service() {
         const val ACTION_REFRESH = "REFRESH"
         const val ACTION_ENABLE_MULTICAST = "ENABLE_MULTICAST"
         const val ACTION_DISABLE_MULTICAST = "DISABLE_MULTICAST"
+        private const val SERVICE_READY_TIMEOUT_MS = 1_500L
+        internal const val MICROPHONE_FAILURE_NONE = ""
+        internal const val MICROPHONE_FAILURE_OWNER_BUSY = "owner_busy"
+        internal const val MICROPHONE_FAILURE_SERVICE_START = "service_start"
+        internal const val MICROPHONE_FAILURE_SERVICE_TIMEOUT = "service_timeout"
+        internal const val MICROPHONE_FAILURE_FOREGROUND_TYPE = "foreground_type"
+        private val serviceReadyLock = Any()
         @Volatile private var activeService: RatspeakService? = null
+        @Volatile private var lastMicrophoneFailure = MICROPHONE_FAILURE_NONE
+        private var serviceReadyLatch = CountDownLatch(1)
+
+        private fun reportMicrophoneFailure(code: String) {
+            lastMicrophoneFailure = code
+            // Stable phase codes contain no identity, session token, route or device name.
+            Log.w(TAG, "microphone_transition_failed code=$code")
+        }
+
+        internal fun lastMicrophoneFailureCode(): String = lastMicrophoneFailure
+
+        private fun publishReady(service: RatspeakService) {
+            synchronized(serviceReadyLock) {
+                activeService = service
+                serviceReadyLatch.countDown()
+            }
+        }
+
+        private fun publishStopped(service: RatspeakService) {
+            synchronized(serviceReadyLock) {
+                if (activeService !== service) return
+                activeService = null
+                serviceReadyLatch = CountDownLatch(1)
+            }
+        }
+
+        /**
+         * Rust invokes microphone admission from a blocking worker. If Android
+         * is recreating the process service, wait briefly for onCreate instead
+         * of turning that normal lifecycle edge into a permanent recorder
+         * failure. Main-looper callers start the service but never wait.
+         */
+        internal fun ensureReadyForMicrophoneCapture(context: Context): Boolean {
+            activeService?.let { return true }
+            val application = context.applicationContext
+            val callerIsMainThread = Looper.myLooper() == Looper.getMainLooper()
+            val plan = RatspeakMobilePolicy.serviceReadinessPlan(
+                serviceReady = activeService != null,
+                callerIsMainThread = callerIsMainThread,
+            )
+            if (plan == RatspeakMobilePolicy.ServiceReadinessPlan.READY) return true
+
+            val ready = synchronized(serviceReadyLock) {
+                activeService?.let { return true }
+                serviceReadyLatch
+            }
+            try {
+                ContextCompat.startForegroundService(
+                    application,
+                    Intent(application, RatspeakService::class.java),
+                )
+            } catch (_: Throwable) {
+                reportMicrophoneFailure(MICROPHONE_FAILURE_SERVICE_START)
+                return false
+            }
+            if (plan == RatspeakMobilePolicy.ServiceReadinessPlan.START_WITHOUT_WAIT) {
+                reportMicrophoneFailure(MICROPHONE_FAILURE_SERVICE_TIMEOUT)
+                return false
+            }
+            val signalled = try {
+                ready.await(SERVICE_READY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                false
+            }
+            if (!signalled || activeService == null) {
+                reportMicrophoneFailure(MICROPHONE_FAILURE_SERVICE_TIMEOUT)
+                return false
+            }
+            lastMicrophoneFailure = MICROPHONE_FAILURE_NONE
+            return true
+        }
 
         /** Promote the running service before opening exact-session microphone capture. */
         internal fun setMicrophoneCaptureActive(
@@ -38,15 +120,13 @@ class RatspeakService : Service() {
             ownerToken: String,
             active: Boolean,
         ): Boolean {
-            val service = activeService
-            if (service != null) return service.setMicrophoneCaptureActive(ownerToken, active)
-            if (!active) return true
-            return try {
-                ContextCompat.startForegroundService(context, Intent(context, RatspeakService::class.java))
-                false
-            } catch (_: Throwable) {
-                false
+            if (!active) {
+                val service = activeService ?: return true
+                return service.setMicrophoneCaptureActive(ownerToken, false)
             }
+            if (!ensureReadyForMicrophoneCapture(context)) return false
+            val service = activeService ?: return false
+            return service.setMicrophoneCaptureActive(ownerToken, true)
         }
     }
 
@@ -62,8 +142,8 @@ class RatspeakService : Service() {
         createNotificationChannel()
         createMessageNotificationChannel()
         createCallNotificationChannel()
-        activeService = this
         startForegroundTyped(microphoneCapture = false)
+        publishReady(this)
         RatspeakPlatformSupervisor.start(this)
         // Message and call notifications are driven by the Rust/Tauri notification backend.
     }
@@ -92,7 +172,7 @@ class RatspeakService : Service() {
         running = false
         RatspeakPlatformSupervisor.stop(this)
         releaseMulticastLock()
-        if (activeService === this) activeService = null
+        publishStopped(this)
         super.onDestroy()
     }
 
@@ -180,12 +260,21 @@ class RatspeakService : Service() {
 
     @Synchronized
     private fun setMicrophoneCaptureActive(ownerToken: String, active: Boolean): Boolean {
-        if (!RatspeakMobilePolicy.validCallSessionToken(ownerToken)) return false
+        if (!RatspeakMobilePolicy.validCallSessionToken(ownerToken)) {
+            reportMicrophoneFailure(MICROPHONE_FAILURE_FOREGROUND_TYPE)
+            return false
+        }
         val previous = microphoneCaptureOwner
         when (RatspeakMobilePolicy.microphoneCapturePlan(previous, ownerToken, active)) {
             RatspeakMobilePolicy.MicrophoneCapturePlan.ALREADY_ACTIVE,
-            RatspeakMobilePolicy.MicrophoneCapturePlan.ALREADY_INACTIVE -> return true
-            RatspeakMobilePolicy.MicrophoneCapturePlan.REJECT -> return false
+            RatspeakMobilePolicy.MicrophoneCapturePlan.ALREADY_INACTIVE -> {
+                lastMicrophoneFailure = MICROPHONE_FAILURE_NONE
+                return true
+            }
+            RatspeakMobilePolicy.MicrophoneCapturePlan.REJECT -> {
+                reportMicrophoneFailure(MICROPHONE_FAILURE_OWNER_BUSY)
+                return false
+            }
             RatspeakMobilePolicy.MicrophoneCapturePlan.PROMOTE -> {
                 microphoneCaptureOwner = ownerToken
             }
@@ -195,13 +284,14 @@ class RatspeakService : Service() {
         }
         return try {
             startForegroundTyped(microphoneCapture = active)
+            lastMicrophoneFailure = MICROPHONE_FAILURE_NONE
             true
-        } catch (error: Throwable) {
+        } catch (_: Throwable) {
             microphoneCaptureOwner = previous
             // Preserve the last known-good foreground type and truthful card
             // if Android rejects a promotion (for example, permission denied).
             try { startForegroundTyped(microphoneCapture = previous != null) } catch (_: Throwable) {}
-            Log.w(TAG, "Foreground microphone transition failed: ${error.message}")
+            reportMicrophoneFailure(MICROPHONE_FAILURE_FOREGROUND_TYPE)
             false
         }
     }

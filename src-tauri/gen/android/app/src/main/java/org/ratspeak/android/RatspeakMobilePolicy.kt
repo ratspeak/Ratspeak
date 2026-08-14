@@ -122,6 +122,34 @@ object RatspeakMobilePolicy {
         return current != null && current == candidate
     }
 
+    enum class ServiceReadinessPlan {
+        READY,
+        START_AND_WAIT,
+        START_WITHOUT_WAIT,
+    }
+
+    /** Never block Android's main looper while waiting for Service.onCreate(). */
+    fun serviceReadinessPlan(
+        serviceReady: Boolean,
+        callerIsMainThread: Boolean,
+    ): ServiceReadinessPlan {
+        if (serviceReady) return ServiceReadinessPlan.READY
+        return if (callerIsMainThread) {
+            ServiceReadinessPlan.START_WITHOUT_WAIT
+        } else {
+            ServiceReadinessPlan.START_AND_WAIT
+        }
+    }
+
+    /** A delayed audio-focus callback may act only on its exact current lease. */
+    fun voiceMemoInterruptionOwns(
+        currentOwner: String?,
+        callbackOwner: String,
+        callbackListenerIsCurrent: Boolean,
+    ): Boolean {
+        return callbackListenerIsCurrent && callSessionOwns(currentOwner, callbackOwner)
+    }
+
     enum class MicrophoneCapturePlan {
         PROMOTE,
         ALREADY_ACTIVE,

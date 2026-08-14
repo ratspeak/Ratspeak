@@ -54,6 +54,11 @@ pub struct VoiceCallArgs {
 }
 
 #[derive(Deserialize)]
+pub struct VoiceAnswerArgs {
+    pub link_id: String,
+}
+
+#[derive(Deserialize)]
 pub struct VoiceSetMicrophoneMutedArgs {
     pub muted: bool,
 }
@@ -184,14 +189,19 @@ pub async fn voice_call(state: State<'_, Arc<AppState>>, args: VoiceCallArgs) ->
 }
 
 #[tauri::command]
-pub async fn voice_answer(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+pub async fn voice_answer(
+    state: State<'_, Arc<AppState>>,
+    args: VoiceAnswerArgs,
+) -> AppResult<Value> {
+    let expected_link_id = hex_to_array16(args.link_id.trim())
+        .ok_or_else(|| AppError::bad_request("Voice answer requires the exact incoming link"))?;
     let app_state = state.inner().clone();
     crate::voice::reserve_call_audio(&app_state);
     if let Err(error) = crate::voice_memo::cancel_recording(&app_state).await {
         crate::voice::release_call_audio(&app_state);
         return Err(AppError::service_unavailable(error));
     }
-    match crate::voice::answer(&app_state).await {
+    match crate::voice::answer(&app_state, expected_link_id).await {
         Ok(result) => Ok(result),
         Err(error) => {
             crate::voice::release_call_audio(&app_state);

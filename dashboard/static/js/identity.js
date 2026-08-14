@@ -1122,8 +1122,7 @@ function openRestorePhraseModal(fromSetup) {
                         if (typeof completeSetupAfterIdentityImport === 'function') {
                             completeSetupAfterIdentityImport(data);
                         } else {
-                            window.location.href = '/#dashboard';
-                            window.location.reload();
+                            reloadToAppLanding();
                         }
                         return;
                     }
@@ -1303,8 +1302,7 @@ function handleImportBackupPayload(fileName, fileSize, b64, expectedFormat) {
                             if (typeof completeSetupAfterIdentityImport === 'function') {
                                 completeSetupAfterIdentityImport(data);
                             } else {
-                                window.location.href = '/#dashboard';
-                                window.location.reload();
+                                reloadToAppLanding();
                             }
                             return;
                         }
@@ -2462,8 +2460,7 @@ function _hwFinish(result) {
             if (typeof completeSetupAfterIdentityImport === 'function') {
                 completeSetupAfterIdentityImport(result);
             } else {
-                window.location.href = '/#dashboard';
-                window.location.reload();
+                reloadToAppLanding();
             }
         };
         if (pinForSetup) {

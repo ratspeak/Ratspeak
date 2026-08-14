@@ -13,7 +13,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lxst_core::{CallRole, Profile, RawAudioFrame, SignallingStatus, TELEPHONY_DESTINATION_NAME};
 use lxst_telephony::{
     ActiveCallSnapshot, TelephonyControl, TelephonyRnsEndpoint, TelephonyRuntimeCore,
-    TelephonyRuntimeSnapshot, TelephonyService, TelephonyServiceEvent,
+    TelephonyRuntimeSnapshot, TelephonyService, TelephonyServiceEvent, request_answer,
 };
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_DELIVERY_DESTINATION_NAME, hex_to_array16};
 use rns_identity::destination::Destination;
@@ -216,6 +216,9 @@ pub async fn shutdown_voice_service(state: &Arc<AppState>) {
     }
     release_call_audio(state);
     VOICE_MICROPHONE_MUTED.store(false, Ordering::Relaxed);
+    if let Ok(mut persisted) = state.voice_call_snapshot.lock() {
+        *persisted = None;
+    }
 
     state.emit_to_all(
         "voice_call_update",
@@ -234,10 +237,16 @@ pub fn voice_status(state: &AppState) -> Value {
         .lock()
         .map(|voice| voice.is_some())
         .unwrap_or(false);
+    let snapshot = state
+        .voice_call_snapshot
+        .lock()
+        .ok()
+        .and_then(|snapshot| snapshot.clone());
     json!({
         "enabled": true,
         "running": running,
         "microphone_muted": microphone_muted(),
+        "snapshot": snapshot,
     })
 }
 
@@ -309,10 +318,18 @@ pub async fn call_identity(state: &Arc<AppState>, remote_identity: [u8; 16]) -> 
     }))
 }
 
-pub async fn answer(state: &Arc<AppState>) -> VoiceResult<Value> {
+pub async fn answer(state: &Arc<AppState>, expected_link_id: [u8; 16]) -> VoiceResult<Value> {
     ensure_voice_service_started(state).await?;
-    send_control(state, TelephonyControl::Answer).await?;
-    Ok(json!({ "ok": true }))
+    let tx =
+        voice_control_tx(state).ok_or_else(|| "LXST voice service is not running".to_string())?;
+    let active = request_answer(&tx, expected_link_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut result = active_call_payload(&active);
+    if let Some(object) = result.as_object_mut() {
+        object.insert("ok".to_string(), json!(true));
+    }
+    Ok(result)
 }
 
 pub async fn hangup(state: &Arc<AppState>) -> VoiceResult<Value> {
@@ -970,6 +987,9 @@ async fn drive_voice_events(
                 audio_failure = None;
                 profile_adaptation.reset();
                 latest_snapshot = None;
+                if let Ok(mut persisted) = state.voice_call_snapshot.lock() {
+                    *persisted = None;
+                }
                 state.emit_to_all(
                     "voice_call_update",
                     json!({
@@ -1098,6 +1118,9 @@ async fn drive_voice_events(
                 release_call_audio(&state);
                 stop_audio_session(audio_session.take(), &control_tx).await;
                 profile_adaptation.reset();
+                if let Ok(mut persisted) = state.voice_call_snapshot.lock() {
+                    *persisted = None;
+                }
                 state.emit_to_all(
                     "voice_call_update",
                     json!({
@@ -1229,11 +1252,13 @@ async fn reconcile_audio_session(
         return;
     }
 
-    if audio_failure
+    if let Some(failure) = audio_failure
         .as_ref()
-        .is_some_and(|failure| failure.matches(active.link_id, profile))
+        .filter(|failure| failure.matches(active.link_id, profile))
     {
-        return;
+        if !failure.ready_to_retry(Instant::now()) {
+            return;
+        }
     }
 
     stop_audio_session(audio_session.take(), control_tx).await;
@@ -1267,17 +1292,42 @@ async fn reconcile_audio_session(
             );
         }
         Err(message) => {
+            let attempts = audio_failure
+                .as_ref()
+                .filter(|failure| failure.matches(active.link_id, profile))
+                .map(|failure| failure.attempts.saturating_add(1))
+                .unwrap_or(1);
+            let first_failure = attempts == 1;
             *audio_failure = Some(VoiceAudioFailure {
                 link_id: active.link_id,
                 profile,
+                attempts,
+                next_retry_at: Instant::now() + audio_recovery_delay(attempts - 1),
             });
-            state.emit_to_all(
-                "voice_call_update",
-                json!({
-                    "type": "error",
-                    "message": message,
-                }),
-            );
+            if first_failure {
+                state.emit_to_all(
+                    "voice_call_update",
+                    json!({
+                        "type": "audio",
+                        "state": "recovering",
+                        "link_id": hex::encode(active.link_id),
+                        "profile": profile_key(profile),
+                        "running": false,
+                        "microphone": false,
+                        "microphone_muted": microphone_muted(),
+                        "speaker": false,
+                        "warnings": [message],
+                    }),
+                );
+            } else {
+                tracing::warn!(
+                    link_id = %crate::short_id(&hex::encode(active.link_id)),
+                    profile = profile_key(profile),
+                    attempts,
+                    reason = "full_session_start_failed",
+                    "LXST native audio recovery failed"
+                );
+            }
         }
     }
 }
@@ -1364,23 +1414,24 @@ fn emit_snapshot(
     snapshot: &TelephonyRuntimeSnapshot,
     audio: Option<&VoiceAudioSession>,
 ) {
-    state.emit_to_all(
-        "voice_call_update",
-        json!({
-            "type": "snapshot",
-            "external_busy": snapshot.external_busy,
-            "pending_link_count": snapshot.pending_link_count,
-            "audio": audio.map(|session| json!({
-                "link_id": hex::encode(session.link_id),
-                "profile": profile_key(session.profile),
-                "running": session.running(),
-                "microphone": session.microphone,
-                "microphone_muted": microphone_muted(),
-                "speaker": session.speaker,
-            })),
-            "active_call": snapshot.active_call.as_ref().map(active_call_payload),
-        }),
-    );
+    let payload = json!({
+        "type": "snapshot",
+        "external_busy": snapshot.external_busy,
+        "pending_link_count": snapshot.pending_link_count,
+        "audio": audio.map(|session| json!({
+            "link_id": hex::encode(session.link_id),
+            "profile": profile_key(session.profile),
+            "running": session.running(),
+            "microphone": session.microphone,
+            "microphone_muted": microphone_muted(),
+            "speaker": session.speaker,
+        })),
+        "active_call": snapshot.active_call.as_ref().map(active_call_payload),
+    });
+    if let Ok(mut persisted) = state.voice_call_snapshot.lock() {
+        *persisted = Some(payload.clone());
+    }
+    state.emit_to_all("voice_call_update", payload);
 }
 
 fn emit_audio_session_state(state: &AppState, state_key: &str, session: &VoiceAudioSession) {
@@ -1786,11 +1837,17 @@ impl Drop for AndroidVoiceOutput {
 struct VoiceAudioFailure {
     link_id: [u8; 16],
     profile: Profile,
+    attempts: u32,
+    next_retry_at: Instant,
 }
 
 impl VoiceAudioFailure {
     fn matches(&self, link_id: [u8; 16], profile: Profile) -> bool {
         self.link_id == link_id && self.profile == profile
+    }
+
+    fn ready_to_retry(&self, now: Instant) -> bool {
+        now >= self.next_retry_at
     }
 }
 
@@ -3373,6 +3430,12 @@ mod android_voice_audio {
                     return Err("Another app or call is using the microphone".to_string());
                 }
                 _ => {
+                    let phase = last_voice_memo_start_failure()
+                        .unwrap_or_else(|_| "native_unknown".to_string());
+                    tracing::warn!(
+                        phase = %phase,
+                        "Android voice message native audio admission failed"
+                    );
                     return Err("Android microphone audio session is unavailable".to_string());
                 }
             }
@@ -3429,6 +3492,26 @@ mod android_voice_audio {
             })?
             .i()
             .map_err(|e| format!("RatspeakVoiceMemoAudio.startForSession result: {e}"))
+        })
+    }
+
+    fn last_voice_memo_start_failure() -> VoiceResult<String> {
+        with_env(|env| {
+            let class = find_app_class(env, VOICE_MEMO_CLASS_NAME)?;
+            let value = env
+                .call_static_method(class, "lastStartFailureCode", "()Ljava/lang/String;", &[])
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("RatspeakVoiceMemoAudio.lastStartFailureCode: {e}")
+                })?
+                .l()
+                .map_err(|e| format!("RatspeakVoiceMemoAudio.lastStartFailureCode result: {e}"))?;
+            if value.is_null() {
+                return Ok("native_unknown".to_string());
+            }
+            env.get_string(JString::from(value))
+                .map(|value| value.into())
+                .map_err(|e| format!("RatspeakVoiceMemoAudio.lastStartFailureCode string: {e}"))
         })
     }
 
@@ -4033,6 +4116,31 @@ mod tests {
         assert_eq!(queue.pop_sample(), 0.4);
         assert_eq!(queue.pop_sample(), 0.5);
         assert_eq!(queue.pop_sample(), 0.0);
+    }
+
+    #[test]
+    fn full_audio_session_failures_retry_with_bounded_exact_link_backoff() {
+        let now = Instant::now();
+        let failure = VoiceAudioFailure {
+            link_id: [0x44; 16],
+            profile: Profile::QualityHigh,
+            attempts: 1,
+            next_retry_at: now + VOICE_AUDIO_RECOVERY_INITIAL_DELAY,
+        };
+
+        assert!(failure.matches([0x44; 16], Profile::QualityHigh));
+        assert!(!failure.matches([0x45; 16], Profile::QualityHigh));
+        assert!(!failure.ready_to_retry(now));
+        assert!(
+            failure.ready_to_retry(
+                now + VOICE_AUDIO_RECOVERY_INITIAL_DELAY + Duration::from_millis(1)
+            )
+        );
+        assert_eq!(audio_recovery_delay(0), VOICE_AUDIO_RECOVERY_INITIAL_DELAY);
+        assert_eq!(
+            audio_recovery_delay(u32::MAX),
+            VOICE_AUDIO_RECOVERY_MAX_DELAY
+        );
     }
 
     #[test]

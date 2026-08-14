@@ -298,9 +298,10 @@ function runConnectingProgress() {
 }
 
 function setupCompletionView() {
-    return typeof isCompactLayout === 'function' && isCompactLayout()
-        ? 'peers'
-        : 'dashboard';
+    if (typeof appLandingView === 'function') return appLandingView();
+    var nativeMobile = typeof isTauriMobile === 'function' && isTauriMobile();
+    var compact = typeof isCompactLayout === 'function' && isCompactLayout();
+    return nativeMobile || compact ? 'peers' : 'dashboard';
 }
 
 function showSetupConnectingStep() {

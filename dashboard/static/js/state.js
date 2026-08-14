@@ -1005,9 +1005,28 @@ function debounce(fn, delay) {
     };
 }
 
+// Dashboard is a desktop quickview, not a destination in the native/compact
+// tab bar. Native WebViews can briefly report a wide viewport during first
+// layout, so the injected platform flag is authoritative and width is only a
+// browser/responsive fallback.
+function appUsesMobileNavigation() {
+    var nativeMobile = typeof isTauriMobile === 'function' && isTauriMobile();
+    var compact = typeof isCompactLayout === 'function' && isCompactLayout();
+    return nativeMobile || compact;
+}
+
+function appLandingView() {
+    return appUsesMobileNavigation() ? 'peers' : 'dashboard';
+}
+
+function reloadToAppLanding() {
+    window.location.href = '/#' + appLandingView();
+    window.location.reload();
+}
+
 function waitForServerAndReload(maxRetries, targetPath) {
     maxRetries = maxRetries || 30;
-    var target = targetPath || '/#dashboard';
+    var target = targetPath || '/#' + appLandingView();
     var attempt = 0;
     function getDelay() {
         if (attempt <= 10) return 1000;

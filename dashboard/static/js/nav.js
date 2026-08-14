@@ -89,13 +89,26 @@ function _normalizeViewId(viewId) {
     return VIEWS.indexOf(normalized) !== -1 ? normalized : null;
 }
 
+function _viewForNavigationSurface(viewId) {
+    var normalized = _normalizeViewId(viewId);
+    if (normalized === 'dashboard' &&
+        typeof appUsesMobileNavigation === 'function' &&
+        appUsesMobileNavigation()) {
+        return 'peers';
+    }
+    return normalized;
+}
+
 function _resolveInitialView() {
-    var hashView = _normalizeViewId(window.location.hash);
+    var hashView = _viewForNavigationSurface(window.location.hash);
     if (hashView) return hashView;
-    if (typeof isCompactLayout === 'function' && isCompactLayout()) return 'peers';
+    if (typeof appUsesMobileNavigation === 'function' && appUsesMobileNavigation()) {
+        return 'peers';
+    }
     var saved = null;
     try { saved = localStorage.getItem('ratspeak_view'); } catch(e) {}
-    return _normalizeViewId(saved) || 'dashboard';
+    return _viewForNavigationSurface(saved) ||
+        (typeof appLandingView === 'function' ? appLandingView() : 'dashboard');
 }
 
 var _navTransitioning = false;
@@ -307,7 +320,8 @@ function _animateViewSwitch(oldView, newView, transitionType) {
 }
 
 function switchView(viewId, opts) {
-    viewId = _normalizeViewId(viewId) || 'dashboard';
+    viewId = _viewForNavigationSurface(viewId) ||
+        (typeof appLandingView === 'function' ? appLandingView() : 'dashboard');
     if (viewId === currentView && !_navInitialLoad) return;
     if (_navTransitioning) return;
 

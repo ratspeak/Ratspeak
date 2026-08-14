@@ -1223,7 +1223,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260804"));
+    assert!(index.contains("/static/style.css?v=ui-20260813-2"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -4253,8 +4253,8 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("lxmfLimits.efficient_resource_bytes || 1048575"));
     assert!(lxmf.contains("if (!_messageShowsTransferPercent(msg)) return null;"));
     assert!(lxmf.contains("if (!_messageCanCancelSend(msg)) return '';"));
-    assert!(lxmf.contains("aria-label=\"Stop retrying message\">Stop</button>"));
-    assert!(lxmf.contains("A copy already handed to the network may still arrive."));
+    assert!(lxmf.contains("aria-label=\"Cancel message delivery\">Cancel</button>"));
+    assert!(lxmf.contains("message: 'Cancel this message?'"));
     assert!(lxmf.contains("canCancelSend ? _messageInlineCancelHtml(msg) : '<span class=\"msg-time\">' + time + '</span>'"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
@@ -4317,6 +4317,15 @@ fn voice_and_capture_paths_preflight_media_permissions() {
             "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakCallAudio.kt",
         ))
         .expect("Android call audio owner");
+    let memo_audio = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceMemoAudio.kt",
+    ))
+    .expect("Android voice memo audio owner");
+    let service =
+        read_source(root.join(
+            "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt",
+        ))
+        .expect("Android foreground service");
     assert!(activity.contains("MEDIA_PERMISSION_REQUEST_CODE"));
     assert!(activity.contains("fun hasMediaPermissions(audio: Boolean, camera: Boolean): Boolean"));
     assert!(activity.contains(
@@ -4351,6 +4360,15 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(call_audio.contains("RatspeakMobilePolicy.callSessionOwns(ownerToken, sessionToken)"));
     assert!(activity.contains("RatspeakVoiceAudio.stop()"));
     assert!(call_audio.contains("fun stopForSession("));
+    assert!(service.contains("CountDownLatch"));
+    assert!(service.contains("ensureReadyForMicrophoneCapture"));
+    assert!(service.contains("ready.await"));
+    assert!(memo_audio.contains("fun lastStartFailureCode(): String"));
+    assert!(memo_audio.contains("lateinit var listener"));
+    assert!(memo_audio.contains("voiceMemoInterruptionOwns"));
+    assert!(memo_audio.contains("RatspeakAndroidObservers.voiceMemoAudioInterruption"));
+    assert!(activity.contains("isVoiceMemoAudioSessionActive(token)"));
+    assert!(activity.contains("handleAudioInterruption"));
 
     let voice_audio = read_source(root.join(
         "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceAudio.kt",
@@ -4422,6 +4440,19 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(lxmf.contains("function _voiceBlockMobileNavigation(ms)"));
     assert!(lxmf.contains("var dialToken = ++_voiceDialToken;"));
     assert!(lxmf.contains("function _voiceCancelMemoForCall()"));
+    assert!(lxmf.contains("var _voiceAnswerToken = 0;"));
+    assert!(lxmf.contains("function _voiceIncomingIsExact(linkId)"));
+    assert!(lxmf.contains("RS.invoke('voice_answer', { args: { link_id: expectedLinkId } })"));
+    let answer_call = lxmf
+        .split("function _voiceAnswerCall()")
+        .nth(1)
+        .and_then(|tail| tail.split("function _voiceRejectCall()").next())
+        .expect("voice answer function");
+    assert!(answer_call.contains("incoming.status = 'answering';"));
+    assert!(answer_call.contains("_voiceIncomingIsExact(expectedLinkId)"));
+    assert!(!answer_call.contains("lxstVoiceState.incoming = null"));
+    assert!(lxmf.contains("if (!incoming || incoming.status !== 'ringing')"));
+    assert!(lxmf.contains("var terminatedMatches = (!data.link_id) ||"));
     assert!(lxmf.contains(
         "return _voiceCancelMemoForCall().then(_voiceAfterNextPaint).then(_voiceEnsurePlaybackReady).then(_voiceEnsureMicrophonePermission)"
     ));
@@ -4496,6 +4527,15 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_rs.contains("pub async fn announce_if_running(state: &AppState)"));
     assert!(voice_rs.contains("static VOICE_MICROPHONE_MUTED: AtomicBool"));
     assert!(voice_rs.contains("pub fn set_microphone_muted("));
+    assert!(voice_rs.contains("request_answer(&tx, expected_link_id)"));
+    assert!(voice_rs.contains("\"snapshot\": snapshot"));
+    assert!(voice_rs.contains("*persisted = Some(payload.clone());"));
+    assert!(lxmf.contains("if (status && status.snapshot)"));
+    assert!(lxmf.contains("_voiceHandleUpdate(status.snapshot);"));
+    let voice_command = read_source(root.join("crates/ratspeak-tauri/src/commands/voice.rs"))
+        .expect("voice command");
+    assert!(voice_command.contains("pub struct VoiceAnswerArgs"));
+    assert!(voice_command.contains("crate::voice::answer(&app_state, expected_link_id)"));
     assert!(voice_rs.contains("enum VoiceAudioControl"));
     assert!(voice_rs.contains("RestartSpeaker { speakerphone: bool }"));
     assert!(voice_rs.contains("async fn restart_speaker("));
@@ -4594,10 +4634,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260804"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260804"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260804"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260804"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260813-2"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260813-2"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260813-2"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260813-2"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -4931,8 +4971,9 @@ fn settings_version_display_uses_package_version_api() {
 #[test]
 fn release_workflows_pin_v1_0_26d_and_stage_tag_builds_as_prereleases() {
     let root = repo_root();
-    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 27352fd0d4ea67e2a35bcf798cdb4606630d4055";
+    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 6c77c9e69d0c5c6c60396335cb1d02eb8ccb7c28";
     let rslxmf_commit = "RATSPEAK_RSLXMF_REF: 681c0f5961acce637183efc9a4047bf25ead56bf";
+    let rslxst_commit = "RATSPEAK_RSLXST_REF: fd81d7155c6e0af799aaa398aee21028ce535924";
     let dependency_refs = [
         "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26d",
         "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26d",
@@ -4972,6 +5013,10 @@ fn release_workflows_pin_v1_0_26d_and_stage_tag_builds_as_prereleases() {
         assert!(
             workflow.contains(rslxmf_commit),
             "{workflow_path} must build the synchronized rsLXMF commit"
+        );
+        assert!(
+            workflow.contains(rslxst_commit),
+            "{workflow_path} must build the reviewed rsLXST commit"
         );
     }
 
@@ -6074,7 +6119,7 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn)"));
     assert!(lxmf.contains("_bindMessageFocusPreservingActivation(btn, function()"));
     assert!(lxmf.contains("_cancelLxmfSend(btn.getAttribute('data-msg-id'));"));
-    assert!(lxmf.contains("title: 'Stop retrying?'"));
+    assert!(lxmf.contains("title: 'Cancel delivery?'"));
     assert!(messaging.contains("\"may_have_left_device\": cancelled"));
     assert!(inbound.contains("lxmf_step_starts_delivery_timeout"));
     assert!(inbound.contains("manager.cancel_outbound_message(msg_id)"));
@@ -6134,7 +6179,7 @@ fn optimistic_lxmf_cancel_is_native_before_canonical_reconciliation() {
     assert!(messaging.contains("LxmfClientSendCancellation::Queued"));
     assert!(lxmf.contains("_pendingLxmfCancelByClientId[msgId] = true;"));
     assert!(lxmf.contains("return _invokeLxmfCancel(msgId).then(function(resp)"));
-    assert!(lxmf.contains("title: 'Stop retrying?'"));
+    assert!(lxmf.contains("title: 'Cancel delivery?'"));
     assert!(lxmf.contains("var eventMsgId = data.msg_id || data.client_msg_id;"));
 }
 
@@ -6400,6 +6445,15 @@ fn identity_management_is_first_class_tab() {
     assert!(setup_js.contains("function setupCompletionView()"));
     assert!(setup_js.contains("window.location.href = '/#' + setupCompletionView()"));
     assert!(!setup_js.contains("window.location.href = '/#dashboard'"));
+    let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    assert!(nav_js.contains("function _viewForNavigationSurface(viewId)"));
+    assert!(nav_js.contains("appUsesMobileNavigation()"));
+    let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
+    assert!(state_js.contains("function appUsesMobileNavigation()"));
+    assert!(state_js.contains("function appLandingView()"));
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    assert!(!identity_js.contains("window.location.href = '/#dashboard'"));
 
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
     assert!(tauri_lib.contains("api_export_identity_reticulum_base64"));

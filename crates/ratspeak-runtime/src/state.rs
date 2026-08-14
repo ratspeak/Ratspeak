@@ -515,6 +515,11 @@ pub struct AppState {
     local_identity_public_keys: RwLock<HashMap<String, [u8; 64]>>,
     #[cfg(feature = "lxst-voice")]
     pub lxst_voice: Mutex<Option<crate::voice::LxstVoiceServiceHandle>>,
+    /// Last authoritative LXST call/audio snapshot for WebView reload and
+    /// mobile foreground recovery. Command admission never writes this; only
+    /// the service event loop may publish or clear it.
+    #[cfg(feature = "lxst-voice")]
+    pub(crate) voice_call_snapshot: Mutex<Option<serde_json::Value>>,
     #[cfg(feature = "lxst-voice")]
     pub voice_memo_recording: Mutex<Option<crate::voice_memo::VoiceMemoRecordingHandle>>,
     #[cfg(feature = "lxst-voice")]
@@ -780,6 +785,8 @@ impl AppState {
             local_identity_public_keys: RwLock::new(HashMap::new()),
             #[cfg(feature = "lxst-voice")]
             lxst_voice: Mutex::new(None),
+            #[cfg(feature = "lxst-voice")]
+            voice_call_snapshot: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
             voice_memo_recording: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]

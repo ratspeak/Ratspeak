@@ -231,6 +231,65 @@ class RatspeakMobilePolicyTest {
     }
 
     @Test
+    fun serviceReadinessWaitsOnlyOffTheMainLooper() {
+        assertEquals(
+            RatspeakMobilePolicy.ServiceReadinessPlan.READY,
+            RatspeakMobilePolicy.serviceReadinessPlan(
+                serviceReady = true,
+                callerIsMainThread = true,
+            ),
+        )
+        assertEquals(
+            RatspeakMobilePolicy.ServiceReadinessPlan.START_AND_WAIT,
+            RatspeakMobilePolicy.serviceReadinessPlan(
+                serviceReady = false,
+                callerIsMainThread = false,
+            ),
+        )
+        assertEquals(
+            RatspeakMobilePolicy.ServiceReadinessPlan.START_WITHOUT_WAIT,
+            RatspeakMobilePolicy.serviceReadinessPlan(
+                serviceReady = false,
+                callerIsMainThread = true,
+            ),
+        )
+    }
+
+    @Test
+    fun voiceMemoInterruptionRequiresTheExactOwnerAndListener() {
+        val oldSession = "vmr-0000000000000001"
+        val replacement = "vmr-0000000000000002"
+        assertTrue(
+            RatspeakMobilePolicy.voiceMemoInterruptionOwns(
+                oldSession,
+                oldSession,
+                callbackListenerIsCurrent = true,
+            ),
+        )
+        assertFalse(
+            RatspeakMobilePolicy.voiceMemoInterruptionOwns(
+                replacement,
+                oldSession,
+                callbackListenerIsCurrent = true,
+            ),
+        )
+        assertFalse(
+            RatspeakMobilePolicy.voiceMemoInterruptionOwns(
+                oldSession,
+                oldSession,
+                callbackListenerIsCurrent = false,
+            ),
+        )
+        assertFalse(
+            RatspeakMobilePolicy.voiceMemoInterruptionOwns(
+                null,
+                oldSession,
+                callbackListenerIsCurrent = true,
+            ),
+        )
+    }
+
+    @Test
     fun nativeGenerationRejectsStaleTeardown() {
         val current = RatspeakMobilePolicy.NativeOwner("00112233445566778899aabbccddeeff", 42)
         assertTrue(RatspeakMobilePolicy.nativeOwnerMatches(current, current.token, 42))

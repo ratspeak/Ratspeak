@@ -1712,6 +1712,13 @@ class MainActivity : TauriActivity() {
             return this@MainActivity.hasMediaPermissions(audio, camera)
         }
 
+        /** Exact-token fence evaluated in the WebView immediately before interruption cleanup. */
+        @JavascriptInterface
+        fun isVoiceMemoAudioSessionActive(sessionToken: String): Boolean {
+            return RatspeakMobilePolicy.validCallSessionToken(sessionToken) &&
+                RatspeakVoiceMemoAudio.isSessionActive(sessionToken)
+        }
+
         @JavascriptInterface
         fun notificationAuthorizationStatus(): String {
             val status = RatspeakNativeBridge.notificationAuthorizationStatus()
@@ -1912,6 +1919,26 @@ class MainActivity : TauriActivity() {
                 null,
             )
         }
+    }
+
+    internal fun onNativeVoiceMemoAudioInterruption(sessionToken: String): Boolean {
+        if (!RatspeakMobilePolicy.validCallSessionToken(sessionToken) || webViewRef == null) {
+            return false
+        }
+        val encodedToken = JSONObject.quote(sessionToken)
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "(function(token){" +
+                    "if(!window.RatspeakAndroid||" +
+                    "!window.RatspeakAndroid.isVoiceMemoAudioSessionActive(token))return;" +
+                    "var vm=window.RS&&window.RS.voiceMemos;" +
+                    "if(vm&&typeof vm.handleAudioInterruption==='function')" +
+                    "vm.handleAudioInterruption();" +
+                    "})($encodedToken);",
+                null,
+            )
+        }
+        return true
     }
 
     internal fun onNativeUsbPermission(deviceName: String, granted: Boolean, error: String?) {

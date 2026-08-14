@@ -2577,19 +2577,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 ))
                             });
                         }
-                        if lxmf_step_starts_delivery_timeout(new_state) {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs_f64();
-                            if let Ok(mut times) = tick_state.message_send_times.lock() {
-                                times.entry(msg_id.clone()).or_insert(now);
-                            }
-                        } else if lxmf_step_ends_delivery_timeout(new_state) {
-                            if let Ok(mut times) = tick_state.message_send_times.lock() {
-                                times.remove(msg_id);
-                            }
-                        }
+                        update_message_delivery_timeout(&tick_state, msg_id, new_state);
 
                         // Route delivery-state to originating LRGP session.
                         let lrgp_meta = tick_state
@@ -2618,6 +2606,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     }
 
                     for update in delivery_progress {
+                        // Progress can be the only observable output when a
+                        // recovered/reused Link already owns the delivery.
+                        // Start the same bounded clock as ordinary state
+                        // updates so a stalled Resource can never remain
+                        // pending indefinitely.
+                        update_message_delivery_timeout(&tick_state, &update.msg_id, update.step);
                         let client_msg_id = tick_state
                             .msg_id_map
                             .lock()
@@ -2653,12 +2647,18 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .await;
                     }
 
-                    // Every ~30s: timeout sweep + evict >1h tracking entries.
+                    // Check delivery deadlines every ~5s. Resource progress can
+                    // otherwise cross its three-minute deadline just after a
+                    // coarse maintenance pass and remain apparently pending
+                    // for another 30 seconds.
                     timeout_check_counter += 1;
+                    if timeout_check_counter % 10 == 0 {
+                        check_message_timeouts(&tick_state, tick_activity_origin).await;
+                    }
+                    // Every ~30s: slower discovery maintenance and retention.
                     if timeout_check_counter % 60 == 0 {
                         propagation::reconcile_active_auto_node(&tick_state).await;
                         propagation::probe_static_nodes_background(&tick_state).await;
-                        check_message_timeouts(&tick_state, tick_activity_origin).await;
                         sweep_stale_game_deliveries(&tick_state).await;
                         let cleanup_now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -5216,9 +5216,35 @@ fn lxmf_step_ends_delivery_timeout(step: &str) -> bool {
     )
 }
 
+fn update_message_delivery_timeout(state: &AppState, msg_id: &str, step: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    if let Ok(mut times) = state.message_send_times.lock() {
+        update_message_delivery_timeout_at(&mut times, msg_id, step, now);
+    }
+}
+
+fn update_message_delivery_timeout_at(
+    times: &mut std::collections::HashMap<String, f64>,
+    msg_id: &str,
+    step: &str,
+    now: f64,
+) {
+    if lxmf_step_starts_delivery_timeout(step) {
+        times.entry(msg_id.to_string()).or_insert(now);
+    } else if lxmf_step_ends_delivery_timeout(step) {
+        times.remove(msg_id);
+    }
+}
+
 #[cfg(test)]
 mod delivery_timeout_policy_tests {
-    use super::{lxmf_step_ends_delivery_timeout, lxmf_step_starts_delivery_timeout};
+    use super::{
+        lxmf_step_ends_delivery_timeout, lxmf_step_starts_delivery_timeout,
+        update_message_delivery_timeout_at,
+    };
 
     #[test]
     fn direct_link_setup_starts_the_bounded_delivery_clock() {
@@ -5245,6 +5271,28 @@ mod delivery_timeout_policy_tests {
         ] {
             assert!(lxmf_step_ends_delivery_timeout(step), "{step}");
         }
+    }
+
+    #[test]
+    fn progress_only_resource_transfer_owns_one_bounded_clock() {
+        let mut times = std::collections::HashMap::new();
+
+        update_message_delivery_timeout_at(
+            &mut times,
+            "resource-message",
+            "resource_advertised",
+            10.0,
+        );
+        update_message_delivery_timeout_at(
+            &mut times,
+            "resource-message",
+            "resource_transferring",
+            20.0,
+        );
+        assert_eq!(times.get("resource-message"), Some(&10.0));
+
+        update_message_delivery_timeout_at(&mut times, "resource-message", "delivered", 30.0);
+        assert!(!times.contains_key("resource-message"));
     }
 }
 

@@ -29,6 +29,12 @@ object RatspeakAndroidObservers {
         synchronized(lock) { activity.get() }?.onNativeUsbSelectorPermission(granted, errorCode)
     }
 
+    /** UI observation is optional; the exact native recorder remains the owner. */
+    fun voiceMemoAudioInterruption(sessionToken: String): Boolean {
+        val owner = synchronized(lock) { activity.get() } ?: return false
+        return owner.onNativeVoiceMemoAudioInterruption(sessionToken)
+    }
+
     fun saveStoredFile(
         privatePath: String,
         fileName: String,
