@@ -17,7 +17,7 @@ use crate::state::AppState;
 const VOICE_MEMO_START_UNAVAILABLE: &str = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
 const VOICE_MEMO_AUDIO_BUSY: &str =
     "Another app or call is using the microphone. End it, then try recording again.";
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 const VOICE_MEMO_PLAYBACK_UNAVAILABLE: &str =
     "Ratspeak couldn't play this voice message. Check the selected audio output, then try again.";
 
@@ -315,7 +315,7 @@ pub async fn voice_memo_playback_start(
     state: State<'_, Arc<AppState>>,
     args: VoiceMemoPlaybackStartArgs,
 ) -> AppResult<Value> {
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     {
         let data = match (args.data_base64, args.stored_name) {
             (Some(encoded), None) => {
@@ -367,7 +367,7 @@ pub async fn voice_memo_playback_start(
         return Ok(serde_json::to_value(started).unwrap_or_else(|_| json!({})));
     }
 
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         let _ = (state, args);
         Err(AppError::service_unavailable(
@@ -383,7 +383,7 @@ pub async fn voice_memo_playback_session_stop(
 ) -> AppResult<Value> {
     let lease_id = crate::voice_memo::parse_playback_lease_id(&args.lease_id)
         .ok_or_else(|| AppError::bad_request("Voice message playback lease is invalid"))?;
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     {
         let position_ms = crate::voice_memo::stop_native_playback(&state, lease_id)
             .await
@@ -396,7 +396,7 @@ pub async fn voice_memo_playback_session_stop(
         }));
     }
 
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         let _ = (state, lease_id);
         Ok(json!({ "ok": true, "released": false, "lease_id": args.lease_id }))

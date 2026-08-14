@@ -2363,7 +2363,10 @@ fn games_transport_uses_native_lxmf_fields_and_a_durable_outbox() {
     assert!(runtime.contains(".forget_incoming_nonce("));
     assert!(runtime.contains("fn game_delivery_state_is_in_flight(state: &str)"));
     assert!(runtime.contains("sweep_stale_game_deliveries(&tick_state).await"));
-    assert!(runtime.contains("update_game_session_delivery_state(\n                    &state,"));
+    let proof_completion =
+        rust_function_block(&runtime, "complete_authenticated_lxmf_delivery_proof");
+    assert!(proof_completion.contains(".lrgp_msg_to_session"));
+    assert!(proof_completion.contains("update_game_session_delivery_state("));
     assert!(state.contains("LrgpRouter::with_builtin_apps()"));
     assert!(!state.contains("register(Box::new(lrgp::apps::tictactoe"));
     for field in ["validation", "preferred_delivery", "ttl"] {
@@ -4376,6 +4379,9 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     .expect("android voice audio");
     assert!(voice_audio.contains("object RatspeakVoiceAudio"));
     assert!(voice_audio.contains("AudioAttributes.USAGE_VOICE_COMMUNICATION"));
+    assert!(voice_audio.contains("AudioAttributes.USAGE_MEDIA"));
+    assert!(voice_audio.contains("fun startVoiceMemoPlayback("));
+    assert!(voice_audio.contains("fun playbackHeadFrames(): Long"));
     assert!(voice_audio.contains("AudioAttributes.CONTENT_TYPE_SPEECH"));
     assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_FLOAT"));
     assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_16BIT"));
@@ -4873,7 +4879,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.26e");
+    assert_eq!(version_file.trim(), "1.0.26i");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -4959,7 +4965,7 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000034"#));
+    assert!(tauri_conf.contains(r#""versionCode": 1000038"#));
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
@@ -7004,6 +7010,40 @@ fn mobile_native_ownership_and_usb_recovery_remain_closed_and_single_flight() {
 }
 
 #[test]
+fn android_audio_initializes_process_context_before_cpal_access() {
+    let root = repo_root();
+    let runtime =
+        read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice runtime");
+    let runtime_manifest =
+        read_source(root.join("crates/ratspeak-runtime/Cargo.toml")).expect("runtime manifest");
+
+    assert!(runtime_manifest.contains("ndk-context = \"0.1.1\""));
+    assert!(runtime.contains("static ANDROID_AUDIO_CONTEXT: OnceLock<"));
+    assert!(runtime.contains("ndk_context::initialize_android_context("));
+    assert!(runtime.contains(".new_global_ref(application)"));
+
+    let call_start = runtime
+        .find("async fn start(\n        link_id: [u8; 16]")
+        .expect("call audio start");
+    let call_start = &runtime[call_start..];
+    assert!(
+        call_start.find("ensure_android_audio_context()?")
+            < call_start.find("let host = cpal::default_host()"),
+        "live calls must establish ndk-context before CPAL"
+    );
+
+    let memo_start = runtime
+        .find("pub(crate) fn start_microphone_capture(")
+        .expect("voice memo capture start");
+    let memo_start = &runtime[memo_start..];
+    assert!(
+        memo_start.find("ensure_android_audio_context()?")
+            < memo_start.find("let host = cpal::default_host()"),
+        "voice memos must establish ndk-context before CPAL"
+    );
+}
+
+#[test]
 fn mobile_memory_pressure_reaches_bounded_attachment_owners_without_webview_authority() {
     let root = repo_root();
     let native = read_source(root.join("src-tauri/src/mobile_native.rs")).expect("mobile native");
@@ -7556,6 +7596,10 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
         "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceMemoAudio.kt",
     ))
     .expect("android memo audio");
+    let android_voice_audio = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceAudio.kt",
+    ))
+    .expect("android voice output");
     let android_service =
         read_source(root.join(
             "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt",
@@ -7570,6 +7614,12 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     );
     assert!(voice.contains("pub(crate) fn start_microphone_capture"));
     assert!(voice.contains("MICROPHONE_CAPTURE_RETRY_DELAYS"));
+    assert!(memo.contains("RECORDING_STOP_DRAIN_TIMEOUT"));
+    assert!(memo.contains("drain_capture_on_stop("));
+    assert!(voice.contains("MICROPHONE_CONFIG_ATTEMPT_LIMIT"));
+    assert!(voice.contains("fn select_input_configs("));
+    assert!(voice.contains("android_microphone_candidate_sample_rates"));
+    assert!(voice.contains("ANDROID_MICROPHONE_NATIVE_SAMPLE_RATES"));
     assert!(voice.contains("host.input_devices()"));
     assert!(voice.contains("pub fn reserve_call_audio"));
     assert!(voice.contains("pub fn release_call_audio"));
@@ -7634,13 +7684,13 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(voice_memos.contains("cacheGeneration !== mediaCacheGeneration"));
     assert!(voice_memos.contains("var token = ++draftExpirySequence"));
     assert!(voice_memos.contains("leaseId = stoppingLease"));
-    assert!(voice_memos.contains("nativeIosPlaybackByLease[stoppingLease] = handle"));
+    assert!(voice_memos.contains("nativeMobilePlaybackByLease[stoppingLease] = handle"));
     assert!(voice_memos.contains("playbackAttemptIsCurrent(coordinator, audio)"));
     assert!(voice_memos.contains("handleAudioInterruption"));
     assert!(voice_memos.contains("RS.audioPlayback.ensure({ installUnlock: true })"));
     assert!(voice_memos.contains("RS.invoke('voice_memo_playback_start'"));
     assert!(voice_memos.contains("'voice_memo_playback_session_stop'"));
-    assert!(voice_memos.contains("return createNativeIosPlayback(item)"));
+    assert!(voice_memos.contains("return createNativeMobilePlayback(item)"));
     assert!(voice_memos.contains("return createMediaPlayback(item)"));
     assert!(voice_memos.contains("classes = ['is-recorded']"));
     assert!(voice_memos.contains("classes.push('is-live')"));
@@ -7669,6 +7719,11 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
             .contains("fun startForSession(context: Context, sessionToken: String): Int")
     );
     assert!(android_memo_audio.contains("START_BUSY"));
+    assert!(android_memo_audio.contains("fun startPlaybackForSession("));
+    assert!(android_memo_audio.contains("fun stopPlaybackForSession("));
+    assert!(android_memo_audio.contains("AudioAttributes.USAGE_MEDIA"));
+    assert!(android_voice_audio.contains("fun startVoiceMemoPlayback("));
+    assert!(android_voice_audio.contains("fun playbackHeadFrames(): Long"));
     assert!(
         android_memo_audio
             .contains("fun stopForSession(context: Context, sessionToken: String): Boolean")

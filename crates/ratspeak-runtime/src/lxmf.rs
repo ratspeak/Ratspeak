@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -44,6 +45,9 @@ const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
 const DIRECT_PATH_FAILURE_SUPPRESSION_SECS: f64 = 30.0;
 const DIRECT_BACKCHANNEL_IDENTIFY_GRACE: Duration = Duration::from_secs(3);
+type DirectInboundResourceAcceptHandler =
+    Arc<dyn Fn([u8; 16], &rns_protocol::resource_adv::ResourceAdvertisement) -> bool + Send + Sync>;
+type DirectInboundResourceConcludedHandler = Arc<dyn Fn([u8; 16], [u8; 32]) + Send + Sync>;
 // Wire tag for the original (v1) Ratspeak chat extension. Kept for inbound
 // decoding of messages from peers that haven't upgraded.
 pub const RATSPEAK_CHAT_CUSTOM_TYPE_V1: &[u8] = b"ratspeak.chat.v1";
@@ -902,6 +906,23 @@ struct PendingOpportunisticDelivery {
     retry_at: f64,
 }
 
+/// Ordered terminal notifications emitted by the responder-side Reticulum
+/// LinkManager. Production derives this compact stream from the manager's
+/// lossless accounting channel so proof, Resource conclusion and Link closure
+/// retain actor order without cloning completed Resource payloads.
+#[derive(Debug, Clone)]
+pub(crate) enum BackchannelLinkEvent {
+    PacketProof(rns_runtime::link_manager::LinkPacketProof),
+    ResourceConclusion {
+        link_id: [u8; 16],
+        resource_hash: [u8; 32],
+        conclusion: rns_runtime::link_manager::LinkResourceConclusion,
+    },
+    LinkClosed {
+        link_id: [u8; 16],
+    },
+}
+
 pub struct LxmfManager {
     pub identity: Identity,
     /// True when `identity` is backed by a hardware token (PIV). Gates features
@@ -930,13 +951,16 @@ pub struct LxmfManager {
     pub link_delivery: Option<lxmf_core::link_delivery::LinkDeliveryManager>,
     lxmf_link_command_tx: Option<mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>>,
     lxmf_direct_link_packet_tx: Option<mpsc::UnboundedSender<(Vec<u8>, [u8; 16])>>,
+    direct_inbound_resource_accept_handler: Option<DirectInboundResourceAcceptHandler>,
+    direct_inbound_resource_concluded_handler: Option<DirectInboundResourceConcludedHandler>,
     pending_direct_link_identifications: HashMap<[u8; 16], PendingDirectLinkIdentification>,
     lxmf_backchannel_command_rx: Option<mpsc::Receiver<BackchannelSendCommand>>,
     lxmf_link_identified_rx: Option<mpsc::Receiver<([u8; 16], [u8; 16])>>,
-    lxmf_link_closed_rx: Option<mpsc::Receiver<[u8; 16]>>,
-    lxmf_link_packet_proof_rx: Option<mpsc::Receiver<rns_runtime::link_manager::LinkPacketProof>>,
-    lxmf_link_resource_proof_rx:
-        Option<mpsc::Receiver<rns_runtime::link_manager::LinkResourceProof>>,
+    lxmf_backchannel_event_rx: Option<mpsc::UnboundedReceiver<BackchannelLinkEvent>>,
+    pending_backchannel_resource_cancellations:
+        std::collections::VecDeque<lxmf_core::link_delivery::BackchannelResourceCancelRequest>,
+    opportunistic_proof_tx:
+        Option<mpsc::UnboundedSender<rns_transport::link_messages::DestinationEvent>>,
     opportunistic_in_flight: HashMap<[u8; 32], PendingOpportunisticDelivery>,
     pub propagation_sync: Option<lxmf_core::propagation_sync::PropagationSyncTask>,
     pub propagation_client: Option<lxmf_core::propagation_client::PropagationClient>,
@@ -1293,12 +1317,14 @@ impl LxmfManager {
             link_delivery: None,
             lxmf_link_command_tx: None,
             lxmf_direct_link_packet_tx: None,
+            direct_inbound_resource_accept_handler: None,
+            direct_inbound_resource_concluded_handler: None,
             pending_direct_link_identifications: HashMap::new(),
             lxmf_backchannel_command_rx: None,
             lxmf_link_identified_rx: None,
-            lxmf_link_closed_rx: None,
-            lxmf_link_packet_proof_rx: None,
-            lxmf_link_resource_proof_rx: None,
+            lxmf_backchannel_event_rx: None,
+            pending_backchannel_resource_cancellations: std::collections::VecDeque::new(),
+            opportunistic_proof_tx: None,
             opportunistic_in_flight: HashMap::new(),
             propagation_sync: None,
             propagation_client: None,
@@ -1356,24 +1382,41 @@ impl LxmfManager {
         Ok((hash_hex, lxmf_hex))
     }
 
-    pub fn set_lxmf_link_control(
+    pub(crate) fn set_lxmf_link_control(
         &mut self,
         command_tx: mpsc::Sender<rns_runtime::link_manager::LinkManagerCommand>,
         direct_link_packet_tx: mpsc::UnboundedSender<(Vec<u8>, [u8; 16])>,
         identified_rx: mpsc::Receiver<([u8; 16], [u8; 16])>,
-        closed_rx: mpsc::Receiver<[u8; 16]>,
-        packet_proof_rx: mpsc::Receiver<rns_runtime::link_manager::LinkPacketProof>,
-        resource_proof_rx: mpsc::Receiver<rns_runtime::link_manager::LinkResourceProof>,
+        backchannel_event_rx: mpsc::UnboundedReceiver<BackchannelLinkEvent>,
     ) {
         self.lxmf_link_command_tx = Some(command_tx);
         self.lxmf_direct_link_packet_tx = Some(direct_link_packet_tx);
         self.lxmf_link_identified_rx = Some(identified_rx);
-        self.lxmf_link_closed_rx = Some(closed_rx);
-        self.lxmf_link_packet_proof_rx = Some(packet_proof_rx);
-        self.lxmf_link_resource_proof_rx = Some(resource_proof_rx);
+        self.lxmf_backchannel_event_rx = Some(backchannel_event_rx);
         self.lxmf_backchannel_command_rx = None;
         self.ensure_link_delivery_backchannel_sender();
         self.ensure_link_delivery_inbound_sender();
+        self.ensure_link_delivery_resource_handlers();
+    }
+
+    pub(crate) fn set_direct_inbound_resource_handlers<A, C>(&mut self, accept: A, concluded: C)
+    where
+        A: Fn([u8; 16], &rns_protocol::resource_adv::ResourceAdvertisement) -> bool
+            + Send
+            + Sync
+            + 'static,
+        C: Fn([u8; 16], [u8; 32]) + Send + Sync + 'static,
+    {
+        self.direct_inbound_resource_accept_handler = Some(Arc::new(accept));
+        self.direct_inbound_resource_concluded_handler = Some(Arc::new(concluded));
+        self.ensure_link_delivery_resource_handlers();
+    }
+
+    pub fn set_opportunistic_proof_sender(
+        &mut self,
+        proof_tx: mpsc::UnboundedSender<rns_transport::link_messages::DestinationEvent>,
+    ) {
+        self.opportunistic_proof_tx = Some(proof_tx);
     }
 
     pub fn note_pending_direct_backchannel(&mut self, dest_hash: [u8; 16], link_id: [u8; 16]) {
@@ -2477,6 +2520,11 @@ impl LxmfManager {
 
     pub fn set_delivery_limit_kb(&mut self, limit_kb: usize) {
         self.delivery_limit_kb = limit_kb as f64;
+        if let Some(ref mut link_delivery) = self.link_delivery {
+            link_delivery.set_inbound_resource_limit_bytes(
+                limit_kb.saturating_mul(1_000).min(MAX_LXMF_RESOURCE_BYTES),
+            );
+        }
         if let Some(client) = self.propagation_client.as_mut() {
             client.set_delivery_limit(self.delivery_limit_kb);
         }
@@ -2979,10 +3027,32 @@ impl LxmfManager {
         }
     }
 
+    fn ensure_link_delivery_resource_handlers(&mut self) {
+        let Some(link_delivery) = self.link_delivery.as_mut() else {
+            return;
+        };
+        if let Some(handler) = self.direct_inbound_resource_accept_handler.clone() {
+            link_delivery.set_inbound_resource_accept_handler(move |link_id, advertisement| {
+                handler(link_id, advertisement)
+            });
+        }
+        if let Some(handler) = self.direct_inbound_resource_concluded_handler.clone() {
+            link_delivery.set_inbound_resource_concluded_handler(move |link_id, resource_id| {
+                handler(link_id, resource_id);
+            });
+        }
+    }
+
     fn ensure_link_delivery_manager(&mut self) -> bool {
         if self.link_delivery.is_some() {
+            if let Some(ref mut link_delivery) = self.link_delivery {
+                link_delivery.set_inbound_resource_limit_bytes(
+                    ((self.delivery_limit_kb * 1_000.0) as usize).min(MAX_LXMF_RESOURCE_BYTES),
+                );
+            }
             self.ensure_link_delivery_backchannel_sender();
             self.ensure_link_delivery_inbound_sender();
+            self.ensure_link_delivery_resource_handlers();
             return true;
         }
 
@@ -2995,8 +3065,14 @@ impl LxmfManager {
             Some(self.identity.get_public_key()),
             self.identity.get_signing_key(),
         ));
+        if let Some(ref mut link_delivery) = self.link_delivery {
+            link_delivery.set_inbound_resource_limit_bytes(
+                ((self.delivery_limit_kb * 1_000.0) as usize).min(MAX_LXMF_RESOURCE_BYTES),
+            );
+        }
         self.ensure_link_delivery_backchannel_sender();
         self.ensure_link_delivery_inbound_sender();
+        self.ensure_link_delivery_resource_handlers();
         true
     }
 
@@ -3640,6 +3716,7 @@ impl LxmfManager {
             }
             self.drain_link_delivery_progress_updates();
         }
+        self.drain_core_backchannel_resource_cancellations();
 
         if let Some(ref mut ps) = self.propagation_sync {
             ps.drain_events(&self.known_identities);
@@ -3878,6 +3955,7 @@ impl LxmfManager {
         {
             cancelled = true;
         }
+        self.drain_core_backchannel_resource_cancellations();
         if self.router.cancel_outbound(&hash) {
             cancelled = true;
         }
@@ -4325,59 +4403,78 @@ impl LxmfManager {
             }
         }
 
-        if let Some(rx) = self.lxmf_link_closed_rx.as_mut() {
-            let mut closed = Vec::new();
-            while let Ok(link_id) = rx.try_recv() {
-                closed.push(link_id);
-            }
-            for link_id in closed {
-                self.pending_direct_link_identifications
-                    .retain(|_, pending| pending.link_id != link_id);
-                let closed_results = self
-                    .link_delivery
-                    .as_mut()
-                    .map(|ld| ld.fail_backchannel_link(link_id, "link closed"))
-                    .unwrap_or_default();
-                tracing::debug!(
-                    link_id = %crate::short_id(&hex::encode(link_id)),
-                    failed_deliveries = closed_results.len(),
-                    "LXMF inbound Link closed; removed core backchannel state"
-                );
-                for result in closed_results {
-                    self.handle_link_delivery_result(result, results);
-                }
+        let mut backchannel_events = Vec::new();
+        if let Some(rx) = self.lxmf_backchannel_event_rx.as_mut() {
+            while let Ok(event) = rx.try_recv() {
+                backchannel_events.push(event);
             }
         }
-
-        if let Some(rx) = self.lxmf_link_packet_proof_rx.as_mut() {
-            let mut proofs = Vec::new();
-            while let Ok(proof) = rx.try_recv() {
-                proofs.push(proof);
-            }
-            for proof in proofs {
-                if let Some(result) = self.link_delivery.as_mut().and_then(|ld| {
-                    ld.handle_backchannel_packet_proof(proof.link_id, proof.packet_hash)
-                }) {
-                    self.handle_link_delivery_result(result, results);
+        for event in backchannel_events {
+            match event {
+                BackchannelLinkEvent::PacketProof(proof) => {
+                    if let Some(result) = self.link_delivery.as_mut().and_then(|ld| {
+                        ld.handle_backchannel_packet_proof(proof.link_id, proof.packet_hash)
+                    }) {
+                        self.handle_link_delivery_result(result, results);
+                    }
                 }
-            }
-        }
-
-        if let Some(rx) = self.lxmf_link_resource_proof_rx.as_mut() {
-            let mut proofs = Vec::new();
-            while let Ok(proof) = rx.try_recv() {
-                proofs.push(proof);
-            }
-            for proof in proofs {
-                if let Some(result) = self.link_delivery.as_mut().and_then(|ld| {
-                    ld.handle_backchannel_resource_proof(proof.link_id, proof.resource_hash)
-                }) {
-                    self.handle_link_delivery_result(result, results);
+                BackchannelLinkEvent::ResourceConclusion {
+                    link_id,
+                    resource_hash,
+                    conclusion,
+                } => {
+                    let result = self.link_delivery.as_mut().and_then(|ld| match conclusion {
+                        rns_runtime::link_manager::LinkResourceConclusion::Complete => {
+                            ld.handle_backchannel_resource_proof(link_id, resource_hash)
+                        }
+                        rns_runtime::link_manager::LinkResourceConclusion::Rejected => ld
+                            .handle_backchannel_resource_conclusion(
+                                link_id,
+                                resource_hash,
+                                lxmf_core::link_delivery::BackchannelResourceConclusion::Rejected,
+                                "resource rejected",
+                            ),
+                        rns_runtime::link_manager::LinkResourceConclusion::Failed(reason) => ld
+                            .handle_backchannel_resource_conclusion(
+                                link_id,
+                                resource_hash,
+                                lxmf_core::link_delivery::BackchannelResourceConclusion::Failed,
+                                reason,
+                            ),
+                        rns_runtime::link_manager::LinkResourceConclusion::Cancelled => ld
+                            .handle_backchannel_resource_conclusion(
+                                link_id,
+                                resource_hash,
+                                lxmf_core::link_delivery::BackchannelResourceConclusion::Failed,
+                                "resource cancelled",
+                            ),
+                    });
+                    if let Some(result) = result {
+                        self.handle_link_delivery_result(result, results);
+                    }
+                }
+                BackchannelLinkEvent::LinkClosed { link_id } => {
+                    self.pending_direct_link_identifications
+                        .retain(|_, pending| pending.link_id != link_id);
+                    let closed_results = self
+                        .link_delivery
+                        .as_mut()
+                        .map(|ld| ld.fail_backchannel_link(link_id, "link closed"))
+                        .unwrap_or_default();
+                    tracing::debug!(
+                        link_id = %crate::short_id(&hex::encode(link_id)),
+                        failed_deliveries = closed_results.len(),
+                        "LXMF inbound Link closed; removed core backchannel state"
+                    );
+                    for result in closed_results {
+                        self.handle_link_delivery_result(result, results);
+                    }
                 }
             }
         }
 
         self.drain_core_backchannel_send_commands();
+        self.drain_core_backchannel_resource_cancellations();
         self.drain_link_delivery_progress_updates();
     }
 
@@ -4423,6 +4520,45 @@ impl LxmfManager {
                     let _ = command
                         .result_tx
                         .send(Err(BackchannelSendError::TransportUnavailable));
+                }
+            }
+        }
+    }
+
+    fn drain_core_backchannel_resource_cancellations(&mut self) {
+        if let Some(ref mut delivery) = self.link_delivery {
+            self.pending_backchannel_resource_cancellations
+                .extend(delivery.take_backchannel_resource_cancellations());
+        }
+
+        let Some(command_tx) = self.lxmf_link_command_tx.as_ref() else {
+            return;
+        };
+        while let Some(request) = self
+            .pending_backchannel_resource_cancellations
+            .front()
+            .copied()
+        {
+            match command_tx.try_reserve() {
+                Ok(permit) => {
+                    self.pending_backchannel_resource_cancellations.pop_front();
+                    permit.send(
+                        rns_runtime::link_manager::LinkManagerCommand::CancelLinkResource {
+                            link_id: request.link_id,
+                            resource_id: request.resource_hash,
+                            direction: rns_runtime::link_manager::LinkResourceDirection::Outbound,
+                            result_tx: None,
+                        },
+                    );
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => break,
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::warn!(
+                        pending = self.pending_backchannel_resource_cancellations.len(),
+                        "LXMF backchannel Resource cancellation channel closed"
+                    );
+                    self.pending_backchannel_resource_cancellations.clear();
+                    break;
                 }
             }
         }
@@ -4885,6 +5021,7 @@ impl LxmfManager {
             message.next_delivery_attempt = now + DELIVERY_RETRY_WAIT as f64;
 
             let dispatch_result = if let Some(hash) = msg_hash {
+                let opportunistic_proof_tx = self.opportunistic_proof_tx.clone();
                 // Receipt registration must precede packet dispatch, and both
                 // channel slots must be reserved before either message is
                 // visible. A fast proof can otherwise beat registration.
@@ -4902,14 +5039,30 @@ impl LxmfManager {
                             &raw,
                             rns_wire::flags::HeaderType::Header1,
                         );
-                        receipt_permit.send(TransportMessage::RegisterReceipt {
-                            truncated_hash,
-                            full_hash,
-                            destination_hash: dest_hash,
-                            destination_public_key,
-                            msg_id: hex::encode(hash),
-                            timeout: Some(std::time::Duration::from_secs(15)),
-                        });
+                        let msg_id = hex::encode(hash);
+                        if let Some(proof_tx) = opportunistic_proof_tx {
+                            receipt_permit.send(TransportMessage::RegisterReceiptWithProof {
+                                truncated_hash,
+                                full_hash,
+                                destination_hash: dest_hash,
+                                destination_public_key,
+                                msg_id,
+                                timeout: Some(std::time::Duration::from_secs(15)),
+                                proof_tx,
+                            });
+                        } else {
+                            // Non-runtime unit users can omit the dedicated
+                            // proof stream; production always installs it at
+                            // destination registration time.
+                            receipt_permit.send(TransportMessage::RegisterReceipt {
+                                truncated_hash,
+                                full_hash,
+                                destination_hash: dest_hash,
+                                destination_public_key,
+                                msg_id,
+                                timeout: Some(std::time::Duration::from_secs(15)),
+                            });
+                        }
                         outbound_permit.send(TransportMessage::Outbound(
                             rns_transport::messages::OutboundRequest {
                                 raw: Bytes::from(raw),
@@ -6230,19 +6383,8 @@ mod tests {
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
         let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
-        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
-        let (_packet_tx, packet_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
-        let (_resource_tx, resource_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(
-            command_tx,
-            direct_tx,
-            identified_rx,
-            closed_rx,
-            packet_rx,
-            resource_rx,
-        );
+        let (_backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
 
         let link_id = [0x11; 16];
         let identity_hash = [0x22; 16];
@@ -6272,19 +6414,8 @@ mod tests {
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
         let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
-        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
-        let (_packet_tx, packet_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
-        let (_resource_tx, resource_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(
-            command_tx,
-            direct_tx,
-            identified_rx,
-            closed_rx,
-            packet_rx,
-            resource_rx,
-        );
+        let (_backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
 
         let dest = [0x33; 16];
         let link_id = [0x44; 16];
@@ -6352,19 +6483,8 @@ mod tests {
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
         let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
-        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
-        let (_packet_tx, packet_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
-        let (_resource_tx, resource_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(
-            command_tx,
-            direct_tx,
-            identified_rx,
-            closed_rx,
-            packet_rx,
-            resource_rx,
-        );
+        let (_backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
 
         let dest = [0x34; 16];
         let dest_hex = hex::encode(dest);
@@ -6460,19 +6580,8 @@ mod tests {
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
         let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
-        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
-        let (_packet_tx, packet_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
-        let (_resource_tx, resource_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(
-            command_tx,
-            direct_tx,
-            identified_rx,
-            closed_rx,
-            packet_rx,
-            resource_rx,
-        );
+        let (_backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
 
         let identity_hash = [0x22; 16];
         let dest = Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity_hash));
@@ -6532,19 +6641,8 @@ mod tests {
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
         let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
-        let (closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
-        let (_packet_tx, packet_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
-        let (_resource_tx, resource_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(
-            command_tx,
-            direct_tx,
-            identified_rx,
-            closed_rx,
-            packet_rx,
-            resource_rx,
-        );
+        let (backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
 
         let dest = [0x35; 16];
         let link_id = [0x45; 16];
@@ -6561,7 +6659,9 @@ mod tests {
                 .is_some()
         );
 
-        closed_tx.try_send(link_id).unwrap();
+        backchannel_event_tx
+            .send(BackchannelLinkEvent::LinkClosed { link_id })
+            .unwrap();
         let mut results = Vec::new();
         mgr.drain_backchannel_events(&mut results);
 
@@ -6584,19 +6684,8 @@ mod tests {
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
         let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
-        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
-        let (_packet_tx, packet_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
-        let (_resource_tx, resource_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(
-            command_tx,
-            direct_tx,
-            identified_rx,
-            closed_rx,
-            packet_rx,
-            resource_rx,
-        );
+        let (_backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
 
         let dest = [0x36; 16];
         let link_id = [0x46; 16];
@@ -6663,7 +6752,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backchannel_packet_proof_marks_delivery_delivered() {
+    async fn ordered_backchannel_proof_before_receipt_and_close_marks_delivered() {
         let mut mgr = test_manager();
         let (transport_tx, _transport_rx) = mpsc::channel::<TransportMessage>(8);
         mgr.router.set_transport(transport_tx);
@@ -6671,18 +6760,8 @@ mod tests {
             mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
         let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
         let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
-        let (_closed_tx, closed_rx) = mpsc::channel::<[u8; 16]>(4);
-        let (packet_tx, packet_rx) = mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(4);
-        let (_resource_tx, resource_rx) =
-            mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(4);
-        mgr.set_lxmf_link_control(
-            command_tx,
-            direct_tx,
-            identified_rx,
-            closed_rx,
-            packet_rx,
-            resource_rx,
-        );
+        let (backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
 
         let dest = [0x55; 16];
         let link_id = [0x66; 16];
@@ -6709,40 +6788,40 @@ mod tests {
             .unwrap();
         mgr.drain_core_backchannel_send_commands();
         let command = command_rx.try_recv().expect("backchannel send command");
-        match command {
+        let result_tx = match command {
             rns_runtime::link_manager::LinkManagerCommand::SendLinkPayload {
                 result_tx: Some(result_tx),
                 ..
-            } => {
-                result_tx
-                    .send(Ok(
-                        rns_runtime::link_manager::LinkPayloadSendReceipt::Packet(
-                            rns_runtime::link_manager::LinkPacketSendReceipt {
-                                link_id,
-                                packet_hash,
-                            },
-                        ),
-                    ))
-                    .unwrap();
-            }
+            } => result_tx,
             _ => panic!("expected SendLinkPayload command with result channel"),
-        }
-        tokio::task::yield_now().await;
-        let mut receipt_results = Vec::new();
-        let delivery_results = mgr.link_delivery.as_mut().unwrap().tick();
-        for result in delivery_results {
-            mgr.handle_link_delivery_result(result, &mut receipt_results);
-        }
-        assert!(receipt_results.is_empty());
+        };
 
-        packet_tx
-            .try_send(rns_runtime::link_manager::LinkPacketProof {
-                link_id,
-                packet_hash,
-            })
+        // Reticulum can validate and publish the remote proof before this
+        // asynchronous adapter observes the local send receipt. Preserve that
+        // exact order so the production tick must reconcile both events.
+        backchannel_event_tx
+            .send(BackchannelLinkEvent::PacketProof(
+                rns_runtime::link_manager::LinkPacketProof {
+                    link_id,
+                    packet_hash,
+                },
+            ))
             .unwrap();
-        let mut results = Vec::new();
-        mgr.drain_backchannel_events(&mut results);
+        backchannel_event_tx
+            .send(BackchannelLinkEvent::LinkClosed { link_id })
+            .unwrap();
+        result_tx
+            .send(Ok(
+                rns_runtime::link_manager::LinkPayloadSendReceipt::Packet(
+                    rns_runtime::link_manager::LinkPacketSendReceipt {
+                        link_id,
+                        packet_hash,
+                    },
+                ),
+            ))
+            .unwrap();
+        tokio::task::yield_now().await;
+        let results = mgr.tick();
 
         assert_eq!(results, vec![(hex::encode(msg_hash), "delivered")]);
         let progress = mgr.take_delivery_progress_updates();
@@ -6754,7 +6833,180 @@ mod tests {
         assert_eq!(delivered.progress, Some(1.0));
         assert_eq!(delivered.representation, "packet");
         assert_eq!(mgr.link_delivery.as_ref().unwrap().pending_count(), 0);
+        assert!(
+            mgr.link_delivery
+                .as_ref()
+                .unwrap()
+                .backchannel_link_snapshot(dest)
+                .is_none(),
+            "later Link closure must retire reuse without overriding its earlier proof"
+        );
         assert!(!mgr.auto_live_fallback.contains(&msg_hash));
+    }
+
+    #[tokio::test]
+    async fn outbound_backchannel_resource_rejection_settles_exact_owner() {
+        let mut mgr = test_manager();
+        let (transport_tx, _transport_rx) = mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(transport_tx);
+        let (command_tx, mut command_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(4);
+        let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
+        let (backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
+
+        let dest = [0x81; 16];
+        let link_id = [0x82; 16];
+        let resource_hash = [0x83; 32];
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Resource rejection",
+            "rejected by receiver",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+        assert!(mgr.ensure_link_delivery_manager());
+        mgr.link_delivery
+            .as_mut()
+            .unwrap()
+            .register_backchannel(dest, link_id);
+        mgr.link_delivery
+            .as_mut()
+            .unwrap()
+            .start_backchannel_delivery(msg, dest)
+            .unwrap();
+        mgr.drain_core_backchannel_send_commands();
+
+        let result_tx = match command_rx.try_recv().expect("backchannel send command") {
+            rns_runtime::link_manager::LinkManagerCommand::SendLinkPayload {
+                result_tx: Some(result_tx),
+                ..
+            } => result_tx,
+            _ => panic!("expected SendLinkPayload command with result channel"),
+        };
+        result_tx
+            .send(Ok(
+                rns_runtime::link_manager::LinkPayloadSendReceipt::Resource(
+                    rns_runtime::link_manager::LinkResourceSendReceipt {
+                        link_id,
+                        resource_hash,
+                    },
+                ),
+            ))
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(mgr.tick().is_empty());
+
+        backchannel_event_tx
+            .send(BackchannelLinkEvent::ResourceConclusion {
+                link_id,
+                resource_hash,
+                conclusion: rns_runtime::link_manager::LinkResourceConclusion::Rejected,
+            })
+            .unwrap();
+        assert_eq!(mgr.tick(), vec![(hex::encode(msg_hash), "rejected")]);
+        assert_eq!(mgr.link_delivery.as_ref().unwrap().pending_count(), 0);
+        assert!(
+            mgr.link_delivery
+                .as_ref()
+                .unwrap()
+                .backchannel_link_snapshot(dest)
+                .is_some(),
+            "receiver rejection is message-terminal, not Link-terminal"
+        );
+    }
+
+    #[tokio::test]
+    async fn backchannel_resource_cancel_survives_command_backpressure() {
+        let mut mgr = test_manager();
+        let (transport_tx, _transport_rx) = mpsc::channel::<TransportMessage>(8);
+        mgr.router.set_transport(transport_tx);
+        let (command_tx, mut command_rx) =
+            mpsc::channel::<rns_runtime::link_manager::LinkManagerCommand>(1);
+        let command_fill_tx = command_tx.clone();
+        let (_identified_tx, identified_rx) = mpsc::channel::<([u8; 16], [u8; 16])>(4);
+        let (direct_tx, _direct_rx) = mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
+        let (_backchannel_event_tx, backchannel_event_rx) = mpsc::unbounded_channel();
+        mgr.set_lxmf_link_control(command_tx, direct_tx, identified_rx, backchannel_event_rx);
+
+        let dest = [0x91; 16];
+        let link_id = [0x92; 16];
+        let resource_hash = [0x93; 32];
+        let mut msg = LxMessage::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "Resource cancel",
+            "cancel exact transfer",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let msg_hash = msg.hash.unwrap();
+        assert!(mgr.ensure_link_delivery_manager());
+        mgr.link_delivery
+            .as_mut()
+            .unwrap()
+            .register_backchannel(dest, link_id);
+        mgr.link_delivery
+            .as_mut()
+            .unwrap()
+            .start_backchannel_delivery(msg, dest)
+            .unwrap();
+        mgr.drain_core_backchannel_send_commands();
+
+        let result_tx = match command_rx.try_recv().expect("backchannel send command") {
+            rns_runtime::link_manager::LinkManagerCommand::SendLinkPayload {
+                result_tx: Some(result_tx),
+                ..
+            } => result_tx,
+            _ => panic!("expected SendLinkPayload command with result channel"),
+        };
+        result_tx
+            .send(Ok(
+                rns_runtime::link_manager::LinkPayloadSendReceipt::Resource(
+                    rns_runtime::link_manager::LinkResourceSendReceipt {
+                        link_id,
+                        resource_hash,
+                    },
+                ),
+            ))
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(mgr.tick().is_empty());
+
+        command_fill_tx
+            .try_send(rns_runtime::link_manager::LinkManagerCommand::Announce)
+            .unwrap();
+        assert!(mgr.cancel_outbound_message(&hex::encode(msg_hash)));
+        assert_eq!(mgr.pending_backchannel_resource_cancellations.len(), 1);
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(rns_runtime::link_manager::LinkManagerCommand::Announce)
+        ));
+
+        let _ = mgr.tick();
+        match command_rx
+            .try_recv()
+            .expect("retained Resource cancellation")
+        {
+            rns_runtime::link_manager::LinkManagerCommand::CancelLinkResource {
+                link_id: cancelled_link,
+                resource_id,
+                direction,
+                ..
+            } => {
+                assert_eq!(cancelled_link, link_id);
+                assert_eq!(resource_id, resource_hash);
+                assert_eq!(
+                    direction,
+                    rns_runtime::link_manager::LinkResourceDirection::Outbound
+                );
+            }
+            _ => panic!("expected exact CancelLinkResource command"),
+        }
+        assert!(mgr.pending_backchannel_resource_cancellations.is_empty());
     }
 
     #[test]
@@ -8541,6 +8793,8 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
         mgr.router.set_transport(tx);
+        let (proof_tx, mut proof_rx) = tokio::sync::mpsc::unbounded_channel();
+        mgr.set_opportunistic_proof_sender(proof_tx);
 
         let mut message = mgr
             .create_message(&dest_hex, "needs stamp", "", DeliveryMethod::Opportunistic)
@@ -8571,10 +8825,25 @@ mod tests {
                 .any(|(id, state)| id == &msg_id && *state == "sent"),
             "tick should move deferred stamped messages into outbound processing"
         );
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(TransportMessage::RegisterReceipt { .. })
-        ));
+        let registered_proof_tx = match rx.try_recv() {
+            Ok(TransportMessage::RegisterReceiptWithProof { proof_tx, .. }) => proof_tx,
+            _ => panic!("expected receipt with dedicated proof owner"),
+        };
+        registered_proof_tx
+            .send(
+                rns_transport::link_messages::DestinationEvent::DeliveryProof {
+                    msg_id: msg_id.clone(),
+                    rtt: Some(Duration::from_millis(4)),
+                },
+            )
+            .unwrap();
+        match proof_rx.try_recv().unwrap() {
+            rns_transport::link_messages::DestinationEvent::DeliveryProof {
+                msg_id: proof_msg_id,
+                ..
+            } => assert_eq!(proof_msg_id, msg_id),
+            _ => panic!("expected dedicated Opportunistic delivery proof"),
+        }
         assert!(matches!(rx.try_recv(), Ok(TransportMessage::Outbound(_))));
         assert_eq!(mgr.opportunistic_in_flight.len(), 1);
         let hash: [u8; 32] = hex::decode(&msg_id).unwrap().try_into().unwrap();

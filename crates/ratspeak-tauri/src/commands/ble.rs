@@ -489,6 +489,61 @@ fn ble_retry_owns_connection(
         .is_some_and(|current| *current == generation)
 }
 
+#[cfg(any(feature = "ble", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BleIdentityResolutionDisposition {
+    Accepted,
+    Duplicate,
+    Disconnected,
+    Conflict,
+    Invalid,
+}
+
+#[cfg(any(feature = "ble", test))]
+fn begin_ble_connection_generation(
+    connected: &mut std::collections::HashSet<String>,
+    verified: &mut std::collections::HashSet<String>,
+    address_to_identity: &mut std::collections::HashMap<String, String>,
+    address: &str,
+) -> bool {
+    let fresh = connected.insert(address.to_string());
+    if fresh {
+        verified.remove(address);
+        address_to_identity.insert(address.to_string(), String::new());
+    }
+    fresh
+}
+
+#[cfg(any(feature = "ble", test))]
+fn accept_ble_identity_for_live_connection(
+    connected: &std::collections::HashSet<String>,
+    verified: &mut std::collections::HashSet<String>,
+    address_to_identity: &mut std::collections::HashMap<String, String>,
+    address: &str,
+    identity_hash: &str,
+) -> BleIdentityResolutionDisposition {
+    if !is_valid_identity_hash_hex(identity_hash) {
+        return BleIdentityResolutionDisposition::Invalid;
+    }
+    if !connected.contains(address) {
+        return BleIdentityResolutionDisposition::Disconnected;
+    }
+    if verified.contains(address) {
+        return if address_to_identity
+            .get(address)
+            .is_some_and(|current| current == identity_hash)
+        {
+            BleIdentityResolutionDisposition::Duplicate
+        } else {
+            BleIdentityResolutionDisposition::Conflict
+        };
+    }
+
+    address_to_identity.insert(address.to_string(), identity_hash.to_string());
+    verified.insert(address.to_string());
+    BleIdentityResolutionDisposition::Accepted
+}
+
 fn ble_peer_expires_at_for_duration(duration_secs: u64) -> u64 {
     if duration_secs == 0 {
         0
@@ -869,19 +924,27 @@ fn spawn_enable_ble_peer_task(
                                 }
                                 BlePeerEvent::Connected {
                                     address,
-                                    identity_hash,
+                                    identity_hash: _,
                                     protocol,
                                 } => {
-                                    connected_addresses.write().await.insert(address.clone());
-                                    verified_addresses.write().await.remove(&address);
-                                    connection_generations
-                                        .write()
-                                        .await
-                                        .insert(address.clone(), next_connection_generation);
-                                    next_connection_generation =
-                                        next_connection_generation.wrapping_add(1).max(1);
-                                    address_to_identity
-                                        .insert(address.clone(), identity_hash.clone());
+                                    let fresh_connection = {
+                                        let mut connected = connected_addresses.write().await;
+                                        let mut verified = verified_addresses.write().await;
+                                        begin_ble_connection_generation(
+                                            &mut connected,
+                                            &mut verified,
+                                            &mut address_to_identity,
+                                            &address,
+                                        )
+                                    };
+                                    if fresh_connection {
+                                        connection_generations
+                                            .write()
+                                            .await
+                                            .insert(address.clone(), next_connection_generation);
+                                        next_connection_generation =
+                                            next_connection_generation.wrapping_add(1).max(1);
+                                    }
                                     emit_logical_ble_peer_status(
                                         &state_relay,
                                         &address_to_identity,
@@ -890,14 +953,20 @@ fn spawn_enable_ble_peer_task(
                                         .get(&address)
                                         .cloned()
                                         .unwrap_or_default();
+                                    let resolved_identity_hash = address_to_identity
+                                        .get(&address)
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    let routable =
+                                        is_valid_identity_hash_hex(&resolved_identity_hash);
                                     state_relay.emit_to_all(
                                         "ble_peer_connected",
                                         json!({
                                             "address": address,
-                                            "identity_hash": identity_hash,
+                                            "identity_hash": resolved_identity_hash,
                                             "provisional_identity_hash": provisional_identity_hash,
-                                            "readiness": "connected",
-                                            "routable": false,
+                                            "readiness": if routable { "routable" } else { "connected" },
+                                            "routable": routable,
                                             "protocol": protocol,
                                         }),
                                     );
@@ -973,10 +1042,53 @@ fn spawn_enable_ble_peer_task(
                                     address,
                                     identity_hash,
                                 } => {
-                                    verified_addresses.write().await.insert(address.clone());
+                                    let resolution = {
+                                        let connected = connected_addresses.read().await;
+                                        let mut verified = verified_addresses.write().await;
+                                        accept_ble_identity_for_live_connection(
+                                            &connected,
+                                            &mut verified,
+                                            &mut address_to_identity,
+                                            &address,
+                                            &identity_hash,
+                                        )
+                                    };
+                                    match resolution {
+                                        BleIdentityResolutionDisposition::Accepted => {}
+                                        BleIdentityResolutionDisposition::Duplicate => {
+                                            tracing::trace!(
+                                                peer = %address,
+                                                identity = %identity_hash,
+                                                "Ignored duplicate BLE identity resolution for live connection"
+                                            );
+                                            continue;
+                                        }
+                                        BleIdentityResolutionDisposition::Disconnected => {
+                                            tracing::debug!(
+                                                peer = %address,
+                                                identity = %identity_hash,
+                                                "Ignored BLE identity resolution without a live connection lease"
+                                            );
+                                            continue;
+                                        }
+                                        BleIdentityResolutionDisposition::Conflict => {
+                                            tracing::warn!(
+                                                peer = %address,
+                                                identity = %identity_hash,
+                                                "Rejected conflicting BLE identity resolution for live connection"
+                                            );
+                                            continue;
+                                        }
+                                        BleIdentityResolutionDisposition::Invalid => {
+                                            tracing::warn!(
+                                                peer = %address,
+                                                identity = %identity_hash,
+                                                "Rejected malformed BLE identity resolution"
+                                            );
+                                            continue;
+                                        }
+                                    }
                                     // Disconnect path persists recent reconnect records from this map.
-                                    address_to_identity
-                                        .insert(address.clone(), identity_hash.clone());
                                     provisional_identity_by_address
                                         .insert(address.clone(), identity_hash.clone());
                                     emit_logical_ble_peer_status(
@@ -2636,6 +2748,130 @@ mod tests {
         assert!(ble_retry_owns_connection(&generations, address, 8));
         generations.remove(address);
         assert!(!ble_retry_owns_connection(&generations, address, 8));
+    }
+
+    #[test]
+    fn ble_identity_resolution_is_scoped_to_the_live_connection_generation() {
+        let address = "AA:BB:CC:DD:EE:FF";
+        let first_identity = "11111111111111111111111111111111";
+        let conflicting_identity = "22222222222222222222222222222222";
+        let mut connected = std::collections::HashSet::new();
+        let mut verified = std::collections::HashSet::from([address.to_string()]);
+        let mut identities = std::collections::HashMap::from([(
+            address.to_string(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        )]);
+
+        assert!(begin_ble_connection_generation(
+            &mut connected,
+            &mut verified,
+            &mut identities,
+            address,
+        ));
+        assert!(!verified.contains(address));
+        assert_eq!(identities.get(address).map(String::as_str), Some(""));
+        assert_eq!(
+            accept_ble_identity_for_live_connection(
+                &connected,
+                &mut verified,
+                &mut identities,
+                address,
+                first_identity,
+            ),
+            BleIdentityResolutionDisposition::Accepted
+        );
+
+        // Native central and peripheral callbacks can report Connected twice
+        // for the same still-live address. That is not a new generation and
+        // must not erase the verified announce that already won this one.
+        assert!(!begin_ble_connection_generation(
+            &mut connected,
+            &mut verified,
+            &mut identities,
+            address,
+        ));
+        assert!(verified.contains(address));
+        assert_eq!(
+            identities.get(address).map(String::as_str),
+            Some(first_identity)
+        );
+        assert_eq!(
+            accept_ble_identity_for_live_connection(
+                &connected,
+                &mut verified,
+                &mut identities,
+                address,
+                first_identity,
+            ),
+            BleIdentityResolutionDisposition::Duplicate
+        );
+        assert_eq!(
+            accept_ble_identity_for_live_connection(
+                &connected,
+                &mut verified,
+                &mut identities,
+                address,
+                conflicting_identity,
+            ),
+            BleIdentityResolutionDisposition::Conflict
+        );
+        assert_eq!(
+            identities.get(address).map(String::as_str),
+            Some(first_identity)
+        );
+
+        connected.remove(address);
+        verified.remove(address);
+        identities.remove(address);
+        assert_eq!(
+            accept_ble_identity_for_live_connection(
+                &connected,
+                &mut verified,
+                &mut identities,
+                address,
+                first_identity,
+            ),
+            BleIdentityResolutionDisposition::Disconnected
+        );
+
+        // A stable BLE address is deliberately re-armed after reconnect.
+        assert!(begin_ble_connection_generation(
+            &mut connected,
+            &mut verified,
+            &mut identities,
+            address,
+        ));
+        assert_eq!(
+            accept_ble_identity_for_live_connection(
+                &connected,
+                &mut verified,
+                &mut identities,
+                address,
+                first_identity,
+            ),
+            BleIdentityResolutionDisposition::Accepted
+        );
+    }
+
+    #[test]
+    fn ble_identity_resolution_rejects_malformed_destination_hashes() {
+        let address = "AA:BB:CC:DD:EE:FF";
+        let connected = std::collections::HashSet::from([address.to_string()]);
+        let mut verified = std::collections::HashSet::new();
+        let mut identities = std::collections::HashMap::new();
+
+        assert_eq!(
+            accept_ble_identity_for_live_connection(
+                &connected,
+                &mut verified,
+                &mut identities,
+                address,
+                "not-a-destination-hash",
+            ),
+            BleIdentityResolutionDisposition::Invalid
+        );
+        assert!(!verified.contains(address));
+        assert!(!identities.contains_key(address));
     }
 
     #[test]

@@ -25,6 +25,7 @@ var systemCommands = read('crates/ratspeak-tauri/src/commands/system.rs');
 var iosPlatform = read('crates/ratspeak-runtime/src/platform_ios.rs');
 var androidActivity = read('src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt');
 var androidMemoAudio = read('src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceMemoAudio.kt');
+var androidVoiceAudio = read('src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakVoiceAudio.kt');
 var androidService = read('src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt');
 var androidManifest = read('src-tauri/gen/android/app/src/main/AndroidManifest.xml');
 var iosInfo = read('src-tauri/Info.plist');
@@ -116,20 +117,20 @@ assert(voice.includes('cacheGeneration !== mediaCacheGeneration') &&
 assert(state.includes('RS.voiceMemos.releaseInactiveMedia(!!(payload && payload.critical))'),
     'critical native pressure must reach the active voice media owner');
 assert(voice.includes("RS.audioPlayback.ensure({ installUnlock: true })"),
-    'Android and desktop media playback must retain the shared audio unlock path');
+    'desktop media playback must retain the shared audio unlock path');
 assert(voice.includes("RS.invoke('voice_memo_playback_start'"),
-    'iOS playback must start native PCM output from the bounded LXVM source');
+    'mobile playback must start native PCM output from the bounded LXVM source');
 assert(voice.includes("RS.invoke('voice_memo_playback_session_stop'"),
-    'iOS playback must stop its exact native worker on pause, end, and handoff');
+    'mobile playback must stop its exact native worker on pause, end, and handoff');
 assert(voice.includes('leaseId = stoppingLease') &&
-    voice.includes('nativeIosPlaybackByLease[stoppingLease] = handle'),
+    voice.includes('nativeMobilePlaybackByLease[stoppingLease] = handle'),
     'a failed native stop must retain the exact lease for a later teardown retry');
-assert(voice.includes("if (typeof isIOS === 'function' && isIOS()) return createNativeIosPlayback(item);") &&
+assert(voice.includes('if (usesNativeVoiceMemoPlayback()) return createNativeMobilePlayback(item);') &&
     voice.includes('return createMediaPlayback(item);'),
-    'playback dispatch must use native iOS output without changing Android or desktop media output');
-assert(voice.includes('if (typeof isIOS === \'function\' && isIOS()) {') &&
+    'playback dispatch must use native mobile output without changing desktop media output');
+assert(voice.includes('if (usesNativeVoiceMemoPlayback()) {') &&
     voice.includes('var decode = decodeDraftOrStored(source).then'),
-    'only iOS may bypass WAV decoding while established Android and desktop paths retain it');
+    'mobile playback must bypass WAV expansion while desktop retains its media path');
 assert(voice.indexOf('stopAnyPlayback().then', voice.indexOf('function cancelForCall()')) <
     voice.indexOf("if (recorderState === 'idle')", voice.indexOf('function cancelForCall()')),
     'starting a call must stop memo playback even when the recorder is idle');
@@ -161,7 +162,7 @@ assert(runtime.includes('struct NativeVoiceMemoSource') &&
     'native playback must incrementally decode the bounded LXVM frame table');
 assert(runtime.includes('runtime.block_on(drive_native_playback(') &&
     runtime.includes('command_tx: mpsc::Sender<PlaybackCommand>'),
-    'non-Send iOS audio objects must remain inside their dedicated blocking worker');
+    'native mobile audio objects must remain inside their dedicated blocking worker');
 assert(capture.includes('MICROPHONE_CAPTURE_RETRY_DELAYS'));
 assert(capture.includes('host.input_devices()'),
     'capture startup must fall back from a stale CoreAudio default device');
@@ -170,7 +171,11 @@ assert(capture.includes('release_call_audio'));
 assert(capture.includes('VOICE_MEMO_OUTPUT_BUFFER_MS') &&
     capture.includes('FiniteAudioOutput::bounded(max_samples)') &&
     capture.includes('.try_lock()'),
-    'native memo output must use a fixed PCM ring without blocking its realtime callback');
+    'iOS native memo output must use a fixed PCM ring without blocking its realtime callback');
+assert(capture.includes('start_voice_memo_playback') &&
+    androidVoiceAudio.includes('startVoiceMemoPlayback') &&
+    androidVoiceAudio.includes('playbackHeadFrames'),
+    'Android native memo output must use the proven AudioTrack bridge and its playback clock');
 assert(runtime.includes('call_audio_reserved'));
 assert(runtime.includes('_platform_audio_session'));
 assert(commands.includes('VOICE_MEMO_START_UNAVAILABLE'));

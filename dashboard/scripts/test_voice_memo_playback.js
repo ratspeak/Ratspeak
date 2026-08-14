@@ -5,6 +5,10 @@ var assert = require('assert');
 var fs = require('fs');
 var path = require('path');
 var vm = require('vm');
+var childProcess = require('child_process');
+
+var androidScenario = process.argv.includes('--android');
+var platformName = androidScenario ? 'Android' : 'iOS';
 
 var root = path.join(__dirname, '..', '..');
 var source = fs.readFileSync(path.join(root, 'dashboard/static/js/voice_memos.js'), 'utf8');
@@ -89,7 +93,9 @@ var context = {
             return selector.indexOf('memo-test') !== -1 ? player : null;
         },
     },
-    navigator: { userAgent: 'iPhone', platform: 'iPhone', maxTouchPoints: 1 },
+    navigator: androidScenario
+        ? { userAgent: 'Android', platform: 'Linux armv8l', maxTouchPoints: 5 }
+        : { userAgent: 'iPhone', platform: 'iPhone', maxTouchPoints: 1 },
     Promise: Promise,
     Uint8Array: Uint8Array,
     Object: Object,
@@ -113,12 +119,13 @@ var context = {
     CustomEvent: function() {},
     CSS: { escape: function(value) { return value; } },
     escapeHtml: function(value) { return value; },
-    isIOS: function() { return true; },
+    isIOS: function() { return !androidScenario; },
+    isAndroid: function() { return androidScenario; },
     showToast: function(message) { toasts.push(message); },
     addEventListener: function() {},
     Audio: function() {
         mediaConstructs += 1;
-        throw new Error('iOS voice messages must not construct a WebView media element');
+        throw new Error('mobile voice messages must not construct a WebView media element');
     },
     RS: {
         config: { VOICE_PLAYBACK_START_TIMEOUT: 2000 },
@@ -184,7 +191,7 @@ async function runLatestTimeout() {
 }
 
 (async function() {
-    assert(nativeEvents, 'iOS must subscribe to exact native playback progress events');
+    assert(nativeEvents, platformName + ' must subscribe to exact native playback progress events');
     var html = context.RS.voiceMemos.renderAttachment({
         voice_memo_key: 'memo-test',
         voice_memo: { duration_ms: 4000, waveform: [30, 80, 120] },
@@ -205,12 +212,12 @@ async function runLatestTimeout() {
 
     clickHandler();
     await flush();
-    assert.equal(nativeStarts.length, 1, 'iOS must start one native playback worker');
+    assert.equal(nativeStarts.length, 1, platformName + ' must start one native playback worker');
     assert.equal(nativeStarts[0].data_base64, 'container');
     assert.equal(nativeStarts[0].position_ms, 0);
-    assert.equal(decodeCalls, 0, 'iOS must not expand LXVM into WAV/base64 IPC');
-    assert.equal(mediaConstructs, 0, 'iOS must not use WKWebView media output');
-    assert.equal(audioUnlockCalls, 0, 'native iOS output must not depend on Web Audio readiness');
+    assert.equal(decodeCalls, 0, platformName + ' must not expand LXVM into WAV/base64 IPC');
+    assert.equal(mediaConstructs, 0, platformName + ' must not use WebView media output');
+    assert.equal(audioUnlockCalls, 0, 'native mobile output must not depend on Web Audio readiness');
     assert.equal(player.dataset.playbackState, 'starting');
     assert.equal(playButton['aria-label'], 'Starting playback',
         'a successful start command must not claim playback before the audio clock advances');
@@ -305,7 +312,10 @@ async function runLatestTimeout() {
     assert(expiredHtml.includes('disabled'),
         'memory pressure must not prevent a retained outgoing draft from reaching its expiry');
 
-    console.log('Voice memo playback tests passed');
+    console.log(platformName + ' voice memo playback tests passed');
+    if (!androidScenario) {
+        childProcess.execFileSync(process.execPath, [__filename, '--android'], { stdio: 'inherit' });
+    }
 })().catch(function(error) {
     console.error(error);
     process.exitCode = 1;

@@ -168,6 +168,74 @@ fn inbound_resource_admission_bytes(
     Some(limit_bytes.max(rns_protocol::resource::MAX_EFFICIENT_SIZE + 1))
 }
 
+fn admit_inbound_lxmf_resource(
+    state: &Arc<AppState>,
+    link_id: [u8; 16],
+    advertisement: &rns_protocol::resource_adv::ResourceAdvertisement,
+) -> bool {
+    let limit = state.lxmf_delivery_limit_bytes();
+    if let Some(admission_bytes) = inbound_resource_admission_bytes(
+        advertisement.data_size,
+        advertisement.total_segments,
+        limit,
+    ) {
+        match state.admit_inbound_attachment_resource(
+            link_id,
+            advertisement.resource_hash,
+            advertisement.original_hash,
+            admission_bytes,
+        ) {
+            Ok(()) => return true,
+            Err(error) => {
+                let activity_origin = state.activity_request_fence();
+                let reason = match error {
+                    state::AttachmentTransferAdmissionError::MemoryPressure => {
+                        producer::LxmfInboundRejectionReason::AttachmentMemoryPressure
+                    }
+                    _ => producer::LxmfInboundRejectionReason::AttachmentBusy,
+                };
+                record_activity_if_current(state, activity_origin, || {
+                    Ok(producer::lxmf_inbound_rejected(
+                        producer::LxmfInboundRejected {
+                            link: producer::LinkId::new(link_id),
+                            encoded_bytes: advertisement.data_size as u64,
+                            max_message_bytes: limit as u64,
+                            reason,
+                        },
+                    ))
+                });
+                tracing::warn!(
+                    link = %short_id(&hex::encode(link_id)),
+                    encoded_bytes = advertisement.data_size,
+                    reason = ?error,
+                    "rejected inbound LXMF Resource for bounded memory admission"
+                );
+                return false;
+            }
+        }
+    }
+
+    let activity_origin = state.activity_request_fence();
+    record_activity_if_current(state, activity_origin, || {
+        Ok(producer::lxmf_inbound_rejected(
+            producer::LxmfInboundRejected {
+                link: producer::LinkId::new(link_id),
+                encoded_bytes: advertisement.data_size as u64,
+                max_message_bytes: limit as u64,
+                reason: producer::LxmfInboundRejectionReason::SizeLimit,
+            },
+        ))
+    });
+    tracing::warn!(
+        link = %short_id(&hex::encode(link_id)),
+        encoded_bytes = advertisement.data_size,
+        max_message_bytes = limit,
+        reason = "size_limit",
+        "rejected inbound LXMF Resource advertisement"
+    );
+    false
+}
+
 #[cfg(test)]
 mod lxmf_delivery_admission_tests {
     use super::*;
@@ -1526,9 +1594,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         );
                     }
                 }
+                let (opportunistic_proof_tx, opportunistic_proof_rx) =
+                    tokio::sync::mpsc::unbounded_channel();
                 if let Ok(mut lxmf) = state.lxmf.lock() {
                     if let Some(mgr) = lxmf.as_mut() {
                         mgr.delivery_tx = Some(delivery_tx);
+                        mgr.set_opportunistic_proof_sender(opportunistic_proof_tx);
                     }
                 }
 
@@ -1540,6 +1611,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     .read()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
+                tokio::spawn(handle_lxmf_delivery_proofs(
+                    state.clone(),
+                    opportunistic_proof_rx,
+                    dispatch_shutdown.clone(),
+                ));
                 tokio::spawn(async move {
                     loop {
                         let event = tokio::select! {
@@ -1908,72 +1984,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     lxmf_link_mgr
                         .set_resource_strategy(rns_runtime::prelude::ResourceStrategy::AcceptApp);
                     lxmf_link_mgr.set_resource_accept_handler(move |link_id, advertisement| {
-                        let limit = admission_state.lxmf_delivery_limit_bytes();
-                        if let Some(admission_bytes) = inbound_resource_admission_bytes(
-                            advertisement.data_size,
-                            advertisement.total_segments,
-                            limit,
-                        ) {
-                            match admission_state.admit_inbound_attachment_resource(
-                                link_id,
-                                advertisement.resource_hash,
-                                advertisement.original_hash,
-                                admission_bytes,
-                            ) {
-                                Ok(()) => return true,
-                                Err(error) => {
-                                    let activity_origin =
-                                        admission_state.activity_request_fence();
-                                    let reason = match error {
-                                        state::AttachmentTransferAdmissionError::MemoryPressure => {
-                                            producer::LxmfInboundRejectionReason::AttachmentMemoryPressure
-                                        }
-                                        _ => producer::LxmfInboundRejectionReason::AttachmentBusy,
-                                    };
-                                    record_activity_if_current(
-                                        &admission_state,
-                                        activity_origin,
-                                        || {
-                                            Ok(producer::lxmf_inbound_rejected(
-                                                producer::LxmfInboundRejected {
-                                                    link: producer::LinkId::new(link_id),
-                                                    encoded_bytes: advertisement.data_size as u64,
-                                                    max_message_bytes: limit as u64,
-                                                    reason,
-                                                },
-                                            ))
-                                        },
-                                    );
-                                    tracing::warn!(
-                                        link = %short_id(&hex::encode(link_id)),
-                                        encoded_bytes = advertisement.data_size,
-                                        reason = ?error,
-                                        "rejected inbound LXMF Resource for bounded memory admission"
-                                    );
-                                    return false;
-                                }
-                            }
-                        }
-
-                        let activity_origin = admission_state.activity_request_fence();
-                        record_activity_if_current(&admission_state, activity_origin, || {
-                            Ok(producer::lxmf_inbound_rejected(
-                                producer::LxmfInboundRejected {
-                                    link: producer::LinkId::new(link_id),
-                                    encoded_bytes: advertisement.data_size as u64,
-                                    max_message_bytes: limit as u64,
-                                    reason: producer::LxmfInboundRejectionReason::SizeLimit,
-                                },
-                            ))
-                        });
-                        tracing::warn!(
-                            link = %short_id(&hex::encode(link_id)),
-                            encoded_bytes = advertisement.data_size,
-                            max_message_bytes = limit,
-                            reason = "size_limit",
-                            "rejected inbound LXMF Resource advertisement"
-                        );
-                        false
+                        admit_inbound_lxmf_resource(&admission_state, link_id, advertisement)
                     });
                     let lxmf_link_identities = lxmf_link_mgr.link_identities_handle();
 
@@ -1992,35 +2003,37 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     );
                     let (link_identified_tx, link_identified_rx) =
                         tokio::sync::mpsc::channel::<([u8; 16], [u8; 16])>(CHANNEL_BUFFER_SIZE);
-                    let (link_closed_tx, link_closed_rx) =
-                        tokio::sync::mpsc::channel::<[u8; 16]>(CHANNEL_BUFFER_SIZE);
-                    let (link_packet_proof_tx, link_packet_proof_rx) =
-                        tokio::sync::mpsc::channel::<rns_runtime::link_manager::LinkPacketProof>(
-                            CHANNEL_BUFFER_SIZE,
-                        );
-                    let (link_resource_proof_tx, link_resource_proof_rx) =
-                        tokio::sync::mpsc::channel::<rns_runtime::link_manager::LinkResourceProof>(
-                            CHANNEL_BUFFER_SIZE,
-                        );
+                    let (backchannel_event_tx, backchannel_event_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<lxmf::BackchannelLinkEvent>();
                     lxmf_link_mgr.set_link_packet_channel(link_pkt_tx.clone());
                     // Use the single-owner accounting stream instead of also
                     // installing the legacy completion channel. Installing
                     // both would clone every completed Resource Vec.
                     lxmf_link_mgr.set_accounting_event_channel(link_accounting_tx);
                     lxmf_link_mgr.set_link_identified_channel(link_identified_tx);
-                    lxmf_link_mgr.set_link_closed_channel(link_closed_tx);
-                    lxmf_link_mgr.set_link_packet_proof_channel(link_packet_proof_tx);
-                    lxmf_link_mgr.set_outbound_resource_proof_channel(link_resource_proof_tx);
 
+                    let direct_admission_state = state.clone();
+                    let direct_conclusion_state = state.clone();
                     if let Ok(mut lxmf) = state.lxmf.lock() {
                         if let Some(mgr) = lxmf.as_mut() {
+                            mgr.set_direct_inbound_resource_handlers(
+                                move |link_id, advertisement| {
+                                    admit_inbound_lxmf_resource(
+                                        &direct_admission_state,
+                                        link_id,
+                                        advertisement,
+                                    )
+                                },
+                                move |_link_id, resource_id| {
+                                    direct_conclusion_state
+                                        .complete_inbound_attachment_resource(resource_id);
+                                },
+                            );
                             mgr.set_lxmf_link_control(
                                 link_command_tx,
                                 link_pkt_tx.clone(),
                                 link_identified_rx,
-                                link_closed_rx,
-                                link_packet_proof_rx,
-                                link_resource_proof_rx,
+                                backchannel_event_rx,
                             );
                         }
                     }
@@ -2046,6 +2059,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 },
                             };
                             match event {
+                                LinkManagerAccountingEvent::LinkPacketProof(proof) => {
+                                    let _ = backchannel_event_tx
+                                        .send(lxmf::BackchannelLinkEvent::PacketProof(proof));
+                                }
                                 LinkManagerAccountingEvent::ResourceCompletion(completion) => {
                                     accounting_state.complete_inbound_attachment_resource(
                                         completion.resource_hash,
@@ -2069,8 +2086,26 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                     accounting_state
                                         .complete_inbound_attachment_resource(resource_id);
                                 }
+                                LinkManagerAccountingEvent::ResourceEvent(
+                                    LinkResourceEvent::Concluded {
+                                        link_id,
+                                        resource_id,
+                                        direction: LinkResourceDirection::Outbound,
+                                        conclusion,
+                                    },
+                                ) => {
+                                    let _ = backchannel_event_tx.send(
+                                        lxmf::BackchannelLinkEvent::ResourceConclusion {
+                                            link_id,
+                                            resource_hash: resource_id,
+                                            conclusion,
+                                        },
+                                    );
+                                }
                                 LinkManagerAccountingEvent::LinkClosed { link_id } => {
                                     accounting_state.release_inbound_attachment_link(link_id);
+                                    let _ = backchannel_event_tx
+                                        .send(lxmf::BackchannelLinkEvent::LinkClosed { link_id });
                                 }
                                 _ => {}
                             }
@@ -3515,6 +3550,147 @@ async fn answer_lxmf_path_request(
     }
 }
 
+/// Handle authenticated Opportunistic proofs on their dedicated per-session
+/// channel. They bypass ordinary bounded destination ingress entirely, while
+/// sharing the same terminal completion path as legacy destination events.
+async fn handle_lxmf_delivery_proofs(
+    state: Arc<AppState>,
+    mut proof_rx: tokio::sync::mpsc::UnboundedReceiver<
+        rns_transport::link_messages::DestinationEvent,
+    >,
+    shutdown: rns_runtime::lifecycle::ShutdownSignal,
+) {
+    use rns_transport::link_messages::DestinationEvent;
+
+    loop {
+        let event = tokio::select! {
+            biased;
+            _ = shutdown.wait() => break,
+            event = proof_rx.recv() => match event {
+                Some(event) => event,
+                None => break,
+            },
+        };
+        let activity_origin = state.activity_request_fence();
+        if shutdown.is_triggered() {
+            break;
+        }
+        if let DestinationEvent::DeliveryProof { msg_id, rtt } = event {
+            complete_authenticated_lxmf_delivery_proof(&state, &msg_id, rtt, activity_origin).await;
+        } else {
+            tracing::warn!(
+                reason = "unexpected_event",
+                "ignored non-proof event on dedicated LXMF proof channel"
+            );
+        }
+    }
+}
+
+async fn complete_authenticated_lxmf_delivery_proof(
+    state: &Arc<AppState>,
+    msg_id: &str,
+    rtt: Option<Duration>,
+    activity_origin: ActivityRequestFence,
+) {
+    // Reticulum has already authenticated this proof. Rejoin it with the
+    // retained Opportunistic LXMF message so callbacks and ticket
+    // last-delivery accounting advance only on actual delivery.
+    let completed = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|mut lxmf| {
+            lxmf.as_mut()
+                .map(|manager| manager.complete_opportunistic_delivery(msg_id))
+        })
+        .unwrap_or(false);
+    if !completed {
+        tracing::debug!(
+            msg_id = %short_id(msg_id),
+            "ignored delivery proof without a matching in-flight Opportunistic message"
+        );
+        return;
+    }
+    let rtt_ms = rtt.map(|d| d.as_secs_f64() * 1000.0);
+    let msg_id_for_db = msg_id.to_string();
+    let identity_for_db = helpers::active_identity_id(state);
+    // One hop: flip the state and read the method back for the emit.
+    let (updated, method) = db::spawn_db(state.db.clone(), move |p| {
+        let updated =
+            db::update_message_state(&p, &msg_id_for_db, &identity_for_db, "delivered", rtt_ms);
+        let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
+        (updated, method)
+    })
+    .await
+    .expect("db task panicked");
+    if !updated {
+        tracing::debug!(
+            msg_id = %short_id(msg_id),
+            reason = "terminal_state_preserved",
+            "suppressed a late delivery proof state regression"
+        );
+        return;
+    }
+    if let Ok(mut times) = state.message_send_times.lock() {
+        times.remove(msg_id);
+    }
+    let client_msg_id = state
+        .msg_id_map
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(msg_id));
+    state.emit_to_all(
+        "lxmf_step",
+        json!({
+            "step": "delivered",
+            "msg_id": msg_id,
+            "client_msg_id": client_msg_id,
+            "rtt_ms": rtt_ms,
+            "method": method,
+        }),
+    );
+    tracing::info!(msg_id = %short_id(msg_id), rtt_ms = ?rtt_ms, "message delivery confirmed");
+    record_activity_if_current(state, activity_origin, || {
+        let message = producer::MessageId::from_hex(msg_id)?;
+        let method = method
+            .as_deref()
+            .and_then(producer::LxmfDeliveryMethod::from_code);
+        let rtt_ms = rtt_ms.map(|value| {
+            value
+                .round()
+                .clamp(0.0, u64::MAX as f64)
+                .min(u64::MAX as f64) as u64
+        });
+        Ok(producer::lxmf_delivery_state_changed(
+            producer::LxmfDeliveryStateChanged {
+                message,
+                state: producer::LxmfDeliveryState::Delivered,
+                method,
+                rtt_ms,
+                failure_reason: None,
+            },
+        ))
+    });
+    // Proofs do not necessarily reappear in the LXMF manager's polled state
+    // changes. Complete the originating game action here as well, so its UI
+    // cannot remain stuck on "Sending" after a valid proof.
+    let lrgp_meta = state
+        .lrgp_msg_to_session
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(msg_id));
+    if let Some(meta) = lrgp_meta {
+        update_game_session_delivery_state(
+            state,
+            &meta.session_id,
+            &meta.identity_id,
+            &meta.contact_hash,
+            "delivered",
+        )
+        .await;
+    }
+}
+
 /// Handle inbound LXMF messages delivered by the transport actor.
 async fn handle_inbound_lxmf(
     state: Arc<AppState>,
@@ -3540,114 +3716,8 @@ async fn handle_inbound_lxmf(
         if shutdown.is_triggered() {
             break;
         }
-        if let DestinationEvent::DeliveryProof {
-            ref msg_id,
-            ref rtt,
-        } = event
-        {
-            // Reticulum has already authenticated this proof. Rejoin it with
-            // the retained Opportunistic LXMF message so callbacks and ticket
-            // last-delivery accounting advance only on actual delivery.
-            let completed = state
-                .lxmf
-                .lock()
-                .ok()
-                .and_then(|mut lxmf| {
-                    lxmf.as_mut()
-                        .map(|manager| manager.complete_opportunistic_delivery(msg_id))
-                })
-                .unwrap_or(false);
-            if !completed {
-                tracing::debug!(
-                    msg_id = %short_id(msg_id),
-                    "ignored delivery proof without a matching in-flight Opportunistic message"
-                );
-                continue;
-            }
-            let rtt_ms = rtt.map(|d| d.as_secs_f64() * 1000.0);
-            let msg_id_for_db = msg_id.clone();
-            let identity_for_db = helpers::active_identity_id(&state);
-            // One hop: flip the state and read the method back for the emit.
-            let (updated, method) = db::spawn_db(state.db.clone(), move |p| {
-                let updated = db::update_message_state(
-                    &p,
-                    &msg_id_for_db,
-                    &identity_for_db,
-                    "delivered",
-                    rtt_ms,
-                );
-                let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
-                (updated, method)
-            })
-            .await
-            .expect("db task panicked");
-            if !updated {
-                tracing::debug!(
-                    msg_id = %short_id(msg_id),
-                    reason = "terminal_state_preserved",
-                    "suppressed a late delivery proof state regression"
-                );
-                continue;
-            }
-            if let Ok(mut times) = state.message_send_times.lock() {
-                times.remove(msg_id);
-            }
-            let client_msg_id = state
-                .msg_id_map
-                .lock()
-                .ok()
-                .and_then(|mut map| map.remove(msg_id));
-            state.emit_to_all(
-                "lxmf_step",
-                json!({
-                    "step": "delivered",
-                    "msg_id": msg_id,
-                    "client_msg_id": client_msg_id,
-                    "rtt_ms": rtt_ms,
-                    "method": method,
-                }),
-            );
-            tracing::info!(msg_id = %short_id(msg_id), rtt_ms = ?rtt_ms, "message delivery confirmed");
-            record_activity_if_current(&state, activity_origin, || {
-                let message = producer::MessageId::from_hex(msg_id)?;
-                let method = method
-                    .as_deref()
-                    .and_then(producer::LxmfDeliveryMethod::from_code);
-                let rtt_ms = rtt_ms.map(|value| {
-                    value
-                        .round()
-                        .clamp(0.0, u64::MAX as f64)
-                        .min(u64::MAX as f64) as u64
-                });
-                Ok(producer::lxmf_delivery_state_changed(
-                    producer::LxmfDeliveryStateChanged {
-                        message,
-                        state: producer::LxmfDeliveryState::Delivered,
-                        method,
-                        rtt_ms,
-                        failure_reason: None,
-                    },
-                ))
-            });
-            // Delivery proofs arrive on the destination event stream and do
-            // not necessarily reappear in the LXMF manager's polled state
-            // changes. Complete the originating game action here as well, so
-            // its UI cannot remain stuck on "Sending" after a valid proof.
-            let lrgp_meta = state
-                .lrgp_msg_to_session
-                .lock()
-                .ok()
-                .and_then(|mut map| map.remove(msg_id));
-            if let Some(meta) = lrgp_meta {
-                update_game_session_delivery_state(
-                    &state,
-                    &meta.session_id,
-                    &meta.identity_id,
-                    &meta.contact_hash,
-                    "delivered",
-                )
-                .await;
-            }
+        if let DestinationEvent::DeliveryProof { msg_id, rtt } = &event {
+            complete_authenticated_lxmf_delivery_proof(&state, msg_id, *rtt, activity_origin).await;
             continue;
         }
 
@@ -3873,6 +3943,22 @@ async fn inbound_source_blackholed(
     )
 }
 
+async fn enqueue_lxmf_delivery_proof(
+    transport_tx: &tokio::sync::mpsc::Sender<rns_transport::messages::TransportMessage>,
+    proof_raw: Vec<u8>,
+    destination_hash: [u8; 16],
+) -> bool {
+    transport_tx
+        .send(rns_transport::messages::TransportMessage::Outbound(
+            rns_transport::messages::OutboundRequest {
+                raw: Bytes::from(proof_raw),
+                destination_hash,
+            },
+        ))
+        .await
+        .is_ok()
+}
+
 /// Pre-decrypted inbound entry: `data` = [dest:16][src:16][sig:64][msgpack].
 async fn handle_decrypted_lxmf_from_origin(
     state: &Arc<AppState>,
@@ -4008,13 +4094,14 @@ async fn process_inbound_lxmf(
                 .ok()
                 .map(|(proof_hdr, _)| (proof_raw, tx, proof_hdr))
         }) {
-            let _ = tx.try_send(rns_transport::messages::TransportMessage::Outbound(
-                rns_transport::messages::OutboundRequest {
-                    raw: Bytes::from(proof_raw),
-                    destination_hash: proof_hdr.destination_hash,
-                },
-            ));
-            tracing::debug!("sent delivery proof for inbound message");
+            if enqueue_lxmf_delivery_proof(&tx, proof_raw, proof_hdr.destination_hash).await {
+                tracing::debug!("sent delivery proof for inbound message");
+            } else {
+                tracing::warn!(
+                    reason = "transport_closed",
+                    "could not enqueue delivery proof for inbound message"
+                );
+            }
         }
     }
 
@@ -6390,6 +6477,77 @@ mod inbound_pipeline_tests {
                 .iter()
                 .filter(|(event, _)| event == name)
                 .count()
+        }
+    }
+
+    #[tokio::test]
+    async fn dedicated_opportunistic_proof_bypasses_destination_ingress_backpressure() {
+        use rns_transport::link_messages::DestinationEvent;
+
+        let (state, emitter) = pipeline_state();
+        let (proof_tx, proof_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ordinary_tx, _ordinary_rx) = tokio::sync::mpsc::channel(1);
+        let shutdown = rns_runtime::lifecycle::ShutdownSignal::new();
+        ordinary_tx
+            .send(DestinationEvent::DeliveryProof {
+                msg_id: "11".repeat(32),
+                rtt: None,
+            })
+            .await
+            .unwrap();
+        let task = tokio::spawn(handle_lxmf_delivery_proofs(state, proof_rx, shutdown));
+        proof_tx
+            .send(DestinationEvent::DeliveryProof {
+                msg_id: "22".repeat(32),
+                rtt: Some(Duration::from_millis(5)),
+            })
+            .unwrap();
+        drop(proof_tx);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("dedicated proof handler must not wait on ordinary ingress")
+            .unwrap();
+        assert!(matches!(
+            ordinary_tx.try_send(DestinationEvent::DeliveryProof {
+                msg_id: "33".repeat(32),
+                rtt: None,
+            }),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ));
+        assert_eq!(emitter.count("lxmf_step"), 0);
+    }
+
+    #[tokio::test]
+    async fn receiver_delivery_proof_waits_for_transport_capacity() {
+        let (transport_tx, mut transport_rx) = tokio::sync::mpsc::channel(1);
+        transport_tx
+            .send(rns_transport::messages::TransportMessage::RequestPath {
+                destination_hash: [0x31; 16],
+            })
+            .await
+            .unwrap();
+        let proof_destination = [0x32; 16];
+        let enqueue_tx = transport_tx.clone();
+        let task = tokio::spawn(async move {
+            enqueue_lxmf_delivery_proof(&enqueue_tx, vec![0xAA; 64], proof_destination).await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "proof enqueue must wait instead of drop"
+        );
+
+        assert!(matches!(
+            transport_rx.recv().await,
+            Some(rns_transport::messages::TransportMessage::RequestPath { .. })
+        ));
+        assert!(task.await.unwrap());
+        match transport_rx.recv().await.unwrap() {
+            rns_transport::messages::TransportMessage::Outbound(request) => {
+                assert_eq!(request.destination_hash, proof_destination);
+                assert_eq!(request.raw.as_ref(), &[0xAA; 64]);
+            }
+            _ => panic!("expected retained delivery proof outbound"),
         }
     }
 

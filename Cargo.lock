@@ -4032,6 +4032,7 @@ dependencies = [
  "lxst-core",
  "lxst-rns",
  "lxst-telephony",
+ "ndk-context",
  "objc2 0.6.4",
  "r2d2",
  "r2d2_sqlite",

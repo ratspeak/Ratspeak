@@ -37,7 +37,7 @@
     var playbackCoordinator = null;
     var previewPlaybackState = 'idle';
     var pointerStartedRecording = false;
-    var nativeIosPlaybackByLease = Object.create(null);
+    var nativeMobilePlaybackByLease = Object.create(null);
     var START_FAILURE_MESSAGE = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
     var ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
     var ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
@@ -244,15 +244,19 @@
     function voiceCallOwnsAudio() {
         return typeof lxstVoiceState !== 'undefined' && !!(lxstVoiceState.active || lxstVoiceState.incoming);
     }
+    function usesNativeVoiceMemoPlayback() {
+        return (typeof isIOS === 'function' && isIOS()) ||
+            (typeof isAndroid === 'function' && isAndroid());
+    }
     function preparePlaybackInteraction() {
         if (voiceCallOwnsAudio()) {
             showToast('Finish the current call before playing a voice message.', 'toast-orange', 4200);
             return Promise.resolve(false);
         }
-        // iOS voice messages use the same native CPAL/RemoteIO output layer as
+        // Mobile voice messages use the same proven native speaker layer as
         // LXST calls. Web Audio readiness is neither required nor evidence
-        // that the hardware route is audible.
-        if (typeof isIOS === 'function' && isIOS()) return Promise.resolve(true);
+        // that the platform output clock is advancing.
+        if (usesNativeVoiceMemoPlayback()) return Promise.resolve(true);
         if (!window.RS || !RS.audioPlayback || typeof RS.audioPlayback.ensure !== 'function') {
             return Promise.resolve(true);
         }
@@ -498,7 +502,7 @@
     function ensureMediaUrl(item) {
         if (!item.url) {
             item.url = URL.createObjectURL(new Blob([item.wavBytes], { type: item.mime || 'audio/wav' }));
-            if (!(typeof isIOS === 'function' && isIOS())) item.wavBytes = null;
+            item.wavBytes = null;
         }
         return item.url;
     }
@@ -557,7 +561,7 @@
             return Promise.resolve(playbackByKey[key]);
         }
         if (playbackInFlightByKey[key]) return playbackInFlightByKey[key];
-        if (typeof isIOS === 'function' && isIOS()) {
+        if (usesNativeVoiceMemoPlayback()) {
             var nativeMetadata = source || {};
             var nativeItem = {
                 nativeSource: {
@@ -612,12 +616,12 @@
             },
         };
     }
-    function onNativeIosPlaybackEvent(data) {
+    function onNativeMobilePlaybackEvent(data) {
         var leaseId = String(data && (data.lease_id || data.session_id) || '');
-        var handle = leaseId && nativeIosPlaybackByLease[leaseId];
+        var handle = leaseId && nativeMobilePlaybackByLease[leaseId];
         if (handle && typeof handle._nativeUpdate === 'function') handle._nativeUpdate(data);
     }
-    function createNativeIosPlayback(item) {
+    function createNativeMobilePlayback(item) {
         var handle = createEventedPlaybackHandle();
         var source = item.nativeSource || {};
         var leaseId = '';
@@ -635,7 +639,7 @@
         function stopLease() {
             if (!leaseId) return Promise.resolve(true);
             var stoppingLease = leaseId;
-            delete nativeIosPlaybackByLease[stoppingLease];
+            delete nativeMobilePlaybackByLease[stoppingLease];
             leaseId = '';
             return RS.invoke('voice_memo_playback_session_stop', {
                 args: { lease_id: stoppingLease },
@@ -648,7 +652,7 @@
             }).catch(function(error) {
                 if (!leaseId) {
                     leaseId = stoppingLease;
-                    nativeIosPlaybackByLease[stoppingLease] = handle;
+                    nativeMobilePlaybackByLease[stoppingLease] = handle;
                 }
                 throw error;
             });
@@ -664,7 +668,7 @@
                 var startedLease = String(result && result.lease_id || '');
                 if (!startedLease) throw new Error('Native voice message playback did not return a lease');
                 leaseId = startedLease;
-                nativeIosPlaybackByLease[startedLease] = handle;
+                nativeMobilePlaybackByLease[startedLease] = handle;
                 positionMs = Math.max(0, Number(result.position_ms || positionMs));
                 if (Number(result.duration_ms) > 0) {
                     item.duration_ms = Number(result.duration_ms);
@@ -702,7 +706,7 @@
                 handle.paused = false;
                 handle._emit('timeupdate');
             } else if (data && data.state === 'ended') {
-                if (leaseId) delete nativeIosPlaybackByLease[leaseId];
+                if (leaseId) delete nativeMobilePlaybackByLease[leaseId];
                 leaseId = '';
                 desiredPlaying = false;
                 handle.paused = true;
@@ -710,7 +714,7 @@
                 handle._emit('timeupdate');
                 handle._emit('ended');
             } else if (data && data.state === 'error') {
-                if (leaseId) delete nativeIosPlaybackByLease[leaseId];
+                if (leaseId) delete nativeMobilePlaybackByLease[leaseId];
                 leaseId = '';
                 desiredPlaying = false;
                 handle.paused = true;
@@ -741,7 +745,7 @@
         return Promise.resolve(audio);
     }
     function createPlayback(item) {
-        if (typeof isIOS === 'function' && isIOS()) return createNativeIosPlayback(item);
+        if (usesNativeVoiceMemoPlayback()) return createNativeMobilePlayback(item);
         return createMediaPlayback(item);
     }
     function startPreviewAttempt(coordinator) {
@@ -1316,8 +1320,8 @@
             syncComposer();
         });
         RS.listen('voice_memo_recording', onRecordingEvent).catch(function() {});
-        if (typeof isIOS === 'function' && isIOS()) {
-            RS.listen('voice_memo_playback', onNativeIosPlaybackEvent).catch(function() {});
+        if (usesNativeVoiceMemoPlayback()) {
+            RS.listen('voice_memo_playback', onNativeMobilePlaybackEvent).catch(function() {});
         }
     }
 

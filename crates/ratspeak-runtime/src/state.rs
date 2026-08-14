@@ -530,12 +530,11 @@ pub struct AppState {
     #[cfg(feature = "lxst-voice")]
     pub(crate) voice_memo_recording_generation: AtomicU64,
     /// Process-monotonic source for exact native voice-message playback IDs.
-    #[cfg(all(feature = "lxst-voice", target_os = "ios"))]
+    #[cfg(all(feature = "lxst-voice", any(target_os = "ios", target_os = "android")))]
     pub(crate) voice_memo_playback_generation: AtomicU64,
-    /// iOS owns voice-message output in the same native CPAL/RemoteIO layer as
-    /// LXST calls. Other platforms retain their existing media backend until
-    /// an equivalent native implementation is proven on that platform.
-    #[cfg(all(feature = "lxst-voice", target_os = "ios"))]
+    /// Mobile voice-message output shares each platform's proven native LXST
+    /// speaker layer. Desktop platforms retain the bounded WAV/media backend.
+    #[cfg(all(feature = "lxst-voice", any(target_os = "ios", target_os = "android")))]
     pub voice_memo_playback: Mutex<Option<crate::voice_memo::VoiceMemoPlaybackHandle>>,
     /// Decoding a maximum-length memo produces roughly 14 MiB of PCM. Keep one
     /// native decoder active at a time so concurrent WebView requests cannot
@@ -793,9 +792,9 @@ impl AppState {
             voice_memo_control_lock: tokio::sync::Mutex::new(()),
             #[cfg(feature = "lxst-voice")]
             voice_memo_recording_generation: AtomicU64::new(0),
-            #[cfg(all(feature = "lxst-voice", target_os = "ios"))]
+            #[cfg(all(feature = "lxst-voice", any(target_os = "ios", target_os = "android")))]
             voice_memo_playback_generation: AtomicU64::new(0),
-            #[cfg(all(feature = "lxst-voice", target_os = "ios"))]
+            #[cfg(all(feature = "lxst-voice", any(target_os = "ios", target_os = "android")))]
             voice_memo_playback: Mutex::new(None),
             #[cfg(feature = "lxst-voice")]
             voice_memo_decode_lock: tokio::sync::Mutex::new(()),

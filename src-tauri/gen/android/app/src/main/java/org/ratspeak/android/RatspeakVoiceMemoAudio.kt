@@ -21,12 +21,13 @@ object RatspeakVoiceMemoAudio {
     private var focusListener: AudioManager.OnAudioFocusChangeListener? = null
     private var focusRequest: AudioFocusRequest? = null
     @Volatile private var ownerToken: String? = null
+    @Volatile private var playbackOwnerToken: String? = null
     private var previousMode = AudioManager.MODE_NORMAL
     private var cleanupRetryToken: String? = null
     private var cleanupRetryAttempt = 0
 
     @JvmStatic
-    fun isActive(): Boolean = ownerToken != null
+    fun isActive(): Boolean = ownerToken != null || playbackOwnerToken != null
 
     @JvmStatic
     fun isSessionActive(sessionToken: String): Boolean = ownerToken == sessionToken
@@ -53,7 +54,7 @@ object RatspeakVoiceMemoAudio {
             return fail("invalid_session", START_PLATFORM_UNAVAILABLE)
         }
         if (ownerToken == sessionToken) return START_OK
-        if (ownerToken != null || RatspeakCallAudio.isActive()) {
+        if (ownerToken != null || playbackOwnerToken != null || RatspeakCallAudio.isActive()) {
             return fail("audio_owner_busy", START_BUSY)
         }
 
@@ -112,6 +113,46 @@ object RatspeakVoiceMemoAudio {
         true
     }
 
+    /** Acquire an exact media-output lease without promoting microphone capture. */
+    @JvmStatic
+    fun startPlaybackForSession(context: Context, sessionToken: String): Int = synchronized(lock) {
+        if (!RatspeakMobilePolicy.validCallSessionToken(sessionToken)) {
+            return fail("invalid_playback_session", START_PLATFORM_UNAVAILABLE)
+        }
+        if (playbackOwnerToken == sessionToken) return START_OK
+        if (ownerToken != null || playbackOwnerToken != null || RatspeakCallAudio.isActive()) {
+            return fail("audio_owner_busy", START_BUSY)
+        }
+
+        val application = context.applicationContext
+        val manager = application.getSystemService(AudioManager::class.java)
+            ?: return fail("audio_manager", START_PLATFORM_UNAVAILABLE)
+        previousMode = manager.mode
+        if (!requestPlaybackFocus(manager, application, sessionToken)) {
+            return fail("playback_audio_focus", START_BUSY)
+        }
+        try {
+            manager.mode = AudioManager.MODE_NORMAL
+        } catch (_: Throwable) {
+            releaseAudio(manager)
+            return fail("playback_mode", START_PLATFORM_UNAVAILABLE)
+        }
+        playbackOwnerToken = sessionToken
+        lastStartFailure = ""
+        START_OK
+    }
+
+    @JvmStatic
+    fun stopPlaybackForSession(context: Context, sessionToken: String): Boolean = synchronized(lock) {
+        if (!RatspeakMobilePolicy.validCallSessionToken(sessionToken) ||
+            playbackOwnerToken != sessionToken
+        ) {
+            return false
+        }
+        finishPlaybackStop(context.applicationContext, sessionToken)
+        true
+    }
+
     private fun requestFocus(manager: AudioManager, context: Context, sessionToken: String): Boolean {
         lateinit var listener: AudioManager.OnAudioFocusChangeListener
         listener = AudioManager.OnAudioFocusChangeListener { change ->
@@ -156,6 +197,52 @@ object RatspeakVoiceMemoAudio {
         return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
     }
 
+    private fun requestPlaybackFocus(
+        manager: AudioManager,
+        context: Context,
+        sessionToken: String,
+    ): Boolean {
+        lateinit var listener: AudioManager.OnAudioFocusChangeListener
+        listener = AudioManager.OnAudioFocusChangeListener { change ->
+            if (change != AudioManager.AUDIOFOCUS_LOSS &&
+                change != AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+            ) return@OnAudioFocusChangeListener
+            handler.post { handlePlaybackFocusLoss(context, sessionToken, listener) }
+        }
+        val result = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(attributes)
+                    .setOnAudioFocusChangeListener(listener, handler)
+                    .build()
+                val focusResult = manager.requestAudioFocus(request)
+                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    focusListener = listener
+                    focusRequest = request
+                }
+                focusResult
+            } else {
+                @Suppress("DEPRECATION")
+                val focusResult = manager.requestAudioFocus(
+                    listener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT,
+                )
+                if (focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    focusListener = listener
+                }
+                focusResult
+            }
+        } catch (_: Throwable) {
+            AudioManager.AUDIOFOCUS_REQUEST_FAILED
+        }
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
     private fun handleFocusLoss(
         context: Context,
         sessionToken: String,
@@ -178,11 +265,28 @@ object RatspeakVoiceMemoAudio {
         }
     }
 
+    private fun handlePlaybackFocusLoss(
+        context: Context,
+        sessionToken: String,
+        listener: AudioManager.OnAudioFocusChangeListener,
+    ) = synchronized(lock) {
+        if (playbackOwnerToken != sessionToken || focusListener !== listener) return@synchronized
+        Log.w(TAG, "playback_interrupted code=focus_loss")
+        RatspeakVoiceAudio.stop()
+        finishPlaybackStop(context.applicationContext, sessionToken)
+    }
+
     private fun finishStop(context: Context, sessionToken: String) {
         if (ownerToken != sessionToken) return
         ownerToken = null
         cleanupRetryToken = null
         cleanupRetryAttempt = 0
+        context.getSystemService(AudioManager::class.java)?.let(::releaseAudio)
+    }
+
+    private fun finishPlaybackStop(context: Context, sessionToken: String) {
+        if (playbackOwnerToken != sessionToken) return
+        playbackOwnerToken = null
         context.getSystemService(AudioManager::class.java)?.let(::releaseAudio)
     }
 

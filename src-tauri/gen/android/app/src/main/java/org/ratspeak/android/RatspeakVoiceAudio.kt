@@ -19,12 +19,29 @@ object RatspeakVoiceAudio {
     private var trackSampleRate = 0
     private var trackChannels = 0
     private var trackEncoding = AudioFormat.ENCODING_INVALID
+    private var trackUsage = AudioAttributes.USAGE_UNKNOWN
     private var trackStarted = false
+    private var lastPlaybackHeadFrames = 0L
     private var pcm16Scratch = ShortArray(0)
     private var lastError = ""
 
     @JvmStatic
+    fun isActive(): Boolean = synchronized(lock) {
+        track?.state == AudioTrack.STATE_INITIALIZED
+    }
+
+    @JvmStatic
     fun start(sampleRate: Int, channels: Int): Boolean {
+        return startWithUsage(sampleRate, channels, AudioAttributes.USAGE_VOICE_COMMUNICATION)
+    }
+
+    /** Finite voice-message playback uses the media route, not the call route. */
+    @JvmStatic
+    fun startVoiceMemoPlayback(sampleRate: Int, channels: Int): Boolean {
+        return startWithUsage(sampleRate, channels, AudioAttributes.USAGE_MEDIA)
+    }
+
+    private fun startWithUsage(sampleRate: Int, channels: Int, usage: Int): Boolean {
         val safeSampleRate = sampleRate.coerceIn(8_000, 48_000)
         val safeChannels = channels.coerceIn(1, 2)
         synchronized(lock) {
@@ -33,7 +50,8 @@ object RatspeakVoiceAudio {
                 existing != null &&
                 existing.state == AudioTrack.STATE_INITIALIZED &&
                 trackSampleRate == safeSampleRate &&
-                trackChannels == safeChannels
+                trackChannels == safeChannels &&
+                trackUsage == usage
             ) {
                 return try {
                     if (trackStarted && existing.playState != AudioTrack.PLAYSTATE_PLAYING) {
@@ -56,7 +74,14 @@ object RatspeakVoiceAudio {
             }
             val errors = ArrayList<String>(2)
             for (encoding in intArrayOf(AudioFormat.ENCODING_PCM_FLOAT, AudioFormat.ENCODING_PCM_16BIT)) {
-                val created = createTrack(safeSampleRate, safeChannels, channelMask, encoding, errors)
+                val created = createTrack(
+                    safeSampleRate,
+                    safeChannels,
+                    channelMask,
+                    encoding,
+                    usage,
+                    errors,
+                )
                     ?: continue
                 try {
                     created.setVolume(AudioTrack.getMaxVolume())
@@ -65,7 +90,9 @@ object RatspeakVoiceAudio {
                     trackSampleRate = safeSampleRate
                     trackChannels = safeChannels
                     trackEncoding = encoding
+                    trackUsage = usage
                     trackStarted = false
+                    lastPlaybackHeadFrames = 0L
                     lastError = ""
                     return true
                 } catch (e: Throwable) {
@@ -75,6 +102,7 @@ object RatspeakVoiceAudio {
                     trackSampleRate = 0
                     trackChannels = 0
                     trackEncoding = AudioFormat.ENCODING_INVALID
+                    trackUsage = AudioAttributes.USAGE_UNKNOWN
                     trackStarted = false
                 }
             }
@@ -122,11 +150,23 @@ object RatspeakVoiceAudio {
         }
     }
 
+    /** Unsigned AudioTrack playback-head frames, bounded well below wrap for a memo. */
+    @JvmStatic
+    fun playbackHeadFrames(): Long = synchronized(lock) {
+        val active = track ?: return@synchronized lastPlaybackHeadFrames
+        try {
+            active.playbackHeadPosition.toLong() and 0xffff_ffffL
+        } catch (_: Throwable) {
+            lastPlaybackHeadFrames
+        }
+    }
+
     private fun createTrack(
         sampleRate: Int,
         channels: Int,
         channelMask: Int,
         encoding: Int,
+        usage: Int,
         errors: MutableList<String>
     ): AudioTrack? {
         val minBuffer = try {
@@ -151,7 +191,7 @@ object RatspeakVoiceAudio {
         )
         targetBufferBytes -= targetBufferBytes % frameBytes
         val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setUsage(usage)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         val format = AudioFormat.Builder()
@@ -209,10 +249,16 @@ object RatspeakVoiceAudio {
 
     private fun stopLocked() {
         val current = track ?: return
+        lastPlaybackHeadFrames = try {
+            current.playbackHeadPosition.toLong() and 0xffff_ffffL
+        } catch (_: Throwable) {
+            lastPlaybackHeadFrames
+        }
         track = null
         trackSampleRate = 0
         trackChannels = 0
         trackEncoding = AudioFormat.ENCODING_INVALID
+        trackUsage = AudioAttributes.USAGE_UNKNOWN
         trackStarted = false
         try { current.pause() } catch (_: Throwable) {}
         try { current.flush() } catch (_: Throwable) {}
