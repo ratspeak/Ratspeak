@@ -224,6 +224,7 @@ pub async fn api_set_foreground(
 /// running WebView JavaScript event loop.
 pub async fn apply_foreground_state(state: Arc<AppState>, fg: bool) -> AppResult<Value> {
     let transition = state.begin_foreground_transition();
+    state.set_notification_foreground(fg);
     apply_foreground_transition(state, fg, transition).await
 }
 
@@ -267,6 +268,7 @@ pub fn set_foreground_state_if_current(state: &Arc<AppState>, fg: bool, transiti
     if !state.is_current_foreground_transition(transition) {
         return false;
     }
+    state.set_notification_foreground(fg);
     let was = state
         .is_foreground
         .swap(fg, std::sync::atomic::Ordering::Relaxed);

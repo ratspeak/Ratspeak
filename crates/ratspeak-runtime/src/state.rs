@@ -588,6 +588,10 @@ pub struct AppState {
     pub lrgp_msg_to_session: Mutex<HashMap<String, LrgpMsgMeta>>,
     pub session_shutdown: RwLock<ShutdownSignal>,
     pub is_foreground: Arc<AtomicBool>,
+    /// Immediate platform visibility used only for user-attention policy.
+    /// Transport foreground transitions may await lifecycle housekeeping, but
+    /// native notification decisions must follow the platform edge at once.
+    notification_foreground: AtomicBool,
     /// Monotonic ticket used to discard a stale asynchronous foreground
     /// transition after a newer background/foreground edge has arrived.
     foreground_transition_generation: AtomicU64,
@@ -827,6 +831,7 @@ impl AppState {
             lrgp_msg_to_session: Mutex::new(HashMap::new()),
             session_shutdown: RwLock::new(ShutdownSignal::new()),
             is_foreground: Arc::new(AtomicBool::new(true)),
+            notification_foreground: AtomicBool::new(true),
             foreground_transition_generation: AtomicU64::new(0),
             network_transition_generation: AtomicU64::new(0),
             network_transition_lock: tokio::sync::Mutex::new(()),
@@ -939,6 +944,15 @@ impl AppState {
 
     pub fn native_notifications_enabled(&self) -> bool {
         self.native_notifications_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_notification_foreground(&self, foreground: bool) {
+        self.notification_foreground
+            .store(foreground, Ordering::Release);
+    }
+
+    pub fn should_surface_native_notification(&self) -> bool {
+        !self.notification_foreground.load(Ordering::Acquire) && self.native_notifications_enabled()
     }
 
     pub fn install_mobile_platform_bridge(&self, bridge: Arc<dyn MobilePlatformBridge>) {
@@ -2417,7 +2431,10 @@ impl AppState {
     }
 
     pub fn emit_native_notification(&self, notification: NativeNotification) {
-        if self.native_notifications_enabled() {
+        // This is the final notification ownership boundary. Callers may do
+        // asynchronous work after their initial lifecycle check, so recheck
+        // here to prevent a foreground transition from racing an OS alert.
+        if self.should_surface_native_notification() {
             self.notifier.notify(notification);
         }
     }

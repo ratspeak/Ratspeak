@@ -55,7 +55,7 @@ context.RS = context.window.RS;
 vm.runInNewContext(source, context, { filename: 'legal_documents.js' });
 
 const legal = context.window.RS.legal;
-assert.strictEqual(legal.version, '2026-08-11');
+assert.strictEqual(legal.version, '2026-08-15');
 assert.strictEqual(
     Array.from(Object.keys(legal.documents)).join(','),
     'privacy,terms,guidelines,support'
@@ -74,6 +74,7 @@ assert(builtSheet.body.children[0].innerHTML.includes('Ratspeak does not current
 assert(builtSheet.body.children[0].innerHTML.includes('Vercel Web Analytics'));
 assert(builtSheet.body.children[0].innerHTML.includes('is not linked to your Ratspeak identity'));
 assert(builtSheet.body.children[0].innerHTML.includes('connecting IP address'));
+assert(builtSheet.body.children[0].innerHTML.includes('Age eligibility'));
 
 const article = builtSheet.body.children[0];
 article.listeners.click({
@@ -89,6 +90,9 @@ article.listeners.click({
 });
 assert.strictEqual(builtSheet.sheet.attributes['aria-label'], 'Community Guidelines');
 assert(article.innerHTML.includes('Open networks still need human boundaries.'));
+assert(article.innerHTML.includes('Violence and targeted harm'));
+assert(article.innerHTML.includes('Abuse and exploitation'));
+assert(!article.innerHTML.includes('Child sexual abuse and exploitation'));
 assert.strictEqual(builtSheet.body.scrollTop, 0);
 
 builtSheet.footer.children[0].listeners.click();

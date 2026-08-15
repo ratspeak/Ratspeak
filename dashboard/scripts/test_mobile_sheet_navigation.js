@@ -247,6 +247,10 @@ vm.createContext(gameViewContext);
 vm.runInContext(functionSource(gamesSource, '_isViewingSession'), gameViewContext);
 assert.strictEqual(gameViewContext._isViewingSession('game-1'), true,
     'touch-tablet desktop layouts consider their selected game visible');
+gameViewContext.RS.isAttentionForeground = function() { return false; };
+assert.strictEqual(gameViewContext._isViewingSession('game-1'), false,
+    'a selected game is not actively viewed while Ratspeak is backgrounded');
+gameViewContext.RS.isAttentionForeground = function() { return true; };
 gameViewContext.isCompactLayout = function() { return true; };
 assert.strictEqual(gameViewContext._isViewingSession('game-1'), false,
     'compact layouts require the game detail stack entry');

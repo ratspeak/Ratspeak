@@ -514,7 +514,7 @@ fn notify_incoming_call_if_background(
     remote_lxmf_destination: &str,
     link_id: [u8; 16],
 ) {
-    if state.is_foreground() || !state.native_notifications_enabled() {
+    if !state.should_surface_native_notification() {
         return;
     }
     let identity_id = crate::helpers::active_identity_id(state);
@@ -4479,6 +4479,7 @@ mod tests {
         let notifier = Arc::new(RecordingNotifier::default());
         let state = make_notification_state(notifier.clone());
         state.is_foreground.store(false, Ordering::Relaxed);
+        state.set_notification_foreground(false);
         db::save_identity(&state.db, "identity-a", "lxmf-a", "Me", "Me");
         db::set_active_identity(&state.db, "identity-a").unwrap();
 

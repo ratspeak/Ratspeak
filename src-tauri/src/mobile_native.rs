@@ -686,6 +686,9 @@ pub(crate) fn submit_lifecycle(foreground: bool) {
     // Tauri RunEvents are delivered only after setup has installed AppState.
     // Allocate authority before spawning so scheduling cannot invert two edges.
     let transition = state.begin_foreground_transition();
+    // Notification attention follows the trusted platform edge immediately;
+    // protocol lifecycle housekeeping continues asynchronously below.
+    state.set_notification_foreground(foreground);
     tauri::async_runtime::spawn(async move {
         if ratspeak_tauri::commands::system::apply_foreground_transition(
             state, foreground, transition,

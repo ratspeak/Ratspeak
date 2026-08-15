@@ -175,7 +175,7 @@ function _channelsShowPublicConsent() {
     if (typeof _rsBuildSheet !== 'function') return Promise.resolve(false);
 
     _channelsPublicConsentPromptPromise = new Promise(function(resolve) {
-        var built = _rsBuildSheet({ title: 'Before you enter public channels' }, function(value) {
+        var built = _rsBuildSheet({ title: 'Public channels' }, function(value) {
             _channelsPublicConsentPromptPromise = null;
             resolve(value === true);
         });
@@ -183,15 +183,15 @@ function _channelsShowPublicConsent() {
 
         var intro = document.createElement('p');
         intro.className = 'channel-consent-intro';
-        intro.textContent = 'Public channels can connect you to independently operated infrastructure and people Ratspeak does not control.';
+        intro.textContent = 'Public channels are shared spaces hosted by Ratspeak or independent operators.';
         built.body.appendChild(intro);
 
         var facts = document.createElement('div');
         facts.className = 'channel-consent-facts';
         [
-            ['hub', 'Independent hubs', 'Unless marked official, each hub is run and moderated by someone else. Content may be offensive, misleading, or illegal.'],
-            ['privacy', 'Hub-readable messages', 'The hub relays and can read channel messages. They do not have the same end-to-end privacy as direct messages.'],
-            ['controls', 'You stay in control', 'You can block people, report content, or leave at any time. Public channels are for adults 18 and older.']
+            ['hub', 'Independent operators', 'Unless marked official, a hub is run and moderated by someone else. Ratspeak may not be able to remove its content.'],
+            ['privacy', 'Different privacy', 'A hub can read and relay channel messages. Direct-message encryption does not apply.'],
+            ['controls', 'Your controls', 'You can block participants, report content, and leave a hub at any time.']
         ].forEach(function(fact) {
             var item = document.createElement('div');
             item.className = 'channel-consent-fact';
@@ -235,9 +235,13 @@ function _channelsShowPublicConsent() {
             return input;
         }
         var adult = acknowledgement('I am 18 or older.');
-        var independent = acknowledgement('I understand that independent hubs may contain unmoderated content.');
-        var policiesAccepted = acknowledgement('I agree to the Terms and Community Guidelines.');
+        var independent = acknowledgement('I understand that public channels may contain content from people Ratspeak does not control.');
         built.body.appendChild(acknowledgements);
+
+        var agreement = document.createElement('p');
+        agreement.className = 'channel-consent-agreement';
+        agreement.textContent = 'By continuing, you agree to the Terms and Community Guidelines.';
+        built.body.appendChild(agreement);
 
         var policies = document.createElement('div');
         policies.className = 'channel-consent-policies';
@@ -262,21 +266,20 @@ function _channelsShowPublicConsent() {
         continueButton.textContent = 'Continue';
         continueButton.disabled = true;
         function syncContinue() {
-            continueButton.disabled = !(adult.checked && independent.checked && policiesAccepted.checked);
+            continueButton.disabled = !(adult.checked && independent.checked);
             error.textContent = '';
         }
         adult.addEventListener('change', syncContinue);
         independent.addEventListener('change', syncContinue);
-        policiesAccepted.addEventListener('change', syncContinue);
         continueButton.addEventListener('click', function() {
-            if (!adult.checked || !independent.checked || !policiesAccepted.checked) return;
+            if (!adult.checked || !independent.checked) return;
             continueButton.disabled = true;
             continueButton.textContent = 'Saving\u2026';
             RS.invoke('accept_public_channel_consent', {
                 version: _channelsPublicConsent.requiredVersion,
                 adultConfirmed: adult.checked,
                 independentHubsUnderstood: independent.checked,
-                policiesAccepted: policiesAccepted.checked
+                policiesAccepted: true
             }).then(function(data) {
                 _channelsApplyPublicConsentSettings(data);
                 built.dismiss(true);

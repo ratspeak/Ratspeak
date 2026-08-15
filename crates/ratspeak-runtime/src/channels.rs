@@ -1292,8 +1292,7 @@ fn notify_committed_channel_events(
     };
     if identity_generation
         .is_none_or(|generation| state.current_identity_session_generation() != generation)
-        || state.is_foreground()
-        || !state.native_notifications_enabled()
+        || !state.should_surface_native_notification()
     {
         return;
     }
@@ -7246,6 +7245,7 @@ mod tests {
         let state = channels_test_state_with_notifier(&identity, notifier.clone());
         state.set_native_notifications_enabled(true);
         state.is_foreground.store(false, Ordering::Release);
+        state.set_notification_foreground(false);
         let generation = state.current_identity_session_generation();
         let weak = Arc::downgrade(&state);
 

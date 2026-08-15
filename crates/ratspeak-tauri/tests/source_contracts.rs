@@ -161,7 +161,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(!index.contains("id=\"channel-session-banner\""));
     assert_eq!(
         channels_js
-            .matches("hub relays and can read channel messages")
+            .matches("A hub can read and relay channel messages")
             .count(),
         1,
         "hub-readability disclosure belongs in the one-time consent, not repeated channel chrome"
@@ -1223,7 +1223,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260815-2"));
+    assert!(index.contains("/static/style.css?v=ui-20260815-4"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -2206,6 +2206,51 @@ fn notifications_use_canonical_names_and_ignore_watched_game_unread() {
         !runtime_rs.contains("downloaded from relay"),
         "background Offline Inbox downloads must rely on per-message notifications"
     );
+}
+
+#[test]
+fn notification_attention_uses_visibility_not_transport_settlement_or_selected_state() {
+    let root = repo_root();
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let runtime =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    let voice =
+        read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice runtime");
+    let channels = read_source(root.join("crates/ratspeak-runtime/src/channels.rs"))
+        .expect("channels runtime");
+    let system = read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs"))
+        .expect("system commands");
+    let mobile = read_source(root.join("src-tauri/src/mobile_native.rs")).expect("mobile shell");
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri shell");
+    let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
+    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
+
+    assert!(state.contains("notification_foreground: AtomicBool"));
+    assert!(state.contains("pub fn should_surface_native_notification(&self) -> bool"));
+    assert!(state.contains("if self.should_surface_native_notification()"));
+    assert!(
+        runtime
+            .matches("!state.should_surface_native_notification()")
+            .count()
+            >= 2
+    );
+    assert!(voice.contains("!state.should_surface_native_notification()"));
+    assert!(channels.contains("!state.should_surface_native_notification()"));
+    assert!(system.contains("state.set_notification_foreground(fg);"));
+    assert!(mobile.contains("state.set_notification_foreground(foreground);"));
+    assert!(shell.contains("state.set_notification_foreground(foreground);"));
+
+    assert!(state_js.contains("window.RS.isAttentionForeground = function()"));
+    assert!(
+        lxmf_js.contains("var conversationVisible = _isConversationActivelyVisible(msg.source)")
+    );
+    assert!(lxmf_js.contains("if (appForeground && !conversationVisible)"));
+    assert!(lxmf_js.contains("!window.__TAURI_INTERNALS__ && !appForeground"));
+    assert!(games_js.contains("!RS.isAttentionForeground()"));
+    assert!(games_js.contains("if (appForeground)"));
+    assert!(games_js.contains("!window.__TAURI_INTERNALS__ && !appForeground"));
 }
 
 #[test]
@@ -4644,10 +4689,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260815-2"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260815-2"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260815-2"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260815-2"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260815-4"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260815-4"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260815-4"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260815-4"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -7835,7 +7880,7 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     )
     .expect("android activity");
 
-    assert!(db.contains("PUBLIC_CHANNEL_CONSENT_VERSION"));
+    assert!(db.contains("PUBLIC_CHANNEL_CONSENT_VERSION: u16 = 2"));
     assert!(db.contains("PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING"));
     assert!(runtime.contains("has_current_public_channel_consent"));
     assert!(runtime.contains("hub.desired_connected = false"));
@@ -7851,13 +7896,15 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     assert!(interfaces.contains("db::try_set_settings"));
 
     for copy in [
-        "Before you enter public channels",
+        "Public channels",
         "I am 18 or older.",
-        "I agree to the Terms and Community Guidelines.",
-        "independent hubs may contain unmoderated content",
+        "By continuing, you agree to the Terms and Community Guidelines.",
+        "public channels may contain content from people Ratspeak does not control",
     ] {
         assert!(channels.contains(copy));
     }
+    assert!(channels.contains("policiesAccepted: true"));
+    assert!(!channels.contains("var policiesAccepted = acknowledgement"));
     for url in [
         "https://ratspeak.org/privacy.html",
         "https://ratspeak.org/terms.html",
@@ -7866,12 +7913,23 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     ] {
         assert!(legal.contains(url));
     }
-    assert!(legal.contains("version: '2026-08-11'"));
+    assert!(legal.contains("version: '2026-08-15'"));
     assert!(legal.contains("Available offline"));
     assert!(legal.contains("function openDocument(documentId)"));
     assert!(legal.contains("View current version online"));
     assert!(legal.contains("Ratspeak does not currently operate a public channel hub."));
     assert!(legal.contains("Network blackholing may also be available for known identities."));
+    assert!(legal.contains("Violence and targeted harm"));
+    assert!(legal.contains("Abuse and exploitation"));
+    for stale in [
+        "Child sexual abuse and exploitation:",
+        "Sexual exploitation and abuse:",
+        "We prioritize child safety",
+        "Do not attach child sexual abuse material",
+        "exploit, endanger, sexualize, groom, or solicit a child",
+    ] {
+        assert!(!legal.contains(stale));
+    }
     assert!(channels.contains("RS.legal.open(documentId)"));
     assert!(channels.contains("RS.legal.open('support')"));
     assert!(nav.contains("data-about-document"));

@@ -3229,7 +3229,7 @@ pub fn get_setting(pool: &DbPool, key: &str) -> Option<String> {
 /// Current wording version for the app-wide, adults-only public-channel
 /// acknowledgement. Bump only when the safety acknowledgement materially
 /// changes; identity switching must not turn this gate into a bypass.
-pub const PUBLIC_CHANNEL_CONSENT_VERSION: u16 = 1;
+pub const PUBLIC_CHANNEL_CONSENT_VERSION: u16 = 2;
 pub const PUBLIC_CHANNEL_CONSENT_SETTING: &str = "public_channel_consent_version";
 pub const PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING: &str = "public_channel_consent_accepted_at";
 

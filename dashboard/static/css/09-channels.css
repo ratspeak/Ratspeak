@@ -2017,6 +2017,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-consent-intro,
+.channel-consent-agreement,
 .channel-report-explanation,
 .channel-report-privacy {
     margin: 0;

@@ -21,8 +21,13 @@ var contactAddedSource = lxmf.slice(
 var notifications = [];
 var context = {
     window: null,
+    currentView: 'message',
+    document: { hidden: false },
     lxmfActiveContact: null,
     RS: {
+        isAttentionForeground: function() {
+            return !context.document.hidden;
+        },
         voiceMemos: {
             onConversationChanged: function(hash, reason) {
                 notifications.push({ hash: hash, reason: reason });
@@ -43,6 +48,16 @@ var ownerA = context._activateConversation('AABBCC', 'navigation');
 assert.equal(ownerA.hash, 'aabbcc');
 assert.equal(notifications.length, 1);
 assert(context._conversationOwnerIsCurrent(ownerA));
+assert(context._isConversationActivelyVisible('AABBCC'),
+    'the selected peer is actively visible only in foreground Messages');
+context.currentView = 'settings';
+assert(!context._isConversationActivelyVisible('aabbcc'),
+    'a selected peer on another screen must not suppress message attention');
+context.currentView = 'message';
+context.document.hidden = true;
+assert(!context._isConversationActivelyVisible('aabbcc'),
+    'a hidden app must not treat its last selected peer as actively visible');
+context.document.hidden = false;
 
 var sameA = context._activateConversation('aabbcc', 'navigation');
 assert.equal(sameA.epoch, ownerA.epoch, 'case-equivalent activation must not advance ownership');
@@ -72,6 +87,16 @@ var conversationUpdateSource = lxmf.slice(
 assert(conversationUpdateSource.includes('var hash = _canonicalConversationHash(data.hash)'));
 assert(conversationUpdateSource.includes('msg.source = _canonicalConversationHash(msg.source)'));
 assert(conversationUpdateSource.includes('msg.destination = _canonicalConversationHash(msg.destination)'));
+assert(conversationUpdateSource.includes('var conversationVisible = _isConversationActivelyVisible(msg.source)'));
+assert(conversationUpdateSource.includes('if (conversationVisible) {') &&
+    conversationUpdateSource.includes("RS.invoke('mark_read', { hash: msg.source })"),
+    'only a conversation the user can currently see may be marked read on arrival');
+assert(conversationUpdateSource.includes('if (appForeground && !conversationVisible) {'),
+    'foreground attention belongs to an in-app toast only outside the visible conversation');
+assert(conversationUpdateSource.includes("!window.__TAURI_INTERNALS__ && !appForeground"),
+    'the browser fallback must notify only in background, regardless of the last selected chat');
+assert(!conversationUpdateSource.includes('document.hidden &&'),
+    'message attention must use the shared focus-aware lifecycle predicate');
 var deletionSource = lxmf.slice(
     lxmf.indexOf("RS.listen('conversation_hidden'"),
     lxmf.indexOf('// 30s re-check')

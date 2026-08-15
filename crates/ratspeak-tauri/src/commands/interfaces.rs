@@ -1131,7 +1131,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
     }))
 }
 
-/// Persist the versioned, adults-only public-channel acknowledgement.
+/// Persist the versioned public-channel acknowledgement.
 ///
 /// The frontend supplies the version it displayed. Rejecting stale/future
 /// values prevents an old WebView or crafted IPC call from recording consent
@@ -1149,7 +1149,7 @@ fn validate_public_channel_consent(
     }
     if !adult_confirmed || !independent_hubs_understood || !policies_accepted {
         return Err(AppError::bad_request(
-            "Confirm every public-channel acknowledgement before continuing.",
+            "Confirm the public-channel acknowledgements before continuing.",
         ));
     }
     Ok(())

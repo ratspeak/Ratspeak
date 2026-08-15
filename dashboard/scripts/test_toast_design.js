@@ -282,6 +282,13 @@ assert(!lxmfSource.includes("'New message from ' + escapeHtml(fromLabel)"),
     'toast textContent must receive the real contact name, not escaped markup text');
 assert(lxmfSource.includes("? 'New voice message from ' + fromLabel"),
     'inbound voice messages must identify themselves without a redundant send toast');
+assert(lxmfSource.includes('if (appForeground && !conversationVisible) {') &&
+    lxmfSource.includes("!window.__TAURI_INTERNALS__ && !appForeground"),
+    'messages must choose in-app or OS attention from actual foreground visibility');
+var gamesSource = callsiteSource('games_tab.js');
+assert(gamesSource.includes('if (appForeground) {') &&
+    gamesSource.includes("!window.__TAURI_INTERNALS__ && !appForeground"),
+    'game updates must not leave hidden in-app toasts alongside OS notifications');
 assert(!callsiteSource('health.js').includes('Pausing interface…') &&
     !callsiteSource('health.js').includes('Resuming interface…'),
     'interface rows must own routine pause/resume progress');

@@ -45,6 +45,23 @@ function _canonicalConversationHash(value) {
     return String(value == null ? '' : value).trim().toLowerCase();
 }
 
+function _lxmfAttentionForeground() {
+    if (window.RS && typeof RS.isAttentionForeground === 'function') {
+        return !!RS.isAttentionForeground();
+    }
+    if (typeof _currentLifecycleForeground === 'function') {
+        return !!_currentLifecycleForeground();
+    }
+    return typeof document === 'undefined' || !document.hidden;
+}
+
+function _isConversationActivelyVisible(hash) {
+    if (!_lxmfAttentionForeground()) return false;
+    if (typeof currentView !== 'undefined' && currentView !== 'message') return false;
+    return !!hash &&
+        _canonicalConversationHash(hash) === _canonicalConversationHash(lxmfActiveContact);
+}
+
 function _notifyConversationOwnerChanged(hash, reason) {
     if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.onConversationChanged === 'function') {
         RS.voiceMemos.onConversationChanged(hash || null, reason || 'navigation');
@@ -4893,6 +4910,8 @@ RS.listen('lxmf_message', function(msg) {
     msg.source = _canonicalConversationHash(msg.source);
     msg.destination = _canonicalConversationHash(msg.destination);
     var activeHash = _canonicalConversationHash(lxmfActiveContact);
+    var appForeground = _lxmfAttentionForeground();
+    var conversationVisible = _isConversationActivelyVisible(msg.source);
     if (msg.source === activeHash || msg.destination === activeHash) {
         // Dedupe reconnect replays.
         var isDupe = msg.id && lxmfConversation.some(function(m) { return m.id === msg.id; });
@@ -4900,11 +4919,11 @@ RS.listen('lxmf_message', function(msg) {
         lxmfConversation.push(msg);
         cacheSet(activeHash, lxmfConversation.slice());
         renderConversation({ stickToBottom: true });
-        if (msg.source === activeHash) {
+        if (conversationVisible) {
             RS.invoke('mark_read', { hash: msg.source }).catch(function() {});
         }
     }
-    if (msg.source !== activeHash) {
+    if (appForeground && !conversationVisible) {
         var fromLabel = _messageSourceName(msg);
         var hasAudio = !!msg.audio;
         var hasAttachment = (msg.attachments && msg.attachments.length > 0) || msg.image;
@@ -4915,16 +4934,24 @@ RS.listen('lxmf_message', function(msg) {
                 : 'New message from ' + fromLabel);
         var sourceHash = msg.source;
         showToast(toastMsg, 'toast-action', 4000, function() { openConversationWith(sourceHash); });
-        if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
-            var notifFrom = _messageSourceName(msg);
-            var notifBody = (msg.content || '').substring(0, 120) || 'New message';
-            rsNotify.send({
-                title: 'Message from ' + notifFrom,
-                body: notifBody,
-                tag: 'lxmf-' + msg.source,
-                onClick: function() { openConversationWith(msg.source); }
-            });
-        }
+    }
+    // Tauri notifications are emitted by the runtime. This fallback is only
+    // for a background browser, where the last selected chat is not visible.
+    if (!window.__TAURI_INTERNALS__ && !appForeground && typeof rsNotify !== 'undefined') {
+        var notifFrom = _messageSourceName(msg);
+        var notifBody = (msg.content || '').substring(0, 120) || 'New message';
+        rsNotify.send({
+            title: 'Message from ' + notifFrom,
+            body: notifBody,
+            tag: 'lxmf-' + msg.source,
+            onClick: function() { openConversationWith(msg.source); }
+        });
+    }
+});
+
+document.addEventListener('rs-lifecycle-foreground-handled', function() {
+    if (_isConversationActivelyVisible(lxmfActiveContact)) {
+        RS.invoke('mark_read', { hash: _canonicalConversationHash(lxmfActiveContact) }).catch(function() {});
     }
 });
 

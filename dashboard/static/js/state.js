@@ -1119,8 +1119,15 @@ function _currentLifecycleForeground() {
     if (window.__RATSPEAK_DESKTOP__) {
         return !document.hidden && document.hasFocus();
     }
+    if (!window.__TAURI_INTERNALS__ && typeof document.hasFocus === 'function') {
+        return !document.hidden && document.hasFocus();
+    }
     return !document.hidden;
 }
+
+window.RS.isAttentionForeground = function() {
+    return _currentLifecycleForeground();
+};
 
 // On Android the service keeps the process alive, so a resume doesn't
 // trigger backend deltas — explicitly re-fetch on hidden→visible.

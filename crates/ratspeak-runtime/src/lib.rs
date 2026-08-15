@@ -628,7 +628,7 @@ async fn notify_inbound_message_if_background(
     content: &str,
     has_attachment: bool,
 ) {
-    if state.is_foreground() || !state.native_notifications_enabled() {
+    if !state.should_surface_native_notification() {
         return;
     }
 
@@ -665,7 +665,7 @@ fn notify_game_if_background(
     command: &str,
     is_new_session: bool,
 ) {
-    if state.is_foreground() || !state.native_notifications_enabled() {
+    if !state.should_surface_native_notification() {
         return;
     }
 
@@ -7670,6 +7670,7 @@ mod notification_tests {
         state
             .is_foreground
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        state.set_notification_foreground(false);
         db::save_contact(
             &state.db,
             "abcd1234abcd1234",
@@ -7695,6 +7696,7 @@ mod notification_tests {
         state
             .is_foreground
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        state.set_notification_foreground(true);
         notify_inbound_message_if_background(
             &state,
             "abcd1234abcd1234",
@@ -7708,6 +7710,7 @@ mod notification_tests {
         state
             .is_foreground
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        state.set_notification_foreground(false);
         state.set_native_notifications_enabled(false);
         notify_inbound_message_if_background(
             &state,
@@ -7717,6 +7720,34 @@ mod notification_tests {
             false,
         )
         .await;
+        assert_eq!(notifier.notifications.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn native_notification_owner_follows_immediate_platform_visibility() {
+        let notifier = Arc::new(RecordingNotifier::default());
+        let state = make_state(notifier.clone());
+        let notification = ratspeak_core::NativeNotification::message(
+            "Message from Alice",
+            "hello",
+            "lxmf:abcd1234abcd1234",
+            42,
+        );
+
+        // AppState starts foregrounded. Even a caller that forgets its own
+        // early lifecycle check cannot leak an OS notification.
+        state.emit_native_notification(notification.clone());
+        assert!(notifier.notifications.lock().unwrap().is_empty());
+
+        // A platform background edge owns notification attention immediately,
+        // even while the slower transport lifecycle state is still foreground.
+        state.set_notification_foreground(false);
+        state.emit_native_notification(notification.clone());
+        assert_eq!(notifier.notifications.lock().unwrap().len(), 1);
+
+        // The inverse edge suppresses immediately as the app becomes visible.
+        state.set_notification_foreground(true);
+        state.emit_native_notification(notification);
         assert_eq!(notifier.notifications.lock().unwrap().len(), 1);
     }
 
@@ -7747,6 +7778,7 @@ mod notification_tests {
         state
             .is_foreground
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        state.set_notification_foreground(false);
         db::save_identity(&state.db, "identity-a", "lxmf-a", "Me", "Me");
         db::set_active_identity(&state.db, "identity-a").unwrap();
         db::save_contact(

@@ -92,6 +92,10 @@
 
     function _isViewingSession(sessionId) {
         if (!sessionId || _selectedSessionId !== sessionId) return false;
+        if (typeof RS !== 'undefined' && typeof RS.isAttentionForeground === 'function' &&
+            !RS.isAttentionForeground()) {
+            return false;
+        }
         if (typeof currentView === 'undefined' || currentView !== 'games') return false;
         if (typeof isCompactLayout === 'function' && isCompactLayout()) {
             if (typeof RS === 'undefined' || !RS.viewStack || typeof RS.viewStack.top !== 'function') {
@@ -2044,6 +2048,9 @@
         if (!record || !record.game_id) return;
 
         var prevStatus = prev ? prev.status : null;
+        var appForeground = typeof RS === 'undefined' ||
+            typeof RS.isAttentionForeground !== 'function' ||
+            RS.isAttentionForeground();
 
         var view = _gameView(_appId(record));
         if (view && view.onSessionDelta) {
@@ -2051,30 +2058,32 @@
         }
 
         var isNew = !prev;
-        if (isNew && typeof currentView !== 'undefined' && currentView !== 'games') {
-            if (record.status === 'pending' && !_isMe(record, record.challenger)) {
+        if (isNew && record.status === 'pending' && !_isMe(record, record.challenger)) {
+            if (appForeground && typeof currentView !== 'undefined' && currentView !== 'games') {
                 if (typeof showToast === 'function') showToast('Game challenge from ' + _contactName(record.contact_hash), 'toast-action', 5000, function() { window.openGameSession(record.game_id); });
                 if (typeof haptic === 'function') haptic('success');
-                if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
-                    rsNotify.send({
-                        title: 'Game challenge',
-                        body: _contactName(record.contact_hash) + ' challenged you to a game'
-                    });
-                }
+            }
+            if (!window.__TAURI_INTERNALS__ && !appForeground && typeof rsNotify !== 'undefined') {
+                rsNotify.send({
+                    title: 'Game challenge',
+                    body: _contactName(record.contact_hash) + ' challenged you to a game'
+                });
             }
         }
 
-        // Toast on remote moves whenever the user isn't actively staring at
-        // this game's board. `currentView !== 'games'` catches every other tab;
-        // even on the games view a delta on a non-selected game still alerts.
+        // Foreground updates use an in-app action when this board is not
+        // visible. Background browser updates use only the OS fallback; Tauri
+        // background notifications are owned by the runtime.
         var movedSinceLast = prev &&
             _sessionValue(record, 'move_count', null) !==
             _sessionValue(prev, 'move_count', null);
         var notViewingThisGame = !_isViewingSession(record.game_id);
         if (movedSinceLast && notViewingThisGame && record.status === 'active') {
-            if (typeof showToast === 'function') showToast('Game update from ' + _contactName(record.contact_hash), 'toast-action', 3000, function() { window.openGameSession(record.game_id); });
-            if (typeof haptic === 'function') haptic('light');
-            if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
+            if (appForeground) {
+                if (typeof showToast === 'function') showToast('Game update from ' + _contactName(record.contact_hash), 'toast-action', 3000, function() { window.openGameSession(record.game_id); });
+                if (typeof haptic === 'function') haptic('light');
+            }
+            if (!window.__TAURI_INTERNALS__ && !appForeground && typeof rsNotify !== 'undefined') {
                 rsNotify.send({
                     title: 'Game update',
                     body: _contactName(record.contact_hash) + ' made a move'

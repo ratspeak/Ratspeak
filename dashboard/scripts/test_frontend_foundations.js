@@ -123,7 +123,7 @@ assert(!/<a class="bottom-bar-item"/.test(html), 'mobile primary navigation must
 var revisionMatches = Array.from(html.matchAll(/\/(?:static\/(?!js\/vendor)[^"?]+)\?v=([^"&]+)/g));
 assert(revisionMatches.length > 20, 'first-party asset revisions must be explicit');
 var revisions = new Set(revisionMatches.map(function(match) { return match[1]; }));
-assert.deepStrictEqual(Array.from(revisions), ['ui-20260815-2'],
+assert.deepStrictEqual(Array.from(revisions), ['ui-20260815-4'],
     'first-party CSS, fonts, and JS must share one build-level asset revision');
 
 var nav = read('static/js/nav.js');
@@ -200,7 +200,7 @@ assert(channelsSource.includes('channel-consent-acknowledgements'),
     'public-channel safety confirmations must remain one coherent acknowledgement group');
 var legalDocumentsSource = read('static/js/legal_documents.js');
 assert(channelsSource.includes('RS.legal.open(documentId)') &&
-    legalDocumentsSource.includes("version: '2026-08-11'") &&
+    legalDocumentsSource.includes("version: '2026-08-15'") &&
     legalDocumentsSource.includes('Available offline'),
     'public-channel policies must open the versioned offline reader');
 assert(legalDocumentsSource.includes('View current version online') &&

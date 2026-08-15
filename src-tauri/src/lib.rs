@@ -1539,6 +1539,9 @@ fn set_desktop_foreground(app: &tauri::AppHandle, foreground: bool) {
     if let Some(state) = app.try_state::<std::sync::Arc<ratspeak_tauri::state::AppState>>() {
         let state = std::sync::Arc::clone(state.inner());
         let transition = state.begin_foreground_transition();
+        // Window visibility owns notification attention synchronously. The
+        // transport lifecycle transition may await Activity housekeeping.
+        state.set_notification_foreground(foreground);
         if foreground {
             tauri::async_runtime::spawn(async move {
                 let expiry = {
