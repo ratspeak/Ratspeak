@@ -1223,7 +1223,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260815-5"));
+    assert!(index.contains("/static/style.css?v=ui-20260815-6"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -4689,10 +4689,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260815-5"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260815-5"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260815-5"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260815-5"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260815-6"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260815-6"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260815-6"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260815-6"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -7869,6 +7869,8 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
         .expect("settings commands");
     let channels =
         read_source(root.join("dashboard/static/js/channels.js")).expect("channels frontend");
+    let channels_css =
+        read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels styles");
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("navigation frontend");
     let legal = read_source(root.join("dashboard/static/js/legal_documents.js"))
         .expect("offline legal documents");
@@ -7905,6 +7907,11 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     }
     assert!(channels.contains("policiesAccepted: true"));
     assert!(!channels.contains("var policiesAccepted = acknowledgement"));
+    assert!(channels.contains(
+        "['Privacy', 'privacy'],\n            ['Terms', 'terms'],\n            ['Guidelines', 'guidelines'],\n            ['Support', 'support']"
+    ));
+    assert!(channels.contains("separator.textContent = '·';"));
+    assert!(channels_css.contains(".channel-consent-policy-separator"));
     for url in [
         "https://ratspeak.org/privacy.html",
         "https://ratspeak.org/terms.html",
@@ -7943,6 +7950,8 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     assert!(state.contains("window.RS.openSupportEmail"));
     assert!(tauri.contains("fn open_support_email"));
     assert!(tauri.contains("open_support_email,"));
+    assert!(tauri.contains("encode_mailto_query_component(subject)"));
+    assert!(!tauri.contains("url::form_urlencoded::Serializer"));
     assert!(tauri.contains("canOpenURL: ns_url"));
     assert!(tauri.contains("options: options,"));
     assert!(tauri.contains("completionHandler: &*completion"));

@@ -229,6 +229,38 @@ fn validate_http_url(raw: &str) -> Result<String, String> {
     }
 }
 
+fn encode_mailto_query_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for &byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod mailto_tests {
+    use super::encode_mailto_query_component;
+
+    #[test]
+    fn mailto_query_uses_rfc3986_spaces_and_utf8() {
+        assert_eq!(
+            encode_mailto_query_component("Ratspeak privacy request"),
+            "Ratspeak%20privacy%20request"
+        );
+        assert_eq!(
+            encode_mailto_query_component("a+b&c\nü"),
+            "a%2Bb%26c%0A%C3%BC"
+        );
+    }
+}
+
 #[tauri::command]
 async fn open_external_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let clean = validate_http_url(&url)?;
@@ -252,10 +284,14 @@ async fn open_support_email(
     {
         return Err("Invalid support email".into());
     }
-    let query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("subject", subject)
-        .append_pair("body", &body)
-        .finish();
+    // `application/x-www-form-urlencoded` encodes spaces as `+`, but several
+    // mobile mail clients treat `+` literally in a mailto URI. RFC 3986
+    // percent-encoding keeps the visible draft subject correct everywhere.
+    let query = format!(
+        "subject={}&body={}",
+        encode_mailto_query_component(subject),
+        encode_mailto_query_component(&body)
+    );
     open_platform_url(app, format!("mailto:mail@ratspeak.org?{query}")).await
 }
 

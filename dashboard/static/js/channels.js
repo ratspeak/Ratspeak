@@ -245,9 +245,21 @@ function _channelsShowPublicConsent() {
 
         var policies = document.createElement('div');
         policies.className = 'channel-consent-policies';
-        policies.appendChild(_channelsPublicConsentLink('Terms', 'terms'));
-        policies.appendChild(_channelsPublicConsentLink('Community Guidelines', 'guidelines'));
-        policies.appendChild(_channelsPublicConsentLink('Privacy', 'privacy'));
+        [
+            ['Privacy', 'privacy'],
+            ['Terms', 'terms'],
+            ['Guidelines', 'guidelines'],
+            ['Support', 'support']
+        ].forEach(function(policy, index) {
+            if (index > 0) {
+                var separator = document.createElement('span');
+                separator.className = 'channel-consent-policy-separator';
+                separator.setAttribute('aria-hidden', 'true');
+                separator.textContent = '·';
+                policies.appendChild(separator);
+            }
+            policies.appendChild(_channelsPublicConsentLink(policy[0], policy[1]));
+        });
         built.body.appendChild(policies);
 
         var error = document.createElement('div');
