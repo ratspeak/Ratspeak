@@ -3757,7 +3757,8 @@ fn interface_pause_resume_is_config_backed_and_visible() {
     assert!(health_js.contains("label: 'Rename'"));
     assert!(health_js.contains("pause_interface"));
     assert!(health_js.contains("resume_interface"));
-    assert!(health_js.contains("conn-iface-pill-paused"));
+    assert!(health_js.contains(r#"conn-iface-status-text">Paused"#));
+    assert!(!health_js.contains("conn-iface-pill-paused"));
     assert!(health_js.contains("waitingForAndroidUsb"));
     assert!(health_js.contains("Waiting for USB"));
     assert!(health_js.contains("enabled && !waitingForAndroidUsb"));

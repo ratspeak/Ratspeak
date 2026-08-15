@@ -1191,7 +1191,7 @@ function _renderConnectionsFromCache() {
                     }
                 }
                 if (paused) {
-                    pillHtml += '<span class="conn-iface-pill conn-iface-pill-paused">Paused</span>';
+                    pillHtml += '<span class="conn-iface-status-text">Paused</span>';
                 } else if (mobileHealth) {
                     pillHtml += '<span class="conn-iface-pill" role="status" title="' +
                         escapeHtml(mobileHealth.label) + '">' +
