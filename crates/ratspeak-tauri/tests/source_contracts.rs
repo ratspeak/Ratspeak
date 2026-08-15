@@ -5027,8 +5027,8 @@ fn settings_version_display_uses_package_version_api() {
 fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleases() {
     let root = repo_root();
     let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 2e0d0a688881040a0a12639490f494b162466be1";
-    let rslxmf_commit = "RATSPEAK_RSLXMF_REF: b40dcd37f2e9961ef5fdae535ecafe823f98255a";
-    let rslxst_commit = "RATSPEAK_RSLXST_REF: fd81d7155c6e0af799aaa398aee21028ce535924";
+    let rslxmf_commit = "RATSPEAK_RSLXMF_REF: 094bc956625b64ce69ceaf1bca2e924277828df8";
+    let rslxst_commit = "RATSPEAK_RSLXST_REF: 9f06e3371b8a28ed7a0d77df45d9e152a41d0302";
     let dependency_refs = [
         "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26k",
         "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26k",
