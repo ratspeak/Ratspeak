@@ -1095,6 +1095,8 @@ pub fn run() {
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_memo_cancel,
             #[cfg(feature = "lxst-voice")]
+            ratspeak_tauri::commands::voice::send_lxmf_voice_message,
+            #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_memo_playback_start,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_memo_playback_session_stop,

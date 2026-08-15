@@ -333,6 +333,14 @@ pub struct RNodeLifecycleOperationLease {
     generation: u64,
 }
 
+/// Session-local ownership token for an interface lifecycle transaction.
+///
+/// RNode operations introduced the generation fence, but the same ownership
+/// rule applies to every asynchronously paused or resumed interface. The
+/// original RNode name remains available for RNode-specific readiness and
+/// native-bridge paths.
+pub type InterfaceLifecycleOperationLease = RNodeLifecycleOperationLease;
+
 impl std::fmt::Debug for RNodeLifecycleOperationLease {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1761,6 +1769,34 @@ impl AppState {
         let before = operations.len();
         operations.retain(|_, operation| operation.generation != lease.generation);
         operations.len() != before
+    }
+
+    /// Begin a generation-fenced lifecycle transaction for any interface.
+    pub fn begin_interface_lifecycle_operation<I, S>(
+        &self,
+        names: I,
+    ) -> Option<InterfaceLifecycleOperationLease>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.begin_rnode_lifecycle_operation(names)
+    }
+
+    /// Return whether this interface transaction still owns its names.
+    pub fn is_current_interface_lifecycle_operation(
+        &self,
+        lease: &InterfaceLifecycleOperationLease,
+    ) -> bool {
+        self.is_current_rnode_lifecycle_operation(lease)
+    }
+
+    /// Finish only the exact interface transaction represented by `lease`.
+    pub fn finish_interface_lifecycle_operation(
+        &self,
+        lease: &InterfaceLifecycleOperationLease,
+    ) -> bool {
+        self.finish_rnode_lifecycle_operation(lease)
     }
 
     /// Invalidate every active lifecycle operation owning any supplied name.
@@ -3341,6 +3377,22 @@ mod tests {
 
         assert!(!state.is_current_rnode_lifecycle_operation(&first));
         assert!(state.is_current_rnode_lifecycle_operation(&second));
+    }
+
+    #[test]
+    fn generic_interface_lifecycle_fences_tcp_pause_resume() {
+        let state = make_state();
+        let pause = state
+            .begin_interface_lifecycle_operation(["RMAP"])
+            .expect("pause operation");
+        let resume = state
+            .begin_interface_lifecycle_operation(["RMAP"])
+            .expect("resume operation");
+
+        assert!(!state.is_current_interface_lifecycle_operation(&pause));
+        assert!(state.is_current_interface_lifecycle_operation(&resume));
+        assert!(!state.finish_interface_lifecycle_operation(&pause));
+        assert!(state.finish_interface_lifecycle_operation(&resume));
     }
 
     #[test]

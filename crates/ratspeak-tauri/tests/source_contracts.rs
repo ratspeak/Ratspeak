@@ -1528,7 +1528,7 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
         (
             resume,
             ".activate(Arc::clone(&st))",
-            "finish_rnode_lifecycle_operation(lease)",
+            "finish_interface_lifecycle_operation(lease)",
         ),
         (
             add,
@@ -3773,17 +3773,20 @@ fn interface_pause_resume_is_config_backed_and_visible() {
         .expect("interfaces commands");
     assert!(interfaces_rs.contains("pub async fn pause_interface"));
     assert!(interfaces_rs.contains("pub async fn resume_interface"));
+    assert!(interfaces_rs.contains("set_exact_interface_enabled(&config_dir, &name, false)"));
+    assert!(interfaces_rs.contains("set_exact_interface_enabled(&config_dir, &name, true)"));
     assert!(
         interfaces_rs
-            .contains("crate::rns_config::set_interface_enabled(&config_dir, &name, false)")
+            .matches("begin_interface_lifecycle_operation([&name])")
+            .count()
+            >= 2
     );
-    assert!(
-        interfaces_rs
-            .contains("crate::rns_config::set_interface_enabled(&config_dir, &name, true)")
-    );
+    assert!(interfaces_rs.contains("is_current_interface_lifecycle_operation(lease)"));
+    assert!(interfaces_rs.contains("outcome.interface_id"));
     assert!(interfaces_rs.contains("teardown_live_interface_by_name(&st, &iface_name"));
     assert!(interfaces_rs.contains("resolve_android_usb_runtime_selector"));
     assert!(interfaces_rs.contains("preflight_android_usb_selector_for_interface"));
+    assert!(interfaces_rs.contains("iface_type.as_deref(),\n        &name,"));
     assert!(interfaces_rs.contains("request_android_usb_permission"));
     assert!(!interfaces_rs.contains("format!(\"TCP to {}:{}\""));
 
@@ -7567,7 +7570,7 @@ fn lxmf_tick_runs_blocking_work_off_async_runtime() {
 }
 
 #[test]
-fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
+fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     let root = repo_root();
     let memo = read_source(root.join("crates/ratspeak-runtime/src/voice_memo.rs"))
         .expect("voice memo runtime");
@@ -7636,11 +7639,9 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     );
     assert!(memo.contains("call_audio_reserved"));
     assert!(memo.contains("_platform_audio_session"));
-    assert!(
-        memo.contains(
-            "VOICE_MEMO_MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE"
-        )
-    );
+    assert!(memo.contains(
+        "VOICE_MEMO_MAX_GENERATED_OGG_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE"
+    ));
     assert!(memo.contains("pub fn parse_recording_session_id"));
     assert!(memo.contains("pub fn parse_playback_lease_id"));
     assert!(memo.contains("take_matching_recording(state, session_id)"));
@@ -7657,11 +7658,41 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
     assert!(commands.contains("pub session_id: String"));
     assert!(commands.contains("pub lease_id: String"));
     assert!(commands.contains("read_bounded_voice_memo"));
-    assert!(
-        commands.contains(".take((crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES as u64) + 1)")
-    );
+    assert!(commands.contains(".take((crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES as u64) + 1)"));
     assert!(commands.contains("voice_memo_decode_lock.lock().await"));
-    assert!(messaging.contains("RS.invoke('send_lxmf_with_staged_attachment'"));
+    assert!(commands.contains("pub async fn send_lxmf_voice_message("));
+    assert!(commands.contains("begin_attachment_staging("));
+    assert!(commands.contains("take_completed_attachment_staging(&args.staging_token)"));
+    assert!(commands.contains("VOICE_MEMO_MAX_GENERATED_OGG_BYTES"));
+    assert!(commands.contains("crate::voice_memo::inspect_voice_memo(&inspection_bytes)"));
+    assert!(commands.contains("crate::commands::messaging::queue_prepared_audio("));
+    assert!(messaging_commands.contains("AudioMessageRequest"));
+    assert!(
+        messaging_commands
+            .contains("send_audio_message_with_preference_report(AudioMessageRequest")
+    );
+    let voice_send = messaging
+        .split("function sendLxmfVoiceMemo(")
+        .nth(1)
+        .and_then(|source| source.split("window.sendLxmfVoiceMemo").next())
+        .expect("voice-message send function");
+    assert!(voice_send.contains("RS.invoke('send_lxmf_voice_message'"));
+    assert!(voice_send.contains("voiceDraft.staging_token"));
+    assert!(!voice_send.contains("send_lxmf_with_staged_attachment"));
+    assert!(!voice_send.contains("begin_attachment_stage"));
+    assert!(!voice_send.contains("append_attachment_stage"));
+    assert!(!voice_send.contains("data_base64"));
+    assert!(!commands.contains(".lxvm"));
+    assert!(!messaging_commands.contains(".lxvm"));
+    assert!(!messaging.contains(".lxvm"));
+    assert!(!voice_memos.contains(".lxvm"));
+    assert!(messaging.contains("if (msg.audio && window.RS && RS.voiceMemos)"));
+    assert!(voice_memos.contains("Number(audio && audio.mode) === 0x10"));
+    assert!(voice_memos.contains("var unsupported = !isAudio(audio) || audio.supported === false"));
+    assert!(voice_memos.contains("data-audio-supported"));
+    assert!(voice_memos.contains("Array.from({ length: BAR_COUNT }, function() { return 0; })"));
+    assert!(voice_memos.contains("result && String(result.staging_token || '')"));
+    assert!(voice_memos.contains("Record it again to retry."));
     assert!(messaging.contains("_conversationOwnerIsCurrent(sendOwner)"));
     assert!(messaging.contains("_cancelStagedAttachmentToken(stageToken)"));
     assert!(messaging.contains("_conversationOwnerIdentityIsCurrent(sendOwner)"));
@@ -7742,6 +7773,7 @@ fn voice_memos_share_lxst_capture_and_the_bounded_lxmf_attachment_path() {
         "voice_memo_pause",
         "voice_memo_stop",
         "voice_memo_cancel",
+        "send_lxmf_voice_message",
         "voice_memo_playback_start",
         "voice_memo_playback_session_stop",
         "voice_memo_decode_data",

@@ -40,6 +40,12 @@ use crate::state::DbPool;
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
+pub const MAX_AUDIO_FIELD_BYTES: usize = 1_000_000;
+pub const AUDIO_MESSAGE_FILE_NAME: &str = "Voice message.opus";
+// A deferred PoW stamp can still be attached after semantic submission. Its
+// MessagePack bin8 representation is marker + u8 length + 32 stamp bytes; the
+// surrounding fixarray marker remains one byte when the payload grows 4 -> 5.
+const MAX_DEFERRED_STAMP_WIRE_BYTES: usize = 2 + lxmf_core::constants::STAMP_SIZE;
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
@@ -725,6 +731,31 @@ fn validate_attachment_envelope_size(actual_bytes: usize) -> Result<(), LxmfSubm
     }
 }
 
+fn validate_outbound_audio(audio_bytes: &[u8]) -> Result<(), LxmfSubmissionFailure> {
+    #[cfg(feature = "lxst-voice")]
+    {
+        crate::voice_memo::inspect_voice_memo(audio_bytes)
+            .map(|_| ())
+            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)
+    }
+    #[cfg(not(feature = "lxst-voice"))]
+    {
+        let _ = audio_bytes;
+        Err(LxmfSubmissionFailure::PreparationFailed)
+    }
+}
+
+fn validate_audio_message_size(actual_bytes: usize) -> Result<(), LxmfSubmissionFailure> {
+    let limit_bytes = rns_protocol::resource::MAX_EFFICIENT_SIZE;
+    if actual_bytes >= limit_bytes {
+        return Err(LxmfSubmissionFailure::ResourceLimitExceeded {
+            actual_bytes,
+            limit_bytes,
+        });
+    }
+    Ok(())
+}
+
 fn normalize_protocol_delivery_method(msg: &mut LxMessage) {
     if msg.method == DeliveryMethod::Opportunistic {
         if let Ok(packed) = msg.pack_payload() {
@@ -761,6 +792,22 @@ pub struct AttachmentMessageRequest<'a> {
     pub staged_path: Option<&'a Path>,
     pub is_image: bool,
     pub image_mime: &'a str,
+    pub db_pool: &'a DbPool,
+    pub identity_id: &'a str,
+    pub preference: DeliveryPreference,
+}
+
+/// Fully-specified first-class LXMF Ogg/Opus audio send request.
+///
+/// Staging-token ownership remains in the command layer. When `staged_path`
+/// is present, the runtime atomically adopts that already-validated private
+/// file into identity-scoped message storage before queueing the LXM.
+pub struct AudioMessageRequest<'a> {
+    pub dest_hash_hex: &'a str,
+    pub content: &'a str,
+    pub title: &'a str,
+    pub audio_bytes: &'a [u8],
+    pub staged_path: Option<&'a Path>,
     pub db_pool: &'a DbPool,
     pub identity_id: &'a str,
     pub preference: DeliveryPreference,
@@ -2054,6 +2101,139 @@ impl LxmfManager {
             "",
             "",
             Some(delivery_method_name(method)),
+        )
+        .is_err()
+        {
+            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
+            return Err(LxmfSubmissionFailure::StorageFailed);
+        }
+
+        if self.router.try_send(msg).is_err() {
+            let _ = db::delete_message_for_identity(db_pool, &msg_id, identity_id);
+            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
+            return Err(LxmfSubmissionFailure::PreparationFailed);
+        }
+        self.auto_live_fallback.extend(auto_fallback);
+        Ok(LxmfQueuedMessage {
+            message_id: msg_id,
+            method,
+        })
+    }
+
+    /// Queue a standards-based LXMF voice message as
+    /// `FIELD_AUDIO = [AM_OPUS_OGG, ogg_bytes]`.
+    pub fn send_audio_message(&mut self, request: AudioMessageRequest<'_>) -> Option<String> {
+        self.send_audio_message_with_preference_report(request)
+            .ok()
+            .map(|queued| queued.message_id)
+    }
+
+    /// Fallible first-class audio submission surface for the app command
+    /// layer. This deliberately does not route through generic attachments.
+    pub fn send_audio_message_with_preference_report(
+        &mut self,
+        request: AudioMessageRequest<'_>,
+    ) -> Result<LxmfQueuedMessage, LxmfSubmissionFailure> {
+        let AudioMessageRequest {
+            dest_hash_hex,
+            content,
+            title,
+            audio_bytes,
+            staged_path,
+            db_pool,
+            identity_id,
+            preference,
+        } = request;
+
+        validate_outbound_audio(audio_bytes)?;
+        let content = if content.trim().is_empty() {
+            "Voice message"
+        } else {
+            content
+        };
+        let dest_bytes =
+            hex::decode(dest_hash_hex).map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        if dest_bytes.len() != 16 {
+            return Err(LxmfSubmissionFailure::PreparationFailed);
+        }
+        let mut dest = [0u8; 16];
+        dest.copy_from_slice(&dest_bytes);
+
+        let method = self.pick_delivery_method(
+            db_pool,
+            dest_hash_hex,
+            preference,
+            DeliveryProfile::Attachment,
+        );
+        let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, title, content, method);
+        self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
+        msg.set_audio_field(lxmf_core::constants::AM_OPUS_OGG, audio_bytes)
+            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        debug_assert!(
+            !msg.fields
+                .contains_key(&lxmf_core::constants::FIELD_FILE_ATTACHMENTS)
+        );
+
+        msg.include_ticket = true;
+        self.router
+            .prepare_outbound(&mut msg)
+            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        if let Some(prv_key) = self.identity.get_private_key() {
+            let mut ed_seed = [0u8; 32];
+            ed_seed.copy_from_slice(&prv_key[32..64]);
+            let signing_key = rns_crypto::ed25519::Ed25519PrivateKey::from_bytes(&ed_seed);
+            msg.sign(&signing_key)
+                .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        }
+        normalize_protocol_delivery_method(&mut msg);
+        let packed_len = msg
+            .packed_len()
+            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        let packed_admission_len = packed_len
+            .checked_add(MAX_DEFERRED_STAMP_WIRE_BYTES)
+            .ok_or(LxmfSubmissionFailure::PreparationFailed)?;
+        validate_audio_message_size(packed_admission_len)?;
+
+        let msg_id = msg
+            .hash
+            .map(hex::encode)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let display_timestamp = db::next_conversation_observed_timestamp(
+            db_pool,
+            dest_hash_hex,
+            identity_id,
+            msg.timestamp,
+        );
+
+        self.preempt_opportunistic_path(&mut msg);
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
+        let method = msg.method;
+        let stored_name = match staged_path {
+            Some(path) => self.adopt_staged_attachment(AUDIO_MESSAGE_FILE_NAME, path),
+            None => self.save_attachment(AUDIO_MESSAGE_FILE_NAME, audio_bytes),
+        }
+        .map_err(|_| LxmfSubmissionFailure::StorageFailed)?;
+
+        if db::try_save_message_with_audio(
+            db_pool,
+            &msg_id,
+            &self.lxmf_hash,
+            dest_hash_hex,
+            content,
+            title,
+            display_timestamp,
+            "sending",
+            "outbound",
+            identity_id,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some(delivery_method_name(method)),
+            Some(lxmf_core::constants::AM_OPUS_OGG),
+            &stored_name,
         )
         .is_err()
         {
@@ -5148,6 +5328,38 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_LXMF_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(feature = "lxst-voice")]
+    fn valid_ogg_opus_fixture() -> Vec<u8> {
+        use ogg::writing::{PacketWriteEndInfo, PacketWriter};
+
+        let serial = 0x5253_4155;
+        let mut writer = PacketWriter::new(Vec::new());
+        let mut head = b"OpusHead".to_vec();
+        head.extend_from_slice(&[1, 1]);
+        head.extend_from_slice(&0u16.to_le_bytes());
+        head.extend_from_slice(&24_000u32.to_le_bytes());
+        head.extend_from_slice(&0i16.to_le_bytes());
+        head.push(0);
+        writer
+            .write_packet(head, serial, PacketWriteEndInfo::EndPage, 0)
+            .unwrap();
+        let mut tags = b"OpusTags".to_vec();
+        tags.extend_from_slice(&0u32.to_le_bytes());
+        tags.extend_from_slice(&0u32.to_le_bytes());
+        writer
+            .write_packet(tags, serial, PacketWriteEndInfo::EndPage, 0)
+            .unwrap();
+        writer
+            .write_packet(
+                vec![0xf8, 0xff, 0xfe],
+                serial,
+                PacketWriteEndInfo::EndStream,
+                960,
+            )
+            .unwrap();
+        writer.into_inner()
+    }
 
     fn test_pool() -> DbPool {
         let mgr = SqliteConnectionManager::memory();
@@ -8769,6 +8981,72 @@ mod tests {
     }
 
     #[test]
+    fn audio_requires_full_lxmf_envelope_below_efficient_resource_size() {
+        let limit = rns_protocol::resource::MAX_EFFICIENT_SIZE;
+        assert_eq!(validate_audio_message_size(limit - 1), Ok(()));
+        assert_eq!(
+            validate_audio_message_size(limit),
+            Err(LxmfSubmissionFailure::ResourceLimitExceeded {
+                actual_bytes: limit,
+                limit_bytes: limit,
+            })
+        );
+    }
+
+    #[test]
+    fn deferred_stamp_reserve_matches_actual_packed_lxm_at_efficient_boundary() {
+        fn message_with_audio_len(audio_len: usize) -> LxMessage {
+            let mut message = LxMessage::new(
+                [0x11; 16],
+                [0x22; 16],
+                "",
+                "Voice message",
+                DeliveryMethod::Direct,
+            );
+            message
+                .set_audio_field(lxmf_core::constants::AM_OPUS_OGG, &vec![0; audio_len])
+                .unwrap();
+            message.signature = Some([0x33; 64]);
+            message
+        }
+
+        let limit = rns_protocol::resource::MAX_EFFICIENT_SIZE;
+        let mut audio_len = limit - 512;
+        let unstamped = loop {
+            let message = message_with_audio_len(audio_len);
+            let packed_len = message.packed_len().unwrap();
+            let predicted = packed_len + MAX_DEFERRED_STAMP_WIRE_BYTES;
+            match predicted.cmp(&limit) {
+                std::cmp::Ordering::Equal => break message,
+                std::cmp::Ordering::Less => audio_len += limit - predicted,
+                std::cmp::Ordering::Greater => audio_len -= predicted - limit,
+            }
+        };
+        let unstamped_len = unstamped.packed_len().unwrap();
+        assert_eq!(unstamped_len + MAX_DEFERRED_STAMP_WIRE_BYTES, limit);
+
+        let mut stamped = unstamped.clone();
+        stamped.stamp = Some(vec![0x44; lxmf_core::constants::STAMP_SIZE]);
+        assert_eq!(stamped.packed_len().unwrap(), limit);
+        assert_eq!(
+            validate_audio_message_size(unstamped_len + MAX_DEFERRED_STAMP_WIRE_BYTES),
+            Err(LxmfSubmissionFailure::ResourceLimitExceeded {
+                actual_bytes: limit,
+                limit_bytes: limit,
+            })
+        );
+
+        let mut below = message_with_audio_len(audio_len - 1);
+        let below_unstamped_len = below.packed_len().unwrap();
+        below.stamp = Some(vec![0x55; lxmf_core::constants::STAMP_SIZE]);
+        assert_eq!(below.packed_len().unwrap(), limit - 1);
+        assert_eq!(
+            validate_audio_message_size(below_unstamped_len + MAX_DEFERRED_STAMP_WIRE_BYTES),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn propagated_submission_without_a_router_node_leaves_no_sending_history() {
         let pool = test_pool();
         let mut mgr = test_manager();
@@ -9271,6 +9549,108 @@ mod tests {
 
         assert_eq!(attachment[0].as_str(), Some("note.txt"));
         assert_eq!(attachment[1].as_slice(), Some(&b"hello"[..]));
+    }
+
+    #[cfg(feature = "lxst-voice")]
+    #[test]
+    fn semantic_audio_send_uses_only_field_audio_and_first_class_storage() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "da".repeat(16);
+        let audio_bytes = valid_ogg_opus_fixture();
+
+        let queued = mgr
+            .send_audio_message_with_preference_report(AudioMessageRequest {
+                dest_hash_hex: &dest,
+                content: "",
+                title: "",
+                audio_bytes: &audio_bytes,
+                staged_path: None,
+                db_pool: &pool,
+                identity_id: "me",
+                preference: DeliveryPreference::Direct,
+            })
+            .expect("audio message queued");
+        assert_eq!(queued.method, DeliveryMethod::Direct);
+
+        let message = mgr.router.pending_outbound.first().unwrap();
+        let audio = message.audio_field().unwrap().unwrap();
+        assert_eq!(audio.mode, lxmf_core::constants::AM_OPUS_OGG);
+        assert_eq!(audio.bytes, audio_bytes);
+        assert!(
+            !message
+                .fields
+                .contains_key(&lxmf_core::constants::FIELD_FILE_ATTACHMENTS)
+        );
+
+        let conversation = db::get_conversation(&pool, &dest, "me", 10);
+        let row = conversation
+            .iter()
+            .find(|message| message["id"] == queued.message_id)
+            .unwrap();
+        assert_eq!(row["audio"]["mode"], lxmf_core::constants::AM_OPUS_OGG);
+        assert_eq!(row["audio"]["supported"], true);
+        assert_eq!(row["content"], "Voice message");
+        assert!(row["attachments"].is_null());
+        let stored = row["audio"]["stored_name"].as_str().unwrap();
+        assert_eq!(
+            std::fs::read(mgr.get_received_file(stored).unwrap()).unwrap(),
+            audio_bytes
+        );
+    }
+
+    #[cfg(feature = "lxst-voice")]
+    #[test]
+    fn invalid_audio_is_rejected_before_storage_or_router_admission() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "db".repeat(16);
+
+        let result = mgr.send_audio_message_with_preference_report(AudioMessageRequest {
+            dest_hash_hex: &dest,
+            content: "Voice message",
+            title: "",
+            audio_bytes: b"not an Ogg stream",
+            staged_path: None,
+            db_pool: &pool,
+            identity_id: "me",
+            preference: DeliveryPreference::Direct,
+        });
+
+        assert_eq!(result, Err(LxmfSubmissionFailure::PreparationFailed));
+        assert!(mgr.router.pending_outbound.is_empty());
+        assert!(db::get_conversation(&pool, &dest, "me", 10).is_empty());
+        assert_eq!(std::fs::read_dir(mgr.files_dir()).unwrap().count(), 0);
+    }
+
+    #[cfg(feature = "lxst-voice")]
+    #[test]
+    fn staged_audio_is_adopted_and_queue_failure_rolls_back_database_and_file() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "dc".repeat(16);
+        let audio_bytes = valid_ogg_opus_fixture();
+        let staging = mgr.data_dir.join("private-audio-staging-test");
+        std::fs::write(&staging, &audio_bytes).unwrap();
+
+        let result = mgr.send_audio_message_with_preference_report(AudioMessageRequest {
+            dest_hash_hex: &dest,
+            content: "Voice message",
+            title: "",
+            audio_bytes: &audio_bytes,
+            staged_path: Some(&staging),
+            db_pool: &pool,
+            identity_id: "me",
+            preference: DeliveryPreference::Propagated,
+        });
+
+        assert_eq!(result, Err(LxmfSubmissionFailure::PreparationFailed));
+        assert!(
+            !staging.exists(),
+            "runtime must consume the adopted staging file"
+        );
+        assert!(db::get_conversation(&pool, &dest, "me", 10).is_empty());
+        assert_eq!(std::fs::read_dir(mgr.files_dir()).unwrap().count(), 0);
     }
 
     #[test]

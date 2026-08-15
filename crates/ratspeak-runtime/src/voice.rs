@@ -3,7 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
-#[cfg(any(target_os = "ios", target_os = "android"))]
+#[cfg(any(target_os = "ios", target_os = "android", test))]
 use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc, Mutex,
@@ -3060,7 +3060,6 @@ pub(crate) struct NativeVoiceMemoOutput {
 #[cfg(target_os = "android")]
 pub(crate) struct NativeVoiceMemoOutput {
     progress: Arc<NativeVoiceMemoOutputProgress>,
-    submitted_samples: AtomicU64,
     source_sample_rate: u32,
 }
 
@@ -3122,10 +3121,19 @@ impl NativeVoiceMemoOutput {
         if skip_samples > 0 {
             samples.drain(..skip_samples);
         }
+        let submitted = samples.len() as u64;
         self.queue
             .lock()
             .map_err(|_| "Voice message output queue is unavailable".to_string())?
-            .push_samples(samples)
+            .push_samples(samples)?;
+        self.progress
+            .submitted_samples
+            .fetch_add(submitted, Ordering::AcqRel);
+        Ok(())
+    }
+
+    pub(crate) fn finish_input(&self) {
+        self.progress.input_complete.store(true, Ordering::Release);
     }
 
     pub(crate) fn play(&self) -> VoiceResult<()> {
@@ -3167,7 +3175,7 @@ impl NativeVoiceMemoOutput {
     }
 
     pub(crate) fn buffered_duration_ms(&self) -> u32 {
-        let submitted = self.submitted_samples.load(Ordering::Acquire);
+        let submitted = self.progress.submitted_samples.load(Ordering::Acquire);
         let played = android_voice_audio::played_frames().unwrap_or_default();
         let buffered = submitted.saturating_sub(played);
         ((buffered * 1_000) / u64::from(Self::OUTPUT_SAMPLE_RATE)).min(u64::from(u32::MAX)) as u32
@@ -3187,13 +3195,18 @@ impl NativeVoiceMemoOutput {
             samples.drain(..skip_samples);
         }
         write_android_voice_samples(&samples)?;
-        self.submitted_samples
+        self.progress
+            .submitted_samples
             .fetch_add(samples.len() as u64, Ordering::AcqRel);
         Ok(())
     }
 
+    pub(crate) fn finish_input(&self) {
+        self.progress.input_complete.store(true, Ordering::Release);
+    }
+
     pub(crate) fn play(&self) -> VoiceResult<()> {
-        if self.submitted_samples.load(Ordering::Acquire) == 0 {
+        if self.progress.submitted_samples.load(Ordering::Acquire) == 0 {
             return Err("Voice message decoded to empty PCM".to_string());
         }
         if !android_voice_audio::is_active().unwrap_or(false) {
@@ -3231,7 +3244,8 @@ impl NativeVoiceMemoOutputMonitor {
 #[cfg(target_os = "ios")]
 struct NativeVoiceMemoOutputProgress {
     rendered_samples: AtomicU64,
-    total_samples: u64,
+    submitted_samples: AtomicU64,
+    input_complete: AtomicBool,
     output_sample_rate: u32,
     output_channels: usize,
     start_position_ms: u32,
@@ -3240,7 +3254,8 @@ struct NativeVoiceMemoOutputProgress {
 
 #[cfg(target_os = "android")]
 struct NativeVoiceMemoOutputProgress {
-    total_samples: u64,
+    submitted_samples: AtomicU64,
+    input_complete: AtomicBool,
     output_sample_rate: u32,
     start_position_ms: u32,
     duration_ms: u32,
@@ -3262,7 +3277,11 @@ impl NativeVoiceMemoOutputProgress {
     }
 
     fn finished(&self) -> bool {
-        self.rendered_samples.load(Ordering::Acquire) >= self.total_samples
+        finite_output_finished(
+            &self.input_complete,
+            &self.submitted_samples,
+            self.rendered_samples.load(Ordering::Acquire),
+        )
     }
 }
 
@@ -3280,8 +3299,22 @@ impl NativeVoiceMemoOutputProgress {
     }
 
     fn finished(&self) -> bool {
-        self.played_samples() >= self.total_samples
+        finite_output_finished(
+            &self.input_complete,
+            &self.submitted_samples,
+            self.played_samples(),
+        )
     }
+}
+
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+fn finite_output_finished(
+    input_complete: &AtomicBool,
+    submitted_samples: &AtomicU64,
+    rendered_samples: u64,
+) -> bool {
+    input_complete.load(Ordering::Acquire)
+        && rendered_samples >= submitted_samples.load(Ordering::Acquire)
 }
 
 #[cfg(any(target_os = "ios", test))]
@@ -3380,13 +3413,10 @@ pub(crate) fn start_voice_memo_output(
     let output_channels = usize::from(output_config.channels());
     let output_sample_rate = output_config.sample_rate().0;
     let start_position_ms = start_position_ms.min(duration_ms);
-    let total_samples = u64::from(duration_ms.saturating_sub(start_position_ms))
-        * u64::from(output_sample_rate)
-        * output_channels.max(1) as u64
-        / 1_000;
     let progress = Arc::new(NativeVoiceMemoOutputProgress {
         rendered_samples: AtomicU64::new(0),
-        total_samples,
+        submitted_samples: AtomicU64::new(0),
+        input_complete: AtomicBool::new(false),
         output_sample_rate,
         output_channels,
         start_position_ms,
@@ -3421,21 +3451,18 @@ pub(crate) fn start_voice_memo_output(
 ) -> VoiceResult<NativeVoiceMemoOutput> {
     let output_sample_rate = NativeVoiceMemoOutput::OUTPUT_SAMPLE_RATE;
     let start_position_ms = start_position_ms.min(duration_ms);
-    let total_samples = u64::from(duration_ms.saturating_sub(start_position_ms))
-        * u64::from(output_sample_rate)
-        / 1_000;
     android_voice_audio::start_voice_memo_playback(
         output_sample_rate,
         NativeVoiceMemoOutput::OUTPUT_CHANNELS,
     )?;
     Ok(NativeVoiceMemoOutput {
         progress: Arc::new(NativeVoiceMemoOutputProgress {
-            total_samples,
+            submitted_samples: AtomicU64::new(0),
+            input_complete: AtomicBool::new(false),
             output_sample_rate,
             start_position_ms,
             duration_ms,
         }),
-        submitted_samples: AtomicU64::new(0),
         source_sample_rate,
     })
 }
@@ -4726,5 +4753,37 @@ mod tests {
 
         assert!(queue.push_samples(vec![0.3, 0.4]).is_err());
         assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn finite_memo_completion_uses_exact_submitted_samples_after_input_is_sealed() {
+        let input_complete = AtomicBool::new(false);
+        let submitted_samples = AtomicU64::new(1_608);
+
+        assert!(!finite_output_finished(
+            &input_complete,
+            &submitted_samples,
+            1_608
+        ));
+        input_complete.store(true, Ordering::Release);
+        assert!(!finite_output_finished(
+            &input_complete,
+            &submitted_samples,
+            1_607
+        ));
+        assert!(finite_output_finished(
+            &input_complete,
+            &submitted_samples,
+            1_608
+        ));
+
+        // A seek may leave a non-millisecond-aligned tail as well. Completion
+        // follows the actual enqueued PCM, not a rounded millisecond target.
+        submitted_samples.store(1_296, Ordering::Release);
+        assert!(finite_output_finished(
+            &input_complete,
+            &submitted_samples,
+            1_296
+        ));
     }
 }

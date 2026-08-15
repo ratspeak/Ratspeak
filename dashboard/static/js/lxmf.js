@@ -2360,9 +2360,8 @@ function _updateConversationPreview(hash, previewText, timestamp) {
 
 function _conversationPreviewForMessage(message) {
     if (!message) return '';
-    if (Array.isArray(message.attachments) && message.attachments.some(function(attachment) {
-        return window.RS && RS.voiceMemos && RS.voiceMemos.isAttachment(attachment);
-    })) return 'Voice message';
+    if (message.audio && Number(message.audio.mode) === 0x10) return 'Voice message';
+    if (message.audio) return 'Unsupported audio';
     var content = (message.content || '').trim();
     if (content) return content;
     if (message.image) return 'Photo';
@@ -3288,12 +3287,14 @@ function renderConversation(options) {
             '</div>';
         }
 
+        var audioHtml = '';
+        if (msg.audio && window.RS && RS.voiceMemos) {
+            audioHtml = RS.voiceMemos.renderAudio(msg.audio, msg);
+        }
+
         var attachHtml = '';
         if (msg.attachments && msg.attachments.length > 0) {
             attachHtml = msg.attachments.map(function(att) {
-                if (window.RS && RS.voiceMemos && RS.voiceMemos.isAttachment(att)) {
-                    return RS.voiceMemos.renderAttachment(att, msg);
-                }
                 var sizeStr = att.size ? prettySize(att.size) : '';
                 var nameHtml = att.unavailable
                     ? '<span class="file-name">Attachment unavailable</span>'
@@ -3370,6 +3371,7 @@ function renderConversation(options) {
         if ((msg.image || (msg.attachments && msg.attachments.length > 0)) && displayContent) {
             displayContent = displayContent.replace(/\n?\[File:[^\]]*\]\s*$/, '');
         }
+        if (audioHtml && displayContent.trim() === 'Voice message') displayContent = '';
 
         var hasReactions = reactionHtml ? ' has-reactions' : '';
         var hasImage = !!imageHtml;
@@ -3385,6 +3387,7 @@ function renderConversation(options) {
                 replyHtml +
                 imageHtml +
                 (displayContent ? '<div class="lxmf-msg-content">' + linkifyMessageText(displayContent) + '</div>' : '') +
+                audioHtml +
                 attachHtml +
                 '<div class="lxmf-msg-meta">' + metaHtml + '</div>' +
             '</div>' +
@@ -3841,43 +3844,40 @@ function sendLxmfVoiceMemo(voiceDraft, targetHash, options) {
     options = options || {};
     targetHash = _canonicalConversationHash(targetHash);
     var sendOwner = options.owner || _conversationOwnerSnapshot();
+    var stageToken = String(voiceDraft && voiceDraft.staging_token || '');
     if (!targetHash || targetHash !== _canonicalConversationHash(sendOwner.hash) ||
-        !_conversationOwnerIsCurrent(sendOwner) || !voiceDraft || !voiceDraft.data_base64) {
-        return Promise.reject(new Error('Voice message no longer belongs to this conversation.'));
+        !_conversationOwnerIsCurrent(sendOwner) || !voiceDraft || !stageToken) {
+        if (!stageToken) {
+            return Promise.reject(new Error('Voice message staging is unavailable.'));
+        }
+        return _cancelStagedAttachmentToken(stageToken).then(function() {
+            throw _staleConversationOperationError('Voice message was not sent after changing conversations.');
+        });
     }
     var input = document.getElementById('lxmf-input');
-    if (!input) return Promise.reject(new Error('Message composer is unavailable.'));
-    var msgId = generateMsgId();
-    var filename = voiceDraft.filename || 'Voice message.lxvm';
-    var chosenDelivery = _deliveryPrefOrAuto('auto');
-    var raw;
-    try {
-        raw = atob(voiceDraft.data_base64);
-    } catch (_) {
-        return Promise.reject(new Error('Voice message data is invalid.'));
-    }
-    var voiceBytes = new Uint8Array(raw.length);
-    for (var byteIndex = 0; byteIndex < raw.length; byteIndex++) {
-        voiceBytes[byteIndex] = raw.charCodeAt(byteIndex);
-    }
-    var voiceBlob = new Blob([voiceBytes], { type: 'audio/x-lxst-voice-memo' });
-    return _stageAttachmentBlob(voiceBlob, filename, 'audio/x-lxst-voice-memo', false, targetHash).then(function(stageToken) {
-        if (!_conversationOwnerIsCurrent(sendOwner) ||
-            (typeof options.isCurrent === 'function' && !options.isCurrent())) {
-            return _cancelStagedAttachmentToken(stageToken).then(function() {
-                throw _staleConversationOperationError('Voice message was not sent after changing conversations.');
-            });
-        }
-        if (typeof options.onAdmissionStart === 'function') options.onAdmissionStart();
-        return RS.invoke('send_lxmf_with_staged_attachment', {
-            args: {
-                dest_hash: targetHash,
-                content: '',
-                delivery_method: chosenDelivery,
-                client_msg_id: msgId,
-                staging_token: stageToken,
-            }
+    if (!input) {
+        return _cancelStagedAttachmentToken(stageToken).then(function() {
+            throw new Error('Message composer is unavailable.');
         });
+    }
+    var msgId = generateMsgId();
+    var chosenDelivery = _deliveryPrefOrAuto('auto');
+    if (!_conversationOwnerIsCurrent(sendOwner) ||
+        (typeof options.isCurrent === 'function' && !options.isCurrent())) {
+        return _cancelStagedAttachmentToken(stageToken).then(function() {
+            throw _staleConversationOperationError('Voice message was not sent after changing conversations.');
+        });
+    }
+    if (typeof options.onAdmissionStart === 'function') options.onAdmissionStart();
+    return RS.invoke('send_lxmf_voice_message', {
+        args: {
+            dest_hash: targetHash,
+            delivery_method: chosenDelivery,
+            client_msg_id: msgId,
+            staging_token: stageToken,
+        }
+    }).catch(function(error) {
+        return _cancelStagedAttachmentToken(stageToken).then(function() { throw error; });
     }).then(function(resp) {
         if (!_conversationOwnerIdentityIsCurrent(sendOwner)) return resp;
         var acceptedId = (resp && resp.msg_id) || msgId;
@@ -3885,19 +3885,21 @@ function sendLxmfVoiceMemo(voiceDraft, targetHash, options) {
         var isActive = _appendConversationMessage(targetHash, {
             id: acceptedId,
             direction: 'outbound',
-            content: '',
+            content: 'Voice message',
             timestamp: Date.now() / 1000,
             state: resp && resp.cancelled ? 'cancelled' : 'sending',
             delivery_method: _optimisticDeliveryMethod(chosenDelivery),
-            attachments: [{
-                filename: filename,
+            audio: {
+                mode: 0x10,
+                supported: true,
+                stored_name: '',
                 size: voiceDraft.size || 0,
                 voice_memo_key: acceptedId,
                 voice_memo: {
                     duration_ms: voiceDraft.duration_ms,
                     waveform: voiceDraft.waveform || [],
                 },
-            }],
+            },
         });
         if (isActive) renderConversation({ forceScrollBottom: true });
         _updateConversationPreview(targetHash, 'Voice message', Date.now() / 1000);
@@ -4315,9 +4317,9 @@ function clearPendingFile() {
 
 function setReplyTarget(msgData) {
     var replyContent = (msgData.content || '').substring(0, 100);
-    if (!replyContent && Array.isArray(msgData.attachments) && msgData.attachments.some(function(attachment) {
-        return window.RS && RS.voiceMemos && RS.voiceMemos.isAttachment(attachment);
-    })) replyContent = 'Voice message';
+    if (msgData.audio) {
+        replyContent = Number(msgData.audio.mode) === 0x10 ? 'Voice message' : 'Unsupported audio';
+    }
     _replyTarget = {
         id: msgData.id,
         content: replyContent,

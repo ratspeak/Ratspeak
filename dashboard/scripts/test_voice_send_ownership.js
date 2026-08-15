@@ -41,7 +41,6 @@ function deferred() {
     return { promise: promise, resolve: resolve, reject: reject };
 }
 
-var stage = null;
 var admission = null;
 var calls = [];
 var appended = [];
@@ -54,12 +53,9 @@ var context = {
         activeElement: null,
     },
     Promise: Promise,
-    Blob: Blob,
-    Uint8Array: Uint8Array,
     Error: Error,
     String: String,
     Date: Date,
-    atob: atob,
     lxmfActiveContact: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     _conversationEpoch: 0,
     _conversationIdentityGeneration: 0,
@@ -67,7 +63,6 @@ var context = {
     generateMsgId: function() { return 'client-message'; },
     _deliveryPrefOrAuto: function() { return 'auto'; },
     _optimisticDeliveryMethod: function(value) { return value; },
-    _stageAttachmentBlob: function() { return stage.promise; },
     _appendConversationMessage: function(hash, message) {
         appended.push({ hash: hash, message: message });
         return false;
@@ -81,7 +76,7 @@ var context = {
         invoke: function(command, payload) {
             calls.push({ command: command, payload: payload });
             if (command === 'cancel_attachment_stage') return Promise.resolve({ ok: true });
-            if (command === 'send_lxmf_with_staged_attachment') return admission.promise;
+            if (command === 'send_lxmf_voice_message') return admission.promise;
             return Promise.reject(new Error('Unexpected command: ' + command));
         },
     },
@@ -104,7 +99,8 @@ vm.createContext(context);
 
 function voiceDraft() {
     return {
-        data_base64: 'TFhWTQ==',
+        staging_token: 'stage-default',
+        data_base64: 'T2dnUw==',
         duration_ms: 1200,
         waveform: [1, 2, 3],
         size: 4,
@@ -118,46 +114,44 @@ async function flush() {
 (async function() {
     var hashA = context.lxmfActiveContact;
     var ownerA = context._conversationOwnerSnapshot();
-    stage = deferred();
     admission = deferred();
-    var staleSend = context.sendLxmfVoiceMemo(voiceDraft(), hashA, { owner: ownerA });
     context._activateConversation('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'navigation');
-    stage.resolve('stage-a');
+    var staleDraft = voiceDraft();
+    staleDraft.staging_token = 'stage-a';
+    var staleSend = context.sendLxmfVoiceMemo(staleDraft, hashA, { owner: ownerA });
     await assert.rejects(staleSend, /not sent after changing conversations/);
     assert(calls.some(function(call) {
         return call.command === 'cancel_attachment_stage' && call.payload.token === 'stage-a';
     }), 'navigation before admission must cancel the exact staged payload');
-    assert(!calls.some(function(call) { return call.command === 'send_lxmf_with_staged_attachment'; }),
-        'stale staging must never reach native send admission');
+    assert(!calls.some(function(call) { return call.command === 'send_lxmf_voice_message'; }),
+        'stale voice staging must never reach native send admission');
 
     calls.length = 0;
     context._activateConversation(hashA, 'navigation');
-    var cancelledByRecorder = false;
     var cancelledOwner = context._conversationOwnerSnapshot();
-    stage = deferred();
     admission = deferred();
-    var cancelledSend = context.sendLxmfVoiceMemo(voiceDraft(), hashA, {
+    var cancelledDraft = voiceDraft();
+    cancelledDraft.staging_token = 'stage-cancelled';
+    var cancelledSend = context.sendLxmfVoiceMemo(cancelledDraft, hashA, {
         owner: cancelledOwner,
-        isCurrent: function() { return !cancelledByRecorder; },
+        isCurrent: function() { return false; },
     });
-    cancelledByRecorder = true;
-    stage.resolve('stage-cancelled');
     await assert.rejects(cancelledSend, /not sent after changing conversations/);
     assert(calls.some(function(call) {
         return call.command === 'cancel_attachment_stage' && call.payload.token === 'stage-cancelled';
     }), 'background or explicit retirement before admission must cancel staging even in the same chat');
-    assert(!calls.some(function(call) { return call.command === 'send_lxmf_with_staged_attachment'; }));
+    assert(!calls.some(function(call) { return call.command === 'send_lxmf_voice_message'; }));
 
     calls.length = 0;
     var admittedOwner = context._conversationOwnerSnapshot();
     var admissionStarted = false;
-    stage = deferred();
     admission = deferred();
-    var admittedSend = context.sendLxmfVoiceMemo(voiceDraft(), hashA, {
+    var admittedDraft = voiceDraft();
+    admittedDraft.staging_token = 'stage-b';
+    var admittedSend = context.sendLxmfVoiceMemo(admittedDraft, hashA, {
         owner: admittedOwner,
         onAdmissionStart: function() { admissionStarted = true; },
     });
-    stage.resolve('stage-b');
     await flush();
     assert(admissionStarted, 'the UI must learn the exact native-admission boundary');
     context._activateConversation('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'navigation');
@@ -169,10 +163,10 @@ async function flush() {
     var appendedBeforeIdentityReset = appended.length;
     context._activateConversation(hashA, 'navigation');
     var oldIdentityOwner = context._conversationOwnerSnapshot();
-    stage = deferred();
     admission = deferred();
-    var identityStaleSend = context.sendLxmfVoiceMemo(voiceDraft(), hashA, { owner: oldIdentityOwner });
-    stage.resolve('stage-c');
+    var identityDraft = voiceDraft();
+    identityDraft.staging_token = 'stage-c';
+    var identityStaleSend = context.sendLxmfVoiceMemo(identityDraft, hashA, { owner: oldIdentityOwner });
     await flush();
     context._resetConversationSession('identity_replaced');
     admission.resolve({ msg_id: 'accepted-c' });

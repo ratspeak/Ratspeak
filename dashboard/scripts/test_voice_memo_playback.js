@@ -192,7 +192,16 @@ async function runLatestTimeout() {
 
 (async function() {
     assert(nativeEvents, platformName + ' must subscribe to exact native playback progress events');
-    var html = context.RS.voiceMemos.renderAttachment({
+    var unsupportedHtml = context.RS.voiceMemos.renderAudio({
+        mode: 0x20,
+        supported: false,
+        stored_name: 'unknown-audio.bin',
+    }, { id: 'unsupported-message' });
+    assert(unsupportedHtml.includes('Unsupported audio') && unsupportedHtml.includes('disabled'),
+        'unknown FIELD_AUDIO modes must render a clear disabled row without decode admission');
+    var html = context.RS.voiceMemos.renderAudio({
+        mode: 0x10,
+        supported: true,
         voice_memo_key: 'memo-test',
         voice_memo: { duration_ms: 4000, waveform: [30, 80, 120] },
     }, { id: 'message-test' });
@@ -215,7 +224,7 @@ async function runLatestTimeout() {
     assert.equal(nativeStarts.length, 1, platformName + ' must start one native playback worker');
     assert.equal(nativeStarts[0].data_base64, 'container');
     assert.equal(nativeStarts[0].position_ms, 0);
-    assert.equal(decodeCalls, 0, platformName + ' must not expand LXVM into WAV/base64 IPC');
+    assert.equal(decodeCalls, 0, platformName + ' must not expand Ogg/Opus into WAV/base64 IPC');
     assert.equal(mediaConstructs, 0, platformName + ' must not use WebView media output');
     assert.equal(audioUnlockCalls, 0, 'native mobile output must not depend on Web Audio readiness');
     assert.equal(player.dataset.playbackState, 'starting');
@@ -305,7 +314,9 @@ async function runLatestTimeout() {
 
     context.RS.voiceMemos.releaseInactiveMedia(false);
     draftExpiry.callback();
-    var expiredHtml = context.RS.voiceMemos.renderAttachment({
+    var expiredHtml = context.RS.voiceMemos.renderAudio({
+        mode: 0x10,
+        supported: true,
         voice_memo_key: 'memo-test',
         voice_memo: { duration_ms: 4000, waveform: [30, 80, 120] },
     }, { id: 'message-test' });

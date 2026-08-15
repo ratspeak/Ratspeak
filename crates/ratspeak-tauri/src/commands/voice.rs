@@ -11,8 +11,8 @@ use tokio::io::AsyncReadExt as _;
 
 use crate::commands::shared::{hex_to_array16, resolve_identity_hash};
 use crate::error::{AppError, AppResult};
-use crate::helpers::validate_hex;
-use crate::state::AppState;
+use crate::helpers::{sanitize_text, validate_hex};
+use crate::state::{AppState, AttachmentTransferAdmissionError};
 
 const VOICE_MEMO_START_UNAVAILABLE: &str = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
 const VOICE_MEMO_AUDIO_BUSY: &str =
@@ -80,6 +80,16 @@ pub struct VoiceMemoSessionArgs {
 }
 
 #[derive(Deserialize)]
+pub struct SendLxmfVoiceMessageArgs {
+    pub dest_hash: String,
+    pub staging_token: String,
+    #[serde(default)]
+    pub delivery_method: Option<String>,
+    #[serde(default)]
+    pub client_msg_id: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct VoiceMemoPlaybackLeaseArgs {
     pub lease_id: String,
 }
@@ -105,6 +115,7 @@ pub struct VoiceMemoDecodeStoredArgs {
 #[derive(Serialize)]
 pub struct VoiceMemoDraftResponse {
     pub session_id: String,
+    pub staging_token: String,
     pub filename: String,
     pub mime: String,
     pub data_base64: String,
@@ -286,8 +297,46 @@ pub async fn voice_memo_stop(
         .await
         .map_err(voice_memo_session_error)?;
     let size = draft.data.len();
+    ensure_outbound_voice_memo_size(size)?;
+    let staging_token = Arc::clone(&state)
+        .begin_attachment_staging(
+            crate::voice_memo::VOICE_MEMO_FILENAME.to_string(),
+            crate::voice_memo::VOICE_MEMO_MIME.to_string(),
+            size,
+            false,
+        )
+        .map_err(voice_memo_staging_admission_error)?;
+    let staged_state = Arc::clone(&state);
+    let staged_token = staging_token.clone();
+    let staged_data = draft.data.clone();
+    let written = match tokio::task::spawn_blocking(move || {
+        staged_state.append_attachment_staging(&staged_token, 0, &staged_data)
+    })
+    .await
+    {
+        Ok(Ok(written)) if written == size => written,
+        Ok(Ok(_)) => {
+            let _ = state.cancel_attachment_staging(&staging_token);
+            return Err(AppError::internal("Voice message staging length changed"));
+        }
+        Ok(Err(error)) => {
+            let _ = state.cancel_attachment_staging(&staging_token);
+            return Err(match error.kind() {
+                std::io::ErrorKind::InvalidInput => {
+                    AppError::bad_request("Voice message staging was invalidated")
+                }
+                _ => AppError::internal("Could not stage voice message"),
+            });
+        }
+        Err(_) => {
+            let _ = state.cancel_attachment_staging(&staging_token);
+            return Err(AppError::internal("voice message staging task panicked"));
+        }
+    };
+    debug_assert_eq!(written, size);
     Ok(VoiceMemoDraftResponse {
         session_id: args.session_id,
+        staging_token,
         filename: crate::voice_memo::VOICE_MEMO_FILENAME.to_string(),
         mime: crate::voice_memo::VOICE_MEMO_MIME.to_string(),
         data_base64: B64.encode(&draft.data),
@@ -295,6 +344,23 @@ pub async fn voice_memo_stop(
         duration_ms: draft.duration_ms,
         waveform: draft.waveform,
     })
+}
+
+fn voice_memo_staging_admission_error(error: AttachmentTransferAdmissionError) -> AppError {
+    match error {
+        AttachmentTransferAdmissionError::Busy => {
+            AppError::conflict("Another media transfer is already active")
+        }
+        AttachmentTransferAdmissionError::MemoryPressure => {
+            AppError::service_unavailable("Media transfers are paused while memory recovers")
+        }
+        AttachmentTransferAdmissionError::TooLarge => {
+            AppError::bad_request("Voice message exceeds the supported size")
+        }
+        AttachmentTransferAdmissionError::Storage => {
+            AppError::internal("Could not create private voice message staging")
+        }
+    }
 }
 
 #[tauri::command]
@@ -311,6 +377,62 @@ pub async fn voice_memo_cancel(
 }
 
 #[tauri::command]
+pub async fn send_lxmf_voice_message(
+    state: State<'_, Arc<AppState>>,
+    args: SendLxmfVoiceMessageArgs,
+) -> AppResult<Value> {
+    // Taking the exact token first makes this command single-use. Every early
+    // return below drops the staged owner, which removes its private file and
+    // releases the media-transfer admission lease.
+    let staged = state
+        .take_completed_attachment_staging(&args.staging_token)
+        .ok_or_else(|| AppError::bad_request("Voice message staging is incomplete or expired"))?;
+    if staged.is_image
+        || staged.file_name != crate::voice_memo::VOICE_MEMO_FILENAME
+        || staged.mime != crate::voice_memo::VOICE_MEMO_MIME
+    {
+        return Err(AppError::bad_request("Voice message staging is invalid"));
+    }
+    ensure_outbound_voice_memo_size(staged.declared_size)?;
+
+    let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
+    if !validate_hex(&dest_hash, 16, 64) {
+        return Err(AppError::new(
+            "invalid_destination",
+            "Invalid identity hash",
+        ));
+    }
+    let delivery_pref =
+        crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref());
+    crate::commands::messaging::validate_delivery_preference(&state, delivery_pref)?;
+    let client_msg_id =
+        crate::commands::messaging::normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
+
+    let audio_bytes = read_bounded_voice_memo(staged.path.clone()).await?;
+    if audio_bytes.len() != staged.declared_size {
+        return Err(AppError::new(
+            "audio_storage_failed",
+            "Staged voice message length changed",
+        ));
+    }
+    let inspection_bytes = audio_bytes.clone();
+    tokio::task::spawn_blocking(move || crate::voice_memo::inspect_voice_memo(&inspection_bytes))
+        .await
+        .map_err(|_| AppError::internal("Voice message validation task panicked"))?
+        .map_err(|_| AppError::bad_request("Voice message is not valid bounded Ogg/Opus"))?;
+
+    crate::commands::messaging::queue_prepared_audio(
+        Arc::clone(&state),
+        dest_hash,
+        delivery_pref,
+        client_msg_id,
+        audio_bytes,
+        staged,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn voice_memo_playback_start(
     state: State<'_, Arc<AppState>>,
     args: VoiceMemoPlaybackStartArgs,
@@ -319,7 +441,7 @@ pub async fn voice_memo_playback_start(
     {
         let data = match (args.data_base64, args.stored_name) {
             (Some(encoded), None) => {
-                let max_encoded = crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES
+                let max_encoded = crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES
                     .div_ceil(3)
                     .saturating_mul(4);
                 if encoded.len() > max_encoded {
@@ -408,7 +530,7 @@ pub async fn voice_memo_decode_data(
     state: State<'_, Arc<AppState>>,
     args: VoiceMemoDecodeDataArgs,
 ) -> AppResult<VoiceMemoPlaybackResponse> {
-    let max_encoded = crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES
+    let max_encoded = crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES
         .div_ceil(3)
         .saturating_mul(4);
     if args.data_base64.len() > max_encoded {
@@ -465,8 +587,17 @@ pub async fn voice_memo_inspect_stored(
 }
 
 fn ensure_voice_memo_container_size(size: usize) -> AppResult<()> {
-    if size > crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES {
+    if size > crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES {
         return Err(AppError::bad_request("Voice memo data is too large"));
+    }
+    Ok(())
+}
+
+fn ensure_outbound_voice_memo_size(size: usize) -> AppResult<()> {
+    if size == 0 || size > crate::voice_memo::VOICE_MEMO_MAX_GENERATED_OGG_BYTES {
+        return Err(AppError::bad_request(
+            "Voice message staging is outside the recorder bound",
+        ));
     }
     Ok(())
 }
@@ -482,7 +613,7 @@ async fn read_bounded_voice_memo(path: std::path::PathBuf) -> AppResult<Vec<u8>>
     tokio::fs::File::open(path)
         .await
         .map_err(|_| AppError::not_found("Voice memo not found"))?
-        .take((crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES as u64) + 1)
+        .take((crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES as u64) + 1)
         .read_to_end(&mut data)
         .await
         .map_err(|_| AppError::not_found("Voice memo not found"))?;
@@ -541,24 +672,39 @@ mod tests {
     #[test]
     fn voice_memo_container_limit_rejects_only_oversize() {
         assert!(
-            ensure_voice_memo_container_size(crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES)
-                .is_ok()
+            ensure_voice_memo_container_size(crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES).is_ok()
         );
         let error =
-            ensure_voice_memo_container_size(crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES + 1)
+            ensure_voice_memo_container_size(crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES + 1)
                 .expect_err("oversized memo must be rejected before decode");
         assert_eq!(error.code, "bad_request");
+    }
+
+    #[test]
+    fn outbound_voice_memo_uses_the_generated_ogg_bound() {
+        assert!(ensure_outbound_voice_memo_size(1).is_ok());
+        assert!(
+            ensure_outbound_voice_memo_size(crate::voice_memo::VOICE_MEMO_MAX_GENERATED_OGG_BYTES)
+                .is_ok()
+        );
+        assert!(ensure_outbound_voice_memo_size(0).is_err());
+        assert!(
+            ensure_outbound_voice_memo_size(
+                crate::voice_memo::VOICE_MEMO_MAX_GENERATED_OGG_BYTES + 1
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
     async fn stored_voice_memo_is_rejected_from_metadata_before_read() {
         let path = std::env::temp_dir().join(format!(
-            "ratspeak-voice-oversize-{}-{}.lxvm",
+            "ratspeak-voice-oversize-{}-{}.opus",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
         let file = std::fs::File::create(&path).expect("create sparse fixture");
-        file.set_len((crate::voice_memo::VOICE_MEMO_MAX_CONTAINER_BYTES + 1) as u64)
+        file.set_len((crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES + 1) as u64)
             .expect("set sparse fixture length");
         drop(file);
 

@@ -52,7 +52,9 @@ ids.forEach(function(id) { elements[id] = makeElement(); });
 var documentHandlers = Object.create(null);
 var recordingEvent = null;
 var startRequests = [];
+var stopRequests = [];
 var cancelIds = [];
+var cancelledStageTokens = [];
 var currentHash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 var epoch = 1;
 var identityGeneration = 1;
@@ -118,6 +120,15 @@ var context = {
                 cancelIds.push(payload && payload.args && payload.args.session_id);
                 return Promise.resolve({ ok: true });
             }
+            if (command === 'voice_memo_stop') {
+                var stopRequest = deferred();
+                stopRequests.push(stopRequest);
+                return stopRequest.promise;
+            }
+            if (command === 'cancel_attachment_stage') {
+                cancelledStageTokens.push(payload && payload.token);
+                return Promise.resolve({ cancelled: true });
+            }
             if (command === 'voice_memo_playback_session_stop') return Promise.resolve({ released: true });
             return Promise.reject(new Error('Unexpected command: ' + command));
         },
@@ -179,8 +190,22 @@ async function flush() {
     recordingEvent({ state: 'paused', session_id: 'vmr-0000000000000002' });
     assert.strictEqual(elements['lxmf-voice-recorder'].dataset.state, 'paused');
 
-    await context.RS.voiceMemos.discard();
+    elements['voice-memo-stop-btn'].fire('click');
+    await flush();
+    assert.strictEqual(stopRequests.length, 1);
+    var discardDuringStop = context.RS.voiceMemos.discard();
+    await discardDuringStop;
     assert.strictEqual(cancelIds[cancelIds.length - 1], 'vmr-0000000000000002');
+    stopRequests[0].resolve({
+        session_id: 'vmr-0000000000000002',
+        staging_token: 'staged-voice-after-retirement',
+        data_base64: 'container',
+        duration_ms: 60,
+        waveform: [32],
+    });
+    await flush();
+    assert.deepStrictEqual(cancelledStageTokens, ['staged-voice-after-retirement'],
+        'a stop completion retired by cancellation must remove its exact private staging token');
     console.log('Voice recording ownership tests passed');
 })().catch(function(error) {
     console.error(error);

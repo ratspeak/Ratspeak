@@ -91,11 +91,8 @@
         var seconds = total % 60;
         return minutes + ':' + String(seconds).padStart(2, '0');
     }
-    function isVoiceMemoFilename(filename) {
-        return /\.lxvm$/i.test(String(filename || ''));
-    }
-    function isVoiceMemoAttachment(attachment) {
-        return !!(attachment && isVoiceMemoFilename(attachment.filename || attachment.stored_name));
+    function isAudio(audio) {
+        return Number(audio && audio.mode) === 0x10;
     }
     function announce(text) {
         var node = el('voice-memo-announcer');
@@ -133,7 +130,11 @@
         return result;
     }
     function barsHtml(values, playedFraction) {
-        return downsample(values, BAR_COUNT).map(function(value, index) {
+        values = Array.isArray(values) ? values : [];
+        var bars = values.length
+            ? downsample(values, BAR_COUNT)
+            : Array.from({ length: BAR_COUNT }, function() { return 0; });
+        return bars.map(function(value, index) {
             var normalized = Math.max(0, Math.min(255, Number(value) || 0));
             var height = 4 + Math.round(normalized / 255 * 22);
             var played = typeof playedFraction === 'number' && ((index + 0.5) / BAR_COUNT) <= playedFraction;
@@ -385,7 +386,11 @@
         var generation = recordingGeneration;
         var sessionId = recordingSessionId;
         RS.invoke('voice_memo_stop', recordingCommandArgs()).then(function(result) {
-            if (generation !== recordingGeneration || sessionId !== recordingSessionId) return;
+            if (generation !== recordingGeneration || sessionId !== recordingSessionId) {
+                var staleToken = result && String(result.staging_token || '');
+                if (staleToken) RS.invoke('cancel_attachment_stage', { token: staleToken }).catch(function() {});
+                return;
+            }
             recordingSessionId = '';
             draft = result;
             paused = false;
@@ -413,7 +418,10 @@
         recordingSendAdmissionStarted = false;
         var playbackStopped = stopAnyPlayback();
         var wasCapturing = recorderState === 'recording' || recorderState === 'paused' || recorderState === 'starting' || recorderState === 'stopping';
-        var request = Promise.resolve();
+        var stagedToken = draft && String(draft.staging_token || '');
+        var request = stagedToken
+            ? RS.invoke('cancel_attachment_stage', { token: stagedToken }).catch(function() {})
+            : Promise.resolve();
         if (wasCapturing && sessionId) {
             request = RS.invoke('voice_memo_cancel', { args: { session_id: sessionId } }).catch(function() {});
         } else if (wasCapturing && pendingStart) {
@@ -476,9 +484,12 @@
             voiceHaptic('medium');
         }).catch(function() {
             if (generation !== recordingGeneration) return;
+            draft = null;
+            recordingTarget = '';
+            recordingOwner = null;
             recordingSendAdmissionStarted = false;
-            setRecorderState('review');
-            showToast('Voice message wasn\'t sent. Try again.', 'toast-red', 4200);
+            setRecorderState('idle');
+            showToast('Voice message wasn\'t sent. Record it again to retry.', 'toast-red', 4200);
         });
     }
     function retireAdmittedSendUi() {
@@ -883,21 +894,26 @@
         button.title = playing ? 'Pause preview' : busy ? 'Preparing preview' : 'Play preview';
     }
 
-    function renderAttachment(attachment, message) {
-        var storedName = attachment.stored_name || '';
-        var key = storedName || attachment.voice_memo_key || (message && message.id) || ('memo-' + Math.random());
-        var metadata = (storedName && metadataByStoredName[storedName]) || draftByKey[key] || attachment.voice_memo || null;
+    function renderAudio(audio, message) {
+        if (!audio || typeof audio !== 'object') return '';
+        var storedName = audio.stored_name || '';
+        var key = storedName || audio.voice_memo_key || (message && message.id) || ('memo-' + Math.random());
+        var metadata = (storedName && metadataByStoredName[storedName]) || draftByKey[key] || audio.voice_memo || null;
         var duration = metadata && metadata.duration_ms;
         var waveform = metadata && metadata.waveform;
-        var disabled = !storedName && !draftByKey[key];
-        return '<div class="voice-memo-player' + (disabled ? ' is-loading' : '') + '" data-playback-state="' + (disabled ? 'loading' : 'idle') + '" data-voice-key="' + esc(key) + '" data-stored-name="' + esc(storedName) + '">' +
+        var unsupported = !isAudio(audio) || audio.supported === false;
+        var disabled = unsupported || (!storedName && !draftByKey[key]);
+        var loading = !unsupported && disabled;
+        var initialState = unsupported ? 'error' : disabled ? 'loading' : 'idle';
+        var statusText = unsupported ? 'Unsupported audio' : disabled ? 'Loading' : '';
+        return '<div class="voice-memo-player' + (loading ? ' is-loading' : '') + '" data-playback-state="' + initialState + '" data-voice-key="' + esc(key) + '" data-stored-name="' + esc(storedName) + '" data-audio-supported="' + (unsupported ? '0' : '1') + '">' +
             '<button class="voice-memo-player-play" type="button" aria-label="Play voice message"' + (disabled ? ' disabled' : '') + '>' +
                 '<svg class="voice-memo-player-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + ICON_PLAY + '</svg>' +
                 '<span class="loading-spinner voice-memo-player-spinner" aria-hidden="true"></span>' +
             '</button>' +
             '<div class="voice-memo-player-waveform" role="slider" tabindex="-1" aria-disabled="true" aria-label="Voice message position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' + barsHtml(waveform || [], 0) + '</div>' +
-            '<span class="voice-memo-player-time">' + (duration ? formatDuration(duration) : 'Loading') + '</span>' +
-            '<span class="voice-memo-player-status" role="status" aria-live="polite">' + (disabled ? 'Loading' : '') + '</span>' +
+            '<span class="voice-memo-player-time">' + (duration ? formatDuration(duration) : unsupported ? '--:--' : 'Loading') + '</span>' +
+            '<span class="voice-memo-player-status" role="status" aria-live="polite">' + statusText + '</span>' +
         '</div>';
     }
     function registerDraft(key, value) {
@@ -1193,6 +1209,7 @@
         container.querySelectorAll('.voice-memo-player').forEach(function(player) {
             if (player.dataset.voiceBound === '1') return;
             player.dataset.voiceBound = '1';
+            if (player.dataset.audioSupported === '0') return;
             hydrateMetadata(player);
             var play = player.querySelector('.voice-memo-player-play');
             var waveform = player.querySelector('.voice-memo-player-waveform');
@@ -1368,8 +1385,8 @@
 
     window.RS = window.RS || {};
     RS.voiceMemos = {
-        isAttachment: isVoiceMemoAttachment,
-        renderAttachment: renderAttachment,
+        isAudio: isAudio,
+        renderAudio: renderAudio,
         registerDraft: registerDraft,
         hydratePlayers: hydratePlayers,
         syncComposer: syncComposer,

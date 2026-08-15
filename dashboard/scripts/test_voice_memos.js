@@ -17,7 +17,9 @@ var css = read('dashboard/static/css/09-messaging.css');
 var responsive = read('dashboard/static/css/13-responsive.css');
 var capture = read('crates/ratspeak-runtime/src/voice.rs');
 var runtime = read('crates/ratspeak-runtime/src/voice_memo.rs');
+var oggOpus = read('crates/ratspeak-runtime/src/voice_memo/ogg_opus.rs');
 var commands = read('crates/ratspeak-tauri/src/commands/voice.rs');
+var messagingCommands = read('crates/ratspeak-tauri/src/commands/messaging.rs');
 var tauri = read('src-tauri/src/lib.rs');
 var state = read('dashboard/static/js/state.js');
 var sharedUi = read('dashboard/static/js/ui_shared.js');
@@ -51,6 +53,7 @@ for (var command of [
     'voice_memo_pause',
     'voice_memo_stop',
     'voice_memo_cancel',
+    'send_lxmf_voice_message',
     'voice_memo_playback_start',
     'voice_memo_playback_session_stop',
     'voice_memo_decode_data',
@@ -119,7 +122,7 @@ assert(state.includes('RS.voiceMemos.releaseInactiveMedia(!!(payload && payload.
 assert(voice.includes("RS.audioPlayback.ensure({ installUnlock: true })"),
     'desktop media playback must retain the shared audio unlock path');
 assert(voice.includes("RS.invoke('voice_memo_playback_start'"),
-    'mobile playback must start native PCM output from the bounded LXVM source');
+    'mobile playback must start native PCM output from the bounded Ogg/Opus source');
 assert(voice.includes("RS.invoke('voice_memo_playback_session_stop'"),
     'mobile playback must stop its exact native worker on pause, end, and handoff');
 assert(voice.includes('leaseId = stoppingLease') &&
@@ -146,20 +149,37 @@ assert(voice.includes('class="voice-memo-player-icon"') &&
     !voice.includes('voice-memo-player-icon-play') &&
     !voice.includes('voice-memo-player-icon-pause'),
     'message playback must render exactly one stateful play/pause glyph');
-assert(messaging.includes("_stageAttachmentBlob(voiceBlob"));
-assert(messaging.includes("RS.invoke('send_lxmf_with_staged_attachment'"));
+var voiceSend = messaging.split('function sendLxmfVoiceMemo(')[1].split('window.sendLxmfVoiceMemo')[0];
+assert(voiceSend.includes("RS.invoke('send_lxmf_voice_message'"));
+assert(voiceSend.includes('voiceDraft.staging_token'));
+assert(!voiceSend.includes('send_lxmf_with_staged_attachment'));
+assert(!voiceSend.includes('_stageAttachmentBlob'));
+assert(!voiceSend.includes('data_base64'));
 assert(messaging.includes("_updateConversationPreview(targetHash, 'Voice message'"));
+assert(messaging.includes('if (msg.audio && window.RS && RS.voiceMemos)'));
 assert(messaging.includes('RS.voiceMemos.hydratePlayers(container)'));
+assert(voice.includes('Number(audio && audio.mode) === 0x10'));
+assert(voice.includes('var unsupported = !isAudio(audio) || audio.supported === false'));
+assert(voice.includes('data-audio-supported'));
+assert(voice.includes('Array.from({ length: BAR_COUNT }, function() { return 0; })'),
+    'received audio without decoded metadata must use a neutral waveform');
+assert(commands.includes('begin_attachment_staging('));
+assert(commands.includes('take_completed_attachment_staging(&args.staging_token)'));
+assert(commands.includes('crate::voice_memo::inspect_voice_memo(&inspection_bytes)'));
+assert(commands.includes('crate::commands::messaging::queue_prepared_audio('));
+assert(messagingCommands.includes('send_audio_message_with_preference_report(AudioMessageRequest'));
+assert(!voice.includes('.lxvm') && !messaging.includes('.lxvm') &&
+    !commands.includes('.lxvm') && !messagingCommands.includes('.lxvm'));
 
-assert(runtime.includes('const MAGIC: &[u8; 4] = b"LXVM"'));
-assert(runtime.includes('const VERSION: u8 = 1'));
 assert(runtime.includes('const PROFILE: Profile = Profile::QualityMedium'));
 assert(runtime.includes('VOICE_MEMO_MAX_DURATION_MS: u32 = 5 * 60 * 1_000'));
-assert(runtime.includes('MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE'));
-assert(runtime.includes('parser_rejects_unbounded_counts_before_allocating'));
+assert(runtime.includes('VOICE_MEMO_MAX_GENERATED_OGG_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE'));
+assert(oggOpus.includes('b"OpusHead"') && oggOpus.includes('b"OpusTags"'));
+assert(oggOpus.includes('maximum_recording_ogg_size_matches_the_compile_time_resource_bound'));
+assert(oggOpus.includes('data.len() > VOICE_MEMO_MAX_AUDIO_BYTES'));
 assert(runtime.includes('struct NativeVoiceMemoSource') &&
     runtime.includes('NATIVE_PLAYBACK_REFILL_TARGET_MS'),
-    'native playback must incrementally decode the bounded LXVM frame table');
+    'native playback must incrementally decode the bounded Ogg/Opus packet stream');
 assert(runtime.includes('runtime.block_on(drive_native_playback(') &&
     runtime.includes('command_tx: mpsc::Sender<PlaybackCommand>'),
     'native mobile audio objects must remain inside their dedicated blocking worker');

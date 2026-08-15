@@ -15,8 +15,9 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
 use crate::lxmf::{
-    AttachmentMessageRequest, DeliveryPreference, DeliveryProfile, LxmfManager,
-    LxmfSubmissionFailure, MessageSendRequest, ReactionSendRequest, ReplyMessageSendRequest,
+    AttachmentMessageRequest, AudioMessageRequest, DeliveryPreference, DeliveryProfile,
+    LxmfManager, LxmfSubmissionFailure, MessageSendRequest, ReactionSendRequest,
+    ReplyMessageSendRequest,
 };
 use crate::state::{
     AppState, AttachmentTransferAdmissionError, AttachmentTransferLease,
@@ -77,7 +78,7 @@ fn queue_lxmf_client_send<T>(
         ))
 }
 
-fn normalize_lxmf_client_msg_id(raw: Option<&str>) -> AppResult<Option<String>> {
+pub(crate) fn normalize_lxmf_client_msg_id(raw: Option<&str>) -> AppResult<Option<String>> {
     let Some(raw) = raw else {
         return Ok(None);
     };
@@ -1266,6 +1267,195 @@ async fn queue_prepared_attachment(
     }
 }
 
+#[cfg(feature = "lxst-voice")]
+pub(crate) async fn queue_prepared_audio(
+    state: Arc<AppState>,
+    dest_hash: String,
+    delivery_pref: DeliveryPreference,
+    client_msg_id: Option<String>,
+    audio_bytes: Vec<u8>,
+    staged: StagedAttachment,
+) -> AppResult<Value> {
+    let client_send = begin_lxmf_client_send(&state, client_msg_id.as_ref())?;
+    let activity_fence = state.activity_request_fence();
+    let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    let propagation_readiness = ensure_propagation_ready_for_send(
+        &state,
+        &dest_hash,
+        delivery_pref,
+        DeliveryProfile::Attachment,
+        client_msg_id.as_deref(),
+    )
+    .await;
+    if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
+        return Ok(response);
+    }
+    propagation_readiness?;
+
+    let identity_id = active_identity_id(&state);
+    let st = Arc::clone(&state);
+    let dh = dest_hash.clone();
+    let cancellation = client_send
+        .as_ref()
+        .map(LxmfClientSendGuard::cancellation_probe);
+    let staged_path = staged.path.clone();
+    let (send_result, staged) = tokio::task::spawn_blocking(move || {
+        let attempt = queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
+            Some(
+                manager.send_audio_message_with_preference_report(AudioMessageRequest {
+                    dest_hash_hex: &dh,
+                    content: "Voice message",
+                    title: "",
+                    audio_bytes: &audio_bytes,
+                    staged_path: Some(&staged_path),
+                    db_pool: &st.db,
+                    identity_id: &identity_id,
+                    preference: delivery_pref,
+                }),
+            )
+        });
+        (attempt, staged)
+    })
+    .await
+    .map_err(|_| AppError::internal("send_audio task panicked"))?;
+
+    match send_result {
+        LxmfClientSendAttempt::Queued(Ok(queued)) => {
+            let id = queued.message_id;
+            state.hold_attachment_delivery_lease(id.clone(), staged.into_transfer_lease());
+            if finalize_lxmf_client_send(&state, client_send.as_ref(), &id).await? {
+                return Ok(json!({
+                    "msg_id": id,
+                    "client_msg_id": client_msg_id,
+                    "cancelled": true,
+                }));
+            }
+            schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
+            record_lxmf_delivery_queued(&state, activity_fence, &id, &dest_hash, queued.method);
+            state.emit_to_all(
+                "lxmf_step",
+                json!({
+                    "step": "sending",
+                    "message": "Voice message queued for delivery",
+                    "msg_id": id,
+                    "client_msg_id": client_msg_id,
+                }),
+            );
+            broadcast_conversations(Arc::clone(&state));
+            state.lxmf_notify.notify_one();
+            Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
+        }
+        LxmfClientSendAttempt::Queued(Err(LxmfSubmissionFailure::ResourceLimitExceeded {
+            actual_bytes,
+            limit_bytes,
+        })) => {
+            record_lxmf_submission_failed(
+                &state,
+                activity_fence,
+                &dest_hash,
+                producer::LxmfSubmissionFailureReason::AttachmentEnvelopeTooLarge,
+            );
+            emit_lxmf_send_error(
+                &state,
+                client_msg_id.as_deref(),
+                "audio_envelope_too_large",
+                "Voice message exceeds the protocol resource limit",
+            );
+            Err(AppError::new(
+                "audio_envelope_too_large",
+                format!(
+                    "Voice message uses {actual_bytes} bytes; the protocol limit is {limit_bytes} bytes"
+                ),
+            ))
+        }
+        LxmfClientSendAttempt::Queued(Err(LxmfSubmissionFailure::PreparationFailed)) => {
+            record_lxmf_submission_failed(
+                &state,
+                activity_fence,
+                &dest_hash,
+                producer::LxmfSubmissionFailureReason::PreparationFailed,
+            );
+            emit_lxmf_send_error(
+                &state,
+                client_msg_id.as_deref(),
+                "audio_invalid",
+                "Voice message could not be queued",
+            );
+            Err(AppError::new(
+                "audio_invalid",
+                "Voice message could not be queued",
+            ))
+        }
+        LxmfClientSendAttempt::Queued(Err(LxmfSubmissionFailure::StorageFailed)) => {
+            record_lxmf_submission_failed(
+                &state,
+                activity_fence,
+                &dest_hash,
+                producer::LxmfSubmissionFailureReason::AttachmentStorageFailed,
+            );
+            emit_lxmf_send_error(
+                &state,
+                client_msg_id.as_deref(),
+                "audio_storage_failed",
+                "Voice message storage is unavailable",
+            );
+            Err(AppError::new(
+                "audio_storage_failed",
+                "Voice message storage is unavailable",
+            ))
+        }
+        LxmfClientSendAttempt::Cancelled => Ok(emit_prequeue_lxmf_cancellation(
+            &state,
+            client_msg_id.as_deref().unwrap_or_default(),
+        )),
+        LxmfClientSendAttempt::Failed(reason) => {
+            record_lxmf_submission_failed(&state, activity_fence, &dest_hash, reason);
+            let (code, message, error) = match reason {
+                producer::LxmfSubmissionFailureReason::RouterUnavailable => (
+                    "lxmf_not_initialized",
+                    "LXMF not initialized",
+                    AppError::lxmf_not_initialized("LXMF not initialized"),
+                ),
+                producer::LxmfSubmissionFailureReason::PreparationFailed => (
+                    "audio_invalid",
+                    "Voice message could not be queued",
+                    AppError::new("audio_invalid", "Voice message could not be queued"),
+                ),
+                producer::LxmfSubmissionFailureReason::AttachmentBusy => (
+                    "attachment_busy",
+                    "Another media transfer is already active",
+                    AppError::conflict("Another media transfer is already active"),
+                ),
+                producer::LxmfSubmissionFailureReason::AttachmentMemoryPressure => (
+                    "attachment_memory_pressure",
+                    "Media transfers are paused while memory recovers",
+                    AppError::conflict("Media transfers are paused while memory recovers"),
+                ),
+                producer::LxmfSubmissionFailureReason::AttachmentTooLarge => (
+                    "audio_too_large",
+                    "Voice message exceeds the supported size",
+                    AppError::bad_request("Voice message exceeds the supported size"),
+                ),
+                producer::LxmfSubmissionFailureReason::AttachmentEnvelopeTooLarge => (
+                    "audio_envelope_too_large",
+                    "Voice message exceeds the protocol resource limit",
+                    AppError::bad_request("Voice message exceeds the protocol resource limit"),
+                ),
+                producer::LxmfSubmissionFailureReason::AttachmentStorageFailed => (
+                    "audio_storage_failed",
+                    "Voice message storage is unavailable",
+                    AppError::internal("Voice message storage is unavailable"),
+                ),
+            };
+            emit_lxmf_send_error(&state, client_msg_id.as_deref(), code, message);
+            Err(error)
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn send_lxmf_with_attachment(
     state: State<'_, Arc<AppState>>,
@@ -2294,16 +2484,9 @@ fn clean_download_filename(path: &std::path::Path) -> String {
 }
 
 fn download_mime(path: &std::path::Path) -> String {
-    if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("lxvm"))
-    {
-        "audio/x-lxst-voice-memo".to_string()
-    } else {
-        mime_guess::from_path(path)
-            .first_or_octet_stream()
-            .to_string()
-    }
+    mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .to_string()
 }
 
 fn received_file_path(state: &AppState, stored_name: &str) -> AppResult<std::path::PathBuf> {

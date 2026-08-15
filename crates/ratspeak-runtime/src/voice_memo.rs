@@ -1,37 +1,36 @@
-//! Asynchronous voice memo capture and the Ratspeak LXST voice-memo container.
+//! Asynchronous voice memo capture and standard Ogg/Opus voice-message playback.
 //!
 //! LXST live calls carry raw codec frames inside a realtime session. A voice
 //! memo has different lifecycle and storage requirements, so this module
-//! reuses the trusted LXST Opus implementation while giving asynchronous media
-//! a small, versioned, strictly bounded container of its own.
+//! reuses the trusted LXST Opus implementation and wraps its exact packets in
+//! the interoperable LXMF `FIELD_AUDIO` Ogg/Opus representation.
+
+mod ogg_opus;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cpal::Stream;
-use lxst_core::{CodecKind, Frame, OpusDecoderState, OpusEncoderState, Profile, RawAudioFrame};
+use lxst_core::{OpusEncoderState, OpusMonoDecoder, Profile, RawAudioFrame};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::state::AppState;
 
-pub const VOICE_MEMO_EXTENSION: &str = "lxvm";
-pub const VOICE_MEMO_MIME: &str = "audio/x-lxst-voice-memo";
-pub const VOICE_MEMO_FILENAME: &str = "Voice message.lxvm";
+pub const VOICE_MEMO_EXTENSION: &str = "opus";
+pub const VOICE_MEMO_MIME: &str = "audio/ogg; codecs=opus";
+pub const VOICE_MEMO_FILENAME: &str = "Voice message.opus";
 pub const VOICE_MEMO_MAX_DURATION_MS: u32 = 5 * 60 * 1_000;
+pub const VOICE_MEMO_MAX_AUDIO_BYTES: usize = 1_000_000;
 
-const MAGIC: &[u8; 4] = b"LXVM";
-const VERSION: u8 = 1;
 const PROFILE: Profile = Profile::QualityMedium;
-const PROFILE_WIRE: u8 = 0x40;
-const HEADER_LEN: usize = 16;
 const FRAME_MS: u32 = 60;
 const MAX_FRAME_COUNT: usize = (VOICE_MEMO_MAX_DURATION_MS / FRAME_MS) as usize;
-const MAX_FRAME_PAYLOAD: usize = 60;
-pub const VOICE_MEMO_MAX_CONTAINER_BYTES: usize =
-    HEADER_LEN + MAX_FRAME_COUNT * (1 + std::mem::size_of::<u16>() + MAX_FRAME_PAYLOAD);
+const MAX_RECORDING_PACKET_BYTES: usize = 60;
+pub const VOICE_MEMO_MAX_GENERATED_OGG_BYTES: usize = 313_550;
 const RECORDING_STOP_DRAIN_TIMEOUT: Duration = Duration::from_millis(180);
 const RECORDING_SESSION_PREFIX: &str = "vmr-";
 const PLAYBACK_LEASE_PREFIX: &str = "vmp-";
@@ -75,12 +74,6 @@ pub struct VoiceMemoPlayback {
     pub waveform: Vec<u8>,
     pub sample_rate_hz: u32,
     pub channels: u8,
-}
-
-struct DecodedVoiceMemo {
-    frames: Vec<RawAudioFrame>,
-    duration_ms: u32,
-    waveform: Vec<u8>,
 }
 
 #[cfg(any(target_os = "ios", target_os = "android"))]
@@ -176,63 +169,92 @@ enum PlaybackCommand {
     Stop { reply: oneshot::Sender<u32> },
 }
 
-#[cfg(any(target_os = "ios", target_os = "android", test))]
 struct NativeVoiceMemoSource {
-    decoder: OpusDecoderState,
-    frames: std::vec::IntoIter<Vec<u8>>,
-    first_frame_skip_ms: u32,
+    decoder: OpusMonoDecoder,
+    packets: std::vec::IntoIter<Vec<u8>>,
+    discard_samples_48k: u64,
+    remaining_samples_48k: u64,
+    output_gain: f32,
     exhausted: bool,
 }
 
-#[cfg(any(target_os = "ios", target_os = "android", test))]
 impl NativeVoiceMemoSource {
-    fn new(frames: Vec<Vec<u8>>, position_ms: u32) -> VoiceMemoResult<Self> {
-        let mut decoder = OpusDecoderState::new(PROFILE)
+    fn new(parsed: ogg_opus::ParsedOggOpus, position_ms: u32) -> VoiceMemoResult<Self> {
+        let decoder = OpusMonoDecoder::new()
             .map_err(|error| format!("Could not initialize voice memo playback: {error}"))?;
-        let mut frames = frames.into_iter();
-        for _ in 0..(position_ms / FRAME_MS) {
-            let payload = frames
-                .next()
-                .ok_or_else(|| "Voice message seek position is invalid".to_string())?;
-            decode_native_frame(&mut decoder, payload)?;
-        }
+        let position_samples_48k = u64::from(position_ms)
+            .saturating_mul(48)
+            .min(parsed.metadata.playable_samples_48k);
+        let discard_samples_48k = u64::from(parsed.metadata.pre_skip_48k)
+            .checked_add(position_samples_48k)
+            .ok_or_else(|| "Voice message seek position overflows".to_string())?;
+        let remaining_samples_48k = parsed.metadata.playable_samples_48k - position_samples_48k;
+        let output_gain = 10.0f32.powf(f32::from(parsed.metadata.output_gain_q8) / (20.0 * 256.0));
         Ok(Self {
             decoder,
-            frames,
-            first_frame_skip_ms: position_ms % FRAME_MS,
-            exhausted: false,
+            packets: parsed.packets.into_iter(),
+            discard_samples_48k,
+            remaining_samples_48k,
+            output_gain,
+            exhausted: remaining_samples_48k == 0,
         })
     }
 
-    fn next_decoded(&mut self) -> VoiceMemoResult<Option<(RawAudioFrame, u32)>> {
-        let Some(payload) = self.frames.next() else {
-            self.exhausted = true;
-            return Ok(None);
-        };
-        let frame = decode_native_frame(&mut self.decoder, payload)?;
-        Ok(Some((frame, std::mem::take(&mut self.first_frame_skip_ms))))
+    fn next_decoded(&mut self) -> VoiceMemoResult<Option<RawAudioFrame>> {
+        while !self.exhausted {
+            let Some(packet) = self.packets.next() else {
+                self.exhausted = true;
+                if self.remaining_samples_48k != 0 {
+                    return Err("Voice message ended before its final granule".to_string());
+                }
+                return Ok(None);
+            };
+            let frame = self
+                .decoder
+                .decode_packet(&packet)
+                .map_err(|error| format!("Could not decode voice memo audio: {error}"))?;
+            let frame_samples = frame.samples.len() as u64;
+            if self.discard_samples_48k >= frame_samples {
+                self.discard_samples_48k -= frame_samples;
+                continue;
+            }
+            let start = usize::try_from(std::mem::take(&mut self.discard_samples_48k))
+                .map_err(|_| "Voice message trim overflows".to_string())?;
+            let available = frame.samples.len() - start;
+            let take =
+                available.min(usize::try_from(self.remaining_samples_48k).unwrap_or(usize::MAX));
+            if take == 0 {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let samples = frame.samples[start..start + take]
+                .iter()
+                .map(|sample| (sample * self.output_gain).clamp(-1.0, 1.0))
+                .collect::<Vec<_>>();
+            self.remaining_samples_48k -= take as u64;
+            if self.remaining_samples_48k == 0 {
+                self.exhausted = true;
+            }
+            return RawAudioFrame::new(1, samples)
+                .map(Some)
+                .map_err(|error| format!("Could not prepare voice memo audio: {error}"));
+        }
+        Ok(None)
     }
 
     #[cfg(any(target_os = "ios", target_os = "android"))]
     fn refill(&mut self, output: &crate::voice::NativeVoiceMemoOutput) -> VoiceMemoResult<()> {
         while !self.exhausted && output.buffered_duration_ms() < NATIVE_PLAYBACK_REFILL_TARGET_MS {
-            let Some((frame, skip_ms)) = self.next_decoded()? else {
+            let Some(frame) = self.next_decoded()? else {
                 break;
             };
-            output.enqueue_frame(&frame, skip_ms)?;
+            output.enqueue_frame(&frame, 0)?;
+        }
+        if self.exhausted {
+            output.finish_input();
         }
         Ok(())
     }
-}
-
-#[cfg(any(target_os = "ios", target_os = "android", test))]
-fn decode_native_frame(
-    decoder: &mut OpusDecoderState,
-    payload: Vec<u8>,
-) -> VoiceMemoResult<RawAudioFrame> {
-    decoder
-        .decode_frame(&Frame::new(CodecKind::Opus, payload))
-        .map_err(|error| format!("Could not decode voice memo audio: {error}"))
 }
 
 struct RecordingActor {
@@ -565,7 +587,7 @@ pub async fn start_native_playback(
 ) -> VoiceMemoResult<VoiceMemoNativePlaybackStarted> {
     let parsed = {
         let _decode = state.voice_memo_decode_lock.lock().await;
-        tokio::task::spawn_blocking(move || parse_container(&data))
+        tokio::task::spawn_blocking(move || ogg_opus::parse_ogg_opus(&data))
             .await
             .map_err(|_| "Voice message decoder task panicked".to_string())??
     };
@@ -580,21 +602,20 @@ pub async fn start_native_playback(
     invalidate_playback_session_locked(state).await;
 
     let lease_id = next_nonzero_generation(&state.voice_memo_playback_generation);
-    let duration_ms = parsed.duration_ms;
+    let duration_ms = parsed.metadata.duration_ms;
     let position_ms = if requested_position_ms >= duration_ms {
         0
     } else {
         requested_position_ms
     };
-    let waveform = parsed.waveform;
-    let frames = parsed.frames;
+    let waveform = Vec::new();
     let (command_tx, command_rx) = mpsc::channel(1);
     let (started_tx, started_rx) = oneshot::channel();
     let (committed_tx, committed_rx) = oneshot::channel();
     let runtime = tokio::runtime::Handle::current();
     let worker_state = Arc::clone(state);
     let task = tokio::task::spawn_blocking(move || {
-        let mut source = match NativeVoiceMemoSource::new(frames, position_ms) {
+        let mut source = match NativeVoiceMemoSource::new(parsed, position_ms) {
             Ok(source) => source,
             Err(error) => {
                 let _ = started_tx.send(Err(error));
@@ -609,11 +630,7 @@ pub async fn start_native_playback(
                     return;
                 }
             };
-        let output = match crate::voice::start_voice_memo_output(
-            PROFILE.sample_rate_hz(),
-            position_ms,
-            duration_ms,
-        ) {
+        let output = match crate::voice::start_voice_memo_output(48_000, position_ms, duration_ms) {
             Ok(output) => output,
             Err(error) => {
                 let _ = started_tx.send(Err(error));
@@ -969,7 +986,7 @@ fn encode_captured_frame(
     let encoded = encoder
         .encode_frame(&frame)
         .map_err(|error| format!("Could not encode voice memo audio: {error}"))?;
-    if encoded.payload.is_empty() || encoded.payload.len() > MAX_FRAME_PAYLOAD {
+    if encoded.payload.is_empty() || encoded.payload.len() > MAX_RECORDING_PACKET_BYTES {
         return Err("Voice memo encoder produced an invalid frame".to_string());
     }
     frames.push(encoded.payload);
@@ -999,8 +1016,16 @@ fn finish_draft(frames: Vec<Vec<u8>>, waveform: Vec<u8>) -> VoiceMemoResult<Voic
     if frames.is_empty() {
         return Err("No microphone audio was captured. Try recording again.".to_string());
     }
+    if frames.len() != waveform.len() || frames.len() > MAX_FRAME_COUNT {
+        return Err("Voice memo frame metadata is invalid".to_string());
+    }
     let duration_ms = duration_for_frames(frames.len());
-    let data = encode_container(&frames, &waveform)?;
+    let serial = u32::from_le_bytes(
+        Uuid::new_v4().as_bytes()[..4]
+            .try_into()
+            .expect("UUID serial slice"),
+    );
+    let data = ogg_opus::mux_opus_packets(&frames, serial)?;
     Ok(VoiceMemoDraft {
         data,
         duration_ms,
@@ -1012,164 +1037,62 @@ fn duration_for_frames(frame_count: usize) -> u32 {
     (frame_count as u32).saturating_mul(FRAME_MS)
 }
 
-fn encode_container(frames: &[Vec<u8>], waveform: &[u8]) -> VoiceMemoResult<Vec<u8>> {
-    if frames.is_empty() || frames.len() > MAX_FRAME_COUNT || frames.len() != waveform.len() {
-        return Err("Voice memo frame metadata is invalid".to_string());
-    }
-    let frame_count = u16::try_from(frames.len())
-        .map_err(|_| "Voice memo contains too many frames".to_string())?;
-    let mut data = Vec::with_capacity(
-        HEADER_LEN + waveform.len() + frames.iter().map(|frame| frame.len() + 2).sum::<usize>(),
-    );
-    data.extend_from_slice(MAGIC);
-    data.push(VERSION);
-    data.push(PROFILE_WIRE);
-    data.extend_from_slice(&0u16.to_be_bytes());
-    data.extend_from_slice(&duration_for_frames(frames.len()).to_be_bytes());
-    data.extend_from_slice(&frame_count.to_be_bytes());
-    data.extend_from_slice(&frame_count.to_be_bytes());
-    data.extend_from_slice(waveform);
-    for frame in frames {
-        if frame.is_empty() || frame.len() > MAX_FRAME_PAYLOAD {
-            return Err("Voice memo contains an invalid Opus frame".to_string());
-        }
-        let length = frame.len() as u16;
-        data.extend_from_slice(&length.to_be_bytes());
-        data.extend_from_slice(frame);
-    }
-    if data.len() > VOICE_MEMO_MAX_CONTAINER_BYTES {
-        return Err("Voice memo exceeds the container limit".to_string());
-    }
-    Ok(data)
-}
-
-struct ParsedVoiceMemo {
-    duration_ms: u32,
-    waveform: Vec<u8>,
-    frames: Vec<Vec<u8>>,
-}
-
-fn parse_container(data: &[u8]) -> VoiceMemoResult<ParsedVoiceMemo> {
-    if data.len() < HEADER_LEN || data.len() > VOICE_MEMO_MAX_CONTAINER_BYTES {
-        return Err("Voice memo size is invalid".to_string());
-    }
-    if &data[..4] != MAGIC {
-        return Err("Voice memo header is invalid".to_string());
-    }
-    if data[4] != VERSION {
-        return Err("Voice memo version is not supported".to_string());
-    }
-    if data[5] != PROFILE_WIRE || u16::from_be_bytes([data[6], data[7]]) != 0 {
-        return Err("Voice memo codec profile is not supported".to_string());
-    }
-    let duration_ms = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-    let waveform_count = usize::from(u16::from_be_bytes([data[12], data[13]]));
-    let frame_count = usize::from(u16::from_be_bytes([data[14], data[15]]));
-    if frame_count == 0
-        || frame_count > MAX_FRAME_COUNT
-        || waveform_count != frame_count
-        || duration_ms != duration_for_frames(frame_count)
-        || duration_ms > VOICE_MEMO_MAX_DURATION_MS
-    {
-        return Err("Voice memo metadata is invalid".to_string());
-    }
-    let waveform_end = HEADER_LEN
-        .checked_add(waveform_count)
-        .ok_or_else(|| "Voice memo metadata overflows".to_string())?;
-    if waveform_end > data.len() {
-        return Err("Voice memo waveform is truncated".to_string());
-    }
-    let waveform = data[HEADER_LEN..waveform_end].to_vec();
-    let mut cursor = waveform_end;
-    let mut frames = Vec::with_capacity(frame_count);
-    for _ in 0..frame_count {
-        let length_end = cursor
-            .checked_add(2)
-            .ok_or_else(|| "Voice memo frame length overflows".to_string())?;
-        if length_end > data.len() {
-            return Err("Voice memo frame table is truncated".to_string());
-        }
-        let length = usize::from(u16::from_be_bytes([data[cursor], data[cursor + 1]]));
-        if length == 0 || length > MAX_FRAME_PAYLOAD {
-            return Err("Voice memo contains an invalid Opus frame".to_string());
-        }
-        cursor = length_end;
-        let frame_end = cursor
-            .checked_add(length)
-            .ok_or_else(|| "Voice memo frame length overflows".to_string())?;
-        if frame_end > data.len() {
-            return Err("Voice memo audio is truncated".to_string());
-        }
-        frames.push(data[cursor..frame_end].to_vec());
-        cursor = frame_end;
-    }
-    if cursor != data.len() {
-        return Err("Voice memo has unexpected trailing data".to_string());
-    }
-    Ok(ParsedVoiceMemo {
-        duration_ms,
-        waveform,
-        frames,
-    })
-}
-
-fn decode_voice_memo_frames(data: &[u8]) -> VoiceMemoResult<DecodedVoiceMemo> {
-    let parsed = parse_container(data)?;
-    let mut decoder = OpusDecoderState::new(PROFILE)
-        .map_err(|error| format!("Could not initialize voice memo playback: {error}"))?;
-    let mut frames = Vec::with_capacity(parsed.frames.len());
-    for payload in &parsed.frames {
-        frames.push(
-            decoder
-                .decode_frame(&Frame::new(CodecKind::Opus, payload.clone()))
-                .map_err(|error| format!("Could not decode voice memo audio: {error}"))?,
-        );
-    }
-    Ok(DecodedVoiceMemo {
-        frames,
-        duration_ms: parsed.duration_ms,
-        waveform: parsed.waveform,
-    })
-}
-
 pub fn decode_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoPlayback> {
-    let decoded = decode_voice_memo_frames(data)?;
-    let mut pcm = Vec::<i16>::with_capacity(
-        decoded.frames.len() * PROFILE.sample_frames_per_packet() * usize::from(PROFILE.channels()),
-    );
-    for frame in &decoded.frames {
-        pcm.extend(
-            frame
-                .samples
-                .iter()
-                .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16),
-        );
+    let parsed = ogg_opus::parse_ogg_opus(data)?;
+    let duration_ms = parsed.metadata.duration_ms;
+    let capacity = usize::try_from(parsed.metadata.playable_samples_48k)
+        .map_err(|_| "Decoded voice memo is too large".to_string())?;
+    let mut source = NativeVoiceMemoSource::new(parsed, 0)?;
+    let mut wav_data = begin_pcm16_wav(capacity, 48_000, 1)?;
+    let mut waveform = Vec::with_capacity(duration_ms.div_ceil(FRAME_MS) as usize);
+    let mut bucket_peak = 0.0f32;
+    let mut bucket_samples = 0usize;
+    while let Some(frame) = source.next_decoded()? {
+        for sample in frame.samples {
+            bucket_peak = bucket_peak.max(sample.abs());
+            bucket_samples += 1;
+            let pcm = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
+            wav_data.extend_from_slice(&pcm.to_le_bytes());
+            if bucket_samples == 2_880 {
+                waveform.push((bucket_peak.sqrt() * 255.0).round() as u8);
+                bucket_peak = 0.0;
+                bucket_samples = 0;
+            }
+        }
     }
-    let wav_data = encode_pcm16_wav(&pcm, PROFILE.sample_rate_hz(), PROFILE.channels())?;
+    if bucket_samples != 0 {
+        waveform.push((bucket_peak.sqrt() * 255.0).round() as u8);
+    }
+    let expected_wav_len = capacity
+        .checked_mul(2)
+        .and_then(|bytes| 44usize.checked_add(bytes))
+        .ok_or_else(|| "Decoded voice memo is too large".to_string())?;
+    if wav_data.len() != expected_wav_len {
+        return Err("Decoded voice memo sample count does not match its granules".to_string());
+    }
     Ok(VoiceMemoPlayback {
         wav_data,
-        duration_ms: decoded.duration_ms,
-        waveform: decoded.waveform,
-        sample_rate_hz: PROFILE.sample_rate_hz(),
-        channels: PROFILE.channels(),
+        duration_ms,
+        waveform,
+        sample_rate_hz: 48_000,
+        channels: 1,
     })
 }
 
 pub fn inspect_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoMetadata> {
-    let parsed = parse_container(data)?;
+    let parsed = ogg_opus::parse_ogg_opus(data)?;
     Ok(VoiceMemoMetadata {
-        duration_ms: parsed.duration_ms,
-        waveform: parsed.waveform,
+        duration_ms: parsed.metadata.duration_ms,
+        waveform: Vec::new(),
     })
 }
 
-fn encode_pcm16_wav(
-    samples: &[i16],
+fn begin_pcm16_wav(
+    sample_count: usize,
     sample_rate_hz: u32,
     channels: u8,
 ) -> VoiceMemoResult<Vec<u8>> {
-    let data_len = samples
-        .len()
+    let data_len = sample_count
         .checked_mul(2)
         .and_then(|length| u32::try_from(length).ok())
         .ok_or_else(|| "Decoded voice memo is too large".to_string())?;
@@ -1194,15 +1117,13 @@ fn encode_pcm16_wav(
     wav.extend_from_slice(&16u16.to_le_bytes());
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_len.to_le_bytes());
-    for sample in samples {
-        wav.extend_from_slice(&sample.to_le_bytes());
-    }
     Ok(wav)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lxst_core::{AudioCodec, OpusProfile};
 
     fn synthetic_frames(count: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
         let mut encoder = OpusEncoderState::new(PROFILE).unwrap();
@@ -1223,6 +1144,30 @@ mod tests {
             .collect::<Vec<_>>();
         let waveform = (0..count).map(|index| (index % 255) as u8).collect();
         (frames, waveform)
+    }
+
+    fn recording_contract_packets() -> Vec<Vec<u8>> {
+        let mut encoder = OpusEncoderState::new(PROFILE).unwrap();
+        (0..4)
+            .map(|packet_index| {
+                let samples = (0..PROFILE.sample_frames_per_packet())
+                    .map(|sample| match ((packet_index * 17 + sample) / 120) % 8 {
+                        0 => 0.0,
+                        1 => 0.125,
+                        2 => 0.25,
+                        3 => 0.125,
+                        4 => 0.0,
+                        5 => -0.125,
+                        6 => -0.25,
+                        _ => -0.125,
+                    })
+                    .collect::<Vec<_>>();
+                encoder
+                    .encode_frame(&RawAudioFrame::new(1, samples).unwrap())
+                    .unwrap()
+                    .payload
+            })
+            .collect()
     }
 
     #[test]
@@ -1251,30 +1196,69 @@ mod tests {
     }
 
     #[test]
-    fn container_round_trip_retains_lxst_frames_for_native_output() {
-        let (frames, waveform) = synthetic_frames(8);
-        let encoded = encode_container(&frames, &waveform).unwrap();
-        let decoded = decode_voice_memo_frames(&encoded).unwrap();
+    fn recording_profile_and_packet_fixture_are_frozen_before_ogg_wrapping() {
+        assert_eq!(PROFILE, Profile::QualityMedium);
+        assert_eq!(PROFILE.sample_rate_hz(), 24_000);
+        assert_eq!(PROFILE.channels(), 1);
+        assert_eq!(PROFILE.frame_time_ms(), 60);
+        assert_eq!(PROFILE.sample_frames_per_packet(), 1_440);
+        assert_eq!(PROFILE.opus_payload_ceiling_bytes(), Some(60));
+        assert_eq!(
+            PROFILE.audio_codec(),
+            AudioCodec::Opus(OpusProfile::VoiceMedium)
+        );
+        assert_eq!(OpusProfile::VoiceMedium.bitrate_ceiling(), 8_000);
 
-        assert_eq!(decoded.duration_ms, 8 * FRAME_MS);
-        assert_eq!(decoded.waveform, waveform);
-        assert_eq!(decoded.frames.len(), 8);
-        assert!(decoded.frames.iter().all(|frame| {
-            frame.channels == PROFILE.channels()
-                && frame.sample_frames() == PROFILE.sample_frames_per_packet()
-                && frame.samples.iter().any(|sample| sample.abs() > 0.001)
-        }));
+        let packets = recording_contract_packets();
+        let lengths = packets.iter().map(Vec::len).collect::<Vec<_>>();
+        let mut length_prefixed = Vec::new();
+        for packet in packets {
+            length_prefixed.extend_from_slice(&(packet.len() as u16).to_be_bytes());
+            length_prefixed.extend_from_slice(&packet);
+        }
+        let digest = hex::encode(rns_crypto::sha::sha256(&length_prefixed));
+
+        assert_eq!(lengths, vec![53, 56, 56, 54]);
+        assert!(lengths.windows(2).any(|window| window[0] != window[1]));
+        assert_eq!(
+            digest,
+            "09a4f9cbc808eee88cd3619aaae3bf478f784a8799dfc81c8256c8886091be8e"
+        );
+    }
+
+    #[test]
+    fn ogg_round_trip_retains_lxst_packets_byte_for_byte() {
+        let (frames, waveform) = synthetic_frames(8);
+        let hashes = frames
+            .iter()
+            .map(|packet| rns_crypto::sha::sha256(packet))
+            .collect::<Vec<_>>();
+        let encoded = ogg_opus::mux_opus_packets(&frames, 42).unwrap();
+        let parsed = ogg_opus::parse_ogg_opus(&encoded).unwrap();
+
+        assert_eq!(parsed.metadata.duration_ms, 8 * FRAME_MS);
+        assert_eq!(parsed.packets, frames);
+        assert_eq!(
+            parsed
+                .packets
+                .iter()
+                .map(|packet| rns_crypto::sha::sha256(packet))
+                .collect::<Vec<_>>(),
+            hashes
+        );
+        assert_eq!(waveform.len(), 8);
     }
 
     #[test]
     fn incremental_native_source_primes_opus_state_and_keeps_exact_seek_offset() {
         let (frames, _) = synthetic_frames(8);
-        let mut source = NativeVoiceMemoSource::new(frames, 150).unwrap();
+        let encoded = ogg_opus::mux_opus_packets(&frames, 43).unwrap();
+        let parsed = ogg_opus::parse_ogg_opus(&encoded).unwrap();
+        let mut source = NativeVoiceMemoSource::new(parsed, 150).unwrap();
 
-        let (first, skip_ms) = source.next_decoded().unwrap().unwrap();
-        assert_eq!(skip_ms, 30);
-        assert_eq!(first.channels, PROFILE.channels());
-        assert_eq!(first.sample_frames(), PROFILE.sample_frames_per_packet());
+        let first = source.next_decoded().unwrap().unwrap();
+        assert_eq!(first.channels, 1);
+        assert_eq!(first.sample_frames(), 1_440);
 
         let mut remaining = 0;
         while source.next_decoded().unwrap().is_some() {
@@ -1285,13 +1269,57 @@ mod tests {
     }
 
     #[test]
-    fn container_round_trip_decodes_to_bounded_wav() {
-        let (frames, waveform) = synthetic_frames(8);
-        let encoded = encode_container(&frames, &waveform).unwrap();
+    fn native_source_applies_sample_exact_pre_skip_seek_and_end_trim() {
+        let (frames, _) = synthetic_frames(3);
+        let encoded = ogg_opus::mux_opus_packets_with_timing(&frames, 46, 312, 480, 0, 0).unwrap();
+        let parsed = ogg_opus::parse_ogg_opus(&encoded).unwrap();
+        let mut source = NativeVoiceMemoSource::new(parsed, 17).unwrap();
+        let mut samples = 0usize;
+        while let Some(frame) = source.next_decoded().unwrap() {
+            samples += frame.sample_frames();
+        }
+
+        assert_eq!(samples, 7_032);
+        assert!(source.exhausted);
+    }
+
+    #[test]
+    fn native_source_applies_positive_and_negative_opus_header_gain() {
+        fn decoded_peak(data: &[u8]) -> f32 {
+            let parsed = ogg_opus::parse_ogg_opus(data).unwrap();
+            let mut source = NativeVoiceMemoSource::new(parsed, 0).unwrap();
+            let mut peak = 0.0f32;
+            while let Some(frame) = source.next_decoded().unwrap() {
+                peak = frame
+                    .samples
+                    .iter()
+                    .fold(peak, |current, sample| current.max(sample.abs()));
+            }
+            peak
+        }
+
+        let packets = recording_contract_packets();
+        let neutral = ogg_opus::mux_opus_packets_with_timing(&packets, 47, 0, 0, 0, 0).unwrap();
+        let positive =
+            ogg_opus::mux_opus_packets_with_timing(&packets, 48, 0, 0, 0, 6 * 256).unwrap();
+        let negative =
+            ogg_opus::mux_opus_packets_with_timing(&packets, 49, 0, 0, 0, -6 * 256).unwrap();
+        let neutral_peak = decoded_peak(&neutral);
+        let positive_ratio = decoded_peak(&positive) / neutral_peak;
+        let negative_ratio = decoded_peak(&negative) / neutral_peak;
+
+        assert!((1.95..=2.05).contains(&positive_ratio));
+        assert!((0.49..=0.51).contains(&negative_ratio));
+    }
+
+    #[test]
+    fn ogg_round_trip_decodes_to_bounded_wav() {
+        let (frames, _) = synthetic_frames(8);
+        let encoded = ogg_opus::mux_opus_packets(&frames, 44).unwrap();
         let playback = decode_voice_memo(&encoded).unwrap();
         assert_eq!(playback.duration_ms, 8 * FRAME_MS);
-        assert_eq!(playback.waveform, waveform);
-        assert_eq!(playback.sample_rate_hz, 24_000);
+        assert_eq!(playback.waveform.len(), 8);
+        assert_eq!(playback.sample_rate_hz, 48_000);
         assert_eq!(playback.channels, 1);
         assert_eq!(&playback.wav_data[..4], b"RIFF");
         assert_eq!(&playback.wav_data[8..12], b"WAVE");
@@ -1305,30 +1333,20 @@ mod tests {
 
     #[test]
     fn parser_rejects_truncation_and_trailing_bytes() {
-        let (frames, waveform) = synthetic_frames(4);
-        let encoded = encode_container(&frames, &waveform).unwrap();
-        assert!(parse_container(&encoded[..encoded.len() - 1]).is_err());
+        let (frames, _) = synthetic_frames(4);
+        let encoded = ogg_opus::mux_opus_packets(&frames, 45).unwrap();
+        assert!(inspect_voice_memo(&encoded[..encoded.len() - 1]).is_err());
         let mut trailing = encoded;
         trailing.push(0);
-        assert!(parse_container(&trailing).is_err());
-    }
-
-    #[test]
-    fn parser_rejects_unbounded_counts_before_allocating() {
-        let mut data = vec![0u8; HEADER_LEN];
-        data[..4].copy_from_slice(MAGIC);
-        data[4] = VERSION;
-        data[5] = PROFILE_WIRE;
-        data[8..12].copy_from_slice(&VOICE_MEMO_MAX_DURATION_MS.to_be_bytes());
-        data[12..14].copy_from_slice(&u16::MAX.to_be_bytes());
-        data[14..16].copy_from_slice(&u16::MAX.to_be_bytes());
-        assert!(parse_container(&data).is_err());
+        assert!(inspect_voice_memo(&trailing).is_err());
     }
 
     #[test]
     fn encoder_keeps_max_memo_under_reticulum_efficient_resource_limit() {
         const {
-            assert!(VOICE_MEMO_MAX_CONTAINER_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE);
+            assert!(
+                VOICE_MEMO_MAX_GENERATED_OGG_BYTES < rns_protocol::resource::MAX_EFFICIENT_SIZE
+            );
         }
     }
 
@@ -1339,9 +1357,9 @@ mod tests {
         let (frames, waveform) = synthetic_frames(1);
         let draft = finish_draft(frames, waveform).unwrap();
         assert_eq!(draft.duration_ms, FRAME_MS);
-        let decoded = decode_voice_memo_frames(&draft.data).unwrap();
-        assert_eq!(decoded.duration_ms, FRAME_MS);
-        assert_eq!(decoded.frames.len(), 1);
+        let parsed = ogg_opus::parse_ogg_opus(&draft.data).unwrap();
+        assert_eq!(parsed.metadata.duration_ms, FRAME_MS);
+        assert_eq!(parsed.packets.len(), 1);
     }
 
     #[tokio::test]

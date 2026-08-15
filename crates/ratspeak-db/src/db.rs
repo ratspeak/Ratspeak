@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 42;
+const SCHEMA_VERSION: i64 = 43;
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -18,6 +18,11 @@ pub const PEER_SERVICE_RATSPEAK_CHAT: &str = "ratspeak.chat";
 pub const LXMF_COMPRESSION_SUPPORT_SUPPORTED: &str = "supported";
 pub const LXMF_COMPRESSION_SUPPORT_UNSUPPORTED: &str = "unsupported";
 pub const ATTACHMENT_UNAVAILABLE_STORED_NAME: &str = "!unavailable";
+
+// `row_to_message` consumes `SELECT *` rows. Keep these suffix positions
+// locked across fresh schema creation and migrations.
+const MESSAGE_AUDIO_MODE_COLUMN_INDEX: usize = 22;
+const MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX: usize = 23;
 
 const IDENTITY_SELECT_COLUMNS: &str = "hash,
     lxmf_hash,
@@ -173,6 +178,8 @@ CREATE TABLE IF NOT EXISTS messages (
     game_action TEXT DEFAULT '',
     game_move_san TEXT DEFAULT '',
     delivery_method TEXT,
+    audio_mode INTEGER CHECK (audio_mode IS NULL OR audio_mode BETWEEN 0 AND 255),
+    audio_stored_name TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (id, identity_id)
 );
 
@@ -1799,6 +1806,30 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 43 {
+        migration_step(conn, 43, |conn| {
+            if table_exists(conn, "messages")? {
+                let columns = get_column_names(conn, "messages")?;
+                if !columns.iter().any(|column| column == "audio_mode") {
+                    conn.execute_batch(
+                        "ALTER TABLE messages
+                         ADD COLUMN audio_mode INTEGER
+                         CHECK (audio_mode IS NULL OR audio_mode BETWEEN 0 AND 255);",
+                    )?;
+                }
+                if !columns.iter().any(|column| column == "audio_stored_name") {
+                    conn.execute_batch(
+                        "ALTER TABLE messages
+                         ADD COLUMN audio_stored_name TEXT NOT NULL DEFAULT '';",
+                    )?;
+                }
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 43;")?;
+            tracing::info!("Migrated to schema version 43 (first-class LXMF audio messages)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -2592,7 +2623,7 @@ pub fn save_message(
     reply_to_preview: &str,
     delivery_method: Option<&str>,
 ) {
-    if let Err(error) = try_save_message(
+    save_message_with_audio(
         pool,
         msg_id,
         source,
@@ -2610,6 +2641,59 @@ pub fn save_message(
         reply_to_id,
         reply_to_preview,
         delivery_method,
+        None,
+        "",
+    );
+}
+
+/// Persist a message with first-class LXMF audio metadata.
+///
+/// `audio_stored_name` points into the identity-scoped files directory. A
+/// structurally valid but unavailable audio field retains its mode with
+/// [`ATTACHMENT_UNAVAILABLE_STORED_NAME`], so media failure never erases the
+/// enclosing message.
+#[allow(clippy::too_many_arguments)]
+pub fn save_message_with_audio(
+    pool: &DbPool,
+    msg_id: &str,
+    source: &str,
+    destination: &str,
+    content: &str,
+    title: &str,
+    timestamp: f64,
+    state: &str,
+    direction: &str,
+    identity_id: &str,
+    attachment_name: &str,
+    attachment_stored_name: &str,
+    image_name: &str,
+    image_stored_name: &str,
+    reply_to_id: &str,
+    reply_to_preview: &str,
+    delivery_method: Option<&str>,
+    audio_mode: Option<u8>,
+    audio_stored_name: &str,
+) {
+    if let Err(error) = try_save_message_with_audio(
+        pool,
+        msg_id,
+        source,
+        destination,
+        content,
+        title,
+        timestamp,
+        state,
+        direction,
+        identity_id,
+        attachment_name,
+        attachment_stored_name,
+        image_name,
+        image_stored_name,
+        reply_to_id,
+        reply_to_preview,
+        delivery_method,
+        audio_mode,
+        audio_stored_name,
     ) {
         tracing::warn!(error, "failed to persist message");
     }
@@ -2637,6 +2721,52 @@ pub fn try_save_message(
     reply_to_preview: &str,
     delivery_method: Option<&str>,
 ) -> Result<(), String> {
+    try_save_message_with_audio(
+        pool,
+        msg_id,
+        source,
+        destination,
+        content,
+        title,
+        timestamp,
+        state,
+        direction,
+        identity_id,
+        attachment_name,
+        attachment_stored_name,
+        image_name,
+        image_stored_name,
+        reply_to_id,
+        reply_to_preview,
+        delivery_method,
+        None,
+        "",
+    )
+}
+
+/// Fallible first-class audio persistence used by outbound admission.
+#[allow(clippy::too_many_arguments)]
+pub fn try_save_message_with_audio(
+    pool: &DbPool,
+    msg_id: &str,
+    source: &str,
+    destination: &str,
+    content: &str,
+    title: &str,
+    timestamp: f64,
+    state: &str,
+    direction: &str,
+    identity_id: &str,
+    attachment_name: &str,
+    attachment_stored_name: &str,
+    image_name: &str,
+    image_stored_name: &str,
+    reply_to_id: &str,
+    reply_to_preview: &str,
+    delivery_method: Option<&str>,
+    audio_mode: Option<u8>,
+    audio_stored_name: &str,
+) -> Result<(), String> {
     let conn = pool.get().map_err(|error| error.to_string())?;
     let exists: bool = conn
         .query_row(
@@ -2654,9 +2784,10 @@ pub fn try_save_message(
         )
         .map_err(|error| error.to_string())?;
     } else {
+        let audio_mode = audio_mode.map(i64::from);
         conn.execute(
-            "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-            params![msg_id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method],
+            "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method, audio_mode, audio_stored_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![msg_id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method, audio_mode, audio_stored_name],
         ).map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -3038,18 +3169,22 @@ where
         Ok((
             row.get::<_, String>(0).unwrap_or_default(),
             row.get::<_, String>(1).unwrap_or_default(),
+            row.get::<_, String>(2).unwrap_or_default(),
         ))
     }) else {
         return Vec::new();
     };
 
     let mut file_refs = Vec::new();
-    for (attachment, image) in rows.flatten() {
+    for (attachment, image, audio) in rows.flatten() {
         if !attachment.is_empty() {
             file_refs.push(attachment);
         }
         if !image.is_empty() {
             file_refs.push(image);
+        }
+        if !audio.is_empty() {
+            file_refs.push(audio);
         }
     }
     file_refs
@@ -3063,7 +3198,7 @@ pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) ->
 
     let file_refs = query_message_file_refs(
         &conn,
-        "SELECT attachment_stored_name, image_stored_name FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2",
+        "SELECT attachment_stored_name, image_stored_name, audio_stored_name FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2",
         params![dest_hash, identity_id],
     );
 
@@ -7855,13 +7990,13 @@ pub fn clear_all_messages(pool: &DbPool, identity_id: &str) -> Vec<String> {
     let file_refs = if identity_id.is_empty() {
         query_message_file_refs(
             &conn,
-            "SELECT attachment_stored_name, image_stored_name FROM messages",
+            "SELECT attachment_stored_name, image_stored_name, audio_stored_name FROM messages",
             [],
         )
     } else {
         query_message_file_refs(
             &conn,
-            "SELECT attachment_stored_name, image_stored_name FROM messages WHERE identity_id = ?1",
+            "SELECT attachment_stored_name, image_stored_name, audio_stored_name FROM messages WHERE identity_id = ?1",
             params![identity_id],
         )
     };
@@ -7887,7 +8022,7 @@ pub fn get_identity_file_refs(pool: &DbPool, identity_id: &str) -> Vec<String> {
     }
     query_message_file_refs(
         &conn,
-        "SELECT attachment_stored_name, image_stored_name FROM messages WHERE identity_id = ?1",
+        "SELECT attachment_stored_name, image_stored_name, audio_stored_name FROM messages WHERE identity_id = ?1",
         params![identity_id],
     )
 }
@@ -8844,6 +8979,12 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
     let attachment_stored_name = row.get::<_, String>(13).unwrap_or_default();
     let image_name = row.get::<_, String>(14).unwrap_or_default();
     let image_stored_name = row.get::<_, String>(15).unwrap_or_default();
+    let audio_mode = row
+        .get::<_, Option<i64>>(MESSAGE_AUDIO_MODE_COLUMN_INDEX)?
+        .and_then(|mode| u8::try_from(mode).ok());
+    let audio_stored_name = row
+        .get::<_, String>(MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX)
+        .unwrap_or_default();
 
     // Reshape flat columns to nested `msg.image` / `msg.attachments`.
     let image_json = (!image_stored_name.is_empty()).then(|| {
@@ -8872,6 +9013,23 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
             }])
         }
     });
+    let audio_json = audio_mode.map(|mode| {
+        let unavailable =
+            audio_stored_name.is_empty() || audio_stored_name == ATTACHMENT_UNAVAILABLE_STORED_NAME;
+        if unavailable {
+            serde_json::json!({
+                "mode": mode,
+                "supported": false,
+                "unavailable": true,
+            })
+        } else {
+            serde_json::json!({
+                "mode": mode,
+                "stored_name": audio_stored_name,
+                "supported": mode == 0x10,
+            })
+        }
+    });
 
     Ok(serde_json::json!({
         "id": row.get::<_, String>(0)?,
@@ -8888,6 +9046,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
         "identity_id": row.get::<_, String>(11).unwrap_or_default(),
         "image": image_json,
         "attachments": attachments_json,
+        "audio": audio_json,
         "reply_to_id": row.get::<_, String>(16).unwrap_or_default(),
         "reply_to_preview": row.get::<_, String>(17).unwrap_or_default(),
         "game_id": row.get::<_, String>(18).unwrap_or_default(),
@@ -8994,6 +9153,152 @@ mod attachment_unavailable_tests {
             Some(true)
         );
         assert!(attachment.get("stored_name").is_none());
+    }
+}
+
+#[cfg(test)]
+mod audio_message_tests {
+    use super::*;
+
+    fn test_pool() -> DbPool {
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    #[test]
+    fn first_class_audio_round_trips_without_becoming_an_attachment() {
+        let pool = test_pool();
+        save_message_with_audio(
+            &pool,
+            "audio-message",
+            "source",
+            "destination",
+            "Voice message",
+            "",
+            1.0,
+            "received",
+            "inbound",
+            "identity",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+            Some(0x10),
+            "stored-audio.opus",
+        );
+
+        let messages = get_conversation(&pool, "source", "identity", 10);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["audio"]["mode"], 0x10);
+        assert_eq!(messages[0]["audio"]["stored_name"], "stored-audio.opus");
+        assert_eq!(messages[0]["audio"]["supported"], true);
+        assert!(messages[0]["attachments"].is_null());
+        assert!(messages[0]["image"].is_null());
+    }
+
+    #[test]
+    fn unknown_and_unavailable_audio_remain_visible_but_not_playable() {
+        let pool = test_pool();
+        for (id, mode, stored_name) in [
+            ("unknown-audio", 0xfe, "opaque-audio.bin"),
+            (
+                "unavailable-audio",
+                0x10,
+                ATTACHMENT_UNAVAILABLE_STORED_NAME,
+            ),
+        ] {
+            save_message_with_audio(
+                &pool,
+                id,
+                "source",
+                "destination",
+                "Voice message",
+                "",
+                1.0,
+                "received",
+                "inbound",
+                "identity",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                None,
+                Some(mode),
+                stored_name,
+            );
+        }
+
+        let messages = get_conversation(&pool, "source", "identity", 10);
+        let unknown = messages
+            .iter()
+            .find(|message| message["id"] == "unknown-audio")
+            .unwrap();
+        assert_eq!(unknown["audio"]["mode"], 0xfe);
+        assert_eq!(unknown["audio"]["stored_name"], "opaque-audio.bin");
+        assert_eq!(unknown["audio"]["supported"], false);
+
+        let unavailable = messages
+            .iter()
+            .find(|message| message["id"] == "unavailable-audio")
+            .unwrap();
+        assert_eq!(unavailable["audio"]["mode"], 0x10);
+        assert_eq!(unavailable["audio"]["unavailable"], true);
+        assert_eq!(unavailable["audio"]["supported"], false);
+        assert!(unavailable["audio"].get("stored_name").is_none());
+    }
+
+    #[test]
+    fn audio_file_references_participate_in_every_message_cleanup_surface() {
+        let pool = test_pool();
+        for (id, source, identity, stored_name) in [
+            ("one", "peer-a", "identity-a", "one.opus"),
+            ("two", "peer-b", "identity-a", "two.opus"),
+            ("three", "peer-c", "identity-b", "three.opus"),
+        ] {
+            save_message_with_audio(
+                &pool,
+                id,
+                source,
+                "destination",
+                "Voice message",
+                "",
+                1.0,
+                "received",
+                "inbound",
+                identity,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                None,
+                Some(0x10),
+                stored_name,
+            );
+        }
+
+        let refs = get_identity_file_refs(&pool, "identity-a");
+        assert_eq!(refs.len(), 2);
+        assert!(refs.contains(&"one.opus".to_string()));
+        assert!(refs.contains(&"two.opus".to_string()));
+
+        assert_eq!(
+            delete_conversation(&pool, "peer-a", "identity-a"),
+            vec!["one.opus"]
+        );
+        assert_eq!(clear_all_messages(&pool, "identity-a"), vec!["two.opus"]);
+        assert_eq!(
+            get_identity_file_refs(&pool, "identity-b"),
+            vec!["three.opus"]
+        );
     }
 }
 
@@ -10376,6 +10681,23 @@ mod migration_tests {
             room_state_cols.iter().any(|column| column == "topic"),
             "fresh schema should retain authenticated Channels room topics"
         );
+        let message_cols = get_column_names(&conn, "messages").unwrap();
+        assert_eq!(
+            message_cols
+                .get(MESSAGE_AUDIO_MODE_COLUMN_INDEX)
+                .map(String::as_str),
+            Some("audio_mode")
+        );
+        assert_eq!(
+            message_cols
+                .get(MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX)
+                .map(String::as_str),
+            Some("audio_stored_name")
+        );
+        assert_eq!(
+            message_cols.len(),
+            MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX + 1
+        );
     }
 
     #[test]
@@ -10455,6 +10777,54 @@ mod migration_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn migration_43_adds_nullable_audio_mode_and_empty_storage_reference() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "ALTER TABLE messages DROP COLUMN audio_stored_name;
+                 ALTER TABLE messages DROP COLUMN audio_mode;
+                 UPDATE schema_version SET version = 42;",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), 43);
+        let conn = pool.get().unwrap();
+        let columns = get_column_names(&conn, "messages").unwrap();
+        assert_eq!(
+            columns
+                .get(MESSAGE_AUDIO_MODE_COLUMN_INDEX)
+                .map(String::as_str),
+            Some("audio_mode")
+        );
+        assert_eq!(
+            columns
+                .get(MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX)
+                .map(String::as_str),
+            Some("audio_stored_name")
+        );
+        assert_eq!(columns.len(), MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX + 1);
+        conn.execute(
+            "INSERT INTO messages (
+                id, source, destination, timestamp, identity_id
+             ) VALUES ('pre-audio', 'source', 'destination', 1.0, 'identity')",
+            [],
+        )
+        .unwrap();
+        let defaults: (Option<i64>, String) = conn
+            .query_row(
+                "SELECT audio_mode, audio_stored_name FROM messages WHERE id = 'pre-audio'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(defaults, (None, String::new()));
     }
 
     /// T1-8: blackhole requests queued for an identity do not survive its

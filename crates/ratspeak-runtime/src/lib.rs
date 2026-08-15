@@ -604,11 +604,7 @@ fn notification_body(content: &str, has_attachment: bool) -> String {
     let trimmed = content.trim();
     let lower = trimmed.to_ascii_lowercase();
     if has_attachment && lower.starts_with("[file:") && trimmed.ends_with(']') {
-        return if lower.contains(".lxvm") {
-            "Voice message".to_string()
-        } else {
-            "New attachment".to_string()
-        };
+        return "New attachment".to_string();
     }
     let without_fallback = trimmed
         .rfind("\n[File:")
@@ -3314,6 +3310,7 @@ async fn send_announce_from_state_inner(
 
 // FIELD_FILE_ATTACHMENTS 0x05 = msgpack `[[filename, bytes], …]`.
 // FIELD_IMAGE            0x06 = msgpack `[format, bytes]` (`png`, `webp`, ...).
+// FIELD_AUDIO            0x07 = msgpack `[mode, bytes]`.
 struct ExtractedAttachment {
     file_name: String,
     stored_name: String,
@@ -3393,6 +3390,128 @@ fn extract_and_save_attachment(
     }
 
     None
+}
+
+#[derive(Debug, Clone)]
+struct ExtractedAudio {
+    mode: u8,
+    stored_name: String,
+    supported: bool,
+}
+
+fn extracted_audio_json(audio: &ExtractedAudio) -> Value {
+    if audio.stored_name == db::ATTACHMENT_UNAVAILABLE_STORED_NAME {
+        json!({
+            "mode": audio.mode,
+            "supported": false,
+            "unavailable": true,
+        })
+    } else {
+        json!({
+            "mode": audio.mode,
+            "stored_name": audio.stored_name,
+            "supported": audio.supported,
+        })
+    }
+}
+
+/// Extract a structurally valid native LXMF audio field after the shared
+/// authentication, policy and deduplication gates. Media errors are local to
+/// this optional field: they never reject the enclosing message or its proof.
+fn extract_and_save_audio(
+    state: &AppState,
+    msg: &lxmf_core::message::LxMessage,
+) -> Option<ExtractedAudio> {
+    let audio = match msg.audio_field() {
+        Ok(audio) => audio?,
+        Err(error) => {
+            tracing::warn!(%error, "ignoring malformed inbound LXMF audio field");
+            return None;
+        }
+    };
+    let mode = audio.mode;
+    let unavailable = || ExtractedAudio {
+        mode,
+        stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.to_string(),
+        supported: false,
+    };
+    if audio.bytes.len() > lxmf::MAX_AUDIO_FIELD_BYTES {
+        tracing::warn!(
+            mode,
+            size = audio.bytes.len(),
+            max_size = lxmf::MAX_AUDIO_FIELD_BYTES,
+            "inbound LXMF audio exceeds persistence limit"
+        );
+        return Some(unavailable());
+    }
+
+    let is_ogg_opus = mode == lxmf_core::constants::AM_OPUS_OGG;
+    #[cfg(feature = "lxst-voice")]
+    if is_ogg_opus {
+        if let Err(error) = voice_memo::inspect_voice_memo(audio.bytes) {
+            tracing::warn!(%error, size = audio.bytes.len(), "inbound Ogg/Opus audio is invalid");
+            return Some(unavailable());
+        }
+    }
+
+    let file_name = if is_ogg_opus {
+        lxmf::AUDIO_MESSAGE_FILE_NAME.to_string()
+    } else {
+        format!("Audio message {mode:02x}.bin")
+    };
+    let stored_name = state.lxmf.lock().ok().and_then(|mut lxmf| {
+        lxmf.as_mut()
+            .and_then(|mgr| mgr.save_attachment(&file_name, audio.bytes).ok())
+    });
+    match stored_name {
+        Some(stored_name) => {
+            tracing::info!(
+                mode,
+                size = audio.bytes.len(),
+                "extracted inbound LXMF audio"
+            );
+            Some(ExtractedAudio {
+                mode,
+                stored_name,
+                supported: is_ogg_opus && cfg!(feature = "lxst-voice"),
+            })
+        }
+        None => {
+            tracing::warn!(
+                mode,
+                size = audio.bytes.len(),
+                "failed to persist inbound LXMF audio"
+            );
+            Some(unavailable())
+        }
+    }
+}
+
+fn remove_inbound_media_after_persistence_failure(
+    state: &AppState,
+    attachment: Option<&ExtractedAttachment>,
+    audio: Option<&ExtractedAudio>,
+) {
+    let files_dir = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(lxmf::LxmfManager::files_dir));
+    let Some(files_dir) = files_dir else {
+        return;
+    };
+    let stored_names = attachment
+        .map(|attachment| attachment.stored_name.as_str())
+        .into_iter()
+        .chain(audio.map(|audio| audio.stored_name.as_str()));
+    for stored_name in stored_names {
+        if stored_name == db::ATTACHMENT_UNAVAILABLE_STORED_NAME {
+            continue;
+        }
+        if let Some(sanitized) = lxmf::sanitize_stored_file_name(stored_name) {
+            let _ = std::fs::remove_file(files_dir.join(sanitized));
+        }
+    }
 }
 
 fn clamp_chat_field(value: &str, max_chars: usize) -> String {
@@ -4213,6 +4332,7 @@ async fn process_inbound_lxmf(
 
     let received_at = next_chat_observed_timestamp(state, &source_hash, &identity_id).await;
     let attachment_file = extract_and_save_attachment(state, &msg);
+    let audio_file = extract_and_save_audio(state, &msg);
     let (reply_to_id, reply_to_preview) = inbound_reply_fields(chat_extension.as_ref());
     {
         let msg_id_for_save = msg_id.clone();
@@ -4224,6 +4344,7 @@ async fn process_inbound_lxmf(
         let identity_id_for_save = identity_id.clone();
         let reply_to_id_for_save = reply_to_id.clone();
         let reply_to_preview_for_save = reply_to_preview.clone();
+        let audio_for_save = audio_file.clone();
         let (att_name, att_stored, img_name, img_stored) = match attachment_file.as_ref() {
             Some(a) if a.is_image => (
                 String::new(),
@@ -4239,8 +4360,8 @@ async fn process_inbound_lxmf(
             ),
             None => (String::new(), String::new(), String::new(), String::new()),
         };
-        db::spawn_db(state.db.clone(), move |p| {
-            db::save_message(
+        let save_result = db::spawn_db(state.db.clone(), move |p| {
+            db::try_save_message_with_audio(
                 &p,
                 &msg_id_for_save,
                 &source_hash_for_save,
@@ -4258,10 +4379,24 @@ async fn process_inbound_lxmf(
                 &reply_to_id_for_save,
                 &reply_to_preview_for_save,
                 None,
-            );
+                audio_for_save.as_ref().map(|audio| audio.mode),
+                audio_for_save
+                    .as_ref()
+                    .map(|audio| audio.stored_name.as_str())
+                    .unwrap_or(""),
+            )
         })
         .await
         .expect("db task panicked");
+        if let Err(error) = save_result {
+            tracing::warn!(%error, "failed to persist inbound LXMF message");
+            remove_inbound_media_after_persistence_failure(
+                state,
+                attachment_file.as_ref(),
+                audio_file.as_ref(),
+            );
+            return;
+        }
     }
     {
         // Inbound message un-hides the conversation.
@@ -4291,7 +4426,7 @@ async fn process_inbound_lxmf(
         &source_hash,
         &identity_id,
         &msg.content,
-        attachment_file.is_some(),
+        attachment_file.is_some() || audio_file.is_some(),
     )
     .await;
 
@@ -4324,6 +4459,12 @@ async fn process_inbound_lxmf(
                 json!([{ "filename": att.file_name, "stored_name": att.stored_name }]),
             );
         }
+    }
+    if let Some(ref audio) = audio_file {
+        event_data
+            .as_object_mut()
+            .unwrap()
+            .insert("audio".to_string(), extracted_audio_json(audio));
     }
     state.emit_to_all("lxmf_message", event_data);
     messaging::broadcast_conversations(Arc::clone(state));
@@ -6643,6 +6784,24 @@ mod inbound_pipeline_tests {
         msg.pack().unwrap()
     }
 
+    fn packed_inbound_with_audio(
+        dest: [u8; 16],
+        src: [u8; 16],
+        mode: u8,
+        audio_bytes: &[u8],
+    ) -> Vec<u8> {
+        let mut msg = lxmf_core::message::LxMessage::new(
+            dest,
+            src,
+            "",
+            "Voice message",
+            lxmf_core::constants::DeliveryMethod::Direct,
+        );
+        msg.set_audio_field(mode, audio_bytes).unwrap();
+        msg.signature = Some([0u8; 64]);
+        msg.pack().unwrap()
+    }
+
     fn message_rows(state: &AppState) -> i64 {
         state
             .db
@@ -6767,6 +6926,80 @@ mod inbound_pipeline_tests {
         assert_eq!(emitter.count("lxmf_message"), 1);
         assert!(emitter.count("contacts_update") >= 1);
         assert!(emitter.count("unread_total") >= 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_audio_mode_is_bounded_first_class_media_not_an_attachment() {
+        let (state, emitter) = pipeline_state();
+        let data =
+            packed_inbound_with_audio(local_dest(&state), [0xED; 16], 0xfe, b"future audio codec");
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        let identity = local_identity(&state);
+        let conversation = db::get_conversation(&state.db, &hex::encode([0xED; 16]), &identity, 10);
+        assert_eq!(conversation.len(), 1);
+        assert_eq!(conversation[0]["audio"]["mode"], 0xfe);
+        assert_eq!(conversation[0]["audio"]["supported"], false);
+        assert!(conversation[0]["audio"]["stored_name"].is_string());
+        assert!(conversation[0]["attachments"].is_null());
+        assert!(conversation[0]["image"].is_null());
+
+        let event = emitter
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(name, _)| name == "lxmf_message")
+            .map(|(_, payload)| payload.clone())
+            .unwrap();
+        assert_eq!(event["audio"]["mode"], 0xfe);
+        assert_eq!(event["audio"]["supported"], false);
+        assert!(event.get("attachments").is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_audio_does_not_reject_or_hide_the_enclosing_message() {
+        let (state, emitter) = pipeline_state();
+        let mut msg = lxmf_core::message::LxMessage::new(
+            local_dest(&state),
+            [0xEC; 16],
+            "",
+            "text survives malformed media",
+            lxmf_core::constants::DeliveryMethod::Direct,
+        );
+        msg.set_msgpack_field(
+            lxmf_core::constants::FIELD_AUDIO,
+            vec![0x93, lxmf_core::constants::AM_OPUS_OGG, 0xc4, 0x00, 0xc0],
+        )
+        .unwrap();
+        msg.signature = Some([0u8; 64]);
+        let data = msg.pack().unwrap();
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        let identity = local_identity(&state);
+        let conversation = db::get_conversation(&state.db, &hex::encode([0xEC; 16]), &identity, 10);
+        assert_eq!(conversation.len(), 1);
+        assert_eq!(conversation[0]["content"], "text survives malformed media");
+        assert!(conversation[0]["audio"].is_null());
+        assert_eq!(emitter.count("lxmf_message"), 1);
+    }
+
+    #[tokio::test]
+    async fn oversized_audio_retains_message_and_mode_without_persisting_bytes() {
+        let (state, _emitter) = pipeline_state();
+        let audio = vec![0x55; lxmf::MAX_AUDIO_FIELD_BYTES + 1];
+        let data = packed_inbound_with_audio(local_dest(&state), [0xEB; 16], 0xfe, &audio);
+
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+
+        let identity = local_identity(&state);
+        let conversation = db::get_conversation(&state.db, &hex::encode([0xEB; 16]), &identity, 10);
+        assert_eq!(conversation.len(), 1);
+        assert_eq!(conversation[0]["audio"]["mode"], 0xfe);
+        assert_eq!(conversation[0]["audio"]["unavailable"], true);
+        assert!(conversation[0]["audio"].get("stored_name").is_none());
     }
 
     #[tokio::test]
@@ -7419,11 +7652,7 @@ mod notification_tests {
     }
 
     #[test]
-    fn attachment_notifications_hide_wire_fallback_and_name_voice_memos() {
-        assert_eq!(
-            notification_body("[File: Voice message.lxvm]", true),
-            "Voice message"
-        );
+    fn attachment_notifications_hide_wire_fallback_without_legacy_media_inference() {
         assert_eq!(
             notification_body("[File: field-notes.pdf]", true),
             "New attachment"
