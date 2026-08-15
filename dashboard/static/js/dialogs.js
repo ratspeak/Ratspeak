@@ -144,6 +144,10 @@ function _rsBuildSheet(opts, onClose) {
     overlay.style.zIndex = '99999';
 
     var sheet = shell.sheet;
+    // Rich sheets own one bounded, independently scrolling body. Keep this
+    // marker separate from the style-free rs-sheet-shell hook so compact menu
+    // sheets can continue to scroll at the outer shell when needed.
+    sheet.classList.add('rs-dialog-sheet');
     if (opts.sheetClass) sheet.classList.add(opts.sheetClass);
     sheet.setAttribute('role', 'dialog');
     sheet.setAttribute('aria-modal', 'true');

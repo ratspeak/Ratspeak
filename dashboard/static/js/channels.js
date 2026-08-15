@@ -4906,6 +4906,7 @@ function _channelsPresentSheet(built, initialFocus) {
     if (RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
         RS.gestures.attachDragDismiss(built.sheet, {
             axis: 'y',
+            handleSelector: '.bottom-sheet-handle',
             blockIfScrolled: true,
             skipIf: function(event) {
                 return !!event.target.closest('button, input, textarea, select');

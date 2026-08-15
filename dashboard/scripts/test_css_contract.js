@@ -129,9 +129,19 @@ assert(/\.channel-consent-fact\s*\{[^}]*display:\s*flex;/s
 assert(/\.channel-consent-acknowledgements\s*\{[^}]*border:\s*1px solid/s
     .test(sourceByName['09-channels.css']),
     'public-channel confirmations must share one bounded acknowledgement group');
-assert(/\.channel-consent-sheet\s*\{[^}]*max-height:\s*min\(88dvh,\s*760px\)/s
-    .test(sourceByName['13-responsive.css']),
-    'the public-channel consent sheet must keep its footer reachable on compact viewports');
+assert(/\.bottom-sheet\.rs-dialog-sheet\s*\{[^}]*overflow:\s*hidden;[^}]*padding-bottom:\s*0;/s
+    .test(sourceByName['13-responsive.css']) &&
+    /\.bottom-sheet\.rs-dialog-sheet \.bottom-sheet-body\s*\{[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*scrollbar-gutter:\s*stable;/s
+        .test(sourceByName['13-responsive.css']),
+    'rich mobile sheets must have one inner touch-scroll owner with a stable themed scrollbar lane');
+assert(/\.bottom-sheet-body > \*\s*\{[^}]*flex-shrink:\s*0;/s
+    .test(sourceByName['08-modals.css']),
+    'scrolling sheet content must overflow instead of collapsing bounded controls');
+assert(/\.channel-consent-sheet\s*\{[^}]*max-height:\s*min\(760px,\s*calc\(var\(--app-height, 100dvh\) - max\(var\(--sat\), var\(--space-8\)\)\)\)/s
+    .test(sourceByName['13-responsive.css']) &&
+    /\.channel-consent-sheet \.bottom-sheet-footer \.nr-btn\s*\{[^}]*min-width:\s*0;[^}]*flex:\s*1 1 0;/s
+        .test(sourceByName['13-responsive.css']),
+    'public-channel consent must preserve reachable actions on short and narrow phones');
 
 var gamesCss = sourceByName['11-games.css'];
 assert(/\.four-board\s*\{[\s\S]*?grid-template-columns:\s*repeat\(7,/.test(gamesCss) &&

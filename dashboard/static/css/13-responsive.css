@@ -12,8 +12,32 @@
 
 @media (max-width: 768px) {
 
+    /* Canonical rich sheets keep their header and actions anchored while the
+       body is the only touch-scroll owner. Nested outer/body scrolling could
+       strand controls on short phones, especially at larger text sizes. */
+    .bottom-sheet.rs-dialog-sheet {
+        overflow: hidden;
+        padding-bottom: 0;
+    }
+
+    .bottom-sheet.rs-dialog-sheet .bottom-sheet-body {
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior-y: contain;
+        scrollbar-gutter: stable;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
+    }
+
+    .bottom-sheet.rs-dialog-sheet .bottom-sheet-footer {
+        flex: 0 0 auto;
+        padding-bottom: max(var(--space-5), var(--sab));
+    }
+
     .bottom-sheet.open.channel-consent-sheet {
-        max-height: min(88dvh, 760px);
+        max-height: min(760px, calc(100vh - var(--space-8)));
+        max-height: min(760px, calc(var(--app-height, 100dvh) - max(var(--sat), var(--space-8))));
     }
 
     .channel-consent-sheet .bottom-sheet-body {
@@ -25,6 +49,20 @@
     .channel-consent-sheet .bottom-sheet-footer {
         padding-top: var(--space-4);
         padding-bottom: max(var(--space-5), var(--sab));
+    }
+
+    .channel-consent-sheet .bottom-sheet-footer .nr-btn {
+        min-width: 0;
+        flex: 1 1 0;
+    }
+
+    @media (max-width: 360px), (max-height: 560px) {
+        .channel-consent-sheet .bottom-sheet-header,
+        .channel-consent-sheet .bottom-sheet-body,
+        .channel-consent-sheet .bottom-sheet-footer {
+            padding-left: var(--space-5);
+            padding-right: var(--space-5);
+        }
     }
     .network-main {
         display: flex;

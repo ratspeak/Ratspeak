@@ -144,6 +144,12 @@
     min-height: 0;
 }
 
+/* A scrolling flex column must overflow instead of compressing bounded rows
+   (checkbox groups, summaries, previews) until their contents disappear. */
+.bottom-sheet-body > * {
+    flex-shrink: 0;
+}
+
 .bottom-sheet-footer {
     display: flex;
     justify-content: flex-end;
