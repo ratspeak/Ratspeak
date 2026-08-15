@@ -14,10 +14,11 @@ use crate::commands::shared::remove_stored_file_refs;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
+#[cfg(feature = "lxst-voice")]
+use crate::lxmf::AudioMessageRequest;
 use crate::lxmf::{
-    AttachmentMessageRequest, AudioMessageRequest, DeliveryPreference, DeliveryProfile,
-    LxmfManager, LxmfSubmissionFailure, MessageSendRequest, ReactionSendRequest,
-    ReplyMessageSendRequest,
+    AttachmentMessageRequest, DeliveryPreference, DeliveryProfile, LxmfManager,
+    LxmfSubmissionFailure, MessageSendRequest, ReactionSendRequest, ReplyMessageSendRequest,
 };
 use crate::state::{
     AppState, AttachmentTransferAdmissionError, AttachmentTransferLease,
