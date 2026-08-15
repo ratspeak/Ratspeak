@@ -162,7 +162,7 @@ function _channelsPublicConsentLink(label, documentId) {
         event.stopPropagation();
         if (!RS.legal || typeof RS.legal.open !== 'function' || !RS.legal.open(documentId)) {
             if (typeof showToast === 'function') {
-                showToast('This document could not be opened.', 'toast-red', 5000);
+                showToast('This document could not be opened.', 'toast-error', 5000);
             }
         }
     });
@@ -429,7 +429,7 @@ function _channelsInsertComposerText(value) {
     if (!fitted ||
             _channelsUtf8Length(_channelsMessageBody(before + fitted + after)) > limit) {
         if (typeof showToast === 'function') {
-            showToast('The channel message is already at its byte limit', 'toast-orange', 2400);
+            showToast('The channel message is already at its byte limit', 'toast-warning', 2400);
         }
         return false;
     }
@@ -615,7 +615,7 @@ function channelsConnectToHub(hub, options) {
                 options.switching
                     ? 'Switching channel hub\u2026'
                     : 'Connecting to channel hub\u2026',
-                'toast-blue',
+                'toast-progress',
                 2600
             );
         }
@@ -4062,7 +4062,7 @@ function channelsOpenChannelShare(hubDestinationHash, roomName) {
                 if (typeof showToast === 'function') {
                     showToast(
                         ok ? 'Channel link copied' : 'Could not copy channel link',
-                        ok ? 'toast-green' : 'toast-orange',
+                        ok ? 'toast-success' : 'toast-error',
                         2200
                     );
                 }
@@ -4083,8 +4083,8 @@ function channelsOpenChannelShare(hubDestinationHash, roomName) {
             ).then(function(method) {
                 if (typeof showToast === 'function') {
                     showToast(
-                        method === 'share' ? 'QR handed to destination' : 'QR image saved',
-                        'toast-green',
+                        method === 'share' ? 'QR code shared' : 'QR image saved',
+                        'toast-success',
                         2400
                     );
                 }
@@ -4092,7 +4092,7 @@ function channelsOpenChannelShare(hubDestinationHash, roomName) {
                 if (typeof showToast === 'function') {
                     showToast(
                         (error && error.message) || 'Could not share channel QR',
-                        'toast-red',
+                        'toast-error',
                         3200
                     );
                 }
@@ -4119,7 +4119,7 @@ function channelsOpenChannelShare(hubDestinationHash, roomName) {
         if (typeof showToast === 'function') {
             showToast(
                 (error && error.message) || 'Could not build channel share',
-                'toast-red',
+                'toast-error',
                 3200
             );
         }
@@ -4241,7 +4241,7 @@ window.channelsOpenNativeSharedChannel = channelsOpenNativeSharedChannel;
 function channelsScanSharedChannel() {
     if (!RS.qr || typeof RS.qr.openScanner !== 'function') {
         if (typeof showToast === 'function') {
-            showToast('QR scanning is not available in this build', 'toast-orange', 2800);
+            showToast('QR scanning is not available in this build', 'toast-warning', 2800);
         }
         return;
     }
@@ -4432,7 +4432,7 @@ function channelsOpenHubSwitcher() {
     function retireStaleSwitcher() {
         built.dismiss();
         if (typeof showToast === 'function') {
-            showToast('Channels changed. Choose a hub again.', 'toast-orange', 2800);
+            showToast('Channels changed. Choose a hub again.', 'toast-warning', 2800);
         }
     }
 
@@ -4609,7 +4609,7 @@ function channelsOpenConnectSheet(prefill) {
             }));
         }).catch(function(err) {
             if (typeof showToast === 'function') {
-                showToast((err && err.message) || 'Could not load channel safety settings.', 'toast-red', 5000);
+                showToast((err && err.message) || 'Could not load channel safety settings.', 'toast-error', 5000);
             }
         });
         return;
@@ -4923,7 +4923,7 @@ function channelsOpenJoinSheet(prefillRoom, options) {
             if (accepted) channelsOpenJoinSheet(prefillRoom, { public_consent_checked: true });
         }).catch(function(err) {
             if (typeof showToast === 'function') {
-                showToast((err && err.message) || 'Could not load channel safety settings.', 'toast-red', 5000);
+                showToast((err && err.message) || 'Could not load channel safety settings.', 'toast-error', 5000);
             }
         });
         return;
@@ -5150,13 +5150,13 @@ function _channelsDisconnectFromHub(control) {
         channelsHistorySelection = null;
         channelsApplySnapshot(snapshot);
         if (typeof showToast === 'function') {
-            showToast('Channel session ended', 'toast-green', 2200);
+            showToast('Channel session ended', 'toast-success', 2200);
         }
         return snapshot;
     }).catch(function(err) {
         if (control) control.disabled = false;
         if (typeof showToast === 'function') {
-            showToast((err && err.message) || 'Could not disconnect', 'toast-red', 3200);
+            showToast((err && err.message) || 'Could not disconnect', 'toast-error', 3200);
         }
         return null;
     });
@@ -5193,7 +5193,7 @@ function channelsOpenHubOptions(eventOrTrigger) {
             onSelect: function() {
                 RS.copyText(hub.destination_hash).then(function(ok) {
                     if (typeof showToast === 'function') {
-                        showToast(ok ? 'Hub address copied' : 'Could not copy', ok ? 'toast-green' : 'toast-orange', 1800);
+                        showToast(ok ? 'Hub address copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1800);
                     }
                 });
             }
@@ -5438,7 +5438,7 @@ function channelsOpenHubDetails() {
     copyButton.textContent = 'Copy address';
     copyButton.addEventListener('click', function() {
         RS.copyText(hub.destination_hash).then(function(ok) {
-            if (typeof showToast === 'function') showToast(ok ? 'Hub address copied' : 'Could not copy', ok ? 'toast-green' : 'toast-orange', 1800);
+            if (typeof showToast === 'function') showToast(ok ? 'Hub address copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1800);
         });
     });
     var shareButton = document.createElement('button');
@@ -5552,7 +5552,7 @@ function channelsOpenRoomOptions(eventOrTrigger) {
                     if (!confirmed) return;
                     _channelsPartRoom(room.name).catch(function(err) {
                         if (typeof showToast === 'function') {
-                            showToast((err && err.message) || 'Could not leave channel', 'toast-red', 3200);
+                            showToast((err && err.message) || 'Could not leave channel', 'toast-error', 3200);
                         }
                     });
                 });
@@ -5643,13 +5643,13 @@ function channelsOpenRoomDetails() {
             return channelsRefreshUnread();
         }).then(function() {
             if (typeof showToast === 'function') {
-                showToast('Channel notifications updated', 'toast-green', 1800);
+                showToast('Channel notifications updated', 'toast-success', 1800);
             }
         }).catch(function(error) {
             notificationSelect.value = previous;
             renderPolicyNote();
             if (typeof showToast === 'function') {
-                showToast((error && error.message) || 'Could not update channel notifications', 'toast-red', 3200);
+                showToast((error && error.message) || 'Could not update channel notifications', 'toast-error', 3200);
             }
         }).then(function() {
             notificationSelect.disabled = false;
@@ -5729,7 +5729,7 @@ function channelsOpenRoomDetails() {
                 built.dismiss();
             }).catch(function(err) {
                 leave.disabled = false;
-                if (typeof showToast === 'function') showToast((err && err.message) || 'Could not leave channel', 'toast-red', 3200);
+                if (typeof showToast === 'function') showToast((err && err.message) || 'Could not leave channel', 'toast-error', 3200);
             });
         });
     });
@@ -5768,7 +5768,7 @@ function channelsDisconnect() {
         channelsApplySnapshot(snapshot);
         return snapshot;
     }).catch(function(error) {
-        if (typeof showToast === 'function') showToast((error && error.message) || 'Could not end channel session', 'toast-red', 3500);
+        if (typeof showToast === 'function') showToast((error && error.message) || 'Could not end channel session', 'toast-error', 3500);
     });
 }
 
@@ -5812,7 +5812,7 @@ function channelsSendMessage() {
     var limit = _channelsMessageLimit();
     if (!text.trim()) return;
     if (bodyBytes > limit) {
-        if (typeof showToast === 'function') showToast('Channel message exceeds the hub limit', 'toast-red', 3000);
+        if (typeof showToast === 'function') showToast('Channel message exceeds the hub limit', 'toast-warning', 3000);
         return;
     }
     var shouldRestoreComposerFocus = RS.composer
@@ -5854,7 +5854,7 @@ function channelsSendMessage() {
                 RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
             }
         }
-        if (typeof showToast === 'function') showToast((error && error.message) || 'Could not send channel message', 'toast-red', 3500);
+        if (typeof showToast === 'function') showToast((error && error.message) || 'Could not send channel message', 'toast-error', 3500);
     }).then(function() {
         _channelsSendPending = false;
         _channelsUpdateComposer();
@@ -5883,7 +5883,7 @@ function _channelsBindUI() {
             actionEl.disabled = true;
             _channelsPartRoom(actionEl.dataset.room || '').catch(function(error) {
                 actionEl.disabled = false;
-                if (typeof showToast === 'function') showToast((error && error.message) || 'Could not leave channel', 'toast-red', 3200);
+                if (typeof showToast === 'function') showToast((error && error.message) || 'Could not leave channel', 'toast-error', 3200);
             });
         }
     });

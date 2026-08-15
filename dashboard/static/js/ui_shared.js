@@ -326,7 +326,7 @@
             badge.setAttribute('data-value', mode);
         }
         if (opts.toastSuppressed && data && data.suppressed && typeof showToast === 'function') {
-            showToast('Transport Mode is handled by the shared instance on this device.', 'toast-yellow', 5000);
+            showToast('Transport Mode is managed by Ratspeak\u2019s shared service on this device.', 'toast-info', 5000);
         }
     };
 
@@ -356,7 +356,7 @@
                     else badge.removeAttribute('data-value');
                 }
                 if (typeof showToast === 'function') {
-                    showToast((err && err.message) || 'Failed to update transport mode', 'toast-red', 8000);
+                    showToast((err && err.message) || 'Could not update Transport Mode', 'toast-error', 8000);
                 }
                 return null;
             });
@@ -498,7 +498,7 @@
                         if (disconnectBle) {
                             RS.invoke('disconnect_ble_rnode', { name: iface.name }).catch(function(err) {
                                 if (typeof showToast === 'function') {
-                                    showToast((err && err.message) || 'Failed to disconnect BLE LoRa radio', 'toast-red', 8000);
+                                    showToast((err && err.message) || 'Could not disconnect the Bluetooth LoRa radio', 'toast-error', 8000);
                                 }
                             });
                         } else if (typeof removeHubInterface === 'function') {

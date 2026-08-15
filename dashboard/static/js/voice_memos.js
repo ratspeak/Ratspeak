@@ -251,7 +251,7 @@
     }
     function preparePlaybackInteraction() {
         if (voiceCallOwnsAudio()) {
-            showToast('Finish the current call before playing a voice message.', 'toast-orange', 4200);
+            showToast('Finish the current call before playing a voice message.', 'toast-warning', 4200);
             return Promise.resolve(false);
         }
         // Mobile voice messages use the same proven native speaker layer as
@@ -303,7 +303,7 @@
     function startRecording() {
         if (recorderState !== 'idle' || !window.lxmfActiveContact) return Promise.resolve(false);
         if (voiceCallOwnsAudio()) {
-            showToast('Finish the current call before recording a voice message.', 'toast-orange', 4200);
+            showToast('Finish the current call before recording a voice message.', 'toast-warning', 4200);
             return Promise.resolve(false);
         }
         var generation = ++recordingGeneration;
@@ -323,7 +323,7 @@
             if (!granted) {
                 recordingTarget = '';
                 recordingOwner = null;
-                showToast('Microphone access is needed to record a voice message.', 'toast-red', 4200);
+                showToast('Allow microphone access to record a voice message.', 'toast-warning', 4200);
                 setRecorderState('idle');
                 return false;
             }
@@ -355,7 +355,7 @@
                 setRecorderState('idle');
                 var audioBusy = error && error.code === 'conflict';
                 showToast(audioBusy && error.message ? error.message : START_FAILURE_MESSAGE,
-                    audioBusy ? 'toast-orange' : 'toast-red', 4500);
+                    audioBusy ? 'toast-warning' : 'toast-error', 4500);
                 return false;
             }).finally(function() {
                 if (recordingStartPromise === startPromise) recordingStartPromise = null;
@@ -376,7 +376,7 @@
             voiceHaptic('light');
         }).catch(function(error) {
             if (generation === recordingGeneration && sessionId === recordingSessionId) {
-                showToast((error && error.message) || 'Could not update the recording.', 'toast-red', 3500);
+                showToast((error && error.message) || 'Could not update the recording.', 'toast-error', 3500);
             }
         });
     }
@@ -406,7 +406,7 @@
             recordingTarget = '';
             recordingOwner = null;
             setRecorderState('idle');
-            showToast((error && error.message) || 'Could not finish the voice message.', 'toast-red', 4200);
+            showToast((error && error.message) || 'Could not finish the voice message.', 'toast-error', 4200);
         });
     }
     function discardRecording() {
@@ -453,7 +453,7 @@
     function sendDraft() {
         if (recorderState !== 'review' || !draft || typeof window.sendLxmfVoiceMemo !== 'function') return;
         if (!recordingTarget || !recordingOwner || !conversationOwnerIsCurrent(recordingOwner)) {
-            showToast('Voice message discarded after changing conversations.', 'toast-orange', 4200);
+            showToast('Voice message discarded after changing conversations.', 'toast-warning', 4200);
             discardRecording();
             return;
         }
@@ -489,7 +489,7 @@
             recordingOwner = null;
             recordingSendAdmissionStarted = false;
             setRecorderState('idle');
-            showToast('Voice message wasn\'t sent. Record it again to retry.', 'toast-red', 4200);
+            showToast('Voice message wasn\'t sent. Record it again to retry.', 'toast-error', 4200);
         });
     }
     function retireAdmittedSendUi() {
@@ -869,7 +869,7 @@
             return startPreviewAttempt(coordinator);
         }).catch(function(error) {
             if (generation !== playbackGeneration) return;
-            showToast((error && error.message) || 'Could not prepare voice message playback.', 'toast-red', 4000);
+            showToast((error && error.message) || 'Could not prepare voice message playback.', 'toast-error', 4000);
         });
     }
     function playbackError(coordinator, audio, error) {
@@ -877,7 +877,7 @@
         window.RS.diag('warn', '[voice memo] playback failed:', error && (error.name || error.message || error));
         stopAnyPlayback();
         syncPreviewPlayButton(false, 'error');
-        showToast('Could not play this voice message.', 'toast-red', 3500);
+        showToast('Could not play this voice message.', 'toast-error', 3500);
     }
     function syncPreviewPlayButton(playing, state) {
         previewPlaybackState = state || (playing ? 'playing' : 'idle');
@@ -1256,7 +1256,7 @@
             stopRecording();
             announce('Maximum voice message length reached');
         } else if (data.state === 'error') {
-            showToast(data.message || 'Voice message recording stopped.', 'toast-red', 4200);
+            showToast(data.message || 'Voice message recording stopped.', 'toast-error', 4200);
             discardRecording();
             return;
         } else if (data.state === 'idle' && recorderState !== 'stopping') {
@@ -1312,7 +1312,7 @@
             if (document.hidden) stopAnyPlayback();
             if (document.hidden && recorderState !== 'idle') {
                 if (retireAdmittedSendUi()) return;
-                showToast('Voice message discarded while Ratspeak was in the background.', 'toast-orange', 4200);
+                showToast('Voice message discarded while Ratspeak was in the background.', 'toast-warning', 4200);
                 alertVoice('Voice message discarded while Ratspeak was in the background');
                 discardRecording();
             }
@@ -1354,7 +1354,7 @@
             : reason === 'identity_replaced'
                 ? 'Voice message discarded after changing identities.'
                 : 'Voice message discarded after changing conversations.';
-        showToast(message, 'toast-orange', 3600);
+        showToast(message, 'toast-warning', 3600);
         discardRecording();
     }
 
@@ -1377,7 +1377,7 @@
                 return;
             }
             if (retireAdmittedSendUi()) return;
-            showToast('Recording stopped because another app needed audio.', 'toast-orange', 4200);
+            showToast('Recording stopped because another app needed audio.', 'toast-warning', 4200);
             alertVoice('Recording stopped because another app needed audio');
             return discardRecording();
         });

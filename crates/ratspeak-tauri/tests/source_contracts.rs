@@ -1223,7 +1223,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260813-2"));
+    assert!(index.contains("/static/style.css?v=ui-20260815-1"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -4247,7 +4247,7 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("function _syncImageViewerActions(viewer)"));
     assert!(lxmf.contains("copyBtn.hidden = !canCopy;"));
     assert!(lxmf.contains("_saveDownloadedMediaFile(file, { preferPhotos: true })"));
-    assert!(lxmf.contains("Saved to photos!"));
+    assert!(lxmf.contains("Saved to Photos"));
     assert!(lxmf.contains("function _compensateImageLoadScroll(container, img, before)"));
     assert!(lxmf.contains("function _messageHasTransferPayload(msg)"));
     assert!(lxmf.contains("function _messageCanCancelSend(msg)"));
@@ -4644,10 +4644,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260813-2"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260813-2"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260813-2"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260813-2"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260815-1"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260815-1"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260815-1"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260815-1"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -5749,7 +5749,7 @@ fn cache_clear_buttons_clear_reticulum_db_and_frontend_caches() {
     assert!(events.contains("announceCache = [];"));
     assert!(events.contains("RS.invoke('api_get_peers_snapshot')"));
     assert!(peers_cache.contains("function replace(rows)"));
-    assert!(settings.contains("Path table cleared."));
+    assert!(settings.contains("Path table cleared"));
     assert!(!settings.contains("Hub node restarting"));
 }
 
@@ -6303,8 +6303,8 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_js.contains("var fromSetup = !!window._identityImportFromSetup;"));
     assert!(identity_js.contains("var activateHtml = fromSetup ? ''"));
     assert!(identity_js.contains("completeSetupAfterIdentityImport(data);"));
-    assert!(identity_js.contains("Choose Reticulum Identity Key import"));
-    assert!(identity_js.contains("Choose Ratspeak Identity Backup import"));
+    assert!(identity_js.contains("Choose Reticulum Identity Key to import this file."));
+    assert!(identity_js.contains("Choose Ratspeak Identity Backup to import this file."));
     assert!(identity_js.contains("mimeType: 'application/octet-stream'"));
     assert!(identity_js.contains("function saveIdentityBackupWithAndroid(fileName, backupBase64)"));
     assert!(

@@ -792,7 +792,7 @@ function showConnectionDetailSheet(hash, options) {
             RS.invoke('block_contact', { args: { hash: h, escalate_to_blackhole: result.checked } })
                 .then(function(resp) {
                     if (resp && resp.blackhole_pending && typeof showToast === 'function') {
-                        showToast('Blocked. Network blackhole will activate on their next announce.', 'toast-orange', 5000);
+                        showToast('Blocked. Network filtering starts after their next announce.', 'toast-warning', 5000);
                     }
                 })
                 .catch(function() {});

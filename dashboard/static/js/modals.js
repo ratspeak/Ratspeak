@@ -391,7 +391,7 @@ function removeHubInterface(ifaceType, ifaceName) {
         document.querySelectorAll('#node-modal .danger-btn-sm').forEach(function(btn) {
             btn.disabled = false;
         });
-        showToast(message, 'toast-red', 8000);
+        showToast(message, 'toast-error', 8000);
     });
 }
 
@@ -1284,16 +1284,14 @@ function refreshRnodeSerialPorts() {
                 }).join('');
             if (ports.some(function(p) { return p.permission_denied; })) {
                 showToast(
-                    'A USB-Serial radio was detected but is not user-readable. ' +
-                    'Install the udev rules: sudo cp 99-ratspeak.rules /etc/udev/rules.d/ && ' +
-                    'sudo udevadm control --reload && sudo udevadm trigger',
-                    'toast-yellow',
+                    'USB-Serial radio found, but permission was denied. Install the Ratspeak udev rules, then reconnect it.',
+                    'toast-warning',
                     8000
                 );
             }
         }
     }).catch(function() {
-        showToast('Failed to scan serial ports', 'toast-red', 3000);
+        showToast('Could not scan serial ports', 'toast-error', 3000);
         sel.innerHTML = '<option value="">Error scanning ports</option>';
     });
 }
@@ -1680,8 +1678,8 @@ function submitRnodeInterface() {
                     window._onUsbPermissionResult = null;
                     if (result && result.granted) { resolve(true); }
                     else {
-                        var err = result && result.error ? result.error : 'USB permission denied';
-                        showToast(err, 'toast-red', 4000);
+                        var err = result && result.error ? result.error : 'USB permission is required to use this radio';
+                        showToast(err, 'toast-warning', 4000);
                         resolve(false);
                     }
                 };
@@ -1744,7 +1742,7 @@ function submitRnodeInterface() {
             if (window._activeProgressDialog && window._activeProgressDialog.error) {
                 window._activeProgressDialog.error((err && err.message) || 'Failed to configure LoRa interface');
             } else {
-                showToast((err && err.message) || 'Failed to configure LoRa interface', 'toast-red', 8000);
+                showToast((err && err.message) || 'Could not configure LoRa interface', 'toast-error', 8000);
             }
         });
     });
@@ -1883,7 +1881,7 @@ function resumePublicServerInterface(server, match) {
         if (typeof refreshConfigInterfaces === 'function') refreshConfigInterfaces();
     }).catch(function(err) {
         clearConnectPublicPending();
-        showToast((err && err.message) || 'Failed to reconnect', 'toast-red', 8000);
+        showToast((err && err.message) || 'Could not reconnect', 'toast-error', 8000);
     });
 }
 
@@ -2170,7 +2168,7 @@ function _handleConnectInvokeError(err, resetText) {
         }, 3000);
     }
     var message = err && err.message ? err.message : 'Connection request failed';
-    showToast(message, 'toast-red', 8000);
+    showToast(message, 'toast-error', 8000);
 }
 
 function _handleInterfaceButtonError(err, buttonId, resetText, fallbackMessage) {
@@ -2184,7 +2182,7 @@ function _handleInterfaceButtonError(err, buttonId, resetText, fallbackMessage) 
             btn.disabled = false;
         }, 3000);
     }
-    showToast((err && err.message) || fallbackMessage || 'Interface request failed', 'toast-red', 8000);
+    showToast((err && err.message) || fallbackMessage || 'Could not update the interface', 'toast-error', 8000);
 }
 
 function submitConnection() {
@@ -2427,7 +2425,7 @@ function toggleLocalNetwork() {
     if (isEnabled) {
         rsConfirm({ message: 'Disable Local Network?', danger: true, confirmText: 'Disable' }).then(function(ok) {
             if (ok) RS.invoke('disable_auto_interface', {}).catch(function(err) {
-                showToast((err && err.message) || 'Failed to disable Local Network', 'toast-red', 8000);
+                showToast((err && err.message) || 'Could not turn off Local Network', 'toast-error', 8000);
             });
         });
     } else {
@@ -2704,7 +2702,7 @@ function _ensureBlePermissions() {
             }
         } catch (e) {
         }
-        showToast('Requesting Bluetooth permissions\u2026', 'toast-blue', 3000);
+        showToast('Requesting Bluetooth access…', 'toast-progress', 3000);
         window._onBlePermissionResult = function(granted) {
             window._onBlePermissionResult = null;
             resolve(!!granted);
@@ -2732,9 +2730,9 @@ function toggleBlePeer() {
                 (missingStr.indexOf('permission') !== -1 || missingStr.indexOf('not initialized') !== -1)) {
                 _ensureBlePermissions().then(function(granted) {
                     if (granted) {
-                        showToast('Bluetooth permissions granted. Tap + again to enable Bluetooth Peer', 'toast-green', 5000);
+                        showToast('Bluetooth access granted. Tap + again to turn on Bluetooth Peer.', 'toast-success', 5000);
                     } else {
-                        showToast('Bluetooth permissions denied. Bluetooth Peer requires Bluetooth access', 'toast-red', 5000);
+                        showToast('Bluetooth access is required to use Bluetooth Peer.', 'toast-warning', 5000);
                     }
                 });
                 return;
@@ -2743,7 +2741,7 @@ function toggleBlePeer() {
             var msg = missing.length > 0
                 ? 'Bluetooth Peer is not available: ' + missing.join(', ')
                 : 'Bluetooth Peer is not available. No Bluetooth adapter found.';
-            showToast(msg, 'toast-orange', 5000);
+            showToast(msg, 'toast-warning', 5000);
             return;
         }
 
@@ -2751,7 +2749,7 @@ function toggleBlePeer() {
         if (isEnabled) {
             rsConfirm({ message: 'Disable Bluetooth Peer? Active peer connections will be dropped.', danger: true, confirmText: 'Disable' }).then(function(ok) {
                 if (ok) RS.invoke('disable_ble_peer_interface').catch(function(err) {
-                    showToast((err && err.message) || 'Failed to disable Bluetooth Peer', 'toast-red', 8000);
+                    showToast((err && err.message) || 'Could not turn off Bluetooth Peer', 'toast-error', 8000);
                 });
             });
         } else {
@@ -2783,14 +2781,14 @@ function toggleBlePeer() {
                         if (window._activeProgressDialog && window._activeProgressDialog.error) {
                             window._activeProgressDialog.error((err && err.message) || 'Failed to enable Bluetooth Peer');
                         } else {
-                            showToast((err && err.message) || 'Failed to enable Bluetooth Peer', 'toast-red', 8000);
+                            showToast((err && err.message) || 'Could not turn on Bluetooth Peer', 'toast-error', 8000);
                         }
                     });
                 });
             });
         }
     }).catch(function() {
-        showToast('Could not check Bluetooth Peer availability', 'toast-red', 5000);
+        showToast('Could not check Bluetooth Peer availability', 'toast-error', 5000);
     });
 }
 
@@ -2822,7 +2820,7 @@ function showBlePeerActions(evt, btn) {
     function disconnectVisiblePeer() {
         addresses.forEach(function(address) {
             RS.invoke('disconnect_ble_peer', { address: address }).catch(function(err) {
-                showToast((err && err.message) || 'Failed to disconnect Bluetooth Peer', 'toast-red', 8000);
+                showToast((err && err.message) || 'Could not disconnect Bluetooth Peer', 'toast-error', 8000);
             });
         });
     }

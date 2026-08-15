@@ -121,7 +121,7 @@ RS.invokeOrToast = function(command, args, failMessage) {
         var detail = err && err.message ? err.message : (typeof err === 'string' ? err : '');
         var message = failMessage || 'Action failed';
         if (typeof showToast === 'function') {
-            showToast(detail ? message + ' (' + detail + ')' : message, 'toast-red', 3500);
+            showToast(detail ? message + ' (' + detail + ')' : message, 'toast-error', 3500);
         }
         return undefined;
     });

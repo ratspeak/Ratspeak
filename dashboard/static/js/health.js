@@ -328,10 +328,10 @@ function setInterfacePaused(ifaceType, ifaceName, paused) {
         return invokeLifecycle();
     }).then(function(result) {
         if (result === null) return;
-        showToast(paused ? 'Pausing interface...' : 'Resuming interface...', 'toast-blue', 2500);
+        showToast(paused ? 'Pausing interface…' : 'Resuming interface…', 'toast-progress', 2500);
         refreshConfigInterfaces();
     }).catch(function(err) {
-        showToast((err && err.message) || 'Failed to update interface', 'toast-red', 8000);
+        showToast((err && err.message) || 'Could not update interface', 'toast-error', 8000);
     });
 }
 
@@ -397,7 +397,7 @@ function openInterfaceEdit(ifaceType, ifaceName) {
     var record = (_cachedConfigByName && _cachedConfigByName[ifaceName]) || null;
     var iface = record ? record.iface : null;
     if (!iface) {
-        showToast('Interface settings are still loading', 'toast-yellow', 2500);
+        showToast('Interface settings are still loading', 'toast-warning', 2500);
         refreshConfigInterfaces();
         return;
     }
@@ -1407,7 +1407,7 @@ function renderTrafficTable(rateTable) {
 }
 
 function renderAlert(alert) {
-    var colorClass = alert.level === 'critical' ? 'toast-red' : 'toast-orange';
+    var colorClass = alert.level === 'critical' ? 'toast-error' : 'toast-warning';
     var duration = 5000;
     showToast(alert.message, colorClass, duration);
 }

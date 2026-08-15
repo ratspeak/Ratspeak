@@ -615,7 +615,7 @@ function _voiceIncomingMatchesContact(hash) {
 
 function _voiceNotify(message, className) {
     if (typeof showToast === 'function') {
-        showToast(message, className || 'toast-orange', 2500);
+        showToast(message, className || 'toast-warning', 2500);
     }
 }
 
@@ -1721,10 +1721,10 @@ function _flushPendingLxmfCancel(clientMsgId, serverMsgId) {
     _invokeLxmfCancel(serverMsgId).then(function(resp) {
         if (resp && resp.cancelled) {
             _markLxmfMessageCancelled(serverMsgId);
-            showToast('Delivery cancelled.', 'toast-orange', 3000);
+            showToast('Delivery cancelled', 'toast-info', 3000);
         }
     }).catch(function(err) {
-        showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+        showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
     });
 }
 
@@ -1743,10 +1743,10 @@ function _cancelLxmfSend(msgId) {
         return _invokeLxmfCancel(msgId).then(function(resp) {
             if (!resp || !resp.cancelled) return;
             _markLxmfMessageCancelled(resp.msg_id || resp.client_msg_id || msgId);
-            showToast('Delivery cancelled.', 'toast-orange', 3000);
+            showToast('Delivery cancelled', 'toast-info', 3000);
         });
     }).catch(function(err) {
-        showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+        showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
     });
 }
 
@@ -2941,7 +2941,7 @@ document.addEventListener('DOMContentLoaded', function() {
             rsPromptContact({ title: 'Add Contact' }).then(function(result) {
                 if (!result) return;
                 RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-                showToast('Adding contact...', 'toast-orange', 2000);
+                showToast('Adding contact…', 'toast-progress', 2000);
             });
         });
     }
@@ -3146,7 +3146,7 @@ function showContactDetailSheet(hash) {
             RS.invokeOrToast('block_contact', { args: { hash: hash, escalate_to_blackhole: result.checked } }, 'Could not block contact')
                 .then(function(resp) {
                     if (resp && resp.blackhole_pending && typeof showToast === 'function') {
-                        showToast('Blocked. Network blackhole will activate on their next announce.', 'toast-orange', 5000);
+                        showToast('Blocked. Network filtering starts after their next announce.', 'toast-warning', 5000);
                     }
                 })
                 .catch(function() {});
@@ -3172,7 +3172,7 @@ document.addEventListener('DOMContentLoaded', function() {
         rsPromptContact({ title: 'Add Contact' }).then(function(result) {
             if (!result) return;
             RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-            showToast('Adding contact...', 'toast-orange', 2000);
+            showToast('Adding contact…', 'toast-progress', 2000);
         });
     }
 
@@ -3426,10 +3426,10 @@ function renderConversation(options) {
             var name = this.getAttribute('data-stored-name');
             if (!name) return;
             RS.saveFile(name).then(function(saved) {
-                if (saved !== false && typeof showToast === 'function') showToast('Saved', 'toast-green', 2200);
+                if (saved !== false && typeof showToast === 'function') showToast('Saved', 'toast-success', 2200);
             }).catch(function(err) {
                 if (typeof showToast === 'function') {
-                    showToast('Download failed: ' + (err.message || err.code || 'error'), 'toast-red', 4000);
+                    showToast('Could not download: ' + (err.message || err.code || 'unknown error'), 'toast-error', 4000);
                 } else {
                     window.RS.diag('error', '[lxmf] file download failed:', name, err);
                 }
@@ -3462,7 +3462,7 @@ function renderConversation(options) {
             var url = this.getAttribute('data-url');
             if (url && window.RS && typeof RS.openExternalUrl === 'function') {
                 RS.openExternalUrl(url).catch(function(err) {
-                    showToast('Could not open link: ' + ((err && err.message) || 'error'), 'toast-red', 3500);
+                    showToast('Could not open link: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
                 });
             }
         });
@@ -3672,7 +3672,7 @@ function _markOptimisticMessageFailed(clientMsgId, error, targetHash) {
     _commitConversationMessages(targetHash, target);
     if (target.active) renderConversation();
     if (typeof showToast === 'function') {
-        showToast((error && error.message) || 'Attachment could not be sent', 'toast-red', 4500);
+        showToast((error && error.message) || 'Attachment could not be sent', 'toast-error', 4500);
     }
 }
 
@@ -3703,7 +3703,7 @@ function sendLxmfMessage(deliveryMethod) {
     var chosenDelivery = _deliveryPrefOrAuto(deliveryMethod);
     var maxMessageBytes = lxmfLimits.max_message_bytes || 134217727;
     if (text && _utf8ByteLength(text) > maxMessageBytes) {
-        showToast('Message exceeds protocol limit (' + prettySize(_utf8ByteLength(text)) + ' > ' + prettySize(maxMessageBytes) + ').', 'toast-red', 5000);
+        showToast('Message is too large for this network (' + prettySize(_utf8ByteLength(text)) + ' > ' + prettySize(maxMessageBytes) + ')', 'toast-warning', 5000);
         return;
     }
 
@@ -3711,11 +3711,11 @@ function sendLxmfMessage(deliveryMethod) {
         var pendingAttachment = lxmfPendingFile;
         if (_canonicalConversationHash(pendingAttachment.destination) !== targetHash) {
             clearPendingFile();
-            showToast('Attach the file again for this conversation.', 'toast-blue', 3000);
+            showToast('Attach the file again for this conversation', 'toast-warning', 3000);
             return;
         }
         if (pendingAttachment.preparing) {
-            showToast('Choose an image size before sending.', 'toast-blue', 2600);
+            showToast('Choose an image size before sending', 'toast-warning', 2600);
             return;
         }
         var attachMsgId = generateMsgId();
@@ -3926,7 +3926,7 @@ function _ensureAttachmentMediaPermission(opts) {
             var message = opts.audio
                 ? 'Camera or microphone permission denied'
                 : 'Camera permission denied';
-            showToast(message, 'toast-orange', 3500);
+            showToast(message, 'toast-warning', 3500);
         }
         return granted;
     });
@@ -4195,7 +4195,7 @@ function _stageSelectedImage(file, pendingFile, selectionToken) {
             RS.invoke('cancel_attachment_stage', { token: stageToken }).catch(function() {});
         }
         if (selectionToken === _pendingAttachmentToken && lxmfPendingFile === pendingFile) {
-            showToast((error && error.message) || 'Could not prepare photo', 'toast-red', 4500);
+            showToast((error && error.message) || 'Could not prepare photo', 'toast-error', 4500);
             clearPendingFile();
         }
         return null;
@@ -4208,14 +4208,14 @@ function handleFileSelected(inputEl) {
 
     var maxSize = lxmfLimits.max_attachment_bytes || 128000000;
     if (file.size > maxSize) {
-        showToast('File exceeds protocol limit (' + prettySize(file.size) + ' > ' + prettySize(maxSize) + '). Choose a smaller file.', 'toast-red', 5000);
+        showToast('File is too large for this network (' + prettySize(file.size) + ' > ' + prettySize(maxSize) + '). Choose a smaller file.', 'toast-warning', 5000);
         inputEl.value = '';
         clearPendingFile();
         return;
     }
     var imageCandidate = _looksLikeImageAttachment(file);
     if (!imageCandidate && file.size > (lxmfLimits.efficient_resource_bytes || 1048575)) {
-        showToast('Large attachment - transfer may take a while on slow links.', 'toast-blue', 3500);
+        showToast('Large attachment — transfer may take a while on slow links', 'toast-info', 3500);
     }
 
     var token = ++_pendingAttachmentToken;
@@ -4250,7 +4250,7 @@ function handleFileSelected(inputEl) {
         }).catch(function(error) {
             pendingFile.stage_error = error;
             if (!pendingFile.cancelled && lxmfPendingFile === pendingFile) {
-                showToast((error && error.message) || 'Could not stage attachment', 'toast-red', 4500);
+                showToast((error && error.message) || 'Could not stage attachment', 'toast-error', 4500);
             }
             return null;
         });
@@ -4496,7 +4496,7 @@ function _sendReactionForMessage(msgData, emoji, opts) {
     }).catch(function() {
         // Roll the optimistic apply back so the pill reflects reality.
         _optimisticApplyReaction(msgData.id, emoji, action === 'add' ? 'remove' : 'add');
-        if (typeof showToast === 'function') showToast('Reaction failed', 'toast-red', 2500);
+        if (typeof showToast === 'function') showToast('Could not add the reaction', 'toast-error', 2500);
     });
 }
 
@@ -4542,7 +4542,7 @@ function _saveDownloadedMediaFile(file, opts) {
     opts = opts || {};
     return RS.saveDownloadedFile(file, opts).then(function() {
         if (typeof showToast === 'function') {
-            showToast(/^image\//i.test(file.mime || '') && opts.preferPhotos ? 'Saved to photos!' : 'Saved', 'toast-green', 2500);
+            showToast(/^image\//i.test(file.mime || '') && opts.preferPhotos ? 'Saved to Photos' : 'Saved', 'toast-success', 2500);
         }
         return true;
     });
@@ -4711,13 +4711,13 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
         var action = mediaAction ? mediaAction.run() : _copyToClipboard(msgData.content || '');
         action.then(function(ok) {
             if (typeof showToast === 'function') {
-                if (!mediaAction) showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-green' : 'toast-orange', 1600);
+                if (!mediaAction) showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1600);
             }
             if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
             _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         }).catch(function(err) {
             if (typeof showToast === 'function') {
-                showToast((mediaAction && mediaAction.label === 'Save' ? 'Save failed: ' : 'Copy failed: ') + ((err && err.message) || 'error'), 'toast-red', 3500);
+                showToast((mediaAction && mediaAction.label === 'Save' ? 'Could not save: ' : 'Could not copy: ') + ((err && err.message) || 'unknown error'), 'toast-error', 3500);
             }
             if (typeof haptic === 'function') haptic('warning');
             _restoreLxmfComposerKeyboard(shouldRestoreComposer);
@@ -4868,7 +4868,7 @@ RS.listen('contacts_update', function(data) {
 });
 
 RS.listen('contact_blocked', function(data) {
-    if (typeof showToast === 'function') showToast('User blocked', 'toast-green', 2000);
+    if (typeof showToast === 'function') showToast('User blocked', 'toast-success', 2000);
     // Optimistic removal; idempotent peer_removed event will follow.
     if (data && data.hash && typeof PeersCache !== 'undefined' && PeersCache) {
         PeersCache.applyRemoved(data.hash);
@@ -4877,7 +4877,7 @@ RS.listen('contact_blocked', function(data) {
 });
 
 RS.listen('contact_unblocked', function(data) {
-    if (typeof showToast === 'function') showToast('User unblocked', 'toast-green', 2000);
+    if (typeof showToast === 'function') showToast('User unblocked', 'toast-success', 2000);
     if (typeof refreshPeersList === 'function') refreshPeersList();
 });
 
@@ -4915,7 +4915,7 @@ RS.listen('lxmf_message', function(msg) {
             ? 'New message with attachment from ' + escapeHtml(fromLabel)
             : 'New message from ' + escapeHtml(fromLabel);
         var sourceHash = msg.source;
-        showToast(toastMsg, 'toast-blue', 4000, function() { openConversationWith(sourceHash); });
+        showToast(toastMsg, 'toast-action', 4000, function() { openConversationWith(sourceHash); });
         if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
             var notifFrom = _messageSourceName(msg);
             var notifBody = (msg.content || '').substring(0, 120) || 'New message';
@@ -5001,13 +5001,13 @@ RS.listen('lxmf_step', function(data) {
     }
 
     if (data.step === 'timeout') {
-        showToast('Message timed out: destination may be unreachable', 'toast-red', 5000);
+        showToast('Message timed out. The recipient may be unreachable.', 'toast-error', 5000);
     }
     if (data.step === 'error') {
-        showToast(data.message || 'Send error', 'toast-red', 5000);
+        showToast(data.message || 'Send error', 'toast-error', 5000);
     }
     if (data.step === 'rejected') {
-        showToast(data.message || 'Message rejected by destination', 'toast-red', 5000);
+        showToast(data.message || 'The recipient rejected the message', 'toast-error', 5000);
     }
 });
 
@@ -5067,14 +5067,14 @@ document.addEventListener('visibilitychange', function() {
 
 RS.listen('contact_added', function(data) {
     var addedName = data && data.display_name;
-    showToast(addedName ? 'Contact added: ' + addedName : 'Contact added', 'toast-green', 3000);
+    showToast(addedName ? 'Contact added: ' + addedName : 'Contact added', 'toast-success', 3000);
     renderContactList();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
     if (typeof refreshPeersList === 'function') refreshPeersList();
 });
 
 RS.listen('contact_error', function(data) {
-    showToast(data.error || 'Contact operation failed', 'toast-red', 4000);
+    showToast(data.error || 'Could not update contact', 'toast-error', 4000);
 });
 
 function _aboutClassifyIface(iface) {
@@ -5234,7 +5234,7 @@ function showContactAbout(hash) {
             if (viaLink.getAttribute('data-known') === '1') {
                 showContactAbout(v);
             } else {
-                showToast('Relay not in peer list', 'toast-orange', 1500);
+                showToast('Relay is not in your peer list', 'toast-warning', 1500);
             }
         });
     }
@@ -5408,7 +5408,7 @@ function closeFabContactPicker() {
         if (!lxmfActiveContact) { showPreConditionToast('Select a conversation first'); return; }
         var files = e.dataTransfer.files;
         if (!files || files.length === 0) return;
-        if (files.length > 1) showToast('Only one file can be attached at a time', 'toast-orange', 3000);
+        if (files.length > 1) showToast('Only one file can be attached at a time', 'toast-warning', 3000);
         handleFileSelected({ files: [files[0]], value: '' });
     });
 })();
@@ -5488,7 +5488,7 @@ function openChatHeaderDropdown(triggerEl) {
                 if (!lxmfActiveContact) return;
                 RS.copyText(lxmfActiveContact).then(function(ok) {
                     if (ok) showCopyConfirmationToast('Hash');
-                    else showToast('Could not copy', 'toast-orange', 1500);
+                    else showToast('Could not copy', 'toast-error', 1500);
                 });
             }
         },
@@ -6040,7 +6040,7 @@ RS.listen('conversation_deleted', function(data) {
     }
     if (_canonicalConversationHash(_ghostConversationHash) === hash) _removeGhostRow();
     loadConversations();
-    showToast('Conversation deleted', 'toast-green', 3000);
+    showToast('Conversation deleted', 'toast-success', 3000);
 });
 
 // 30s re-check so identity/path changes surface without a page reload.
@@ -6191,7 +6191,7 @@ function _ensureImageViewer() {
         _fileFromImageElement(source).then(_copyDownloadedImage).then(function() {
             showCopyConfirmationToast('Image');
         }).catch(function(err) {
-            showToast((err && err.message) || 'Could not copy image', 'toast-orange', 3000);
+            showToast((err && err.message) || 'Could not copy image', 'toast-error', 3000);
         });
     });
     viewer.querySelector('#image-viewer-save').addEventListener('click', function(e) {
@@ -6201,16 +6201,16 @@ function _ensureImageViewer() {
             (source.closest('.lxmf-image-button') && source.closest('.lxmf-image-button').getAttribute('data-stored-name')));
         if (stored) {
             RS.saveFile(stored, { preferPhotos: true }).then(function(saved) {
-                if (saved !== false) showToast('Saved', 'toast-green', 2500);
+                if (saved !== false) showToast('Saved', 'toast-success', 2500);
             }).catch(function(err) {
-                showToast('Save failed: ' + ((err && err.message) || 'error'), 'toast-red', 4000);
+                showToast('Could not save: ' + ((err && err.message) || 'unknown error'), 'toast-error', 4000);
             });
             return;
         }
         _fileFromImageElement(source).then(function(file) {
             return _saveDownloadedMediaFile(file, { preferPhotos: true });
         }).catch(function(err) {
-            showToast('Save failed: ' + ((err && err.message) || 'error'), 'toast-red', 4000);
+            showToast('Could not save: ' + ((err && err.message) || 'unknown error'), 'toast-error', 4000);
         });
     });
     document.addEventListener('keydown', function(e) {

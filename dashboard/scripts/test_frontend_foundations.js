@@ -123,7 +123,7 @@ assert(!/<a class="bottom-bar-item"/.test(html), 'mobile primary navigation must
 var revisionMatches = Array.from(html.matchAll(/\/(?:static\/(?!js\/vendor)[^"?]+)\?v=([^"&]+)/g));
 assert(revisionMatches.length > 20, 'first-party asset revisions must be explicit');
 var revisions = new Set(revisionMatches.map(function(match) { return match[1]; }));
-assert.deepStrictEqual(Array.from(revisions), ['ui-20260813-2'],
+assert.deepStrictEqual(Array.from(revisions), ['ui-20260815-1'],
     'first-party CSS, fonts, and JS must share one build-level asset revision');
 
 var nav = read('static/js/nav.js');

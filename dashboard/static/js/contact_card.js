@@ -623,10 +623,10 @@ z`,
                 canvasBlob(canvas).then(function(blob) {
                     return saveQrBlob(blob, fileBase + '-' + CONTACT_QR_FILE);
                 }).then(function(method) {
-                    if (method === 'share') showToast('QR handed to destination', 'toast-green', 2500);
-                    else showToast('QR image saved', 'toast-green', 2500);
+                    if (method === 'share') showToast('QR code shared', 'toast-success', 2500);
+                    else showToast('QR image saved', 'toast-success', 2500);
                 }).catch(function(err) {
-                    showToast(err && err.message ? err.message : 'Could not share QR', 'toast-red', 3000);
+                    showToast(err && err.message ? err.message : 'Could not share QR', 'toast-error', 3000);
                 });
             });
 
@@ -644,7 +644,7 @@ z`,
                         shareButton.removeAttribute('aria-busy');
                     } catch (err) {
                         shareButton.removeAttribute('aria-busy');
-                        showToast(err && err.message ? err.message : 'Could not render QR', 'toast-red', 3000);
+                        showToast(err && err.message ? err.message : 'Could not render QR', 'toast-error', 3000);
                     }
                 });
             });
@@ -691,12 +691,12 @@ z`,
             btn.disabled = true;
             btn.textContent = 'Adding...';
             RS.invoke('import_contact_card', { payload: payload }).then(function() {
-                showToast('Contact added with identity key', 'toast-green', 3000);
+                showToast('Contact added', 'toast-success', 3000);
                 closeAll();
             }).catch(function(err) {
                 btn.disabled = false;
                 btn.textContent = 'Add';
-                showToast(err && err.message ? err.message : 'Could not add contact', 'toast-red', 3000);
+                showToast(err && err.message ? err.message : 'Could not add contact', 'toast-error', 3000);
             });
         });
     }
@@ -1132,7 +1132,7 @@ z`,
         rsPromptContact({ title: 'Add Contact' }).then(function(result) {
             if (!result) return;
             RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-            showToast('Adding contact...', 'toast-orange', 2000);
+            showToast('Adding contact…', 'toast-progress', 2000);
         });
     }
 

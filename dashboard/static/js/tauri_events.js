@@ -347,7 +347,7 @@ RS.listen('node_operation_status', function(data) {
     }
 
     if (data.done && !progressHandling) {
-        var toastColor = data.error ? 'toast-red' : 'toast-green';
+        var toastColor = data.error ? 'toast-error' : 'toast-success';
         var toastDuration = data.error ? 8000 : 5000;
         showToast(displayStep, toastColor, toastDuration);
 
@@ -836,7 +836,7 @@ RS.listen('ble_peer_peripheral_unavailable', function(data) {
     window._blePeerPeripheralUnavailable = (data && data.reason) || 'Peripheral mode unavailable';
     if (typeof showToast === 'function') {
         var reason = window._blePeerPeripheralUnavailable;
-        showToast('Bluetooth Peer: ' + reason + ' — running as central only', 'toast-orange', 5000);
+        showToast('Bluetooth Peer: ' + reason + ' — running as central only', 'toast-warning', 5000);
     }
     _bleRerender();
 });
@@ -914,11 +914,9 @@ RS.listen('auto_carrier_state', function(data) {
         if (prevWasOk || firstSinceSpawn) {
             if (typeof showToast === 'function') {
                 showToast(
-                    'Local Network: no multicast echo on ' + data.nic +
-                    '. Windows Defender Firewall blocks IPv6 multicast on Public Wi-Fi profiles by default. ' +
-                    'In Settings → Network & Internet → Wi-Fi → properties, switch the active network to Private — ' +
-                    'or run as administrator: Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private',
-                    'toast-yellow',
+                    'Local Network is blocked on ' + data.nic +
+                    '. Set the active Wi-Fi network to Private in Windows Settings.',
+                    'toast-warning',
                     12000
                 );
                 window._autoFirewallToastShown = true;
@@ -989,13 +987,13 @@ RS.listen('ble_rnode_passkey_prompt', function(data) {
         var digits = String(value).replace(/\D+/g, '');
         var passkey = parseInt(digits, 10);
         if (!digits || isNaN(passkey) || passkey < 0 || passkey > 999999) {
-            showToast('Passkey must be a 6-digit number.', 'toast-red', 4000);
+            showToast('Enter a 6-digit passkey.', 'toast-warning', 4000);
             if (wasCurrent) RS.invoke('cancel_ble_rnode_pairing').catch(function() {});
             return;
         }
         RS.invoke('submit_ble_rnode_passkey', { passkey: passkey }).catch(function(err) {
-            var msg = (err && err.message) || 'Failed to submit passkey';
-            showToast(msg, 'toast-red', 4000);
+            var msg = (err && err.message) || 'Could not submit the passkey';
+            showToast(msg, 'toast-error', 4000);
         });
     });
 
@@ -1029,9 +1027,9 @@ RS.listen('mobile_hardware_state', function(data) {
     if (data.kind === 'usb_rnode') {
         var usbProgress = window._activeProgressDialog;
         if (data.state === 'detached') {
-            showToast('USB RNode disconnected. Reconnect it, then resume the interface.', 'toast-yellow', 5000);
+            showToast('USB RNode disconnected. Reconnect it, then resume the interface.', 'toast-warning', 5000);
         } else if (data.state === 'permission_needed') {
-            showToast('USB permission is required to reconnect the RNode.', 'toast-yellow', 5000);
+            showToast('USB permission is required to reconnect the RNode.', 'toast-warning', 5000);
         } else if (data.state === 'permission_granted' && usbProgress && usbProgress.isOpen()) {
             usbProgress.update('USB permission granted. Reconnecting...');
         }
@@ -1060,7 +1058,7 @@ RS.listen('mobile_hardware_state', function(data) {
         };
         message = failures[data.reason] || failures.connect_failed;
         if (pd && pd.isOpen()) pd.error(message);
-        else showToast(message, 'toast-red', 5000);
+        else showToast(message, 'toast-error', 5000);
         return;
     }
     if (pd && pd.isOpen() && message) pd.update(message);
@@ -1115,8 +1113,8 @@ RS.listen('system_status', function(data) {
 });
 
 RS.listen('identity_error', function(data) {
-    var msg = (data && data.error) ? data.error : 'Identity operation failed.';
-    var toastClass = (data && data.degraded) ? 'toast-red' : 'toast-orange';
+    var msg = (data && data.error) ? data.error : 'Could not update the identity';
+    var toastClass = (data && data.degraded) ? 'toast-error' : 'toast-warning';
     var duration = (data && data.degraded) ? 12000 : 6000;
     showToast(msg, toastClass, duration);
 
@@ -1134,7 +1132,7 @@ RS.listen('announce_triggered', function(data) {
         return;
     }
     if (typeof showToast === 'function') {
-        showToast('Announce failed: ' + (data.error || 'Unknown error'), 'toast-red');
+        showToast('Could not send the announce: ' + (data.error || 'unknown error'), 'toast-error');
     }
 });
 

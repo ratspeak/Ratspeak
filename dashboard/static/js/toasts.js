@@ -2,7 +2,9 @@ var TOAST_CLASS_MAP = {
     'toast-error':   'toast-red',
     'toast-warning': 'toast-orange',
     'toast-success': 'toast-green',
-    'toast-info':    'toast-blue'
+    'toast-info':    'toast-blue',
+    'toast-progress':'toast-progress',
+    'toast-action':  'toast-action'
 };
 
 var _activeToasts = new Set();
@@ -28,6 +30,11 @@ function createToastStatusIcon(colorClass) {
         path.setAttribute('d', 'm6.5 6.5 7 7m0-7-7 7');
     } else if (colorClass === 'toast-orange' || colorClass === 'toast-yellow') {
         path.setAttribute('d', 'M10 5.75v5.5m0 3v.1');
+    } else if (colorClass === 'toast-progress') {
+        path.setAttribute('d', 'M5.5 10h.1m4.35 0h.1m4.35 0h.1');
+        svg.setAttribute('stroke-width', '2.4');
+    } else if (colorClass === 'toast-action') {
+        path.setAttribute('d', 'M5.5 10h9m-3.25-3.25L14.5 10l-3.25 3.25');
     } else if (colorClass === 'toast-purple') {
         path.setAttribute('d', 'M10 4.75v10.5M4.75 10h10.5');
     } else {
@@ -53,6 +60,7 @@ function showToast(message, colorClass, duration, onClick) {
     var container = document.getElementById('toast-container');
     var toast = document.createElement('div');
     toast.className = 'toast ' + colorClass;
+    toast.setAttribute('aria-atomic', 'true');
 
     if (colorClass === 'toast-red') {
         toast.setAttribute('role', 'alert');
@@ -77,11 +85,16 @@ function showToast(message, colorClass, duration, onClick) {
 
     // Whole toast is the tap target so the click area matches the visual.
     if (onClick) {
-        toast.style.cursor = 'pointer';
-        toast.addEventListener('click', function() {
+        toast.classList.add('toast-actionable');
+        var actionBtn = document.createElement('button');
+        actionBtn.type = 'button';
+        actionBtn.className = 'toast-action-target';
+        actionBtn.setAttribute('aria-label', 'Open: ' + message);
+        actionBtn.addEventListener('click', function() {
             dismissToast();
             onClick();
         });
+        toast.appendChild(actionBtn);
     }
 
     var closeBtn = document.createElement('button');
@@ -96,6 +109,8 @@ function showToast(message, colorClass, duration, onClick) {
     svg.setAttribute('stroke', 'currentColor');
     svg.setAttribute('stroke-width', '2');
     svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
     var line1 = document.createElementNS(ns, 'line');
     line1.setAttribute('x1', '2'); line1.setAttribute('y1', '2');
     line1.setAttribute('x2', '12'); line1.setAttribute('y2', '12');

@@ -694,6 +694,7 @@
     color: var(--text-primary);
     font-family: var(--font-sans);
     pointer-events: auto;
+    position: relative;
     transform: translate3d(18px, -2px, 0) scale(0.985);
     opacity: 0;
     transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease;
@@ -721,6 +722,8 @@
     color: var(--toast-tone);
     background: var(--toast-tint);
     border-radius: var(--radius-lg);
+    position: relative;
+    z-index: 2;
 }
 
 .toast-status svg {
@@ -732,6 +735,32 @@
     min-width: 0;
     font-weight: var(--type-weight-medium);
     overflow-wrap: anywhere;
+    position: relative;
+    z-index: 2;
+}
+
+.toast-actionable .toast-status,
+.toast-actionable .toast-message {
+    pointer-events: none;
+}
+
+.toast-action-target {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.toast-action-target:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -3px;
 }
 
 .toast-close {
@@ -747,6 +776,8 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    position: relative;
+    z-index: 3;
     transition: color var(--transition-fast), background var(--transition-fast);
 }
 .toast-close:hover { color: var(--text-primary); background: var(--hover-subtle); }
@@ -758,6 +789,8 @@
 .toast.toast-orange,
 .toast.toast-yellow { --toast-tone: var(--status-warning-fg); --toast-tint: var(--status-warning-bg); }
 .toast.toast-purple { --toast-tone: var(--status-purple-fg); --toast-tint: var(--status-purple-bg); }
+.toast.toast-progress { --toast-tone: var(--status-info-fg); --toast-tint: var(--status-info-bg); }
+.toast.toast-action { --toast-tone: var(--accent); --toast-tint: var(--accent-bg); }
 
 .toast.toast-error { --toast-tone: var(--status-error-fg); --toast-tint: var(--status-error-bg); }
 .toast.toast-warning { --toast-tone: var(--status-warning-fg); --toast-tint: var(--status-warning-bg); }

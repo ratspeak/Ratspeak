@@ -51,7 +51,7 @@ function applyPeersSortPreference(sort, opts) {
     if (opts.persist) {
         RS.invoke('set_peers_sort', { sort: peersSort }).catch(function(err) {
             if (typeof showToast === 'function') {
-                showToast('Could not save peer sort preference', 'toast-red', 3000);
+                showToast('Could not save peer sort preference', 'toast-error', 3000);
             }
             window.RS.diag('warn', '[peers] failed to persist sort preference:', err);
         });
@@ -617,7 +617,7 @@ function renderPeersDetailPanel(hash) {
                 RS.invokeOrToast('block_contact', { args: { hash: hash, escalate_to_blackhole: result.checked } }, 'Could not block contact')
                     .then(function(resp) {
                         if (resp && resp.blackhole_pending && typeof showToast === 'function') {
-                            showToast('Blocked. Network blackhole will activate on their next announce.', 'toast-orange', 5000);
+                            showToast('Blocked. Network filtering starts after their next announce.', 'toast-warning', 5000);
                         }
                     })
                     .catch(function() {});

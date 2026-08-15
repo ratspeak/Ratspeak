@@ -105,7 +105,7 @@
 
     function showError(message) {
         if (typeof showToast === 'function') {
-            showToast(message, 'toast-red', 5000);
+            showToast(message, 'toast-error', 5000);
         }
     }
 
