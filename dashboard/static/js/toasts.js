@@ -7,6 +7,38 @@ var TOAST_CLASS_MAP = {
 
 var _activeToasts = new Set();
 
+function createToastStatusIcon(colorClass) {
+    var status = document.createElement('span');
+    status.className = 'toast-status';
+    status.setAttribute('aria-hidden', 'true');
+
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 20 20');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.8');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+
+    var path = document.createElementNS(ns, 'path');
+    if (colorClass === 'toast-green') {
+        path.setAttribute('d', 'M5.25 10.25 8.5 13.5 14.75 6.75');
+    } else if (colorClass === 'toast-red') {
+        path.setAttribute('d', 'm6.5 6.5 7 7m0-7-7 7');
+    } else if (colorClass === 'toast-orange' || colorClass === 'toast-yellow') {
+        path.setAttribute('d', 'M10 5.75v5.5m0 3v.1');
+    } else if (colorClass === 'toast-purple') {
+        path.setAttribute('d', 'M10 4.75v10.5M4.75 10h10.5');
+    } else {
+        path.setAttribute('d', 'M10 8.75v5m0-8.1v.1');
+    }
+
+    svg.appendChild(path);
+    status.appendChild(svg);
+    return status;
+}
+
 // onClick is reserved for undo of a just-happened destructive action, or
 // navigating to an inbound item. Use rsChoice/rsPrompt for confirm flows.
 function showToast(message, colorClass, duration, onClick) {
@@ -36,9 +68,11 @@ function showToast(message, colorClass, duration, onClick) {
         setTimeout(function() { toast.remove(); }, 350);
     }
 
+    toast.appendChild(createToastStatusIcon(colorClass));
+
     var msgSpan = document.createElement('span');
+    msgSpan.className = 'toast-message';
     msgSpan.textContent = message;
-    msgSpan.style.flex = '1';
     toast.appendChild(msgSpan);
 
     // Whole toast is the tap target so the click area matches the visual.

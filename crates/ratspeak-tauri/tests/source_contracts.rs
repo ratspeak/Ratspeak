@@ -7887,3 +7887,22 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     assert!(tauri.contains("open_support_email,"));
     assert!(android.contains("fun openSupportEmail"));
 }
+
+#[test]
+fn service_readiness_refreshes_ui_without_a_startup_toast() {
+    let events = read_source(repo_root().join("dashboard/static/js/tauri_events.js"))
+        .expect("tauri event bridge");
+    let listener = events
+        .split("RS.listen('system_status'")
+        .nth(1)
+        .expect("system status listener")
+        .split("RS.listen('identity_error'")
+        .next()
+        .expect("system status listener body");
+
+    assert!(listener.contains("_initialConnectDone = true"));
+    assert!(listener.contains("loadConversations"));
+    assert!(listener.contains("loadIdentities"));
+    assert!(!listener.contains("showToast"));
+    assert!(!events.contains("Services ready"));
+}

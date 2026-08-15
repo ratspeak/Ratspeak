@@ -1105,10 +1105,8 @@ RS.listen('identity_reset', function(data) {
 
 RS.listen('system_status', function(data) {
     if (!data || typeof data !== 'object') return;
-    var wasFirstReady = !_initialConnectDone;
     if (data.status === 'ready') {
         _initialConnectDone = true;
-        if (!wasFirstReady) showToast('Services ready', 'toast-green');
         if (typeof loadConversations === 'function') loadConversations();
         if (typeof loadIdentities === 'function') loadIdentities();
         return;

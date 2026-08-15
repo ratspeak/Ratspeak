@@ -1246,15 +1246,16 @@
         max-width: none;
     }
     .toast {
+        grid-template-columns: 28px minmax(0, 1fr) 44px;
         max-width: 100%;
         width: 100%;
-        transform: translateY(-120%);
+        transform: translate3d(0, -14px, 0) scale(0.985);
     }
     .toast.visible {
         transform: translateY(0);
     }
     .toast.dismiss {
-        transform: translateY(-120%);
+        transform: translate3d(0, -10px, 0) scale(0.985);
     }
     .toast-close {
         min-width: 44px;
