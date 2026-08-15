@@ -123,7 +123,7 @@ assert(!/<a class="bottom-bar-item"/.test(html), 'mobile primary navigation must
 var revisionMatches = Array.from(html.matchAll(/\/(?:static\/(?!js\/vendor)[^"?]+)\?v=([^"&]+)/g));
 assert(revisionMatches.length > 20, 'first-party asset revisions must be explicit');
 var revisions = new Set(revisionMatches.map(function(match) { return match[1]; }));
-assert.deepStrictEqual(Array.from(revisions), ['ui-20260815-4'],
+assert.deepStrictEqual(Array.from(revisions), ['ui-20260815-5'],
     'first-party CSS, fonts, and JS must share one build-level asset revision');
 
 var nav = read('static/js/nav.js');
@@ -204,7 +204,9 @@ assert(channelsSource.includes('RS.legal.open(documentId)') &&
     legalDocumentsSource.includes('Available offline'),
     'public-channel policies must open the versioned offline reader');
 assert(legalDocumentsSource.includes('View current version online') &&
-    legalDocumentsSource.includes('Promise.resolve(RS.openExternalUrl(current.url))'),
+    legalDocumentsSource.includes('Promise.resolve(RS.openExternalUrl(current.url))') &&
+    legalDocumentsSource.includes("handleSelector: '.bottom-sheet-handle'") &&
+    legalDocumentsSource.includes('blockIfScrolled: false'),
     'the offline reader must retain an explicit, failure-aware path to the current online copy');
 assert(channelsSource.includes('RS.ui.focusAfterUpdate(initialFocus)'),
     'compact channel sheets must not force keyboard focus during touch navigation');

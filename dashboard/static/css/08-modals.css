@@ -1416,6 +1416,28 @@
     overscroll-behavior: contain;
 }
 
+/* The visible grabber is small; its touch target spans the sheet width. */
+.rs-legal-sheet .bottom-sheet-handle {
+    position: relative;
+    width: 100%;
+    height: 30px;
+    margin: 0;
+    background: transparent;
+    border-radius: 0;
+}
+
+.rs-legal-sheet .bottom-sheet-handle::after {
+    content: '';
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    width: 40px;
+    height: 5px;
+    transform: translateX(-50%);
+    border-radius: 3px;
+    background: var(--sheet-handle);
+}
+
 .rs-legal-document {
     color: var(--text-secondary);
     font-size: var(--type-row-detail-size);

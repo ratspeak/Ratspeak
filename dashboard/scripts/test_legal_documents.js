@@ -27,6 +27,9 @@ class FakeElement {
 
 let builtSheet = null;
 let openedUrl = '';
+let openedSubject = '';
+let openedBody = '';
+let dragDismiss = null;
 const context = {
     console,
     Promise,
@@ -34,7 +37,17 @@ const context = {
     window: {
         RS: {
             openExternalUrl(url) { openedUrl = url; return Promise.resolve(true); },
-            openSupportEmail() { return Promise.resolve(true); }
+            openSupportEmail(subject, body) {
+                openedSubject = subject;
+                openedBody = body;
+                return Promise.resolve(true);
+            },
+            gestures: {
+                attachDragDismiss(element, options) {
+                    dragDismiss = { element, options };
+                    return {};
+                }
+            }
         }
     },
     document: { createElement(tag) { return new FakeElement(tag); } },
@@ -60,15 +73,51 @@ assert.strictEqual(
     Array.from(Object.keys(legal.documents)).join(','),
     'privacy,terms,guidelines,support'
 );
+const canonicalHeadings = {
+    privacy: [
+        'Privacy at a glance', 'Who and what this policy covers',
+        'Information stored on your device', 'Direct messages, media, and calls',
+        'Propagation nodes and relays', 'Public and shared channels',
+        'Website, downloads, and support', 'Device permissions',
+        'Retention, deletion, and security', 'Your choices and controls',
+        'Questions or requests'
+    ],
+    terms: [
+        'Your agreement with Ratspeak', 'Eligibility', 'Beta and pre-release software',
+        'A decentralized, independently operated network', 'Public and shared channels',
+        'Acceptable use', 'Your content and responsibility',
+        'Reports, blocking, and enforcement', 'Changes and availability',
+        'Open-source components', 'Service limits', 'Changes and contact'
+    ],
+    guidelines: [
+        'Where these guidelines apply', 'Treat people as people',
+        'Content and conduct we do not allow', 'Be a good network participant',
+        'Public channels and independent hubs', 'Block, leave, and report',
+        'How Ratspeak responds', 'Immediate danger and support'
+    ]
+};
+Object.keys(canonicalHeadings).forEach((documentId) => {
+    canonicalHeadings[documentId].forEach((heading) => {
+        assert(
+            legal.documents[documentId].content.includes('<h2>' + heading + '</h2>'),
+            documentId + ' offline copy is missing current section: ' + heading
+        );
+    });
+});
 assert.strictEqual(index.includes('/static/js/legal_documents.js'), true);
 assert(css.includes('.rs-legal-sheet .bottom-sheet-body'));
 assert(css.includes('.bottom-sheet.open.rs-legal-sheet'));
+assert(css.includes('.rs-legal-sheet .bottom-sheet-handle'));
+assert(css.includes('.rs-legal-sheet .bottom-sheet-handle::after'));
 
 assert.strictEqual(legal.open('privacy'), true);
 assert.strictEqual(builtSheet.wasPresented, true);
 assert.strictEqual(builtSheet.options.showTitle, false);
 assert.strictEqual(builtSheet.sheet.attributes['aria-label'], 'Privacy Policy');
 assert.strictEqual(builtSheet.body.children.length, 1);
+assert.strictEqual(dragDismiss.element, builtSheet.sheet);
+assert.strictEqual(dragDismiss.options.handleSelector, '.bottom-sheet-handle');
+assert.strictEqual(dragDismiss.options.blockIfScrolled, false);
 assert(builtSheet.body.children[0].innerHTML.includes('Available offline'));
 assert(builtSheet.body.children[0].innerHTML.includes('Ratspeak does not currently operate a public channel hub.'));
 assert(builtSheet.body.children[0].innerHTML.includes('Vercel Web Analytics'));
@@ -96,7 +145,22 @@ assert(!article.innerHTML.includes('Child sexual abuse and exploitation'));
 assert.strictEqual(builtSheet.body.scrollTop, 0);
 
 builtSheet.footer.children[0].listeners.click();
+article.listeners.click({
+    preventDefault() {},
+    target: {
+        closest(selector) {
+            if (selector === '[data-legal-email]') {
+                return { getAttribute() { return 'Ratspeak safety report'; } };
+            }
+            return null;
+        }
+    }
+});
+dragDismiss.options.onCommit();
+assert.strictEqual(builtSheet.wasDismissed, true);
 setImmediate(() => {
     assert.strictEqual(openedUrl, 'https://ratspeak.org/community-guidelines.html');
+    assert.strictEqual(openedSubject, 'Ratspeak safety report');
+    assert.strictEqual(openedBody, '');
     console.log('Offline legal document tests passed');
 });

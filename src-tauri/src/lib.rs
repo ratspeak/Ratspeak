@@ -266,7 +266,7 @@ async fn open_platform_url(app: tauri::AppHandle, clean: String) -> Result<(), S
 
         let (tx, rx) = std::sync::mpsc::channel();
         app.run_on_main_thread(move || {
-            let _ = tx.send(open_external_url_ios(&clean));
+            open_external_url_ios(&clean, tx);
         })
         .map_err(|error| format!("Could not open link: {error}"))?;
 
@@ -323,46 +323,88 @@ async fn open_platform_url(app: tauri::AppHandle, clean: String) -> Result<(), S
 }
 
 #[cfg(target_os = "ios")]
-fn open_external_url_ios(url: &str) -> Result<(), String> {
+fn open_external_url_ios(
+    url: &str,
+    reply: std::sync::mpsc::Sender<Result<(), String>>,
+) {
+    use block2::RcBlock;
     use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
     use std::ffi::CString;
 
     unsafe {
-        let ns_string_class =
-            AnyClass::get(c"NSString").ok_or_else(|| "NSString class not found".to_string())?;
-        let ns_url_class =
-            AnyClass::get(c"NSURL").ok_or_else(|| "NSURL class not found".to_string())?;
-        let ui_app_class = AnyClass::get(c"UIApplication")
-            .ok_or_else(|| "UIApplication class not found".to_string())?;
-        let c_url = CString::new(url).map_err(|_| "Invalid URL".to_string())?;
+        let Some(ns_string_class) = AnyClass::get(c"NSString") else {
+            let _ = reply.send(Err("NSString class not found".to_string()));
+            return;
+        };
+        let Some(ns_url_class) = AnyClass::get(c"NSURL") else {
+            let _ = reply.send(Err("NSURL class not found".to_string()));
+            return;
+        };
+        let Some(ns_dictionary_class) = AnyClass::get(c"NSDictionary") else {
+            let _ = reply.send(Err("NSDictionary class not found".to_string()));
+            return;
+        };
+        let Some(ui_app_class) = AnyClass::get(c"UIApplication") else {
+            let _ = reply.send(Err("UIApplication class not found".to_string()));
+            return;
+        };
+        let Ok(c_url) = CString::new(url) else {
+            let _ = reply.send(Err("Invalid URL".to_string()));
+            return;
+        };
         let ns_string: *mut AnyObject =
             msg_send![ns_string_class, stringWithUTF8String: c_url.as_ptr()];
         let ns_url: *mut AnyObject = msg_send![ns_url_class, URLWithString: ns_string];
         if ns_url.is_null() {
-            return Err("Invalid URL".into());
+            let _ = reply.send(Err("Invalid URL".into()));
+            return;
         }
         let app: *mut AnyObject = msg_send![ui_app_class, sharedApplication];
         if app.is_null() {
-            return Err("UIApplication unavailable".into());
+            let _ = reply.send(Err("UIApplication unavailable".into()));
+            return;
         }
-        let ok: bool = msg_send![app, openURL: ns_url];
-        if ok {
-            Ok(())
-        } else {
-            Err("No application can open this link".into())
+        let can_open: Bool = msg_send![app, canOpenURL: ns_url];
+        if !can_open.as_bool() {
+            let _ = reply.send(Err("No application can open this link".into()));
+            return;
         }
+        let options: *mut AnyObject = msg_send![ns_dictionary_class, dictionary];
+        if options.is_null() {
+            let _ = reply.send(Err("Could not prepare link options".into()));
+            return;
+        }
+
+        // The modern API confirms whether iOS actually handed the URL to an
+        // application. Retain the block until UIKit invokes it.
+        let completion = RcBlock::new(move |opened: Bool| {
+            let result = if opened.as_bool() {
+                Ok(())
+            } else {
+                Err("No application can open this link".into())
+            };
+            let _ = reply.send(result);
+        });
+        let _: () = msg_send![
+            app,
+            openURL: ns_url,
+            options: options,
+            completionHandler: &*completion
+        ];
+        std::mem::forget(completion);
     }
 }
 
 #[tauri::command]
-fn open_mobile_app_settings() -> Result<(), String> {
+async fn open_mobile_app_settings(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "ios")]
     {
-        open_external_url_ios("app-settings:")
+        open_platform_url(app, "app-settings:".to_string()).await
     }
     #[cfg(not(target_os = "ios"))]
     {
+        let _ = app;
         Err("Mobile app settings are unavailable on this platform".to_string())
     }
 }
