@@ -1270,9 +1270,6 @@ function openIdentityStatusEditor() {
             var savedStatus = profileStatusFromPayload(result);
             setActiveProfileStatus(savedStatus === null ? nextStatus : savedStatus);
             built.dismiss(nextStatus);
-            if (typeof showToast === 'function') {
-                showToast(isClearing ? 'Status cleared' : 'Status saved', 'toast-success', 2500);
-            }
             if (typeof loadIdentities === 'function') loadIdentities();
         }).catch(function(err) {
             setSubmitting(false, false);

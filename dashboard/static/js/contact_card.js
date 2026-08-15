@@ -1132,7 +1132,6 @@ z`,
         rsPromptContact({ title: 'Add Contact' }).then(function(result) {
             if (!result) return;
             RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-            showToast('Adding contact…', 'toast-progress', 2000);
         });
     }
 

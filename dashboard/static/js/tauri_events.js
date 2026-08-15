@@ -347,9 +347,9 @@ RS.listen('node_operation_status', function(data) {
     }
 
     if (data.done && !progressHandling) {
-        var toastColor = data.error ? 'toast-error' : 'toast-success';
-        var toastDuration = data.error ? 8000 : 5000;
-        showToast(displayStep, toastColor, toastDuration);
+        // Successful lifecycle changes are reflected by the connection row.
+        // Only a failure needs to interrupt the user.
+        if (data.error) showToast(displayStep, 'toast-error', 5000);
 
         if (data.operation === 'add_lora' && !data.error) {
             closeRnodeModal();

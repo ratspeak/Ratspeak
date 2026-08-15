@@ -9,6 +9,30 @@ var TOAST_CLASS_MAP = {
 
 var _activeToasts = new Set();
 
+function toastDeveloperDetailsEnabled() {
+    return window.__RATSPEAK_DIAGNOSTICS__ === true ||
+        (typeof window.ratspeakDeveloperModeEnabled === 'function' &&
+            window.ratspeakDeveloperModeEnabled());
+}
+
+function toastErrorCopy(error, fallback) {
+    var base = String(fallback || 'Action failed');
+    var detail = error && error.message
+        ? String(error.message)
+        : (typeof error === 'string' ? error : '');
+    if (!detail || detail === base) return base;
+
+    // Validation/auth/conflict messages are deliberately written for users.
+    // Uncoded client errors are likewise authored at the interaction site.
+    var safeCodes = ['bad_request', 'unauthorized', 'forbidden', 'not_found', 'conflict'];
+    var code = error && error.code ? String(error.code) : '';
+    if (!code || safeCodes.indexOf(code) !== -1) return detail;
+
+    // Internal/database/runtime detail is useful only in an explicit support
+    // session. Normal product UI keeps the actionable fallback.
+    return toastDeveloperDetailsEnabled() ? base + ' — ' + detail : base;
+}
+
 function createToastStatusIcon(colorClass) {
     var status = document.createElement('span');
     status.className = 'toast-status';
@@ -34,7 +58,10 @@ function createToastStatusIcon(colorClass) {
         path.setAttribute('d', 'M5.5 10h.1m4.35 0h.1m4.35 0h.1');
         svg.setAttribute('stroke-width', '2.4');
     } else if (colorClass === 'toast-action') {
-        path.setAttribute('d', 'M5.5 10h9m-3.25-3.25L14.5 10l-3.25 3.25');
+        // Action toasts represent something newly received. A downward arrow
+        // into a quiet baseline reads as incoming, while the full card remains
+        // the explicit "open" control for assistive technology.
+        path.setAttribute('d', 'M10 4.5v8m-3.25-3.25L10 12.5l3.25-3.25M5 15.25h10');
     } else if (colorClass === 'toast-purple') {
         path.setAttribute('d', 'M10 4.75v10.5M4.75 10h10.5');
     } else {
@@ -46,8 +73,13 @@ function createToastStatusIcon(colorClass) {
     return status;
 }
 
-// onClick is reserved for undo of a just-happened destructive action, or
-// navigating to an inbound item. Use rsChoice/rsPrompt for confirm flows.
+// Toasts are user interruptions. Use them only when the user must correct an
+// action, when an otherwise invisible action needs confirmation, or when an
+// asynchronous inbound/background event deserves attention. Routine state
+// changes already rendered in the interface must stay inline. Diagnostics
+// belong in RS.diag/Activity, not here. onClick is reserved for undo of a
+// just-happened destructive action or navigating to an inbound item; use
+// rsChoice/rsPrompt for confirmation flows.
 function showToast(message, colorClass, duration, onClick) {
     colorClass = TOAST_CLASS_MAP[colorClass] || colorClass || '';
 
@@ -146,13 +178,13 @@ function showToast(message, colorClass, duration, onClick) {
 }
 
 function showCopyConfirmationToast(noun) {
-    showToast(noun + ' copied', 'toast-green', 1500);
+    showToast(noun + ' copied', 'toast-success', 1500);
 }
 
 function showRateLimitedToast() {
-    showToast('Slow down, announcing too fast', 'toast-orange', 3000);
+    showToast('Wait a moment before announcing again', 'toast-warning', 3000);
 }
 
 function showPreConditionToast(message) {
-    showToast(message, 'toast-orange', 3000);
+    showToast(message, 'toast-warning', 3000);
 }

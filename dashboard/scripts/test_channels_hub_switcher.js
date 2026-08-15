@@ -271,7 +271,8 @@ assert(channelsSource.indexOf("list.setAttribute('aria-live', 'polite')") !== -1
 assert(channelsSource.indexOf("list.setAttribute('aria-busy', 'true')") !== -1);
 assert(channelsSource.indexOf("titleElement.textContent = 'Switch to '") !== -1);
 assert(channelsSource.indexOf("sharedRoom ? 'Switch and review' : 'Switch'") !== -1);
-assert(channelsSource.indexOf("'Switching channel hub\\u2026'") !== -1);
+assert(channelsSource.indexOf("'Switching channel hub\\u2026'") === -1,
+    'the hub snapshot owns switching progress without a duplicate toast');
 assert(channelsSource.indexOf("switching: connectMode.kind === 'switch'") !== -1);
 assert(channelsSource.indexOf("'Could not switch channel hubs.'") !== -1);
 assert(channelsSource.indexOf("case 'reconnecting': return { label: 'Reconnecting'") !== -1);

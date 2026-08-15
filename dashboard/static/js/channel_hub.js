@@ -2334,7 +2334,7 @@ function channelHubOpenManager(initialOverview) {
         return loadAdmin();
     }
 
-    function mutateAdmin(args, successText) {
+    function mutateAdmin(args) {
         if (!mutationsAvailable()) {
             return Promise.reject(new Error(
                 adminMutationBusy
@@ -2356,9 +2356,6 @@ function channelHubOpenManager(initialOverview) {
                 adminSnapshot = validatedAdminSnapshot(nextAdmin);
                 registryMutationWarning = false;
                 renderAdmin(adminSnapshot);
-                if (successText && typeof showToast === 'function') {
-                    showToast(successText, 'toast-success', 2200);
-                }
                 return adminSnapshot;
             }
         ).catch(function(mutationError) {
@@ -2457,12 +2454,11 @@ function channelHubOpenManager(initialOverview) {
         renderDirty();
     }
 
-    function applyResult(nextOverview, toastText) {
+    function applyResult(nextOverview) {
         if (_channelHubManagerSequence !== sequence) return null;
         overview = _channelHubApplyOverview(nextOverview);
         error.textContent = '';
         renderStatus(overview);
-        if (toastText && typeof showToast === 'function') showToast(toastText, 'toast-success', 2200);
         return overview;
     }
 
@@ -2495,7 +2491,6 @@ function channelHubOpenManager(initialOverview) {
         error.textContent = '';
         saveConfig().then(function(updated) {
             if (!updated || _channelHubManagerSequence !== sequence) return;
-            if (typeof showToast === 'function') showToast('Hub settings saved', 'toast-success', 2200);
             refreshAdmin();
         }).catch(function(saveError) {
             if (_channelHubManagerSequence !== sequence) return;
@@ -2519,7 +2514,7 @@ function channelHubOpenManager(initialOverview) {
             : RS.invoke('channel_hub_stop');
         request.then(function(nextOverview) {
             if (!nextOverview || _channelHubManagerSequence !== sequence) return;
-            applyResult(nextOverview, action === 'start' ? 'Your hub is ready' : 'Hub stopped');
+            applyResult(nextOverview);
             refreshAdmin();
         }).catch(function(actionError) {
             if (_channelHubManagerSequence !== sequence) return;

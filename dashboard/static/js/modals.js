@@ -2702,7 +2702,6 @@ function _ensureBlePermissions() {
             }
         } catch (e) {
         }
-        showToast('Requesting Bluetooth access…', 'toast-progress', 3000);
         window._onBlePermissionResult = function(granted) {
             window._onBlePermissionResult = null;
             resolve(!!granted);

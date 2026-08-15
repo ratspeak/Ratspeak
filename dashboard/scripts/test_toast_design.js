@@ -19,6 +19,12 @@ var callsiteSources = fs.readdirSync(jsRoot)
         return { name: name, text: fs.readFileSync(path.join(jsRoot, name), 'utf8') };
     });
 
+function callsiteSource(name) {
+    var source = callsiteSources.find(function(entry) { return entry.name === name; });
+    assert(source, 'missing reviewed toast source ' + name);
+    return source.text;
+}
+
 function extractCalls(source, functionName) {
     var calls = [];
     var matcher = new RegExp('\\b' + functionName + '\\s*\\(', 'g');
@@ -146,6 +152,8 @@ assert(toastJs.includes("status.setAttribute('aria-hidden', 'true')"),
 assert(toastJs.includes("colorClass === 'toast-progress'") &&
     toastJs.includes("colorClass === 'toast-action'"),
     'progress and actionable notices must have distinct status glyphs');
+assert(toastJs.includes("M10 4.5v8m-3.25-3.25L10 12.5l3.25-3.25M5 15.25h10"),
+    'inbound action notices must use the reviewed receive/downward glyph');
 assert(toastJs.includes("msgSpan.className = 'toast-message'"),
     'toast copy must use the shared presentation class');
 assert(toastJs.includes("toast.setAttribute('role', 'alert')"),
@@ -233,6 +241,56 @@ var callsiteText = callsiteSources.map(function(source) { return source.text; })
         'dashboard toast copy must not restore stale phrase: ' + stalePhrase);
 });
 
+[
+    'Voice message sent',
+    'Challenge sent',
+    'Delivery cancelled',
+    'Channel session ended',
+    'Channel notifications updated',
+    'Hub settings saved',
+    'Status saved',
+    'Status cleared',
+    'Conversation deleted',
+    'Activity started',
+    'Activity resumed',
+    'Activity paused',
+    'Requesting Bluetooth access',
+    'Adding contact',
+    'Disconnected from Offline Inbox node',
+    'Offline Inbox announce queued',
+    'Connecting to Offline Inbox node',
+    'Checking Offline Inbox',
+    'Switching channel hub',
+    'Connecting to channel hub'
+].forEach(function(redundantCopy) {
+    assert(!toastCalls.some(function(call) { return call.source.includes(redundantCopy); }),
+        'inline state must replace redundant toast: ' + redundantCopy);
+});
+
+var voiceSource = callsiteSource('voice_memos.js');
+var lxmfSource = callsiteSource('lxmf.js');
+assert(!extractCalls(voiceSource, 'showToast').some(function(call) {
+    return /Voice message (?:sent|queued)/i.test(call);
+}), 'voice send success must use the message row instead of a toast');
+assert(lxmfSource.includes("content: 'Voice message'") &&
+    lxmfSource.includes("state: resp && resp.cancelled ? 'cancelled' : 'sending'"),
+    'outbound voice messages must enter the shared message delivery state machine');
+assert(lxmfSource.includes("if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.check)") &&
+    lxmfSource.includes("if (state === 'sent') return wrap('msg-state-sent', 'Sent', ICON.check)"),
+    'voice and text messages must share the established checkmark delivery states');
+assert(!lxmfSource.includes("'New message from ' + escapeHtml(fromLabel)"),
+    'toast textContent must receive the real contact name, not escaped markup text');
+assert(lxmfSource.includes("? 'New voice message from ' + fromLabel"),
+    'inbound voice messages must identify themselves without a redundant send toast');
+assert(!callsiteSource('health.js').includes('Pausing interface…') &&
+    !callsiteSource('health.js').includes('Resuming interface…'),
+    'interface rows must own routine pause/resume progress');
+assert(callsiteSource('tauri_events.js').includes(
+    "if (data.error) showToast(displayStep, 'toast-error', 5000)"
+), 'interface lifecycle events must interrupt only on failure');
+assert(callsiteSource('constants.js').includes('toastErrorCopy(err, message)'),
+    'generic command failures must apply the user/developer detail boundary');
+
 var actionableCalls = toastCalls.filter(function(call) {
     var args = splitCallArguments(call.source);
     return args.length >= 4 && !!args[3];
@@ -244,15 +302,7 @@ actionableCalls.forEach(function(call) {
 });
 
 [
-    'Requesting Bluetooth access',
-    'Resetting Ratspeak',
-    'Adding contact',
-    'Pausing interface',
-    'Resuming interface',
-    'Connecting to Offline Inbox node',
-    'Switching channel hub',
-    'Connecting to channel hub',
-    'Checking Offline Inbox'
+    'Resetting Ratspeak'
 ].forEach(function(progressCopy) {
     var matchingCalls = toastCalls.filter(function(call) { return call.source.includes(progressCopy); });
     assert(matchingCalls.length > 0, 'missing reviewed pending-operation toast: ' + progressCopy);
@@ -282,6 +332,7 @@ FakeElement.prototype.remove = function() { this.removed = true; };
 var toastContainer = new FakeElement('div');
 var timers = [];
 var sandbox = {
+    window: {},
     document: {
         getElementById: function(id) { return id === 'toast-container' ? toastContainer : null; },
         createElement: function(tagName) { return new FakeElement(tagName); },
@@ -298,9 +349,40 @@ var sandbox = {
     Set: Set
 };
 vm.runInNewContext(toastJs, sandbox);
+assert.strictEqual(
+    sandbox.toastErrorCopy(
+        { code: 'database_error', message: 'no such table: messages' },
+        'Could not save contact'
+    ),
+    'Could not save contact',
+    'normal product UI must not expose internal backend detail'
+);
+assert.strictEqual(
+    sandbox.toastErrorCopy(
+        { code: 'conflict', message: 'This contact is already saved' },
+        'Could not save contact'
+    ),
+    'This contact is already saved',
+    'reviewed corrective backend messages must remain useful to users'
+);
+sandbox.window.ratspeakDeveloperModeEnabled = function() { return true; };
+assert.strictEqual(
+    sandbox.toastErrorCopy(
+        { code: 'database_error', message: 'no such table: messages' },
+        'Could not save contact'
+    ),
+    'Could not save contact — no such table: messages',
+    'developer mode may reveal bounded support detail'
+);
 var opened = 0;
 sandbox.showToast('New message from Mountain Relay', 'toast-action', 4000, function() { opened += 1; });
 var actionableToast = toastContainer.children[0];
+var actionPath = actionableToast.children[0].children[0].children[0];
+assert.strictEqual(
+    actionPath.attributes.d,
+    'M10 4.5v8m-3.25-3.25L10 12.5l3.25-3.25M5 15.25h10',
+    'action toast must render the reviewed incoming/downward glyph'
+);
 var actionTarget = actionableToast.children.find(function(child) {
     return child.className === 'toast-action-target';
 });

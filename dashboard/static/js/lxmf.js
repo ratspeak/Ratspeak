@@ -1721,7 +1721,6 @@ function _flushPendingLxmfCancel(clientMsgId, serverMsgId) {
     _invokeLxmfCancel(serverMsgId).then(function(resp) {
         if (resp && resp.cancelled) {
             _markLxmfMessageCancelled(serverMsgId);
-            showToast('Delivery cancelled', 'toast-info', 3000);
         }
     }).catch(function(err) {
         showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
@@ -1743,7 +1742,6 @@ function _cancelLxmfSend(msgId) {
         return _invokeLxmfCancel(msgId).then(function(resp) {
             if (!resp || !resp.cancelled) return;
             _markLxmfMessageCancelled(resp.msg_id || resp.client_msg_id || msgId);
-            showToast('Delivery cancelled', 'toast-info', 3000);
         });
     }).catch(function(err) {
         showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
@@ -2941,7 +2939,6 @@ document.addEventListener('DOMContentLoaded', function() {
             rsPromptContact({ title: 'Add Contact' }).then(function(result) {
                 if (!result) return;
                 RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-                showToast('Adding contact…', 'toast-progress', 2000);
             });
         });
     }
@@ -3172,7 +3169,6 @@ document.addEventListener('DOMContentLoaded', function() {
         rsPromptContact({ title: 'Add Contact' }).then(function(result) {
             if (!result) return;
             RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-            showToast('Adding contact…', 'toast-progress', 2000);
         });
     }
 
@@ -4910,10 +4906,13 @@ RS.listen('lxmf_message', function(msg) {
     }
     if (msg.source !== activeHash) {
         var fromLabel = _messageSourceName(msg);
+        var hasAudio = !!msg.audio;
         var hasAttachment = (msg.attachments && msg.attachments.length > 0) || msg.image;
-        var toastMsg = hasAttachment
-            ? 'New message with attachment from ' + escapeHtml(fromLabel)
-            : 'New message from ' + escapeHtml(fromLabel);
+        var toastMsg = hasAudio
+            ? 'New voice message from ' + fromLabel
+            : (hasAttachment
+                ? 'New message with attachment from ' + fromLabel
+                : 'New message from ' + fromLabel);
         var sourceHash = msg.source;
         showToast(toastMsg, 'toast-action', 4000, function() { openConversationWith(sourceHash); });
         if (!window.__TAURI_INTERNALS__ && document.hidden && typeof rsNotify !== 'undefined') {
@@ -6040,7 +6039,6 @@ RS.listen('conversation_deleted', function(data) {
     }
     if (_canonicalConversationHash(_ghostConversationHash) === hash) _removeGhostRow();
     loadConversations();
-    showToast('Conversation deleted', 'toast-success', 3000);
 });
 
 // 30s re-check so identity/path changes surface without a page reload.

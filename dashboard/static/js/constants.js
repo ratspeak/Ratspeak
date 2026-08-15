@@ -118,10 +118,12 @@ RS.sheetShell = {
 // (callers are fire-and-forget; chained .then handlers see undefined).
 RS.invokeOrToast = function(command, args, failMessage) {
     return RS.invoke(command, args).catch(function(err) {
-        var detail = err && err.message ? err.message : (typeof err === 'string' ? err : '');
         var message = failMessage || 'Action failed';
         if (typeof showToast === 'function') {
-            showToast(detail ? message + ' (' + detail + ')' : message, 'toast-error', 3500);
+            var copy = typeof toastErrorCopy === 'function'
+                ? toastErrorCopy(err, message)
+                : message;
+            showToast(copy, 'toast-error', 3500);
         }
         return undefined;
     });

@@ -610,15 +610,6 @@ function channelsConnectToHub(hub, options) {
         channelsActiveRoom = null;
         channelsHistorySelection = null;
         channelsApplySnapshot(snapshot);
-        if (typeof showToast === 'function') {
-            showToast(
-                options.switching
-                    ? 'Switching channel hub\u2026'
-                    : 'Connecting to channel hub\u2026',
-                'toast-progress',
-                2600
-            );
-        }
         return snapshot;
     });
 }
@@ -5149,9 +5140,6 @@ function _channelsDisconnectFromHub(control) {
         channelsActiveRoom = null;
         channelsHistorySelection = null;
         channelsApplySnapshot(snapshot);
-        if (typeof showToast === 'function') {
-            showToast('Channel session ended', 'toast-success', 2200);
-        }
         return snapshot;
     }).catch(function(err) {
         if (control) control.disabled = false;
@@ -5641,10 +5629,6 @@ function channelsOpenRoomDetails() {
         }).then(function() {
             unread.notification_level = selected;
             return channelsRefreshUnread();
-        }).then(function() {
-            if (typeof showToast === 'function') {
-                showToast('Channel notifications updated', 'toast-success', 1800);
-            }
         }).catch(function(error) {
             notificationSelect.value = previous;
             renderPolicyNote();

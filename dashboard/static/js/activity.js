@@ -980,18 +980,12 @@ function initActivity() {
 
 function setActivityCapture(enabled) {
     var command = null;
-    var toastText = null;
-    var toastClass = 'toast-success';
     if (enabled && activityCaptureState === 'off') {
         command = 'activity_start';
-        toastText = 'Activity started';
     } else if (enabled && activityCaptureState === 'stopped') {
         command = 'activity_resume';
-        toastText = 'Activity resumed';
     } else if (!enabled && activityCaptureState === 'capturing') {
         command = 'activity_stop';
-        toastText = 'Activity paused';
-        toastClass = 'toast-info';
     }
     if (!command || _activityControlPending) return Promise.resolve(activityStatus);
 
@@ -1003,11 +997,6 @@ function setActivityCapture(enabled) {
             return reconcileActivityStatus(context).then(function() { return status; });
         }
         activityBootstrap.forceResync('capture_control_acknowledged');
-        return status;
-    }).then(function(status) {
-        if (context.token === _activityControlToken && typeof showToast === 'function') {
-            showToast(toastText, toastClass, 2000);
-        }
         return status;
     }).catch(function(error) {
         rollbackActivityControl(context);

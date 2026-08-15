@@ -1193,9 +1193,7 @@ function startIdentityFileImport(format) {
             );
         }).catch(function(err) {
             resetPendingIdentityImport();
-            if (err && err.cancelled) {
-                showToast('Identity import cancelled', 'toast-info', 2500);
-            } else {
+            if (!(err && err.cancelled)) {
                 showToast(err && err.message ? err.message : 'Could not import the identity', 'toast-error', 4000);
             }
         });
@@ -1384,9 +1382,7 @@ function saveIdentityExportPayload(payload) {
 }
 
 function handleIdentityExportError(err) {
-    if (err && err.cancelled) {
-        showToast('Identity export cancelled', 'toast-info', 2500);
-    } else {
+    if (!(err && err.cancelled)) {
         showToast(err && err.message ? err.message : 'Could not export the identity', 'toast-error', 3000);
     }
 }

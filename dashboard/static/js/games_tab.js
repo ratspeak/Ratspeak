@@ -1954,7 +1954,6 @@
                 // the event stream.
                 return;
             }
-            if (typeof showToast === 'function') showToast('Challenge sent', 'toast-success', 2000);
             _selectedSessionId = (ack && ack.session_id) ? ack.session_id : sessionId;
             RS.invoke('get_all_game_sessions').then(function(sessions) {
                 if (Array.isArray(sessions)) {

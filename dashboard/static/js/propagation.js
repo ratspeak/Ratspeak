@@ -386,8 +386,9 @@ function wireUpHandlers(container, mode) {
     var hostAnnounceBtn = document.getElementById('prop-host-announce-btn');
     if (hostAnnounceBtn) {
         hostAnnounceBtn.addEventListener('click', function() {
+            // The shared announce_triggered owner reports the real transmitted
+            // or failed outcome. Do not claim success on command acceptance.
             RS.invoke('trigger_announce').catch(function() {});
-            showToast('Offline Inbox announce queued', 'toast-info', 2500);
         });
     }
 
@@ -558,7 +559,6 @@ function selectRelayNode(hash) {
         .catch(function(err) {
             showPreConditionToast((err && err.message) || 'Invalid Offline Inbox node hash');
         });
-    showToast('Connecting to Offline Inbox node…', 'toast-progress', 2000);
 }
 
 function setPropagationNode() {
@@ -572,8 +572,10 @@ function setPropagationNode() {
 }
 
 function clearPropagationNode() {
-    RS.invoke('set_propagation_node', { hash: '' }).catch(function() {});
-    showToast('Disconnected from Offline Inbox node', 'toast-info', 2000);
+    RS.invoke('set_propagation_node', { hash: '' }).catch(function(err) {
+        showToast((err && err.message) || 'Could not disconnect from the Offline Inbox node',
+            'toast-error', 4000);
+    });
 }
 
 function syncPropagationMailbox() {
@@ -661,7 +663,6 @@ RS.listen('propagation_error', function(data) {
 RS.listen('propagation_sync_result', function(data) {
     if (data && (data.success || data.ok)) {
         if (data.started) {
-            showToast(data.message || 'Checking Offline Inbox…', 'toast-progress', 3000);
             return;
         }
         var count = data.downloaded || 0;

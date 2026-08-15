@@ -328,7 +328,6 @@ function setInterfacePaused(ifaceType, ifaceName, paused) {
         return invokeLifecycle();
     }).then(function(result) {
         if (result === null) return;
-        showToast(paused ? 'Pausing interface…' : 'Resuming interface…', 'toast-progress', 2500);
         refreshConfigInterfaces();
     }).catch(function(err) {
         showToast((err && err.message) || 'Could not update interface', 'toast-error', 8000);
