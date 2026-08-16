@@ -20,9 +20,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26k
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26k
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.26k
+  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26l
+  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26l
+  RATSPEAK_RSLXST_REF: ratspeak-v1.0.26l
   RATSPEAK_LRGP_REF: ratspeak-v1.0.26d
   TOOLCHAINS: com.apple.dt.toolchain.XcodeDefault
 
@@ -177,7 +177,6 @@ jobs:
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
           cargo tauri ios build --ci --target aarch64 \
-            --build-number "${GITHUB_RUN_NUMBER}" \
             --export-method app-store-connect
 
       - name: Validate iOS simulator bundle

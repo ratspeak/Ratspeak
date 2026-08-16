@@ -52,11 +52,10 @@ expect_raw "$info_plist" CFBundleVersion '1.0.26'
 expect_raw "$info_plist" LSRequiresIPhoneOS true
 expect_raw "$info_plist" UILaunchStoryboardName LaunchScreen
 expect_json "$info_plist" CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak"]}]'
-expect_json "$info_plist" NSBonjourServices '["_reticulum._udp"]'
 expect_json "$info_plist" UIBackgroundModes '["audio","bluetooth-central","bluetooth-peripheral"]'
 expect_json "$info_plist" UIRequiredDeviceCapabilities '["arm64","metal"]'
 expect_json "$info_plist" UISupportedInterfaceOrientations '["UIInterfaceOrientationPortrait"]'
-expect_json "$info_plist" 'UISupportedInterfaceOrientations~ipad' '["UIInterfaceOrientationPortrait","UIInterfaceOrientationPortraitUpsideDown"]'
+expect_json "$info_plist" 'UISupportedInterfaceOrientations~ipad' '["UIInterfaceOrientationPortrait","UIInterfaceOrientationPortraitUpsideDown","UIInterfaceOrientationLandscapeLeft","UIInterfaceOrientationLandscapeRight"]'
 
 for permission_key in \
   NSBluetoothAlwaysUsageDescription \
@@ -84,20 +83,24 @@ for declaration in \
   'iOS: 14.0' \
   'TARGETED_DEVICE_FAMILY: "1,2"' \
   'path: ratspeak_iOS/PrivacyInfo.xcprivacy' \
-  'buildPhase: resources'; do
+  'buildPhase: resources' \
+  'entitlements:' \
+  'path: ratspeak_iOS/ratspeak_iOS.entitlements' \
+  'com.apple.developer.networking.multicast: true'; do
   if ! grep -Fq "$declaration" "$project_model"; then
     echo "$project_model: missing declaration: $declaration" >&2
     exit 1
   fi
 done
 
-team_setting_count="$(grep -Fc "DEVELOPMENT_TEAM = $expected_team_id;" "$project_file" || true)"
+team_setting_count="$(grep -Ec "DEVELOPMENT_TEAM = \"?$expected_team_id\"?;" "$project_file" || true)"
 if [[ "$team_setting_count" -ne 2 ]]; then
   echo "$project_file: expected both build configurations to use team $expected_team_id, found $team_setting_count" >&2
   exit 1
 fi
 
-if grep -F 'DEVELOPMENT_TEAM = ' "$project_file" | grep -Fvq "DEVELOPMENT_TEAM = $expected_team_id;"; then
+all_team_setting_count="$(grep -Fc 'DEVELOPMENT_TEAM = ' "$project_file" || true)"
+if [[ "$all_team_setting_count" -ne "$team_setting_count" ]]; then
   echo "$project_file: contains a signing team other than $expected_team_id" >&2
   exit 1
 fi
@@ -107,17 +110,16 @@ if ! grep -Fq 'PrivacyInfo.xcprivacy in Resources' "$project_file"; then
   exit 1
 fi
 
-multicast_enabled="$(plist_raw "$entitlements" com.apple.developer.networking.multicast || true)"
-if [[ "$multicast_enabled" == "true" ]]; then
-  if ! grep -Fq 'entitlements:' "$project_model" || ! grep -Fq 'CODE_SIGN_ENTITLEMENTS' "$project_file"; then
-    echo "The multicast entitlement is enabled but the Xcode project does not sign it" >&2
-    exit 1
-  fi
-else
-  if grep -Fq 'entitlements:' "$project_model" || grep -Fq 'CODE_SIGN_ENTITLEMENTS' "$project_file"; then
-    echo "The empty entitlement file must not be signed before multicast approval" >&2
-    exit 1
-  fi
+multicast_enabled="$(plist_raw "$entitlements" 'com\.apple\.developer\.networking\.multicast' || true)"
+if [[ "$multicast_enabled" != "true" ]]; then
+  echo "$entitlements: com.apple.developer.networking.multicast must be true" >&2
+  exit 1
+fi
+
+entitlements_setting_count="$(grep -Fc 'CODE_SIGN_ENTITLEMENTS = ratspeak_iOS/ratspeak_iOS.entitlements;' "$project_file" || true)"
+if [[ "$entitlements_setting_count" -ne 2 ]]; then
+  echo "$project_file: expected both build configurations to sign the multicast entitlements file, found $entitlements_setting_count" >&2
+  exit 1
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

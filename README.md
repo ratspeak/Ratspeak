@@ -126,8 +126,10 @@ ringtones, and platform audio routing are all subject to change.
 
 ## Platform Notes
 
-- iOS does not support general USB serial. Local Network, multicast, notifications, and
-  background behavior depend on Apple permissions as well, and currently don't have support at this time.
+- iOS does not support general USB serial. Ratspeak's signed iOS builds support
+  Local Network and multicast discovery; users must still grant the normal iOS
+  Local Network permission. Notifications require user permission, and
+  background execution remains subject to iOS lifecycle limits.
 - Windows Bluetooth Peer advertiser support needs the future signed MSIX lane.
 - Linux Bluetooth Peer depends on BlueZ GATT server and LE advertising support.
 - Voice calls require microphone permission per platform; the prompt is

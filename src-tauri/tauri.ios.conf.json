@@ -1,3 +1,8 @@
 {
-  "identifier": "org.ratspeak.apple"
+  "identifier": "org.ratspeak.apple",
+  "bundle": {
+    "iOS": {
+      "developmentTeam": "X92A7KF9SP"
+    }
+  }
 }

@@ -30,8 +30,9 @@ plist_raw() {
 uuid="$(plist_raw "$decoded_profile" UUID || true)"
 profile_team="$(plist_raw "$decoded_profile" TeamIdentifier.0 || true)"
 application_identifier="$(plist_raw "$decoded_profile" Entitlements.application-identifier || true)"
-entitlement_team="$(plist_raw "$decoded_profile" Entitlements.com.apple.developer.team-identifier || true)"
+entitlement_team="$(plist_raw "$decoded_profile" 'Entitlements.com\.apple\.developer\.team-identifier' || true)"
 debuggable="$(plist_raw "$decoded_profile" Entitlements.get-task-allow || true)"
+multicast_enabled="$(plist_raw "$decoded_profile" 'Entitlements.com\.apple\.developer\.networking\.multicast' || true)"
 expires="$(plist_raw "$decoded_profile" ExpirationDate || true)"
 
 if [[ ! "$uuid" =~ ^[A-Fa-f0-9-]+$ ]]; then
@@ -48,6 +49,10 @@ if [[ "$application_identifier" != "$expected_team_id.$expected_bundle_id" ]]; t
 fi
 if [[ "$debuggable" != "false" ]]; then
   echo "Provisioning profile is not an App Store distribution profile (get-task-allow=$debuggable)" >&2
+  exit 1
+fi
+if [[ "$multicast_enabled" != "true" ]]; then
+  echo "Provisioning profile does not include com.apple.developer.networking.multicast=true" >&2
   exit 1
 fi
 provisions_all_devices="$(plist_raw "$decoded_profile" ProvisionsAllDevices || true)"

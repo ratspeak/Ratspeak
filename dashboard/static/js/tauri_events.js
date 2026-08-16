@@ -876,7 +876,7 @@ RS.listen('ble_scan_results', function(data) {
     }
 });
 
-// AutoInterface JoinFailed; current producer is Apple multicast-without-entitlement.
+// AutoInterface JoinFailed; surface the runtime failure on the matching row.
 RS.listen('auto_unavailable', function(data) {
     if (!data) return;
     window._autoUnavailable = {
@@ -901,6 +901,10 @@ RS.listen('auto_carrier_state', function(data) {
     if (!data || !data.nic) return;
     var key = (data.interface || '') + ':' + data.nic;
     var prev = window._autoCarrier[key];
+    var recoveredUnavailable = !!data.ok && !!window._autoUnavailable &&
+        window._autoUnavailable.interface === (data.interface || '') &&
+        window._autoUnavailable.nic === data.nic;
+    if (recoveredUnavailable) window._autoUnavailable = null;
     window._autoCarrier[key] = {
         ok: !!data.ok,
         reason: data.reason || '',
@@ -922,6 +926,9 @@ RS.listen('auto_carrier_state', function(data) {
                 window._autoFirewallToastShown = true;
             }
         }
+    }
+    if (recoveredUnavailable && typeof refreshConnectionsList === 'function') {
+        try { refreshConnectionsList(); } catch (_) {}
     }
 });
 

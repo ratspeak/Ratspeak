@@ -21,11 +21,41 @@ assert(/PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"\s+android:value="true"/.t
 
 var appleProject = read('src-tauri/gen/apple/project.yml');
 var applePlist = read('src-tauri/gen/apple/ratspeak_iOS/Info.plist');
-[appleProject, applePlist].forEach(function(source) {
+
+function yamlOrientationBlock(key) {
+    var match = appleProject.match(new RegExp(
+        '^\\s*' + key.replace('~', '\\~') + ':\\n((?:\\s+- UIInterfaceOrientation[^\\n]+\\n?)+)',
+        'm'));
+    assert(match, 'Apple project must declare ' + key);
+    return match[1];
+}
+
+function plistOrientationBlock(key) {
+    var match = applePlist.match(new RegExp(
+        '<key>' + key.replace('~', '\\~') + '</key>\\s*<array>([\\s\\S]*?)</array>'));
+    assert(match, 'Apple Info.plist must declare ' + key);
+    return match[1];
+}
+
+[yamlOrientationBlock('UISupportedInterfaceOrientations'),
+    plistOrientationBlock('UISupportedInterfaceOrientations')].forEach(function(source) {
     assert(source.includes('UIInterfaceOrientationPortrait'),
-        'Apple mobile configuration must support portrait');
+        'iPhone configuration must support portrait');
     assert(!source.includes('UIInterfaceOrientationLandscape'),
-        'Apple mobile configuration must not advertise landscape');
+        'iPhone configuration must remain portrait-only');
 });
 
-console.log('Mobile portrait-orientation tests passed.');
+[yamlOrientationBlock('UISupportedInterfaceOrientations~ipad'),
+    plistOrientationBlock('UISupportedInterfaceOrientations~ipad')].forEach(function(source) {
+    [
+        'UIInterfaceOrientationPortrait',
+        'UIInterfaceOrientationPortraitUpsideDown',
+        'UIInterfaceOrientationLandscapeLeft',
+        'UIInterfaceOrientationLandscapeRight'
+    ].forEach(function(orientation) {
+        assert(source.includes(orientation),
+            'iPad configuration must support ' + orientation);
+    });
+});
+
+console.log('Mobile orientation tests passed.');

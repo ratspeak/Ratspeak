@@ -54,8 +54,6 @@ targets:
         LSRequiresIPhoneOS: true
         NSBluetoothAlwaysUsageDescription: Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.
         NSBluetoothPeripheralUsageDescription: Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.
-        NSBonjourServices:
-          - _reticulum._udp
         NSCameraUsageDescription: Ratspeak accesses your camera so you can take photos or videos to send in a message.
         NSLocalNetworkUsageDescription: Required when you enable a TCP, Local, or Bluetooth Peer interface in Network settings so Ratspeak can reach other nodes on your local network.
         NSMicrophoneUsageDescription: Ratspeak uses your microphone for voice calls, voice messages, and videos you choose to record.
@@ -72,8 +70,16 @@ targets:
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 1.0.26
         CFBundleVersion: "1.0.26"
+    # AutoInterface uses raw UDP IPv6 multicast, not Bonjour. Apple approved
+    # this managed capability for org.ratspeak.apple on August 15, 2026.
+    entitlements:
+      path: ratspeak_iOS/ratspeak_iOS.entitlements
+      properties:
+        com.apple.developer.networking.multicast: true
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full

@@ -1169,25 +1169,16 @@ function _renderConnectionsFromCache() {
 
                 var displayName = (typeof friendlyInterfaceName === 'function') ? friendlyInterfaceName(name, typeName, iface.role || 'normal') : name;
 
-                // Multicast join rejected (iOS entitlement / Linux NIC vanish);
+                // Multicast join rejected (for example, permission denied or NIC vanished);
                 // pill surfaces this so the empty peer list isn't mistaken for a bug.
                 var pillHtml = '';
                 if (sectionKey === 'local' && window._autoUnavailable &&
                     window._autoUnavailable.interface === name) {
-                    var iosPill = (typeof isIOS === 'function') && isIOS();
-                    if (iosPill) {
-                        pillHtml = '<span class="conn-iface-pill" ' +
-                            'title="Apple multicast entitlement is required for local Wi-Fi peer discovery. We have requested it; coverage will appear automatically once approved." ' +
-                            '>' +
-                            'Pending Apple approval' +
-                            '</span>';
-                    } else {
-                        pillHtml = '<span class="conn-iface-pill" ' +
-                            'title="' + escapeHtml(window._autoUnavailable.reason || 'Multicast unavailable') + '" ' +
-                            '>' +
-                            'Multicast unavailable' +
-                            '</span>';
-                    }
+                    pillHtml = '<span class="conn-iface-pill" ' +
+                        'title="' + escapeHtml(window._autoUnavailable.reason || 'Multicast unavailable') + '" ' +
+                        '>' +
+                        'Multicast unavailable' +
+                        '</span>';
                 }
                 if (paused) {
                     pillHtml += '<span class="conn-iface-status-text">Paused</span>';

@@ -87,11 +87,10 @@ expect_raw MinimumOSVersion 14.0
 expect_raw UILaunchStoryboardName LaunchScreen
 expect_json UIDeviceFamily '[1,2]'
 expect_json CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak"]}]'
-expect_json NSBonjourServices '["_reticulum._udp"]'
 expect_json UIBackgroundModes '["audio","bluetooth-central","bluetooth-peripheral"]'
 expect_json UIRequiredDeviceCapabilities '["arm64","metal"]'
 expect_json UISupportedInterfaceOrientations '["UIInterfaceOrientationPortrait"]'
-expect_json 'UISupportedInterfaceOrientations~ipad' '["UIInterfaceOrientationPortrait","UIInterfaceOrientationPortraitUpsideDown"]'
+expect_json 'UISupportedInterfaceOrientations~ipad' '["UIInterfaceOrientationPortrait","UIInterfaceOrientationPortraitUpsideDown","UIInterfaceOrientationLandscapeLeft","UIInterfaceOrientationLandscapeRight"]'
 
 for permission_key in \
   NSBluetoothAlwaysUsageDescription \
@@ -190,6 +189,11 @@ if [[ "$mode" == "testflight" ]]; then
   get_task_allow="$(plist_raw "$signature_entitlements" get-task-allow || true)"
   if [[ "$get_task_allow" == "true" ]]; then
     echo "$app: TestFlight signature enables get-task-allow" >&2
+    exit 1
+  fi
+  multicast_enabled="$(plist_raw "$signature_entitlements" 'com\.apple\.developer\.networking\.multicast' || true)"
+  if [[ "$multicast_enabled" != "true" ]]; then
+    echo "$app: TestFlight signature does not include com.apple.developer.networking.multicast=true" >&2
     exit 1
   fi
 

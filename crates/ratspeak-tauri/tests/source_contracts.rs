@@ -544,6 +544,7 @@ fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
         &read_source(root.join("src-tauri/tauri.ios.conf.json")).expect("iOS Tauri config"),
     )
     .expect("valid iOS Tauri config");
+    assert_eq!(ios_config["bundle"]["iOS"]["developmentTeam"], "X92A7KF9SP");
     assert!(base_config["plugins"]["deep-link"].is_null());
     assert!(android_config["plugins"]["deep-link"].is_null());
     assert!(ios_config["plugins"]["deep-link"].is_null());
@@ -576,7 +577,8 @@ fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
     assert!(android_manifest.contains("android.intent.category.BROWSABLE"));
     assert!(ios_info.contains("<key>CFBundleURLTypes</key>"));
     assert!(ios_info.contains("<string>ratspeak</string>"));
-    assert!(ios_entitlements.contains("Multicast Networking entitlement"));
+    assert!(ios_entitlements.contains("com.apple.developer.networking.multicast"));
+    assert!(ios_entitlements.contains("<true/>"));
     assert!(!ios_entitlements.contains("com.apple.developer.associated-domains"));
     assert!(cargo.contains(r#"tauri-plugin-deep-link = "2.4.9""#));
     assert!(
@@ -1279,7 +1281,7 @@ fn appearance_families_are_durable_validated_and_native_aware() {
 }
 
 #[test]
-fn mobile_shells_advertise_only_portrait_orientations() {
+fn mobile_shells_advertise_platform_appropriate_orientations() {
     let root = repo_root();
     let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
         .expect("android manifest");
@@ -1291,10 +1293,12 @@ fn mobile_shells_advertise_only_portrait_orientations() {
     assert!(manifest.contains("android:screenOrientation=\"portrait\""));
     assert!(manifest.contains("tools:ignore=\"DiscouragedApi,LockedOrientationActivity\""));
     assert!(ios_info.contains("UIInterfaceOrientationPortrait"));
-    assert!(!ios_info.contains("UIInterfaceOrientationLandscape"));
+    assert!(ios_info.contains("UIInterfaceOrientationLandscapeLeft"));
+    assert!(ios_info.contains("UIInterfaceOrientationLandscapeRight"));
     assert!(ios_project.contains("UISupportedInterfaceOrientations:"));
     assert!(ios_project.contains("UISupportedInterfaceOrientations~ipad:"));
-    assert!(!ios_project.contains("UIInterfaceOrientationLandscape"));
+    assert!(ios_project.contains("UIInterfaceOrientationLandscapeLeft"));
+    assert!(ios_project.contains("UIInterfaceOrientationLandscapeRight"));
     assert!(ios_project.contains("TARGETED_DEVICE_FAMILY: \"1,2\""));
 }
 
@@ -4751,7 +4755,6 @@ fn ios_project_model_owns_app_store_info_declarations() {
         "CFBundleURLTypes",
         "NSBluetoothAlwaysUsageDescription",
         "NSBluetoothPeripheralUsageDescription",
-        "NSBonjourServices",
         "NSCameraUsageDescription",
         "NSLocalNetworkUsageDescription",
         "NSMicrophoneUsageDescription",
@@ -4928,7 +4931,7 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.26k");
+    assert_eq!(version_file.trim(), "1.0.26l");
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -5026,13 +5029,13 @@ fn settings_version_display_uses_package_version_api() {
 #[test]
 fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleases() {
     let root = repo_root();
-    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: 2e0d0a688881040a0a12639490f494b162466be1";
+    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: fbc2f1938b7b2573a11e24af613d0f0e533e0ad6";
     let rslxmf_commit = "RATSPEAK_RSLXMF_REF: 094bc956625b64ce69ceaf1bca2e924277828df8";
     let rslxst_commit = "RATSPEAK_RSLXST_REF: 9f06e3371b8a28ed7a0d77df45d9e152a41d0302";
     let dependency_refs = [
-        "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26k",
-        "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26k",
-        "RATSPEAK_RSLXST_REF: ratspeak-v1.0.26k",
+        "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26l",
+        "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26l",
+        "RATSPEAK_RSLXST_REF: ratspeak-v1.0.26l",
         "RATSPEAK_LRGP_REF: ratspeak-v1.0.26d",
     ];
 
@@ -5097,7 +5100,7 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
     for dependency_ref in dependency_refs {
         assert!(ios.contains(dependency_ref));
     }
-    assert!(ios.contains(r#"--build-number "${GITHUB_RUN_NUMBER}""#));
+    assert!(!ios.contains("--build-number"));
     assert!(ios.contains("--export-method app-store-connect"));
     assert!(ios.contains("APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}"));
     for required in [
@@ -5134,12 +5137,36 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
         .expect("iOS project specification");
     assert!(ios_project.contains("path: ratspeak_iOS/PrivacyInfo.xcprivacy"));
     assert!(ios_project.contains("buildPhase: resources"));
-    assert!(!ios_project.contains("entitlements:"));
+    assert!(ios_project.contains("entitlements:"));
+    assert!(ios_project.contains("path: ratspeak_iOS/ratspeak_iOS.entitlements"));
+    assert!(ios_project.contains("com.apple.developer.networking.multicast: true"));
+    assert!(!ios_project.contains("NSBonjourServices"));
 
     let ios_pbx = read_source(root.join("src-tauri/gen/apple/ratspeak.xcodeproj/project.pbxproj"))
         .expect("generated iOS project");
     assert!(ios_pbx.contains("PrivacyInfo.xcprivacy in Resources"));
-    assert!(!ios_pbx.contains("CODE_SIGN_ENTITLEMENTS"));
+    assert_eq!(
+        ios_pbx
+            .matches("CODE_SIGN_ENTITLEMENTS = ratspeak_iOS/ratspeak_iOS.entitlements;")
+            .count(),
+        2
+    );
+
+    let signing_profile_gate =
+        read_source(root.join("scripts/release/assert-ios-signing-profile.sh"))
+            .expect("iOS signing profile gate");
+    let bundle_gate =
+        read_source(root.join("scripts/release/assert-ios-bundle.sh")).expect("iOS bundle gate");
+    for gate in [&signing_profile_gate, &bundle_gate] {
+        assert!(gate.contains("com.apple.developer.networking.multicast"));
+    }
+
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    assert!(!health.contains("Pending Apple approval"));
+    assert!(health.contains("Multicast unavailable"));
+    let tauri_events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
+    assert!(tauri_events.contains("if (recoveredUnavailable) window._autoUnavailable = null;"));
 
     let app_cargo = read_source(root.join("src-tauri/Cargo.toml")).expect("app Cargo.toml");
     assert!(app_cargo.contains(r#"tauri = { version = "2", features = [] }"#));

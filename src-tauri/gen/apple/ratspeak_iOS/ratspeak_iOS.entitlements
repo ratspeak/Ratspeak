@@ -2,33 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!--
-	  Multicast Networking entitlement.
-
-	  Required for Reticulum AutoInterface UDP IPv6 link-local multicast.
-	  Without it, iOS 14+ can reject multicast joins and sends even though
-	  TCP and Bluetooth paths still work.
-
-	  Provisioning prerequisites (must be done BEFORE this builds for device):
-	    1. Active paid Apple Developer Program membership. Free personal
-	       teams cannot sign the multicast networking entitlement.
-	    2. Approved request for `com.apple.developer.networking.multicast`
-	       against bundle id `org.ratspeak.apple`. Submit at
-	       https://developer.apple.com/contact/request/networking-multicast/
-	       with use case: "Mesh networking app discovers nearby Reticulum
-	       nodes via UDP multicast on local Wi-Fi (no internet)."
-	    3. Regenerate provisioning profile after Apple approves.
-
-	  If signing fails because the provisioning profile does not include
-	  com.apple.developer.networking.multicast, approval or profile
-	  regeneration is still missing. The app can build without this
-	  entitlement, but local multicast discovery is degraded on iOS.
-	-->
-	<!-- Disabled until multicast entitlement approval is available for the
-	     signing team. See provisioning steps above. -->
-	<!--
 	<key>com.apple.developer.networking.multicast</key>
 	<true/>
-	-->
 </dict>
 </plist>
