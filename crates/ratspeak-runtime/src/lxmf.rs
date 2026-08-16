@@ -876,6 +876,14 @@ fn backchannel_error_from_runtime(
         rns_runtime::link_manager::LinkSendError::NoSessionKeys => {
             BackchannelSendError::NoSessionKeys
         }
+        rns_runtime::link_manager::LinkSendError::IdentityUnavailable
+        | rns_runtime::link_manager::LinkSendError::IdentificationUnavailable => {
+            // These commands are not expected for an already-identified LXMF
+            // backchannel. If the runtime reports either anyway, retire the
+            // cached Link and let core retry normal Direct discovery instead
+            // of terminally losing the message.
+            BackchannelSendError::LinkNotActive
+        }
         rns_runtime::link_manager::LinkSendError::TransportUnavailable => {
             BackchannelSendError::TransportUnavailable
         }
@@ -5486,6 +5494,59 @@ mod tests {
         panic!("expected outbound transport message");
     }
 
+    fn accept_initiator_endpoint_binding(
+        rx: &mut mpsc::Receiver<TransportMessage>,
+        expected_link_id: [u8; 16],
+        expected_interface_id: rns_transport::messages::InterfaceId,
+    ) {
+        let message = rx.try_recv().expect("expected endpoint binding");
+        let TransportMessage::BindLinkEndpoint {
+            binding,
+            lifecycle_tx,
+            result_tx,
+        } = message
+        else {
+            panic!("expected endpoint binding, got {message:?}");
+        };
+        assert_eq!(binding.link_id, expected_link_id);
+        assert_eq!(binding.interface_id, expected_interface_id);
+        assert_eq!(
+            binding.role,
+            rns_transport::messages::LinkEndpointRole::Initiator
+        );
+        result_tx
+            .send(rns_transport::messages::LinkEndpointBindResult::Bound)
+            .unwrap();
+        std::mem::forget(lifecycle_tx);
+    }
+
+    fn next_initiator_endpoint_outbound(rx: &mut mpsc::Receiver<TransportMessage>) -> Vec<u8> {
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                TransportMessage::SendLinkEndpoint {
+                    role,
+                    request,
+                    result_tx,
+                    ..
+                }
+                | TransportMessage::SendLinkEndpointAndUnbind {
+                    role,
+                    request,
+                    result_tx,
+                    ..
+                } => {
+                    assert_eq!(role, rns_transport::messages::LinkEndpointRole::Initiator);
+                    result_tx
+                        .send(rns_transport::messages::LinkEndpointSendResult::Sent)
+                        .unwrap();
+                    return request.raw.to_vec();
+                }
+                _ => {}
+            }
+        }
+        panic!("expected initiator endpoint transport message");
+    }
+
     #[test]
     fn received_ratchet_loader_rejects_arbitrary_filename_stems() {
         assert_eq!(
@@ -6622,6 +6683,19 @@ mod tests {
             Some(link_id)
         );
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn unexpected_runtime_identity_failures_retire_cached_backchannels() {
+        for error in [
+            rns_runtime::link_manager::LinkSendError::IdentityUnavailable,
+            rns_runtime::link_manager::LinkSendError::IdentificationUnavailable,
+        ] {
+            assert_eq!(
+                backchannel_error_from_runtime(error),
+                BackchannelSendError::LinkNotActive
+            );
+        }
     }
 
     #[tokio::test]
@@ -7955,9 +8029,12 @@ mod tests {
             &link_id,
             &proof_data,
             &responder_pub,
-            &responder_pub.to_bytes()
+            &responder_pub.to_bytes(),
+            1,
         ));
-        let _rtt_raw = next_outbound(&mut rx);
+        accept_initiator_endpoint_binding(&mut rx, link_id, 1);
+        let _ = mgr.tick();
+        let _rtt_raw = next_initiator_endpoint_outbound(&mut rx);
 
         let _ = mgr.tick();
         let snapshot = mgr
@@ -8073,9 +8150,12 @@ mod tests {
             &link_id,
             &proof_data,
             &responder_pub,
-            &responder_pub.to_bytes()
+            &responder_pub.to_bytes(),
+            1,
         ));
-        let _rtt_raw = next_outbound(&mut rx);
+        accept_initiator_endpoint_binding(&mut rx, link_id, 1);
+        let _ = mgr.tick();
+        let _rtt_raw = next_initiator_endpoint_outbound(&mut rx);
 
         let _ = mgr.tick();
         assert!(
