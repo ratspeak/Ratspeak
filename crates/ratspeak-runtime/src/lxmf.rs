@@ -9091,17 +9091,21 @@ mod tests {
 
         assert_eq!(mgr.router.pending_deferred_stamps.len(), 1);
 
-        let mut states = Vec::new();
-        for _ in 0..100 {
-            states.extend(mgr.tick());
-            if states
-                .iter()
-                .any(|(id, state)| id == &msg_id && *state == "sent")
-            {
-                break;
+        let states = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let mut states = Vec::new();
+            loop {
+                states.extend(mgr.tick());
+                if states
+                    .iter()
+                    .any(|(id, state)| id == &msg_id && *state == "sent")
+                {
+                    break states;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .expect("deferred stamp should complete on a loaded release runner");
 
         assert!(mgr.router.pending_deferred_stamps.is_empty());
         assert!(
