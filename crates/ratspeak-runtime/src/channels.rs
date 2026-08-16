@@ -8352,7 +8352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn heartbeat_send_failure_defers_session_end_to_link_actor() {
+    async fn authenticated_transient_proof_and_endpoint_terminal_drive_product_state() {
         let client_identity = Identity::new();
         let hub_identity = Identity::new();
         let hub_signing = hub_identity.get_signing_key().unwrap();
@@ -8360,11 +8360,7 @@ mod tests {
         let hub_destination =
             Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
 
-        // Capacity one makes the failure deterministic: the proof for the
-        // inbound PING fills the transport queue before the automatic PONG is
-        // submitted. Dropping the receiver then rejects the PONG inside the
-        // Link actor.
-        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(1);
+        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(16);
         let manager = ChannelsManagerHandle::start(
             transport_tx,
             client_identity.clone(),
@@ -8424,6 +8420,25 @@ mod tests {
         )
         .await;
 
+        let endpoint_lifecycle_tx = match timeout_transport(&mut transport_rx).await {
+            TransportMessage::BindLinkEndpoint {
+                binding,
+                lifecycle_tx,
+                result_tx,
+            } => {
+                assert_eq!(binding.link_id, responder.link_id);
+                assert_eq!(binding.interface_id, 1);
+                assert_eq!(
+                    binding.role,
+                    rns_transport::messages::LinkEndpointRole::Initiator
+                );
+                result_tx
+                    .send(rns_transport::messages::LinkEndpointBindResult::Bound)
+                    .unwrap();
+                lifecycle_tx
+            }
+            other => panic!("expected initiator endpoint binding, got {other:?}"),
+        };
         let lrrtt = next_attached_outbound(&mut transport_rx).await;
         let (_, lrrtt_offset) = rns_wire::header::PacketHeader::unpack(&lrrtt.raw).unwrap();
         responder
@@ -8445,15 +8460,55 @@ mod tests {
         assert_eq!(hello.message_type, MessageType::Hello);
 
         let welcome = Envelope::new(MessageType::Welcome, hub_identity.hash);
-        send_server_envelope(&delivery_tx, &mut responder, &welcome).await;
+        let welcome_packet_hash =
+            send_server_envelope(&delivery_tx, &mut responder, &welcome).await;
+        let welcome_proof = next_attached_outbound(&mut transport_rx).await;
+        let (proof_header, proof_offset) =
+            rns_wire::header::PacketHeader::unpack(&welcome_proof.raw).unwrap();
+        assert_eq!(
+            proof_header.flags.packet_type,
+            rns_wire::flags::PacketType::Proof
+        );
+        assert_eq!(
+            proof_header.context,
+            rns_wire::context::PacketContext::LinkProof
+        );
+        responder
+            .validate_peer_packet_proof(&welcome_packet_hash, &welcome_proof.raw[proof_offset..])
+            .expect("RRC client packet proof must use the LINKREQUEST transient signer");
+        let mut identity_signed_proof = welcome_packet_hash.to_vec();
+        identity_signed_proof.extend_from_slice(
+            &client_identity
+                .sign(&welcome_packet_hash)
+                .expect("test client identity can sign"),
+        );
+        assert!(
+            responder
+                .validate_peer_packet_proof(&welcome_packet_hash, &identity_signed_proof)
+                .is_err(),
+            "the Ratspeak application identity is not the initiator Link proof signer"
+        );
         wait_snapshot(&manager, |snapshot| snapshot.phase == ChannelsPhase::Active).await;
 
-        let mut ping = Envelope::new(MessageType::Ping, hub_identity.hash);
-        ping.body = Some(Value::Float(42.5));
-        send_server_envelope(&delivery_tx, &mut responder, &ping).await;
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        drop(transport_rx);
+        endpoint_lifecycle_tx
+            .send(rns_transport::messages::LinkEndpointLifecycleEvent {
+                binding: rns_transport::messages::LinkEndpointBinding {
+                    link_id: responder.link_id,
+                    interface_id: 1,
+                    role: rns_transport::messages::LinkEndpointRole::Initiator,
+                },
+                reason: rns_transport::messages::LinkEndpointTerminalReason::InterfaceClosed,
+                dropped_packets: 0,
+            })
+            .unwrap();
+        tokio::spawn(async move {
+            while let Some(message) = transport_rx.recv().await {
+                if let TransportMessage::UnbindLinkEndpoint { result_tx, .. } = message {
+                    let _ =
+                        result_tx.send(rns_transport::messages::LinkEndpointUnbindResult::NotBound);
+                }
+            }
+        });
 
         let closed = wait_snapshot(&manager, |snapshot| {
             snapshot.phase == ChannelsPhase::Reconnecting
@@ -8470,6 +8525,9 @@ mod tests {
         assert_eq!(recovery.attempt, 1);
         assert!(recovery.next_attempt_at_ms.is_some());
 
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(manager.snapshot().hubs[0].recovery.attempt, 1);
+
         manager.shutdown().await;
     }
 
@@ -8479,7 +8537,7 @@ mod tests {
         let hub_identity = Identity::new();
         let hub_destination =
             Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
-        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(32);
+        let (transport_tx, mut transport_rx) = test_transport_channel(32);
         let manager = ChannelsManagerHandle::start(
             transport_tx,
             client_identity.clone(),
@@ -8643,7 +8701,7 @@ mod tests {
             Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
         let hub_destination_hex = hex::encode(hub_destination);
         let state = channels_test_state(&client_identity);
-        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(64);
+        let (transport_tx, mut transport_rx) = test_transport_channel(64);
         let manager = ChannelsManagerHandle::start(
             transport_tx,
             client_identity.clone(),
@@ -8989,7 +9047,7 @@ mod tests {
         let hub_destination =
             Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub_identity.hash));
         let hub_destination_hex = hex::encode(hub_destination);
-        let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(128);
+        let (transport_tx, mut transport_rx) = test_transport_channel(128);
         let manager = ChannelsManagerHandle::start(
             transport_tx,
             client_identity.clone(),
@@ -9242,6 +9300,37 @@ mod tests {
                 .as_ref()
                 .map(|item| item.text.as_str()),
             Some("Welcome to the test hub. /join general for the main room.")
+        );
+
+        let mut wrong_interface_notice = Envelope::new(MessageType::Notice, hub_identity.hash);
+        wrong_interface_notice.body = Some(Value::Text("wrong-interface injection".into()));
+        let wrong_encoded = rrc::encode(&wrong_interface_notice).unwrap();
+        let wrong_encrypted = responder.encrypt(&wrong_encoded).unwrap();
+        send_link_packet_on_interface(
+            &delivery_tx,
+            responder.link_id,
+            rns_wire::flags::PacketType::Data,
+            rns_wire::context::PacketContext::None,
+            &wrong_encrypted,
+            2,
+        )
+        .await;
+        let mut interface_barrier = Envelope::new(MessageType::Notice, hub_identity.hash);
+        interface_barrier.body = Some(Value::Text("interface barrier".into()));
+        send_server_envelope(&delivery_tx, &mut responder, &interface_barrier).await;
+        let interface_snapshot = wait_snapshot(&manager, |snapshot| {
+            snapshot
+                .notices
+                .iter()
+                .any(|item| item.text == "interface barrier")
+        })
+        .await;
+        assert!(
+            interface_snapshot
+                .notices
+                .iter()
+                .all(|item| item.text != "wrong-interface injection"),
+            "wrong-interface Link traffic must not reach RRC product state"
         );
 
         assert_eq!(
@@ -9810,6 +9899,101 @@ mod tests {
         encoded
     }
 
+    /// Stand-in for the transport actor in client-session product tests.
+    ///
+    /// The Link session now waits for typed endpoint admission before it can
+    /// advance. These tests still inspect the emitted packets, so acknowledge
+    /// endpoint commands and forward an equivalent observable command instead
+    /// of falling back to the unsafe generic Link route.
+    fn test_transport_channel(
+        capacity: usize,
+    ) -> (
+        mpsc::Sender<TransportMessage>,
+        mpsc::Receiver<TransportMessage>,
+    ) {
+        let (transport_tx, mut transport_rx) = mpsc::channel(capacity);
+        let (observed_tx, observed_rx) = mpsc::channel(capacity);
+        tokio::spawn(async move {
+            let mut endpoint_lifecycle_senders = Vec::new();
+            while let Some(message) = transport_rx.recv().await {
+                let observed = match message {
+                    TransportMessage::BindLinkEndpoint {
+                        binding,
+                        lifecycle_tx,
+                        result_tx,
+                    } => {
+                        assert_eq!(
+                            binding.role,
+                            rns_transport::messages::LinkEndpointRole::Initiator
+                        );
+                        let _ =
+                            result_tx.send(rns_transport::messages::LinkEndpointBindResult::Bound);
+                        endpoint_lifecycle_senders.push(lifecycle_tx);
+                        continue;
+                    }
+                    TransportMessage::SendLinkEndpoint {
+                        link_id,
+                        role,
+                        request,
+                        result_tx,
+                    } => {
+                        let _ =
+                            result_tx.send(rns_transport::messages::LinkEndpointSendResult::Sent);
+                        let (result_tx, _result_rx) = oneshot::channel();
+                        TransportMessage::SendLinkEndpoint {
+                            link_id,
+                            role,
+                            request,
+                            result_tx,
+                        }
+                    }
+                    TransportMessage::SendLinkEndpointAndUnbind {
+                        link_id,
+                        role,
+                        request,
+                        result_tx,
+                    } => {
+                        let _ =
+                            result_tx.send(rns_transport::messages::LinkEndpointSendResult::Sent);
+                        let (result_tx, _result_rx) = oneshot::channel();
+                        TransportMessage::SendLinkEndpointAndUnbind {
+                            link_id,
+                            role,
+                            request,
+                            result_tx,
+                        }
+                    }
+                    TransportMessage::SendLinkEndpointBestEffort {
+                        link_id,
+                        role,
+                        request,
+                        result_tx,
+                    } => {
+                        let _ =
+                            result_tx.send(rns_transport::messages::LinkEndpointSendResult::Sent);
+                        let (result_tx, _result_rx) = oneshot::channel();
+                        TransportMessage::SendLinkEndpointBestEffort {
+                            link_id,
+                            role,
+                            request,
+                            result_tx,
+                        }
+                    }
+                    TransportMessage::UnbindLinkEndpoint { result_tx, .. } => {
+                        let _ = result_tx
+                            .send(rns_transport::messages::LinkEndpointUnbindResult::Unbound);
+                        continue;
+                    }
+                    message => message,
+                };
+                if observed_tx.send(observed).await.is_err() {
+                    break;
+                }
+            }
+        });
+        (transport_tx, observed_rx)
+    }
+
     async fn timeout_transport(rx: &mut mpsc::Receiver<TransportMessage>) -> TransportMessage {
         timeout_transport_within(rx, Duration::from_secs(3)).await
     }
@@ -9834,12 +10018,43 @@ mod tests {
 
     async fn next_attached_outbound(rx: &mut mpsc::Receiver<TransportMessage>) -> OutboundRequest {
         loop {
-            if let TransportMessage::OutboundAttached {
-                request,
-                interface_id: 1,
-            } = timeout_transport(rx).await
-            {
-                return request;
+            match timeout_transport(rx).await {
+                TransportMessage::OutboundAttached {
+                    request,
+                    interface_id: 1,
+                } => return request,
+                TransportMessage::BindLinkEndpoint {
+                    binding,
+                    lifecycle_tx,
+                    result_tx,
+                } => {
+                    assert_eq!(binding.interface_id, 1);
+                    assert_eq!(
+                        binding.role,
+                        rns_transport::messages::LinkEndpointRole::Initiator
+                    );
+                    let _ = result_tx.send(rns_transport::messages::LinkEndpointBindResult::Bound);
+                    // Keep the endpoint lifecycle open for direct-channel
+                    // tests that do not run a transport actor.
+                    std::mem::forget(lifecycle_tx);
+                }
+                TransportMessage::SendLinkEndpoint {
+                    role,
+                    request,
+                    result_tx,
+                    ..
+                }
+                | TransportMessage::SendLinkEndpointAndUnbind {
+                    role,
+                    request,
+                    result_tx,
+                    ..
+                } => {
+                    assert_eq!(role, rns_transport::messages::LinkEndpointRole::Initiator);
+                    let _ = result_tx.send(rns_transport::messages::LinkEndpointSendResult::Sent);
+                    return request;
+                }
+                _ => {}
             }
         }
     }
@@ -9876,7 +10091,9 @@ mod tests {
             }
             let plaintext = responder.decrypt(&request.raw[offset..]).unwrap();
             let packet_hash = rns_wire::hash::packet_hash(&request.raw, header.flags.header_type);
-            let proof = responder.prove_packet(&packet_hash, signing_key).unwrap();
+            let proof = responder
+                .prove_responder_packet_with(&packet_hash, |hash| Some(signing_key.sign(hash)))
+                .unwrap();
             send_link_packet(
                 delivery_tx,
                 responder.link_id,
@@ -9969,7 +10186,7 @@ mod tests {
         delivery_tx: &mpsc::Sender<DestinationEvent>,
         responder: &mut Link,
         envelope: &Envelope,
-    ) {
+    ) -> [u8; 32] {
         let encoded = rrc::encode(envelope).unwrap();
         let encrypted = responder.encrypt(&encoded).unwrap();
         send_link_packet(
@@ -9979,7 +10196,7 @@ mod tests {
             rns_wire::context::PacketContext::None,
             &encrypted,
         )
-        .await;
+        .await
     }
 
     async fn close_test_hub_session(
@@ -10003,7 +10220,18 @@ mod tests {
         packet_type: rns_wire::flags::PacketType,
         context: rns_wire::context::PacketContext,
         body: &[u8],
-    ) {
+    ) -> [u8; 32] {
+        send_link_packet_on_interface(delivery_tx, link_id, packet_type, context, body, 1).await
+    }
+
+    async fn send_link_packet_on_interface(
+        delivery_tx: &mpsc::Sender<DestinationEvent>,
+        link_id: [u8; 16],
+        packet_type: rns_wire::flags::PacketType,
+        context: rns_wire::context::PacketContext,
+        body: &[u8],
+        interface_id: rns_transport::messages::InterfaceId,
+    ) -> [u8; 32] {
         let header = rns_wire::header::PacketHeader {
             flags: rns_wire::flags::PacketFlags {
                 header_type: rns_wire::flags::HeaderType::Header1,
@@ -10019,14 +10247,16 @@ mod tests {
         };
         let mut raw = header.pack();
         raw.extend_from_slice(body);
+        let packet_hash = rns_wire::hash::packet_hash(&raw, rns_wire::flags::HeaderType::Header1);
         delivery_tx
             .send(DestinationEvent::InboundPacket {
                 raw: Bytes::from(raw),
-                interface_id: 1,
+                interface_id,
                 metrics: Default::default(),
             })
             .await
             .unwrap();
+        packet_hash
     }
 
     fn channels_test_state_with_notifier(
