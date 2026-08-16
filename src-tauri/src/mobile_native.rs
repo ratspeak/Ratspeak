@@ -482,9 +482,7 @@ fn take_pending_ble_request(token: &str, generation: u64) -> Option<NativeBleRno
 }
 
 #[cfg(target_os = "android")]
-fn native_ble_failure_code(
-    code: &str,
-) -> ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode {
+fn native_ble_failure_code(code: &str) -> ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode {
     use ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode;
     match code {
         "bond_timeout" => BleRnodeNativeFailureCode::BondTimeout,

@@ -359,10 +359,7 @@ async fn open_platform_url(app: tauri::AppHandle, clean: String) -> Result<(), S
 }
 
 #[cfg(target_os = "ios")]
-fn open_external_url_ios(
-    url: &str,
-    reply: std::sync::mpsc::Sender<Result<(), String>>,
-) {
+fn open_external_url_ios(url: &str, reply: std::sync::mpsc::Sender<Result<(), String>>) {
     use block2::RcBlock;
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
@@ -482,13 +479,7 @@ async fn save_stored_attachment_native(
     #[cfg(target_os = "android")]
     {
         let _ = app;
-        if mobile_native::save_stored_file(
-            &path,
-            &filename,
-            &mime,
-            prefer_photos,
-            &request_id,
-        ) {
+        if mobile_native::save_stored_file(&path, &filename, &mime, prefer_photos, &request_id) {
             Ok("pending".into())
         } else {
             Ok("unsupported".into())
@@ -1509,8 +1500,8 @@ fn prepare_file_export_ios(
         .map_err(|_| "Could not secure the file exporter".to_string())?;
 
     if let Ok(entries) = std::fs::read_dir(&root) {
-        let cutoff = std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(24 * 60 * 60));
+        let cutoff =
+            std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(24 * 60 * 60));
         for entry in entries.flatten() {
             let stale = cutoff.is_some_and(|cutoff| {
                 entry
@@ -1570,8 +1561,7 @@ fn present_file_export_ios(path: &std::path::Path) -> Result<(), String> {
         let url: *mut AnyObject = msg_send![url_class, fileURLWithPath: string];
         let urls: *mut AnyObject = msg_send![array_class, arrayWithObject: url];
         let allocated: *mut AnyObject = msg_send![picker_class, alloc];
-        let picker: *mut AnyObject =
-            msg_send![allocated, initForExportingURLs: urls, asCopy: true];
+        let picker: *mut AnyObject = msg_send![allocated, initForExportingURLs: urls, asCopy: true];
         let application: *mut AnyObject = msg_send![application_class, sharedApplication];
         let windows: *mut AnyObject = msg_send![application, windows];
         let window: *mut AnyObject = msg_send![windows, firstObject];
@@ -1773,7 +1763,10 @@ unsafe fn register_ios_memory_warning_observer() {
         return;
     };
     let Some(string_class) = AnyClass::get(c"NSString") else {
-        tracing::debug!(reason = "nsstring_unavailable", "iOS memory observer unavailable");
+        tracing::debug!(
+            reason = "nsstring_unavailable",
+            "iOS memory observer unavailable"
+        );
         return;
     };
     let center: *mut AnyObject = msg_send![center_class, defaultCenter];
