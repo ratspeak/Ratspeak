@@ -105,6 +105,9 @@ jobs:
         working-directory: Ratspeak
         run: bash dashboard/build-css.sh
 
+      - name: Select reviewed Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
       - name: Validate Apple toolchain
         shell: bash
         working-directory: Ratspeak

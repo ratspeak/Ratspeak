@@ -120,6 +120,9 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "${{ steps.source.outputs.tauri_cli }}" --locked
 
+      - name: Select reviewed Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
       - name: Validate Apple toolchain
         shell: bash
         working-directory: Ratspeak

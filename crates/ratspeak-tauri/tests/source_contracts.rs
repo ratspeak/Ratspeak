@@ -5160,6 +5160,9 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
     assert!(windows.contains("git config --global core.autocrlf false"));
     assert!(windows.contains(r#""$hash  $($_.Name)""#));
     assert!(!windows.contains("$hash  $path"));
+    let macos =
+        read_source(root.join(".github/workflows/release-macos.yml")).expect("macOS release");
+    assert!(macos.contains("sudo xcode-select -s /Applications/Xcode_26.3.app"));
     let linux =
         read_source(root.join(".github/workflows/release-desktop.yml")).expect("Linux release");
     assert!(linux.contains(r#"test -n "$rpm""#));
@@ -5168,6 +5171,7 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
 
     let ios =
         read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");
+    assert!(ios.contains("sudo xcode-select -s /Applications/Xcode_26.3.app"));
     assert!(ios.contains("source-integrity.mjs github-outputs"));
     assert!(ios.contains("source-integrity.mjs verify-release-source"));
     assert!(ios.contains("source-integrity.mjs bom"));
