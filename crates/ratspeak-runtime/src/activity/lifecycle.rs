@@ -65,7 +65,7 @@ struct RecorderInner {
     shutdown: AtomicBool,
 }
 
-/// Cloneable Activity producer/controller. Producers call only [`Self::record`]
+/// Cloneable Activity producer/controller. Producers call only [`Self::record_event`]
 /// and never await; lifecycle and replay operations are explicitly async.
 #[derive(Clone)]
 pub struct ActivityRecorder {

@@ -177,7 +177,7 @@ fn decimal_snapshot(counter: &AtomicU64) -> String {
 
 /// Serializable Activity health with exact decimal-string counter values.
 ///
-/// Fields are private so only [`ActivityHealth::snapshot`] can construct this
+/// Fields are private so only `ActivityHealth::snapshot` can construct this
 /// wire-safe representation. Named accessors support native inspection without
 /// exposing a generic lookup surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

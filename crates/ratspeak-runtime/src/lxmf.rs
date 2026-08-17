@@ -3006,7 +3006,7 @@ impl LxmfManager {
             .join("ratchets")
     }
 
-    /// Binary: repeated [dest_hash:16][pubkey:64] records.
+    /// Binary: repeated `[dest_hash:16][pubkey:64]` records.
     pub fn known_identities_blob(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(self.known_identities.len() * 80);
         for (hash_hex, pk) in &self.known_identities {
