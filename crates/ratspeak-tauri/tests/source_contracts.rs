@@ -3421,6 +3421,9 @@ fn android_name_based_jni_boundary_is_pinned_and_final_artifacts_are_inspected()
 
     let ci = read_source(root.join(".github/workflows/ci.yml")).expect("CI workflow");
     assert!(ci.contains("cargo tauri android build --target aarch64 --apk -- --locked"));
+    assert!(ci.contains(
+        "apk=gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"
+    ));
     assert!(ci.contains(":app:lintArm64Release"));
     assert!(ci.contains("assert-android-jni-boundaries.py archive"));
     assert!(!ci.contains(":app:assembleArm64Release"));
