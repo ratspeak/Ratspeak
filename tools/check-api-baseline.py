@@ -302,6 +302,10 @@ def main() -> None:
             fail("snapshot source must be the clean source commit at HEAD")
         if not args.change_record.startswith("api-reviews/"):
             fail("change record must be stored below api-reviews/")
+        status = run(["git", "status", "--porcelain=v1", "--untracked-files=all"])
+        dirty_paths = {line[3:] for line in status.splitlines() if len(line) > 3}
+        if dirty_paths - {args.change_record}:
+            fail("snapshot source has uncommitted changes outside the review record")
         config["snapshotSource"] = {
             "commit": args.snapshot_source_commit,
             "capturedOn": date.today().isoformat(),
