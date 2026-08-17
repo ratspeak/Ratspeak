@@ -103,9 +103,6 @@ For a release bundle, run `cargo tauri build -- --locked` from
 `Ratspeak/src-tauri`.
 Desktop bundles land under `Ratspeak/src-tauri/target/release/bundle/`.
 
-Maintainer source qualification, exact component commits, and reproducible
-artifact metadata are documented in [`RELEASING.md`](RELEASING.md).
-
 To build without the experimental voice stack and skip the rsLXST sibling,
 pass `--no-default-features` to `cargo tauri dev` or `cargo tauri build`.
 

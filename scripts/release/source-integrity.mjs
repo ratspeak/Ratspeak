@@ -310,11 +310,6 @@ export function verifyProductSurfaces(set) {
   );
 
   expectContains(readUtf8(join(repoRoot, "CHANGELOG.md")), "## [Unreleased]", "changelog policy");
-  expectContains(
-    readUtf8(join(repoRoot, "RELEASING.md")),
-    "release/dependency-set.json",
-    "source qualification policy",
-  );
   for (const lockfile of ["Cargo.lock", "src-tauri/Cargo.lock"]) {
     if (!existsSync(join(repoRoot, lockfile))) fail(`missing committed release lockfile ${lockfile}`);
   }
