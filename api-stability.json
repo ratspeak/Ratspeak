@@ -19,7 +19,7 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "basisCommit": "b39e08208d7efc2f9538d7b931a96e30fcbc2fe2",
+    "commit": "b39e08208d7efc2f9538d7b931a96e30fcbc2fe2",
     "capturedOn": "2026-08-17",
     "changeRecord": "api-reviews/wave-c-product-integration.json"
   },

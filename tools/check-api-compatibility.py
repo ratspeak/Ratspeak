@@ -33,6 +33,11 @@ def git_show(commit: str, path: str) -> str:
 
 
 def main() -> None:
+    metadata = subprocess.run(
+        [sys.executable, "tools/check-api-baseline.py", "--metadata-only"], cwd=ROOT
+    )
+    if metadata.returncode != 0:
+        fail("snapshot metadata or reviewed change record is invalid")
     ledger = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
     floor = ledger.get("compatibilityFloor", {}).get("evidenceCommit")
     if not isinstance(floor, str):
@@ -56,6 +61,14 @@ def main() -> None:
             f"{total_removed} public API lines were removed from the Wave C floor; "
             "the current policy permits additions only"
         )
+    change_record = json.loads(
+        (ROOT / ledger["snapshotSource"]["changeRecord"]).read_text(encoding="utf-8")
+    )
+    if change_record["publicApiDiff"] != {
+        "added": total_added,
+        "removed": total_removed,
+    }:
+        fail("reviewed change record does not match the measured API diff")
     print(f"api compatibility: additive-only (+{total_added}, -0)")
 
 

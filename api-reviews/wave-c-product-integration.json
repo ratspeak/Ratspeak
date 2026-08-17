@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "snapshotSourceCommit": "b39e08208d7efc2f9538d7b931a96e30fcbc2fe2",
   "capabilities": ["APP-01", "APP-02", "APP-03", "APP-04", "APP-05", "LXMF-01", "LXST-01", "LXST-02", "LXST-03", "LXST-04", "LRGP-01"],
   "classification": "application-internal consumer migration",
   "canonicalDependencies": [
