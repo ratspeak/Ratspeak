@@ -274,11 +274,18 @@ export function verifyProductSurfaces(set) {
   const androidBuild = set.product.platformBuilds.androidVersionCode;
   const iosBuild = set.product.platformBuilds.iosBundleVersion;
 
+  let existingDisplayTag = null;
   try {
-    const existingDisplayTag = git(["rev-parse", `v${display}^{commit}`]);
-    expectEqual(existingDisplayTag, git(["rev-parse", "HEAD"]), `existing display tag v${display}`);
-  } catch (error) {
-    if (error.message?.startsWith(`existing display tag v${display}:`)) throw error;
+    existingDisplayTag = git(["rev-parse", `v${display}^{commit}`]);
+  } catch {
+    // The candidate display tag is expected to be absent before its release.
+  }
+  if (existingDisplayTag !== null) {
+    try {
+      git(["merge-base", "--is-ancestor", existingDisplayTag, "HEAD"]);
+    } catch {
+      fail(`existing display tag v${display} is not an ancestor of HEAD`);
+    }
   }
 
   const predecessor = set.product.predecessor;
