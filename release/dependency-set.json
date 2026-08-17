@@ -36,7 +36,7 @@
       "name": "rsReticulum",
       "repository": "https://github.com/ratspeak/rsReticulum.git",
       "path": "../rsReticulum",
-      "commit": "31472d9251a0cb3c9b95878b01f383f17bbda6b5",
+      "commit": "ab53670f988fc15a6a3ec0207932f63b6aa65534",
       "version": "1.1.0",
       "integrationTag": null
     },
@@ -45,7 +45,7 @@
       "name": "rsLXMF",
       "repository": "https://github.com/ratspeak/rsLXMF.git",
       "path": "../rsLXMF",
-      "commit": "84c59c87b433ebda16f6d96116725ca193679a24",
+      "commit": "1aee9dc1ed36e8f5078643c6290edca0b5e61aa5",
       "version": "1.1.0",
       "integrationTag": null
     },
@@ -54,7 +54,7 @@
       "name": "rsLXST",
       "repository": "https://github.com/ratspeak/rsLXST.git",
       "path": "../rsLXST",
-      "commit": "ac541ed227cbda5b8ad3d4e65d550dd92f62c6fb",
+      "commit": "0df95692496c531269eec30f4b37e34c21ed9e32",
       "version": "0.1.2",
       "integrationTag": null
     },
@@ -63,7 +63,7 @@
       "name": "lrgp-rs",
       "repository": "https://github.com/ratspeak/lrgp-rs.git",
       "path": "../lrgp-rs",
-      "commit": "eeaf4915c33e180ccd9702674fa224631ef784d8",
+      "commit": "6b3ca2936da8410fcca3e1eebaeb2c53de95a132",
       "version": "0.4.0",
       "integrationTag": null
     }
