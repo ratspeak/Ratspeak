@@ -107,7 +107,7 @@ pub(super) fn mux_opus_packets_with_timing(
         let last = index + 1 == packets.len();
         let end = if last {
             PacketWriteEndInfo::EndStream
-        } else if (index + 1) % PACKETS_PER_PAGE == 0 {
+        } else if (index + 1).is_multiple_of(PACKETS_PER_PAGE) {
             PacketWriteEndInfo::EndPage
         } else {
             PacketWriteEndInfo::NormalPacket

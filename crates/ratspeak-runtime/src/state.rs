@@ -1665,7 +1665,7 @@ impl AppState {
     /// origin stale first or waits for/purges the already-admitted draft.
     pub fn is_current_activity_origin_fence(&self, fence: ActivityRequestFence) -> bool {
         let current_epoch = self.identity_switch_lock.epoch();
-        fence.identity_lock_epoch % 2 == 0
+        fence.identity_lock_epoch.is_multiple_of(2)
             && current_epoch == fence.identity_lock_epoch
             && self.current_identity_session_generation() == fence.identity_session_generation
             && self.current_activity_boundary_generation() == fence.activity_boundary_generation

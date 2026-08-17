@@ -147,7 +147,7 @@ fn base32_encode_padded(bytes: &[u8]) -> String {
     if bits > 0 {
         out.push(BASE32_ALPHABET[((buffer << (5 - bits)) & 0x1f) as usize] as char);
     }
-    while out.len() % 8 != 0 {
+    while !out.len().is_multiple_of(8) {
         out.push('=');
     }
     out

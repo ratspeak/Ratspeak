@@ -647,7 +647,7 @@ mod tests {
         });
 
         for generation in 0..ROUNDS {
-            let profile = if generation % 2 == 0 {
+            let profile = if generation.is_multiple_of(2) {
                 CaptureProfile::Normal
             } else {
                 CaptureProfile::Trace

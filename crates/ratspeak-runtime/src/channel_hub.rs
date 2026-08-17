@@ -237,7 +237,7 @@ pub const fn valid_evidence_retention_secs(value: u64) -> bool {
     value == 0
         || (value >= CHANNEL_HUB_EVIDENCE_RETENTION_MIN_SECS
             && value <= CHANNEL_HUB_EVIDENCE_RETENTION_MAX_SECS
-            && value % (60 * 60) == 0)
+            && value.is_multiple_of(60 * 60))
 }
 
 fn bool_setting(enabled: bool) -> String {

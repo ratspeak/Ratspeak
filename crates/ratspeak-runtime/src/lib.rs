@@ -2314,7 +2314,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             false
                         };
                     save_counter = save_counter.wrapping_add(1);
-                    let should_save_crypto_state = save_counter % 600 == 0;
+                    let should_save_crypto_state = save_counter.is_multiple_of(600);
                     let tick_state_for_lxmf = tick_state.clone();
                     let tick_result = tokio::task::spawn_blocking(move || {
                         let empty_result = || {
@@ -2684,11 +2684,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     // coarse maintenance pass and remain apparently pending
                     // for another 30 seconds.
                     timeout_check_counter += 1;
-                    if timeout_check_counter % 10 == 0 {
+                    if timeout_check_counter.is_multiple_of(10) {
                         check_message_timeouts(&tick_state, tick_activity_origin).await;
                     }
                     // Every ~30s: slower discovery maintenance and retention.
-                    if timeout_check_counter % 60 == 0 {
+                    if timeout_check_counter.is_multiple_of(60) {
                         propagation::reconcile_active_auto_node(&tick_state).await;
                         propagation::probe_static_nodes_background(&tick_state).await;
                         sweep_stale_game_deliveries(&tick_state).await;

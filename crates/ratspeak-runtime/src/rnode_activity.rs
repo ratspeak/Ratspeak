@@ -401,7 +401,7 @@ async fn await_identity_lifecycle_release(
 ) -> bool {
     loop {
         let observed_epoch = state.identity_switch_lock.epoch();
-        if observed_epoch % 2 == 0 {
+        if observed_epoch.is_multiple_of(2) {
             if state.current_identity_session_generation() != identity_generation {
                 return false;
             }
