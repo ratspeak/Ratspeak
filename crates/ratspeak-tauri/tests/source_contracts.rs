@@ -3420,8 +3420,10 @@ fn android_name_based_jni_boundary_is_pinned_and_final_artifacts_are_inspected()
     assert!(verifier.contains("defined_methods"));
 
     let ci = read_source(root.join(".github/workflows/ci.yml")).expect("CI workflow");
-    assert!(ci.contains(":app:assembleArm64Release"));
+    assert!(ci.contains("cargo tauri android build --target aarch64 --apk -- --locked"));
+    assert!(ci.contains(":app:lintArm64Release"));
     assert!(ci.contains("assert-android-jni-boundaries.py archive"));
+    assert!(!ci.contains(":app:assembleArm64Release"));
     assert!(!ci.contains(":app:compileArm64DebugKotlin :app:lintArm64Debug"));
 
     let release = read_source(root.join(".github/workflows/release-android.yml"))
