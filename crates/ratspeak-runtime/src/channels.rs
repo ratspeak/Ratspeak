@@ -7013,7 +7013,7 @@ mod tests {
     use rns_link::link::{CloseReason, Link};
     use rns_transport::actor::TransportActor;
     use rns_transport::link_messages::DestinationEvent;
-    use rns_transport::messages::OutboundRequest;
+    use rns_transport::messages::{OutboundRequest, RecalledDestinationRpcEntry};
     use std::sync::Mutex;
 
     use crate::channel_hub::{ChannelHubConfig, ChannelHubHandle, HubStore};
@@ -8376,10 +8376,30 @@ mod tests {
 
         let response_tx = match timeout_transport(&mut transport_rx).await {
             TransportMessage::Rpc {
+                query: TransportQuery::RecallDestination { dest },
+                response_tx,
+            } if dest == hub_destination => response_tx,
+            other => panic!("expected destination recall, got {other:?}"),
+        };
+        response_tx
+            .send(TransportQueryResponse::RecalledDestination(Some(
+                RecalledDestinationRpcEntry {
+                    dest_hash: hub_destination,
+                    hops: 1,
+                    app_data: Some(reference_announce_data("Test relay")),
+                    timestamp: 1_700_000_000.0,
+                    public_key: hub_public,
+                    ratchet: None,
+                },
+            )))
+            .unwrap();
+
+        let response_tx = match timeout_transport(&mut transport_rx).await {
+            TransportMessage::Rpc {
                 query: TransportQuery::GetRecentAnnounces,
                 response_tx,
             } => response_tx,
-            other => panic!("expected announce query, got {other:?}"),
+            other => panic!("expected hub discovery query, got {other:?}"),
         };
         response_tx
             .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
@@ -9063,17 +9083,37 @@ mod tests {
 
         let response_tx = match timeout_transport(&mut transport_rx).await {
             TransportMessage::Rpc {
+                query: TransportQuery::RecallDestination { dest },
+                response_tx,
+            } if dest == hub_destination => response_tx,
+            other => panic!("expected destination recall, got {other:?}"),
+        };
+        let announce_data = reference_announce_data("Test relay");
+        response_tx
+            .send(TransportQueryResponse::RecalledDestination(Some(
+                RecalledDestinationRpcEntry {
+                    dest_hash: hub_destination,
+                    hops: 1,
+                    app_data: Some(announce_data),
+                    timestamp: 1_700_000_000.0,
+                    public_key: hub_public,
+                    ratchet: None,
+                },
+            )))
+            .unwrap();
+
+        let response_tx = match timeout_transport(&mut transport_rx).await {
+            TransportMessage::Rpc {
                 query: TransportQuery::GetRecentAnnounces,
                 response_tx,
             } => response_tx,
-            other => panic!("expected announce query, got {other:?}"),
+            other => panic!("expected hub discovery query, got {other:?}"),
         };
-        let announce_data = reference_announce_data("Test relay");
         response_tx
             .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
                 dest_hash: hub_destination,
                 hops: 1,
-                app_data: Some(announce_data),
+                app_data: Some(reference_announce_data("Test relay")),
                 timestamp: 1_700_000_000.0,
                 public_key: Some(hub_public),
                 ratchet: None,
@@ -10115,27 +10155,44 @@ mod tests {
         let response_tx = loop {
             match timeout_transport_within(transport_rx, Duration::from_secs(6)).await {
                 TransportMessage::Rpc {
-                    query: TransportQuery::GetRecentAnnounces,
+                    query: TransportQuery::RecallDestination { dest },
                     response_tx,
-                } => break response_tx,
+                } if dest == hub_destination => break response_tx,
                 _ => continue,
             }
         };
         response_tx
-            .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
-                dest_hash: hub_destination,
-                hops: 1,
-                app_data: Some(reference_announce_data("Recovery relay")),
-                timestamp: 1_700_000_000.0,
-                public_key: Some(hub_identity.get_public_key()),
-                ratchet: None,
-                name_hash: rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT),
-                is_path_response: false,
-                retained: false,
-            }]))
+            .send(TransportQueryResponse::RecalledDestination(Some(
+                RecalledDestinationRpcEntry {
+                    dest_hash: hub_destination,
+                    hops: 1,
+                    app_data: Some(reference_announce_data("Recovery relay")),
+                    timestamp: 1_700_000_000.0,
+                    public_key: hub_identity.get_public_key(),
+                    ratchet: None,
+                },
+            )))
             .unwrap();
         let delivery_tx = loop {
             match timeout_transport(transport_rx).await {
+                TransportMessage::Rpc {
+                    query: TransportQuery::GetRecentAnnounces,
+                    response_tx,
+                } => {
+                    response_tx
+                        .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
+                            dest_hash: hub_destination,
+                            hops: 1,
+                            app_data: Some(reference_announce_data("Recovery relay")),
+                            timestamp: 1_700_000_000.0,
+                            public_key: Some(hub_identity.get_public_key()),
+                            ratchet: None,
+                            name_hash: rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT),
+                            is_path_response: false,
+                            retained: false,
+                        }]))
+                        .unwrap();
+                }
                 TransportMessage::RegisterDestination {
                     delivery_tx: Some(delivery_tx),
                     ..
