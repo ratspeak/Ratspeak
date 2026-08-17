@@ -1757,12 +1757,12 @@ mod tests {
             let mgr = lxmf.as_mut().unwrap();
             mgr.router
                 .pending_outbound
-                .push(lxmf_core::message::LxMessage::new(
+                .push(lxmf_core::message_api::LxMessage::new(
                     [0x33; 16],
                     mgr.lxmf_dest_hash,
                     "pending",
                     "pending",
-                    lxmf_core::constants::DeliveryMethod::Propagated,
+                    lxmf_core::message_api::DeliveryMethod::Propagated,
                 ));
         }
 

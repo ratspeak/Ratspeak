@@ -11,8 +11,8 @@ use bytes::Bytes;
 use serde_json::{Value, json};
 
 use lxmf_core::constants::{
-    DELIVERY_RETRY_WAIT, DeliveryMethod, DeliveryRepresentation, MAX_DELIVERY_ATTEMPTS,
-    MAX_PATHLESS_TRIES, PATH_REQUEST_WAIT, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
+    DELIVERY_RETRY_WAIT, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES, PATH_REQUEST_WAIT,
+    STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
 use lxmf_core::delivery_ratchet::{DeliveryAnnounceKind, DeliveryRatchetState};
 use lxmf_core::handlers::CompressionSupport;
@@ -21,7 +21,7 @@ use lxmf_core::link_delivery::{
     DeliveryState, DirectLinkStartKind, LxmfDeliveryEvent, LxmfDeliveryEventKind,
     LxmfDeliveryEventMethod, is_retryable_link_delivery_failure,
 };
-use lxmf_core::message::LxMessage;
+use lxmf_core::message_api::{DeliveryMethod, DeliveryRepresentation, LxMessage};
 use lxmf_core::router::{
     DirectDeliveryPlan, DirectDeliveryPlanInput, DirectReusableLinkState, DirectRouteSnapshot,
     LxmRouter, OutboundAction, RouterConfig, plan_direct_delivery,
@@ -4414,7 +4414,7 @@ impl LxmfManager {
                 |plaintext| {
                     self.encrypt_for_destination(&dest_hex, plaintext)
                         .ok_or_else(|| {
-                            lxmf_core::message::MessageError::PackFailed(format!(
+                            lxmf_core::message_api::MessageError::PackFailed(format!(
                                 "no identity key for destination {dest_hex}"
                             ))
                         })
@@ -5022,7 +5022,7 @@ impl LxmfManager {
                 self.encrypt_for_destination(&dest_hex, plaintext)
                     .ok_or_else(|| {
                         missing_identity = true;
-                        lxmf_core::message::MessageError::PackFailed(format!(
+                        lxmf_core::message_api::MessageError::PackFailed(format!(
                             "no identity key for destination {dest_hex}"
                         ))
                     })
@@ -5412,16 +5412,16 @@ mod tests {
 
     #[test]
     fn lrgp_fields_are_native_lxmf_values_not_binary_wrappers() {
-        let envelope = lrgp::envelope::pack_envelope(
+        let envelope = lrgp::protocol::pack_envelope(
             "ttt",
             1,
-            lrgp::constants::CMD_CHALLENGE,
+            lrgp::protocol::CMD_CHALLENGE,
             "0123456789abcdef",
             None,
             None,
         )
         .unwrap();
-        let fields = lrgp::envelope::pack_lxmf_fields(&envelope).unwrap();
+        let fields = lrgp::protocol::pack_lxmf_fields(&envelope).unwrap();
         let mut message = LxMessage::new(
             [0x11; 16],
             [0x22; 16],
@@ -5434,12 +5434,12 @@ mod tests {
         assert!(
             message
                 .msgpack_field_ids
-                .contains(&lrgp::constants::FIELD_CUSTOM_TYPE)
+                .contains(&lrgp::protocol::FIELD_CUSTOM_TYPE)
         );
         assert!(
             message
                 .msgpack_field_ids
-                .contains(&lrgp::constants::FIELD_CUSTOM_META)
+                .contains(&lrgp::protocol::FIELD_CUSTOM_META)
         );
 
         // Decode the complete LXMF payload exactly as a Python client would:
@@ -5462,11 +5462,11 @@ mod tests {
             })
         };
         assert_eq!(
-            field(lrgp::constants::FIELD_CUSTOM_TYPE).and_then(rmpv::Value::as_str),
-            Some(lrgp::constants::PROTOCOL_TYPE)
+            field(lrgp::protocol::FIELD_CUSTOM_TYPE).and_then(rmpv::Value::as_str),
+            Some(lrgp::protocol::PROTOCOL_TYPE)
         );
         assert!(
-            field(lrgp::constants::FIELD_CUSTOM_META)
+            field(lrgp::protocol::FIELD_CUSTOM_META)
                 .and_then(rmpv::Value::as_map)
                 .is_some()
         );
@@ -8963,8 +8963,8 @@ mod tests {
 
         let mut lrgp_fields = HashMap::new();
         lrgp_fields.insert(
-            lrgp::constants::FIELD_CUSTOM_TYPE,
-            rmpv::Value::String(lrgp::constants::PROTOCOL_TYPE.into()),
+            lrgp::protocol::FIELD_CUSTOM_TYPE,
+            rmpv::Value::String(lrgp::protocol::PROTOCOL_TYPE.into()),
         );
         assert!(
             mgr.send_message_with_lrgp_fields_preference(

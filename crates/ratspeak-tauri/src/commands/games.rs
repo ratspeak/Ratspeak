@@ -213,21 +213,21 @@ pub async fn send_game_action(
                 "dispatch_outgoing returned error"
             );
             let reason = match &error {
-                lrgp::errors::LrgpError::UnknownApp(_)
-                | lrgp::errors::LrgpError::UnsupportedVersion { .. } => "unsupported_app".into(),
-                lrgp::errors::LrgpError::UnauthorizedPeer { .. } => "unauthorized_sender".into(),
-                lrgp::errors::LrgpError::SessionExpired(_) => "session_expired".into(),
-                lrgp::errors::LrgpError::SessionNotFound(_) => "session_not_found".into(),
-                lrgp::errors::LrgpError::SessionExists(_) => "session_exists".into(),
-                lrgp::errors::LrgpError::ParticipantRequired => "invalid_params".into(),
-                lrgp::errors::LrgpError::IllegalTransition { .. } => "invalid_state".into(),
-                lrgp::errors::LrgpError::Validation { code, .. } => code.clone(),
-                lrgp::errors::LrgpError::InvalidEnvelope(_)
-                | lrgp::errors::LrgpError::EnvelopeTooLarge(_, _)
-                | lrgp::errors::LrgpError::UnsupportedAction { .. } => "protocol_error".into(),
+                lrgp::protocol::LrgpError::UnknownApp(_)
+                | lrgp::protocol::LrgpError::UnsupportedVersion { .. } => "unsupported_app".into(),
+                lrgp::protocol::LrgpError::UnauthorizedPeer { .. } => "unauthorized_sender".into(),
+                lrgp::protocol::LrgpError::SessionExpired(_) => "session_expired".into(),
+                lrgp::protocol::LrgpError::SessionNotFound(_) => "session_not_found".into(),
+                lrgp::protocol::LrgpError::SessionExists(_) => "session_exists".into(),
+                lrgp::protocol::LrgpError::ParticipantRequired => "invalid_params".into(),
+                lrgp::protocol::LrgpError::IllegalTransition { .. } => "invalid_state".into(),
+                lrgp::protocol::LrgpError::Validation { code, .. } => code.clone(),
+                lrgp::protocol::LrgpError::InvalidEnvelope(_)
+                | lrgp::protocol::LrgpError::EnvelopeTooLarge(_, _)
+                | lrgp::protocol::LrgpError::UnsupportedAction { .. } => "protocol_error".into(),
                 _ => "dispatch_failed".into(),
             };
-            if matches!(&error, lrgp::errors::LrgpError::SessionExpired(_)) {
+            if matches!(&error, lrgp::protocol::LrgpError::SessionExpired(_)) {
                 if let Some(Some(expired)) = state_arc.lrgp_router.with_app(&app_id, |app| {
                     app.get_session_record(&session_id, &identity_id)
                 }) {
@@ -256,7 +256,7 @@ pub async fn send_game_action(
         "dispatch_outgoing returned envelope"
     );
 
-    let lrgp_fields = match lrgp::envelope::pack_lxmf_fields(&envelope) {
+    let lrgp_fields = match lrgp::protocol::pack_lxmf_fields(&envelope) {
         Ok(fields) => fields,
         Err(_) => {
             let _ = state_arc.lrgp_router.rollback_outgoing(
@@ -281,7 +281,7 @@ pub async fn send_game_action(
     // can therefore leave either no action, or a complete action that the
     // existing Resend path can recover; it cannot leave a board transition
     // without its wire envelope.
-    let envelope_mp = match lrgp::envelope::pack_to_bytes(&envelope) {
+    let envelope_mp = match lrgp::protocol::pack_to_bytes(&envelope) {
         Ok(packed) => packed,
         Err(_) => {
             let _ = state_arc.lrgp_router.rollback_outgoing(
@@ -749,12 +749,12 @@ pub async fn resend_last_game_action(
         ));
     }
 
-    let envelope = lrgp::envelope::unpack_from_bytes(&envelope_mp)
+    let envelope = lrgp::protocol::unpack_from_bytes(&envelope_mp)
         .map_err(|e| AppError::internal(format!("envelope unpack: {e}")))?;
-    let command = lrgp::envelope::value_as_str(envelope.get("c").unwrap_or(&rmpv::Value::Nil))
+    let command = lrgp::protocol::value_as_str(envelope.get("c").unwrap_or(&rmpv::Value::Nil))
         .unwrap_or("")
         .to_string();
-    let lrgp_fields = lrgp::envelope::pack_lxmf_fields(&envelope)
+    let lrgp_fields = lrgp::protocol::pack_lxmf_fields(&envelope)
         .map_err(|e| AppError::internal(format!("envelope field packing: {e}")))?;
     let fallback_text = format!("[LRGP {}] {}", app_id, command);
 

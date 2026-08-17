@@ -140,15 +140,15 @@ fn cancelled_lxmf_client_send_response(
 }
 
 fn activity_lxmf_delivery_method(
-    method: lxmf_core::constants::DeliveryMethod,
+    method: lxmf_core::message_api::DeliveryMethod,
 ) -> producer::LxmfDeliveryMethod {
     match method {
-        lxmf_core::constants::DeliveryMethod::Direct => producer::LxmfDeliveryMethod::Direct,
-        lxmf_core::constants::DeliveryMethod::Opportunistic => {
+        lxmf_core::message_api::DeliveryMethod::Direct => producer::LxmfDeliveryMethod::Direct,
+        lxmf_core::message_api::DeliveryMethod::Opportunistic => {
             producer::LxmfDeliveryMethod::Opportunistic
         }
-        lxmf_core::constants::DeliveryMethod::Paper => producer::LxmfDeliveryMethod::Paper,
-        lxmf_core::constants::DeliveryMethod::Propagated => {
+        lxmf_core::message_api::DeliveryMethod::Paper => producer::LxmfDeliveryMethod::Paper,
+        lxmf_core::message_api::DeliveryMethod::Propagated => {
             producer::LxmfDeliveryMethod::Propagated
         }
     }
@@ -159,7 +159,7 @@ fn record_lxmf_delivery_queued(
     fence: crate::state::ActivityRequestFence,
     message_id: &str,
     destination_hash: &str,
-    method: lxmf_core::constants::DeliveryMethod,
+    method: lxmf_core::message_api::DeliveryMethod,
 ) {
     state.activity.record_event_fenced(
         || state.is_current_activity_origin_fence(fence),
@@ -445,12 +445,12 @@ pub(crate) async fn ensure_propagation_ready_for_send(
                 lxmf.as_ref()
                     .map(|mgr| mgr.pick_delivery_method(&st.db, &dh, pref, profile))
             })
-            .unwrap_or(lxmf_core::constants::DeliveryMethod::Direct)
+            .unwrap_or(lxmf_core::message_api::DeliveryMethod::Direct)
     })
     .await
     .map_err(|_| AppError::internal("delivery-method preflight task panicked"))?;
 
-    if method != lxmf_core::constants::DeliveryMethod::Propagated {
+    if method != lxmf_core::message_api::DeliveryMethod::Propagated {
         return Ok(());
     }
 
@@ -897,7 +897,7 @@ pub async fn send_lxmf_propagated(
     state: State<'_, Arc<AppState>>,
     args: SendPropagatedArgs,
 ) -> AppResult<Value> {
-    use lxmf_core::constants::DeliveryMethod;
+    use lxmf_core::message_api::DeliveryMethod;
 
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(&args.content)?;

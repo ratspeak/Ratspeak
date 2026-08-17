@@ -2399,11 +2399,16 @@ fn games_transport_uses_native_lxmf_fields_and_a_durable_outbox() {
     let state =
         read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("state source");
 
+    assert!(lxmf.contains("use lxmf_core::message_api::{"));
+    assert!(!lxmf.contains("use lxmf_core::message::LxMessage"));
     assert!(lxmf.contains("apply_lrgp_fields_to_message"));
     assert!(lxmf.contains(".set_msgpack_field(field_id, bytes)"));
     assert!(games.contains("db::persist_outbound_game_action("));
     assert!(games.contains("db::rollback_outbound_game_action("));
     assert!(games.contains("reason = \"resend_required\";"));
+    assert!(games.contains("lrgp::protocol::pack_lxmf_fields"));
+    assert!(runtime.contains("lrgp::protocol::unpack_envelope"));
+    assert!(db.contains("lrgp::protocol::validate_envelope"));
     assert!(db.contains("pub fn persist_outbound_game_action("));
     assert!(db.contains("pub fn rollback_outbound_game_action("));
     assert!(!db.contains("INSERT OR REPLACE INTO app_actions"));
@@ -4621,6 +4626,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let voice_rs =
         read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice rs");
+    assert!(voice_rs.contains("TelephonyService::registered(transport_tx, &identity)"));
+    assert!(!voice_rs.contains("TelephonyRnsEndpoint"));
+    assert!(!voice_rs.contains("TelephonyRuntimeCore"));
+    assert!(!voice_rs.contains("TelephonyService::new("));
     assert!(voice_rs.contains("fn notify_incoming_call_if_background("));
     assert!(voice_rs.contains("NativeNotification::call("));
     assert!(voice_rs.contains("Incoming call from {label}"));

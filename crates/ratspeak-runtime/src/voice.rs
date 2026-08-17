@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lxst_core::{CallRole, Profile, RawAudioFrame, SignallingStatus, TELEPHONY_DESTINATION_NAME};
 use lxst_telephony::{
-    ActiveCallSnapshot, TelephonyControl, TelephonyRnsEndpoint, TelephonyRuntimeCore,
-    TelephonyRuntimeSnapshot, TelephonyService, TelephonyServiceEvent, request_answer,
+    ActiveCallSnapshot, TelephonyControl, TelephonyRuntimeSnapshot, TelephonyService,
+    TelephonyServiceEvent, request_answer,
 };
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_DELIVERY_DESTINATION_NAME, hex_to_array16};
 use rns_identity::destination::Destination;
@@ -160,14 +160,12 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
     let activity_origin = state.activity_request_fence();
 
     let (transport_tx, identity) = voice_runtime_inputs(state)?;
-    let endpoint = TelephonyRnsEndpoint::register(transport_tx, &identity)
+    let parts = TelephonyService::registered(transport_tx, &identity)
         .map_err(|e| format!("Failed to register LXST telephony destination: {e}"))?;
-
-    let (control_tx, control_rx) = mpsc::channel::<TelephonyControl>(32);
+    let control_tx = parts.control_tx;
+    let event_rx = parts.event_rx;
+    let service = parts.service;
     let (audio_control_tx, audio_control_rx) = mpsc::channel::<VoiceAudioControl>(8);
-    let (event_tx, event_rx) = mpsc::channel::<TelephonyServiceEvent>(128);
-    let service =
-        TelephonyService::new(endpoint, TelephonyRuntimeCore::new(), control_rx, event_tx);
 
     let service_task = tokio::spawn(async move {
         service.run().await;

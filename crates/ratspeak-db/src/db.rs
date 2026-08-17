@@ -8339,8 +8339,8 @@ pub fn persist_outbound_game_action(
     timestamp: f64,
     envelope_mp: &[u8],
 ) -> Option<i64> {
-    let envelope = lrgp::envelope::unpack_from_bytes(envelope_mp).ok()?;
-    let validated = lrgp::envelope::validate_envelope(&envelope).ok()?;
+    let envelope = lrgp::protocol::unpack_from_bytes(envelope_mp).ok()?;
+    let validated = lrgp::protocol::validate_envelope(&envelope).ok()?;
     if validated.session_id != session.session_id
         || validated.app_id != session.app_id
         || validated.version != session.app_version
@@ -8578,8 +8578,8 @@ pub fn persist_inbound_game_action(
     envelope_mp: &[u8],
     session: Option<&lrgp::session::Session>,
 ) -> Option<bool> {
-    let envelope = lrgp::envelope::unpack_from_bytes(envelope_mp).ok()?;
-    let validated = lrgp::envelope::validate_envelope(&envelope).ok()?;
+    let envelope = lrgp::protocol::unpack_from_bytes(envelope_mp).ok()?;
+    let validated = lrgp::protocol::validate_envelope(&envelope).ok()?;
     if validated.session_id != session_id || validated.command != command {
         return None;
     }
@@ -8750,9 +8750,9 @@ pub fn persist_inbound_game_action(
 }
 
 fn packed_game_nonce(envelope_mp: &[u8]) -> Option<Vec<u8>> {
-    lrgp::envelope::unpack_from_bytes(envelope_mp)
+    lrgp::protocol::unpack_from_bytes(envelope_mp)
         .ok()?
-        .get(lrgp::constants::KEY_NONCE)
+        .get(lrgp::protocol::KEY_NONCE)
         .and_then(|value| match value {
             rmpv::Value::Binary(bytes) => Some(bytes.clone()),
             _ => None,
@@ -9331,29 +9331,29 @@ mod game_storage_tests {
         }
     }
 
-    fn packed_envelope(nonce: [u8; lrgp::constants::NONCE_BYTES], command: &str) -> Vec<u8> {
-        let mut envelope = lrgp::envelope::Envelope::new();
+    fn packed_envelope(nonce: [u8; lrgp::protocol::NONCE_BYTES], command: &str) -> Vec<u8> {
+        let mut envelope = lrgp::protocol::Envelope::new();
         envelope.insert(
-            lrgp::constants::KEY_APP.into(),
+            lrgp::protocol::KEY_APP.into(),
             rmpv::Value::String("ttt.1".into()),
         );
         envelope.insert(
-            lrgp::constants::KEY_COMMAND.into(),
+            lrgp::protocol::KEY_COMMAND.into(),
             rmpv::Value::String(command.into()),
         );
         envelope.insert(
-            lrgp::constants::KEY_SESSION.into(),
+            lrgp::protocol::KEY_SESSION.into(),
             rmpv::Value::String("0123456789abcdef".into()),
         );
         envelope.insert(
-            lrgp::constants::KEY_PAYLOAD.into(),
+            lrgp::protocol::KEY_PAYLOAD.into(),
             rmpv::Value::Map(Vec::new()),
         );
         envelope.insert(
-            lrgp::constants::KEY_NONCE.into(),
+            lrgp::protocol::KEY_NONCE.into(),
             rmpv::Value::Binary(nonce.to_vec()),
         );
-        lrgp::envelope::pack_to_bytes(&envelope).unwrap()
+        lrgp::protocol::pack_to_bytes(&envelope).unwrap()
     }
 
     #[test]
@@ -9404,7 +9404,7 @@ mod game_storage_tests {
             .insert("board".into(), serde_json::json!("XO_______"));
         advanced.updated_at = 30.0;
         advanced.last_action_at = 30.0;
-        let envelope = packed_envelope([5; lrgp::constants::NONCE_BYTES], "move");
+        let envelope = packed_envelope([5; lrgp::protocol::NONCE_BYTES], "move");
         let action_num = persist_outbound_game_action(
             &pool,
             &advanced,
@@ -9456,7 +9456,7 @@ mod game_storage_tests {
         let pool = test_pool();
         let mut challenge = session();
         challenge.status = "pending".into();
-        let envelope = packed_envelope([6; lrgp::constants::NONCE_BYTES], "challenge");
+        let envelope = packed_envelope([6; lrgp::protocol::NONCE_BYTES], "challenge");
         let action_num = persist_outbound_game_action(
             &pool,
             &challenge,
@@ -9486,8 +9486,8 @@ mod game_storage_tests {
     fn append_allocates_without_replacing_and_tracks_nonces() {
         let pool = test_pool();
         let s = session();
-        let envelope_a = packed_envelope([1; lrgp::constants::NONCE_BYTES], "challenge");
-        let envelope_b = packed_envelope([2; lrgp::constants::NONCE_BYTES], "accept");
+        let envelope_a = packed_envelope([1; lrgp::protocol::NONCE_BYTES], "challenge");
+        let envelope_b = packed_envelope([2; lrgp::protocol::NONCE_BYTES], "accept");
 
         let first = append_game_action(
             &pool,
@@ -9520,13 +9520,13 @@ mod game_storage_tests {
             &pool,
             &s.session_id,
             &s.identity_id,
-            &[1; lrgp::constants::NONCE_BYTES]
+            &[1; lrgp::protocol::NONCE_BYTES]
         ));
         assert!(!has_game_nonce(
             &pool,
             &s.session_id,
             &s.identity_id,
-            &[9; lrgp::constants::NONCE_BYTES]
+            &[9; lrgp::protocol::NONCE_BYTES]
         ));
     }
 
@@ -9535,8 +9535,8 @@ mod game_storage_tests {
         let pool = test_pool();
         let s = session();
         save_game_session(&pool, &s);
-        let first = packed_envelope([7; lrgp::constants::NONCE_BYTES], "move");
-        let replay = packed_envelope([7; lrgp::constants::NONCE_BYTES], "resign");
+        let first = packed_envelope([7; lrgp::protocol::NONCE_BYTES], "move");
+        let replay = packed_envelope([7; lrgp::protocol::NONCE_BYTES], "resign");
 
         assert_eq!(
             persist_inbound_game_action(
@@ -9580,7 +9580,7 @@ mod game_storage_tests {
 
         let mut wrong_peer = established.clone();
         wrong_peer.contact_hash = "33333333333333333333333333333333".into();
-        let peer_envelope = packed_envelope([3; lrgp::constants::NONCE_BYTES], "move");
+        let peer_envelope = packed_envelope([3; lrgp::protocol::NONCE_BYTES], "move");
         assert_eq!(
             persist_inbound_game_action(
                 &pool,
@@ -9598,7 +9598,7 @@ mod game_storage_tests {
 
         let mut wrong_app = established.clone();
         wrong_app.app_id = "chess".into();
-        let app_envelope = packed_envelope([4; lrgp::constants::NONCE_BYTES], "move");
+        let app_envelope = packed_envelope([4; lrgp::protocol::NONCE_BYTES], "move");
         assert_eq!(
             persist_inbound_game_action(
                 &pool,
@@ -9628,7 +9628,7 @@ mod game_storage_tests {
         let pool = test_pool();
         let established = session();
         assert!(save_game_session(&pool, &established));
-        let move_envelope = packed_envelope([8; lrgp::constants::NONCE_BYTES], "move");
+        let move_envelope = packed_envelope([8; lrgp::protocol::NONCE_BYTES], "move");
 
         // The command supplied to storage must be the command authenticated
         // inside the exact packed envelope; callers cannot relabel an action.

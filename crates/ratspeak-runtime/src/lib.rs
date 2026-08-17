@@ -1876,7 +1876,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 break;
                             };
                             let Ok((_timebase, entries)) =
-                                lxmf_core::message::LxMessage::unpack_propagation_wrapper_bounded(
+                                lxmf_core::message_api::LxMessage::unpack_propagation_wrapper_bounded(
                                     &data,
                                     max_transfer_bytes,
                                 )
@@ -3320,7 +3320,7 @@ struct ExtractedAttachment {
 
 fn extract_and_save_attachment(
     state: &AppState,
-    msg: &lxmf_core::message::LxMessage,
+    msg: &lxmf_core::message_api::LxMessage,
 ) -> Option<ExtractedAttachment> {
     if let Ok(Some((file_name, file_data))) = msg.first_file_attachment() {
         if let Ok(mut lxmf) = state.lxmf.lock() {
@@ -3421,7 +3421,7 @@ fn extracted_audio_json(audio: &ExtractedAudio) -> Value {
 /// this optional field: they never reject the enclosing message or its proof.
 fn extract_and_save_audio(
     state: &AppState,
-    msg: &lxmf_core::message::LxMessage,
+    msg: &lxmf_core::message_api::LxMessage,
 ) -> Option<ExtractedAudio> {
     let audio = match msg.audio_field() {
         Ok(audio) => audio?,
@@ -3897,7 +3897,7 @@ async fn handle_inbound_lxmf(
         let mut lxmf_data = Vec::with_capacity(16 + body.len());
         lxmf_data.extend_from_slice(&dest_hash);
         lxmf_data.extend_from_slice(body);
-        let msg = match lxmf_core::message::LxMessage::unpack(&lxmf_data) {
+        let msg = match lxmf_core::message_api::LxMessage::unpack(&lxmf_data) {
             Ok(m) => m,
             Err(_) => {
                 tracing::warn!(
@@ -3990,7 +3990,7 @@ fn lrgp_sender_authenticated(
 /// Stamp PoW gate (T1-9): applies to every inbound source. Runs after
 /// signature validation and before the delivery-proof ACK; ticket-store
 /// entries bypass via `validate_stamp_with_tickets`.
-fn inbound_stamp_allowed(state: &AppState, msg: &lxmf_core::message::LxMessage) -> bool {
+fn inbound_stamp_allowed(state: &AppState, msg: &lxmf_core::message_api::LxMessage) -> bool {
     if !state
         .enforce_stamps
         .load(std::sync::atomic::Ordering::Relaxed)
@@ -4110,7 +4110,7 @@ async fn handle_decrypted_lxmf_from_origin(
             return;
         }
     }
-    let msg = match lxmf_core::message::LxMessage::unpack(&data) {
+    let msg = match lxmf_core::message_api::LxMessage::unpack(&data) {
         Ok(m) => m,
         Err(_) => {
             tracing::warn!(
@@ -4137,7 +4137,7 @@ async fn handle_decrypted_lxmf(state: &Arc<AppState>, data: Vec<u8>, source: Inb
 /// made every retry look new).
 async fn process_inbound_lxmf(
     state: &Arc<AppState>,
-    mut msg: lxmf_core::message::LxMessage,
+    mut msg: lxmf_core::message_api::LxMessage,
     fallback_id_material: &[u8],
     source: InboundLxmfSource,
     activity_origin: ActivityRequestFence,
@@ -5935,8 +5935,7 @@ fn send_lrgp_error_best_effort(state: &AppState, reply: LrgpErrorReply<'_>) {
         code,
         message,
     } = reply;
-    if rejected_command == lrgp::constants::CMD_ERROR || app_id.is_empty() || session_id.is_empty()
-    {
+    if rejected_command == lrgp::protocol::CMD_ERROR || app_id.is_empty() || session_id.is_empty() {
         return;
     }
 
@@ -5954,20 +5953,20 @@ fn send_lrgp_error_best_effort(state: &AppState, reply: LrgpErrorReply<'_>) {
             rmpv::Value::String(rejected_command.to_string().into()),
         ),
     ]);
-    let Ok(envelope) = lrgp::envelope::pack_envelope(
+    let Ok(envelope) = lrgp::protocol::pack_envelope(
         app_id,
         app_version,
-        lrgp::constants::CMD_ERROR,
+        lrgp::protocol::CMD_ERROR,
         session_id,
         Some(payload),
         None,
     ) else {
         return;
     };
-    if lrgp::envelope::validate_envelope_size(&envelope).is_err() {
+    if lrgp::protocol::validate_envelope_size(&envelope).is_err() {
         return;
     }
-    let Ok(fields) = lrgp::envelope::pack_lxmf_fields(&envelope) else {
+    let Ok(fields) = lrgp::protocol::pack_lxmf_fields(&envelope) else {
         return;
     };
     let fallback = format!("[LRGP] Action rejected: {message}");
@@ -5996,7 +5995,7 @@ fn send_lrgp_error_best_effort(state: &AppState, reply: LrgpErrorReply<'_>) {
 // Returns true if the envelope was LRGP (dispatched); false → fall through.
 async fn try_handle_inbound_lrgp(
     state: &AppState,
-    msg: &lxmf_core::message::LxMessage,
+    msg: &lxmf_core::message_api::LxMessage,
     sender_hash: &str,
     identity_id: &str,
     sender_authenticated: bool,
@@ -6018,9 +6017,9 @@ async fn try_handle_inbound_lrgp(
     }
 
     let has_lrgp_marker = matches!(
-        rmpv_fields.get(&lrgp::constants::FIELD_CUSTOM_TYPE),
+        rmpv_fields.get(&lrgp::protocol::FIELD_CUSTOM_TYPE),
         Some(rmpv::Value::String(value))
-            if value.as_str() == Some(lrgp::constants::PROTOCOL_TYPE)
+            if value.as_str() == Some(lrgp::protocol::PROTOCOL_TYPE)
     );
     if !has_lrgp_marker {
         return false;
@@ -6036,7 +6035,7 @@ async fn try_handle_inbound_lrgp(
         return true;
     }
 
-    let envelope = match lrgp::envelope::unpack_envelope(&rmpv_fields) {
+    let envelope = match lrgp::protocol::unpack_envelope(&rmpv_fields) {
         Ok(Some(env)) => env,
         Ok(None) => return false,
         Err(_) => {
@@ -6054,27 +6053,27 @@ async fn try_handle_inbound_lrgp(
     tracing::info!(from = %short_id(sender_hash), "Inbound LRGP game message received");
 
     let session_id = envelope
-        .get(lrgp::constants::KEY_SESSION)
-        .and_then(lrgp::envelope::value_as_str)
+        .get(lrgp::protocol::KEY_SESSION)
+        .and_then(lrgp::protocol::value_as_str)
         .unwrap_or("")
         .to_string();
     let app_ver = envelope
-        .get(lrgp::constants::KEY_APP)
-        .and_then(lrgp::envelope::value_as_str)
+        .get(lrgp::protocol::KEY_APP)
+        .and_then(lrgp::protocol::value_as_str)
         .unwrap_or("");
-    let (app_id, app_version) = lrgp::envelope::parse_app_version(app_ver)
+    let (app_id, app_version) = lrgp::protocol::parse_app_version(app_ver)
         .map(|(id, version)| (id.to_string(), version))
         .unwrap_or_default();
     let command = envelope
-        .get(lrgp::constants::KEY_COMMAND)
-        .and_then(lrgp::envelope::value_as_str)
+        .get(lrgp::protocol::KEY_COMMAND)
+        .and_then(lrgp::protocol::value_as_str)
         .unwrap_or("")
         .to_string();
 
     // The router's process-local nonce cache protects the hot path. Retaining
     // accepted envelopes on action rows lets us compare their protocol nonces
     // and extend that guarantee across application restarts.
-    let envelope_mp = match lrgp::envelope::pack_to_bytes(&envelope) {
+    let envelope_mp = match lrgp::protocol::pack_to_bytes(&envelope) {
         Ok(bytes) => bytes,
         Err(_) => {
             tracing::warn!(
@@ -6084,8 +6083,8 @@ async fn try_handle_inbound_lrgp(
             return true;
         }
     };
-    let durable_nonce: [u8; lrgp::constants::NONCE_BYTES] = envelope
-        .get(lrgp::constants::KEY_NONCE)
+    let durable_nonce: [u8; lrgp::protocol::NONCE_BYTES] = envelope
+        .get(lrgp::protocol::KEY_NONCE)
         .and_then(|value| match value {
             rmpv::Value::Binary(bytes) => bytes.as_slice().try_into().ok(),
             _ => None,
@@ -6143,7 +6142,7 @@ async fn try_handle_inbound_lrgp(
                         &pool,
                         &sid,
                         &iid,
-                        lrgp::constants::CMD_ERROR,
+                        lrgp::protocol::CMD_ERROR,
                         &payload,
                         &sender,
                         message_timestamp,
@@ -6233,16 +6232,16 @@ async fn try_handle_inbound_lrgp(
                 "dispatch_incoming returned error"
             );
             let (code, public_message) = match &error {
-                lrgp::errors::LrgpError::UnknownApp(_) => ("unsupported_app", "Game unavailable"),
-                lrgp::errors::LrgpError::SessionExpired(_) => {
+                lrgp::protocol::LrgpError::UnknownApp(_) => ("unsupported_app", "Game unavailable"),
+                lrgp::protocol::LrgpError::SessionExpired(_) => {
                     ("session_expired", "Game session expired")
                 }
-                lrgp::errors::LrgpError::UnauthorizedPeer { .. } => {
+                lrgp::protocol::LrgpError::UnauthorizedPeer { .. } => {
                     ("unauthorized_sender", "Sender is not part of this game")
                 }
                 _ => ("protocol_error", "Action rejected"),
             };
-            if matches!(&error, lrgp::errors::LrgpError::SessionExpired(_)) {
+            if matches!(&error, lrgp::protocol::LrgpError::SessionExpired(_)) {
                 if let Some(Some(expired)) = state.lrgp_router.with_app(&app_id, |app| {
                     app.get_session_record(&session_id, identity_id)
                 }) {
@@ -6772,12 +6771,12 @@ mod inbound_pipeline_tests {
     }
 
     fn packed_inbound(dest: [u8; 16], src: [u8; 16], content: &str) -> Vec<u8> {
-        let mut msg = lxmf_core::message::LxMessage::new(
+        let mut msg = lxmf_core::message_api::LxMessage::new(
             dest,
             src,
             "",
             content,
-            lxmf_core::constants::DeliveryMethod::Direct,
+            lxmf_core::message_api::DeliveryMethod::Direct,
         );
         // Unsigned-by-unknown-sender: verify returns None and the message is
         // still delivered, so tests don't need real peer keys.
@@ -6791,12 +6790,12 @@ mod inbound_pipeline_tests {
         mode: u8,
         audio_bytes: &[u8],
     ) -> Vec<u8> {
-        let mut msg = lxmf_core::message::LxMessage::new(
+        let mut msg = lxmf_core::message_api::LxMessage::new(
             dest,
             src,
             "",
             "Voice message",
-            lxmf_core::constants::DeliveryMethod::Direct,
+            lxmf_core::message_api::DeliveryMethod::Direct,
         );
         msg.set_audio_field(mode, audio_bytes).unwrap();
         msg.signature = Some([0u8; 64]);
@@ -6962,12 +6961,12 @@ mod inbound_pipeline_tests {
     #[tokio::test]
     async fn malformed_audio_does_not_reject_or_hide_the_enclosing_message() {
         let (state, emitter) = pipeline_state();
-        let mut msg = lxmf_core::message::LxMessage::new(
+        let mut msg = lxmf_core::message_api::LxMessage::new(
             local_dest(&state),
             [0xEC; 16],
             "",
             "text survives malformed media",
-            lxmf_core::constants::DeliveryMethod::Direct,
+            lxmf_core::message_api::DeliveryMethod::Direct,
         );
         msg.set_msgpack_field(
             lxmf_core::constants::FIELD_AUDIO,
@@ -7096,12 +7095,12 @@ mod inbound_pipeline_tests {
         content: &str,
         signing: &rns_crypto::ed25519::Ed25519PrivateKey,
     ) -> Vec<u8> {
-        let mut msg = lxmf_core::message::LxMessage::new(
+        let mut msg = lxmf_core::message_api::LxMessage::new(
             dest,
             src,
             "",
             content,
-            lxmf_core::constants::DeliveryMethod::Direct,
+            lxmf_core::message_api::DeliveryMethod::Direct,
         );
         msg.sign(signing).unwrap();
         msg.pack().unwrap()
@@ -7230,7 +7229,7 @@ mod inbound_pipeline_tests {
         handle_decrypted_lxmf(&state, prop_data, InboundLxmfSource::Propagated).await;
 
         let opp_data = packed_inbound(dest, [0xE3; 16], "via opportunistic");
-        let msg = lxmf_core::message::LxMessage::unpack(&opp_data).unwrap();
+        let msg = lxmf_core::message_api::LxMessage::unpack(&opp_data).unwrap();
         process_inbound_lxmf(
             &state,
             msg,
@@ -7285,12 +7284,12 @@ mod inbound_pipeline_tests {
         let (state, emitter) = pipeline_state();
         let target_id = hex::encode([0xAB; 32]);
 
-        let mut msg = lxmf_core::message::LxMessage::new(
+        let mut msg = lxmf_core::message_api::LxMessage::new(
             local_dest(&state),
             [0xEE; 16],
             "",
             "",
-            lxmf_core::constants::DeliveryMethod::Direct,
+            lxmf_core::message_api::DeliveryMethod::Direct,
         );
         for (field_id, bytes) in
             lxmf::ratspeak_chat_custom_fields(&lxmf::RatspeakChatExtension::Reaction {
@@ -7320,12 +7319,12 @@ mod inbound_pipeline_tests {
         let (state, emitter) = pipeline_state();
         let target_hash = [0xAB; 32];
 
-        let mut msg = lxmf_core::message::LxMessage::new(
+        let mut msg = lxmf_core::message_api::LxMessage::new(
             local_dest(&state),
             [0xEE; 16],
             "",
             "Reacted to your message with \u{1F44D}.",
-            lxmf_core::constants::DeliveryMethod::Direct,
+            lxmf_core::message_api::DeliveryMethod::Direct,
         );
         let dict_value = rmpv::Value::Map(vec![
             (
@@ -7365,12 +7364,12 @@ mod inbound_pipeline_tests {
         let (state, emitter) = pipeline_state();
         let target_hash = [0xCD; 32];
 
-        let mut msg = lxmf_core::message::LxMessage::new(
+        let mut msg = lxmf_core::message_api::LxMessage::new(
             local_dest(&state),
             [0xEE; 16],
             "",
             "standard reply",
-            lxmf_core::constants::DeliveryMethod::Direct,
+            lxmf_core::message_api::DeliveryMethod::Direct,
         );
         msg.set_field(lxmf_core::constants::FIELD_REPLY_TO, target_hash.to_vec());
         msg.set_field(lxmf_core::constants::FIELD_REPLY_QUOTE, b"quoted".to_vec());
