@@ -155,6 +155,13 @@ export function validateDependencySet(set) {
   if (currentDisplay.marketing !== set.product.marketingVersion) {
     fail("displayVersion must be the exact marketingVersion with at most one lowercase prerelease letter");
   }
+  const expectedAndroidTargets = ["aarch64", "armv7", "x86_64"];
+  if (
+    !Array.isArray(set.product.androidArtifactTargets) ||
+    JSON.stringify(set.product.androidArtifactTargets) !== JSON.stringify(expectedAndroidTargets)
+  ) {
+    fail(`androidArtifactTargets must be exactly ${expectedAndroidTargets.join(", ")}; i686 is unsupported`);
+  }
   const builds = set.product.platformBuilds;
   if (!Number.isSafeInteger(builds?.androidVersionCode) || builds.androidVersionCode < 1) {
     fail("androidVersionCode must be a positive integer");
@@ -320,6 +327,14 @@ export function verifyProductSurfaces(set) {
   const tauri = JSON.parse(readUtf8(join(repoRoot, "src-tauri/tauri.conf.json")));
   expectEqual(tauri.version, marketing, "Tauri marketing version");
   expectEqual(tauri.bundle?.android?.versionCode, androidBuild, "Android versionCode");
+  if (!tauri.bundle?.resources?.includes("../third_party/opus-rs-0.1.29-COPYING")) {
+    fail("Tauri bundle must preserve the upstream opus-rs 0.1.29 notice");
+  }
+  expectEqual(
+    sha256(join(repoRoot, "third_party/opus-rs-0.1.29-COPYING")),
+    "67c6f0a4bac3019fb08948838d7203bf661a629416f69057081c6f39db5e96a5",
+    "preserved opus-rs 0.1.29 notice",
+  );
 
   const project = readUtf8(join(repoRoot, "src-tauri/gen/apple/project.yml"));
   expectContains(project, `CFBundleShortVersionString: ${marketing}`, "iOS project marketing version");
@@ -330,7 +345,7 @@ export function verifyProductSurfaces(set) {
 
   const rootManifest = readUtf8(join(repoRoot, "Cargo.toml"));
   const workspacePackage = manifestSection(rootManifest, "workspace.package");
-  expectContains(workspacePackage, "rust-version = \"1.85\"", "workspace MSRV");
+  expectContains(workspacePackage, "rust-version = \"1.87\"", "workspace MSRV");
   expectContains(workspacePackage, "publish = false", "workspace publish policy");
 
   for (const manifest of [
@@ -347,7 +362,7 @@ export function verifyProductSurfaces(set) {
 
   const standaloneManifest = readUtf8(join(repoRoot, "src-tauri/Cargo.toml"));
   const standalonePackage = manifestSection(standaloneManifest, "package");
-  expectContains(standalonePackage, "rust-version = \"1.85\"", "standalone Tauri MSRV");
+  expectContains(standalonePackage, "rust-version = \"1.87\"", "standalone Tauri MSRV");
   expectContains(standalonePackage, "publish = false", "standalone Tauri publish policy");
 
   const expectedRequirements = new Map([
@@ -419,6 +434,16 @@ export function verifyProductSurfaces(set) {
         `${workflowName} publishing BOM binding`,
       );
     }
+  }
+
+  const androidWorkflow = readUtf8(join(workflowDirectory, "release-android.yml"));
+  expectContains(
+    androidWorkflow,
+    `--target ${set.product.androidArtifactTargets.join(" ")}`,
+    "Android artifact target matrix",
+  );
+  if (androidWorkflow.includes("i686")) {
+    fail("release-android.yml must not claim unsupported Android i686 artifacts");
   }
 }
 
@@ -523,6 +548,7 @@ export function generateBom(set, releaseRef = null, { requireClean = true } = {}
       ref: releaseRef ?? exactTag,
       displayVersion: set.product.displayVersion,
       marketingVersion: set.product.marketingVersion,
+      androidArtifactTargets: set.product.androidArtifactTargets,
       platformBuilds: set.product.platformBuilds,
     },
     components: set.components.map((component) => ({

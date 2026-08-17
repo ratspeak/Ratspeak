@@ -12,7 +12,7 @@ members = [
 version = "1.0.26"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-rust-version = "1.85"
+rust-version = "1.87"
 publish = false
 
 [workspace.dependencies]
@@ -77,8 +77,8 @@ r2d2_sqlite = "0.25"
 
 # Misc
 hex = "0.4"
-# Newer 0.25.x releases have raised their MSRV above Ratspeak's Rust 1.85
-# floor. Keep this exact until that floor deliberately moves.
+# Keep this exact image version until its newer dependency surface is reviewed
+# independently; the Rust 1.87 MSRV lift does not implicitly authorize it.
 image = { version = "=0.25.5", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 
 # Testing

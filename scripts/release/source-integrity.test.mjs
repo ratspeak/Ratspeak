@@ -51,6 +51,10 @@ test("dependency-set schema rejects source and platform identity drift", () => {
   const remappedRepository = structuredClone(set);
   remappedRepository.components[0].repository = "https://example.invalid/rsReticulum.git";
   assert.throws(() => validateDependencySet(remappedRepository), /reviewed mapping/);
+
+  const unsupportedAndroidAbi = structuredClone(set);
+  unsupportedAndroidAbi.product.androidArtifactTargets.push("i686");
+  assert.throws(() => validateDependencySet(unsupportedAndroidAbi), /i686 is unsupported/);
 });
 
 test("immutable-action guard scans named and anonymous workflow steps", () => {
@@ -111,6 +115,7 @@ test("source BOM is deterministic and records both lockfile hashes", () => {
   );
   assert.match(first.lockfiles["Cargo.lock"], /^[0-9a-f]{64}$/);
   assert.match(first.lockfiles["src-tauri/Cargo.lock"], /^[0-9a-f]{64}$/);
+  assert.deepEqual(first.product.androidArtifactTargets, ["aarch64", "armv7", "x86_64"]);
   assert.deepEqual(first.toolchains.declared, set.toolchains);
   assert.match(first.toolchains.observed.rustc, /^rustc \d+\.\d+\.\d+/);
   assert.match(first.toolchains.observed.cargo, /^cargo \d+\.\d+\.\d+/);

@@ -3,6 +3,11 @@
   "product": {
     "displayVersion": "1.0.26o",
     "marketingVersion": "1.0.26",
+    "androidArtifactTargets": [
+      "aarch64",
+      "armv7",
+      "x86_64"
+    ],
     "platformBuilds": {
       "androidVersionCode": 1000041,
       "iosBundleVersion": "1000041"
@@ -17,7 +22,7 @@
   },
   "toolchains": {
     "rustRelease": "1.96.0",
-    "rustMsrv": "1.85.0",
+    "rustMsrv": "1.87.0",
     "node": "22.22.0",
     "tauriCli": "2.11.1",
     "java": "17",
@@ -31,7 +36,7 @@
       "name": "rsReticulum",
       "repository": "https://github.com/ratspeak/rsReticulum.git",
       "path": "../rsReticulum",
-      "commit": "092cf5ac30112fa5d7e31bb82761dbea660b4322",
+      "commit": "b927f26ca6bf5edf0e0e5f0a3ac78794a513bf60",
       "version": "1.1.0",
       "integrationTag": null
     },
@@ -40,7 +45,7 @@
       "name": "rsLXMF",
       "repository": "https://github.com/ratspeak/rsLXMF.git",
       "path": "../rsLXMF",
-      "commit": "8b641971d9b9f234fd9a7fd4519b71fb4a05ffa3",
+      "commit": "92ea14b485cdfa478843aae9ed8e3c2f91eae94a",
       "version": "1.1.0",
       "integrationTag": null
     },
@@ -49,7 +54,7 @@
       "name": "rsLXST",
       "repository": "https://github.com/ratspeak/rsLXST.git",
       "path": "../rsLXST",
-      "commit": "0a8735be87e1709367540c50c177330437d5e519",
+      "commit": "5458202e340d981d22a5d90233e3d2ce6320cfb0",
       "version": "0.1.2",
       "integrationTag": null
     },
@@ -58,7 +63,7 @@
       "name": "lrgp-rs",
       "repository": "https://github.com/ratspeak/lrgp-rs.git",
       "path": "../lrgp-rs",
-      "commit": "fee053caae22951ba4372a308246d63fd8185f83",
+      "commit": "2b502a0eee94d92a717b45553815b5e46c3c5ccb",
       "version": "0.4.0",
       "integrationTag": null
     }

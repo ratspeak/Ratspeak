@@ -7,6 +7,9 @@ changes that materially affect how an artifact is reproduced.
 
 ### Changed
 
+- Adopted upstream `opus-rs` 0.1.29 through rsLXST with heap-backed codec
+  state, raised the unified first-party MSRV to Rust 1.87, retained Android
+  ARMv7 voice support, and made Android i686 explicitly unsupported.
 - Prepared the `1.0.26o` source candidate with one reviewed, exact component
   graph for CI and every platform release workflow.
 - Added platform-scoped source BOM generation with both Cargo lockfile hashes,

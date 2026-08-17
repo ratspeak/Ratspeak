@@ -15,10 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RATSPEAK_RSRETICULUM_REF: 092cf5ac30112fa5d7e31bb82761dbea660b4322
-  RATSPEAK_RSLXMF_REF: 8b641971d9b9f234fd9a7fd4519b71fb4a05ffa3
-  RATSPEAK_RSLXST_REF: 0a8735be87e1709367540c50c177330437d5e519
-  RATSPEAK_LRGP_REF: fee053caae22951ba4372a308246d63fd8185f83
+  RATSPEAK_RSRETICULUM_REF: b927f26ca6bf5edf0e0e5f0a3ac78794a513bf60
+  RATSPEAK_RSLXMF_REF: 92ea14b485cdfa478843aae9ed8e3c2f91eae94a
+  RATSPEAK_RSLXST_REF: 5458202e340d981d22a5d90233e3d2ce6320cfb0
+  RATSPEAK_LRGP_REF: 2b502a0eee94d92a717b45553815b5e46c3c5ccb
 
 jobs:
   test:
@@ -170,7 +170,7 @@ jobs:
         working-directory: Ratspeak
 
   msrv:
-    name: Rust 1.85 MSRV
+    name: Rust 1.87 MSRV
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -204,7 +204,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          toolchain: 1.85.0
+          toolchain: 1.87.0
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
@@ -298,7 +298,7 @@ jobs:
             native_android_lint: true
           - os: ubuntu-latest
             target: aarch64-linux-android
-            toolchain: 1.85.0
+            toolchain: 1.87.0
             native_android_lint: false
           - os: macos-latest
             target: aarch64-apple-ios-sim
@@ -306,7 +306,7 @@ jobs:
             native_android_lint: false
           - os: macos-latest
             target: aarch64-apple-ios-sim
-            toolchain: 1.85.0
+            toolchain: 1.87.0
             native_android_lint: false
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09

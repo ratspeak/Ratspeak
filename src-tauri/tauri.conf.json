@@ -14,6 +14,9 @@
     "category": "SocialNetworking",
     "shortDescription": "Ratspeak: An all-in-one Reticulum & LXMF client in Rust.",
     "longDescription": "https://github.com/ratspeak/Ratspeak",
+    "resources": [
+      "../third_party/opus-rs-0.1.29-COPYING"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",

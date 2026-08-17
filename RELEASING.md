@@ -30,6 +30,8 @@ records:
 - the exact rsReticulum, rsLXMF, rsLXST, and lrgp-rs commit;
 - the compatible package version expected from each checkout;
 - product display, marketing, Android, and iOS versions;
+- the supported Android artifact targets (`aarch64`, `armv7`, and `x86_64`;
+  never i686 until separately requalified);
 - release and MSRV Rust versions plus platform build tool versions;
 - the Node version used by source qualification and release evidence tooling;
   and
@@ -69,6 +71,11 @@ are recorded separately within that BOM, so complete BOM bytes are expected to
 differ across platforms while source identity remains identical. Platform and
 architecture qualifiers in BOM filenames preserve every runner's evidence when
 artifacts are merged into one GitHub Release.
+
+The application bundle also carries
+`third_party/opus-rs-0.1.29-COPYING`. Its source contract and hash are checked
+alongside the exact upstream Opus dependency so binary artifacts retain the
+BSD-3-Clause and patent notice after the old rsLXST vendor is removed.
 
 Before a later release operation, the maintainer must also verify that:
 
