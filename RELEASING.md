@@ -8,12 +8,12 @@ store submission.
 ## Version model
 
 - `Cargo.toml` and `src-tauri/Cargo.toml` carry the numeric application/API
-  version (`1.0.26`). First-party Ratspeak crates share it.
+  version (`1.0.27`). First-party Ratspeak crates share it.
 - `VERSION` carries the public display version: the numeric marketing version
   for a stable release, or that version plus one lowercase prerelease letter
-  (`1.0.26o`). A letter is never reused after its Git tag exists. Promotion
-  from a prerelease to its stable numeric release and later numeric version
-  lines are explicit supported transitions.
+  (for example, `1.0.26o`). A letter is never reused after its Git tag exists.
+  Promotion from a prerelease to its stable numeric release and later numeric
+  version lines are explicit supported transitions.
 - `tauri.conf.json` carries the numeric marketing version, the monotonically
   increasing Android `versionCode`, and the matching numeric iOS
   `bundleVersion`. The explicit iOS value prevents Tauri generation from

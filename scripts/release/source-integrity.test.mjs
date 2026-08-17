@@ -22,7 +22,7 @@ test("dependency-set schema rejects source and platform identity drift", () => {
   assert.throws(() => validateDependencySet(invalidCommit), /40-character commit SHA/);
 
   const splitBuildSequence = structuredClone(set);
-  splitBuildSequence.product.platformBuilds.iosBundleVersion = "1000042";
+  splitBuildSequence.product.platformBuilds.iosBundleVersion = "1000043";
   assert.throws(
     () => validateDependencySet(splitBuildSequence),
     /share one monotonic build sequence/,
@@ -33,14 +33,15 @@ test("dependency-set schema rejects source and platform identity drift", () => {
   assert.throws(() => validateDependencySet(mismatchedDisplay), /exact marketingVersion/);
 
   const stablePromotion = structuredClone(set);
+  stablePromotion.product.marketingVersion = "1.0.26";
   stablePromotion.product.displayVersion = "1.0.26";
   assert.doesNotThrow(() => validateDependencySet(stablePromotion));
 
   const nextNumericLine = structuredClone(set);
-  nextNumericLine.product.marketingVersion = "1.0.27";
-  nextNumericLine.product.displayVersion = "1.0.27a";
-  nextNumericLine.product.predecessor.displayVersion = "1.0.26";
-  nextNumericLine.product.predecessor.tag = "v1.0.26";
+  nextNumericLine.product.marketingVersion = "1.0.28";
+  nextNumericLine.product.displayVersion = "1.0.28a";
+  nextNumericLine.product.predecessor.displayVersion = "1.0.27";
+  nextNumericLine.product.predecessor.tag = "v1.0.27";
   assert.doesNotThrow(() => validateDependencySet(nextNumericLine));
 
   const reusedBuild = structuredClone(set);
