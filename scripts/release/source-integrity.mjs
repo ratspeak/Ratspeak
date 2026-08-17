@@ -327,6 +327,7 @@ export function verifyProductSurfaces(set) {
   const tauri = JSON.parse(readUtf8(join(repoRoot, "src-tauri/tauri.conf.json")));
   expectEqual(tauri.version, marketing, "Tauri marketing version");
   expectEqual(tauri.bundle?.android?.versionCode, androidBuild, "Android versionCode");
+  expectEqual(tauri.bundle?.iOS?.bundleVersion, iosBuild, "Tauri iOS bundle version");
   if (!tauri.bundle?.resources?.includes("../third_party/opus-rs-0.1.29-COPYING")) {
     fail("Tauri bundle must preserve the upstream opus-rs 0.1.29 notice");
   }

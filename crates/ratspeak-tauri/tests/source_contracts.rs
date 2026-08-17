@@ -5032,6 +5032,10 @@ fn settings_version_display_uses_package_version_api() {
         tauri_conf_json["bundle"]["android"]["versionCode"],
         dependency_set["product"]["platformBuilds"]["androidVersionCode"]
     );
+    assert_eq!(
+        tauri_conf_json["bundle"]["iOS"]["bundleVersion"],
+        dependency_set["product"]["platformBuilds"]["iosBundleVersion"]
+    );
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");

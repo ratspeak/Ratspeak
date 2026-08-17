@@ -29,6 +29,9 @@
     "android": {
       "versionCode": 1000041
     },
+    "iOS": {
+      "bundleVersion": "1000041"
+    },
     "linux": {
       "appimage": {
         "files": {
