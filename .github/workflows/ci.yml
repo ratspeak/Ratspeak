@@ -389,19 +389,22 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --all-features --locked -- -D warnings
       - name: Build minified Android APK and run release lint
         if: matrix.native_android_lint
-        working-directory: Ratspeak/src-tauri/gen/android
+        working-directory: Ratspeak/src-tauri
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           TAURI_ANDROID_PROJECT_PATH: ${{ github.workspace }}/Ratspeak/src-tauri/gen/android
           TAURI_ANDROID_PACKAGE_UNESCAPED: org.ratspeak.android
           WRY_ANDROID_PACKAGE: org.ratspeak.android
         run: |
-          test -s tauri.settings.gradle
-          test -s app/tauri.build.gradle.kts
-          ./gradlew :app:assembleArm64Release :app:lintArm64Release --warning-mode all --no-daemon
-          mapfile -d '' apks < <(find app/build/outputs/apk/arm64/release -type f -name '*.apk' -print0)
+          test -s gen/android/tauri.settings.gradle
+          test -s gen/android/app/tauri.build.gradle.kts
+          unset TAURI_CONFIG
+          unset TAURI_DEV_HOST
+          cargo tauri android build --target aarch64 --apk -- --locked
+          ./gen/android/gradlew -p gen/android :app:lintArm64Release --warning-mode all --no-daemon
+          mapfile -d '' apks < <(find gen/android/app/build/outputs/apk/arm64/release -type f -name '*.apk' -print0)
           test "${#apks[@]}" -eq 1
-          python3 ../../../scripts/release/assert-android-jni-boundaries.py archive "${apks[0]}"
+          python3 ../scripts/release/assert-android-jni-boundaries.py archive "${apks[0]}"
       - name: Clippy iOS simulator
         if: matrix.target == 'aarch64-apple-ios-sim'
         working-directory: Ratspeak
