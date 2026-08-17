@@ -477,8 +477,14 @@ export function verifyLocalComponents(set) {
     expectEqual(git(["rev-parse", "HEAD"], componentRoot), component.commit, `${component.name} HEAD`);
     expectEqual(componentManifestVersion(componentRoot), component.version, `${component.name} Cargo version`);
     if (component.integrationTag !== null) {
+      let tagType;
+      try {
+        tagType = git(["cat-file", "-t", component.integrationTag], componentRoot);
+      } catch {
+        fail(`${component.name} integration tag type: ${component.integrationTag} does not resolve`);
+      }
       expectEqual(
-        git(["cat-file", "-t", component.integrationTag], componentRoot),
+        tagType,
         "tag",
         `${component.name} integration tag type`,
       );

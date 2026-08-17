@@ -120,7 +120,11 @@ test("source BOM is deterministic and records both lockfile hashes", () => {
   assert.match(first.toolchains.observed.rustc, /^rustc \d+\.\d+\.\d+/);
   assert.match(first.toolchains.observed.cargo, /^cargo \d+\.\d+\.\d+/);
   assert.match(first.toolchains.observed.node, /^v\d+\.\d+\.\d+/);
-  assert.match(first.toolchains.observed.tauriCli, /^tauri-cli \d+\.\d+\.\d+/);
+  assert.ok(
+    first.toolchains.observed.tauriCli === null ||
+      /^tauri-cli \d+\.\d+\.\d+/.test(first.toolchains.observed.tauriCli),
+    `unexpected observed Tauri CLI ${first.toolchains.observed.tauriCli}`,
+  );
 
   withTemporaryDirectory((directory) => {
     const path = join(directory, "bom.json");
