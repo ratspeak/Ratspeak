@@ -5157,6 +5157,7 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
     }
     let windows =
         read_source(root.join(".github/workflows/release-windows.yml")).expect("Windows release");
+    assert!(windows.contains("git config --global core.autocrlf false"));
     assert!(windows.contains(r#""$hash  $($_.Name)""#));
     assert!(!windows.contains("$hash  $path"));
     let linux =

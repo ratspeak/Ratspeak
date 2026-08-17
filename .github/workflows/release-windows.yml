@@ -34,6 +34,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 150
     steps:
+      - name: Preserve source bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+
       - name: Checkout Ratspeak
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
