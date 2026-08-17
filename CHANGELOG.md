@@ -7,6 +7,10 @@ changes that materially affect how an artifact is reproduced.
 
 ### Changed
 
+- Preserved and now inspects every name-based Android Rust/Kotlin JNI boundary
+  in minified release artifacts, restoring BLE RNode, USB permission, platform
+  replay, native file save, and call/voice-message audio entry points that R8
+  could rename or remove beginning with `1.0.26d`.
 - Adopted upstream `opus-rs` 0.1.29 through rsLXST with heap-backed codec
   state, raised the unified first-party MSRV to Rust 1.87, retained Android
   ARMv7 voice support, and made Android i686 explicitly unsupported.

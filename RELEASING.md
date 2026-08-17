@@ -79,6 +79,23 @@ The application bundle also carries
 alongside the exact upstream Opus dependency so binary artifacts retain the
 BSD-3-Clause and patent notice after the old rsLXST vendor is removed.
 
+Android release qualification must inspect the final R8-minified artifact,
+not only compile Kotlin or test an unminified debug build. Rust resolves the
+app's BLE, USB, platform-state, stored-file, and voice helpers by literal JVM
+class, method, and descriptor. Their reviewed inventory lives in
+`scripts/release/android-jni-boundaries.json`. Run the source check before the
+build and the archive check against every produced APK or AAB:
+
+```bash
+python3 scripts/release/assert-android-jni-boundaries.py source
+python3 scripts/release/assert-android-jni-boundaries.py archive path/to/Ratspeak.apk
+```
+
+Ordinary CI builds and inspects one arm64 minified release APK. The Android
+release workflow repeats the archive check for all arm64, ARMv7, and x86_64
+APKs and for the Play AAB when one is requested. A release artifact is invalid
+if any inventoried boundary method was renamed, removed, or changed signature.
+
 Before a later release operation, the maintainer must also verify that:
 
 1. all component source-qualification contracts are green;

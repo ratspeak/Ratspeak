@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "rustSources": [
+    "src-tauri/src/mobile_native.rs",
+    "crates/ratspeak-runtime/src/voice.rs",
+    "../rsReticulum/crates/rns-interface/src/ble_peer.rs"
+  ],
+  "classes": [
+    {
+      "name": "org.ratspeak.android.RatspeakNativeBridge",
+      "methods": [
+        ["replayPlatformState", "()V"],
+        ["startOrReplaceBleRnode", "(Ljava/lang/String;ILjava/lang/String;J)Z"],
+        ["disconnectBleRnode", "(Ljava/lang/String;J)Z"],
+        ["saveStoredFile", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZLjava/lang/String;)Z"],
+        ["nativeSetNetworkType", "(Ljava/lang/String;J)V"],
+        ["nativeUsbDeviceEvent", "(ILjava/lang/String;IILjava/lang/String;ZJ)V"],
+        ["nativeBleRnodeState", "(Ljava/lang/String;JIILjava/lang/String;)V"],
+        ["nativeMemoryPressure", "(Z)V"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakPlatformSupervisor",
+      "methods": [
+        ["requestUsbPermissionForLegacyPath", "(Ljava/lang/String;)V"],
+        ["requestUsbPermissionForSelector", "(IILjava/lang/String;)V"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakBleAvailability",
+      "methods": [
+        ["check", "(Landroid/content/Context;)Ljava/lang/String;"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakBleServer",
+      "methods": [
+        ["openGattServer", "(Landroid/content/Context;[B)Z"],
+        ["closeGattServer", "()V"],
+        ["notifyTx", "(Ljava/lang/String;Ljava/lang/String;[B)Z"],
+        ["subscribedAddressesFor", "(Ljava/lang/String;)Ljava/lang/String;"],
+        ["connectedOrSubscribedAddresses", "()Ljava/lang/String;"],
+        ["broadcastTx", "(Ljava/lang/String;[BLjava/lang/String;)I"],
+        ["getMinSubscribedPayload", "(Ljava/lang/String;)I"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakGattCallback",
+      "methods": [
+        ["nativeBleGattDataReceived", "(Ljava/lang/String;[B)V"],
+        ["nativeBleGattPeerConnected", "(Ljava/lang/String;)V"],
+        ["nativeBleGattPeerDisconnected", "(Ljava/lang/String;)V"],
+        ["nativeBleGattPeerSubscribed", "(Ljava/lang/String;)V"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakBlePeerClient",
+      "methods": [
+        ["connectFromNative", "(Landroid/content/Context;Ljava/lang/String;)Z"],
+        ["write", "(Ljava/lang/String;[B)Z"],
+        ["getMtu", "(Ljava/lang/String;)I"],
+        ["disconnect", "(Ljava/lang/String;)V"],
+        ["scanMesh", "(Landroid/content/Context;J)[Ljava/lang/String;"],
+        ["nativePeerClientDataReceived", "(Ljava/lang/String;[B)V"],
+        ["nativePeerClientDisconnected", "(Ljava/lang/String;)V"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakAdvertiseCallback",
+      "methods": [
+        ["<init>", "()V"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakVoiceAudio",
+      "methods": [
+        ["start", "(II)Z"],
+        ["startVoiceMemoPlayback", "(II)Z"],
+        ["playbackHeadFrames", "()J"],
+        ["isActive", "()Z"],
+        ["write", "([FI)I"],
+        ["stop", "()V"],
+        ["lastError", "()Ljava/lang/String;"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakCallAudio",
+      "methods": [
+        ["startForSession", "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z"],
+        ["stopForSession", "(Landroid/content/Context;Ljava/lang/String;)Z"],
+        ["promoteCaptureForSession", "(Landroid/content/Context;Ljava/lang/String;)Z"],
+        ["demoteCaptureForSession", "(Landroid/content/Context;Ljava/lang/String;)Z"]
+      ]
+    },
+    {
+      "name": "org.ratspeak.android.RatspeakVoiceMemoAudio",
+      "methods": [
+        ["startForSession", "(Landroid/content/Context;Ljava/lang/String;)I"],
+        ["startPlaybackForSession", "(Landroid/content/Context;Ljava/lang/String;)I"],
+        ["lastStartFailureCode", "()Ljava/lang/String;"],
+        ["stopForSession", "(Landroid/content/Context;Ljava/lang/String;)Z"],
+        ["stopPlaybackForSession", "(Landroid/content/Context;Ljava/lang/String;)Z"]
+      ]
+    }
+  ]
+}

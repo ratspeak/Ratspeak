@@ -179,6 +179,20 @@ jobs:
           unset TAURI_DEV_HOST
           cargo tauri android build --target aarch64 armv7 x86_64 --aab -- --locked
 
+      - name: Validate Android JNI boundaries in final artifacts
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          python3 scripts/release/assert-android-jni-boundaries.py source
+          mapfile -d '' artifacts < <(
+            find src-tauri/gen/android/app/build/outputs -type f \
+              \( -name '*.apk' -o -name '*.aab' \) -print0
+          )
+          test "${#artifacts[@]}" -ge 3
+          for artifact in "${artifacts[@]}"; do
+            python3 scripts/release/assert-android-jni-boundaries.py archive "$artifact"
+          done
+
       - name: Check for bundled dev URLs
         shell: bash
         working-directory: Ratspeak

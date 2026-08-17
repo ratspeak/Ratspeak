@@ -3385,6 +3385,53 @@ fn android_ble_gatt_close_targets_captured_connection() {
 }
 
 #[test]
+fn android_name_based_jni_boundary_is_pinned_and_final_artifacts_are_inspected() {
+    let root = repo_root();
+    let manifest: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("scripts/release/android-jni-boundaries.json"))
+            .expect("Android JNI boundary manifest"),
+    )
+    .expect("valid Android JNI boundary manifest");
+    let proguard = read_source(root.join("src-tauri/gen/android/app/proguard-rules.pro"))
+        .expect("Android R8 rules");
+    let classes = manifest["classes"].as_array().expect("boundary classes");
+
+    assert_eq!(manifest["schemaVersion"], 1);
+    assert_eq!(classes.len(), 10);
+    for class in classes {
+        let name = class["name"].as_str().expect("boundary class name");
+        assert!(
+            proguard.contains(&format!("-keep class {name} {{ *; }}")),
+            "R8 must preserve name-based JNI class {name}"
+        );
+        assert!(
+            !class["methods"]
+                .as_array()
+                .expect("boundary methods")
+                .is_empty(),
+            "final artifact verifier needs methods for {name}"
+        );
+    }
+
+    let verifier = read_source(root.join("scripts/release/assert-android-jni-boundaries.py"))
+        .expect("Android JNI verifier");
+    assert!(verifier.contains("def verify_source("));
+    assert!(verifier.contains("def verify_archive("));
+    assert!(verifier.contains("defined_methods"));
+
+    let ci = read_source(root.join(".github/workflows/ci.yml")).expect("CI workflow");
+    assert!(ci.contains(":app:assembleArm64Release"));
+    assert!(ci.contains("assert-android-jni-boundaries.py archive"));
+    assert!(!ci.contains(":app:compileArm64DebugKotlin :app:lintArm64Debug"));
+
+    let release = read_source(root.join(".github/workflows/release-android.yml"))
+        .expect("Android release workflow");
+    assert!(release.contains("Validate Android JNI boundaries in final artifacts"));
+    assert!(release.contains("-name '*.apk' -o -name '*.aab'"));
+    assert!(release.contains("assert-android-jni-boundaries.py archive"));
+}
+
+#[test]
 fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let root = repo_root();
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");

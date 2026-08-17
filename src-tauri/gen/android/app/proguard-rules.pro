@@ -11,17 +11,24 @@
 # Rust JNI utility classes (futures, streams, callbacks)
 -keep class io.github.gedgygedgy.rust.** { *; }
 
-# Ratspeak BLE helpers (called from Rust JNI)
+# Ratspeak Android runtime boundaries. Rust resolves these classes and members
+# by their literal JVM names, while several classes also call exported native
+# methods by JNI convention. Keep the complete boundary shape under R8.
 -keep class org.ratspeak.android.MainActivity { *; }
 -keep class org.ratspeak.android.RatspeakService { *; }
+-keep class org.ratspeak.android.RatspeakNativeBridge { *; }
+-keep class org.ratspeak.android.RatspeakPlatformSupervisor { *; }
 -keep class org.ratspeak.android.RatspeakBleServer { *; }
 -keep class org.ratspeak.android.RatspeakGattCallback { *; }
 -keep class org.ratspeak.android.RatspeakBlePeerClient { *; }
 -keep class org.ratspeak.android.RatspeakBlePeerClient$Companion { *; }
 -keep class org.ratspeak.android.RatspeakBleAvailability { *; }
+-keep class org.ratspeak.android.RatspeakAdvertiseCallback { *; }
 
 # LXST voice audio bridge (called from Rust JNI by class and method name)
 -keep class org.ratspeak.android.RatspeakVoiceAudio { *; }
+-keep class org.ratspeak.android.RatspeakCallAudio { *; }
+-keep class org.ratspeak.android.RatspeakVoiceMemoAudio { *; }
 
 # BLE permission bridge (JavaScript interface)
 -keepclassmembers class org.ratspeak.android.MainActivity$BlePermissionBridge {
