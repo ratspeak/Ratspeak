@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use rns_identity::destination::Destination;
 use rns_runtime::lifecycle::ShutdownSignal;
-use rns_transport::messages::{AnnounceHandlerEvent, PathTableRpcEntry, TransportMessage};
+use rns_runtime::reticulum::{AnnounceSubscription, ReticulumHandle};
+use rns_transport::messages::{AnnounceHandlerEvent, PathTableRpcEntry};
 use serde_json::json;
-use tokio::sync::mpsc;
 
 use crate::db;
 use crate::state::AppState;
@@ -22,26 +22,19 @@ const LXST_TELEPHONY_ASPECT: &str = "lxst.telephony";
 /// Register the lxmf.delivery handler and spawn the per-event processor.
 pub async fn spawn_lxmf_delivery_handler(
     state: Arc<AppState>,
-    transport_tx: mpsc::Sender<TransportMessage>,
+    rns_handle: &ReticulumHandle,
     shutdown: ShutdownSignal,
 ) {
-    let (htx, mut hrx) = mpsc::channel::<AnnounceHandlerEvent>(HANDLER_CHANNEL_CAP);
-    if !register_with_retry(
-        &transport_tx,
-        Some(LXMF_DELIVERY_APP_NAME.to_string()),
-        true,
-        htx,
-    )
-    .await
-    {
+    let Some(mut subscription) = subscribe_with_retry(rns_handle, LXMF_DELIVERY_APP_NAME).await
+    else {
         return;
-    }
+    };
 
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown.wait() => break,
-                ev = hrx.recv() => match ev {
+                ev = subscription.recv() => match ev {
                     Some(event) => {
                         process_delivery_announce(&state, event).await;
                         state.request_poll_now();
@@ -50,32 +43,26 @@ pub async fn spawn_lxmf_delivery_handler(
                 },
             }
         }
+        close_subscription(&mut subscription, LXMF_DELIVERY_APP_NAME).await;
     });
 }
 
 /// Register the lxmf.propagation handler and spawn the per-event processor.
 pub async fn spawn_lxmf_propagation_handler(
     state: Arc<AppState>,
-    transport_tx: mpsc::Sender<TransportMessage>,
+    rns_handle: &ReticulumHandle,
     shutdown: ShutdownSignal,
 ) {
-    let (htx, mut hrx) = mpsc::channel::<AnnounceHandlerEvent>(HANDLER_CHANNEL_CAP);
-    if !register_with_retry(
-        &transport_tx,
-        Some(LXMF_PROPAGATION_APP_NAME.to_string()),
-        true,
-        htx,
-    )
-    .await
-    {
+    let Some(mut subscription) = subscribe_with_retry(rns_handle, LXMF_PROPAGATION_APP_NAME).await
+    else {
         return;
-    }
+    };
 
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown.wait() => break,
-                ev = hrx.recv() => match ev {
+                ev = subscription.recv() => match ev {
                     Some(event) => {
                         process_propagation_announce(&state, event).await;
                         state.request_poll_now();
@@ -84,6 +71,7 @@ pub async fn spawn_lxmf_propagation_handler(
                 },
             }
         }
+        close_subscription(&mut subscription, LXMF_PROPAGATION_APP_NAME).await;
     });
 }
 
@@ -92,26 +80,19 @@ pub async fn spawn_lxmf_propagation_handler(
 /// inserting standalone NomadNet or propagation-node destinations.
 pub async fn spawn_lxst_telephony_handler(
     state: Arc<AppState>,
-    transport_tx: mpsc::Sender<TransportMessage>,
+    rns_handle: &ReticulumHandle,
     shutdown: ShutdownSignal,
 ) {
-    let (htx, mut hrx) = mpsc::channel::<AnnounceHandlerEvent>(HANDLER_CHANNEL_CAP);
-    if !register_with_retry(
-        &transport_tx,
-        Some(LXST_TELEPHONY_ASPECT.to_string()),
-        true,
-        htx,
-    )
-    .await
-    {
+    let Some(mut subscription) = subscribe_with_retry(rns_handle, LXST_TELEPHONY_ASPECT).await
+    else {
         return;
-    }
+    };
 
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown.wait() => break,
-                ev = hrx.recv() => match ev {
+                ev = subscription.recv() => match ev {
                     Some(event) => {
                         process_lxst_telephony_announce(&state, event).await;
                         state.request_poll_now();
@@ -120,51 +101,56 @@ pub async fn spawn_lxst_telephony_handler(
                 },
             }
         }
+        close_subscription(&mut subscription, LXST_TELEPHONY_ASPECT).await;
     });
 }
 
-/// Send `RegisterAnnounceHandler` to the transport actor with retries to
-/// tolerate the startup race before the actor is spawned.
-async fn register_with_retry(
-    transport_tx: &mpsc::Sender<TransportMessage>,
-    aspect_filter: Option<String>,
-    receive_path_responses: bool,
-    callback_tx: mpsc::Sender<AnnounceHandlerEvent>,
-) -> bool {
+/// Install one exact owned announce subscription, retrying transient startup
+/// failures without ever taking aspect-wide deregistration authority.
+async fn subscribe_with_retry(
+    rns_handle: &ReticulumHandle,
+    aspect: &'static str,
+) -> Option<AnnounceSubscription> {
     for attempt in 0..REGISTER_ATTEMPTS {
-        let cb = callback_tx.clone();
-        let filter = aspect_filter.clone();
-        match transport_tx
-            .send(TransportMessage::RegisterAnnounceHandler {
-                aspect_filter: filter,
-                receive_path_responses,
-                callback_tx: cb,
-            })
+        match rns_handle
+            .subscribe_announces_with_capacity(Some(aspect.to_string()), true, HANDLER_CHANNEL_CAP)
             .await
         {
-            Ok(()) => {
-                tracing::debug!(
-                    aspect = ?aspect_filter,
-                    "announce-handler registered"
-                );
-                return true;
+            Ok(subscription) => {
+                tracing::debug!(aspect, "announce subscription registered");
+                return Some(subscription);
             }
-            Err(_) => {
+            Err(error) => {
                 tracing::warn!(
-                    aspect = ?aspect_filter,
+                    aspect,
                     attempt = attempt + 1,
+                    %error,
                     reason = "registration_failed",
-                    "announce-handler register failed; retrying"
+                    "announce subscription registration failed; retrying"
                 );
                 tokio::time::sleep(REGISTER_RETRY_DELAY).await;
             }
         }
     }
     tracing::error!(
-        aspect = ?aspect_filter,
-        "announce-handler register: giving up after retries — aspect-driven updates disabled for this session"
+        aspect,
+        "announce subscription registration: giving up after retries — aspect-driven updates disabled for this session"
     );
-    false
+    None
+}
+
+async fn close_subscription(subscription: &mut AnnounceSubscription, aspect: &'static str) {
+    let dropped_events = subscription.dropped_events();
+    if dropped_events > 0 {
+        tracing::warn!(
+            aspect,
+            dropped_events,
+            "announce subscription omitted events under backpressure"
+        );
+    }
+    if let Err(error) = subscription.close().await {
+        tracing::warn!(aspect, %error, "failed to close announce subscription");
+    }
 }
 
 /// `lxmf.delivery` per-event processing: activity tracking + peer batch emit.
@@ -519,30 +505,17 @@ fn should_touch_peer_activity(event: &AnnounceHandlerEvent) -> bool {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn lxmf_handler_registration_opts_into_path_responses() {
-        for aspect in ["lxmf.delivery", "lxmf.propagation", LXST_TELEPHONY_ASPECT] {
-            let (transport_tx, mut transport_rx) = mpsc::channel::<TransportMessage>(1);
-            let (callback_tx, _callback_rx) = mpsc::channel::<AnnounceHandlerEvent>(1);
-
-            assert!(
-                register_with_retry(&transport_tx, Some(aspect.to_string()), true, callback_tx)
-                    .await
-            );
-
-            let msg = transport_rx.recv().await.expect("registration message");
-            match msg {
-                TransportMessage::RegisterAnnounceHandler {
-                    aspect_filter,
-                    receive_path_responses,
-                    ..
-                } => {
-                    assert_eq!(aspect_filter.as_deref(), Some(aspect));
-                    assert!(receive_path_responses);
-                }
-                other => panic!("unexpected transport message: {other:?}"),
-            }
-        }
+    #[test]
+    fn owned_subscription_aspects_are_complete_and_distinct() {
+        let aspects = [
+            LXMF_DELIVERY_APP_NAME,
+            LXMF_PROPAGATION_APP_NAME,
+            LXST_TELEPHONY_ASPECT,
+        ];
+        assert_eq!(aspects.len(), 3);
+        assert_ne!(aspects[0], aspects[1]);
+        assert_ne!(aspects[0], aspects[2]);
+        assert_ne!(aspects[1], aspects[2]);
     }
 
     fn event_with_path_response(is_path_response: bool) -> AnnounceHandlerEvent {

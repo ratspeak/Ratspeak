@@ -2177,9 +2177,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 }
             }
 
-            // Clone the transport handle before moving rns_mgr into state;
-            // the announce handler below still needs it.
-            let transport_tx_for_handler = rns_mgr.handle.transport_tx.clone();
+            // Retain one runtime handle clone before moving the manager into
+            // state; exact announce subscriptions below are created through
+            // this handle and own their registrations until shutdown.
+            let announce_handle = rns_mgr.handle.clone();
             let channels_identity = state
                 .lxmf
                 .lock()
@@ -2790,19 +2791,19 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     .clone();
                 announce_handlers::spawn_lxmf_delivery_handler(
                     state.clone(),
-                    transport_tx_for_handler.clone(),
+                    &announce_handle,
                     shutdown.clone(),
                 )
                 .await;
                 announce_handlers::spawn_lxmf_propagation_handler(
                     state.clone(),
-                    transport_tx_for_handler.clone(),
+                    &announce_handle,
                     shutdown.clone(),
                 )
                 .await;
                 announce_handlers::spawn_lxst_telephony_handler(
                     state.clone(),
-                    transport_tx_for_handler,
+                    &announce_handle,
                     shutdown,
                 )
                 .await;

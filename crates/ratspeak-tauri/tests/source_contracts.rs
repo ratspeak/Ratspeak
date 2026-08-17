@@ -7399,6 +7399,19 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
 }
 
 #[test]
+fn announce_observers_use_exact_owned_subscriptions() {
+    let handlers =
+        read_source(repo_root().join("crates/ratspeak-runtime/src/announce_handlers.rs"))
+            .expect("announce handlers");
+
+    assert!(handlers.contains("subscribe_announces_with_capacity("));
+    assert!(handlers.contains("subscription.dropped_events()"));
+    assert!(handlers.contains("subscription.close().await"));
+    assert!(!handlers.contains("RegisterAnnounceHandler"));
+    assert!(!handlers.contains("DeregisterAnnounceHandler"));
+}
+
+#[test]
 fn conversation_header_presence_uses_peer_cache_status() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
