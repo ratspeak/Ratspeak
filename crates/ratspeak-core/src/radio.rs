@@ -31,7 +31,15 @@ pub struct RnodeRegion {
     pub min: u64,
     pub max: u64,
     pub frequency: u64,
+    /// Hourly duty cycle prefilled for the region default frequency, percent
+    /// (sent to RNodes as LT_ALOCK). Regulation is the source of truth, not
+    /// upstream's example figures: Europe = ETSI EN 300 220-2 V3.3.1 Table 4
+    /// rows L/M at 868.0 MHz (1 %/h); nowhere else publishes an hourly duty
+    /// cycle for the region default (FCC 15.247, ACMA LIPD: none; ARIB
+    /// STD-T108 at 923.0 MHz: none for a carrier-sensing LoRa node).
     pub airtime_limit_long: Option<f32>,
+    /// Short-term (15 s) airtime cap, percent. No regulation publishes one;
+    /// prefilled nowhere. Users can still set it per interface.
     pub airtime_limit_short: Option<f32>,
 }
 
@@ -78,8 +86,8 @@ pub const RNODE_REGIONS: &[RnodeRegion] = &[
         min: 863_000_000,
         max: 870_000_000,
         frequency: 868_000_000,
-        airtime_limit_long: Some(1.5),
-        airtime_limit_short: Some(33.0),
+        airtime_limit_long: Some(1.0),
+        airtime_limit_short: None,
     },
     RnodeRegion {
         key: "uhf_433",
