@@ -112,6 +112,50 @@ def validate_metadata(
     if ancestor_check.returncode != 0:
         fail(f"baseline commit {commit} is not an ancestor of HEAD")
 
+    compatibility_floor = config.get("compatibilityFloor")
+    if not isinstance(compatibility_floor, dict):
+        fail("compatibility floor identity is missing")
+    floor_evidence = compatibility_floor.get("evidenceCommit")
+    floor_source = compatibility_floor.get("sourceCommit")
+    for label, floor_commit in (
+        ("evidence", floor_evidence),
+        ("source", floor_source),
+    ):
+        if not isinstance(floor_commit, str) or not SHA_PATTERN.fullmatch(floor_commit):
+            fail(f"compatibility floor {label} commit must be a full Git commit")
+        floor_check = subprocess.run(
+            ["git", "cat-file", "-e", f"{floor_commit}^{{commit}}"], cwd=ROOT
+        )
+        if floor_check.returncode != 0:
+            fail(f"compatibility floor {label} commit {floor_commit} is unavailable")
+        floor_ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", floor_commit, "HEAD"], cwd=ROOT
+        )
+        if floor_ancestor.returncode != 0:
+            fail(f"compatibility floor {label} commit is not an ancestor of HEAD")
+
+    snapshot_source = config.get("snapshotSource")
+    if not isinstance(snapshot_source, dict):
+        fail("snapshot source identity is missing")
+    snapshot_commit = snapshot_source.get("basisCommit")
+    if not isinstance(snapshot_commit, str) or not SHA_PATTERN.fullmatch(snapshot_commit):
+        fail("snapshot source basis commit must be a full Git commit")
+    snapshot_check = subprocess.run(
+        ["git", "cat-file", "-e", f"{snapshot_commit}^{{commit}}"], cwd=ROOT
+    )
+    if snapshot_check.returncode != 0:
+        fail(f"snapshot source basis commit {snapshot_commit} is unavailable")
+    snapshot_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", snapshot_commit, "HEAD"], cwd=ROOT
+    )
+    if snapshot_ancestor.returncode != 0:
+        fail(f"snapshot source basis commit {snapshot_commit} is not an ancestor of HEAD")
+    change_record = snapshot_source.get("changeRecord")
+    if not isinstance(change_record, str) or not change_record.startswith("api-reviews/"):
+        fail("snapshot source must name a reviewed change record")
+    if not (ROOT / change_record).is_file():
+        fail(f"snapshot source change record is missing: {change_record}")
+
     packages = config.get("packages")
     if not isinstance(packages, list) or not packages:
         fail("package ledger is empty")

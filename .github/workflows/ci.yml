@@ -63,6 +63,12 @@ jobs:
       - name: Check reviewed Rust API baseline
         run: python3 tools/check-api-baseline.py
         working-directory: Ratspeak
+      - name: Check manifest and feature contract
+        run: python3 tools/check-api-manifest.py
+        working-directory: Ratspeak
+      - name: Check additions-only compatibility floor
+        run: python3 tools/check-api-compatibility.py
+        working-directory: Ratspeak
 
   test:
     name: Test

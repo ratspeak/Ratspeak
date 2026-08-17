@@ -1,0 +1,1503 @@
+{
+  "schemaVersion": 1,
+  "scope": "library Cargo manifests, public features, targets, and non-dev dependencies",
+  "packages": [
+    {
+      "name": "ratspeak",
+      "version": "1.0.26",
+      "rustVersion": "1.87",
+      "edition": "2021",
+      "features": {
+        "default": [
+          "lxst-voice"
+        ],
+        "lxst-voice": [
+          "ratspeak-tauri/lxst-voice"
+        ]
+      },
+      "targets": [
+        {
+          "name": "ratspeak_lib",
+          "kind": [
+            "cdylib",
+            "lib",
+            "staticlib"
+          ],
+          "crateTypes": [
+            "cdylib",
+            "lib",
+            "staticlib"
+          ],
+          "requiredFeatures": []
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "base64",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.22",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "derive"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde_json",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tauri",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tauri-plugin-deep-link",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2.4.9",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tauri-plugin-notification",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tokio",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "full"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tracing",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tracing-subscriber",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.3",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "env-filter"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "url",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "ratspeak-tauri",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(any(target_os = \"android\", target_os = \"ios\"))",
+          "requirement": "^1.0.26",
+          "optional": false,
+          "defaultFeatures": false,
+          "features": [
+            "ble",
+            "mobile-throttle",
+            "rnode-tcp",
+            "seed"
+          ],
+          "sourceKind": "path"
+        },
+        {
+          "name": "tauri-plugin-haptics",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(any(target_os = \"android\", target_os = \"ios\"))",
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "dirs",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(not(any(target_os = \"android\", target_os = \"ios\")))",
+          "requirement": "^6",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "ratspeak-tauri",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(not(any(target_os = \"android\", target_os = \"ios\")))",
+          "requirement": "^1.0.26",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "ble",
+            "hardware"
+          ],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rfd",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(not(any(target_os = \"android\", target_os = \"ios\")))",
+          "requirement": "^0.15",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tauri",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(not(any(target_os = \"android\", target_os = \"ios\")))",
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "devtools",
+            "tray-icon"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tauri-plugin-single-instance",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(not(any(target_os = \"android\", target_os = \"ios\")))",
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "deep-link"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "btleplug",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"android\")",
+          "requirement": "^0.11",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "jni",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"android\")",
+          "requirement": "^0.19",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "rns-interface",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"android\")",
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "ble",
+            "mobile-throttle"
+          ],
+          "sourceKind": "path"
+        },
+        {
+          "name": "tracing-android",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"android\")",
+          "requirement": "^0.2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "block2",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"ios\")",
+          "requirement": "^0.6",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "objc2",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"ios\")",
+          "requirement": "^0.6",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "objc2-ui-kit",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"ios\")",
+          "requirement": "^0.3",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "UIResponder",
+            "UIScrollView",
+            "UIView"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tracing-oslog",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"ios\")",
+          "requirement": "^0.3",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "block2",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"macos\")",
+          "requirement": "^0.6",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "objc2",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"macos\")",
+          "requirement": "^0.6",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tauri-build",
+          "rename": null,
+          "kind": "build",
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        }
+      ]
+    },
+    {
+      "name": "ratspeak-core",
+      "version": "1.0.26",
+      "rustVersion": "1.87",
+      "edition": "2024",
+      "features": {},
+      "targets": [
+        {
+          "name": "ratspeak_core",
+          "kind": [
+            "lib"
+          ],
+          "crateTypes": [
+            "lib"
+          ],
+          "requiredFeatures": []
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "serde",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "derive"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde_json",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "thiserror",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tracing",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        }
+      ]
+    },
+    {
+      "name": "ratspeak-db",
+      "version": "1.0.26",
+      "rustVersion": "1.87",
+      "edition": "2024",
+      "features": {},
+      "targets": [
+        {
+          "name": "ratspeak_db",
+          "kind": [
+            "lib"
+          ],
+          "crateTypes": [
+            "lib"
+          ],
+          "requiredFeatures": []
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "hex",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.4",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "lrgp",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.4.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "r2d2",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.8",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "r2d2_sqlite",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.25",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "ratspeak-core",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.0.26",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rmpv",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "rusqlite",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.32",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "bundled"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "derive"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde_json",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "thiserror",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tokio",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "full"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tracing",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        }
+      ]
+    },
+    {
+      "name": "ratspeak-runtime",
+      "version": "1.0.26",
+      "rustVersion": "1.87",
+      "edition": "2024",
+      "features": {
+        "ble": [
+          "rns-interface/ble",
+          "rns-runtime/ble"
+        ],
+        "default": [
+          "seed"
+        ],
+        "hardware": [
+          "rns-ratkey/hardware",
+          "seed"
+        ],
+        "lxst-voice": [
+          "dep:cpal",
+          "dep:lxst-core",
+          "dep:lxst-rns",
+          "dep:lxst-telephony",
+          "dep:ogg"
+        ],
+        "mobile-throttle": [
+          "rns-interface/mobile-throttle",
+          "rns-transport/mobile-throttle"
+        ],
+        "rnode-tcp": [
+          "rns-interface/rnode-tcp",
+          "rns-runtime/rnode-tcp"
+        ],
+        "seed": [
+          "dep:rns-ratkey"
+        ],
+        "serial": [
+          "dep:serialport",
+          "rns-interface/serial",
+          "rns-runtime/serial"
+        ]
+      },
+      "targets": [
+        {
+          "name": "ratspeak_runtime",
+          "kind": [
+            "lib"
+          ],
+          "crateTypes": [
+            "lib"
+          ],
+          "requiredFeatures": []
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "argon2",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.5",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "bytes",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "ciborium",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "cpal",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.15",
+          "optional": true,
+          "defaultFeatures": true,
+          "features": [
+            "oboe-shared-stdcxx"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "crossbeam-channel",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.5",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "hex",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.4",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "image",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "=0.25.5",
+          "optional": false,
+          "defaultFeatures": false,
+          "features": [
+            "bmp",
+            "gif",
+            "jpeg",
+            "png",
+            "webp"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "indexmap",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "lrgp",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.4.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "lxmf-core",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "lxst-core",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1.2",
+          "optional": true,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "lxst-rns",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1.2",
+          "optional": true,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "lxst-telephony",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1.2",
+          "optional": true,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "ogg",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.9.2",
+          "optional": true,
+          "defaultFeatures": false,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "r2d2",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.8",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "r2d2_sqlite",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.25",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "ratspeak-core",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.0.26",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "ratspeak-db",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.0.26",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rmpv",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "rns-crypto",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-identity",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-interface",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-link",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-protocol",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-ratkey",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": true,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-runtime",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-transport",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-wire",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rusqlite",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.32",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "bundled"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "derive"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde_json",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serialport",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^4",
+          "optional": true,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "thiserror",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tokio",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "full"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tracing",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "uuid",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "v4"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "zeroize",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "jni",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"android\")",
+          "requirement": "^0.19",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "ndk-context",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"android\")",
+          "requirement": "^0.1.1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "objc2",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"ios\")",
+          "requirement": "^0.6",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        }
+      ]
+    },
+    {
+      "name": "ratspeak-tauri",
+      "version": "1.0.26",
+      "rustVersion": "1.87",
+      "edition": "2024",
+      "features": {
+        "ble": [
+          "ratspeak-runtime/ble",
+          "rns-interface/ble",
+          "rns-runtime/ble"
+        ],
+        "default": [
+          "seed",
+          "serial"
+        ],
+        "hardware": [
+          "ratspeak-runtime/hardware",
+          "seed"
+        ],
+        "lxst-voice": [
+          "ratspeak-runtime/lxst-voice"
+        ],
+        "mobile-throttle": [
+          "ratspeak-runtime/mobile-throttle",
+          "rns-interface/mobile-throttle",
+          "rns-transport/mobile-throttle"
+        ],
+        "rnode-tcp": [
+          "ratspeak-runtime/rnode-tcp",
+          "rns-interface/rnode-tcp",
+          "rns-runtime/rnode-tcp"
+        ],
+        "seed": [
+          "ratspeak-runtime/seed"
+        ],
+        "serial": [
+          "dep:serialport",
+          "ratspeak-runtime/serial",
+          "rns-interface/serial",
+          "rns-runtime/serial"
+        ]
+      },
+      "targets": [
+        {
+          "name": "ratspeak_tauri",
+          "kind": [
+            "lib"
+          ],
+          "crateTypes": [
+            "lib"
+          ],
+          "requiredFeatures": []
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "base64",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.22",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "bytes",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "glob",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.3",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "hex",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.4",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "lrgp",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.4.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "lxmf-core",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "mime_guess",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "r2d2",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.8",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "r2d2_sqlite",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.25",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "ratspeak-core",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.0.26",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "ratspeak-db",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.0.26",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "ratspeak-runtime",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.0.26",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rmpv",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "rns-crypto",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-identity",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-interface",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-protocol",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-runtime",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rns-transport",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "rusqlite",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.32",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "bundled"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "derive"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serde_json",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "serialport",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^4",
+          "optional": true,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tauri",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tauri-plugin-notification",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tokio",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "full"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "tracing",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "url",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "libc",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(all(unix, not(any(target_os = \"android\", target_os = \"ios\"))))",
+          "requirement": "^0.2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "objc2",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"ios\")",
+          "requirement": "^0.6",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        }
+      ]
+    }
+  ]
+}

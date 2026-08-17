@@ -10,6 +10,11 @@ Internal boundaries still matter. `api-stability.json` and
 `cargo-public-api` and rustdoc versions. CI rejects unreviewed drift so changes
 cannot silently break another workspace layer or conceal a broadening API.
 
+Wave C migrates application internals to the exact lower-component identities
+selected by their owner repositories: `lxmf_core::message_api`,
+`lxst_telephony::TelephonyService::registered`, and `lrgp::protocol`. Ratspeak
+does not expose a public SDK facade and does not promote any workspace package.
+
 - `ratspeak-core` contains shared domain/configuration and emitter contracts.
 - `ratspeak-db` exposes the application persistence layer.
 - `ratspeak-runtime` exposes extensive application orchestration and currently
@@ -34,6 +39,14 @@ surfaces remain protected by the Android target and minified JNI gates.
 cargo install cargo-public-api --version 0.52.0 --locked
 rustup toolchain install nightly-2026-08-01 --profile minimal
 python3 tools/check-api-baseline.py
+python3 tools/check-api-manifest.py
+python3 tools/check-api-compatibility.py
 ```
+
+The immutable compatibility floor is separate from the current reviewed
+capture. The manifest contract covers package versions, features, targets,
+MSRV, and non-development dependencies. The compatibility check rejects
+removals from the Wave C floor. Tauri IPC, database, JNI, event, platform, and
+wire contracts remain separately gated.
 
 Use `--update` only after reviewing and recording the compatibility impact.
