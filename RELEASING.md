@@ -14,11 +14,13 @@ store submission.
   (`1.0.26o`). A letter is never reused after its Git tag exists. Promotion
   from a prerelease to its stable numeric release and later numeric version
   lines are explicit supported transitions.
-- `tauri.conf.json` carries the numeric marketing version plus a monotonically
-  increasing Android `versionCode`.
-- The Apple project carries the same marketing version and a monotonically
-  increasing numeric `CFBundleVersion`. Android and iOS use the same build
-  sequence when a candidate is prepared for both platforms.
+- `tauri.conf.json` carries the numeric marketing version, the monotonically
+  increasing Android `versionCode`, and the matching numeric iOS
+  `bundleVersion`. The explicit iOS value prevents Tauri generation from
+  replacing the intended Apple build sequence with the marketing version.
+- The Apple project and generated Info.plist carry that same marketing version
+  and numeric `CFBundleVersion`. Android and iOS use the same build sequence
+  when a candidate is prepared for both platforms.
 - Component manifest versions express API compatibility. They do not identify
   the source alone; exact Git commits do.
 
