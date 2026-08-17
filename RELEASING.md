@@ -30,7 +30,9 @@ records:
 - the exact rsReticulum, rsLXMF, rsLXST, and lrgp-rs commit;
 - the compatible package version expected from each checkout;
 - product display, marketing, Android, and iOS versions;
-- release and MSRV Rust versions plus platform build tool versions; and
+- release and MSRV Rust versions plus platform build tool versions;
+- the Node version used by source qualification and release evidence tooling;
+  and
 - an optional integration tag only when that tag resolves to the exact commit.
 
 Ordinary CI mirrors those commits in its static checkout fields so GitHub can

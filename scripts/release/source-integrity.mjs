@@ -207,6 +207,7 @@ export function validateDependencySet(set) {
 
   requireVersion(set.toolchains.rustRelease, "toolchains.rustRelease");
   requireVersion(set.toolchains.rustMsrv, "toolchains.rustMsrv");
+  requireVersion(set.toolchains.node, "toolchains.node");
   requireVersion(set.toolchains.tauriCli, "toolchains.tauriCli");
   requireString(set.toolchains.java, "toolchains.java");
   if (!/^\d+$/.test(set.toolchains.java)) fail("toolchains.java must be a numeric major version");
@@ -380,6 +381,12 @@ export function verifyProductSurfaces(set) {
     verifyImmutableActions(workflowName, workflow);
   }
 
+  expectContains(
+    readUtf8(join(workflowDirectory, "ci.yml")),
+    `node-version: ${set.toolchains.node}`,
+    "CI Node toolchain",
+  );
+
   for (const workflowName of [
     "release-android.yml",
     "release-desktop.yml",
@@ -388,6 +395,11 @@ export function verifyProductSurfaces(set) {
     "release-windows.yml",
   ]) {
     const workflow = readUtf8(join(workflowDirectory, workflowName));
+    expectContains(
+      workflow,
+      `node-version: ${set.toolchains.node}`,
+      `${workflowName} Node toolchain`,
+    );
     expectContains(workflow, "source-integrity.mjs github-outputs", `${workflowName} reviewed source load`);
     expectContains(
       workflow,
@@ -461,6 +473,7 @@ export function githubOutputs(set) {
   const lines = set.components.map((component) => `${component.id}_ref=${component.commit}`);
   lines.push(`rust_toolchain=${set.toolchains.rustRelease}`);
   lines.push(`rust_msrv=${set.toolchains.rustMsrv}`);
+  lines.push(`node_version=${set.toolchains.node}`);
   lines.push(`tauri_cli=${set.toolchains.tauriCli}`);
   lines.push(`android_ndk=${set.toolchains.androidNdk}`);
   lines.push(`java=${set.toolchains.java}`);

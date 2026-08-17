@@ -40,6 +40,16 @@ reviewed_pin() {
 }
 
 status=0
+expected_node="$(reviewed_pin node_version)"
+if [[ ! "$expected_node" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "error: dependency set has invalid node_version (found: ${expected_node:-missing})" >&2
+  status=1
+fi
+if ! grep -q "node-version: $expected_node" "$canonical"; then
+  echo "error: ci.yml must use reviewed Node $expected_node" >&2
+  status=1
+fi
+
 for index in "${!pin_keys[@]}"; do
   key="${pin_keys[$index]}"
   expected="$(reviewed_pin "${output_keys[$index]}")"
@@ -61,6 +71,10 @@ for index in "${!pin_keys[@]}"; do
 done
 
 for workflow in "${release_workflows[@]}"; do
+  if ! grep -q "node-version: $expected_node" "$workflow"; then
+    echo "error: $(basename "$workflow") must use reviewed Node $expected_node" >&2
+    status=1
+  fi
   if grep -q 'RATSPEAK_.*_REF:' "$workflow"; then
     echo "error: $(basename "$workflow") declares a second component-pin source" >&2
     status=1

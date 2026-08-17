@@ -86,6 +86,7 @@ test("GitHub outputs contain exact commits instead of integration tags", () => {
     assert.doesNotMatch(output, new RegExp(`${component.integrationTag}$`, "m"));
   }
   assert.match(output, /^rust_toolchain=\d+\.\d+\.\d+$/m);
+  assert.match(output, /^node_version=\d+\.\d+\.\d+$/m);
   assert.match(output, /^tauri_cli=\d+\.\d+\.\d+$/m);
 });
 

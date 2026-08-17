@@ -18,6 +18,7 @@
   "toolchains": {
     "rustRelease": "1.96.0",
     "rustMsrv": "1.85.0",
+    "node": "22.22.0",
     "tauriCli": "2.11.1",
     "java": "17",
     "androidNdk": "27.0.12077973",
