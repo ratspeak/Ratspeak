@@ -45,6 +45,8 @@ scripts/windows/*.pfx
 # OS
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
 
 # IDE
 .idea/

@@ -21,7 +21,35 @@
   "snapshotSource": {
     "commit": "b39e08208d7efc2f9538d7b931a96e30fcbc2fe2",
     "capturedOn": "2026-08-17",
-    "changeRecord": "api-reviews/wave-c-product-integration.json"
+    "review": {
+      "areas": [
+        "application domain and configuration",
+        "database and persistence",
+        "Reticulum and messaging runtime",
+        "Tauri commands and events",
+        "desktop and mobile application shell"
+      ],
+      "canonicalDependencies": [
+        "lxmf_core::message_api",
+        "lxst_telephony::TelephonyService::registered",
+        "lrgp::protocol"
+      ],
+      "classification": "application-internal consumer migration",
+      "publicApiDiff": {
+        "added": 0,
+        "removed": 0
+      },
+      "semver": "no public-library consequence; application integration only",
+      "deprecations": "none",
+      "wirePersistenceRuntimeImpact": "none",
+      "platformEvidence": [
+        "workspace and standalone shell gates",
+        "macOS, Windows, and Linux compilation",
+        "Android arm64, ARMv7, and x86_64 compilation",
+        "iOS device and simulator compilation",
+        "unchanged IPC, database, JNI, and source contracts"
+      ]
+    }
   },
   "packages": [
     {
@@ -29,7 +57,7 @@
       "manifestPath": "Cargo.toml",
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
-      "snapshot": "api-baseline/ratspeak-core.txt",
+      "snapshot": "api/snapshots/ratspeak-core.txt",
       "itemCount": 186,
       "sha256": "d545a522d547a5e9847898b735595fa17b74c38bad013741ad15cd1964413241"
     },
@@ -38,7 +66,7 @@
       "manifestPath": "Cargo.toml",
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
-      "snapshot": "api-baseline/ratspeak-db.txt",
+      "snapshot": "api/snapshots/ratspeak-db.txt",
       "itemCount": 682,
       "sha256": "81e03f2e8f7ef4093d34d51121cfe55fa5848a380c026c7c8b3c647e3242b54c"
     },
@@ -47,7 +75,7 @@
       "manifestPath": "Cargo.toml",
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
-      "snapshot": "api-baseline/ratspeak-runtime.txt",
+      "snapshot": "api/snapshots/ratspeak-runtime.txt",
       "itemCount": 2361,
       "sha256": "2f797c9b2a8e7b81b06241b3503a3e4659f3f66557af02d2336f39ee7984f3d6"
     },
@@ -56,7 +84,7 @@
       "manifestPath": "Cargo.toml",
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
-      "snapshot": "api-baseline/ratspeak-tauri.txt",
+      "snapshot": "api/snapshots/ratspeak-tauri.txt",
       "itemCount": 790,
       "sha256": "cfabd0baa11a2cd96fd0db2c1ac83d86407919975ce8824daca0f426b0c843ea"
     },
@@ -65,7 +93,7 @@
       "manifestPath": "src-tauri/Cargo.toml",
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
-      "snapshot": "api-baseline/ratspeak.txt",
+      "snapshot": "api/snapshots/ratspeak.txt",
       "itemCount": 2,
       "sha256": "034278ac95cbe749a710332e76ec105d2188a36da147738f9f852517872f38d6"
     }

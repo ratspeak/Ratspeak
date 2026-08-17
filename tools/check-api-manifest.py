@@ -12,8 +12,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LEDGER_PATH = ROOT / "api-stability.json"
-CONTRACT_PATH = ROOT / "api-baseline" / "manifest-contract.json"
+LEDGER_PATH = ROOT / "api" / "stability.json"
+CONTRACT_PATH = ROOT / "api" / "snapshots" / "manifest-contract.json"
 
 
 def fail(message: str) -> None:
