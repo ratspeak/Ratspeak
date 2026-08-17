@@ -4,6 +4,8 @@ description = "Ratspeak runtime: RNS + LXMF + LRGP wiring, AppState, async loops
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [features]
 # `seed` (BIP-39 derivation, pure-Rust) is on by default — new identities are

@@ -20,10 +20,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26n
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26n
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.26n
-  RATSPEAK_LRGP_REF: ratspeak-v1.0.26d
   TOOLCHAINS: com.apple.dt.toolchain.XcodeDefault
 
 jobs:
@@ -33,45 +29,62 @@ jobs:
     timeout-minutes: 150
     steps:
       - name: Checkout Ratspeak
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           path: Ratspeak
+          fetch-depth: 0
+
+      - name: Load reviewed source set
+        id: source
+        shell: bash
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
 
       - name: Checkout rsReticulum
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
-          ref: ${{ env.RATSPEAK_RSRETICULUM_REF }}
+          ref: ${{ steps.source.outputs.rsreticulum_ref }}
           path: rsReticulum
+          fetch-depth: 0
 
       - name: Checkout rsLXMF
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsLXMF
-          ref: ${{ env.RATSPEAK_RSLXMF_REF }}
+          ref: ${{ steps.source.outputs.rslxmf_ref }}
           path: rsLXMF
+          fetch-depth: 0
 
       - name: Checkout rsLXST
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsLXST
-          ref: ${{ env.RATSPEAK_RSLXST_REF }}
+          ref: ${{ steps.source.outputs.rslxst_ref }}
           path: rsLXST
+          fetch-depth: 0
 
       - name: Checkout lrgp-rs
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
-          ref: ${{ env.RATSPEAK_LRGP_REF }}
+          ref: ${{ steps.source.outputs.lrgp_ref }}
           path: lrgp-rs
+          fetch-depth: 0
+
+      - name: Verify reviewed source set
+        shell: bash
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs verify-release-source
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: ${{ steps.source.outputs.rust_toolchain }}
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-bin: false
           workspaces: |
@@ -80,7 +93,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0" --locked
+        run: cargo install tauri-cli --version "${{ steps.source.outputs.tauri_cli }}" --locked
 
       - name: Build CSS
         shell: bash
@@ -165,7 +178,7 @@ jobs:
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri ios build --debug --target aarch64-sim
+          cargo tauri ios build --debug --target aarch64-sim -- --locked
 
       - name: Build TestFlight IPA
         if: ${{ inputs.build_mode == 'testflight' }}
@@ -177,7 +190,7 @@ jobs:
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
           cargo tauri ios build --ci --target aarch64 \
-            --export-method app-store-connect
+            --export-method app-store-connect -- --locked
 
       - name: Validate iOS simulator bundle
         if: ${{ inputs.build_mode == 'simulator-smoke' }}
@@ -198,19 +211,27 @@ jobs:
         working-directory: Ratspeak
         run: bash scripts/release/assert-no-tauri-dev-url.sh src-tauri/gen/apple/build
 
+      - name: Generate source BOM
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          mkdir -p dist/ios
+          node scripts/release/source-integrity.mjs bom --output dist/ios/Ratspeak-ios-source-bom.json
+
       - name: Upload iOS artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ratspeak-ios
           path: |
             Ratspeak/src-tauri/gen/apple/build/**/*.ipa
             Ratspeak/src-tauri/gen/apple/build/**/*.app
+            Ratspeak/dist/ios/Ratspeak-ios-source-bom.json
           if-no-files-found: error
           retention-days: 7
 
       - name: Upload to TestFlight
         if: ${{ inputs.build_mode == 'testflight' }}
-        uses: apple-actions/upload-testflight-build@v3
+        uses: apple-actions/upload-testflight-build@9fd28d4e690396e43caca69cef54cccccce77034
         with:
           app-path: Ratspeak/src-tauri/gen/apple/build/arm64/Ratspeak.ipa
           issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}

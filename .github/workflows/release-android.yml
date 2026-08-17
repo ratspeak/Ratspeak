@@ -33,12 +33,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26n
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26n
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.26n
-  RATSPEAK_LRGP_REF: ratspeak-v1.0.26d
-
 jobs:
   build:
     name: Android
@@ -46,66 +40,92 @@ jobs:
     timeout-minutes: 150
     steps:
       - name: Checkout Ratspeak
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           path: Ratspeak
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Load reviewed source set
+        id: source
+        shell: bash
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
 
       - name: Checkout rsReticulum
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
-          ref: ${{ env.RATSPEAK_RSRETICULUM_REF }}
+          ref: ${{ steps.source.outputs.rsreticulum_ref }}
           path: rsReticulum
+          fetch-depth: 0
 
       - name: Checkout rsLXMF
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsLXMF
-          ref: ${{ env.RATSPEAK_RSLXMF_REF }}
+          ref: ${{ steps.source.outputs.rslxmf_ref }}
           path: rsLXMF
+          fetch-depth: 0
 
       - name: Checkout rsLXST
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsLXST
-          ref: ${{ env.RATSPEAK_RSLXST_REF }}
+          ref: ${{ steps.source.outputs.rslxst_ref }}
           path: rsLXST
+          fetch-depth: 0
 
       - name: Checkout lrgp-rs
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
-          ref: ${{ env.RATSPEAK_LRGP_REF }}
+          ref: ${{ steps.source.outputs.lrgp_ref }}
           path: lrgp-rs
+          fetch-depth: 0
+
+      - name: Verify reviewed source set
+        shell: bash
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs verify-release-source
+
+      - name: Verify publishing release ref
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_REF"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
+          toolchain: ${{ steps.source.outputs.rust_toolchain }}
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: ${{ steps.source.outputs.java }}
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
 
       - name: Install Android NDK
         shell: bash
         run: |
           set +e +o pipefail
-          yes | sdkmanager "ndk;27.0.12077973"
+          yes | sdkmanager "ndk;${{ steps.source.outputs.android_ndk }}"
           sdkmanager_status=${PIPESTATUS[1]}
           set -e -o pipefail
           if [ "$sdkmanager_status" -ne 0 ]; then
             exit "$sdkmanager_status"
           fi
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ steps.source.outputs.android_ndk }}" >> "$GITHUB_ENV"
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-bin: false
           workspaces: |
@@ -114,7 +134,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0" --locked
+        run: cargo install tauri-cli --version "${{ steps.source.outputs.tauri_cli }}" --locked
 
       - name: Build CSS
         shell: bash
@@ -138,7 +158,7 @@ jobs:
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri android build --target aarch64 armv7 x86_64 --apk --split-per-abi
+          cargo tauri android build --target aarch64 armv7 x86_64 --apk --split-per-abi -- --locked
 
       - name: Lint Android release variant
         shell: bash
@@ -152,25 +172,19 @@ jobs:
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri android build --target aarch64 armv7 x86_64 --aab
+          cargo tauri android build --target aarch64 armv7 x86_64 --aab -- --locked
 
       - name: Check for bundled dev URLs
         shell: bash
         working-directory: Ratspeak
         run: bash scripts/release/assert-no-tauri-dev-url.sh src-tauri/gen/android/app/build/outputs
 
-      - name: Validate manual release tag
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_github_release && inputs.release_tag == '' }}
-        shell: bash
-        run: |
-          echo "release_tag is required when publishing a GitHub Release from workflow_dispatch."
-          exit 1
-
       - name: Stage Android release APKs
         shell: bash
         working-directory: Ratspeak
         env:
           RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          PUBLISH_GITHUB_RELEASE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
         run: |
           set -euo pipefail
           release_version="${RELEASE_VERSION:?Missing release version.}"
@@ -188,13 +202,19 @@ jobs:
           cp src-tauri/gen/android/app/build/outputs/apk/arm/release/app-arm-release.apk "$out_dir/Ratspeak-${release_version}-android-armv7.apk"
           cp src-tauri/gen/android/app/build/outputs/apk/x86_64/release/app-x86_64-release.apk "$out_dir/Ratspeak-${release_version}-android-x86_64.apk"
 
+          source_args=(bom --output "$out_dir/Ratspeak-${release_version}-android-source-bom.json")
+          if [[ "$PUBLISH_GITHUB_RELEASE" == "true" ]]; then
+            source_args+=(--release-ref "$release_version")
+          fi
+          node scripts/release/source-integrity.mjs "${source_args[@]}"
+
       - name: Write APK checksums
         shell: bash
         working-directory: Ratspeak
         run: |
           checksum_file="checksums-android.txt"
           : > "$checksum_file"
-          find dist/android -type f -name '*.apk' -print0 |
+          find dist/android -type f -print0 |
             sort -z |
             while IFS= read -r -d '' artifact; do
               hash="$(sha256sum "$artifact" | cut -d ' ' -f 1)"
@@ -203,19 +223,19 @@ jobs:
           test -s "$checksum_file"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ratspeak-android
           path: |
             Ratspeak/src-tauri/gen/android/app/build/outputs/**/*.aab
-            Ratspeak/dist/android/*.apk
+            Ratspeak/dist/android/*
             Ratspeak/checksums-android.txt
           if-no-files-found: error
           retention-days: 7
 
       - name: Publish GitHub Release
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}
@@ -226,12 +246,12 @@ jobs:
             - Mobile Channels polish for keyboard resizing, safe areas, Back navigation, sheets, and partial member lists
             - Privacy-bounded Activity diagnostics plus broader Reticulum, LXMF, and LXST reliability fixes
           files: |
-            Ratspeak/dist/android/*.apk
+            Ratspeak/dist/android/*
             Ratspeak/checksums-android.txt
 
       - name: Upload to Google Play
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_play }}
-        uses: r0adkll/upload-google-play@v1
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: ${{ vars.GOOGLE_PLAY_PACKAGE_NAME || 'org.ratspeak.android' }}

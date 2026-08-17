@@ -2,6 +2,9 @@
 set -euo pipefail
 
 repo_root="${1:-.}"
+dependency_set="$repo_root/release/dependency-set.json"
+expected_version="${EXPECTED_IOS_VERSION:-$(node -p "require(process.argv[1]).product.marketingVersion" "$dependency_set")}"
+expected_build="${EXPECTED_IOS_BUILD:-$(node -p "require(process.argv[1]).product.platformBuilds.iosBundleVersion" "$dependency_set")}"
 project_model="$repo_root/src-tauri/gen/apple/project.yml"
 project_file="$repo_root/src-tauri/gen/apple/ratspeak.xcodeproj/project.pbxproj"
 info_plist="$repo_root/src-tauri/gen/apple/ratspeak_iOS/Info.plist"
@@ -47,8 +50,8 @@ plutil -lint "$privacy_manifest" >/dev/null
 plutil -lint "$entitlements" >/dev/null
 
 expect_raw "$info_plist" CFBundleIdentifier '$(PRODUCT_BUNDLE_IDENTIFIER)'
-expect_raw "$info_plist" CFBundleShortVersionString '1.0.26'
-expect_raw "$info_plist" CFBundleVersion '1.0.26'
+expect_raw "$info_plist" CFBundleShortVersionString "$expected_version"
+expect_raw "$info_plist" CFBundleVersion "$expected_build"
 expect_raw "$info_plist" LSRequiresIPhoneOS true
 expect_raw "$info_plist" UILaunchStoryboardName LaunchScreen
 expect_json "$info_plist" CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak"]}]'

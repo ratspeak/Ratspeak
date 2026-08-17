@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-minimum_xcode_major="${MINIMUM_XCODE_MAJOR:-26}"
-minimum_ios_sdk_major="${MINIMUM_IOS_SDK_MAJOR:-26}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+dependency_set="$repo_root/release/dependency-set.json"
+expected_xcode_version="${EXPECTED_XCODE_VERSION:-$(node -p "require(process.argv[1]).toolchains.xcode" "$dependency_set")}"
+expected_ios_sdk_version="${EXPECTED_IOS_SDK_VERSION:-$(node -p "require(process.argv[1]).toolchains.iosSdk" "$dependency_set")}"
 
 for command_name in xcodebuild xcrun; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -12,17 +14,15 @@ for command_name in xcodebuild xcrun; do
 done
 
 xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
-xcode_major="${xcode_version%%.*}"
 ios_sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
-ios_sdk_major="${ios_sdk_version%%.*}"
 
-if [[ ! "$xcode_major" =~ ^[0-9]+$ ]] || ((xcode_major < minimum_xcode_major)); then
-  echo "Xcode ${minimum_xcode_major} or newer is required; found: ${xcode_version:-unknown}" >&2
+if [[ "$xcode_version" != "$expected_xcode_version" ]]; then
+  echo "Expected Xcode $expected_xcode_version; found: ${xcode_version:-unknown}" >&2
   exit 1
 fi
 
-if [[ ! "$ios_sdk_major" =~ ^[0-9]+$ ]] || ((ios_sdk_major < minimum_ios_sdk_major)); then
-  echo "iOS SDK ${minimum_ios_sdk_major} or newer is required; found: ${ios_sdk_version:-unknown}" >&2
+if [[ "$ios_sdk_version" != "$expected_ios_sdk_version" ]]; then
+  echo "Expected iOS SDK $expected_ios_sdk_version; found: ${ios_sdk_version:-unknown}" >&2
   exit 1
 fi
 

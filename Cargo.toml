@@ -13,34 +13,35 @@ version = "1.0.26"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 rust-version = "1.85"
+publish = false
 
 [workspace.dependencies]
 # --- From rsReticulum (sibling directory) ---
-rns-crypto = { path = "../rsReticulum/crates/rns-crypto" }
-rns-wire = { path = "../rsReticulum/crates/rns-wire" }
-rns-identity = { path = "../rsReticulum/crates/rns-identity" }
-rns-transport = { path = "../rsReticulum/crates/rns-transport" }
-rns-link = { path = "../rsReticulum/crates/rns-link" }
-rns-protocol = { path = "../rsReticulum/crates/rns-protocol" }
-rns-interface = { path = "../rsReticulum/crates/rns-interface" }
-rns-runtime = { path = "../rsReticulum/crates/rns-runtime" }
-rns-ratkey = { path = "../rsReticulum/crates/rns-ratkey" }
+rns-crypto = { path = "../rsReticulum/crates/rns-crypto", version = "1.1.0" }
+rns-wire = { path = "../rsReticulum/crates/rns-wire", version = "1.1.0" }
+rns-identity = { path = "../rsReticulum/crates/rns-identity", version = "1.1.0" }
+rns-transport = { path = "../rsReticulum/crates/rns-transport", version = "1.1.0" }
+rns-link = { path = "../rsReticulum/crates/rns-link", version = "1.1.0" }
+rns-protocol = { path = "../rsReticulum/crates/rns-protocol", version = "1.1.0" }
+rns-interface = { path = "../rsReticulum/crates/rns-interface", version = "1.1.0" }
+rns-runtime = { path = "../rsReticulum/crates/rns-runtime", version = "1.1.0" }
+rns-ratkey = { path = "../rsReticulum/crates/rns-ratkey", version = "1.1.0" }
 
 # --- From rsLXMF (sibling directory) ---
-lxmf-core = { path = "../rsLXMF/crates/lxmf-core" }
+lxmf-core = { path = "../rsLXMF/crates/lxmf-core", version = "1.1.0" }
 
 # --- From rsLXST (sibling directory) ---
-lxst-core = { path = "../rsLXST/crates/lxst-core" }
-lxst-rns = { path = "../rsLXST/crates/lxst-rns" }
-lxst-telephony = { path = "../rsLXST/crates/lxst-telephony" }
+lxst-core = { path = "../rsLXST/crates/lxst-core", version = "0.1.2" }
+lxst-rns = { path = "../rsLXST/crates/lxst-rns", version = "0.1.2" }
+lxst-telephony = { path = "../rsLXST/crates/lxst-telephony", version = "0.1.2" }
 
 # --- Internal crates ---
-# lrgp lives in the sibling lrgp-rs/ repo until we adopt crates.io publishing.
-lrgp = { path = "../lrgp-rs" }
-ratspeak-core = { path = "crates/ratspeak-core" }
-ratspeak-db = { path = "crates/ratspeak-db" }
-ratspeak-runtime = { path = "crates/ratspeak-runtime" }
-ratspeak-tauri = { path = "crates/ratspeak-tauri" }
+# lrgp is an exact sibling source dependency; registry publication is out of scope.
+lrgp = { path = "../lrgp-rs", version = "0.4.0" }
+ratspeak-core = { path = "crates/ratspeak-core", version = "1.0.26" }
+ratspeak-db = { path = "crates/ratspeak-db", version = "1.0.26" }
+ratspeak-runtime = { path = "crates/ratspeak-runtime", version = "1.0.26" }
+ratspeak-tauri = { path = "crates/ratspeak-tauri", version = "1.0.26" }
 
 # --- External dependencies ---
 

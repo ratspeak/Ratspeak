@@ -4930,8 +4930,17 @@ fn active_call_surface_is_passive_and_shows_elapsed_duration() {
 #[test]
 fn settings_version_display_uses_package_version_api() {
     let root = repo_root();
+    let dependency_set: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("release/dependency-set.json")).expect("dependency set"),
+    )
+    .expect("valid dependency set");
     let version_file = read_source(root.join("VERSION")).expect("display version");
-    assert_eq!(version_file.trim(), "1.0.26m");
+    assert_eq!(
+        version_file.trim(),
+        dependency_set["product"]["displayVersion"]
+            .as_str()
+            .expect("display version")
+    );
 
     let system_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system rs");
@@ -5017,7 +5026,12 @@ fn settings_version_display_uses_package_version_api() {
     assert!(
         tauri_conf.contains("connect-src 'self' ipc: http://ipc.localhost https://api.github.com")
     );
-    assert!(tauri_conf.contains(r#""versionCode": 1000040"#));
+    let tauri_conf_json: serde_json::Value =
+        serde_json::from_str(&tauri_conf).expect("valid Tauri config");
+    assert_eq!(
+        tauri_conf_json["bundle"]["android"]["versionCode"],
+        dependency_set["product"]["platformBuilds"]["androidVersionCode"]
+    );
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
@@ -5029,15 +5043,27 @@ fn settings_version_display_uses_package_version_api() {
 #[test]
 fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleases() {
     let root = repo_root();
-    let rsreticulum_commit = "RATSPEAK_RSRETICULUM_REF: d9a1024a16e14cc7717ad4ba548fa09e1ba05b60";
-    let rslxmf_commit = "RATSPEAK_RSLXMF_REF: 8a6316c635aae11113e0e2339f09774e64116146";
-    let rslxst_commit = "RATSPEAK_RSLXST_REF: c53c634dfeca3d44b3ca37f8557f2ab375dddc20";
-    let dependency_refs = [
-        "RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26n",
-        "RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26n",
-        "RATSPEAK_RSLXST_REF: ratspeak-v1.0.26n",
-        "RATSPEAK_LRGP_REF: ratspeak-v1.0.26d",
-    ];
+    let dependency_set: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("release/dependency-set.json")).expect("dependency set"),
+    )
+    .expect("valid dependency set");
+    let components = dependency_set["components"]
+        .as_array()
+        .expect("component array");
+
+    for workflow_path in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/build-desktop.yml",
+    ] {
+        let workflow = read_source(root.join(workflow_path)).expect("build workflow");
+        for component in components {
+            let commit = component["commit"].as_str().expect("component commit");
+            assert!(
+                workflow.contains(commit),
+                "{workflow_path} must build reviewed component commit {commit}"
+            );
+        }
+    }
 
     for workflow_path in [
         ".github/workflows/release-android.yml",
@@ -5046,35 +5072,18 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
         ".github/workflows/release-windows.yml",
     ] {
         let workflow = read_source(root.join(workflow_path)).expect("release workflow");
-        for dependency_ref in dependency_refs {
-            assert!(
-                workflow.contains(dependency_ref),
-                "{workflow_path} must pin {dependency_ref}"
-            );
+        assert!(workflow.contains("source-integrity.mjs github-outputs"));
+        assert!(workflow.contains("source-integrity.mjs verify-release-source"));
+        assert!(workflow.contains("bom --output") || workflow.contains("\"bom\""));
+        assert!(!workflow.contains("RATSPEAK_RSRETICULUM_REF:"));
+        if workflow_path != ".github/workflows/release-ios.yml" {
+            assert!(workflow.contains("source-integrity.mjs verify-release-ref"));
+            assert!(workflow.contains("PUBLISH_GITHUB_RELEASE"));
         }
         assert!(workflow.contains("default: true\n        type: boolean"));
         assert!(
             workflow
                 .contains("prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}")
-        );
-    }
-
-    for workflow_path in [
-        ".github/workflows/ci.yml",
-        ".github/workflows/build-desktop.yml",
-    ] {
-        let workflow = read_source(root.join(workflow_path)).expect("build workflow");
-        assert!(
-            workflow.contains(rsreticulum_commit),
-            "{workflow_path} must build the reviewed rsReticulum commit"
-        );
-        assert!(
-            workflow.contains(rslxmf_commit),
-            "{workflow_path} must build the synchronized rsLXMF commit"
-        );
-        assert!(
-            workflow.contains(rslxst_commit),
-            "{workflow_path} must build the reviewed rsLXST commit"
         );
     }
 
@@ -5093,13 +5102,16 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
     let linux =
         read_source(root.join(".github/workflows/release-desktop.yml")).expect("Linux release");
     assert!(linux.contains(r#"test -n "$rpm""#));
-    assert!(linux.contains(r#"test "$artifact_count" = "4""#));
+    assert!(linux.contains(r#"test "$artifact_count" = "6""#));
+    assert!(linux.contains("linux-${BOM_ARCH}-source-bom.json"));
 
     let ios =
         read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");
-    for dependency_ref in dependency_refs {
-        assert!(ios.contains(dependency_ref));
-    }
+    assert!(ios.contains("source-integrity.mjs github-outputs"));
+    assert!(ios.contains("source-integrity.mjs verify-release-source"));
+    assert!(ios.contains("source-integrity.mjs bom"));
+    assert_eq!(ios.matches("Ratspeak-ios-source-bom.json").count(), 2);
+    assert!(!ios.contains("RATSPEAK_RSRETICULUM_REF:"));
     assert!(!ios.contains("--build-number"));
     assert!(ios.contains("--export-method app-store-connect"));
     assert!(ios.contains("APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}"));

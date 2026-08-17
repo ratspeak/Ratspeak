@@ -28,12 +28,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  RATSPEAK_RSRETICULUM_REF: ratspeak-v1.0.26n
-  RATSPEAK_RSLXMF_REF: ratspeak-v1.0.26n
-  RATSPEAK_RSLXST_REF: ratspeak-v1.0.26n
-  RATSPEAK_LRGP_REF: ratspeak-v1.0.26d
-
 jobs:
   build:
     name: Linux ${{ matrix.arch }}
@@ -61,43 +55,70 @@ jobs:
             rpm_name: ""
     steps:
       - name: Checkout Ratspeak
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           path: Ratspeak
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Load reviewed source set
+        id: source
+        shell: bash
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
 
       - name: Checkout rsReticulum
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsReticulum
-          ref: ${{ env.RATSPEAK_RSRETICULUM_REF }}
+          ref: ${{ steps.source.outputs.rsreticulum_ref }}
           path: rsReticulum
+          fetch-depth: 0
 
       - name: Checkout rsLXMF
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsLXMF
-          ref: ${{ env.RATSPEAK_RSLXMF_REF }}
+          ref: ${{ steps.source.outputs.rslxmf_ref }}
           path: rsLXMF
+          fetch-depth: 0
 
       - name: Checkout rsLXST
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/rsLXST
-          ref: ${{ env.RATSPEAK_RSLXST_REF }}
+          ref: ${{ steps.source.outputs.rslxst_ref }}
           path: rsLXST
+          fetch-depth: 0
 
       - name: Checkout lrgp-rs
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: ${{ github.repository_owner }}/lrgp-rs
-          ref: ${{ env.RATSPEAK_LRGP_REF }}
+          ref: ${{ steps.source.outputs.lrgp_ref }}
           path: lrgp-rs
+          fetch-depth: 0
+
+      - name: Verify reviewed source set
+        shell: bash
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs verify-release-source
+
+      - name: Verify publishing release ref
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_REF"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ steps.source.outputs.rust_toolchain }}
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-bin: false
           workspaces: |
@@ -126,11 +147,11 @@ jobs:
             file
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0" --locked
+        run: cargo install tauri-cli --version "${{ steps.source.outputs.tauri_cli }}" --locked
 
       - name: Run tests
         working-directory: Ratspeak
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Build CSS
         shell: bash
@@ -140,7 +161,7 @@ jobs:
       - name: Check Tauri desktop shell
         shell: bash
         working-directory: Ratspeak
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Build Tauri desktop app
         shell: bash
@@ -150,7 +171,7 @@ jobs:
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri build --bundles ${{ matrix.bundles }}
+          cargo tauri build --bundles ${{ matrix.bundles }} -- --locked
 
       - name: Check for bundled dev URLs
         shell: bash
@@ -162,10 +183,12 @@ jobs:
         working-directory: Ratspeak
         env:
           RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          PUBLISH_GITHUB_RELEASE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
           DEB_NAME: ${{ matrix.deb_name }}
           DEB_ARCH: ${{ matrix.deb_arch }}
           APPIMAGE_NAME: ${{ matrix.appimage_name }}
           RPM_NAME: ${{ matrix.rpm_name }}
+          BOM_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           release_version="${RELEASE_VERSION:?Missing release version.}"
@@ -211,8 +234,14 @@ jobs:
             cp "$rpm" "$out_dir/$rpm_artifact"
           fi
 
+          source_args=(bom --output "$out_dir/Ratspeak-${release_version}-linux-${BOM_ARCH}-source-bom.json")
+          if [[ "$PUBLISH_GITHUB_RELEASE" == "true" ]]; then
+            source_args+=(--release-ref "$release_version")
+          fi
+          node scripts/release/source-integrity.mjs "${source_args[@]}"
+
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -227,18 +256,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Download Linux artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
           pattern: ratspeak-linux-*
           path: Ratspeak/dist/linux
           merge-multiple: true
-
-      - name: Validate manual release tag
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_github_release && inputs.release_tag == '' }}
-        shell: bash
-        run: |
-          echo "release_tag is required when publishing a GitHub Release from workflow_dispatch."
-          exit 1
 
       - name: Validate Linux release artifacts
         shell: bash
@@ -267,7 +289,7 @@ jobs:
           test "$amd64_arch" = "amd64"
           test "$arm64_arch" = "arm64"
           artifact_count="$(find Ratspeak/dist/linux -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          test "$artifact_count" = "4"
+          test "$artifact_count" = "6"
           find Ratspeak/dist/linux -maxdepth 1 -type f -print | sort
 
       - name: Write Linux checksums
@@ -286,7 +308,7 @@ jobs:
           test -s "$checksum_file"
 
       - name: Upload combined artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ratspeak-linux
           path: |
@@ -297,7 +319,7 @@ jobs:
 
       - name: Publish GitHub Release
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}

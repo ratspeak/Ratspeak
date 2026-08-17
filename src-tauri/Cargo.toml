@@ -8,6 +8,7 @@ homepage = "https://github.com/ratspeak/Ratspeak"
 repository = "https://github.com/ratspeak/Ratspeak"
 edition = "2021"
 rust-version = "1.85"
+publish = false
 resolver = "3"
 
 [lib]
@@ -33,14 +34,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-ratspeak-tauri = { path = "../crates/ratspeak-tauri", features = ["ble", "hardware"] }
+ratspeak-tauri = { path = "../crates/ratspeak-tauri", version = "1.0.26", features = ["ble", "hardware"] }
 rfd = "0.15"
 dirs = "6"
 tauri = { version = "2", features = ["tray-icon", "devtools"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
-ratspeak-tauri = { path = "../crates/ratspeak-tauri", default-features = false, features = ["ble", "rnode-tcp", "mobile-throttle", "seed"] }
+ratspeak-tauri = { path = "../crates/ratspeak-tauri", version = "1.0.26", default-features = false, features = ["ble", "rnode-tcp", "mobile-throttle", "seed"] }
 tauri-plugin-haptics = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -50,7 +51,7 @@ block2 = "0.6"
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.19"
 btleplug = "0.11"
-rns-interface = { path = "../../rsReticulum/crates/rns-interface", features = ["ble", "mobile-throttle"] }
+rns-interface = { path = "../../rsReticulum/crates/rns-interface", version = "1.1.0", features = ["ble", "mobile-throttle"] }
 tracing-android = "0.2"
 
 [target.'cfg(target_os = "ios")'.dependencies]

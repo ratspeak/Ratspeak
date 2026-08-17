@@ -4,6 +4,8 @@ description = "Ratspeak SQLite layer — schema, migrations, queries"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 ratspeak-core = { workspace = true }
