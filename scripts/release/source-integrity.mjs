@@ -328,9 +328,11 @@ export function verifyProductSurfaces(set) {
   expectEqual(tauri.version, marketing, "Tauri marketing version");
   expectEqual(tauri.bundle?.android?.versionCode, androidBuild, "Android versionCode");
   expectEqual(tauri.bundle?.iOS?.bundleVersion, iosBuild, "Tauri iOS bundle version");
-  if (!tauri.bundle?.resources?.includes("../third_party/opus-rs-0.1.29-COPYING")) {
-    fail("Tauri bundle must preserve the upstream opus-rs 0.1.29 notice");
-  }
+  expectEqual(
+    tauri.bundle?.resources?.["../third_party/opus-rs-0.1.29-COPYING"],
+    "third-party/opus-rs-0.1.29-COPYING.txt",
+    "Tauri bundled opus-rs notice path",
+  );
   expectEqual(
     sha256(join(repoRoot, "third_party/opus-rs-0.1.29-COPYING")),
     "67c6f0a4bac3019fb08948838d7203bf661a629416f69057081c6f39db5e96a5",
