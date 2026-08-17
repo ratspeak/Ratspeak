@@ -318,6 +318,10 @@ export function verifyProductSurfaces(set) {
   for (const lockfile of ["Cargo.lock", "src-tauri/Cargo.lock"]) {
     if (!existsSync(join(repoRoot, lockfile))) fail(`missing committed release lockfile ${lockfile}`);
   }
+  execFileSync("python3", ["tools/check-api-baseline.py", "--metadata-only"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
 
   expectEqual(readUtf8(join(repoRoot, "VERSION")).trim(), display, "VERSION");
   expectEqual(

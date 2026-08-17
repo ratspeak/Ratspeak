@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "tool": {
+    "name": "cargo-public-api",
+    "version": "0.52.0",
+    "rustdocToolchain": "nightly-2026-08-01",
+    "target": "aarch64-apple-darwin",
+    "arguments": [
+      "--all-features",
+      "-sss"
+    ]
+  },
+  "baseline": {
+    "commit": "fc78e4926c696a921f308d238ef1b620e0db0078",
+    "capturedOn": "2026-08-17"
+  },
+  "packages": [
+    {
+      "name": "ratspeak-core",
+      "manifestPath": "Cargo.toml",
+      "tier": "application-internal",
+      "compatibility": "reviewed-snapshot",
+      "snapshot": "api-baseline/ratspeak-core.txt",
+      "itemCount": 186,
+      "sha256": "d545a522d547a5e9847898b735595fa17b74c38bad013741ad15cd1964413241"
+    },
+    {
+      "name": "ratspeak-db",
+      "manifestPath": "Cargo.toml",
+      "tier": "application-internal",
+      "compatibility": "reviewed-snapshot",
+      "snapshot": "api-baseline/ratspeak-db.txt",
+      "itemCount": 682,
+      "sha256": "81e03f2e8f7ef4093d34d51121cfe55fa5848a380c026c7c8b3c647e3242b54c"
+    },
+    {
+      "name": "ratspeak-runtime",
+      "manifestPath": "Cargo.toml",
+      "tier": "application-internal",
+      "compatibility": "reviewed-snapshot",
+      "snapshot": "api-baseline/ratspeak-runtime.txt",
+      "itemCount": 2361,
+      "sha256": "2f797c9b2a8e7b81b06241b3503a3e4659f3f66557af02d2336f39ee7984f3d6"
+    },
+    {
+      "name": "ratspeak-tauri",
+      "manifestPath": "Cargo.toml",
+      "tier": "application-internal",
+      "compatibility": "reviewed-snapshot",
+      "snapshot": "api-baseline/ratspeak-tauri.txt",
+      "itemCount": 790,
+      "sha256": "cfabd0baa11a2cd96fd0db2c1ac83d86407919975ce8824daca0f426b0c843ea"
+    },
+    {
+      "name": "ratspeak",
+      "manifestPath": "src-tauri/Cargo.toml",
+      "tier": "application-internal",
+      "compatibility": "reviewed-snapshot",
+      "snapshot": "api-baseline/ratspeak.txt",
+      "itemCount": 2,
+      "sha256": "034278ac95cbe749a710332e76ec105d2188a36da147738f9f852517872f38d6"
+    }
+  ]
+}

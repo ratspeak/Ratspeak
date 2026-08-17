@@ -15,12 +15,55 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RATSPEAK_RSRETICULUM_REF: 47dbbf1febc0a9d3259f179a0512d9b56bb2320d
-  RATSPEAK_RSLXMF_REF: b8d7afce73f7f098706029361568e63f22888ea3
-  RATSPEAK_RSLXST_REF: af89a03094605dbdf7264d06fdc546526ec6980b
-  RATSPEAK_LRGP_REF: 2b502a0eee94d92a717b45553815b5e46c3c5ccb
+  RATSPEAK_RSRETICULUM_REF: c9b210a52b139ac9754b46c5c2639c4113e7ae53
+  RATSPEAK_RSLXMF_REF: 80bb96f799330e28a0125367d4c29826f5147cc3
+  RATSPEAK_RSLXST_REF: 21a54b778472343b70fd71d34ae96c61c44187c3
+  RATSPEAK_LRGP_REF: 68b4d546cc9dd55693cda8ae8b0b54ecdfc3b14f
 
 jobs:
+  api-compat:
+    name: Internal Rust API baseline
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          path: Ratspeak
+          fetch-depth: 0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsReticulum
+          ref: ${{ env.RATSPEAK_RSRETICULUM_REF }}
+          path: rsReticulum
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsLXMF
+          ref: ${{ env.RATSPEAK_RSLXMF_REF }}
+          path: rsLXMF
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsLXST
+          ref: ${{ env.RATSPEAK_RSLXST_REF }}
+          path: rsLXST
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/lrgp-rs
+          ref: ${{ env.RATSPEAK_LRGP_REF }}
+          path: lrgp-rs
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-08-01
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: Ratspeak, Ratspeak/src-tauri
+          cache-bin: true
+      - name: Install API snapshot tool
+        run: cargo install cargo-public-api --version 0.52.0 --locked
+      - name: Check reviewed Rust API baseline
+        run: python3 tools/check-api-baseline.py
+        working-directory: Ratspeak
+
   test:
     name: Test
     runs-on: ubuntu-latest

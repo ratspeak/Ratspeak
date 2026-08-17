@@ -7,6 +7,9 @@ changes that materially affect how an artifact is reproduced.
 
 ### Changed
 
+- Classified every Rust package as application internal and added pinned,
+  CI-enforced API snapshots to protect coordinated workspace changes without
+  presenting Ratspeak as a public Rust SDK.
 - Preserved and now inspects every name-based Android Rust/Kotlin JNI boundary
   in minified release artifacts, restoring BLE RNode, USB permission, platform
   replay, native file save, and call/voice-message audio entry points that R8

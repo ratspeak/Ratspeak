@@ -1,0 +1,186 @@
+pub mod ratspeak_core
+pub mod ratspeak_core::config
+pub struct ratspeak_core::config::DashboardConfig
+pub ratspeak_core::config::DashboardConfig::data_dir: std::path::PathBuf
+pub ratspeak_core::config::DashboardConfig::data_root: std::path::PathBuf
+pub ratspeak_core::config::DashboardConfig::max_log_entries: usize
+pub ratspeak_core::config::DashboardConfig::rns_config_dir: std::path::PathBuf
+pub ratspeak_core::config::DashboardConfig::rns_config_dir_overridden: bool
+impl ratspeak_core::config::DashboardConfig
+pub fn ratspeak_core::config::DashboardConfig::db_path(&self) -> std::path::PathBuf
+pub fn ratspeak_core::config::DashboardConfig::files_dir(&self) -> std::path::PathBuf
+pub fn ratspeak_core::config::DashboardConfig::from_env_and_defaults(std::path::PathBuf) -> Self
+pub fn ratspeak_core::config::DashboardConfig::identities_dir(&self) -> std::path::PathBuf
+pub fn ratspeak_core::config::DashboardConfig::identity_cache_dir(&self, &str) -> std::path::PathBuf
+pub fn ratspeak_core::config::DashboardConfig::identity_files_dir(&self, &str) -> std::path::PathBuf
+pub fn ratspeak_core::config::DashboardConfig::identity_profile_dir(&self, &str) -> std::path::PathBuf
+pub fn ratspeak_core::config::DashboardConfig::identity_rns_config_dir(&self, &str) -> std::path::PathBuf
+pub fn ratspeak_core::config::DashboardConfig::uses_app_private_rns_config_dir(&self) -> bool
+pub const ratspeak_core::config::LEGACY_RNS_INSTANCE_CONTROL_PORT: u16
+pub const ratspeak_core::config::LEGACY_RNS_SHARED_INSTANCE_PORT: u16
+pub const ratspeak_core::config::RATSPEAK_RNS_CONFIG_DIR_ENV: &str
+pub const ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT: u16
+pub const ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT: u16
+pub mod ratspeak_core::emitter
+pub enum ratspeak_core::emitter::EmitError
+pub ratspeak_core::emitter::EmitError::Rejected
+pub ratspeak_core::emitter::EmitError::Unavailable
+pub struct ratspeak_core::emitter::NoopEmitter
+impl ratspeak_core::emitter::Emitter for ratspeak_core::emitter::NoopEmitter
+pub fn ratspeak_core::emitter::NoopEmitter::emit(&self, &str, serde_json::value::Value)
+pub fn ratspeak_core::emitter::NoopEmitter::try_emit(&self, &str, serde_json::value::Value) -> core::result::Result<(), ratspeak_core::emitter::EmitError>
+pub trait ratspeak_core::emitter::Emitter: core::marker::Send + core::marker::Sync
+pub fn ratspeak_core::emitter::Emitter::emit(&self, &str, serde_json::value::Value)
+pub fn ratspeak_core::emitter::Emitter::try_emit(&self, &str, serde_json::value::Value) -> core::result::Result<(), ratspeak_core::emitter::EmitError>
+impl ratspeak_core::emitter::Emitter for ratspeak_core::emitter::NoopEmitter
+pub fn ratspeak_core::emitter::NoopEmitter::emit(&self, &str, serde_json::value::Value)
+pub fn ratspeak_core::emitter::NoopEmitter::try_emit(&self, &str, serde_json::value::Value) -> core::result::Result<(), ratspeak_core::emitter::EmitError>
+pub mod ratspeak_core::errors
+pub enum ratspeak_core::errors::CoreError
+pub ratspeak_core::errors::CoreError::Invalid(alloc::string::String)
+pub mod ratspeak_core::notification
+pub enum ratspeak_core::notification::NativeNotificationKind
+pub ratspeak_core::notification::NativeNotificationKind::Call
+pub ratspeak_core::notification::NativeNotificationKind::Channel
+pub ratspeak_core::notification::NativeNotificationKind::Game
+pub ratspeak_core::notification::NativeNotificationKind::Message
+pub struct ratspeak_core::notification::NativeNotification
+pub ratspeak_core::notification::NativeNotification::body: alloc::string::String
+pub ratspeak_core::notification::NativeNotification::kind: ratspeak_core::notification::NativeNotificationKind
+pub ratspeak_core::notification::NativeNotification::notification_id: core::option::Option<i32>
+pub ratspeak_core::notification::NativeNotification::thread_id: core::option::Option<alloc::string::String>
+pub ratspeak_core::notification::NativeNotification::title: alloc::string::String
+impl ratspeak_core::notification::NativeNotification
+pub fn ratspeak_core::notification::NativeNotification::call(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, i32) -> Self
+pub fn ratspeak_core::notification::NativeNotification::channel(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, i32) -> Self
+pub fn ratspeak_core::notification::NativeNotification::game(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, i32) -> Self
+pub fn ratspeak_core::notification::NativeNotification::message(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, i32) -> Self
+pub struct ratspeak_core::notification::NoopNotifier
+impl ratspeak_core::notification::NativeNotifier for ratspeak_core::notification::NoopNotifier
+pub fn ratspeak_core::notification::NoopNotifier::notify(&self, ratspeak_core::notification::NativeNotification)
+pub trait ratspeak_core::notification::NativeNotifier: core::marker::Send + core::marker::Sync
+pub fn ratspeak_core::notification::NativeNotifier::notify(&self, ratspeak_core::notification::NativeNotification)
+impl ratspeak_core::notification::NativeNotifier for ratspeak_core::notification::NoopNotifier
+pub fn ratspeak_core::notification::NoopNotifier::notify(&self, ratspeak_core::notification::NativeNotification)
+pub mod ratspeak_core::radio
+pub struct ratspeak_core::radio::RnodeCatalog
+pub ratspeak_core::radio::RnodeCatalog::bandwidth_max: u64
+pub ratspeak_core::radio::RnodeCatalog::bandwidth_min: u64
+pub ratspeak_core::radio::RnodeCatalog::coding_rate_max: u8
+pub ratspeak_core::radio::RnodeCatalog::coding_rate_min: u8
+pub ratspeak_core::radio::RnodeCatalog::default_preset: &'static str
+pub ratspeak_core::radio::RnodeCatalog::default_region: &'static str
+pub ratspeak_core::radio::RnodeCatalog::frequency_max: u64
+pub ratspeak_core::radio::RnodeCatalog::frequency_min: u64
+pub ratspeak_core::radio::RnodeCatalog::presets: &'static [ratspeak_core::radio::RnodePreset]
+pub ratspeak_core::radio::RnodeCatalog::regions: &'static [ratspeak_core::radio::RnodeRegion]
+pub ratspeak_core::radio::RnodeCatalog::spreading_factor_max: u8
+pub ratspeak_core::radio::RnodeCatalog::spreading_factor_min: u8
+pub ratspeak_core::radio::RnodeCatalog::tx_power_max: i8
+pub ratspeak_core::radio::RnodeCatalog::tx_power_min: i8
+pub struct ratspeak_core::radio::RnodeParams
+pub ratspeak_core::radio::RnodeParams::bandwidth: u64
+pub ratspeak_core::radio::RnodeParams::coding_rate: u8
+pub ratspeak_core::radio::RnodeParams::frequency: u64
+pub ratspeak_core::radio::RnodeParams::spreading_factor: u8
+pub ratspeak_core::radio::RnodeParams::tx_power: i8
+pub struct ratspeak_core::radio::RnodePreset
+pub ratspeak_core::radio::RnodePreset::bandwidth: u64
+pub ratspeak_core::radio::RnodePreset::coding_rate: u8
+pub ratspeak_core::radio::RnodePreset::description: &'static str
+pub ratspeak_core::radio::RnodePreset::key: &'static str
+pub ratspeak_core::radio::RnodePreset::label: &'static str
+pub ratspeak_core::radio::RnodePreset::spreading_factor: u8
+pub ratspeak_core::radio::RnodePreset::tx_power: i8
+pub struct ratspeak_core::radio::RnodeRegion
+pub ratspeak_core::radio::RnodeRegion::airtime_limit_long: core::option::Option<f32>
+pub ratspeak_core::radio::RnodeRegion::airtime_limit_short: core::option::Option<f32>
+pub ratspeak_core::radio::RnodeRegion::frequency: u64
+pub ratspeak_core::radio::RnodeRegion::key: &'static str
+pub ratspeak_core::radio::RnodeRegion::label: &'static str
+pub ratspeak_core::radio::RnodeRegion::max: u64
+pub ratspeak_core::radio::RnodeRegion::min: u64
+pub const ratspeak_core::radio::DEFAULT_RNODE_PRESET_KEY: &str
+pub const ratspeak_core::radio::DEFAULT_RNODE_REGION_KEY: &str
+pub const ratspeak_core::radio::RNODE_BANDWIDTH_MAX_HZ: u64
+pub const ratspeak_core::radio::RNODE_BANDWIDTH_MIN_HZ: u64
+pub const ratspeak_core::radio::RNODE_CODING_RATE_MAX: u8
+pub const ratspeak_core::radio::RNODE_CODING_RATE_MIN: u8
+pub const ratspeak_core::radio::RNODE_FREQUENCY_MAX_HZ: u64
+pub const ratspeak_core::radio::RNODE_FREQUENCY_MIN_HZ: u64
+pub const ratspeak_core::radio::RNODE_PRESETS: &[ratspeak_core::radio::RnodePreset]
+pub const ratspeak_core::radio::RNODE_REGIONS: &[ratspeak_core::radio::RnodeRegion]
+pub const ratspeak_core::radio::RNODE_SPREADING_FACTOR_MAX: u8
+pub const ratspeak_core::radio::RNODE_SPREADING_FACTOR_MIN: u8
+pub const ratspeak_core::radio::RNODE_TX_POWER_MAX_DBM: i8
+pub const ratspeak_core::radio::RNODE_TX_POWER_MIN_DBM: i8
+pub fn ratspeak_core::radio::default_rnode_params() -> ratspeak_core::radio::RnodeParams
+pub fn ratspeak_core::radio::infer_rnode_preset(u64, u8, u8, i8) -> core::option::Option<&'static str>
+pub fn ratspeak_core::radio::infer_rnode_region(u64) -> core::option::Option<&'static str>
+pub fn ratspeak_core::radio::resolve_rnode_params(&str, &str) -> core::option::Option<ratspeak_core::radio::RnodeParams>
+pub fn ratspeak_core::radio::rnode_catalog() -> ratspeak_core::radio::RnodeCatalog
+pub fn ratspeak_core::radio::rnode_preset(&str) -> core::option::Option<&'static ratspeak_core::radio::RnodePreset>
+pub fn ratspeak_core::radio::rnode_region(&str) -> core::option::Option<&'static ratspeak_core::radio::RnodeRegion>
+pub mod ratspeak_core::types
+pub struct ratspeak_core::types::LrgpMsgMeta
+pub ratspeak_core::types::LrgpMsgMeta::app_id: alloc::string::String
+pub ratspeak_core::types::LrgpMsgMeta::contact_hash: alloc::string::String
+pub ratspeak_core::types::LrgpMsgMeta::identity_id: alloc::string::String
+pub ratspeak_core::types::LrgpMsgMeta::sent_at: f64
+pub ratspeak_core::types::LrgpMsgMeta::session_id: alloc::string::String
+pub struct ratspeak_core::types::PeerRow
+pub ratspeak_core::types::PeerRow::display_name: alloc::string::String
+pub ratspeak_core::types::PeerRow::first_seen: core::option::Option<f64>
+pub ratspeak_core::types::PeerRow::hash: alloc::string::String
+pub ratspeak_core::types::PeerRow::identity_hash: alloc::string::String
+pub ratspeak_core::types::PeerRow::is_contact: bool
+pub ratspeak_core::types::PeerRow::last_interface: alloc::string::String
+pub ratspeak_core::types::PeerRow::last_seen: core::option::Option<f64>
+pub ratspeak_core::types::PeerRow::profile_status: alloc::string::String
+pub ratspeak_core::types::PeerRow::services: alloc::vec::Vec<alloc::string::String>
+pub const ratspeak_core::types::LXMF_DELIVERY_APP_NAME: &str
+pub const ratspeak_core::types::LXMF_PROPAGATION_APP_NAME: &str
+pub const ratspeak_core::types::MAX_DISCOVERED_PROPAGATION_NODES: usize
+pub const ratspeak_core::types::PROPAGATION_NODE_TTL_SECS: u64
+pub fn ratspeak_core::types::hex_to_array16(&str) -> core::option::Option<[u8; 16]>
+pub enum ratspeak_core::CoreError
+pub ratspeak_core::CoreError::Invalid(alloc::string::String)
+pub enum ratspeak_core::EmitError
+pub ratspeak_core::EmitError::Rejected
+pub ratspeak_core::EmitError::Unavailable
+pub enum ratspeak_core::NativeNotificationKind
+pub ratspeak_core::NativeNotificationKind::Call
+pub ratspeak_core::NativeNotificationKind::Channel
+pub ratspeak_core::NativeNotificationKind::Game
+pub ratspeak_core::NativeNotificationKind::Message
+pub struct ratspeak_core::NativeNotification
+pub ratspeak_core::NativeNotification::body: alloc::string::String
+pub ratspeak_core::NativeNotification::kind: ratspeak_core::notification::NativeNotificationKind
+pub ratspeak_core::NativeNotification::notification_id: core::option::Option<i32>
+pub ratspeak_core::NativeNotification::thread_id: core::option::Option<alloc::string::String>
+pub ratspeak_core::NativeNotification::title: alloc::string::String
+impl ratspeak_core::notification::NativeNotification
+pub fn ratspeak_core::notification::NativeNotification::call(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, i32) -> Self
+pub fn ratspeak_core::notification::NativeNotification::channel(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, i32) -> Self
+pub fn ratspeak_core::notification::NativeNotification::game(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, i32) -> Self
+pub fn ratspeak_core::notification::NativeNotification::message(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, i32) -> Self
+pub struct ratspeak_core::NoopEmitter
+impl ratspeak_core::emitter::Emitter for ratspeak_core::emitter::NoopEmitter
+pub fn ratspeak_core::emitter::NoopEmitter::emit(&self, &str, serde_json::value::Value)
+pub fn ratspeak_core::emitter::NoopEmitter::try_emit(&self, &str, serde_json::value::Value) -> core::result::Result<(), ratspeak_core::emitter::EmitError>
+pub struct ratspeak_core::NoopNotifier
+impl ratspeak_core::notification::NativeNotifier for ratspeak_core::notification::NoopNotifier
+pub fn ratspeak_core::notification::NoopNotifier::notify(&self, ratspeak_core::notification::NativeNotification)
+pub const ratspeak_core::LXMF_DELIVERY_APP_NAME: &str
+pub const ratspeak_core::LXMF_PROPAGATION_APP_NAME: &str
+pub trait ratspeak_core::Emitter: core::marker::Send + core::marker::Sync
+pub fn ratspeak_core::Emitter::emit(&self, &str, serde_json::value::Value)
+pub fn ratspeak_core::Emitter::try_emit(&self, &str, serde_json::value::Value) -> core::result::Result<(), ratspeak_core::emitter::EmitError>
+impl ratspeak_core::emitter::Emitter for ratspeak_core::emitter::NoopEmitter
+pub fn ratspeak_core::emitter::NoopEmitter::emit(&self, &str, serde_json::value::Value)
+pub fn ratspeak_core::emitter::NoopEmitter::try_emit(&self, &str, serde_json::value::Value) -> core::result::Result<(), ratspeak_core::emitter::EmitError>
+pub trait ratspeak_core::NativeNotifier: core::marker::Send + core::marker::Sync
+pub fn ratspeak_core::NativeNotifier::notify(&self, ratspeak_core::notification::NativeNotification)
+impl ratspeak_core::notification::NativeNotifier for ratspeak_core::notification::NoopNotifier
+pub fn ratspeak_core::notification::NoopNotifier::notify(&self, ratspeak_core::notification::NativeNotification)
+pub fn ratspeak_core::hex_to_array16(&str) -> core::option::Option<[u8; 16]>
