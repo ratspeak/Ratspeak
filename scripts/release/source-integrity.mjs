@@ -399,10 +399,17 @@ export function verifyProductSurfaces(set) {
     verifyImmutableActions(workflowName, workflow);
   }
 
+  const ciWorkflow = readUtf8(join(workflowDirectory, "ci.yml"));
+  expectContains(ciWorkflow, `node-version: ${set.toolchains.node}`, "CI Node toolchain");
   expectContains(
-    readUtf8(join(workflowDirectory, "ci.yml")),
-    `node-version: ${set.toolchains.node}`,
-    "CI Node toolchain",
+    ciWorkflow,
+    "source-integrity.mjs github-outputs",
+    "CI mobile reviewed toolchain load",
+  );
+  expectContains(
+    ciWorkflow,
+    'cargo install tauri-cli --version "${{ steps.mobile-source.outputs.tauri_cli }}" --locked',
+    "CI minified Android Tauri CLI",
   );
 
   for (const workflowName of [
