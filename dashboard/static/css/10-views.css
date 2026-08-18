@@ -902,6 +902,9 @@
     flex-shrink: 0;
     white-space: nowrap;
 }
+.conn-iface-status-text.is-connecting {
+    color: var(--status-warning-fg);
+}
 .conn-iface-group {
     color: var(--text-muted);
     font-size: var(--type-row-meta-size);

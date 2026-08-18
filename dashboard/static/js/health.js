@@ -1182,6 +1182,10 @@ function _renderConnectionsFromCache() {
                 }
                 if (paused) {
                     pillHtml += '<span class="conn-iface-status-text">Paused</span>';
+                } else if (mobileHealth &&
+                    (mobileHealth.state === 'connecting' || mobileHealth.state === 'reconnecting')) {
+                    pillHtml += '<span class="conn-iface-status-text is-connecting" role="status">' +
+                        escapeHtml(mobileHealth.label) + '</span>';
                 } else if (mobileHealth) {
                     pillHtml += '<span class="conn-iface-pill" role="status" title="' +
                         escapeHtml(mobileHealth.label) + '">' +

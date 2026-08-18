@@ -7682,6 +7682,19 @@ fn network_view_hides_shared_instance_internal_interfaces() {
 }
 
 #[test]
+fn connecting_interface_status_uses_plain_warning_text() {
+    let root = repo_root();
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    assert!(health.contains("mobileHealth.state === 'connecting'"));
+    assert!(health.contains("mobileHealth.state === 'reconnecting'"));
+    assert!(health.contains("conn-iface-status-text is-connecting"));
+
+    let css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    assert!(css.contains(".conn-iface-status-text.is-connecting"));
+    assert!(css.contains("color: var(--status-warning-fg);"));
+}
+
+#[test]
 fn propagated_send_paths_run_relay_readiness_preflight() {
     let root = repo_root();
     let propagation = read_source(root.join("crates/ratspeak-runtime/src/propagation.rs"))
