@@ -1,6 +1,7 @@
 /src/main/java/com/ratspeak/app/generated
 /src/main/jniLibs/**/*.so
 /src/main/assets/tauri.conf.json
+/src/main/assets/third-party/
 /tauri.build.gradle.kts
 /proguard-tauri.pro
 /tauri.properties
