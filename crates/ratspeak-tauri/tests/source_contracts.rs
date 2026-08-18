@@ -1303,7 +1303,7 @@ fn mobile_shells_advertise_platform_appropriate_orientations() {
 }
 
 #[test]
-fn ble_rnode_runtime_spawns_enable_flow_control() {
+fn ble_rnode_runtime_spawns_use_upstream_flow_control_default() {
     let root = repo_root();
     let ble_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("ble commands");
@@ -1318,8 +1318,8 @@ fn ble_rnode_runtime_spawns_enable_flow_control() {
     );
     for block in native_blocks {
         assert!(
-            block.contains("flow_control: true"),
-            "Android native BLE RNode runtime args must opt into RNode CMD_READY flow control:\n{block}"
+            block.contains("flow_control: false"),
+            "Android native BLE RNode runtime args must preserve upstream flow-control defaults:\n{block}"
         );
     }
 
@@ -1331,8 +1331,8 @@ fn ble_rnode_runtime_spawns_enable_flow_control() {
     );
     for block in interface_blocks {
         assert!(
-            block.contains("flow_control: true"),
-            "BLE RNode runtime args must opt into RNode CMD_READY flow control:\n{block}"
+            block.contains("flow_control: false"),
+            "BLE RNode runtime args must preserve upstream flow-control defaults:\n{block}"
         );
     }
 }

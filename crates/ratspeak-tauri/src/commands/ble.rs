@@ -1698,7 +1698,11 @@ pub async fn apply_ble_rnode_bridge_ready(
                                     mode,
                                     st_alock,
                                     lt_alock,
-                                    flow_control: true,
+                                    // Match upstream RNodeInterface/Sideband. Official RNode
+                                    // firmware does not emit a fresh CMD_READY after each packet,
+                                    // so forcing flow control can permanently stall after the
+                                    // first outbound frame.
+                                    flow_control: false,
                                     id_interval,
                                     id_callsign,
                                 },

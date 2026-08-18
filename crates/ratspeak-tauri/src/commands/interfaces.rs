@@ -3565,7 +3565,9 @@ async fn spawn_editable_interface(
                                 mode: rnode_runtime_mode(mode),
                                 st_alock: airtime_limit_short.map(|v| v as f32),
                                 lt_alock: airtime_limit_long.map(|v| v as f32),
-                                flow_control: true,
+                                // Upstream RNodeInterface defaults this off. Enabling it without
+                                // an active CMD_READY polling loop stalls after one packet.
+                                flow_control: false,
                             },
                             RNodeStartupOptions::default(),
                         )
@@ -5091,7 +5093,9 @@ pub async fn add_lora_interface(
                             mode: runtime_mode,
                             st_alock: radio.airtime_limit_short.map(|v| v as f32),
                             lt_alock: radio.airtime_limit_long.map(|v| v as f32),
-                            flow_control: true,
+                            // Upstream RNodeInterface defaults this off. Enabling it without
+                            // an active CMD_READY polling loop stalls after one packet.
+                            flow_control: false,
                         },
                         RNodeStartupOptions::default(),
                     )
