@@ -1076,7 +1076,7 @@ pub async fn get_propagation_status(state: State<'_, Arc<AppState>>) -> AppResul
     Ok(crate::propagation::get_status_payload(&state))
 }
 
-async fn live_interface_summary(state: &Arc<AppState>) -> Option<(bool, u64)> {
+async fn any_live_egress_online(state: &Arc<AppState>) -> Option<bool> {
     let handle = {
         let rns = state.rns.read().ok()?;
         rns.as_ref().map(|mgr| mgr.handle.clone())?
@@ -1085,10 +1085,12 @@ async fn live_interface_summary(state: &Arc<AppState>) -> Option<(bool, u64)> {
         .query_control(rns_transport::messages::TransportQuery::GetInterfaceStats)
         .await
     {
-        Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) => Some((
-            stats.iter().any(|iface| iface.online),
-            stats.iter().map(|iface| iface.tx_bytes).sum(),
-        )),
+        Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) => {
+            Some(stats.iter().any(|interface| {
+                interface.online
+                    && !matches!(interface.role.as_str(), "shared_server" | "local_client")
+            }))
+        }
         _ => None,
     }
 }
@@ -1153,9 +1155,8 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         return Err(AppError::service_unavailable("RNS or LXMF not initialized"));
     }
 
-    let before_summary = live_interface_summary(&state).await;
-    let online = before_summary
-        .map(|(online, _)| online)
+    let online = any_live_egress_online(&state)
+        .await
         .or_else(|| crate::any_interface_online_cached(&state));
     if matches!(online, Some(false)) {
         tracing::warn!("manual announce skipped: no interfaces online");
@@ -1171,27 +1172,11 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         return Ok(json!(null));
     }
 
-    let before_tx = before_summary.map(|(_, tx)| tx);
-    let mut report = crate::send_manual_announce_from_origin(&state, activity_fence).await;
-    let mut retried = false;
-    let mut sent_bytes = None;
-
-    if let Some(start_tx) = before_tx {
-        tokio::time::sleep(std::time::Duration::from_millis(450)).await;
-        sent_bytes = live_interface_summary(&state)
-            .await
-            .map(|(_, tx)| tx.saturating_sub(start_tx));
-
-        if report.queued > 0 && sent_bytes == Some(0) {
-            retried = true;
-            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-            report = crate::send_manual_announce_from_origin(&state, activity_fence).await;
-            tokio::time::sleep(std::time::Duration::from_millis(450)).await;
-            sent_bytes = live_interface_summary(&state)
-                .await
-                .map(|(_, tx)| tx.saturating_sub(start_tx));
-        }
-    }
+    // Reticulum owns announce-cap scheduling and may intentionally hold a
+    // packet for longer than an IPC request can remain open. Queue exactly
+    // once; a short fixed TX-byte deadline would reject healthy low-bitrate
+    // interfaces and duplicate the announce while it was still pending.
+    let report = crate::send_manual_announce_from_origin(&state, activity_fence).await;
 
     if report.queued == 0 {
         let failure = if report.packets == 0 {
@@ -1209,26 +1194,12 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         return Ok(json!({ "success": false, "error": "not_ready" }));
     }
 
-    if sent_bytes == Some(0) {
-        tracing::warn!("manual announce queued but no interface transmitted bytes");
-        record_manual_announce_outcome(
-            &state,
-            activity_fence,
-            Some(producer::AnnounceFailureReason::NoInterfaceTransmission),
-        );
-        state.emit_to_all(
-            "announce_triggered",
-            json!({ "success": false, "error": "not_sent", "retried": retried }),
-        );
-        return Ok(json!({ "success": false, "error": "not_sent", "retried": retried }));
-    }
-
     record_manual_announce_outcome(&state, activity_fence, None);
     state.emit_to_all(
         "announce_triggered",
-        json!({ "success": true, "retried": retried, "sent_bytes": sent_bytes }),
+        json!({ "success": true, "queued": report.queued, "packets": report.packets }),
     );
-    Ok(json!({ "success": true, "retried": retried, "sent_bytes": sent_bytes }))
+    Ok(json!({ "success": true, "queued": report.queued, "packets": report.packets }))
 }
 
 #[tauri::command]

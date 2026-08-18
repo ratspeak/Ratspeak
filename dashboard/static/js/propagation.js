@@ -386,8 +386,8 @@ function wireUpHandlers(container, mode) {
     var hostAnnounceBtn = document.getElementById('prop-host-announce-btn');
     if (hostAnnounceBtn) {
         hostAnnounceBtn.addEventListener('click', function() {
-            // The shared announce_triggered owner reports the real transmitted
-            // or failed outcome. Do not claim success on command acceptance.
+            // The shared announce_triggered owner reports queue admission or a
+            // setup failure. Reticulum schedules physical transmission.
             RS.invoke('trigger_announce').catch(function() {});
         });
     }

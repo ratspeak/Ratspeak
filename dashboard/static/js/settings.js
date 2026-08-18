@@ -1991,13 +1991,14 @@ RS.listen('announce_triggered', function(data) {
     if (data.success) {
         _lastAnnounceTime = Date.now();
         if (typeof haptic === 'function') haptic('success');
-        showToast('Announce sent', 'toast-success', 4000);
-        // Burst is gated on backend success so it aligns with the real outcome.
+        showToast('Announce queued for transmission', 'toast-success', 4000);
+        // Burst is gated on backend queue acceptance. Reticulum owns the
+        // interface-specific announce-cap delay and physical transmission.
         if (origin && typeof showAnnounceAnimation === 'function') {
             showAnnounceAnimation(origin.el, origin.cx, origin.cy);
         }
         if (networkBtn) {
-            setAnnounceLabel(networkBtn, 'Announced!');
+            setAnnounceLabel(networkBtn, 'Queued!');
             networkBtn.classList.add('is-success');
             setTimeout(function() {
                 setAnnounceLabel(networkBtn, 'Announce');
@@ -2016,19 +2017,6 @@ RS.listen('announce_triggered', function(data) {
         if (typeof haptic === 'function') haptic('warning');
         showToast('Connect to a network first', 'toast-warning', 3000);
         // Frontend cache disagreed with backend; play dampened animation for closure.
-        if (origin && typeof showAnnounceFailAnimation === 'function') {
-            showAnnounceFailAnimation(origin.el, origin.cx, origin.cy);
-        }
-        if (networkBtn) {
-            setAnnounceLabel(networkBtn, 'Announce');
-            networkBtn.disabled = false;
-        }
-    } else if (data.error === 'not_sent') {
-        if (typeof haptic === 'function') haptic('warning');
-        var announceMsg = window._autoEnabled
-            ? 'Announce queued, but no interface transmitted it yet. Local Network may still be finding peers.'
-            : 'Announce queued, but no connected interface transmitted it. Check that your TCP peer is connected or enable Local Network.';
-        showToast(announceMsg, 'toast-warning', 5000);
         if (origin && typeof showAnnounceFailAnimation === 'function') {
             showAnnounceFailAnimation(origin.el, origin.cx, origin.cy);
         }

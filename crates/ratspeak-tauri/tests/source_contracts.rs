@@ -3537,7 +3537,8 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
             "settings interface actions must not swallow IPC/backend failures"
         );
     }
-    assert!(settings_js.contains("data.error === 'not_sent'"));
+    assert!(settings_js.contains("Announce queued for transmission"));
+    assert!(!settings_js.contains("data.error === 'not_sent'"));
     assert!(settings_js.contains("delete networkBtn.dataset.announcePending"));
     assert!(
         settings_js.contains("var ANNOUNCE_COOLDOWN = 5000;"),
@@ -3557,7 +3558,9 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let network_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
         .expect("network command source");
     assert!(network_rs.contains("send_manual_announce_from_origin"));
-    assert!(network_rs.contains("\"not_sent\""));
+    assert!(!network_rs.contains("\"not_sent\""));
+    assert!(!network_rs.contains("Duration::from_millis(450)"));
+    assert!(network_rs.contains("\"shared_server\" | \"local_client\""));
 }
 
 #[test]

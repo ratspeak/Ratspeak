@@ -2939,6 +2939,63 @@ async fn migrate_android_usb_selectors_for_startup(state: &AppState, config_dir:
     }
 }
 
+fn interface_stats_have_online_egress(interfaces: &[Value]) -> bool {
+    interfaces.iter().any(|interface| {
+        if !interface
+            .get("online")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+
+        // The app-private shared-instance listener and its accepted local
+        // clients are process plumbing, not paths to another Reticulum node.
+        // A SharedInstancePeer is different: it reaches an external daemon
+        // and therefore is a valid egress path.
+        !matches!(
+            interface.get("role").and_then(Value::as_str),
+            Some("shared_server" | "local_client")
+        )
+    })
+}
+
+#[cfg(test)]
+mod interface_availability_tests {
+    use super::interface_stats_have_online_egress;
+    use serde_json::json;
+
+    #[test]
+    fn internal_shared_listener_is_not_network_egress() {
+        let interfaces = vec![
+            json!({"online": true, "role": "shared_server"}),
+            json!({"online": true, "role": "local_client"}),
+            json!({"online": false, "role": "normal"}),
+        ];
+
+        assert!(!interface_stats_have_online_egress(&interfaces));
+    }
+
+    #[test]
+    fn physical_and_shared_instance_peer_interfaces_are_network_egress() {
+        assert!(interface_stats_have_online_egress(&[json!({
+            "online": true,
+            "role": "normal",
+        })]));
+        assert!(interface_stats_have_online_egress(&[json!({
+            "online": true,
+            "role": "shared_instance_peer",
+        })]));
+    }
+
+    #[test]
+    fn missing_legacy_role_remains_eligible() {
+        assert!(interface_stats_have_online_egress(&[json!({
+            "online": true,
+        })]));
+    }
+}
+
 /// `None` until the first poll completes; callers should allow the attempt.
 pub fn any_interface_online_cached(state: &AppState) -> Option<bool> {
     let guard = state.last_stats.read().ok()?;
@@ -2947,10 +3004,7 @@ pub fn any_interface_online_cached(state: &AppState) -> Option<bool> {
         .get("interface_stats")?
         .get("interfaces")?
         .as_array()?;
-    Some(
-        arr.iter()
-            .any(|i| i.get("online").and_then(|o| o.as_bool()).unwrap_or(false)),
-    )
+    Some(interface_stats_have_online_egress(arr))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
