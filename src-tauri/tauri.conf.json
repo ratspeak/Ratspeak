@@ -35,7 +35,12 @@
     "linux": {
       "appimage": {
         "files": {
-          "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml"
+          "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml",
+          "/usr/lib/libayatana-appindicator3.so.1": "resources/linux/appimage-runtime/libayatana-appindicator3.so.1",
+          "/usr/lib/libayatana-ido3-0.4.so.0": "resources/linux/appimage-runtime/libayatana-ido3-0.4.so.0",
+          "/usr/lib/libayatana-indicator3.so.7": "resources/linux/appimage-runtime/libayatana-indicator3.so.7",
+          "/usr/lib/libdbusmenu-glib.so.4": "resources/linux/appimage-runtime/libdbusmenu-glib.so.4",
+          "/usr/lib/libdbusmenu-gtk3.so.4": "resources/linux/appimage-runtime/libdbusmenu-gtk3.so.4"
         }
       },
       "deb": {

@@ -148,6 +148,11 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "2.11.1" --locked
 
+      - name: Stage AppImage indicator runtime
+        if: ${{ matrix.os == 'ubuntu-22.04' }}
+        working-directory: Ratspeak
+        run: bash scripts/release/stage-appimage-runtime.sh
+
       - name: Build CSS
         shell: bash
         working-directory: Ratspeak
@@ -162,6 +167,17 @@ jobs:
         if: ${{ inputs.profile == 'debug' }}
         working-directory: Ratspeak/src-tauri
         run: ${{ matrix.debug_build_command }}
+
+      - name: Verify AppImage indicator runtime
+        if: ${{ matrix.os == 'ubuntu-22.04' }}
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          BUILD_PROFILE: ${{ inputs.profile == 'debug' && 'debug' || 'release' }}
+        run: |
+          mapfile -t appimages < <(find "src-tauri/target/$BUILD_PROFILE/bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' | sort)
+          test "${#appimages[@]}" = "1"
+          bash scripts/release/verify-appimage-runtime.sh "${appimages[0]}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

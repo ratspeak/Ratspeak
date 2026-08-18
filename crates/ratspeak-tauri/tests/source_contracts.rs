@@ -2063,6 +2063,40 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
             .and_then(|value| value.as_str()),
         Some(metainfo_path)
     );
+    for soname in [
+        "libayatana-appindicator3.so.1",
+        "libayatana-ido3-0.4.so.0",
+        "libayatana-indicator3.so.7",
+        "libdbusmenu-glib.so.4",
+        "libdbusmenu-gtk3.so.4",
+    ] {
+        let destination = format!("/usr/lib/{soname}");
+        let source = format!("resources/linux/appimage-runtime/{soname}");
+        assert_eq!(
+            appimage_files
+                .get(&destination)
+                .and_then(|value| value.as_str()),
+            Some(source.as_str()),
+            "AppImage must explicitly bundle {soname}"
+        );
+    }
+
+    let stage_runtime = read_source(root.join("scripts/release/stage-appimage-runtime.sh"))
+        .expect("AppImage runtime staging gate");
+    let verify_runtime = read_source(root.join("scripts/release/verify-appimage-runtime.sh"))
+        .expect("AppImage runtime verification gate");
+    for soname in [
+        "libayatana-appindicator3.so.1",
+        "libayatana-ido3-0.4.so.0",
+        "libayatana-indicator3.so.7",
+        "libdbusmenu-glib.so.4",
+        "libdbusmenu-gtk3.so.4",
+    ] {
+        assert!(stage_runtime.contains(soname));
+        assert!(verify_runtime.contains(soname));
+    }
+    assert!(verify_runtime.contains("--appimage-extract"));
+    assert!(verify_runtime.contains("LD_LIBRARY_PATH=\"$runtime_dir\" ldd"));
 
     let desktop =
         read_source(root.join("src-tauri/resources/linux/Ratspeak.desktop")).expect("desktop");
@@ -5185,6 +5219,14 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
     assert!(linux.contains(r#"test -n "$rpm""#));
     assert!(linux.contains(r#"test "$artifact_count" = "6""#));
     assert!(linux.contains("linux-${BOM_ARCH}-source-bom.json"));
+    for gate in ["stage-appimage-runtime.sh", "verify-appimage-runtime.sh"] {
+        assert!(linux.contains(gate), "Linux release is missing {gate}");
+    }
+    let desktop =
+        read_source(root.join(".github/workflows/build-desktop.yml")).expect("desktop build");
+    for gate in ["stage-appimage-runtime.sh", "verify-appimage-runtime.sh"] {
+        assert!(desktop.contains(gate), "desktop build is missing {gate}");
+    }
 
     let ios =
         read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");

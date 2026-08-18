@@ -154,6 +154,11 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "${{ steps.source.outputs.tauri_cli }}" --locked
 
+      - name: Stage AppImage indicator runtime
+        if: ${{ matrix.appimage_name != '' }}
+        working-directory: Ratspeak
+        run: bash scripts/release/stage-appimage-runtime.sh
+
       - name: Run tests
         working-directory: Ratspeak
         run: cargo test --workspace --locked
@@ -182,6 +187,15 @@ jobs:
         shell: bash
         working-directory: Ratspeak
         run: bash scripts/release/assert-no-tauri-dev-url.sh src-tauri/target/release/bundle
+
+      - name: Verify AppImage indicator runtime
+        if: ${{ matrix.appimage_name != '' }}
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          mapfile -t appimages < <(find src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | sort)
+          test "${#appimages[@]}" = "1"
+          bash scripts/release/verify-appimage-runtime.sh "${appimages[0]}"
 
       - name: Stage Linux release artifacts
         shell: bash
