@@ -1338,7 +1338,7 @@ fn ble_rnode_runtime_spawns_enable_flow_control() {
 }
 
 #[test]
-fn all_rnode_creation_paths_require_strict_capability_admission() {
+fn all_rnode_creation_paths_use_upstream_compatible_startup() {
     let root = repo_root();
     let runtime_rs =
         read_source(root.join("crates/ratspeak-runtime/src/rns.rs")).expect("RNS runtime");
@@ -1346,9 +1346,10 @@ fn all_rnode_creation_paths_require_strict_capability_admission() {
         .expect("interfaces commands");
     let ble_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("BLE commands");
+    let default_option = "RNodeStartupOptions::default()";
     let strict_option = "RNodeStartupOptions::require_capability_admission()";
 
-    let assert_strict_calls = |source: &str, call_path: &str, expected: usize| {
+    let assert_default_calls = |source: &str, call_path: &str, expected: usize| {
         let calls = rust_call_blocks(source, call_path);
         assert_eq!(
             calls.len(),
@@ -1357,13 +1358,13 @@ fn all_rnode_creation_paths_require_strict_capability_admission() {
         );
         for call in calls {
             assert!(
-                call.contains(strict_option),
-                "{call_path} must require capability admission:\n{call}"
+                call.contains(default_option),
+                "{call_path} must preserve upstream-compatible RNode startup:\n{call}"
             );
         }
     };
 
-    assert_strict_calls(
+    assert_default_calls(
         &runtime_rs,
         "reticulum::init_with_options_and_rnode_startup_options",
         1,
@@ -1373,30 +1374,37 @@ fn all_rnode_creation_paths_require_strict_capability_admission() {
         "reticulum::init_with_options_and_rnode_startup_options",
     );
     assert!(configured_startup[0].contains("InitOptions::default()"));
-    assert_strict_calls(
+    assert_default_calls(
         &interfaces_rs,
         "rns_runtime::reticulum::spawn_ble_rnode_runtime_observed_with_options",
         2,
     );
-    assert_strict_calls(
+    assert_default_calls(
         &interfaces_rs,
         "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options",
         2,
     );
-    assert_strict_calls(
+    assert_default_calls(
         &interfaces_rs,
         "rns_runtime::reticulum::spawn_rnode_runtime_observed_with_options",
         2,
     );
-    assert_strict_calls(
+    assert_default_calls(
         &ble_rs,
         "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_with_config_and_options",
         1,
     );
 
-    assert_eq!(runtime_rs.matches(strict_option).count(), 1);
-    assert_eq!(interfaces_rs.matches(strict_option).count(), 6);
-    assert_eq!(ble_rs.matches(strict_option).count(), 1);
+    assert_eq!(runtime_rs.matches(default_option).count(), 1);
+    assert_eq!(interfaces_rs.matches(default_option).count(), 6);
+    assert_eq!(ble_rs.matches(default_option).count(), 1);
+    for source in [&runtime_rs, &interfaces_rs, &ble_rs] {
+        assert_eq!(
+            source.matches(strict_option).count(),
+            0,
+            "normal Ratspeak startup must not require EEPROM capability admission"
+        );
+    }
 
     for legacy_call in ["reticulum::init", "reticulum::init_with_options"] {
         assert!(

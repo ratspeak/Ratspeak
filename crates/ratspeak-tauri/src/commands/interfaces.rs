@@ -3567,7 +3567,7 @@ async fn spawn_editable_interface(
                                 lt_alock: airtime_limit_long.map(|v| v as f32),
                                 flow_control: true,
                             },
-                            RNodeStartupOptions::require_capability_admission(),
+                            RNodeStartupOptions::default(),
                         )
                         .await
                         .map_err(|error| error.to_string())?;
@@ -3622,7 +3622,7 @@ async fn spawn_editable_interface(
                         rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options(
                             &handle,
                             config,
-                            RNodeStartupOptions::require_capability_admission(),
+                            RNodeStartupOptions::default(),
                         )
                         .await
                         .map_err(|error| error.to_string())?;
@@ -3670,7 +3670,7 @@ async fn spawn_editable_interface(
                         lt_alock: airtime_limit_long.map(|v| v as f32),
                         flow_control: false,
                     },
-                    RNodeStartupOptions::require_capability_admission(),
+                    RNodeStartupOptions::default(),
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -4742,7 +4742,7 @@ pub async fn add_lora_interface(
                 match rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options(
                     &rns,
                     config,
-                    RNodeStartupOptions::require_capability_admission(),
+                    RNodeStartupOptions::default(),
                 )
                 .await
                 .map_err(|error| error.to_string())
@@ -5093,7 +5093,7 @@ pub async fn add_lora_interface(
                             lt_alock: radio.airtime_limit_long.map(|v| v as f32),
                             flow_control: true,
                         },
-                        RNodeStartupOptions::require_capability_admission(),
+                        RNodeStartupOptions::default(),
                     )
                     .await
                     .map_err(|error| error.to_string())
@@ -5375,7 +5375,7 @@ pub async fn add_lora_interface(
                         lt_alock: radio.airtime_limit_long.map(|v| v as f32),
                         flow_control: false,
                     },
-                    RNodeStartupOptions::require_capability_admission(),
+                    RNodeStartupOptions::default(),
                 )
                 .await
                 .map_err(|error| error.to_string())

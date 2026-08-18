@@ -50,7 +50,7 @@ impl RnsManager {
             shutdown.clone(),
             is_foreground,
             InitOptions::default(),
-            RNodeStartupOptions::require_capability_admission(),
+            RNodeStartupOptions::default(),
         )
         .await
         .map_err(|e| format!("RNS init failed: {e:?}"))?;
