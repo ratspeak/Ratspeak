@@ -227,8 +227,10 @@ jobs:
         run: |
           set -euo pipefail
           existing_draft="$(gh api \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            --jq '.draft' 2>/dev/null || true)"
+            --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" | \
+            jq -r --arg tag "$RELEASE_TAG" \
+              '.[] | select(.tag_name == $tag) | .draft')"
           if [[ -n "$existing_draft" && "$existing_draft" != "true" ]]; then
             echo "Refusing to modify existing public release $RELEASE_TAG" >&2
             exit 1
