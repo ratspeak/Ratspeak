@@ -3511,8 +3511,10 @@ mod tests {
             .expect("operation");
         {
             let mut operations = state.rnode_lifecycle_operations.lock().unwrap();
-            operations.get_mut("LoRa").unwrap().started_at =
-                Instant::now() - RNODE_LIFECYCLE_OPERATION_TTL - Duration::from_secs(1);
+            let expiry_check_at = operations.get("LoRa").unwrap().started_at
+                + RNODE_LIFECYCLE_OPERATION_TTL
+                + Duration::from_secs(1);
+            prune_rnode_lifecycle_operations(&mut operations, expiry_check_at);
         }
 
         assert!(!state.is_current_rnode_lifecycle_operation(&lease));
