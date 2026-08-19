@@ -18,7 +18,7 @@ on:
       prerelease:
         description: "Mark the GitHub Release as a prerelease."
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -341,7 +341,7 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
           body: |
             - Fixed RNode startup compatibility by treating optional EEPROM information as advisory instead of rejecting otherwise usable hardware, including the T114.
             - Restored reliable BLE transmission after an RNode connects.

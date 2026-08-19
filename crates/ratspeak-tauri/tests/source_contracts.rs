@@ -5155,7 +5155,7 @@ fn settings_version_display_uses_package_version_api() {
 }
 
 #[test]
-fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleases() {
+fn release_workflows_pin_reviewed_dependencies_and_publish_normal_releases_by_default() {
     let root = repo_root();
     let dependency_set: serde_json::Value = serde_json::from_str(
         &read_source(root.join("release/dependency-set.json")).expect("dependency set"),
@@ -5201,11 +5201,12 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
             assert!(workflow.contains("source-integrity.mjs verify-release-ref"));
             assert!(workflow.contains("PUBLISH_GITHUB_RELEASE"));
         }
-        assert!(workflow.contains("default: true\n        type: boolean"));
-        assert!(
-            workflow
-                .contains("prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}")
-        );
+        assert!(workflow.contains(
+            "prerelease:\n        description: \"Mark the GitHub Release as a prerelease.\"\n        required: true\n        default: false\n        type: boolean"
+        ));
+        assert!(workflow.contains(
+            "prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}"
+        ));
         for fragment in release_note_fragments {
             assert!(
                 workflow.contains(fragment),
