@@ -7682,16 +7682,22 @@ fn network_view_hides_shared_instance_internal_interfaces() {
 }
 
 #[test]
-fn connecting_interface_status_uses_plain_warning_text() {
+fn interface_warning_statuses_use_plain_text() {
     let root = repo_root();
     let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
-    assert!(health.contains("mobileHealth.state === 'connecting'"));
-    assert!(health.contains("mobileHealth.state === 'reconnecting'"));
-    assert!(health.contains("conn-iface-status-text is-connecting"));
+    assert!(health.contains("connecting: 'Connecting'"));
+    assert!(health.contains("reconnecting: 'Reconnecting'"));
+    assert!(health.contains("conn-iface-status-text is-warning"));
+    assert!(!health.contains("conn-iface-pill"));
 
     let css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(css.contains(".conn-iface-status-text.is-connecting"));
+    assert!(css.contains(".conn-iface-status-text.is-warning"));
     assert!(css.contains("color: var(--status-warning-fg);"));
+    assert!(!css.contains(".conn-iface-pill"));
+
+    let events = read_source(root.join("dashboard/static/js/tauri_events.js")).expect("events js");
+    assert!(events.contains("conn-iface-status-text is-warning"));
+    assert!(!events.contains("conn-iface-pill"));
 }
 
 #[test]

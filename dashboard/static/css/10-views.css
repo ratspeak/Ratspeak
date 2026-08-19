@@ -887,22 +887,13 @@
     color: var(--text-muted);
     line-height: var(--type-leading-copy);
 }
-.conn-iface-pill {
-    font-size: var(--type-badge-size);
-    color: var(--status-warning-fg);
-    background: var(--status-warning-bg);
-    border: 1px solid var(--status-warning-border);
-    padding: 1px var(--space-3);
-    border-radius: var(--radius-full);
-    flex-shrink: 0;
-}
 .conn-iface-status-text {
     color: var(--text-muted);
     font-size: var(--text-2xs);
     flex-shrink: 0;
     white-space: nowrap;
 }
-.conn-iface-status-text.is-connecting {
+.conn-iface-status-text.is-warning {
     color: var(--status-warning-fg);
 }
 .conn-iface-group {

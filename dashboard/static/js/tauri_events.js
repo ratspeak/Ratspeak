@@ -670,21 +670,21 @@ function _refreshBlePeerSectionState() {
         label.textContent = labelText;
     }
 
-    // Pill keeps the BlueZ rejection visible across re-renders (toast is ephemeral).
-    var existingPill = section.querySelector('[data-ble-pill="peripheral-unavailable"]');
+    // Persistent status keeps the BlueZ rejection visible across re-renders (toast is ephemeral).
+    var existingStatus = section.querySelector('[data-ble-status="peripheral-unavailable"]');
     if (state === 'central_only' && label) {
         var reason = window._blePeerPeripheralUnavailable || 'Peripheral mode unavailable';
-        if (!existingPill) {
-            var pill = document.createElement('span');
-            pill.className = 'conn-iface-pill';
-            pill.setAttribute('data-ble-pill', 'peripheral-unavailable');
-            pill.textContent = 'Peripheral unavailable';
-            label.parentNode.insertBefore(pill, label.nextSibling);
-            existingPill = pill;
+        if (!existingStatus) {
+            var statusText = document.createElement('span');
+            statusText.className = 'conn-iface-status-text is-warning';
+            statusText.setAttribute('data-ble-status', 'peripheral-unavailable');
+            statusText.textContent = 'Peripheral unavailable';
+            label.parentNode.insertBefore(statusText, label.nextSibling);
+            existingStatus = statusText;
         }
-        existingPill.setAttribute('title', reason);
-    } else if (existingPill) {
-        existingPill.remove();
+        existingStatus.setAttribute('title', reason);
+    } else if (existingStatus) {
+        existingStatus.remove();
     }
 
     var countBadge = section.querySelector('#conn-count-ble');

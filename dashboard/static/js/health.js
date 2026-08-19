@@ -1170,28 +1170,24 @@ function _renderConnectionsFromCache() {
                 var displayName = (typeof friendlyInterfaceName === 'function') ? friendlyInterfaceName(name, typeName, iface.role || 'normal') : name;
 
                 // Multicast join rejected (for example, permission denied or NIC vanished);
-                // pill surfaces this so the empty peer list isn't mistaken for a bug.
-                var pillHtml = '';
+                // persistent status keeps the empty peer list from looking like a bug.
+                var statusHtml = '';
                 if (sectionKey === 'local' && window._autoUnavailable &&
                     window._autoUnavailable.interface === name) {
-                    pillHtml = '<span class="conn-iface-pill" ' +
+                    statusHtml = '<span class="conn-iface-status-text is-warning" ' +
                         'title="' + escapeHtml(window._autoUnavailable.reason || 'Multicast unavailable') + '" ' +
                         '>' +
                         'Multicast unavailable' +
                         '</span>';
                 }
                 if (paused) {
-                    pillHtml += '<span class="conn-iface-status-text">Paused</span>';
-                } else if (mobileHealth &&
-                    (mobileHealth.state === 'connecting' || mobileHealth.state === 'reconnecting')) {
-                    pillHtml += '<span class="conn-iface-status-text is-connecting" role="status">' +
-                        escapeHtml(mobileHealth.label) + '</span>';
+                    statusHtml += '<span class="conn-iface-status-text">Paused</span>';
                 } else if (mobileHealth) {
-                    pillHtml += '<span class="conn-iface-pill" role="status" title="' +
+                    statusHtml += '<span class="conn-iface-status-text is-warning" role="status" title="' +
                         escapeHtml(mobileHealth.label) + '">' +
                         escapeHtml(mobileHealth.label) + '</span>';
                 } else if (waitingForDevice) {
-                    pillHtml += '<span class="conn-iface-pill" role="status">Waiting for USB</span>';
+                    statusHtml += '<span class="conn-iface-status-text is-warning" role="status">Waiting for USB</span>';
                 }
 
                 // Augment label with non-default group ID (matches Python rnsd).
@@ -1205,7 +1201,7 @@ function _renderConnectionsFromCache() {
                     '<span class="conn-iface-main">' +
                         '<span class="conn-iface-titleline">' +
                             '<span class="conn-iface-name" title="' + escapeHtml(name) + '">' + escapeHtml(displayName) + groupSuffix + '</span>' +
-                            pillHtml +
+                            statusHtml +
                         '</span>' +
                         '<span class="conn-iface-stats">' +
                             '<span title="TX">\u2191 ' + prettySize(txb) + '</span>' +
