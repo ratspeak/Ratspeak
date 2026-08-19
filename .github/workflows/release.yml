@@ -65,6 +65,27 @@ jobs:
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Require successful ordinary CI on the exact source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          successful_runs="$(gh api \
+            -X GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$SOURCE_SHA" \
+            -f event=push \
+            -f status=success \
+            -f per_page=1 \
+            --jq '.total_count')"
+          if [[ ! "$successful_runs" =~ ^[1-9][0-9]*$ ]]; then
+            echo "No successful ordinary CI push run exists for $SOURCE_SHA" >&2
+            exit 1
+          fi
+          echo "Ordinary CI is green for exact source $SOURCE_SHA"
+
   linux:
     name: Build Linux artifacts
     if: ${{ inputs.recovery_run_id == '' }}

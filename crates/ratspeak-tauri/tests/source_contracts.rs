@@ -5277,6 +5277,11 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(orchestrator.contains("body_path: Ratspeak/release/release-notes.md"));
     assert!(orchestrator.contains("scripts/release/verify-release-artifacts.mjs"));
     assert!(orchestrator.contains("name: Verify and publish complete release"));
+    assert!(orchestrator.contains("name: Require successful ordinary CI on the exact source"));
+    assert!(orchestrator.contains("actions/workflows/ci.yml/runs"));
+    assert!(orchestrator.contains("-f head_sha=\"$SOURCE_SHA\""));
+    assert!(orchestrator.contains("-f event=push"));
+    assert!(orchestrator.contains("-f status=success"));
     assert!(orchestrator.contains("contents: write"));
     assert!(orchestrator.contains("upload_play: false"));
     assert!(orchestrator.contains("notarize: true"));
