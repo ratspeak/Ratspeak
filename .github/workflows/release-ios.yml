@@ -214,52 +214,27 @@ jobs:
         shell: bash
         working-directory: Ratspeak/src-tauri
         env:
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+          APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
 
-          # Resolve the reviewed dependency graph before Xcode invokes Tauri's
-          # generated build script, then prove neither lockfile was rewritten.
-          cargo metadata --locked --format-version 1 > /dev/null
+          # Tauri/Xcode automatic signing needs App Store Connect API
+          # authentication on a headless CI runner. With these credentials,
+          # Tauri uses its supported unsigned-archive/export path instead of
+          # requiring an Apple Development identity. The exact v1.0.27 Store
+          # certificate and profile are already imported above.
+          export APPLE_API_ISSUER="$APPSTORE_ISSUER_ID"
+          export APPLE_API_KEY="$APPSTORE_API_KEY_ID"
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPSTORE_API_KEY_ID}.p8"
+          printf '%s' "$APPSTORE_API_PRIVATE_KEY" > "$APPLE_API_KEY_PATH"
+          chmod 600 "$APPLE_API_KEY_PATH"
+          trap 'rm -f "$APPLE_API_KEY_PATH"' EXIT
 
-          ARCHIVE_PATH="$PWD/gen/apple/build/ratspeak_iOS.xcarchive"
-          EXPORT_PATH="$PWD/gen/apple/build/arm64"
-          EXPORT_OPTIONS="$RUNNER_TEMP/Ratspeak-TestFlight-ExportOptions.plist"
-          rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH"
-
-          plutil -create xml1 "$EXPORT_OPTIONS"
-          plutil -insert destination -string export "$EXPORT_OPTIONS"
-          plutil -insert manageAppVersionAndBuildNumber -bool false "$EXPORT_OPTIONS"
-          plutil -insert method -string app-store-connect "$EXPORT_OPTIONS"
-          plutil -insert signingStyle -string automatic "$EXPORT_OPTIONS"
-          plutil -insert stripSwiftSymbols -bool true "$EXPORT_OPTIONS"
-          plutil -insert teamID -string "$APPLE_TEAM_ID" "$EXPORT_OPTIONS"
-          plutil -insert testFlightInternalTestingOnly -bool false "$EXPORT_OPTIONS"
-          plutil -insert uploadSymbols -bool true "$EXPORT_OPTIONS"
-
-          # The accepted profile is Xcode-managed, so the archive must use
-          # automatic profile selection. The ephemeral runner has only the
-          # exact accepted profile and certificate installed, and the IPA is
-          # checked against both immutable identifiers below.
-          xcodebuild \
-            -workspace gen/apple/ratspeak.xcodeproj/project.xcworkspace \
-            -scheme ratspeak_iOS \
-            -configuration release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$ARCHIVE_PATH" \
-            archive \
-            CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="$IOS_SIGNING_CERTIFICATE_SHA1" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
-
-          xcodebuild -exportArchive \
-            -archivePath "$ARCHIVE_PATH" \
-            -exportPath "$EXPORT_PATH" \
-            -exportOptionsPlist "$EXPORT_OPTIONS"
-
-          git diff --exit-code -- ../Cargo.lock Cargo.lock
+          cargo tauri ios build --ci --target aarch64 \
+            --export-method app-store-connect -- --locked
 
       - name: Normalize Tauri-generated iOS project
         shell: bash
