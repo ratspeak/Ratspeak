@@ -519,6 +519,9 @@ export function verifyProductSurfaces(set) {
   if (releaseWorkflow.includes('tags:\n      - "v*"')) {
     fail("release.yml must require an explicit qualification promotion dispatch after tagging");
   }
+  if (releaseWorkflow.includes("releases/tags/$RELEASE_TAG")) {
+    fail("release.yml must find private drafts through the release list endpoint");
+  }
 
   const qualificationWorkflow = readUtf8(join(workflowDirectory, "qualify-release.yml"));
   expectContains(

@@ -252,8 +252,11 @@ jobs:
         run: |
           set -euo pipefail
           release_id="$(gh api \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            --jq '.id')"
+            --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" | \
+            jq -r --arg tag "$RELEASE_TAG" \
+              '.[] | select(.tag_name == $tag and .draft == true) | .id')"
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
           draft="$(gh api \
             "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             --jq '.draft')"
@@ -287,8 +290,11 @@ jobs:
         run: |
           set -euo pipefail
           release_id="$(gh api \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            --jq '.id')"
+            --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" | \
+            jq -r --arg tag "$RELEASE_TAG" \
+              '.[] | select(.tag_name == $tag and .draft == true) | .id')"
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
           gh api \
             -X PATCH \
             "repos/$GITHUB_REPOSITORY/releases/$release_id" \

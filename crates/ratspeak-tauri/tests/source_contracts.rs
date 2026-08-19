@@ -5306,6 +5306,8 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(orchestrator.contains("draft: true"));
     assert!(orchestrator.contains("Accept: application/octet-stream"));
     assert!(orchestrator.contains("remote-release-assets"));
+    assert!(!orchestrator.contains("releases/tags/$RELEASE_TAG"));
+    assert!(orchestrator.matches("releases?per_page=100").count() >= 3);
     assert!(orchestrator.contains("name: Publish verified normal release"));
     assert!(orchestrator.contains("-X PATCH"));
     assert!(orchestrator.contains("-F draft=false"));
