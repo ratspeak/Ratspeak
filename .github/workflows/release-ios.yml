@@ -25,6 +25,9 @@ concurrency:
 
 env:
   TOOLCHAINS: com.apple.dt.toolchain.XcodeDefault
+  # Exact signing baseline from the accepted v1.0.27 (1000042) IPA.
+  IOS_SIGNING_CERTIFICATE_SHA1: 8BAA6A7C209C72BA31CC4983C09C89193B743162
+  IOS_PROVISIONING_PROFILE_UUID: 7c5b95ef-fe43-4f2a-befc-494d346727b9
 
 jobs:
   build:
@@ -180,6 +183,16 @@ jobs:
 
           PROFILE_UUID="$(bash Ratspeak/scripts/release/assert-ios-signing-profile.sh \
             "$PROFILE_PATH" "$APPLE_TEAM_ID" org.ratspeak.apple)"
+          if [ "$PROFILE_UUID" != "$IOS_PROVISIONING_PROFILE_UUID" ]; then
+            echo "The protected App Store profile does not match the v1.0.27 signing baseline" >&2
+            exit 1
+          fi
+          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" | \
+            grep -Fq "$IOS_SIGNING_CERTIFICATE_SHA1"; then
+            echo "The protected Apple Distribution certificate does not match the v1.0.27 signing baseline" >&2
+            exit 1
+          fi
+          echo "RATSPEAK_IOS_PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
           for PROFILE_DIRECTORY in \
             "$HOME/Library/MobileDevice/Provisioning Profiles" \
             "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
@@ -201,12 +214,53 @@ jobs:
         shell: bash
         working-directory: Ratspeak/src-tauri
         env:
-          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri ios build --ci --target aarch64 \
-            --export-method app-store-connect -- --locked
+
+          # Resolve the reviewed dependency graph before Xcode invokes Tauri's
+          # generated build script, then prove neither lockfile was rewritten.
+          cargo metadata --locked --format-version 1 > /dev/null
+
+          ARCHIVE_PATH="$PWD/gen/apple/build/ratspeak_iOS.xcarchive"
+          EXPORT_PATH="$PWD/gen/apple/build/arm64"
+          EXPORT_OPTIONS="$RUNNER_TEMP/Ratspeak-TestFlight-ExportOptions.plist"
+          rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH"
+
+          plutil -create xml1 "$EXPORT_OPTIONS"
+          plutil -insert destination -string export "$EXPORT_OPTIONS"
+          plutil -insert manageAppVersionAndBuildNumber -bool false "$EXPORT_OPTIONS"
+          plutil -insert method -string app-store-connect "$EXPORT_OPTIONS"
+          plutil -insert provisioningProfiles -xml '<dict/>' "$EXPORT_OPTIONS"
+          plutil -insert 'provisioningProfiles.org\.ratspeak\.apple' \
+            -string "$RATSPEAK_IOS_PROFILE_UUID" "$EXPORT_OPTIONS"
+          plutil -insert signingCertificate -string "$IOS_SIGNING_CERTIFICATE_SHA1" "$EXPORT_OPTIONS"
+          plutil -insert signingStyle -string manual "$EXPORT_OPTIONS"
+          plutil -insert stripSwiftSymbols -bool true "$EXPORT_OPTIONS"
+          plutil -insert teamID -string "$APPLE_TEAM_ID" "$EXPORT_OPTIONS"
+          plutil -insert testFlightInternalTestingOnly -bool false "$EXPORT_OPTIONS"
+          plutil -insert uploadSymbols -bool true "$EXPORT_OPTIONS"
+
+          xcodebuild \
+            -workspace gen/apple/ratspeak.xcodeproj/project.xcworkspace \
+            -scheme ratspeak_iOS \
+            -configuration release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            archive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$IOS_SIGNING_CERTIFICATE_SHA1" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PROVISIONING_PROFILE="$RATSPEAK_IOS_PROFILE_UUID"
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS"
+
+          git diff --exit-code -- ../Cargo.lock Cargo.lock
 
       - name: Normalize Tauri-generated iOS project
         shell: bash
@@ -231,6 +285,47 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: bash scripts/release/assert-ios-bundle.sh testflight src-tauri/gen/apple/build/arm64/Ratspeak.ipa
+
+      - name: Validate v1.0.27 signing continuity
+        if: ${{ inputs.build_mode == 'testflight' }}
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          TEMPORARY_IPA_DIRECTORY="$(mktemp -d "$RUNNER_TEMP/ratspeak-ipa-signing.XXXXXX")"
+          trap 'rm -rf "$TEMPORARY_IPA_DIRECTORY"' EXIT
+          ditto -x -k src-tauri/gen/apple/build/arm64/Ratspeak.ipa "$TEMPORARY_IPA_DIRECTORY"
+          APP_PATH="$(find "$TEMPORARY_IPA_DIRECTORY/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [ -z "$APP_PATH" ]; then
+            echo "The TestFlight IPA contains no application bundle" >&2
+            exit 1
+          fi
+
+          EMBEDDED_PROFILE_PLIST="$TEMPORARY_IPA_DIRECTORY/embedded-profile.plist"
+          EMBEDDED_CERTIFICATE_BASE64="$TEMPORARY_IPA_DIRECTORY/embedded-certificate.base64"
+          EMBEDDED_CERTIFICATE_DER="$TEMPORARY_IPA_DIRECTORY/embedded-certificate.der"
+          security cms -D \
+            -i "$APP_PATH/embedded.mobileprovision" \
+            -o "$EMBEDDED_PROFILE_PLIST"
+          plutil -extract DeveloperCertificates.0 raw \
+            -o "$EMBEDDED_CERTIFICATE_BASE64" \
+            "$EMBEDDED_PROFILE_PLIST"
+          base64 --decode < "$EMBEDDED_CERTIFICATE_BASE64" > "$EMBEDDED_CERTIFICATE_DER"
+          ACTUAL_CERTIFICATE_SHA1="$(openssl x509 \
+            -inform DER \
+            -in "$EMBEDDED_CERTIFICATE_DER" \
+            -noout \
+            -fingerprint \
+            -sha1 | cut -d= -f2 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          if [ "$ACTUAL_CERTIFICATE_SHA1" != "$IOS_SIGNING_CERTIFICATE_SHA1" ]; then
+            echo "The TestFlight IPA certificate does not match v1.0.27" >&2
+            exit 1
+          fi
+
+          ACTUAL_PROFILE_UUID="$(plutil -extract UUID raw -o - "$EMBEDDED_PROFILE_PLIST")"
+          if [ "$ACTUAL_PROFILE_UUID" != "$IOS_PROVISIONING_PROFILE_UUID" ]; then
+            echo "The TestFlight IPA profile does not match v1.0.27" >&2
+            exit 1
+          fi
 
       - name: Check for bundled dev URLs
         shell: bash
