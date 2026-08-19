@@ -219,12 +219,83 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: node scripts/release/verify-release-artifacts.mjs ../release-assets "$RELEASE_TAG"
 
-      - name: Publish one complete GitHub Release
+      - name: Refuse to mutate an existing public release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          existing_draft="$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '.draft' 2>/dev/null || true)"
+          if [[ -n "$existing_draft" && "$existing_draft" != "true" ]]; then
+            echo "Refusing to modify existing public release $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Upload one complete draft GitHub Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
-          draft: false
+          draft: true
           fail_on_unmatched_files: true
           body_path: Ratspeak/release/release-notes.md
           files: release-assets/*
+
+      - name: Download and verify uploaded draft bytes
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          release_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '.id')"
+          draft="$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            --jq '.draft')"
+          test "$draft" = "true"
+
+          remote_dir="../remote-release-assets"
+          rm -rf "$remote_dir"
+          mkdir -p "$remote_dir"
+          while IFS=$'\t' read -r asset_id asset_name; do
+            [[ -n "$asset_id" && -n "$asset_name" ]] || continue
+            if [[ "$asset_name" == */* || "$asset_name" == *\\* ]]; then
+              echo "Invalid uploaded asset name: $asset_name" >&2
+              exit 1
+            fi
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$remote_dir/$asset_name"
+          done < <(gh api \
+            --paginate \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+            --jq '.[] | [.id, .name] | @tsv')
+
+          node scripts/release/verify-release-artifacts.mjs "$remote_dir" "$RELEASE_TAG"
+
+      - name: Publish verified normal release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          release_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            --jq '.id')"
+          gh api \
+            -X PATCH \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false \
+            -F prerelease="$PRERELEASE" >/dev/null
+
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq '.draft')" = "false"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq '.prerelease')" = "$PRERELEASE"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq '.tag_name')" = "$RELEASE_TAG"

@@ -5292,6 +5292,15 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(orchestrator.contains(
         "prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}"
     ));
+    assert!(orchestrator.contains("name: Upload one complete draft GitHub Release"));
+    assert!(orchestrator.contains("name: Refuse to mutate an existing public release"));
+    assert!(orchestrator.contains("draft: true"));
+    assert!(orchestrator.contains("Accept: application/octet-stream"));
+    assert!(orchestrator.contains("remote-release-assets"));
+    assert!(orchestrator.contains("name: Publish verified normal release"));
+    assert!(orchestrator.contains("-X PATCH"));
+    assert!(orchestrator.contains("-F draft=false"));
+    assert!(!orchestrator.contains("draft: false"));
     for workflow in [
         "release-desktop.yml",
         "release-windows.yml",
