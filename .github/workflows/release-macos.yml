@@ -1,22 +1,52 @@
 name: Release macOS
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      source_ref:
+        description: "Exact tag or commit to build."
+        required: true
+        type: string
+      release_tag:
+        description: "Public version used in artifact names."
+        required: true
+        type: string
+      qualify_release_ref:
+        description: "Bind source BOMs to an existing annotated release tag."
+        required: true
+        type: boolean
+      notarize:
+        description: "Require Developer ID signing and Apple notarization."
+        required: true
+        type: boolean
+      recovery_run_id:
+        description: "Prior orchestrator run containing bounded-wait recovery state."
+        required: false
+        default: ""
+        type: string
+    secrets:
+      APPLE_CERTIFICATE:
+        required: true
+      APPLE_CERTIFICATE_PASSWORD:
+        required: true
+      APPLE_SIGNING_IDENTITY:
+        required: true
+      APPLE_ID:
+        required: true
+      APPLE_PASSWORD:
+        required: true
   workflow_dispatch:
     inputs:
-      publish_github_release:
-        description: "Publish macOS artifacts to a GitHub Release"
-        required: true
-        default: false
-        type: boolean
-      release_tag:
-        description: "Release tag to publish when manually dispatching."
+      source_ref:
+        description: "Commit or ref to build; defaults to the selected dispatch ref."
         required: false
         type: string
-      prerelease:
-        description: "Mark the GitHub Release as a prerelease."
+      release_tag:
+        description: "Artifact version label; defaults to the selected ref name."
+        required: false
+        type: string
+      qualify_release_ref:
+        description: "Require release_tag to be the exact annotated product tag."
         required: true
         default: false
         type: boolean
@@ -25,26 +55,32 @@ on:
         required: true
         default: false
         type: boolean
+      recovery_run_id:
+        description: "Resume notarization from this prior workflow run without rebuilding."
+        required: false
+        type: string
 
 permissions:
-  contents: write
+  actions: read
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-macos-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
     name: macOS
+    if: ${{ inputs.recovery_run_id == '' }}
     runs-on: macos-latest
-    timeout-minutes: 150
+    timeout-minutes: 100
     steps:
       - name: Checkout Ratspeak
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           path: Ratspeak
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Setup source qualification Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -94,12 +130,12 @@ jobs:
         working-directory: Ratspeak
         run: node scripts/release/source-integrity.mjs verify-release-source
 
-      - name: Verify publishing release ref
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+      - name: Verify qualified release ref
+        if: ${{ inputs.qualify_release_ref }}
         shell: bash
         working-directory: Ratspeak
         env:
-          RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          RELEASE_REF: ${{ inputs.release_tag }}
         run: node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_REF"
 
       - name: Install Rust toolchain
@@ -111,14 +147,17 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          cache-bin: false
+          cache-bin: true
+          key: tauri-${{ steps.source.outputs.tauri_cli }}
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "${{ steps.source.outputs.tauri_cli }}" --locked
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/install-tauri-cli.sh "${{ steps.source.outputs.tauri_cli }}"
 
       - name: Select reviewed Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.3.app
@@ -143,7 +182,7 @@ jobs:
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Import Developer ID certificate
-        if: ${{ vars.MACOS_NOTARIZE == 'true' || (github.event_name == 'workflow_dispatch' && inputs.notarize == true) }}
+        if: ${{ inputs.notarize }}
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -161,6 +200,7 @@ jobs:
           certificate_path="$RUNNER_TEMP/developer_id_application.p12"
           keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
           keychain_password="$(uuidgen)"
+          echo "RATSPEAK_SIGNING_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
 
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
           security create-keychain -p "$keychain_password" "$keychain_path"
@@ -176,11 +216,8 @@ jobs:
         shell: bash
         working-directory: Ratspeak/src-tauri
         env:
-          MACOS_NOTARIZE: ${{ vars.MACOS_NOTARIZE == 'true' || (github.event_name == 'workflow_dispatch' && inputs.notarize == true) }}
+          MACOS_NOTARIZE: ${{ inputs.notarize }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           # Tauri checks this for the literal string "true"; any other value
           # keeps --skip-jenkins enabled, which skips the Finder .DS_Store layout.
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"
@@ -194,12 +231,21 @@ jobs:
           rm -rf target/x86_64-apple-darwin/release/bundle
 
           if [ "$MACOS_NOTARIZE" = "true" ]; then
-            for name in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            for name in APPLE_SIGNING_IDENTITY; do
               if [ -z "${!name:-}" ]; then
-                echo "Missing required macOS notarization value: $name" >&2
+                echo "Missing required macOS signing value: $name" >&2
                 exit 1
               fi
             done
+            # Produce the final signed outer DMGs first. Apple credentials are
+            # deliberately absent so Tauri cannot enter its opaque app-level
+            # `notarytool submit --wait` path.
+            unset APPLE_ID
+            unset APPLE_PASSWORD
+            unset APPLE_TEAM_ID
+            unset APPLE_API_KEY
+            unset APPLE_API_ISSUER
+            unset APPLE_API_KEY_PATH
             cargo tauri build --target aarch64-apple-darwin --bundles dmg -- --locked
             cargo tauri build --target x86_64-apple-darwin --bundles dmg -- --locked
           else
@@ -220,8 +266,8 @@ jobs:
         shell: bash
         working-directory: Ratspeak
         env:
-          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          PUBLISH_GITHUB_RELEASE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+          RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
+          QUALIFY_RELEASE_REF: ${{ inputs.qualify_release_ref }}
         run: |
           set -euo pipefail
           release_version="${RELEASE_VERSION:?Missing release version.}"
@@ -260,53 +306,120 @@ jobs:
           stage_dmg x86_64-apple-darwin "Ratspeak-${release_version}-macos-x64.dmg" x86_64
 
           source_args=(bom --output "$out_dir/Ratspeak-${release_version}-macos-source-bom.json")
-          if [[ "$PUBLISH_GITHUB_RELEASE" == "true" ]]; then
+          if [[ "$QUALIFY_RELEASE_REF" == "true" ]]; then
             source_args+=(--release-ref "$release_version")
           fi
           node scripts/release/source-integrity.mjs "${source_args[@]}"
 
-      - name: Check for bundled dev URLs
+      - name: Notarize signed outer DMGs
+        if: ${{ inputs.notarize }}
         shell: bash
         working-directory: Ratspeak
-        run: bash scripts/release/assert-no-tauri-dev-url.sh dist/macos
-
-      - name: Write macOS checksums
-        shell: bash
-        working-directory: Ratspeak
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          NOTARY_WAIT_TIMEOUT: 30m
+          RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          set -euo pipefail
-          checksum_file="checksums-macos.txt"
-          : > "$checksum_file"
-          find dist/macos -type f -print0 |
-            sort -z |
-            while IFS= read -r -d '' artifact; do
-              hash="$(shasum -a 256 "$artifact" | cut -d ' ' -f 1)"
-              printf '%s  %s\n' "$hash" "$(basename "$artifact")" >> "$checksum_file"
-            done
-          test -s "$checksum_file"
+          bash scripts/release/notarize-macos-dmgs.sh \
+            submit \
+            dist/macos-notarization \
+            "dist/macos/Ratspeak-${RELEASE_VERSION}-macos-arm64.dmg" \
+            "dist/macos/Ratspeak-${RELEASE_VERSION}-macos-x64.dmg"
+
+      - name: Preserve bounded-wait notarization recovery state
+        if: ${{ failure() && inputs.notarize }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ratspeak-macos-notarization-recovery
+          path: |
+            Ratspeak/dist/macos/*
+            Ratspeak/dist/macos-notarization/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Verify final macOS artifacts and write checksums
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
+          NOTARIZED: ${{ inputs.notarize }}
+        run: bash scripts/release/finalize-macos-dmgs.sh "$RELEASE_VERSION" "$NOTARIZED"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ratspeak-macos
-          path: |
-            Ratspeak/dist/macos/*
-            Ratspeak/checksums-macos.txt
+          path: Ratspeak/dist/macos/*
           if-no-files-found: error
           retention-days: 7
 
-      - name: Publish GitHub Release
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+      - name: Remove temporary signing keychain
+        if: ${{ always() && env.RATSPEAK_SIGNING_KEYCHAIN != '' }}
+        shell: bash
+        run: security delete-keychain "$RATSPEAK_SIGNING_KEYCHAIN" || true
+
+  resume:
+    name: macOS notarization resume
+    if: ${{ inputs.recovery_run_id != '' }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Ratspeak
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
-          body: |
-            - Fixed RNode startup compatibility by treating optional EEPROM information as advisory instead of rejecting otherwise usable hardware, including the T114.
-            - Restored reliable BLE transmission after an RNode connects.
-            - Fixed Announce sometimes staying queued even while an external RNode was connected and ready to transmit.
-            - Fixed Linux AppImage startup crashes caused by incompatible system AppIndicator and GLib libraries.
-            - Simplified interface status messages so connection and hardware warnings are shown as plain yellow text instead of pill-shaped badges.
-          files: |
-            Ratspeak/dist/macos/*
-            Ratspeak/checksums-macos.txt
+          path: Ratspeak
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - name: Verify qualified release ref
+        if: ${{ inputs.qualify_release_ref }}
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          RELEASE_REF: ${{ inputs.release_tag }}
+        run: node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_REF"
+
+      - name: Select reviewed Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
+      - name: Download notarization recovery state
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-macos-notarization-recovery
+          path: Ratspeak/dist
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.recovery_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Resume bounded Apple notarization wait
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          NOTARY_WAIT_TIMEOUT: 30m
+          RELEASE_VERSION: ${{ inputs.release_tag }}
+        run: |
+          bash scripts/release/notarize-macos-dmgs.sh \
+            resume \
+            dist/macos-notarization \
+            "dist/macos/Ratspeak-${RELEASE_VERSION}-macos-arm64.dmg" \
+            "dist/macos/Ratspeak-${RELEASE_VERSION}-macos-x64.dmg"
+
+      - name: Verify final macOS artifacts and write checksums
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          RELEASE_VERSION: ${{ inputs.release_tag }}
+        run: bash scripts/release/finalize-macos-dmgs.sh "$RELEASE_VERSION" true
+
+      - name: Upload final macOS artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ratspeak-macos
+          path: Ratspeak/dist/macos/*
+          if-no-files-found: error
+          retention-days: 7

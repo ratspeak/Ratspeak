@@ -92,8 +92,8 @@ for workflow in "${release_workflows[@]}"; do
       echo "error: $(basename "$workflow") does not verify the exact annotated publishing ref" >&2
       status=1
     fi
-    if ! grep -q 'PUBLISH_GITHUB_RELEASE' "$workflow"; then
-      echo "error: $(basename "$workflow") does not bind publishing BOMs to the verified ref" >&2
+    if ! grep -q 'QUALIFY_RELEASE_REF' "$workflow"; then
+      echo "error: $(basename "$workflow") does not bind qualified BOMs to the verified ref" >&2
       status=1
     fi
   fi

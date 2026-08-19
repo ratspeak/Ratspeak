@@ -1,31 +1,41 @@
 name: Release Windows
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      source_ref:
+        description: "Exact tag or commit to build."
+        required: true
+        type: string
+      release_tag:
+        description: "Public version used in artifact names."
+        required: true
+        type: string
+      qualify_release_ref:
+        description: "Bind source BOMs to an existing annotated release tag."
+        required: true
+        type: boolean
   workflow_dispatch:
     inputs:
-      publish_github_release:
-        description: "Publish Windows artifacts to a GitHub Release"
-        required: true
-        default: false
-        type: boolean
-      release_tag:
-        description: "Release tag to publish when manually dispatching."
+      source_ref:
+        description: "Commit or ref to build; defaults to the selected dispatch ref."
         required: false
         type: string
-      prerelease:
-        description: "Mark the GitHub Release as a prerelease."
+      release_tag:
+        description: "Artifact version label; defaults to the selected ref name."
+        required: false
+        type: string
+      qualify_release_ref:
+        description: "Require release_tag to be the exact annotated product tag."
         required: true
         default: false
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-windows-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -43,7 +53,7 @@ jobs:
         with:
           path: Ratspeak
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Setup source qualification Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -93,12 +103,12 @@ jobs:
         working-directory: Ratspeak
         run: node scripts/release/source-integrity.mjs verify-release-source
 
-      - name: Verify publishing release ref
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+      - name: Verify qualified release ref
+        if: ${{ inputs.qualify_release_ref }}
         shell: pwsh
         working-directory: Ratspeak
         env:
-          RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          RELEASE_REF: ${{ inputs.release_tag }}
         run: |
           & node scripts/release/source-integrity.mjs verify-release-ref "$env:RELEASE_REF"
           if ($LASTEXITCODE -ne 0) {
@@ -113,14 +123,17 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          cache-bin: false
+          cache-bin: true
+          key: tauri-${{ steps.source.outputs.tauri_cli }}
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "${{ steps.source.outputs.tauri_cli }}" --locked
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/install-tauri-cli.sh "${{ steps.source.outputs.tauri_cli }}"
 
       - name: Run tests
         working-directory: Ratspeak
@@ -153,8 +166,8 @@ jobs:
         shell: pwsh
         working-directory: Ratspeak
         env:
-          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          PUBLISH_GITHUB_RELEASE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+          RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
+          QUALIFY_RELEASE_REF: ${{ inputs.qualify_release_ref }}
         run: |
           $ErrorActionPreference = "Stop"
           $version = "$env:RELEASE_VERSION".Trim()
@@ -194,7 +207,7 @@ jobs:
             "--output",
             "$outDir/Ratspeak-$version-windows-source-bom.json"
           )
-          if ($env:PUBLISH_GITHUB_RELEASE -eq "true") {
+          if ($env:QUALIFY_RELEASE_REF -eq "true") {
             $bomArgs += @("--release-ref", $version)
           }
           & node @bomArgs
@@ -222,7 +235,7 @@ jobs:
             throw "No Windows artifacts found for checksums."
           }
 
-          $checksumPath = Join-Path (Get-Location) $checksumFile
+          $checksumPath = Join-Path (Get-Location) "dist/windows/$checksumFile"
           $contents = ($lines -join "`n") + "`n"
           [System.IO.File]::WriteAllText(
             $checksumPath,
@@ -234,24 +247,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ratspeak-windows
-          path: |
-            Ratspeak/dist/windows/*
-            Ratspeak/checksums-windows.txt
+          path: Ratspeak/dist/windows/*
           if-no-files-found: error
           retention-days: 7
-
-      - name: Publish GitHub Release
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
-        with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
-          body: |
-            - Fixed RNode startup compatibility by treating optional EEPROM information as advisory instead of rejecting otherwise usable hardware, including the T114.
-            - Restored reliable BLE transmission after an RNode connects.
-            - Fixed Announce sometimes staying queued even while an external RNode was connected and ready to transmit.
-            - Fixed Linux AppImage startup crashes caused by incompatible system AppIndicator and GLib libraries.
-            - Simplified interface status messages so connection and hardware warnings are shown as plain yellow text instead of pill-shaped badges.
-          files: |
-            Ratspeak/dist/windows/*
-            Ratspeak/checksums-windows.txt

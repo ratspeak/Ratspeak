@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   generateBom,
@@ -132,5 +135,158 @@ test("source BOM is deterministic and records both lockfile hashes", () => {
     const serialized = `${JSON.stringify(first, null, 2)}\n`;
     writeFileSync(path, serialized);
     assert.equal(readFileSync(path, "utf8"), serialized);
+  });
+});
+
+test("final release artifact gate requires the exact complete checksummed source graph", () => {
+  const set = loadDependencySet();
+  const releaseTag = `v${set.product.displayVersion}`;
+  const platformFiles = new Map([
+    ["linux", [
+      `Ratspeak-${releaseTag}-linux-amd64.deb`,
+      `Ratspeak-${releaseTag}-linux-arm64.deb`,
+      `Ratspeak-${releaseTag}-linux-x86_64.AppImage`,
+      `Ratspeak-${releaseTag}-linux-x86_64.rpm`,
+      `Ratspeak-${releaseTag}-linux-amd64-source-bom.json`,
+      `Ratspeak-${releaseTag}-linux-arm64-source-bom.json`,
+    ]],
+    ["windows", [
+      `Ratspeak-${releaseTag}-windows-x64.msi`,
+      `Ratspeak-${releaseTag}-windows-x64-setup.exe`,
+      `Ratspeak-${releaseTag}-windows-source-bom.json`,
+    ]],
+    ["macos", [
+      `Ratspeak-${releaseTag}-macos-arm64.dmg`,
+      `Ratspeak-${releaseTag}-macos-x64.dmg`,
+      `Ratspeak-${releaseTag}-macos-source-bom.json`,
+    ]],
+    ["android", [
+      `Ratspeak-${releaseTag}-android-arm64.apk`,
+      `Ratspeak-${releaseTag}-android-armv7.apk`,
+      `Ratspeak-${releaseTag}-android-x86_64.apk`,
+      `Ratspeak-${releaseTag}-android-source-bom.json`,
+    ]],
+  ]);
+  const bom = generateBom(set, null, { requireClean: false });
+  bom.product.ref = releaseTag;
+  const bomBytes = `${JSON.stringify(bom, null, 2)}\n`;
+  const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+  withTemporaryDirectory((directory) => {
+    for (const [platform, files] of platformFiles) {
+      const checksums = [];
+      for (const name of files) {
+        const bytes = name.endsWith("-source-bom.json") ? bomBytes : `fixture:${name}\n`;
+        writeFileSync(join(directory, name), bytes);
+        checksums.push(`${sha256(bytes)}  ${name}`);
+      }
+      writeFileSync(join(directory, `checksums-${platform}.txt`), `${checksums.join("\n")}\n`);
+    }
+
+    const script = join(dirname(fileURLToPath(import.meta.url)), "verify-release-artifacts.mjs");
+    assert.doesNotThrow(() =>
+      execFileSync(process.execPath, [script, directory, releaseTag], { stdio: "pipe" }),
+    );
+
+    const corrupted = `Ratspeak-${releaseTag}-android-arm64.apk`;
+    writeFileSync(join(directory, corrupted), "corrupted\n");
+    assert.throws(
+      () => execFileSync(process.execPath, [script, directory, releaseTag], { stdio: "pipe" }),
+      /Command failed/,
+    );
+  });
+});
+
+test("macOS notarization timeout preserves IDs and resumes without resubmitting", () => {
+  const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
+  const notarizer = join(scriptsDirectory, "notarize-macos-dmgs.sh");
+
+  withTemporaryDirectory((directory) => {
+    const binDirectory = join(directory, "bin");
+    const stateDirectory = join(directory, "state");
+    const invocationLog = join(directory, "xcrun.log");
+    const arm64Dmg = join(directory, "Ratspeak-v1.0.28-macos-arm64.dmg");
+    const x64Dmg = join(directory, "Ratspeak-v1.0.28-macos-x64.dmg");
+    mkdirSync(binDirectory);
+    writeFileSync(arm64Dmg, "signed arm64 fixture\n");
+    writeFileSync(x64Dmg, "signed x64 fixture\n");
+
+    const xcrun = `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$MOCK_XCRUN_LOG"
+if [[ "$1" == "notarytool" && "$2" == "submit" ]]; then
+  if [[ "$3" == *arm64* ]]; then
+    printf '{"id":"11111111-1111-1111-1111-111111111111"}\\n'
+  else
+    printf '{"id":"22222222-2222-2222-2222-222222222222"}\\n'
+  fi
+elif [[ "$1" == "notarytool" && "$2" == "wait" ]]; then
+  if [[ "$MOCK_NOTARY_WAIT" == "timeout" ]]; then
+    exit 1
+  fi
+  printf '{"status":"Accepted"}\\n'
+elif [[ "$1" == "notarytool" && "$2" == "info" ]]; then
+  printf '{"status":"In Progress"}\\n'
+elif [[ "$1" == "notarytool" && "$2" == "log" ]]; then
+  printf '{"status":"Accepted"}\\n' > "$4"
+elif [[ "$1" != "stapler" ]]; then
+  exit 2
+fi
+`;
+    const plutil = `#!/usr/bin/env bash
+set -euo pipefail
+node -e 'const fs = require("fs"); const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"))[process.argv[1]]; if (!value) process.exit(1); process.stdout.write(String(value));' "$2" "$6"
+`;
+    const xcrunPath = join(binDirectory, "xcrun");
+    const plutilPath = join(binDirectory, "plutil");
+    writeFileSync(xcrunPath, xcrun);
+    writeFileSync(plutilPath, plutil);
+    chmodSync(xcrunPath, 0o755);
+    chmodSync(plutilPath, 0o755);
+
+    const environment = {
+      ...process.env,
+      APPLE_ID: "release@example.invalid",
+      APPLE_PASSWORD: "fixture-password",
+      APPLE_TEAM_ID: "FIXTURETEAM",
+      MOCK_NOTARY_WAIT: "timeout",
+      MOCK_XCRUN_LOG: invocationLog,
+      NOTARY_WAIT_TIMEOUT: "1s",
+      PATH: `${binDirectory}:${process.env.PATH}`,
+    };
+    assert.throws(() =>
+      execFileSync("bash", [notarizer, "submit", stateDirectory, arm64Dmg, x64Dmg], {
+        env: environment,
+        stdio: "pipe",
+      }),
+    );
+
+    const submissions = readFileSync(join(stateDirectory, "submissions.tsv"), "utf8")
+      .trimEnd()
+      .split("\n");
+    assert.deepEqual(submissions, [
+      "Ratspeak-v1.0.28-macos-arm64.dmg\t11111111-1111-1111-1111-111111111111",
+      "Ratspeak-v1.0.28-macos-x64.dmg\t22222222-2222-2222-2222-222222222222",
+    ]);
+    assert.equal(
+      readFileSync(invocationLog, "utf8").split("\n").filter((line) => line.startsWith("notarytool submit ")).length,
+      2,
+    );
+
+    writeFileSync(invocationLog, "");
+    execFileSync("bash", [notarizer, "resume", stateDirectory, arm64Dmg, x64Dmg], {
+      env: { ...environment, MOCK_NOTARY_WAIT: "accepted" },
+      stdio: "pipe",
+    });
+    const resumedInvocations = readFileSync(invocationLog, "utf8");
+    assert.doesNotMatch(resumedInvocations, /^notarytool submit /m);
+    assert.equal(
+      resumedInvocations.split("\n").filter((line) => line.startsWith("notarytool wait ")).length,
+      2,
+    );
+    assert.equal(
+      resumedInvocations.split("\n").filter((line) => line.startsWith("stapler ")).length,
+      4,
+    );
   });
 });

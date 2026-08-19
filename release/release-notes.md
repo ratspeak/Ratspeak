@@ -1,0 +1,5 @@
+- Fixed RNode startup compatibility by treating optional EEPROM information as advisory instead of rejecting otherwise usable hardware, including the T114.
+- Restored reliable BLE transmission after an RNode connects.
+- Fixed Announce sometimes staying queued even while an external RNode was connected and ready to transmit.
+- Fixed Linux AppImage startup crashes caused by incompatible system AppIndicator and GLib libraries.
+- Simplified interface status messages so connection and hardware warnings are shown as plain yellow text instead of pill-shaped badges.

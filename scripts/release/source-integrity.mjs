@@ -268,6 +268,24 @@ function expectContains(source, fragment, label) {
   if (!source.includes(fragment)) fail(`${label}: missing ${fragment}`);
 }
 
+function markdownBullets(source) {
+  const bullets = [];
+  let current = null;
+  for (const line of source.split("\n")) {
+    if (line.startsWith("- ")) {
+      if (current !== null) bullets.push(current);
+      current = line.slice(2).trim();
+    } else if (current !== null && line.startsWith("  ")) {
+      current += ` ${line.trim()}`;
+    } else if (current !== null) {
+      bullets.push(current);
+      current = null;
+    }
+  }
+  if (current !== null) bullets.push(current);
+  return bullets;
+}
+
 export function verifyProductSurfaces(set) {
   const marketing = set.product.marketingVersion;
   const display = set.product.displayVersion;
@@ -309,7 +327,19 @@ export function verifyProductSurfaces(set) {
     "predecessor iOS build number",
   );
 
-  expectContains(readUtf8(join(repoRoot, "CHANGELOG.md")), "## [Unreleased]", "changelog policy");
+  const changelog = readUtf8(join(repoRoot, "CHANGELOG.md"));
+  expectContains(changelog, "## [Unreleased]", "changelog policy");
+  const releaseSectionMarker = `## [${display}]`;
+  const releaseSectionStart = changelog.indexOf(releaseSectionMarker);
+  if (releaseSectionStart < 0) fail(`changelog is missing ${releaseSectionMarker}`);
+  const releaseSectionTail = changelog.slice(releaseSectionStart + releaseSectionMarker.length);
+  const nextReleaseSection = releaseSectionTail.search(/^## \[/m);
+  const releaseSection = nextReleaseSection < 0
+    ? releaseSectionTail
+    : releaseSectionTail.slice(0, nextReleaseSection);
+  const releaseNotes = readUtf8(join(repoRoot, "release/release-notes.md"));
+  const expectedReleaseNotes = `${markdownBullets(releaseSection).map((bullet) => `- ${bullet}`).join("\n")}\n`;
+  expectEqual(releaseNotes, expectedReleaseNotes, "shared release notes must match the current changelog section");
   for (const lockfile of ["Cargo.lock", "src-tauri/Cargo.lock"]) {
     if (!existsSync(join(repoRoot, lockfile))) fail(`missing committed release lockfile ${lockfile}`);
   }
@@ -442,15 +472,34 @@ export function verifyProductSurfaces(set) {
       expectContains(
         workflow,
         "source-integrity.mjs verify-release-ref",
-        `${workflowName} publishing ref verification`,
+        `${workflowName} qualified ref verification`,
       );
       expectContains(
         workflow,
-        "PUBLISH_GITHUB_RELEASE",
-        `${workflowName} publishing BOM binding`,
+        "QUALIFY_RELEASE_REF",
+        `${workflowName} qualified BOM binding`,
       );
     }
   }
+
+  const releaseWorkflow = readUtf8(join(workflowDirectory, "release.yml"));
+  expectContains(releaseWorkflow, 'tags:\n      - "v*"', "release orchestrator tag trigger");
+  expectContains(
+    releaseWorkflow,
+    "scripts/release/verify-release-artifacts.mjs",
+    "release orchestrator artifact gate",
+  );
+  expectContains(
+    releaseWorkflow,
+    "body_path: Ratspeak/release/release-notes.md",
+    "release orchestrator notes source",
+  );
+  expectContains(
+    releaseWorkflow,
+    "uses: softprops/action-gh-release@",
+    "release orchestrator single publisher",
+  );
+  expectContains(releaseWorkflow, "upload_play: false", "release orchestrator Play isolation");
 
   const androidWorkflow = readUtf8(join(workflowDirectory, "release-android.yml"));
   expectContains(

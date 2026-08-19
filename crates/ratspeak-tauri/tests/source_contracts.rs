@@ -5155,7 +5155,7 @@ fn settings_version_display_uses_package_version_api() {
 }
 
 #[test]
-fn release_workflows_pin_reviewed_dependencies_and_publish_normal_releases_by_default() {
+fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     let root = repo_root();
     let dependency_set: serde_json::Value = serde_json::from_str(
         &read_source(root.join("release/dependency-set.json")).expect("dependency set"),
@@ -5189,6 +5189,7 @@ fn release_workflows_pin_reviewed_dependencies_and_publish_normal_releases_by_de
     for workflow_path in [
         ".github/workflows/release-android.yml",
         ".github/workflows/release-desktop.yml",
+        ".github/workflows/release-ios.yml",
         ".github/workflows/release-macos.yml",
         ".github/workflows/release-windows.yml",
     ] {
@@ -5197,37 +5198,110 @@ fn release_workflows_pin_reviewed_dependencies_and_publish_normal_releases_by_de
         assert!(workflow.contains("source-integrity.mjs verify-release-source"));
         assert!(workflow.contains("bom --output") || workflow.contains("\"bom\""));
         assert!(!workflow.contains("RATSPEAK_RSRETICULUM_REF:"));
+        assert!(workflow.contains("cache-bin: true"));
+        assert!(workflow.contains("key: tauri-${{ steps.source.outputs.tauri_cli }}"));
+        assert!(workflow.contains("scripts/release/install-tauri-cli.sh"));
+        assert!(!workflow.contains("cargo install tauri-cli --version"));
         if workflow_path != ".github/workflows/release-ios.yml" {
+            assert!(workflow.contains("workflow_call:"));
             assert!(workflow.contains("source-integrity.mjs verify-release-ref"));
-            assert!(workflow.contains("PUBLISH_GITHUB_RELEASE"));
-        }
-        assert!(workflow.contains(
-            "prerelease:\n        description: \"Mark the GitHub Release as a prerelease.\"\n        required: true\n        default: false\n        type: boolean"
-        ));
-        assert!(workflow.contains(
-            "prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}"
-        ));
-        for fragment in release_note_fragments {
+            assert!(workflow.contains("QUALIFY_RELEASE_REF"));
             assert!(
-                workflow.contains(fragment),
-                "{workflow_path} is missing approved release copy: {fragment}"
+                workflow.contains("permissions:\n  contents: read")
+                    || workflow.contains("permissions:\n  actions: read\n  contents: read")
             );
+            assert!(!workflow.contains("uses: softprops/action-gh-release@"));
+            assert!(!workflow.contains("publish_github_release"));
+            assert!(!workflow.contains("PUBLISH_GITHUB_RELEASE"));
+            assert!(!workflow.contains("push:\n    tags:"));
         }
         assert!(!workflow.contains("Public Channels beta:"));
     }
 
+    for (workflow_path, concurrency_group, flat_artifact_upload) in [
+        (
+            ".github/workflows/release-android.yml",
+            "group: release-android-${{ inputs.release_tag || github.ref }}",
+            "name: ratspeak-android\n          path: Ratspeak/dist/android/*",
+        ),
+        (
+            ".github/workflows/release-desktop.yml",
+            "group: release-linux-${{ inputs.release_tag || github.ref }}",
+            "name: ratspeak-linux\n          path: Ratspeak/dist/linux/*",
+        ),
+        (
+            ".github/workflows/release-macos.yml",
+            "group: release-macos-${{ inputs.release_tag || github.ref }}",
+            "name: ratspeak-macos\n          path: Ratspeak/dist/macos/*",
+        ),
+        (
+            ".github/workflows/release-windows.yml",
+            "group: release-windows-${{ inputs.release_tag || github.ref }}",
+            "name: ratspeak-windows\n          path: Ratspeak/dist/windows/*",
+        ),
+    ] {
+        let workflow = read_source(root.join(workflow_path)).expect("release workflow");
+        assert!(
+            workflow.contains(concurrency_group),
+            "{workflow_path} must not share a reusable-workflow concurrency group"
+        );
+        assert!(
+            workflow.contains(flat_artifact_upload),
+            "{workflow_path} must upload one flat public-artifact directory"
+        );
+    }
+
+    let release_notes =
+        read_source(root.join("release/release-notes.md")).expect("shared release notes");
     let changelog = read_source(root.join("CHANGELOG.md")).expect("changelog");
     for fragment in release_note_fragments {
+        assert!(
+            release_notes.contains(fragment),
+            "shared release notes are missing approved copy: {fragment}"
+        );
         assert!(
             changelog.contains(fragment),
             "changelog is missing approved release copy: {fragment}"
         );
     }
 
+    let orchestrator =
+        read_source(root.join(".github/workflows/release.yml")).expect("release orchestrator");
+    assert!(orchestrator.contains("push:\n    tags:\n      - \"v*\""));
+    assert_eq!(
+        orchestrator
+            .matches("uses: softprops/action-gh-release@")
+            .count(),
+        1
+    );
+    assert!(orchestrator.contains("body_path: Ratspeak/release/release-notes.md"));
+    assert!(orchestrator.contains("scripts/release/verify-release-artifacts.mjs"));
+    assert!(orchestrator.contains("name: Verify and publish complete release"));
+    assert!(orchestrator.contains("contents: write"));
+    assert!(orchestrator.contains("upload_play: false"));
+    assert!(orchestrator.contains("notarize: true"));
+    assert!(orchestrator.contains("recovery_run_id:"));
+    assert!(orchestrator.contains(
+        "prerelease:\n        description: \"Mark the final GitHub Release as a prerelease.\"\n        required: true\n        default: false\n        type: boolean"
+    ));
+    assert!(orchestrator.contains(
+        "prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}"
+    ));
+    for workflow in [
+        "release-desktop.yml",
+        "release-windows.yml",
+        "release-android.yml",
+        "release-macos.yml",
+    ] {
+        assert!(
+            orchestrator.contains(&format!("uses: ./.github/workflows/{workflow}")),
+            "release orchestrator does not call {workflow}"
+        );
+    }
+
     for workflow_path in [
         ".github/workflows/release-android.yml",
         ".github/workflows/release-desktop.yml",
-        ".github/workflows/release-macos.yml",
     ] {
         let workflow = read_source(root.join(workflow_path)).expect("release workflow");
         assert!(workflow.contains(r#""$(basename "$artifact")""#));
@@ -5240,6 +5314,50 @@ fn release_workflows_pin_reviewed_dependencies_and_publish_normal_releases_by_de
     let macos =
         read_source(root.join(".github/workflows/release-macos.yml")).expect("macOS release");
     assert!(macos.contains("sudo xcode-select -s /Applications/Xcode_26.3.app"));
+    assert!(macos.contains("scripts/release/notarize-macos-dmgs.sh"));
+    assert!(macos.contains("scripts/release/finalize-macos-dmgs.sh"));
+    assert!(macos.contains("NOTARY_WAIT_TIMEOUT: 30m"));
+    assert!(macos.contains("ratspeak-macos-notarization-recovery"));
+    assert!(macos.contains("recovery_run_id"));
+    assert!(macos.contains("unset APPLE_ID"));
+    assert!(!macos.contains("--skip-stapling"));
+    let notarization_gate = read_source(root.join("scripts/release/notarize-macos-dmgs.sh"))
+        .expect("bounded macOS notarization gate");
+    for required in [
+        "notarytool submit",
+        "--no-wait",
+        "notarytool wait",
+        "--timeout",
+        "submissions.tsv",
+        "stapler staple",
+        "stapler validate",
+    ] {
+        assert!(
+            notarization_gate.contains(required),
+            "macOS notarization gate is missing {required}"
+        );
+    }
+    let macos_finalizer = read_source(root.join("scripts/release/finalize-macos-dmgs.sh"))
+        .expect("macOS final artifact gate");
+    assert!(macos_finalizer.contains(r#""$(basename "$artifact")""#));
+    for required in [
+        "verify-macos-dmg.sh",
+        "codesign --verify",
+        "stapler validate",
+        "spctl -a",
+        "assert-no-tauri-dev-url.sh",
+    ] {
+        assert!(
+            macos_finalizer.contains(required),
+            "macOS final artifact gate is missing {required}"
+        );
+    }
+    let artifact_gate = read_source(root.join("scripts/release/verify-release-artifacts.mjs"))
+        .expect("complete release artifact gate");
+    assert!(artifact_gate.contains("release artifact set mismatch"));
+    assert!(artifact_gate.contains("SHA-256 mismatch"));
+    assert!(artifact_gate.contains("product commit drift"));
+    assert!(artifact_gate.contains("component count drift"));
     let linux =
         read_source(root.join(".github/workflows/release-desktop.yml")).expect("Linux release");
     assert!(linux.contains(r#"test -n "$rpm""#));

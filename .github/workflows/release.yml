@@ -1,0 +1,209 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing annotated release tag to rebuild and publish."
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the final GitHub Release as a prerelease."
+        required: true
+        default: false
+        type: boolean
+      recovery_run_id:
+        description: "Prior failed release run whose macOS notarization should resume."
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare exact release source
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.source.outputs.release_tag }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Checkout annotated release tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+
+      - name: Setup source qualification Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+
+      - name: Verify release tag and recovery input
+        id: source
+        shell: bash
+        env:
+          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_TAG"
+          test -s release/release-notes.md
+          if [[ -n "$RECOVERY_RUN_ID" && ! "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "recovery_run_id must be a positive GitHub Actions run ID" >&2
+            exit 1
+          fi
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Build Linux artifacts
+    if: ${{ inputs.recovery_run_id == '' }}
+    needs: prepare
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      qualify_release_ref: true
+
+  windows:
+    name: Build Windows artifacts
+    if: ${{ inputs.recovery_run_id == '' }}
+    needs: prepare
+    uses: ./.github/workflows/release-windows.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      qualify_release_ref: true
+
+  android:
+    name: Build Android artifacts
+    if: ${{ inputs.recovery_run_id == '' }}
+    needs: prepare
+    uses: ./.github/workflows/release-android.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      qualify_release_ref: true
+      upload_play: false
+    secrets:
+      ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+      ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+      ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+      ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+
+  macos:
+    name: Build signed and notarized macOS artifacts
+    needs: prepare
+    uses: ./.github/workflows/release-macos.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      qualify_release_ref: true
+      notarize: true
+      recovery_run_id: ${{ inputs.recovery_run_id || '' }}
+    secrets:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+
+  publish:
+    name: Verify and publish complete release
+    needs:
+      - prepare
+      - linux
+      - windows
+      - android
+      - macos
+    if: >-
+      ${{
+        always() &&
+        needs.prepare.result == 'success' &&
+        needs.macos.result == 'success' &&
+        (
+          (
+            inputs.recovery_run_id == '' &&
+            needs.linux.result == 'success' &&
+            needs.windows.result == 'success' &&
+            needs.android.result == 'success'
+          ) ||
+          (
+            inputs.recovery_run_id != '' &&
+            needs.linux.result == 'skipped' &&
+            needs.windows.result == 'skipped' &&
+            needs.android.result == 'skipped'
+          )
+        )
+      }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          path: Ratspeak
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Download Linux release artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-linux
+          path: release-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.recovery_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download Windows release artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-windows
+          path: release-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.recovery_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download Android release artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-android
+          path: release-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.recovery_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download current macOS release artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-macos
+          path: release-assets
+
+      - name: Verify exact artifact set, checksums, and source BOMs
+        working-directory: Ratspeak
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: node scripts/release/verify-release-artifacts.mjs ../release-assets "$RELEASE_TAG"
+
+      - name: Publish one complete GitHub Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+          draft: false
+          fail_on_unmatched_files: true
+          body_path: Ratspeak/release/release-notes.md
+          files: release-assets/*

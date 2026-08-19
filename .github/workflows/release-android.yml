@@ -1,22 +1,48 @@
 name: Release Android
 
 on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      publish_github_release:
-        description: "Publish APK artifacts to a GitHub Release"
+      source_ref:
+        description: "Exact tag or commit to build."
         required: true
+        type: string
+      release_tag:
+        description: "Public version used in artifact names."
+        required: true
+        type: string
+      qualify_release_ref:
+        description: "Bind source BOMs to an existing annotated release tag."
+        required: true
+        type: boolean
+      upload_play:
+        description: "Build and upload a Google Play AAB."
+        required: false
         default: false
         type: boolean
-      release_tag:
-        description: "Release tag to publish when manually dispatching."
+    secrets:
+      ANDROID_UPLOAD_KEYSTORE_BASE64:
+        required: true
+      ANDROID_UPLOAD_KEYSTORE_PASSWORD:
+        required: true
+      ANDROID_UPLOAD_KEY_ALIAS:
+        required: true
+      ANDROID_UPLOAD_KEY_PASSWORD:
+        required: true
+      GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:
+        required: false
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Commit or ref to build; defaults to the selected dispatch ref."
         required: false
         type: string
-      prerelease:
-        description: "Mark the GitHub Release as a prerelease."
+      release_tag:
+        description: "Artifact version label; defaults to the selected ref name."
+        required: false
+        type: string
+      qualify_release_ref:
+        description: "Require release_tag to be the exact annotated product tag."
         required: true
         default: false
         type: boolean
@@ -27,10 +53,10 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-android-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -44,7 +70,7 @@ jobs:
         with:
           path: Ratspeak
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Setup source qualification Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -94,12 +120,12 @@ jobs:
         working-directory: Ratspeak
         run: node scripts/release/source-integrity.mjs verify-release-source
 
-      - name: Verify publishing release ref
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+      - name: Verify qualified release ref
+        if: ${{ inputs.qualify_release_ref }}
         shell: bash
         working-directory: Ratspeak
         env:
-          RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          RELEASE_REF: ${{ inputs.release_tag }}
         run: node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_REF"
 
       - name: Install Rust toolchain
@@ -132,14 +158,17 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          cache-bin: false
+          cache-bin: true
+          key: tauri-${{ steps.source.outputs.tauri_cli }}
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "${{ steps.source.outputs.tauri_cli }}" --locked
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/install-tauri-cli.sh "${{ steps.source.outputs.tauri_cli }}"
 
       - name: Build CSS
         shell: bash
@@ -171,7 +200,7 @@ jobs:
         run: ./gradlew :app:lintArm64Release --warning-mode all
 
       - name: Build signed Android AAB
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_play }}
+        if: ${{ inputs.upload_play }}
         shell: bash
         working-directory: Ratspeak/src-tauri
         run: |
@@ -202,8 +231,8 @@ jobs:
         shell: bash
         working-directory: Ratspeak
         env:
-          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          PUBLISH_GITHUB_RELEASE: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
+          RELEASE_VERSION: ${{ inputs.release_tag || github.ref_name }}
+          QUALIFY_RELEASE_REF: ${{ inputs.qualify_release_ref }}
         run: |
           set -euo pipefail
           release_version="${RELEASE_VERSION:?Missing release version.}"
@@ -222,7 +251,7 @@ jobs:
           cp src-tauri/gen/android/app/build/outputs/apk/x86_64/release/app-x86_64-release.apk "$out_dir/Ratspeak-${release_version}-android-x86_64.apk"
 
           source_args=(bom --output "$out_dir/Ratspeak-${release_version}-android-source-bom.json")
-          if [[ "$PUBLISH_GITHUB_RELEASE" == "true" ]]; then
+          if [[ "$QUALIFY_RELEASE_REF" == "true" ]]; then
             source_args+=(--release-ref "$release_version")
           fi
           node scripts/release/source-integrity.mjs "${source_args[@]}"
@@ -240,36 +269,27 @@ jobs:
               printf '%s  %s\n' "$hash" "$(basename "$artifact")" >> "$checksum_file"
             done
           test -s "$checksum_file"
+          mv "$checksum_file" dist/android/checksums-android.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ratspeak-android
-          path: |
-            Ratspeak/src-tauri/gen/android/app/build/outputs/**/*.aab
-            Ratspeak/dist/android/*
-            Ratspeak/checksums-android.txt
+          path: Ratspeak/dist/android/*
           if-no-files-found: error
           retention-days: 7
 
-      - name: Publish GitHub Release
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_github_release) }}
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+      - name: Upload Play AAB artifact
+        if: ${{ inputs.upload_play }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
-          body: |
-            - Fixed RNode startup compatibility by treating optional EEPROM information as advisory instead of rejecting otherwise usable hardware, including the T114.
-            - Restored reliable BLE transmission after an RNode connects.
-            - Fixed Announce sometimes staying queued even while an external RNode was connected and ready to transmit.
-            - Fixed Linux AppImage startup crashes caused by incompatible system AppIndicator and GLib libraries.
-            - Simplified interface status messages so connection and hardware warnings are shown as plain yellow text instead of pill-shaped badges.
-          files: |
-            Ratspeak/dist/android/*
-            Ratspeak/checksums-android.txt
+          name: ratspeak-android-play-aab
+          path: Ratspeak/src-tauri/gen/android/app/build/outputs/**/*.aab
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload to Google Play
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_play }}
+        if: ${{ inputs.upload_play }}
         uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
