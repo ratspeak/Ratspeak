@@ -32,6 +32,7 @@ jobs:
       - name: Checkout exact candidate
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
+          path: Ratspeak
           fetch-depth: 0
           ref: ${{ inputs.source_ref }}
 
@@ -40,14 +41,52 @@ jobs:
         with:
           node-version: 22.22.0
 
+      - name: Load reviewed source set
+        id: source-set
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
+
+      - name: Checkout rsReticulum
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsReticulum
+          ref: ${{ steps.source-set.outputs.rsreticulum_ref }}
+          path: rsReticulum
+          fetch-depth: 0
+
+      - name: Checkout rsLXMF
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsLXMF
+          ref: ${{ steps.source-set.outputs.rslxmf_ref }}
+          path: rsLXMF
+          fetch-depth: 0
+
+      - name: Checkout rsLXST
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsLXST
+          ref: ${{ steps.source-set.outputs.rslxst_ref }}
+          path: rsLXST
+          fetch-depth: 0
+
+      - name: Checkout lrgp-rs
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/lrgp-rs
+          ref: ${{ steps.source-set.outputs.lrgp_ref }}
+          path: lrgp-rs
+          fetch-depth: 0
+
       - name: Verify candidate surfaces and tag absence
         id: source
         shell: bash
+        working-directory: Ratspeak
         env:
           RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
         run: |
           set -euo pipefail
-          node scripts/release/source-integrity.mjs verify
+          node scripts/release/source-integrity.mjs verify-release-source
           node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
           source_sha="$(git rev-parse HEAD)"
           release_tag="v$(node -p 'require("./release/dependency-set.json").product.displayVersion')"
