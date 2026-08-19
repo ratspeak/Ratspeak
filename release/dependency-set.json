@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
   "product": {
-    "displayVersion": "1.0.27",
-    "marketingVersion": "1.0.27",
+    "displayVersion": "1.0.28",
+    "marketingVersion": "1.0.28",
     "androidArtifactTargets": [
       "aarch64",
       "armv7",
       "x86_64"
     ],
     "platformBuilds": {
-      "androidVersionCode": 1000042,
-      "iosBundleVersion": "1000042"
+      "androidVersionCode": 1000043,
+      "iosBundleVersion": "1000043"
     },
     "predecessor": {
-      "displayVersion": "1.0.26o",
-      "tag": "v1.0.26o",
-      "commit": "6dd1d8ad9c1728c6463ba2cac2d8705db7a9cc18",
-      "androidVersionCode": 1000041,
-      "iosBundleVersion": "1000041"
+      "displayVersion": "1.0.27",
+      "tag": "v1.0.27",
+      "commit": "d435bc0e2caf193d32d1bfe5e4c244d8023a4b63",
+      "androidVersionCode": 1000042,
+      "iosBundleVersion": "1000042"
     }
   },
   "toolchains": {
