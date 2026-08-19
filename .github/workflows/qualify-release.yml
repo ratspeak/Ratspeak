@@ -1,0 +1,222 @@
+name: Release qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Exact untagged candidate commit to qualify."
+        required: true
+        type: string
+      recovery_run_id:
+        description: "Prior failed qualification run whose macOS notarization should resume."
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-qualification-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare untagged release candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.source.outputs.release_tag }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Setup source qualification Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+
+      - name: Verify candidate surfaces and tag absence
+        id: source
+        shell: bash
+        env:
+          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+        run: |
+          set -euo pipefail
+          node scripts/release/source-integrity.mjs verify
+          node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
+          source_sha="$(git rev-parse HEAD)"
+          release_tag="v$(node -p 'require("./release/dependency-set.json").product.displayVersion')"
+          if git rev-parse --verify --quiet "$release_tag^{commit}" >/dev/null; then
+            echo "Pre-tag qualification requires $release_tag to be absent" >&2
+            exit 1
+          fi
+          if [[ -n "$RECOVERY_RUN_ID" && ! "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "recovery_run_id must be a positive GitHub Actions run ID" >&2
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful ordinary CI on the exact source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          successful_runs="$(gh api \
+            -X GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$SOURCE_SHA" \
+            -f event=push \
+            -f status=success \
+            -f per_page=1 \
+            --jq '.total_count')"
+          if [[ ! "$successful_runs" =~ ^[1-9][0-9]*$ ]]; then
+            echo "No successful ordinary CI push run exists for $SOURCE_SHA" >&2
+            exit 1
+          fi
+          echo "Ordinary CI is green for exact source $SOURCE_SHA"
+
+  linux:
+    name: Qualify Linux artifacts
+    if: ${{ inputs.recovery_run_id == '' }}
+    needs: prepare
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      qualify_release_ref: false
+
+  windows:
+    name: Qualify Windows artifacts
+    if: ${{ inputs.recovery_run_id == '' }}
+    needs: prepare
+    uses: ./.github/workflows/release-windows.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      qualify_release_ref: false
+
+  android:
+    name: Qualify signed Android artifacts
+    if: ${{ inputs.recovery_run_id == '' }}
+    needs: prepare
+    uses: ./.github/workflows/release-android.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      qualify_release_ref: false
+      upload_play: false
+    secrets:
+      ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+      ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+      ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+      ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+
+  macos:
+    name: Qualify signed and notarized macOS artifacts
+    needs: prepare
+    uses: ./.github/workflows/release-macos.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      qualify_release_ref: false
+      notarize: true
+      recovery_run_id: ${{ inputs.recovery_run_id || '' }}
+    secrets:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+
+  verify:
+    name: Verify complete pre-tag artifact set
+    needs:
+      - prepare
+      - linux
+      - windows
+      - android
+      - macos
+    if: >-
+      ${{
+        always() &&
+        needs.prepare.result == 'success' &&
+        needs.macos.result == 'success' &&
+        (
+          (
+            inputs.recovery_run_id == '' &&
+            needs.linux.result == 'success' &&
+            needs.windows.result == 'success' &&
+            needs.android.result == 'success'
+          ) ||
+          (
+            inputs.recovery_run_id != '' &&
+            needs.linux.result == 'skipped' &&
+            needs.windows.result == 'skipped' &&
+            needs.android.result == 'skipped'
+          )
+        )
+      }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          path: Ratspeak
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - name: Download Linux qualification artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-linux
+          path: release-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.recovery_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download Windows qualification artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-windows
+          path: release-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.recovery_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download Android qualification artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-android
+          path: release-assets
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.recovery_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download macOS qualification artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ratspeak-macos
+          path: release-assets
+
+      - name: Verify exact artifact set, checksums, and untagged source BOMs
+        working-directory: Ratspeak
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: node scripts/release/verify-release-artifacts.mjs ../release-assets "$RELEASE_TAG" --qualification
+
+      - name: Preserve combined qualification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ratspeak-release-qualification
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7

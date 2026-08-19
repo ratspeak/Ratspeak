@@ -5304,6 +5304,38 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         );
     }
 
+    let qualifier = read_source(root.join(".github/workflows/qualify-release.yml"))
+        .expect("pre-tag release qualifier");
+    assert!(qualifier.contains("name: Release qualification"));
+    assert!(qualifier.contains("description: \"Exact untagged candidate commit to qualify.\""));
+    assert!(qualifier.contains("Pre-tag qualification requires $release_tag to be absent"));
+    assert!(qualifier.contains("name: Require successful ordinary CI on the exact source"));
+    assert!(qualifier.contains("upload_play: false"));
+    assert!(qualifier.contains("notarize: true"));
+    assert!(qualifier.contains("--qualification"));
+    assert!(qualifier.contains("name: ratspeak-release-qualification"));
+    assert!(qualifier.contains("recovery_run_id"));
+    assert!(!qualifier.contains("uses: softprops/action-gh-release@"));
+    assert!(!qualifier.contains("contents: write"));
+    for workflow in [
+        "release-desktop.yml",
+        "release-windows.yml",
+        "release-android.yml",
+        "release-macos.yml",
+    ] {
+        assert!(
+            qualifier.contains(&format!("uses: ./.github/workflows/{workflow}")),
+            "release qualifier does not call {workflow}"
+        );
+    }
+
+    let ios =
+        read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");
+    assert!(ios.contains(
+        "description: \"Exact candidate commit to build; defaults to the selected dispatch ref.\""
+    ));
+    assert!(ios.contains("ref: ${{ inputs.source_ref || github.sha }}"));
+
     for workflow_path in [
         ".github/workflows/release-android.yml",
         ".github/workflows/release-desktop.yml",

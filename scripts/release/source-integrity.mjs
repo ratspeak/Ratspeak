@@ -501,6 +501,31 @@ export function verifyProductSurfaces(set) {
   );
   expectContains(releaseWorkflow, "upload_play: false", "release orchestrator Play isolation");
 
+  const qualificationWorkflow = readUtf8(join(workflowDirectory, "qualify-release.yml"));
+  expectContains(
+    qualificationWorkflow,
+    "Verify complete pre-tag artifact set",
+    "pre-tag release qualification artifact gate",
+  );
+  expectContains(
+    qualificationWorkflow,
+    "verify-release-artifacts.mjs ../release-assets \"$RELEASE_TAG\" --qualification",
+    "pre-tag release qualification BOM mode",
+  );
+  expectContains(
+    qualificationWorkflow,
+    "actions/workflows/ci.yml/runs",
+    "pre-tag release qualification CI gate",
+  );
+  expectContains(
+    qualificationWorkflow,
+    "upload_play: false",
+    "pre-tag release qualification Play isolation",
+  );
+  if (qualificationWorkflow.includes("softprops/action-gh-release")) {
+    fail("qualify-release.yml must not publish a GitHub Release");
+  }
+
   const androidWorkflow = readUtf8(join(workflowDirectory, "release-android.yml"));
   expectContains(
     androidWorkflow,

@@ -168,22 +168,37 @@ test("final release artifact gate requires the exact complete checksummed source
     ]],
   ]);
   const bom = generateBom(set, null, { requireClean: false });
-  bom.product.ref = releaseTag;
-  const bomBytes = `${JSON.stringify(bom, null, 2)}\n`;
   const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
   withTemporaryDirectory((directory) => {
-    for (const [platform, files] of platformFiles) {
-      const checksums = [];
-      for (const name of files) {
-        const bytes = name.endsWith("-source-bom.json") ? bomBytes : `fixture:${name}\n`;
-        writeFileSync(join(directory, name), bytes);
-        checksums.push(`${sha256(bytes)}  ${name}`);
+    const writeFixture = (bomRef) => {
+      const fixtureBom = structuredClone(bom);
+      fixtureBom.product.ref = bomRef;
+      const bomBytes = `${JSON.stringify(fixtureBom, null, 2)}\n`;
+      for (const [platform, files] of platformFiles) {
+        const checksums = [];
+        for (const name of files) {
+          const bytes = name.endsWith("-source-bom.json") ? bomBytes : `fixture:${name}\n`;
+          writeFileSync(join(directory, name), bytes);
+          checksums.push(`${sha256(bytes)}  ${name}`);
+        }
+        writeFileSync(join(directory, `checksums-${platform}.txt`), `${checksums.join("\n")}\n`);
       }
-      writeFileSync(join(directory, `checksums-${platform}.txt`), `${checksums.join("\n")}\n`);
-    }
+    };
 
     const script = join(dirname(fileURLToPath(import.meta.url)), "verify-release-artifacts.mjs");
+    writeFixture(null);
+    assert.doesNotThrow(() =>
+      execFileSync(process.execPath, [script, directory, releaseTag, "--qualification"], {
+        stdio: "pipe",
+      }),
+    );
+    assert.throws(
+      () => execFileSync(process.execPath, [script, directory, releaseTag], { stdio: "pipe" }),
+      /Command failed/,
+    );
+
+    writeFixture(releaseTag);
     assert.doesNotThrow(() =>
       execFileSync(process.execPath, [script, directory, releaseTag], { stdio: "pipe" }),
     );

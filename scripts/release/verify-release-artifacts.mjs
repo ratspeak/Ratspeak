@@ -9,10 +9,12 @@ function fail(message) {
   throw new Error(message);
 }
 
-const [artifactDirectoryArgument, releaseTag] = process.argv.slice(2);
+const [artifactDirectoryArgument, releaseTag, mode] = process.argv.slice(2);
 if (!artifactDirectoryArgument || !releaseTag) {
-  fail("usage: verify-release-artifacts.mjs ARTIFACT_DIRECTORY RELEASE_TAG");
+  fail("usage: verify-release-artifacts.mjs ARTIFACT_DIRECTORY RELEASE_TAG [--qualification]");
 }
+if (mode !== undefined && mode !== "--qualification") fail(`unsupported verification mode: ${mode}`);
+const qualification = mode === "--qualification";
 if (!/^v[0-9]+\.[0-9]+\.[0-9]+[a-z]?$/.test(releaseTag)) {
   fail(`invalid Ratspeak release tag: ${releaseTag}`);
 }
@@ -127,7 +129,10 @@ let productCommit = null;
 for (const bomName of bomFiles) {
   const bom = JSON.parse(readFileSync(join(artifactDirectory, bomName), "utf8"));
   if (bom.schemaVersion !== 1) fail(`${bomName}: unsupported schema`);
-  if (bom.product?.ref !== releaseTag) fail(`${bomName}: release ref is not ${releaseTag}`);
+  const expectedBomRef = qualification ? null : releaseTag;
+  if (bom.product?.ref !== expectedBomRef) {
+    fail(`${bomName}: source BOM ref is not ${expectedBomRef ?? "untagged"}`);
+  }
   if (bom.product?.displayVersion !== dependencySet.product.displayVersion) {
     fail(`${bomName}: display version drift`);
   }
@@ -153,4 +158,5 @@ for (const bomName of bomFiles) {
   }
 }
 
-console.log(`verified ${actualFiles.length} release files for ${releaseTag} at ${productCommit}`);
+const verificationKind = qualification ? "pre-tag qualification" : "release";
+console.log(`verified ${actualFiles.length} ${verificationKind} files for ${releaseTag} at ${productCommit}`);
