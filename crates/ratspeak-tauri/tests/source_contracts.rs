@@ -5264,6 +5264,8 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
     assert!(!ios.contains("--build-number"));
     assert!(ios.contains("--export-method app-store-connect"));
     assert!(ios.contains("APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}"));
+    assert!(ios.contains("Normalize Tauri-generated iOS project"));
+    assert!(ios.contains("git diff --exit-code -- \"$plist\""));
     for required in [
         "IOS_DISTRIBUTION_CERTIFICATE_BASE64",
         "IOS_DISTRIBUTION_CERTIFICATE_PASSWORD",

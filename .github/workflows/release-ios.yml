@@ -200,6 +200,16 @@ jobs:
           cargo tauri ios build --ci --target aarch64 \
             --export-method app-store-connect -- --locked
 
+      - name: Normalize Tauri-generated iOS project
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          plist=src-tauri/gen/apple/ratspeak_iOS/Info.plist
+          if ! git diff --quiet -- "$plist"; then
+            printf '\n' >> "$plist"
+          fi
+          git diff --exit-code -- "$plist"
+
       - name: Validate iOS simulator bundle
         if: ${{ inputs.build_mode == 'simulator-smoke' }}
         shell: bash
