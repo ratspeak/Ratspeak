@@ -232,16 +232,16 @@ jobs:
           plutil -insert destination -string export "$EXPORT_OPTIONS"
           plutil -insert manageAppVersionAndBuildNumber -bool false "$EXPORT_OPTIONS"
           plutil -insert method -string app-store-connect "$EXPORT_OPTIONS"
-          plutil -insert provisioningProfiles -xml '<dict/>' "$EXPORT_OPTIONS"
-          plutil -insert 'provisioningProfiles.org\.ratspeak\.apple' \
-            -string "$RATSPEAK_IOS_PROFILE_UUID" "$EXPORT_OPTIONS"
-          plutil -insert signingCertificate -string "$IOS_SIGNING_CERTIFICATE_SHA1" "$EXPORT_OPTIONS"
-          plutil -insert signingStyle -string manual "$EXPORT_OPTIONS"
+          plutil -insert signingStyle -string automatic "$EXPORT_OPTIONS"
           plutil -insert stripSwiftSymbols -bool true "$EXPORT_OPTIONS"
           plutil -insert teamID -string "$APPLE_TEAM_ID" "$EXPORT_OPTIONS"
           plutil -insert testFlightInternalTestingOnly -bool false "$EXPORT_OPTIONS"
           plutil -insert uploadSymbols -bool true "$EXPORT_OPTIONS"
 
+          # The accepted profile is Xcode-managed, so the archive must use
+          # automatic profile selection. The ephemeral runner has only the
+          # exact accepted profile and certificate installed, and the IPA is
+          # checked against both immutable identifiers below.
           xcodebuild \
             -workspace gen/apple/ratspeak.xcodeproj/project.xcworkspace \
             -scheme ratspeak_iOS \
@@ -250,10 +250,9 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$ARCHIVE_PATH" \
             archive \
-            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_STYLE=Automatic \
             CODE_SIGN_IDENTITY="$IOS_SIGNING_CERTIFICATE_SHA1" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            PROVISIONING_PROFILE="$RATSPEAK_IOS_PROFILE_UUID"
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
 
           xcodebuild -exportArchive \
             -archivePath "$ARCHIVE_PATH" \
