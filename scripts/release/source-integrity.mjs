@@ -483,7 +483,21 @@ export function verifyProductSurfaces(set) {
   }
 
   const releaseWorkflow = readUtf8(join(workflowDirectory, "release.yml"));
-  expectContains(releaseWorkflow, 'tags:\n      - "v*"', "release orchestrator tag trigger");
+  expectContains(
+    releaseWorkflow,
+    'qualification_run_id:\n        description: "Successful final pre-tag qualification run to promote."',
+    "release orchestrator qualification promotion input",
+  );
+  expectContains(
+    releaseWorkflow,
+    "name: ratspeak-release-qualification",
+    "release orchestrator immutable qualification artifact",
+  );
+  expectContains(
+    releaseWorkflow,
+    'verify-release-artifacts.mjs ../release-assets "$RELEASE_TAG" --qualification',
+    "release orchestrator pre-promotion artifact gate",
+  );
   expectContains(
     releaseWorkflow,
     "scripts/release/verify-release-artifacts.mjs",
@@ -499,7 +513,12 @@ export function verifyProductSurfaces(set) {
     "uses: softprops/action-gh-release@",
     "release orchestrator single publisher",
   );
-  expectContains(releaseWorkflow, "upload_play: false", "release orchestrator Play isolation");
+  if (releaseWorkflow.includes("uses: ./.github/workflows/release-android.yml")) {
+    fail("release.yml must promote qualified artifacts rather than rebuild or upload Android");
+  }
+  if (releaseWorkflow.includes('tags:\n      - "v*"')) {
+    fail("release.yml must require an explicit qualification promotion dispatch after tagging");
+  }
 
   const qualificationWorkflow = readUtf8(join(workflowDirectory, "qualify-release.yml"));
   expectContains(

@@ -1,13 +1,10 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing annotated release tag to rebuild and publish."
+        description: "Existing annotated release tag to promote and publish."
         required: true
         type: string
       prerelease:
@@ -15,9 +12,9 @@ on:
         required: true
         default: false
         type: boolean
-      recovery_run_id:
-        description: "Prior failed release run whose macOS notarization should resume."
-        required: false
+      qualification_run_id:
+        description: "Successful final pre-tag qualification run to promote."
+        required: true
         type: string
 
 permissions:
@@ -25,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ inputs.release_tag || github.ref_name }}
+  group: release-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -42,7 +39,7 @@ jobs:
         with:
           path: Ratspeak
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag }}
 
       - name: Setup source qualification Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -86,24 +83,47 @@ jobs:
           path: lrgp-rs
           fetch-depth: 0
 
-      - name: Verify release tag and recovery input
+      - name: Verify release tag and qualification input
         id: source
         shell: bash
         working-directory: Ratspeak
         env:
-          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           node scripts/release/source-integrity.mjs verify-release-source
           node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_TAG"
           test -s release/release-notes.md
-          if [[ -n "$RECOVERY_RUN_ID" && ! "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
-            echo "recovery_run_id must be a positive GitHub Actions run ID" >&2
+          if [[ ! "$QUALIFICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "qualification_run_id must be a positive GitHub Actions run ID" >&2
             exit 1
           fi
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful final pre-tag qualification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+        run: |
+          set -euo pipefail
+          expected_workflow_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/qualify-release.yml" \
+            --jq '.id')"
+          read -r workflow_id status conclusion event <<<"$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN_ID" \
+            --jq '[.workflow_id, .status, .conclusion, .event] | @tsv')"
+          test "$workflow_id" = "$expected_workflow_id"
+          test "$status" = "completed"
+          test "$conclusion" = "success"
+          test "$event" = "workflow_dispatch"
+
+          artifact_count="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN_ID/artifacts" \
+            --jq '[.artifacts[] | select(.name == "ratspeak-release-qualification" and .expired == false)] | length')"
+          test "$artifact_count" = "1"
 
       - name: Require successful ordinary CI on the exact source
         shell: bash
@@ -126,87 +146,9 @@ jobs:
           fi
           echo "Ordinary CI is green for exact source $SOURCE_SHA"
 
-  linux:
-    name: Build Linux artifacts
-    if: ${{ inputs.recovery_run_id == '' }}
-    needs: prepare
-    uses: ./.github/workflows/release-desktop.yml
-    with:
-      source_ref: ${{ needs.prepare.outputs.source_sha }}
-      release_tag: ${{ needs.prepare.outputs.release_tag }}
-      qualify_release_ref: true
-
-  windows:
-    name: Build Windows artifacts
-    if: ${{ inputs.recovery_run_id == '' }}
-    needs: prepare
-    uses: ./.github/workflows/release-windows.yml
-    with:
-      source_ref: ${{ needs.prepare.outputs.source_sha }}
-      release_tag: ${{ needs.prepare.outputs.release_tag }}
-      qualify_release_ref: true
-
-  android:
-    name: Build Android artifacts
-    if: ${{ inputs.recovery_run_id == '' }}
-    needs: prepare
-    uses: ./.github/workflows/release-android.yml
-    with:
-      source_ref: ${{ needs.prepare.outputs.source_sha }}
-      release_tag: ${{ needs.prepare.outputs.release_tag }}
-      qualify_release_ref: true
-      upload_play: false
-    secrets:
-      ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
-      ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
-      ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
-      ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
-
-  macos:
-    name: Build signed and notarized macOS artifacts
-    needs: prepare
-    uses: ./.github/workflows/release-macos.yml
-    with:
-      source_ref: ${{ needs.prepare.outputs.source_sha }}
-      release_tag: ${{ needs.prepare.outputs.release_tag }}
-      qualify_release_ref: true
-      notarize: true
-      recovery_run_id: ${{ inputs.recovery_run_id || '' }}
-    secrets:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-
   publish:
-    name: Verify and publish complete release
-    needs:
-      - prepare
-      - linux
-      - windows
-      - android
-      - macos
-    if: >-
-      ${{
-        always() &&
-        needs.prepare.result == 'success' &&
-        needs.macos.result == 'success' &&
-        (
-          (
-            inputs.recovery_run_id == '' &&
-            needs.linux.result == 'success' &&
-            needs.windows.result == 'success' &&
-            needs.android.result == 'success'
-          ) ||
-          (
-            inputs.recovery_run_id != '' &&
-            needs.linux.result == 'skipped' &&
-            needs.windows.result == 'skipped' &&
-            needs.android.result == 'skipped'
-          )
-        )
-      }}
+    name: Promote, verify, and publish complete release
+    needs: prepare
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
@@ -220,40 +162,55 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.source_sha }}
 
-      - name: Download Linux release artifacts
+      - name: Download final pre-tag qualification
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
-          name: ratspeak-linux
+          name: ratspeak-release-qualification
           path: release-assets
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.recovery_run_id || github.run_id }}
+          run-id: ${{ inputs.qualification_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Download Windows release artifacts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: ratspeak-windows
-          path: release-assets
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.recovery_run_id || github.run_id }}
-          github-token: ${{ github.token }}
+      - name: Verify exact immutable qualification artifact set
+        working-directory: Ratspeak
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: node scripts/release/verify-release-artifacts.mjs ../release-assets "$RELEASE_TAG" --qualification
 
-      - name: Download Android release artifacts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: ratspeak-android
-          path: release-assets
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.recovery_run_id || github.run_id }}
-          github-token: ${{ github.token }}
+      - name: Bind qualified source BOMs to the immutable tag
+        working-directory: release-assets
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bom_files=(Ratspeak-*-source-bom.json)
+          test "${#bom_files[@]}" -eq 5
+          for bom in "${bom_files[@]}"; do
+            tmp="$(mktemp)"
+            jq --arg release_tag "$RELEASE_TAG" '
+              if .product.ref != null then
+                error("qualification BOM is already tag-bound")
+              else
+                .product.ref = $release_tag
+              end
+            ' "$bom" > "$tmp"
+            mv "$tmp" "$bom"
+          done
 
-      - name: Download current macOS release artifacts
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          name: ratspeak-macos
-          path: release-assets
+          for checksum_file in checksums-*.txt; do
+            tmp="$(mktemp)"
+            while IFS= read -r line; do
+              [[ "$line" =~ ^[0-9a-f]{64}[[:space:]][[:space:]]([^/\\]+)$ ]]
+              file="${BASH_REMATCH[1]}"
+              test -f "$file"
+              printf '%s  %s\n' "$(sha256sum "$file" | cut -d ' ' -f 1)" "$file" >> "$tmp"
+            done < "$checksum_file"
+            mv "$tmp" "$checksum_file"
+          done
 
-      - name: Verify exact artifact set, checksums, and source BOMs
+      - name: Verify promoted exact artifact set, checksums, and source BOMs
         working-directory: Ratspeak
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
@@ -280,7 +237,7 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+          prerelease: ${{ inputs.prerelease }}
           draft: true
           fail_on_unmatched_files: true
           body_path: Ratspeak/release/release-notes.md
@@ -325,7 +282,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+          PRERELEASE: ${{ inputs.prerelease }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
           set -euo pipefail

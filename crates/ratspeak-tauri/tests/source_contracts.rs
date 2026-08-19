@@ -5267,7 +5267,10 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
 
     let orchestrator =
         read_source(root.join(".github/workflows/release.yml")).expect("release orchestrator");
-    assert!(orchestrator.contains("push:\n    tags:\n      - \"v*\""));
+    assert!(!orchestrator.contains("push:\n    tags:\n      - \"v*\""));
+    assert!(orchestrator.contains(
+        "qualification_run_id:\n        description: \"Successful final pre-tag qualification run to promote.\""
+    ));
     assert_eq!(
         orchestrator
             .matches("uses: softprops/action-gh-release@")
@@ -5276,7 +5279,15 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     );
     assert!(orchestrator.contains("body_path: Ratspeak/release/release-notes.md"));
     assert!(orchestrator.contains("scripts/release/verify-release-artifacts.mjs"));
-    assert!(orchestrator.contains("name: Verify and publish complete release"));
+    assert!(orchestrator.contains("name: Promote, verify, and publish complete release"));
+    assert!(orchestrator.contains("name: Require successful final pre-tag qualification"));
+    assert!(orchestrator.contains("name: ratspeak-release-qualification"));
+    assert!(orchestrator.contains("run-id: ${{ inputs.qualification_run_id }}"));
+    assert!(orchestrator.contains(
+        "verify-release-artifacts.mjs ../release-assets \"$RELEASE_TAG\" --qualification"
+    ));
+    assert!(orchestrator.contains("name: Bind qualified source BOMs to the immutable tag"));
+    assert!(orchestrator.contains(".product.ref = $release_tag"));
     assert!(orchestrator.contains("name: Require successful ordinary CI on the exact source"));
     assert!(orchestrator.contains("source-integrity.mjs verify-release-source"));
     assert!(orchestrator.contains("actions/workflows/ci.yml/runs"));
@@ -5284,15 +5295,12 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(orchestrator.contains("-f event=push"));
     assert!(orchestrator.contains("-f status=success"));
     assert!(orchestrator.contains("contents: write"));
-    assert!(orchestrator.contains("upload_play: false"));
-    assert!(orchestrator.contains("notarize: true"));
-    assert!(orchestrator.contains("recovery_run_id:"));
+    assert!(!orchestrator.contains("uses: ./.github/workflows/release-android.yml"));
+    assert!(!orchestrator.contains("uses: ./.github/workflows/release-macos.yml"));
     assert!(orchestrator.contains(
         "prerelease:\n        description: \"Mark the final GitHub Release as a prerelease.\"\n        required: true\n        default: false\n        type: boolean"
     ));
-    assert!(orchestrator.contains(
-        "prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}"
-    ));
+    assert!(orchestrator.contains("prerelease: ${{ inputs.prerelease }}"));
     assert!(orchestrator.contains("name: Upload one complete draft GitHub Release"));
     assert!(orchestrator.contains("name: Refuse to mutate an existing public release"));
     assert!(orchestrator.contains("draft: true"));
@@ -5302,17 +5310,6 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(orchestrator.contains("-X PATCH"));
     assert!(orchestrator.contains("-F draft=false"));
     assert!(!orchestrator.contains("draft: false"));
-    for workflow in [
-        "release-desktop.yml",
-        "release-windows.yml",
-        "release-android.yml",
-        "release-macos.yml",
-    ] {
-        assert!(
-            orchestrator.contains(&format!("uses: ./.github/workflows/{workflow}")),
-            "release orchestrator does not call {workflow}"
-        );
-    }
 
     let qualifier = read_source(root.join(".github/workflows/qualify-release.yml"))
         .expect("pre-tag release qualifier");
@@ -5430,7 +5427,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(!ios.contains("RATSPEAK_RSRETICULUM_REF:"));
     assert!(!ios.contains("--build-number"));
     assert!(ios.contains("--export-method app-store-connect"));
-    assert!(ios.contains("APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_TEAM_ID }}"));
+    assert!(ios.contains("APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}"));
     assert!(ios.contains("Normalize Tauri-generated iOS project"));
     assert!(ios.contains("git diff --exit-code -- \"$plist\""));
     for required in [
