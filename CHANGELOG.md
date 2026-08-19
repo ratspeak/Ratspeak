@@ -5,6 +5,20 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.28] - 2026-08-18
+
+### Fixed
+
+- Fixed RNode startup compatibility by treating optional EEPROM information as
+  advisory instead of rejecting otherwise usable hardware, including the T114.
+- Restored reliable BLE transmission after an RNode connects.
+- Fixed Announce sometimes staying queued even while an external RNode was
+  connected and ready to transmit.
+- Fixed Linux AppImage startup crashes caused by incompatible system
+  AppIndicator and GLib libraries.
+- Simplified interface status messages so connection and hardware warnings are
+  shown as plain yellow text instead of pill-shaped badges.
+
 ## [1.0.27] - 2026-08-17
 
 ### Changed
@@ -31,5 +45,6 @@ changes that materially affect how an artifact is reproduced.
 - Declared every first-party Ratspeak package non-publishable and recorded
   compatible versions alongside all sibling path dependencies.
 
-[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.27...HEAD
+[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.28...HEAD
+[1.0.28]: https://github.com/ratspeak/Ratspeak/compare/v1.0.27...v1.0.28
 [1.0.27]: https://github.com/ratspeak/Ratspeak/compare/v1.0.26o...v1.0.27

@@ -5164,6 +5164,13 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
     let components = dependency_set["components"]
         .as_array()
         .expect("component array");
+    let release_note_fragments = [
+        "Fixed RNode startup compatibility",
+        "Restored reliable BLE transmission",
+        "Fixed Announce sometimes staying queued",
+        "Fixed Linux AppImage startup crashes",
+        "plain yellow text instead of pill-shaped badges",
+    ];
 
     for workflow_path in [
         ".github/workflows/ci.yml",
@@ -5198,6 +5205,21 @@ fn release_workflows_pin_reviewed_dependencies_and_stage_tag_builds_as_prereleas
         assert!(
             workflow
                 .contains("prerelease: ${{ github.event_name == 'push' || inputs.prerelease }}")
+        );
+        for fragment in release_note_fragments {
+            assert!(
+                workflow.contains(fragment),
+                "{workflow_path} is missing approved release copy: {fragment}"
+            );
+        }
+        assert!(!workflow.contains("Public Channels beta:"));
+    }
+
+    let changelog = read_source(root.join("CHANGELOG.md")).expect("changelog");
+    for fragment in release_note_fragments {
+        assert!(
+            changelog.contains(fragment),
+            "changelog is missing approved release copy: {fragment}"
         );
     }
 
