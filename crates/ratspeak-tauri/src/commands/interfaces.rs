@@ -1429,6 +1429,7 @@ pub async fn set_announce_ratspeak_usage(
     state: State<'_, Arc<AppState>>,
     enabled: bool,
 ) -> AppResult<Value> {
+    let activity_origin = state.activity_request_fence();
     let persisted = if enabled { "1" } else { "0" };
     db::spawn_db(state.db.clone(), move |p| {
         db::try_set_setting(&p, "announce_ratspeak_usage", persisted)
@@ -1452,6 +1453,13 @@ pub async fn set_announce_ratspeak_usage(
             "peers_sort": persisted_peers_sort(&state),
         }),
     );
+    state.bump_announce_content_revision();
+    crate::send_typed_announce_from_origin(
+        &state,
+        crate::announce::AnnounceOrigin::ProfileChanged,
+        activity_origin,
+    )
+    .await;
     Ok(json!({ "enabled": enabled }))
 }
 
@@ -4532,58 +4540,68 @@ pub async fn add_lora_interface(
         None,
     );
 
-    let (operation_lease, fresh_marker, existing_rnode_port, handoff_targets, config_written) =
-        with_rns_config_lock(&state_arc, || {
-            #[cfg(target_os = "android")]
-            reject_android_ble_owner_conflict(&config_dir, &name, &port)?;
-            let handoff_targets = rnode_handoff_prefix_for_port(&port)
-                .map(|prefix| {
-                    crate::rns_config::rnode_names_with_port_prefix(&config_dir, prefix)
-                        .into_iter()
-                        .filter(|handoff_name| handoff_name != &name)
-                        .map(|handoff_name| {
-                            crate::rns_config::snapshot_interface_block(&config_dir, &handoff_name)
-                                .map(|revision| RnodeHandoffTarget {
-                                    name: handoff_name,
-                                    revision,
-                                })
-                                .map_err(|_| {
-                                    AppError::internal("Failed to snapshot radio handoff target")
-                                })
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?
-                .unwrap_or_default();
-            let mut operation_names = Vec::with_capacity(1 + handoff_targets.len());
-            operation_names.push(name.clone());
-            operation_names.extend(handoff_targets.iter().map(|target| target.name.clone()));
-            let operation_lease = state_arc
-                .begin_rnode_lifecycle_operation(operation_names.iter())
-                .ok_or_else(|| AppError::internal("Failed to begin radio setup"))?;
-            // add_rnode_interface upserts by name; only entries this add creates
-            // may be rolled back (deleted) on connect failure or cancel.
-            let _ = crate::commands::shared::mark_lora_add_freshness(&config_dir, &name, false);
-            let fresh_add = find_config_interface_with_group(&config_dir, None, &name).is_none();
-            let existing_rnode_port = find_config_interface(&config_dir, "rnode", &name)
-                .and_then(|entry| rnode_config_from_entry(&entry))
-                .and_then(|config| config.rnode_port().map(str::to_string));
-            #[cfg(target_os = "android")]
-            let usb_selector_args = android_usb_selector.as_ref().and_then(|selector| {
-                selector
-                    .vendor_id
-                    .zip(selector.product_id)
-                    .map(
-                        |(vendor_id, product_id)| crate::rns_config::RnodeUsbSelectorArgs {
-                            vendor_id,
-                            product_id,
-                            serial_number: selector.serial_number.as_deref(),
-                        },
-                    )
-            });
-            #[cfg(not(target_os = "android"))]
-            let usb_selector_args = None;
-            let config_written = crate::rns_config::add_rnode_interface_with_usb_selector(
+    let (
+        operation_lease,
+        fresh_marker,
+        deferred_fresh_ble_config,
+        existing_rnode_port,
+        handoff_targets,
+        config_written,
+    ) = with_rns_config_lock(&state_arc, || {
+        #[cfg(target_os = "android")]
+        reject_android_ble_owner_conflict(&config_dir, &name, &port)?;
+        let handoff_targets = rnode_handoff_prefix_for_port(&port)
+            .map(|prefix| {
+                crate::rns_config::rnode_names_with_port_prefix(&config_dir, prefix)
+                    .into_iter()
+                    .filter(|handoff_name| handoff_name != &name)
+                    .map(|handoff_name| {
+                        crate::rns_config::snapshot_interface_block(&config_dir, &handoff_name)
+                            .map(|revision| RnodeHandoffTarget {
+                                name: handoff_name,
+                                revision,
+                            })
+                            .map_err(|_| {
+                                AppError::internal("Failed to snapshot radio handoff target")
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let mut operation_names = Vec::with_capacity(1 + handoff_targets.len());
+        operation_names.push(name.clone());
+        operation_names.extend(handoff_targets.iter().map(|target| target.name.clone()));
+        let operation_lease = state_arc
+            .begin_rnode_lifecycle_operation(operation_names.iter())
+            .ok_or_else(|| AppError::internal("Failed to begin radio setup"))?;
+        // add_rnode_interface upserts by name; only entries this add creates
+        // may be rolled back (deleted) on connect failure or cancel.
+        let _ = crate::commands::shared::mark_lora_add_freshness(&config_dir, &name, false);
+        let fresh_add = find_config_interface_with_group(&config_dir, None, &name).is_none();
+        let deferred_fresh_ble_config = cfg!(all(feature = "ble", not(target_os = "android")))
+            && port.starts_with("ble://")
+            && fresh_add;
+        let existing_rnode_port = find_config_interface(&config_dir, "rnode", &name)
+            .and_then(|entry| rnode_config_from_entry(&entry))
+            .and_then(|config| config.rnode_port().map(str::to_string));
+        #[cfg(target_os = "android")]
+        let usb_selector_args = android_usb_selector.as_ref().and_then(|selector| {
+            selector
+                .vendor_id
+                .zip(selector.product_id)
+                .map(
+                    |(vendor_id, product_id)| crate::rns_config::RnodeUsbSelectorArgs {
+                        vendor_id,
+                        product_id,
+                        serial_number: selector.serial_number.as_deref(),
+                    },
+                )
+        });
+        #[cfg(not(target_os = "android"))]
+        let usb_selector_args = None;
+        let config_written = deferred_fresh_ble_config
+            || crate::rns_config::add_rnode_interface_with_usb_selector(
                 &config_dir,
                 crate::rns_config::RnodeInterfaceArgs {
                     name: &name,
@@ -4602,23 +4620,25 @@ pub async fn add_lora_interface(
                 },
                 usb_selector_args,
             );
-            let fresh_marker = (config_written
-                && cfg!(feature = "ble")
-                && port.starts_with("ble://"))
-            .then(|| {
-                crate::commands::shared::mark_lora_add_freshness(&config_dir, &name, fresh_add)
-            })
-            .flatten();
-            Ok::<_, AppError>((
-                operation_lease,
-                fresh_marker,
-                existing_rnode_port,
-                handoff_targets,
-                config_written,
-            ))
-        })?;
+        let fresh_marker = (!deferred_fresh_ble_config
+            && config_written
+            && cfg!(feature = "ble")
+            && port.starts_with("ble://"))
+        .then(|| crate::commands::shared::mark_lora_add_freshness(&config_dir, &name, fresh_add))
+        .flatten();
+        Ok::<_, AppError>((
+            operation_lease,
+            fresh_marker,
+            deferred_fresh_ble_config,
+            existing_rnode_port,
+            handoff_targets,
+            config_written,
+        ))
+    })?;
     #[cfg(not(feature = "ble"))]
     let _ = fresh_marker;
+    #[cfg(any(not(feature = "ble"), target_os = "android"))]
+    let _ = deferred_fresh_ble_config;
     #[cfg(not(any(feature = "ble", target_os = "android")))]
     let _ = &existing_rnode_port;
     #[cfg(not(target_os = "android"))]
@@ -5122,6 +5142,66 @@ pub async fn add_lora_interface(
                             {
                                 Ok(pending_monitor) => {
                                     let id = spawned.interface_id;
+                                    if deferred_fresh_ble_config {
+                                        let committed = with_rns_config_lock(&st, || {
+                                            st.is_current_rnode_lifecycle_operation(
+                                                &operation_lease,
+                                            ) && find_config_interface_with_group(
+                                                &config_dir,
+                                                None,
+                                                &name_for_status,
+                                            )
+                                            .is_none()
+                                                && crate::rns_config::add_rnode_interface(
+                                                    &config_dir,
+                                                    crate::rns_config::RnodeInterfaceArgs {
+                                                        name: &name_for_status,
+                                                        port: &port_str,
+                                                        mode: Some(mode),
+                                                        frequency: radio.frequency,
+                                                        bandwidth: radio.bandwidth,
+                                                        spreading_factor: radio.spreading_factor,
+                                                        coding_rate: radio.coding_rate,
+                                                        tx_power: radio.tx_power,
+                                                        region_key: radio.region_key,
+                                                        preset_key: radio.preset_key,
+                                                        airtime_limit_short: radio
+                                                            .airtime_limit_short,
+                                                        airtime_limit_long: radio
+                                                            .airtime_limit_long,
+                                                        public_map: crate::rns_config::RnodePublicMapArgs::default(),
+                                                    },
+                                                )
+                                        });
+                                        if !committed {
+                                            teardown_spawned_rnode_exact(&rns, &spawned).await;
+                                            if !st.is_current_rnode_lifecycle_operation(
+                                                &operation_lease,
+                                            ) {
+                                                return;
+                                            }
+                                            emit_op_status_broadcast(
+                                                &st,
+                                                "add_lora",
+                                                "hub",
+                                                "BLE radio became ready, but its configuration could not be saved",
+                                                true,
+                                                Some("Config commit failed"),
+                                            );
+                                            record_interface_activity(
+                                                &st,
+                                                activity_fence,
+                                                InterfaceClass::RNode,
+                                                rnode_activity_transition(
+                                                    RnodeActivityOutcome::ConfigureFailed,
+                                                ),
+                                                None,
+                                            );
+                                            let _ = st
+                                                .finish_rnode_lifecycle_operation(&operation_lease);
+                                            return;
+                                        }
+                                    }
                                     if let Some(marker) = fresh_marker {
                                         crate::commands::shared::clear_fresh_lora_add_marker(
                                             &st,
@@ -5220,7 +5300,11 @@ pub async fn add_lora_interface(
                                 &st,
                                 "add_lora",
                                 "hub",
-                                &format!("Config saved. BLE connect failed: {e}"),
+                                &if deferred_fresh_ble_config {
+                                    format!("BLE connect failed: {e}")
+                                } else {
+                                    format!("Config saved. BLE connect failed: {e}")
+                                },
                                 true,
                                 Some(&e),
                             );
@@ -5250,7 +5334,11 @@ pub async fn add_lora_interface(
                         &st,
                         "add_lora",
                         "hub",
-                        "Config saved. BLE connect deferred (RNS not ready).",
+                        if deferred_fresh_ble_config {
+                            "BLE setup deferred because Reticulum is not ready; no interface was saved."
+                        } else {
+                            "Config saved. BLE connect deferred (RNS not ready)."
+                        },
                         true,
                         None,
                     );

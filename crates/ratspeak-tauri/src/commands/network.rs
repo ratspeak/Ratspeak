@@ -91,9 +91,13 @@ pub async fn set_propagation_hosting(
         }
     }
 
-    if args.enabled {
-        crate::send_announce_from_origin(&state, activity_origin).await;
-    }
+    state.bump_announce_content_revision();
+    crate::send_typed_announce_from_origin(
+        &state,
+        crate::announce::AnnounceOrigin::PropagationChanged,
+        activity_origin,
+    )
+    .await;
     crate::propagation::emit_propagation_update(&state);
     Ok(crate::propagation::get_status_payload(&state))
 }
@@ -140,7 +144,13 @@ pub async fn set_stamp_settings(
         }
     }
 
-    crate::send_announce_from_origin(&state, activity_origin).await;
+    state.bump_announce_content_revision();
+    crate::send_typed_announce_from_origin(
+        &state,
+        crate::announce::AnnounceOrigin::ProfileChanged,
+        activity_origin,
+    )
+    .await;
     let payload = crate::propagation::get_status_payload(&state);
     state.emit_to_all("propagation_update", payload.clone());
     Ok(payload)
@@ -1178,6 +1188,38 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
     // interfaces and duplicate the announce while it was still pending.
     let report = crate::send_manual_announce_from_origin(&state, activity_fence).await;
 
+    if matches!(
+        report.disposition,
+        crate::AnnounceSendDisposition::AlreadyQueued | crate::AnnounceSendDisposition::Deferred
+    ) {
+        record_manual_announce_outcome(&state, activity_fence, None);
+        let disposition = if matches!(
+            report.disposition,
+            crate::AnnounceSendDisposition::AlreadyQueued
+        ) {
+            "already_queued"
+        } else {
+            "deferred"
+        };
+        state.emit_to_all(
+            "announce_triggered",
+            json!({
+                "success": true,
+                "queued": 0,
+                "packets": 0,
+                "disposition": disposition,
+                "correlation_id": report.correlation_id.to_string(),
+            }),
+        );
+        return Ok(json!({
+            "success": true,
+            "queued": 0,
+            "packets": 0,
+            "disposition": disposition,
+            "correlation_id": report.correlation_id.to_string(),
+        }));
+    }
+
     if report.queued == 0 {
         let failure = if report.packets == 0 {
             producer::AnnounceFailureReason::NotReady
@@ -1197,9 +1239,21 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
     record_manual_announce_outcome(&state, activity_fence, None);
     state.emit_to_all(
         "announce_triggered",
-        json!({ "success": true, "queued": report.queued, "packets": report.packets }),
+        json!({
+            "success": true,
+            "queued": report.queued,
+            "packets": report.packets,
+            "disposition": "queued",
+            "correlation_id": report.correlation_id.to_string(),
+        }),
     );
-    Ok(json!({ "success": true, "queued": report.queued, "packets": report.packets }))
+    Ok(json!({
+        "success": true,
+        "queued": report.queued,
+        "packets": report.packets,
+        "disposition": "queued",
+        "correlation_id": report.correlation_id.to_string(),
+    }))
 }
 
 #[tauri::command]

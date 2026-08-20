@@ -2907,14 +2907,13 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
     assert!(!add_lora.contains("online.load(std::sync::atomic::Ordering::SeqCst)"));
     assert!(interfaces.contains("teardown_spawned_rnode_exact(handle, spawned)"));
     let freshness_transaction = add_lora
-        .split(
-            "let (operation_lease, fresh_marker, existing_rnode_port, handoff_targets, config_written)",
-        )
-        .nth(1)
-        .and_then(|tail| tail.split("let fresh_add = fresh_marker.is_some()").next())
+        .split("if !config_written")
+        .next()
         .expect("fresh BLE add config transaction");
     assert!(freshness_transaction.contains("with_rns_config_lock"));
     assert!(freshness_transaction.contains("begin_rnode_lifecycle_operation"));
+    assert!(freshness_transaction.contains("deferred_fresh_ble_config"));
+    assert!(freshness_transaction.contains("port.starts_with(\"ble://\")"));
     let stale_clear = freshness_transaction
         .find("mark_lora_add_freshness(&config_dir, &name, false)")
         .expect("stale marker clear");
@@ -2927,6 +2926,21 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
     assert!(stale_clear < config_write && config_write < marker_install);
     assert!(add_lora.contains("clear_fresh_lora_add_marker"));
     assert!(add_lora.contains("rollback_fresh_lora_add_marker"));
+    let readiness = add_lora
+        .find("await_owned_rnode_ready")
+        .expect("observed readiness boundary");
+    let deferred_commit = add_lora
+        .rfind("crate::rns_config::add_rnode_interface")
+        .expect("post-readiness fresh BLE config commit");
+    assert!(
+        readiness < deferred_commit,
+        "a fresh desktop BLE interface must not persist before protocol Ready"
+    );
+    let commit_tail = &add_lora[deferred_commit.saturating_sub(1_000)..];
+    assert!(commit_tail.contains("with_rns_config_lock"));
+    assert!(commit_tail.contains("is_current_rnode_lifecycle_operation"));
+    assert!(commit_tail.contains("find_config_interface_with_group"));
+    assert!(commit_tail.contains("teardown_spawned_rnode_exact"));
 
     let update_lora = interfaces
         .split("pub async fn update_lora_interface")
@@ -3538,6 +3552,19 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
         );
     }
     assert!(settings_js.contains("Announce queued for transmission"));
+    assert!(settings_js.contains("var _announcePending = false;"));
+    let pending_guard = settings_js
+        .find("_announcePending = true;")
+        .expect("shared announce guard is set");
+    let announce_ipc = settings_js
+        .find("RS.invoke('trigger_announce')")
+        .expect("manual announce IPC");
+    assert!(
+        pending_guard < announce_ipc,
+        "manual announce ownership must be claimed before IPC"
+    );
+    assert!(settings_js.contains("_announcePending = false;"));
+    assert!(settings_js.contains("Announce already queued"));
     assert!(!settings_js.contains("data.error === 'not_sent'"));
     assert!(settings_js.contains("delete networkBtn.dataset.announcePending"));
     assert!(
@@ -3550,6 +3577,16 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     assert!(health_js.contains("networkAnnounceBtn.dataset.announcePending !== '1'"));
     assert!(health_js.contains("function interfaceStatsWithoutAutoPeerDoubleCount"));
     assert!(health_js.contains("AutoInterfacePeer["));
+
+    let propagation_js =
+        read_source(root.join("dashboard/static/js/propagation.js")).expect("propagation js");
+    let host_announce = propagation_js
+        .split("var hostAnnounceBtn")
+        .nth(1)
+        .and_then(|tail| tail.split("var stampToggle").next())
+        .expect("propagation announce control");
+    assert!(host_announce.contains("tryTriggerAnnounce()"));
+    assert!(!host_announce.contains("RS.invoke('trigger_announce')"));
 
     let connections_js =
         read_source(root.join("dashboard/static/js/connections.js")).expect("connections js");
@@ -3910,9 +3947,12 @@ fn interface_pause_resume_is_config_backed_and_visible() {
     assert!(health_js.contains("resume_interface"));
     assert!(health_js.contains(r#"conn-iface-status-text">Paused"#));
     assert!(!health_js.contains("conn-iface-pill-paused"));
-    assert!(health_js.contains("waitingForAndroidUsb"));
+    assert!(health_js.contains("function _configuredInterfaceFallback"));
+    assert!(health_js.contains("var fallback = _configuredInterfaceFallback"));
     assert!(health_js.contains("Waiting for USB"));
-    assert!(health_js.contains("enabled && !waitingForAndroidUsb"));
+    assert!(health_js.contains("connecting: fallback.connecting"));
+    assert!(health_js.contains("else if (connecting)"));
+    assert!(!health_js.contains("waitingForAndroidUsb"));
     assert!(!health_js.contains("Display Name"));
     assert!(!health_js.contains("dangerDivider"));
 
@@ -4671,7 +4711,13 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let voice_rs =
         read_source(root.join("crates/ratspeak-runtime/src/voice.rs")).expect("voice rs");
-    assert!(voice_rs.contains("TelephonyService::registered(transport_tx, &identity)"));
+    assert!(voice_rs.contains("TelephonyService::registered_with_config("));
+    assert!(voice_rs.contains("fn coordinated_telephony_service_config()"));
+    assert!(voice_rs.contains("announce_on_start: false"));
+    assert!(voice_rs.contains("announce_interval: None"));
+    assert!(voice_rs.contains("startup_announce_retry_interval: None"));
+    assert!(voice_rs.contains("shutdown_voice_service_for_runtime_teardown"));
+    assert!(voice_rs.contains("if publish_presence_update"));
     assert!(!voice_rs.contains("TelephonyRnsEndpoint"));
     assert!(!voice_rs.contains("TelephonyRuntimeCore"));
     assert!(!voice_rs.contains("TelephonyService::new("));
@@ -4726,6 +4772,24 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
     assert!(runtime_rs.contains("voice::announce_if_running(state).await"));
     assert!(runtime_rs.contains("producer::AnnounceMethod::LxstService"));
+    assert!(runtime_rs.contains("voice::shutdown_voice_service_for_runtime_teardown(state).await"));
+    let presence_burst = rust_function_block(&runtime_rs, "execute_announce_burst");
+    let propagation_build = presence_burst
+        .find("create_propagation_announce_packet()")
+        .expect("propagation component build");
+    let delivery_build = presence_burst
+        .find("create_coordinated_announce_packet()")
+        .expect("delivery component build");
+    assert!(
+        propagation_build < delivery_build,
+        "a failed sibling build must not consume the delivery ratchet"
+    );
+    assert!(presence_burst.contains("let mut delivery_queued = false;"));
+    assert!(presence_burst.contains("if delivery_queued"));
+    assert!(
+        presence_burst
+            .contains("LXST telephony announce suppressed because delivery was not admitted")
+    );
 
     let notification_rs =
         read_source(root.join("crates/ratspeak-core/src/notification.rs")).expect("notification");
@@ -7079,7 +7143,8 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
     let runtime =
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
     assert!(runtime.contains("pub async fn send_announce_from_origin("));
-    assert!(runtime.contains("send_announce_from_origin(&state, activity_origin).await"));
+    assert!(runtime.contains("pub async fn send_typed_announce_from_origin("));
+    assert!(runtime.contains("submit_announce_intent("));
     assert!(runtime.contains("biased;\n                        _ = tick_shutdown.wait()"));
     assert!(runtime.contains("biased;\n            _ = shutdown.wait() => break"));
     assert!(runtime.contains("let poll_activity_origin = state.activity_request_fence();"));
@@ -7145,10 +7210,7 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
     let startup_announce = runtime
         .split("fn schedule_startup_auto_announce(")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("async fn send_announce_from_state_inner(")
-                .next()
-        })
+        .and_then(|tail| tail.split("async fn submit_announce_intent(").next())
         .expect("startup auto-announce task");
     let startup_wait = startup_announce
         .find("_ = tokio::time::sleep(Duration::from_secs(2))")
@@ -7158,7 +7220,7 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
         .unwrap();
     let startup_shutdown = startup_announce.find("if shutdown.is_triggered()").unwrap();
     let startup_send = startup_announce
-        .find("send_announce_from_origin(&state, activity_origin).await")
+        .find("send_typed_announce_from_origin(")
         .unwrap();
     let startup_success = startup_announce.find("if report.queued > 0").unwrap();
     let startup_fenced = startup_announce
@@ -7191,7 +7253,7 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
         .find("if periodic_shutdown.is_triggered()")
         .unwrap();
     let periodic_send = periodic_announce
-        .find("send_announce_from_origin(")
+        .find("send_typed_announce_from_origin(")
         .unwrap();
     assert!(
         periodic_wait < periodic_origin

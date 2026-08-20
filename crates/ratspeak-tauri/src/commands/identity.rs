@@ -1352,7 +1352,13 @@ pub async fn api_set_display_name(
     }
 
     if updated_in_memory {
-        crate::send_announce_from_origin(&state, activity_origin).await;
+        state.bump_announce_content_revision();
+        crate::send_typed_announce_from_origin(
+            &state,
+            crate::announce::AnnounceOrigin::IdentityChanged,
+            activity_origin,
+        )
+        .await;
     }
 
     Ok(json!({ "display_name": display_name }))
@@ -1406,7 +1412,13 @@ pub async fn set_identity_status(
 
     if let Some(payload) = identity_payload {
         state.emit_to_all("lxmf_identity", payload);
-        crate::send_announce_from_origin(&state, activity_origin).await;
+        state.bump_announce_content_revision();
+        crate::send_typed_announce_from_origin(
+            &state,
+            crate::announce::AnnounceOrigin::IdentityChanged,
+            activity_origin,
+        )
+        .await;
     }
 
     Ok(json!({ "status": status }))

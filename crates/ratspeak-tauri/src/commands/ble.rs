@@ -8,8 +8,6 @@
 
 use std::sync::Arc;
 
-#[cfg(feature = "ble")]
-use bytes::Bytes;
 use serde::Deserialize;
 #[cfg(any(feature = "ble", test))]
 use serde::Serialize;
@@ -603,35 +601,19 @@ const BLE_IDENTITY_ANNOUNCE_RETRY_DELAYS_SECS: [u64; 5] = [0, 2, 5, 10, 20];
 
 #[cfg(feature = "ble")]
 async fn send_ble_identity_announce_once(state: &Arc<AppState>) -> bool {
-    let (packet, transport_tx, dest_hash) = {
-        let packet = state
-            .lxmf
-            .lock()
-            .ok()
-            .and_then(|mut manager| manager.as_mut()?.create_announce_packet().ok());
-        let transport_tx = state.rns.read().ok().and_then(|runtime| {
-            runtime
-                .as_ref()
-                .map(|manager| manager.handle.transport_tx.clone())
-        });
-        let dest_hash = state
-            .lxmf
-            .lock()
-            .ok()
-            .and_then(|manager| manager.as_ref().map(|manager| manager.lxmf_dest_hash));
-        (packet, transport_tx, dest_hash)
-    };
-    let (Some(raw), Some(tx), Some(destination_hash)) = (packet, transport_tx, dest_hash) else {
-        return false;
-    };
-    tx.send(rns_transport::messages::TransportMessage::Outbound(
-        rns_transport::messages::OutboundRequest {
-            raw: Bytes::from(raw),
-            destination_hash,
-        },
-    ))
-    .await
-    .is_ok()
+    let activity_origin = state.activity_request_fence();
+    let report = crate::send_typed_announce_from_origin(
+        state,
+        crate::announce::AnnounceOrigin::InterfaceOnline,
+        activity_origin,
+    )
+    .await;
+    matches!(
+        report.disposition,
+        crate::AnnounceSendDisposition::Queued
+            | crate::AnnounceSendDisposition::AlreadyQueued
+            | crate::AnnounceSendDisposition::Deferred
+    )
 }
 
 #[cfg_attr(not(feature = "ble"), allow(dead_code))]
@@ -1180,6 +1162,7 @@ fn spawn_enable_ble_peer_task(
                                         );
                                         continue;
                                     };
+                                    state_relay.bump_announce_interface_revision();
                                     tokio::spawn(async move {
                                         for delay_secs in BLE_IDENTITY_ANNOUNCE_RETRY_DELAYS_SECS {
                                             if delay_secs > 0 {
@@ -1205,7 +1188,7 @@ fn spawn_enable_ble_peer_task(
                                             if send_ble_identity_announce_once(&retry_state).await {
                                                 tracing::info!(
                                                     peer = %address,
-                                                    "Bluetooth Peer identity announce sent"
+                                                    "Bluetooth Peer identity announce covered"
                                                 );
                                             } else {
                                                 tracing::debug!(

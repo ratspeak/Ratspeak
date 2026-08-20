@@ -14,7 +14,9 @@ use lxmf_core::constants::{
     DELIVERY_RETRY_WAIT, MAX_DELIVERY_ATTEMPTS, MAX_PATHLESS_TRIES, PATH_REQUEST_WAIT,
     STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
-use lxmf_core::delivery_ratchet::{DeliveryAnnounceKind, DeliveryRatchetState};
+use lxmf_core::delivery_ratchet::{
+    DeliveryAnnounceKind, DeliveryRatchetError, DeliveryRatchetState,
+};
 use lxmf_core::handlers::CompressionSupport;
 use lxmf_core::link_delivery::{
     BackchannelSendCommand, BackchannelSendError, BackchannelSendReceipt, DeliveryResult,
@@ -79,6 +81,12 @@ pub const RATSPEAK_CAP_GAMES: u64 = 0x02;
 pub const RATSPEAK_CAP_CHAT: u64 = 0x04;
 pub const RATSPEAK_DEFAULT_CAPABILITIES: u64 =
     RATSPEAK_CAP_CLIENT | RATSPEAK_CAP_GAMES | RATSPEAK_CAP_CHAT;
+
+#[derive(Debug)]
+pub(crate) enum CoordinatedDeliveryAnnounceError {
+    Coalesced,
+    Failed(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RatspeakChatExtension {
@@ -2817,8 +2825,24 @@ impl LxmfManager {
         true
     }
 
-    pub fn create_announce_packet(&mut self) -> Result<Vec<u8>, String> {
+    #[cfg(test)]
+    pub(crate) fn create_announce_packet(&mut self) -> Result<Vec<u8>, String> {
         self.build_delivery_announce_packet(DeliveryAnnounceKind::Broadcast)
+    }
+
+    pub(crate) fn create_coordinated_announce_packet(
+        &mut self,
+    ) -> Result<Vec<u8>, CoordinatedDeliveryAnnounceError> {
+        let wall_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cache_now = self.announce_cache_started.elapsed().as_secs_f64();
+        self.build_delivery_announce_packet_at_typed(
+            DeliveryAnnounceKind::Broadcast,
+            wall_now,
+            cache_now,
+        )
     }
 
     /// Path-response variant: an otherwise-identical delivery announce tagged
@@ -2852,6 +2876,21 @@ impl LxmfManager {
         wall_now: u64,
         cache_now: f64,
     ) -> Result<Vec<u8>, String> {
+        self.build_delivery_announce_packet_at_typed(kind, wall_now, cache_now)
+            .map_err(|error| match error {
+                CoordinatedDeliveryAnnounceError::Coalesced => {
+                    DeliveryRatchetError::Coalesced.to_string()
+                }
+                CoordinatedDeliveryAnnounceError::Failed(message) => message,
+            })
+    }
+
+    fn build_delivery_announce_packet_at_typed(
+        &mut self,
+        kind: DeliveryAnnounceKind<'_>,
+        wall_now: u64,
+        cache_now: f64,
+    ) -> Result<Vec<u8>, CoordinatedDeliveryAnnounceError> {
         // Pack as LXMF-compatible msgpack with a Ratspeak extension tail.
         // The first three fields match Python `LXMRouter.get_announce_app_data`.
         // Raw UTF-8 forces Python receivers onto a legacy path that skips
@@ -2877,13 +2916,16 @@ impl LxmfManager {
         let raw = self
             .delivery_ratchets
             .create_announce(&self.identity, &app_data_bytes, wall_now, cache_now, kind)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| match error {
+                DeliveryRatchetError::Coalesced => CoordinatedDeliveryAnnounceError::Coalesced,
+                error => CoordinatedDeliveryAnnounceError::Failed(error.to_string()),
+            })?;
         if raw.len() > rns_wire::constants::MTU {
-            return Err(format!(
+            return Err(CoordinatedDeliveryAnnounceError::Failed(format!(
                 "Announce packet exceeds Reticulum MTU ({} > {})",
                 raw.len(),
                 rns_wire::constants::MTU
-            ));
+            )));
         }
         Ok(raw)
     }
@@ -2919,22 +2961,6 @@ impl LxmfManager {
             ));
         }
         Ok(raw)
-    }
-
-    pub async fn send_announce(
-        &mut self,
-        transport_tx: &tokio::sync::mpsc::Sender<TransportMessage>,
-    ) -> Result<(), String> {
-        let raw = self.create_announce_packet()?;
-        transport_tx
-            .send(TransportMessage::Outbound(
-                rns_transport::messages::OutboundRequest {
-                    raw: Bytes::from(raw),
-                    destination_hash: self.lxmf_dest_hash,
-                },
-            ))
-            .await
-            .map_err(|e| format!("Failed to send announce: {e}"))
     }
 
     /// Memory-only; callers persist via `db::update_identity` outside the
@@ -5697,6 +5723,17 @@ mod tests {
         let raw = mgr.create_announce_packet().expect("announce packet");
 
         assert!(raw.len() <= rns_wire::constants::MTU);
+    }
+
+    #[test]
+    fn coordinated_delivery_announce_preserves_typed_coalescing() {
+        let mut mgr = test_manager();
+        mgr.build_delivery_announce_packet_at_typed(DeliveryAnnounceKind::Broadcast, 100, 1.0)
+            .expect("first announce");
+        assert!(matches!(
+            mgr.build_delivery_announce_packet_at_typed(DeliveryAnnounceKind::Broadcast, 100, 1.5,),
+            Err(CoordinatedDeliveryAnnounceError::Coalesced)
+        ));
     }
 
     #[test]

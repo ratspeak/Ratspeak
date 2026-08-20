@@ -15,7 +15,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lxst_core::{CallRole, Profile, RawAudioFrame, SignallingStatus, TELEPHONY_DESTINATION_NAME};
 use lxst_telephony::{
     ActiveCallSnapshot, TelephonyControl, TelephonyRuntimeSnapshot, TelephonyService,
-    TelephonyServiceEvent, request_answer,
+    TelephonyServiceChannelConfig, TelephonyServiceConfig, TelephonyServiceEvent, request_answer,
 };
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_DELIVERY_DESTINATION_NAME, hex_to_array16};
 use rns_identity::destination::Destination;
@@ -153,6 +153,16 @@ async fn await_or_abort(mut task: JoinHandle<()>) {
     }
 }
 
+fn coordinated_telephony_service_config() -> TelephonyServiceConfig {
+    TelephonyServiceConfig {
+        announce_on_start: false,
+        announce_interval: None,
+        startup_announce_retry_interval: None,
+        startup_announce_retries: 0,
+        ..TelephonyServiceConfig::default()
+    }
+}
+
 pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
     if voice_control_tx(state).is_some() {
         return Ok(());
@@ -160,8 +170,13 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
     let activity_origin = state.activity_request_fence();
 
     let (transport_tx, identity) = voice_runtime_inputs(state)?;
-    let parts = TelephonyService::registered(transport_tx, &identity)
-        .map_err(|e| format!("Failed to register LXST telephony destination: {e}"))?;
+    let parts = TelephonyService::registered_with_config(
+        transport_tx,
+        &identity,
+        coordinated_telephony_service_config(),
+        TelephonyServiceChannelConfig::default(),
+    )
+    .map_err(|e| format!("Failed to register LXST telephony destination: {e}"))?;
     let control_tx = parts.control_tx;
     let event_rx = parts.event_rx;
     let service = parts.service;
@@ -205,10 +220,28 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
         }),
     );
     record_lxst_activity(state, activity_origin, LxstTransition::ServiceStarted);
+    state.bump_announce_content_revision();
+    crate::send_typed_announce_from_origin(
+        state,
+        crate::announce::AnnounceOrigin::ProfileChanged,
+        activity_origin,
+    )
+    .await;
     Ok(())
 }
 
 pub async fn shutdown_voice_service(state: &Arc<AppState>) {
+    shutdown_voice_service_with_presence_update(state, true).await;
+}
+
+pub(crate) async fn shutdown_voice_service_for_runtime_teardown(state: &Arc<AppState>) {
+    shutdown_voice_service_with_presence_update(state, false).await;
+}
+
+async fn shutdown_voice_service_with_presence_update(
+    state: &Arc<AppState>,
+    publish_presence_update: bool,
+) {
     let activity_origin = state.activity_request_fence();
     let handle = state
         .lxst_voice
@@ -234,6 +267,15 @@ pub async fn shutdown_voice_service(state: &Arc<AppState>) {
         }),
     );
     record_lxst_activity(state, activity_origin, LxstTransition::ServiceStopped);
+    if publish_presence_update {
+        state.bump_announce_content_revision();
+        crate::send_typed_announce_from_origin(
+            state,
+            crate::announce::AnnounceOrigin::ProfileChanged,
+            activity_origin,
+        )
+        .await;
+    }
 }
 
 pub fn voice_status(state: &AppState) -> Value {
@@ -4367,6 +4409,15 @@ mod android_voice_audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_telephony_has_no_autonomous_announce_schedule() {
+        let config = coordinated_telephony_service_config();
+        assert!(!config.announce_on_start);
+        assert_eq!(config.announce_interval, None);
+        assert_eq!(config.startup_announce_retry_interval, None);
+        assert_eq!(config.startup_announce_retries, 0);
+    }
 
     #[test]
     fn microphone_capture_retries_are_short_and_bounded() {

@@ -15,6 +15,7 @@ use tokio::sync::watch;
 
 use crate::activity::ActivityRecorder;
 use crate::activity::emitter::EmitterBatchSink;
+use crate::announce::{AnnounceCoordinator, AnnounceSemanticRevision};
 use crate::channels::ChannelsManagerHandle;
 use crate::config::DashboardConfig;
 use crate::lxmf::LxmfManager;
@@ -617,6 +618,11 @@ pub struct AppState {
     /// Auto-announce interval in seconds (0 = disabled).
     pub announce_interval_tx: watch::Sender<u64>,
     pub announce_interval_rx: watch::Receiver<u64>,
+    /// Single session-local owner for complete Ratspeak presence bursts.
+    pub announce_coordinator: Mutex<AnnounceCoordinator>,
+    /// Process-monotonic semantic revisions sampled by announce intents.
+    announce_content_revision: AtomicU64,
+    announce_interface_revision: AtomicU64,
     /// If true, delivery announces include Ratspeak capability metadata.
     pub announce_ratspeak_usage: AtomicBool,
     /// Eager-wake for the stats poll loop; loop has 750ms debounce cooldown.
@@ -846,6 +852,9 @@ impl AppState {
             network_log_level: RwLock::new("standard".into()),
             announce_interval_tx,
             announce_interval_rx,
+            announce_coordinator: Mutex::new(AnnounceCoordinator::default()),
+            announce_content_revision: AtomicU64::new(0),
+            announce_interface_revision: AtomicU64::new(0),
             announce_ratspeak_usage: AtomicBool::new(initial_announce_ratspeak_usage),
             poll_now: Arc::new(tokio::sync::Notify::new()),
             ble_peer_count: AtomicUsize::new(0),
@@ -1027,6 +1036,26 @@ impl AppState {
 
     pub fn current_identity_session_generation(&self) -> u64 {
         self.identity_session_generation.load(Ordering::SeqCst)
+    }
+
+    pub fn announce_semantic_revision(&self) -> AnnounceSemanticRevision {
+        AnnounceSemanticRevision {
+            identity: self.current_identity_session_generation(),
+            content: self.announce_content_revision.load(Ordering::SeqCst),
+            interface: self.announce_interface_revision.load(Ordering::SeqCst),
+        }
+    }
+
+    pub fn bump_announce_content_revision(&self) -> u64 {
+        self.announce_content_revision
+            .fetch_add(1, Ordering::SeqCst)
+            + 1
+    }
+
+    pub fn bump_announce_interface_revision(&self) -> u64 {
+        self.announce_interface_revision
+            .fetch_add(1, Ordering::SeqCst)
+            + 1
     }
 
     /// Register one optimistic WebView message ID before the command performs

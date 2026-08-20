@@ -7,6 +7,7 @@
 #![warn(clippy::await_holding_lock)]
 
 pub mod activity;
+pub mod announce;
 pub mod announce_handlers;
 pub mod blackhole;
 pub mod channel_hub;
@@ -52,6 +53,7 @@ use serde_json::{Value, json};
 
 use activity::ActivityRecorderError;
 use activity::producer::{self, ProducerEvent};
+use announce::{AnnounceAdmission, AnnounceIntent, AnnounceLeadership, AnnounceOrigin};
 #[cfg(all(feature = "ble", target_os = "android"))]
 use mobile_platform::{NativeBleRnodeDisconnect, NativeBleRnodeRequest};
 use state::{ActivityRequestFence, AppState};
@@ -950,7 +952,7 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
     #[cfg(feature = "lxst-voice")]
     voice_memo::cancel_recording(state).await.ok();
     #[cfg(feature = "lxst-voice")]
-    voice::shutdown_voice_service(state).await;
+    voice::shutdown_voice_service_for_runtime_teardown(state).await;
     if let Some(channels) = state.take_channels() {
         channels.shutdown().await;
     }
@@ -2751,8 +2753,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 if periodic_shutdown.is_triggered() {
                                     break;
                                 }
-                                send_announce_from_origin(
+                                send_typed_announce_from_origin(
                                     &periodic_state,
+                                    AnnounceOrigin::Periodic,
                                     activity_origin,
                                 )
                                 .await;
@@ -3008,34 +3011,53 @@ pub fn any_interface_online_cached(state: &AppState) -> Option<bool> {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnnounceSendDisposition {
+    Queued,
+    AlreadyQueued,
+    #[default]
+    Deferred,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AnnounceSendReport {
     pub packets: usize,
     pub queued: usize,
     pub failed: usize,
+    pub disposition: AnnounceSendDisposition,
+    pub correlation_id: u64,
 }
 
 pub async fn send_announce_from_state(state: &AppState) -> AnnounceSendReport {
     let activity_origin = state.activity_request_fence();
-    send_announce_from_state_inner(state, true, activity_origin).await
+    submit_announce_intent(state, AnnounceOrigin::Periodic, true, activity_origin).await
 }
 
 pub async fn send_manual_announce_from_state(state: &AppState) -> AnnounceSendReport {
     let activity_origin = state.activity_request_fence();
-    send_announce_from_state_inner(state, false, activity_origin).await
+    submit_announce_intent(state, AnnounceOrigin::Manual, false, activity_origin).await
 }
 
 pub async fn send_manual_announce_from_origin(
     state: &AppState,
     activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
-    send_announce_from_state_inner(state, false, activity_origin).await
+    submit_announce_intent(state, AnnounceOrigin::Manual, false, activity_origin).await
 }
 
 pub async fn send_announce_from_origin(
     state: &AppState,
     activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
-    send_announce_from_state_inner(state, true, activity_origin).await
+    submit_announce_intent(state, AnnounceOrigin::Periodic, true, activity_origin).await
+}
+
+pub async fn send_typed_announce_from_origin(
+    state: &AppState,
+    origin: AnnounceOrigin,
+    activity_origin: ActivityRequestFence,
+) -> AnnounceSendReport {
+    submit_announce_intent(state, origin, true, activity_origin).await
 }
 
 pub async fn maybe_opportunistic_announce_before_user_send(
@@ -3106,7 +3128,9 @@ pub async fn maybe_opportunistic_announce_before_user_send_from_origin(
     if !claim_opportunistic_announce(state, dest_hash) {
         return report;
     }
-    let announce_report = send_announce_from_origin(state, activity_origin).await;
+    let announce_report =
+        send_typed_announce_from_origin(state, AnnounceOrigin::Opportunistic, activity_origin)
+            .await;
     release_opportunistic_announce(state, dest_hash);
     announce_report
 }
@@ -3173,7 +3197,12 @@ fn schedule_startup_auto_announce(state: Arc<AppState>) {
             }
 
             if matches!(any_interface_online_cached(&state), Some(true)) {
-                let report = send_announce_from_origin(&state, activity_origin).await;
+                let report = send_typed_announce_from_origin(
+                    &state,
+                    AnnounceOrigin::Startup,
+                    activity_origin,
+                )
+                .await;
                 if report.queued > 0 {
                     record_activity_if_current(&state, activity_origin, || {
                         Ok(producer::rns_announce_activity(
@@ -3205,51 +3234,158 @@ fn schedule_startup_auto_announce(state: Arc<AppState>) {
     });
 }
 
-async fn send_announce_from_state_inner(
+async fn submit_announce_intent(
     state: &AppState,
+    origin: AnnounceOrigin,
     require_cached_online: bool,
     activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
-    let mut report = AnnounceSendReport::default();
+    let intent = AnnounceIntent {
+        origin,
+        revisions: state.announce_semantic_revision(),
+    };
+    let admission = match state.announce_coordinator.lock() {
+        Ok(mut coordinator) => coordinator.admit(intent, Instant::now()),
+        Err(_) => {
+            return AnnounceSendReport {
+                failed: 1,
+                disposition: AnnounceSendDisposition::Failed,
+                ..AnnounceSendReport::default()
+            };
+        }
+    };
+
+    let correlation_id = match admission {
+        AnnounceAdmission::AlreadyQueued { correlation_id } => {
+            tracing::info!(
+                correlation_id,
+                origin = origin.as_str(),
+                "presence announce request already covered"
+            );
+            return AnnounceSendReport {
+                disposition: AnnounceSendDisposition::AlreadyQueued,
+                correlation_id,
+                ..AnnounceSendReport::default()
+            };
+        }
+        AnnounceAdmission::Deferred { correlation_id } => {
+            tracing::info!(
+                correlation_id,
+                origin = origin.as_str(),
+                "presence announce request deferred to semantic follow-up"
+            );
+            return AnnounceSendReport {
+                disposition: AnnounceSendDisposition::Deferred,
+                correlation_id,
+                ..AnnounceSendReport::default()
+            };
+        }
+        AnnounceAdmission::Lead { correlation_id } => correlation_id,
+    };
+
+    let mut current_correlation_id = correlation_id;
+    let mut current_activity_origin = activity_origin;
+    let mut first_report = None;
+    loop {
+        let leadership = state
+            .announce_coordinator
+            .lock()
+            .ok()
+            .and_then(|coordinator| coordinator.leadership(current_correlation_id));
+        let Some(leadership) = leadership else {
+            return first_report.unwrap_or(AnnounceSendReport {
+                failed: 1,
+                disposition: AnnounceSendDisposition::Failed,
+                correlation_id: current_correlation_id,
+                ..AnnounceSendReport::default()
+            });
+        };
+
+        let report = if state.is_current_activity_origin_fence(current_activity_origin)
+            && leadership.revisions.identity == state.current_identity_session_generation()
+        {
+            execute_announce_burst(
+                state,
+                require_cached_online,
+                current_activity_origin,
+                &leadership,
+            )
+            .await
+        } else {
+            tracing::info!(
+                correlation_id = leadership.correlation_id,
+                "stale presence announce suppressed"
+            );
+            AnnounceSendReport {
+                disposition: AnnounceSendDisposition::Failed,
+                correlation_id: leadership.correlation_id,
+                ..AnnounceSendReport::default()
+            }
+        };
+        first_report.get_or_insert(report);
+
+        let success = matches!(
+            report.disposition,
+            AnnounceSendDisposition::Queued | AnnounceSendDisposition::AlreadyQueued
+        );
+        let follow_up = state
+            .announce_coordinator
+            .lock()
+            .ok()
+            .and_then(|mut coordinator| {
+                coordinator.finish(leadership.correlation_id, success, Instant::now())
+            });
+        let Some(follow_up) = follow_up else {
+            break;
+        };
+
+        // Delivery ratchets intentionally coalesce identical wall-clock
+        // announce material. A semantic follow-up must cross that boundary
+        // before building its new complete presence bundle.
+        tokio::time::sleep(Duration::from_millis(1_050)).await;
+        current_correlation_id = follow_up.correlation_id;
+        current_activity_origin = state.activity_request_fence();
+    }
+
+    first_report.expect("leader always executes at least one presence burst")
+}
+
+async fn execute_announce_burst(
+    state: &AppState,
+    require_cached_online: bool,
+    activity_origin: ActivityRequestFence,
+    leadership: &AnnounceLeadership,
+) -> AnnounceSendReport {
+    let mut report = AnnounceSendReport {
+        correlation_id: leadership.correlation_id,
+        ..AnnounceSendReport::default()
+    };
+    let origin_set = leadership
+        .origins
+        .iter()
+        .map(|origin| origin.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    tracing::info!(
+        correlation_id = leadership.correlation_id,
+        origins = %origin_set,
+        identity_revision = leadership.revisions.identity,
+        content_revision = leadership.revisions.content,
+        interface_revision = leadership.revisions.interface,
+        "presence announce burst started"
+    );
     if require_cached_online && matches!(any_interface_online_cached(state), Some(false)) {
         tracing::warn!("announce skipped: no interfaces online");
         return report;
     }
-    let (packets, transport_tx) = {
-        let mut packets: Vec<([u8; 16], Vec<u8>, bool)> = Vec::new();
-        let lock_wait_started = std::time::Instant::now();
-        if let Ok(mut lxmf) = state.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                let waited = lock_wait_started.elapsed();
-                if waited > Duration::from_secs(1) {
-                    tracing::warn!(
-                        waited_ms = waited.as_millis() as u64,
-                        "announce waited on lxmf manager lock"
-                    );
-                }
-                if let Ok(raw) = mgr.create_announce_packet() {
-                    packets.push((mgr.lxmf_dest_hash, raw, true));
-                }
-                if state
-                    .propagation_node_hosting_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    if let Ok(raw) = mgr.create_propagation_announce_packet() {
-                        packets.push((mgr.propagation_dest_hash, raw, false));
-                    }
-                }
-            }
-        }
-        let tx = state
-            .rns
-            .read()
-            .ok()
-            .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()));
-        (packets, tx)
-    };
-    report.packets = packets.len();
-
+    let transport_tx = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()));
     let Some(tx) = transport_tx else {
+        report.failed = 1;
+        report.disposition = AnnounceSendDisposition::Failed;
         record_activity_if_current(state, activity_origin, || {
             Ok(producer::rns_announce_activity(
                 producer::RnsAnnounceActivity {
@@ -3264,7 +3400,86 @@ async fn send_announce_from_state_inner(
         return report;
     };
 
+    let (packets, delivery_coalesced, delivery_failed) = {
+        let mut packets: Vec<([u8; 16], Vec<u8>, bool)> = Vec::new();
+        let mut delivery_coalesced = false;
+        let mut delivery_failed = false;
+        let lock_wait_started = std::time::Instant::now();
+        if let Ok(mut lxmf) = state.lxmf.lock() {
+            if let Some(mgr) = lxmf.as_mut() {
+                let waited = lock_wait_started.elapsed();
+                if waited > Duration::from_secs(1) {
+                    tracing::warn!(
+                        waited_ms = waited.as_millis() as u64,
+                        "announce waited on lxmf manager lock"
+                    );
+                }
+                let propagation_packet = if state
+                    .propagation_node_hosting_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    match mgr.create_propagation_announce_packet() {
+                        Ok(raw) => Some((mgr.propagation_dest_hash, raw, false)),
+                        Err(error) => {
+                            delivery_failed = true;
+                            tracing::warn!(
+                                correlation_id = leadership.correlation_id,
+                                %error,
+                                "propagation announce component build failed"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                // Build the delivery component last because its ratchet owns
+                // wall-clock coalescing state. A failed sibling build must not
+                // consume that ratchet when no bundle can be admitted.
+                if !delivery_failed {
+                    match mgr.create_coordinated_announce_packet() {
+                        Ok(raw) => {
+                            packets.push((mgr.lxmf_dest_hash, raw, true));
+                            packets.extend(propagation_packet);
+                        }
+                        Err(lxmf::CoordinatedDeliveryAnnounceError::Coalesced) => {
+                            delivery_coalesced = true;
+                        }
+                        Err(lxmf::CoordinatedDeliveryAnnounceError::Failed(error)) => {
+                            delivery_failed = true;
+                            tracing::warn!(
+                                correlation_id = leadership.correlation_id,
+                                %error,
+                                "LXMF delivery announce component build failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        (packets, delivery_coalesced, delivery_failed)
+    };
+    report.packets = packets.len();
+
+    if delivery_coalesced {
+        report.disposition = AnnounceSendDisposition::AlreadyQueued;
+        tracing::info!(
+            correlation_id = leadership.correlation_id,
+            "complete presence burst coalesced by LXMF delivery ratchet"
+        );
+        return report;
+    }
+    if delivery_failed || !packets.iter().any(|(_, _, is_delivery)| *is_delivery) {
+        report.failed = 1;
+        report.disposition = AnnounceSendDisposition::Failed;
+        return report;
+    }
+
+    #[cfg(feature = "lxst-voice")]
+    let mut delivery_queued = false;
     for (destination_hash, raw, is_lxmf_delivery) in packets {
+        let packet_len = raw.len();
+        let fingerprint = hex::encode(&rns_crypto::sha::sha256(&raw)[..6]);
         match tx
             .send(rns_transport::messages::TransportMessage::Outbound(
                 rns_transport::messages::OutboundRequest {
@@ -3277,11 +3492,21 @@ async fn send_announce_from_state_inner(
             Ok(_) => {
                 report.queued += 1;
                 if is_lxmf_delivery {
+                    #[cfg(feature = "lxst-voice")]
+                    {
+                        delivery_queued = true;
+                    }
                     state
                         .last_lxmf_delivery_announce_at_ms
                         .store(unix_now_ms(), Ordering::Relaxed);
                 }
-                tracing::info!(dest = %short_id(&hex::encode(destination_hash)), "announce sent");
+                tracing::info!(
+                    correlation_id = leadership.correlation_id,
+                    dest = %short_id(&hex::encode(destination_hash)),
+                    packet_len,
+                    packet_fingerprint = %fingerprint,
+                    "announce accepted by Reticulum transport channel"
+                );
                 record_activity_if_current(state, activity_origin, || {
                     Ok(producer::rns_announce_activity(
                         producer::RnsAnnounceActivity {
@@ -3299,7 +3524,14 @@ async fn send_announce_from_state_inner(
             }
             Err(_) => {
                 report.failed += 1;
-                tracing::warn!(reason = "send_failed", "Failed to send announce");
+                tracing::warn!(
+                    correlation_id = leadership.correlation_id,
+                    reason = "send_failed",
+                    dest = %short_id(&hex::encode(destination_hash)),
+                    packet_len,
+                    packet_fingerprint = %fingerprint,
+                    "Failed to submit announce to Reticulum transport channel"
+                );
                 record_activity_if_current(state, activity_origin, || {
                     Ok(producer::rns_announce_activity(
                         producer::RnsAnnounceActivity {
@@ -3315,51 +3547,76 @@ async fn send_announce_from_state_inner(
                         },
                     ))
                 });
+                if is_lxmf_delivery {
+                    // No sibling presence component may be admitted without
+                    // the delivery component that binds it to this identity.
+                    break;
+                }
             }
         }
     }
 
     #[cfg(feature = "lxst-voice")]
-    match voice::announce_if_running(state).await {
-        Ok(true) => {
-            report.packets += 1;
-            report.queued += 1;
-            tracing::info!("LXST telephony announce queued");
-            record_activity_if_current(state, activity_origin, || {
-                Ok(producer::rns_announce_activity(
-                    producer::RnsAnnounceActivity {
-                        transition: producer::RnsAnnounceTransition::Sent {
-                            method: producer::AnnounceMethod::LxstService,
+    if delivery_queued {
+        match voice::announce_if_running(state).await {
+            Ok(true) => {
+                report.packets += 1;
+                report.queued += 1;
+                tracing::info!("LXST telephony announce queued");
+                record_activity_if_current(state, activity_origin, || {
+                    Ok(producer::rns_announce_activity(
+                        producer::RnsAnnounceActivity {
+                            transition: producer::RnsAnnounceTransition::Sent {
+                                method: producer::AnnounceMethod::LxstService,
+                            },
+                            interface: None,
                         },
-                        interface: None,
-                    },
-                ))
-            });
-        }
-        Ok(false) => {
-            tracing::debug!("LXST telephony announce skipped: voice service is not running");
-        }
-        Err(_) => {
-            report.packets += 1;
-            report.failed += 1;
-            tracing::warn!(
-                reason = "queue_failed",
-                "Failed to queue LXST telephony announce"
-            );
-            record_activity_if_current(state, activity_origin, || {
-                Ok(producer::rns_announce_activity(
-                    producer::RnsAnnounceActivity {
-                        transition: producer::RnsAnnounceTransition::Failed {
-                            method: producer::AnnounceMethod::LxstService,
-                            reason: producer::AnnounceFailureReason::QueueFailed,
+                    ))
+                });
+            }
+            Ok(false) => {
+                tracing::debug!("LXST telephony announce skipped: voice service is not running");
+            }
+            Err(_) => {
+                report.packets += 1;
+                report.failed += 1;
+                tracing::warn!(
+                    reason = "queue_failed",
+                    "Failed to queue LXST telephony announce"
+                );
+                record_activity_if_current(state, activity_origin, || {
+                    Ok(producer::rns_announce_activity(
+                        producer::RnsAnnounceActivity {
+                            transition: producer::RnsAnnounceTransition::Failed {
+                                method: producer::AnnounceMethod::LxstService,
+                                reason: producer::AnnounceFailureReason::QueueFailed,
+                            },
+                            interface: None,
                         },
-                        interface: None,
-                    },
-                ))
-            });
+                    ))
+                });
+            }
         }
+    } else {
+        tracing::debug!(
+            correlation_id = leadership.correlation_id,
+            "LXST telephony announce suppressed because delivery was not admitted"
+        );
     }
 
+    report.disposition = if report.queued > 0 && report.failed == 0 {
+        AnnounceSendDisposition::Queued
+    } else {
+        AnnounceSendDisposition::Failed
+    };
+    tracing::info!(
+        correlation_id = leadership.correlation_id,
+        packets = report.packets,
+        queued = report.queued,
+        failed = report.failed,
+        disposition = ?report.disposition,
+        "presence announce burst completed"
+    );
     report
 }
 
@@ -4946,8 +5203,10 @@ async fn poll_stats_loop(
                                 let announce_activity_origin = poll_activity_origin;
                                 tokio::spawn(async move {
                                     tokio::time::sleep(Duration::from_secs(2)).await;
-                                    let report = send_announce_from_origin(
+                                    announce_state.bump_announce_interface_revision();
+                                    let report = send_typed_announce_from_origin(
                                         &announce_state,
+                                        AnnounceOrigin::InterfaceOnline,
                                         announce_activity_origin,
                                     )
                                     .await;

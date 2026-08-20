@@ -1956,6 +1956,7 @@ if (factoryResetBtn) {
 var _lastAnnounceTime = 0;
 var ANNOUNCE_COOLDOWN = 5000;
 var _announceCooldownTimer = null;
+var _announcePending = false;
 
 function setAnnounceLabel(btn, text) {
     if (!btn) return;
@@ -1966,6 +1967,10 @@ function setAnnounceLabel(btn, text) {
 
 // Returns true if IPC fired, false if rate-limited or no online interface.
 function tryTriggerAnnounce() {
+    if (_announcePending) {
+        showToast('Announce already queued', 'toast-info', 2500);
+        return false;
+    }
     if (Date.now() - _lastAnnounceTime < ANNOUNCE_COOLDOWN) {
         showRateLimitedToast();
         return false;
@@ -1974,13 +1979,18 @@ function tryTriggerAnnounce() {
         showToast('Connect to a network first', 'toast-warning', 3000);
         return false;
     }
+    // Set the shared guard before IPC. Every manual entry point calls this
+    // function, so two UI surfaces cannot cross the native boundary together.
+    _announcePending = true;
     RS.invoke('trigger_announce').catch(function(err) {
+        _announcePending = false;
         showToast((err && err.message) || 'Could not send the announce', 'toast-error', 8000);
     });
     return true;
 }
 
 RS.listen('announce_triggered', function(data) {
+    _announcePending = false;
     var networkBtn = document.getElementById('network-announce-btn');
     if (networkBtn && networkBtn.dataset) delete networkBtn.dataset.announcePending;
     // Pop the long-press origin (nav.js _holdLoop); ignore if stale (>5s).
@@ -1990,15 +2000,20 @@ RS.listen('announce_triggered', function(data) {
 
     if (data.success) {
         _lastAnnounceTime = Date.now();
-        if (typeof haptic === 'function') haptic('success');
-        showToast('Announce queued for transmission', 'toast-success', 4000);
+        var alreadyQueued = data.disposition === 'already_queued' || data.disposition === 'deferred';
+        if (typeof haptic === 'function') haptic(alreadyQueued ? 'light' : 'success');
+        showToast(
+            alreadyQueued ? 'Announce already queued' : 'Announce queued for transmission',
+            alreadyQueued ? 'toast-info' : 'toast-success',
+            4000
+        );
         // Burst is gated on backend queue acceptance. Reticulum owns the
         // interface-specific announce-cap delay and physical transmission.
-        if (origin && typeof showAnnounceAnimation === 'function') {
+        if (!alreadyQueued && origin && typeof showAnnounceAnimation === 'function') {
             showAnnounceAnimation(origin.el, origin.cx, origin.cy);
         }
         if (networkBtn) {
-            setAnnounceLabel(networkBtn, 'Queued!');
+            setAnnounceLabel(networkBtn, alreadyQueued ? 'Already queued' : 'Queued!');
             networkBtn.classList.add('is-success');
             setTimeout(function() {
                 setAnnounceLabel(networkBtn, 'Announce');
