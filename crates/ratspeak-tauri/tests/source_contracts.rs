@@ -3711,6 +3711,41 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
 }
 
 #[test]
+fn lxmf_persistence_and_announce_dispatch_do_not_conflate_ownership_boundaries() {
+    let root = repo_root();
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).unwrap();
+    let prune = read_source(root.join("crates/ratspeak-runtime/src/identity_prune.rs")).unwrap();
+    let persistence =
+        read_source(root.join("crates/ratspeak-runtime/src/lxmf_persistence.rs")).unwrap();
+    let handlers =
+        read_source(root.join("crates/ratspeak-runtime/src/announce_handlers.rs")).unwrap();
+    let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).unwrap();
+    let catalog =
+        read_source(root.join("crates/ratspeak-runtime/src/activity/catalog.rs")).unwrap();
+
+    assert!(!runtime.contains("mgr.save_crypto_state()"));
+    assert!(!prune.contains("mgr.save_crypto_state()"));
+    assert!(!handlers.contains("mgr.save_router_state()"));
+    assert!(prune.contains("manager.known_identities_snapshot()"));
+    assert!(prune.contains("delete_prunable_identity_activity_after("));
+    assert!(prune.contains("snapshot.persist()"));
+    assert!(prune.contains("identity_prune_rollback"));
+    assert!(persistence.contains("manager.checkpoint_snapshot()"));
+    assert!(persistence.contains("run_blocking(reason, 2"));
+    assert!(persistence.contains("blocked_checkpoint_io_never_holds_live_lxmf_manager"));
+    assert!(persistence.contains("failed_identity_and_ratchet_delta_remain_dirty_for_retry"));
+    assert!(persistence.contains("delete_expired_received_ratchets"));
+    assert!(lxmf.contains("pending_expired_received_ratchets"));
+    assert!(!lxmf.contains("clean_received_ratchets_dir"));
+    assert!(!lxmf.contains("purge_expired_ratchets_in_memory"));
+    assert!(runtime.contains("TransportMessage::SendPacket"));
+    assert!(runtime.contains("OutboundDispatchResult::Sent"));
+    assert!(runtime.contains("announce accepted by Reticulum interface layer"));
+    assert!(catalog.contains("kinds::RNS_ANNOUNCE_QUEUED"));
+    assert!(catalog.contains("ActivityOutcome::Success"));
+}
+
+#[test]
 fn interface_add_flows_cannot_be_misclassified_as_edits() {
     let root = repo_root();
     let settings_js =
@@ -4898,8 +4933,8 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(presence_burst.contains("if report.lxmf_delivery_queued"));
     assert_eq!(
         presence_burst.matches("tokio::time::timeout(").count(),
-        2,
-        "transport and LXST queue admission must both remain bounded"
+        3,
+        "transport admission, interface dispatch and LXST admission must remain bounded"
     );
     assert!(
         presence_burst
@@ -6547,7 +6582,8 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(
         contact_card_rs.contains("mgr.update_remote_crypto(&dest_hash, &card.public_key, None)")
     );
-    assert!(contact_card_rs.contains("mgr.save_crypto_state()"));
+    assert!(contact_card_rs.contains("lxmf_persistence::persist_current_delta("));
+    assert!(!contact_card_rs.contains("mgr.save_crypto_state()"));
     assert!(contact_card_rs.contains("save_contact_with_identity_pubkey"));
     assert!(db.contains("pub fn save_contact_with_identity_pubkey"));
 

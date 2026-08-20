@@ -166,7 +166,7 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         "rns.path.discovered" => "Path discovered",
         "rns.path.observed" => "Path observed",
         "rns.path.timed_out" => "Path request timed out",
-        "rns.announce.sent" => "Announce queued",
+        "rns.announce.queued" | "rns.announce.sent" => "Announce queued",
         "rns.announce.failed" => "Announce failed",
         "rns.announce.held" => "Announce queued",
         "rns.announce.observed" => "Announce observed",
@@ -526,7 +526,7 @@ fn legacy_detail(event: &ActivityEventV1) -> String {
                 " hops",
             );
         }
-        "rns.announce.sent" => {
+        "rns.announce.queued" | "rns.announce.sent" => {
             push_code(&mut fragments, event, ActivityAttributeKey::Method);
             push_code(&mut fragments, event, ActivityAttributeKey::State);
         }
@@ -973,6 +973,7 @@ mod tests {
             | "lxst.service.failed"
             | "lxst.media.warning" => ActivityDirection::Local,
             "rns.path.requested"
+            | "rns.announce.queued"
             | "rns.announce.sent"
             | "rns.announce.failed"
             | "lxmf.delivery.queued"
@@ -1036,6 +1037,7 @@ mod tests {
             | "interface.removed"
             | "rns.path.discovered"
             | "rns.path.observed"
+            | "rns.announce.queued"
             | "rns.announce.ingress_burst_cleared"
             | "rns.announce.observed"
             | "lxmf.delivery.delivered"
@@ -1576,7 +1578,7 @@ mod tests {
                     },
                     interface: Some(InterfaceClass::Auto),
                 }),
-                "rns.announce.sent",
+                "rns.announce.queued",
                 Network,
                 Info,
                 Normal,
@@ -1595,7 +1597,7 @@ mod tests {
                     },
                     interface: None,
                 }),
-                "rns.announce.sent",
+                "rns.announce.queued",
                 Network,
                 Info,
                 Normal,
@@ -2327,6 +2329,7 @@ mod tests {
             "rns.path.requested",
             "rns.path.discovered",
             "rns.path.observed",
+            "rns.announce.queued",
             "rns.announce.sent",
             "rns.announce.failed",
             "rns.announce.held",

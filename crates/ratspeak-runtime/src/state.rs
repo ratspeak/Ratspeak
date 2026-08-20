@@ -522,6 +522,10 @@ pub struct AppState {
     /// teardown. The handle slot alone cannot make check-then-register atomic.
     pub channel_hub_control_lock: tokio::sync::Mutex<()>,
     pub lxmf: Mutex<Option<LxmfManager>>,
+    /// Serializes immutable LXMF persistence snapshots and their blocking
+    /// writes. Protocol-state mutations take `lxmf` only long enough to
+    /// capture a coherent snapshot; filesystem work must never hold `lxmf`.
+    pub lxmf_persistence_lock: tokio::sync::Mutex<()>,
     /// Public identity keys captured when a local identity is unlocked. Contact
     /// card export is read-only and must not queue behind the LXMF router lock.
     local_identity_public_keys: RwLock<HashMap<String, [u8; 64]>>,
@@ -807,6 +811,7 @@ impl AppState {
             channel_hub: RwLock::new(None),
             channel_hub_control_lock: tokio::sync::Mutex::new(()),
             lxmf: Mutex::new(None),
+            lxmf_persistence_lock: tokio::sync::Mutex::new(()),
             local_identity_public_keys: RwLock::new(HashMap::new()),
             #[cfg(feature = "lxst-voice")]
             lxst_voice: Mutex::new(None),

@@ -7736,6 +7736,98 @@ pub fn delete_identity_activity(pool: &DbPool, hashes: &[String]) -> usize {
     deleted
 }
 
+/// Delete only candidates that are still stale and unprotected at the exact
+/// deletion transaction. An immediate transaction closes the re-observation
+/// race between candidate discovery and deletion. The returned hashes are the
+/// exact committed rows; any query/delete/commit failure rolls the batch back.
+pub fn delete_prunable_identity_activity(
+    pool: &DbPool,
+    hashes: &[String],
+    cutoff_unix: f64,
+    protected_extra: &std::collections::HashSet<String>,
+) -> Result<Vec<String>, String> {
+    delete_prunable_identity_activity_after(pool, hashes, cutoff_unix, protected_extra, |_| Ok(()))
+}
+
+/// Revalidate a prune batch in one immediate transaction, run the caller's
+/// durable pre-delete action against the exact eligible hashes, then commit
+/// those row deletions. If the action fails, the transaction is rolled back.
+pub fn delete_prunable_identity_activity_after<F>(
+    pool: &DbPool,
+    hashes: &[String],
+    cutoff_unix: f64,
+    protected_extra: &std::collections::HashSet<String>,
+    before_delete: F,
+) -> Result<Vec<String>, String>
+where
+    F: FnOnce(&[String]) -> Result<(), String>,
+{
+    let candidates: Vec<&String> = hashes
+        .iter()
+        .filter(|hash| !protected_extra.contains(*hash))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let mut eligible = Vec::new();
+    for chunk in candidates.chunks(500) {
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let cutoff_index = chunk.len() + 1;
+        let sql = format!(
+            "SELECT dest_hash FROM identity_activity
+             WHERE dest_hash IN ({placeholders})
+               AND last_seen < ?{cutoff_index}
+               AND dest_hash NOT IN (SELECT dest_hash FROM contacts)
+               AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
+               AND dest_hash NOT IN (SELECT source FROM messages WHERE source != '')
+               AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
+               AND dest_hash NOT IN (
+                   SELECT propagation_node FROM identities WHERE propagation_node != ''
+               )"
+        );
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|hash| *hash as &dyn rusqlite::types::ToSql)
+            .collect();
+        params.push(&cutoff_unix);
+        let mut selected = {
+            let mut statement = tx.prepare(&sql).map_err(|error| error.to_string())?;
+            statement
+                .query_map(params.as_slice(), |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        eligible.append(&mut selected);
+    }
+
+    before_delete(&eligible)?;
+
+    for chunk in eligible.chunks(500) {
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("DELETE FROM identity_activity WHERE dest_hash IN ({placeholders})");
+        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|hash| hash as &dyn rusqlite::types::ToSql)
+            .collect();
+        tx.execute(&sql, params.as_slice())
+            .map_err(|error| error.to_string())?;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(eligible)
+}
+
 /// Clear discovered peer activity while preserving rows needed by user data.
 ///
 /// Contacts, blocked identities, message counterparties, and configured
@@ -12316,5 +12408,42 @@ mod pending_blackhole_tests {
             })
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn conditional_identity_prune_preserves_reobserved_and_runtime_protected_rows() {
+        let pool = test_pool();
+        let stale = "11111111111111111111111111111111".to_string();
+        let reobserved = "22222222222222222222222222222222".to_string();
+        let protected = "33333333333333333333333333333333".to_string();
+        touch_identity_activity_for_service(
+            &pool,
+            &[
+                (stale.clone(), 1.0, None, None),
+                (reobserved.clone(), 20.0, None, None),
+                (protected.clone(), 1.0, None, None),
+            ],
+            None,
+            PEER_SERVICE_LXMF_DELIVERY,
+        );
+
+        let deleted = delete_prunable_identity_activity(
+            &pool,
+            &[stale.clone(), reobserved.clone(), protected.clone()],
+            10.0,
+            &std::collections::HashSet::from([protected.clone()]),
+        )
+        .unwrap();
+        assert_eq!(deleted, vec![stale.clone()]);
+
+        let conn = pool.get().unwrap();
+        let remaining = conn
+            .prepare("SELECT dest_hash FROM identity_activity ORDER BY dest_hash")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(remaining, vec![reobserved, protected]);
     }
 }

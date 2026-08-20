@@ -636,6 +636,9 @@ pub(super) mod kinds {
     kind!(RNS_PATH_DISCOVERED, "rns.path.discovered", Network);
     trace_ambient_kind!(RNS_PATH_OBSERVED, "rns.path.observed", Network);
     kind!(RNS_PATH_TIMED_OUT, "rns.path.timed_out", Network);
+    kind!(RNS_ANNOUNCE_QUEUED, "rns.announce.queued", Network);
+    // Retained so historical Activity rows remain renderable. New outbound
+    // announce lifecycles use `rns.announce.queued` and never claim RF sent.
     kind!(RNS_ANNOUNCE_SENT, "rns.announce.sent", Network);
     kind!(RNS_ANNOUNCE_FAILED, "rns.announce.failed", Network);
     kind!(RNS_ANNOUNCE_HELD, "rns.announce.held", Network);

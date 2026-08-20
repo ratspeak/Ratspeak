@@ -180,29 +180,47 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         .and_then(crate::lxmf::lxmf_compression_support_db_value_from_app_data)
         .map(str::to_string);
 
-    // The announce payload is already validated by Reticulum. Make its
-    // identity material available immediately; a read-only path-table
-    // observation must never delay learning the peer's public key.
-    if let Some(ref public_key) = event.public_key {
-        if let Ok(mut lxmf) = state.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
-            }
-        }
-    }
-
-    if let Some(bytes) = event.app_data.as_deref() {
-        if let Ok(mut lxmf) = state.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                let changed = mgr.update_lxmf_announce_app_data(
-                    event.destination_hash,
-                    rns_identity::name_hash::name_hash(LXMF_DELIVERY_APP_NAME),
-                    Some(bytes),
-                );
-                if changed {
-                    mgr.save_router_state();
-                }
-            }
+    // The announce payload is already validated by Reticulum. Mutate all
+    // related in-memory state in one short manager critical section, then
+    // persist its immutable delta through the serialized writer.
+    let (identity_changed, ratchet_changed, router_changed) = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|mut lxmf| {
+            lxmf.as_mut().map(|mgr| {
+                let (identity_changed, ratchet_changed) = event
+                    .public_key
+                    .as_ref()
+                    .map(|public_key| {
+                        mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref())
+                    })
+                    .unwrap_or((false, false));
+                let router_changed = event.app_data.as_deref().is_some_and(|bytes| {
+                    mgr.update_lxmf_announce_app_data(
+                        event.destination_hash,
+                        rns_identity::name_hash::name_hash(LXMF_DELIVERY_APP_NAME),
+                        Some(bytes),
+                    )
+                });
+                (identity_changed, ratchet_changed, router_changed)
+            })
+        })
+        .unwrap_or((false, false, false));
+    if identity_changed || ratchet_changed || router_changed {
+        let ratchet_hashes = ratchet_changed
+            .then(|| vec![hash_hex.clone()])
+            .unwrap_or_default();
+        if let Err(error) = crate::lxmf_persistence::persist_current_delta(
+            state,
+            identity_changed,
+            &ratchet_hashes,
+            router_changed,
+            "delivery_announce",
+        )
+        .await
+        {
+            tracing::warn!(%error, "delivery announce persistence failed");
         }
     }
 
@@ -365,18 +383,42 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         .and_then(|d| lxmf_core::handlers::pn_name_from_app_data(d))
         .filter(|s| !s.is_empty());
 
-    if let Ok(mut lxmf) = state.lxmf.lock() {
-        if let Some(mgr) = lxmf.as_mut() {
-            if let Some(ref public_key) = event.public_key {
-                mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref());
-            }
-            if mgr.update_lxmf_announce_app_data(
-                event.destination_hash,
-                rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME),
-                event.app_data.as_deref(),
-            ) {
-                mgr.save_router_state();
-            }
+    let (identity_changed, ratchet_changed, router_changed) = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|mut lxmf| {
+            lxmf.as_mut().map(|mgr| {
+                let (identity_changed, ratchet_changed) = event
+                    .public_key
+                    .as_ref()
+                    .map(|public_key| {
+                        mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref())
+                    })
+                    .unwrap_or((false, false));
+                let router_changed = mgr.update_lxmf_announce_app_data(
+                    event.destination_hash,
+                    rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME),
+                    event.app_data.as_deref(),
+                );
+                (identity_changed, ratchet_changed, router_changed)
+            })
+        })
+        .unwrap_or((false, false, false));
+    if identity_changed || ratchet_changed || router_changed {
+        let ratchet_hashes = ratchet_changed
+            .then(|| vec![hash_hex.clone()])
+            .unwrap_or_default();
+        if let Err(error) = crate::lxmf_persistence::persist_current_delta(
+            state,
+            identity_changed,
+            &ratchet_hashes,
+            router_changed,
+            "propagation_announce",
+        )
+        .await
+        {
+            tracing::warn!(%error, "propagation announce persistence failed");
         }
     }
 

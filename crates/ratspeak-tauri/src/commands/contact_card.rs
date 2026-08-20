@@ -243,11 +243,28 @@ pub async fn import_contact_card(
     .await
     .map_err(|_| AppError::internal("contact-card import db task panicked"))?;
 
-    if let Ok(mut lxmf) = state.lxmf.lock() {
-        if let Some(mgr) = lxmf.as_mut() {
-            mgr.update_remote_crypto(&dest_hash, &card.public_key, None);
-            mgr.save_crypto_state();
-        }
+    let identity_changed = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|mut lxmf| {
+            lxmf.as_mut().map(|mgr| {
+                mgr.update_remote_crypto(&dest_hash, &card.public_key, None)
+                    .0
+            })
+        })
+        .unwrap_or(false);
+    if identity_changed
+        && let Err(error) = ratspeak_runtime::lxmf_persistence::persist_current_delta(
+            &state,
+            true,
+            &[],
+            false,
+            "contact_import",
+        )
+        .await
+    {
+        tracing::warn!(%error, "contact-card identity persistence failed");
     }
 
     state.emit_to_all("contacts_update", json!(contacts_list));

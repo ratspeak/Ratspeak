@@ -18,6 +18,7 @@ pub mod helpers;
 pub mod identity_prune;
 pub mod image_attachment;
 pub mod lxmf;
+pub mod lxmf_persistence;
 pub mod messaging;
 pub mod mobile_platform;
 pub mod propagation;
@@ -75,6 +76,7 @@ const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
 const ANNOUNCE_LXMF_BUILD_RETRY_WINDOW: Duration = Duration::from_secs(30);
 const ANNOUNCE_LXMF_BUILD_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const ANNOUNCE_QUEUE_ADMISSION_WAIT: Duration = Duration::from_secs(1);
+const ANNOUNCE_INTERFACE_DISPATCH_WAIT: Duration = Duration::from_secs(5);
 
 #[cfg(all(feature = "ble", target_os = "android"))]
 fn interface_mode_name(mode: rns_interface::traits::InterfaceMode) -> &'static str {
@@ -995,11 +997,12 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
         teardown_rns_runtime_interfaces(&mgr.handle).await;
         mgr.shutdown().await;
     }
-    // Persist ratchet + peer-key state before dropping the manager.
-    if let Ok(lxmf) = state.lxmf.lock() {
-        if let Some(ref mgr) = *lxmf {
-            mgr.save_crypto_state();
-        }
+    // Drain serialized delta writes and persist one final immutable
+    // identity/router snapshot before dropping the manager. Received ratchets
+    // and the delivery ring are already durable at their mutation seams.
+    if let Err(error) = crate::lxmf_persistence::persist_current_checkpoint(state, "shutdown").await
+    {
+        tracing::warn!(%error, "shutdown LXMF checkpoint failed");
     }
     if let Ok(mut lxmf) = state.lxmf.lock() {
         *lxmf = None;
@@ -2338,6 +2341,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                Vec::new(),
                             )
                         };
                         let lock_wait_started = std::time::Instant::now();
@@ -2369,10 +2373,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         let downloaded = mgr.take_downloaded_propagation_messages();
                         let (completed_deposits, failed_deposits, completed_syncs, failed_syncs) =
                             mgr.take_propagation_health();
-                        // Persist crypto state every ~5 min (600 × 500ms).
-                        if should_save_crypto_state {
-                            mgr.save_crypto_state();
-                        }
+                        let expired_received_ratchets = mgr.take_expired_received_ratchets();
                         (
                             results,
                             delivery_progress,
@@ -2382,6 +2383,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             failed_deposits,
                             completed_syncs,
                             failed_syncs,
+                            expired_received_ratchets,
                         )
                     })
                     .await;
@@ -2394,6 +2396,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         failed_propagation_deposits,
                         completed_propagation_syncs,
                         failed_propagation_syncs,
+                        expired_received_ratchets,
                     ) = match tick_result {
                         Ok(result) => result,
                         Err(_) => {
@@ -2410,9 +2413,44 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                Vec::new(),
                             )
                         }
                     };
+                    if !expired_received_ratchets.is_empty() {
+                        let cleanup_state = tick_state.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) =
+                                crate::lxmf_persistence::delete_expired_received_ratchets(
+                                    &cleanup_state,
+                                    &expired_received_ratchets,
+                                )
+                                .await
+                            {
+                                tracing::warn!(%error, "received-ratchet cleanup failed");
+                            }
+                        });
+                    }
+                    // Capture and persist the current identity/router checkpoint
+                    // outside the protocol-manager lock. Changed received
+                    // ratchets are already write-through deltas, so the
+                    // periodic pass never replays thousands of unchanged files.
+                    if should_save_crypto_state {
+                        let checkpoint_state = tick_state.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = crate::lxmf_persistence::persist_current_checkpoint(
+                                &checkpoint_state,
+                                "periodic",
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    %error,
+                                    "periodic LXMF checkpoint failed"
+                                );
+                            }
+                        });
+                    }
                     // Hosted propagation node maintenance on the crypto-save
                     // cadence (~5 min): age-cull, weight cap, orphan cleanup.
                     // Previously never ran — the store only hard-rejected at
@@ -3727,18 +3765,30 @@ async fn execute_announce_burst(
     for (destination_hash, raw, is_lxmf_delivery) in packets {
         let packet_len = raw.len();
         let fingerprint = hex::encode(&rns_crypto::sha::sha256(&raw)[..6]);
-        match tokio::time::timeout(
+        let (dispatch_tx, dispatch_rx) = tokio::sync::oneshot::channel();
+        let admitted = tokio::time::timeout(
             ANNOUNCE_QUEUE_ADMISSION_WAIT,
-            tx.send(rns_transport::messages::TransportMessage::Outbound(
-                rns_transport::messages::OutboundRequest {
+            tx.send(rns_transport::messages::TransportMessage::SendPacket {
+                request: rns_transport::messages::OutboundRequest {
                     raw: Bytes::from(raw),
                     destination_hash,
                 },
-            )),
+                attached_interface: None,
+                receipt: None,
+                result_tx: dispatch_tx,
+            }),
         )
-        .await
-        {
-            Ok(Ok(())) => {
+        .await;
+        let dispatch = if matches!(admitted, Ok(Ok(()))) {
+            tokio::time::timeout(ANNOUNCE_INTERFACE_DISPATCH_WAIT, dispatch_rx)
+                .await
+                .ok()
+                .and_then(Result::ok)
+        } else {
+            None
+        };
+        match dispatch {
+            Some(rns_transport::messages::OutboundDispatchResult::Sent) => {
                 report.queued += 1;
                 if is_lxmf_delivery {
                     report.lxmf_delivery_queued = true;
@@ -3753,18 +3803,32 @@ async fn execute_announce_burst(
                     dest = %short_id(&hex::encode(destination_hash)),
                     packet_len,
                     packet_fingerprint = %fingerprint,
-                    "announce accepted by Reticulum transport channel"
+                    "announce accepted by Reticulum interface layer"
                 );
             }
-            Ok(Err(_)) | Err(_) => {
+            Some(rns_transport::messages::OutboundDispatchResult::NoInterface) => {
                 report.failed += 1;
                 tracing::warn!(
                     correlation_id = leadership.correlation_id,
-                    reason = "send_failed",
+                    reason = "no_interface",
                     dest = %short_id(&hex::encode(destination_hash)),
                     packet_len,
                     packet_fingerprint = %fingerprint,
-                    "Failed to submit announce to Reticulum transport channel"
+                    "No Reticulum interface accepted announce"
+                );
+                if is_lxmf_delivery {
+                    break;
+                }
+            }
+            Some(rns_transport::messages::OutboundDispatchResult::ReceiptCollision) | None => {
+                report.failed += 1;
+                tracing::warn!(
+                    correlation_id = leadership.correlation_id,
+                    reason = "dispatch_failed",
+                    dest = %short_id(&hex::encode(destination_hash)),
+                    packet_len,
+                    packet_fingerprint = %fingerprint,
+                    "Failed to dispatch announce to Reticulum interface layer"
                 );
                 if is_lxmf_delivery {
                     // No sibling presence component may be admitted without
@@ -5497,15 +5561,12 @@ async fn poll_stats_loop(
                 let mut peer_activity_updates: Vec<db::IdentityActivityUpdate> = Vec::new();
                 let mut peer_activity_hashes: Vec<String> = Vec::new();
                 let mut delivery_trigger_hashes: Vec<[u8; 16]> = Vec::new();
+                let mut identities_changed = false;
+                let mut router_changed = false;
+                let mut changed_ratchet_hashes = Vec::new();
                 // Aspect-agnostic: crypto cache, announce_history, contact-name refresh.
                 if let Ok(mut lxmf) = state.lxmf.lock() {
                     if let Some(mgr) = lxmf.as_mut() {
-                        let mut identities_changed = false;
-                        let mut router_changed = false;
-                        let mut changed_ratchets: Vec<(
-                            String,
-                            rns_identity::ratchet::ReceivedRatchet,
-                        )> = Vec::new();
                         for a in &announces {
                             let dest_hex = hex::encode(a.dest_hash);
                             tracing::debug!(
@@ -5520,12 +5581,8 @@ async fn poll_stats_loop(
                                 let (id_changed, ratchet_changed) =
                                     mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
                                 identities_changed |= id_changed;
-                                if let Some(rr) = mgr
-                                    .received_ratchets
-                                    .get(&dest_hex)
-                                    .filter(|_| ratchet_changed)
-                                {
-                                    changed_ratchets.push((dest_hex.clone(), *rr));
+                                if ratchet_changed {
+                                    changed_ratchet_hashes.push(dest_hex.clone());
                                 }
                                 if is_new {
                                     tracing::debug!(
@@ -5541,48 +5598,26 @@ async fn poll_stats_loop(
                                 a.app_data.as_deref(),
                             );
                         }
-                        // Persist only announce-derived deltas, off the poll
-                        // loop; the ring and full rewrites stay on the
-                        // rotation/periodic/shutdown saves. Stamp costs persist
-                        // per batch like Python's delivery announce handler.
-                        if router_changed {
-                            mgr.save_router_state();
-                        }
-                        if identities_changed || !changed_ratchets.is_empty() {
-                            let ratchet_dir = mgr.ratchets_dir();
-                            let ki_blob = identities_changed.then(|| mgr.known_identities_blob());
-                            tracing::debug!(
-                                known_identities = mgr.known_identities.len(),
-                                changed_ratchets = changed_ratchets.len(),
-                                router_state_changed = router_changed,
-                                "announce-derived crypto state persisted"
-                            );
-                            tokio::task::spawn_blocking(move || {
-                                let received_dir = ratchet_dir.join("received");
-                                std::fs::create_dir_all(&received_dir).ok();
-                                for (hash_hex, rr) in &changed_ratchets {
-                                    let path = received_dir.join(format!("{hash_hex}.ratchet"));
-                                    if rr.save(&path).is_err() {
-                                        tracing::warn!(
-                                            reason = "write_failed",
-                                            "Failed to persist received ratchet"
-                                        );
-                                    }
-                                }
-                                if let Some(blob) = ki_blob {
-                                    let ki_path = ratchet_dir.join("known_identities");
-                                    if rns_identity::persistence::atomic_write(&ki_path, &blob)
-                                        .is_err()
-                                    {
-                                        tracing::warn!(
-                                            reason = "write_failed",
-                                            "Failed to save known identities"
-                                        );
-                                    }
-                                }
-                            });
-                        }
                     }
+                }
+                if identities_changed || !changed_ratchet_hashes.is_empty() || router_changed {
+                    let persistence_state = state.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = crate::lxmf_persistence::persist_current_delta(
+                            &persistence_state,
+                            identities_changed,
+                            &changed_ratchet_hashes,
+                            router_changed,
+                            "announce_ingress",
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                %error,
+                                "announce-derived LXMF persistence failed"
+                            );
+                        }
+                    });
                 }
 
                 if let Ok(mut history) = state.announce_history.write() {

@@ -26,13 +26,11 @@ use lxmf_core::link_delivery::{
 use lxmf_core::message_api::{DeliveryMethod, DeliveryRepresentation, LxMessage};
 use lxmf_core::router::{
     DirectDeliveryPlan, DirectDeliveryPlanInput, DirectReusableLinkState, DirectRouteSnapshot,
-    LxmRouter, OutboundAction, RouterConfig, plan_direct_delivery,
+    LxmRouter, OutboundAction, RouterConfig, RouterStateSnapshot, plan_direct_delivery,
 };
 use rns_identity::destination::Destination;
 use rns_identity::identity::Identity;
-use rns_identity::ratchet::{
-    ReceivedRatchet, clean_received_ratchets_dir, purge_expired_ratchets_in_memory,
-};
+use rns_identity::ratchet::ReceivedRatchet;
 
 use rns_transport::messages::{PathTableRpcEntry, TransportMessage, TransportQuery};
 use tokio::sync::{mpsc, oneshot};
@@ -1004,7 +1002,14 @@ pub struct LxmfManager {
     delivery_ratchets: DeliveryRatchetState,
     announce_cache_started: Instant,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
+    /// Remote ratchets whose current value has not yet been acknowledged by
+    /// the serialized persistence owner. Persistence failures leave entries
+    /// here so a later delta/periodic pass retries them without replaying the
+    /// complete received-ratchet store.
+    dirty_received_ratchets: HashSet<String>,
     pub known_identities: HashMap<String, [u8; 64]>,
+    known_identities_revision: u64,
+    known_identities_persisted_revision: u64,
     peer_lxmf_compression_support: HashMap<[u8; 16], CompressionSupport>,
     route_hops: HashMap<[u8; 16], u8>,
     route_entries: HashMap<[u8; 16], PathTableRpcEntry>,
@@ -1035,6 +1040,7 @@ pub struct LxmfManager {
     last_ratchet_clean: f64,
     last_router_cull: f64,
     pub received_ratchets_dir: PathBuf,
+    pending_expired_received_ratchets: Vec<String>,
     /// Outbound message hashes routed via propagation. `LinkDeliveryManager`
     /// reports `Complete` for both propagation deposits and large-message
     /// direct sends; this map lets `tick()` map completion to the right state
@@ -1053,6 +1059,85 @@ pub struct LxmfManager {
     /// Auto sends that began over a live LXMF method and may be retried once
     /// through the configured Offline Inbox after live delivery fails.
     auto_live_fallback: HashSet<[u8; 32]>,
+}
+
+/// Immutable known-identity artifact captured while the LXMF manager is
+/// locked and persisted only after that protocol lock has been released.
+pub struct KnownIdentitiesSnapshot {
+    identity_hash: String,
+    revision: u64,
+    path: PathBuf,
+    bytes: Vec<u8>,
+    pub count: usize,
+}
+
+impl KnownIdentitiesSnapshot {
+    pub fn persist(&self) -> std::io::Result<()> {
+        rns_identity::persistence::atomic_write(&self.path, &self.bytes)
+    }
+}
+
+/// Immutable periodic/shutdown checkpoint. Received ratchets are deliberately
+/// absent: each changed remote ratchet is persisted as a per-destination delta
+/// when learned, so a checkpoint never rewrites thousands of unchanged files.
+pub struct LxmfCheckpointSnapshot {
+    known_identities: KnownIdentitiesSnapshot,
+    router_state: RouterStateSnapshot,
+    router_state_dir: PathBuf,
+}
+
+impl LxmfCheckpointSnapshot {
+    pub fn persist(&self) -> std::io::Result<()> {
+        self.known_identities.persist()?;
+        self.router_state.save_state(&self.router_state_dir)
+    }
+
+    pub fn known_identities_count(&self) -> usize {
+        self.known_identities.count
+    }
+}
+
+/// Owned delta for state that changed during an LXMF tick or announce
+/// observation. All paths and values are resolved before the manager lock is
+/// released; persistence is then independent of live protocol ownership.
+pub struct LxmfPersistenceDelta {
+    identity_hash: String,
+    known_identities: Option<KnownIdentitiesSnapshot>,
+    received_ratchets: Vec<(String, PathBuf, ReceivedRatchet)>,
+    router_state: Option<(PathBuf, RouterStateSnapshot)>,
+}
+
+impl LxmfPersistenceDelta {
+    pub fn is_empty(&self) -> bool {
+        self.known_identities.is_none()
+            && self.received_ratchets.is_empty()
+            && self.router_state.is_none()
+    }
+
+    pub fn persist(&self) -> std::io::Result<()> {
+        for (_, path, ratchet) in &self.received_ratchets {
+            ratchet.save(path)?;
+        }
+        if let Some(snapshot) = self.known_identities.as_ref() {
+            snapshot.persist()?;
+        }
+        if let Some((path, snapshot)) = self.router_state.as_ref() {
+            snapshot.save_state(path)?;
+        }
+        Ok(())
+    }
+
+    pub fn artifact_count(&self) -> usize {
+        usize::from(self.known_identities.is_some())
+            + self.received_ratchets.len()
+            + usize::from(self.router_state.is_some())
+    }
+
+    fn persisted_ratchets(&self) -> impl Iterator<Item = (&str, ReceivedRatchet)> {
+        self.received_ratchets
+            .iter()
+            .map(|(hash, _, ratchet)| (hash.as_str(), *ratchet))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1311,23 +1396,37 @@ impl LxmfManager {
             wall_now,
         )?;
 
-        // Sweep expired/corrupt files before load.
+        // Validate, expire and load each file exactly once. The former
+        // clean-then-load sequence decoded every ratchet twice at startup.
         let received_dir = ratchet_dir.join("received");
         std::fs::create_dir_all(&received_dir)?;
-        let removed = clean_received_ratchets_dir(&received_dir);
-        if removed > 0 {
-            tracing::info!(removed, "swept expired received-ratchet files at startup");
-        }
         let mut received_ratchets = HashMap::new();
+        let mut removed = 0usize;
         if let Ok(entries) = std::fs::read_dir(&received_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if let Some((name, rr)) =
-                    received_ratchet_hash_from_path(&path).zip(ReceivedRatchet::load(&path).ok())
+                if !path.is_file() {
+                    continue;
+                }
+                match received_ratchet_hash_from_path(&path)
+                    .zip(ReceivedRatchet::load(&path).ok())
+                    .filter(|(_, ratchet)| !ratchet.is_expired())
                 {
-                    received_ratchets.insert(name.to_string(), rr);
+                    Some((name, ratchet)) => {
+                        received_ratchets.insert(name.to_string(), ratchet);
+                    }
+                    None => match std::fs::remove_file(&path) {
+                        Ok(()) => removed += 1,
+                        Err(error) => tracing::warn!(
+                            %error,
+                            "failed to remove expired or corrupt received ratchet"
+                        ),
+                    },
                 }
             }
+        }
+        if removed > 0 {
+            tracing::info!(removed, "swept expired received-ratchet files at startup");
         }
 
         // Binary: repeated [dest_hash:16][pubkey:64] records.
@@ -1372,7 +1471,10 @@ impl LxmfManager {
             delivery_ratchets,
             announce_cache_started: Instant::now(),
             received_ratchets,
+            dirty_received_ratchets: HashSet::new(),
             known_identities,
+            known_identities_revision: 0,
+            known_identities_persisted_revision: 0,
             peer_lxmf_compression_support: HashMap::new(),
             route_hops: HashMap::new(),
             route_entries: HashMap::new(),
@@ -1402,6 +1504,7 @@ impl LxmfManager {
                 .unwrap_or_default()
                 .as_secs_f64(),
             received_ratchets_dir: received_dir,
+            pending_expired_received_ratchets: Vec::new(),
             in_flight_propagation: std::collections::HashMap::new(),
             completed_propagation_deposits: Vec::new(),
             failed_propagation_deposits: Vec::new(),
@@ -3047,6 +3150,149 @@ impl LxmfManager {
         data
     }
 
+    pub fn known_identities_snapshot(&self) -> KnownIdentitiesSnapshot {
+        KnownIdentitiesSnapshot {
+            identity_hash: self.identity_hash.clone(),
+            revision: self.known_identities_revision,
+            path: self.ratchets_dir().join("known_identities"),
+            bytes: self.known_identities_blob(),
+            count: self.known_identities.len(),
+        }
+    }
+
+    pub fn checkpoint_snapshot(&self) -> LxmfCheckpointSnapshot {
+        LxmfCheckpointSnapshot {
+            known_identities: self.known_identities_snapshot(),
+            router_state: self.router.state_snapshot(),
+            router_state_dir: self.lxmf_storage_dir.clone(),
+        }
+    }
+
+    pub fn persistence_delta_snapshot(
+        &self,
+        identities_changed: bool,
+        changed_ratchet_hashes: &[String],
+        router_changed: bool,
+    ) -> LxmfPersistenceDelta {
+        let received_dir = self.ratchets_dir().join("received");
+        let ratchet_hashes = self
+            .dirty_received_ratchets
+            .iter()
+            .chain(changed_ratchet_hashes.iter())
+            .collect::<HashSet<_>>();
+        let received_ratchets = ratchet_hashes
+            .into_iter()
+            .filter_map(|hash| {
+                self.received_ratchets.get(hash).copied().map(|ratchet| {
+                    (
+                        hash.clone(),
+                        received_dir.join(format!("{hash}.ratchet")),
+                        ratchet,
+                    )
+                })
+            })
+            .collect();
+        LxmfPersistenceDelta {
+            identity_hash: self.identity_hash.clone(),
+            known_identities: (identities_changed || self.known_identities_dirty())
+                .then(|| self.known_identities_snapshot()),
+            received_ratchets,
+            router_state: router_changed
+                .then(|| (self.lxmf_storage_dir.clone(), self.router.state_snapshot())),
+        }
+    }
+
+    pub fn dirty_received_ratchets_snapshot(&self) -> LxmfPersistenceDelta {
+        let received_dir = self.ratchets_dir().join("received");
+        let received_ratchets = self
+            .dirty_received_ratchets
+            .iter()
+            .filter_map(|hash| {
+                self.received_ratchets.get(hash).copied().map(|ratchet| {
+                    (
+                        hash.clone(),
+                        received_dir.join(format!("{hash}.ratchet")),
+                        ratchet,
+                    )
+                })
+            })
+            .collect();
+        LxmfPersistenceDelta {
+            identity_hash: self.identity_hash.clone(),
+            known_identities: None,
+            received_ratchets,
+            router_state: None,
+        }
+    }
+
+    /// Clear only ratchet versions that the persistence owner actually wrote.
+    /// If the live value changed while disk I/O was in flight, the dirty bit is
+    /// retained and the newer value is handled by the next serialized pass.
+    pub fn acknowledge_persistence_delta(&mut self, delta: &LxmfPersistenceDelta) {
+        if self.identity_hash != delta.identity_hash {
+            return;
+        }
+        if let Some(snapshot) = delta.known_identities.as_ref() {
+            self.acknowledge_known_identities_snapshot(snapshot);
+        }
+        for (hash, persisted) in delta.persisted_ratchets() {
+            if self.received_ratchets.get(hash).is_some_and(|current| {
+                current.ratchet_pub == persisted.ratchet_pub
+                    && current.received_at == persisted.received_at
+            }) {
+                self.dirty_received_ratchets.remove(hash);
+            }
+        }
+    }
+
+    pub fn acknowledge_known_identities_snapshot(&mut self, snapshot: &KnownIdentitiesSnapshot) {
+        if self.identity_hash == snapshot.identity_hash
+            && self.known_identities_revision == snapshot.revision
+        {
+            self.known_identities_persisted_revision = snapshot.revision;
+        }
+    }
+
+    pub fn acknowledge_checkpoint_snapshot(&mut self, snapshot: &LxmfCheckpointSnapshot) {
+        self.acknowledge_known_identities_snapshot(&snapshot.known_identities);
+    }
+
+    pub fn known_identities_dirty(&self) -> bool {
+        self.known_identities_revision != self.known_identities_persisted_revision
+    }
+
+    pub fn remove_known_identities(
+        &mut self,
+        hashes: &std::collections::HashSet<String>,
+    ) -> Vec<(String, [u8; 64])> {
+        let removed = hashes
+            .iter()
+            .filter_map(|hash| {
+                self.known_identities
+                    .remove(hash)
+                    .map(|public_key| (hash.clone(), public_key))
+            })
+            .collect::<Vec<_>>();
+        if !removed.is_empty() {
+            self.known_identities_revision = self.known_identities_revision.wrapping_add(1);
+        }
+        removed
+    }
+
+    pub fn restore_known_identities(&mut self, entries: &[(String, [u8; 64])]) -> usize {
+        let mut changed = false;
+        for (hash, public_key) in entries {
+            if self.known_identities.get(hash) != Some(public_key) {
+                self.known_identities.insert(hash.clone(), *public_key);
+                changed = true;
+            }
+        }
+        if changed {
+            self.known_identities_revision = self.known_identities_revision.wrapping_add(1);
+        }
+        self.known_identities.len()
+    }
+
     pub fn save_router_state(&self) {
         if self.router.save_state(&self.lxmf_storage_dir).is_err() {
             tracing::warn!(reason = "save_failed", "Failed to save LXMF router state");
@@ -3096,6 +3342,7 @@ impl LxmfManager {
         let identity_changed = self.known_identities.get(dest_hash_hex) != Some(pk);
         if identity_changed {
             self.known_identities.insert(dest_hash_hex.to_string(), *pk);
+            self.known_identities_revision = self.known_identities_revision.wrapping_add(1);
         }
         let mut ratchet_changed = false;
         if let Some(r) = ratchet.filter(|ratchet| {
@@ -3105,6 +3352,8 @@ impl LxmfManager {
         }) {
             self.received_ratchets
                 .insert(dest_hash_hex.to_string(), ReceivedRatchet::new(*r));
+            self.dirty_received_ratchets
+                .insert(dest_hash_hex.to_string());
             ratchet_changed = true;
         }
         (identity_changed, ratchet_changed)
@@ -3816,6 +4065,18 @@ impl LxmfManager {
             .as_secs_f64();
     }
 
+    pub fn take_expired_received_ratchets(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_expired_received_ratchets)
+    }
+
+    pub fn requeue_expired_received_ratchets(&mut self, hashes: Vec<String>) {
+        for hash in hashes {
+            if !self.pending_expired_received_ratchets.contains(&hash) {
+                self.pending_expired_received_ratchets.push(hash);
+            }
+        }
+    }
+
     pub fn auto_propagation_check_due(&self, network_available: bool) -> bool {
         if !network_available || !self.client_propagation_enabled {
             return false;
@@ -3859,20 +4120,28 @@ impl LxmfManager {
     ) -> Vec<(String, &'static str)> {
         let mut results = Vec::new();
 
-        // 15-min ratchet cleanup cadence (matches reference).
+        // 15-min ratchet cleanup cadence (matches reference). Only inspect
+        // coherent in-memory metadata here. The serialized persistence owner
+        // revalidates and removes files after this manager lock is released.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
         if now - self.last_ratchet_clean > 900.0 {
-            let mem_dropped = purge_expired_ratchets_in_memory(&mut self.received_ratchets);
-            let disk_dropped = clean_received_ratchets_dir(&self.received_ratchets_dir);
-            if mem_dropped > 0 || disk_dropped > 0 {
-                tracing::debug!(
-                    mem_dropped,
-                    disk_dropped,
-                    "ratchet cleanup pass: removed expired entries"
-                );
+            let expired = self
+                .received_ratchets
+                .iter()
+                .filter(|(_, ratchet)| ratchet.is_expired())
+                .map(|(hash, _)| hash.clone())
+                .collect::<Vec<_>>();
+            for hash in &expired {
+                self.received_ratchets.remove(hash);
+                self.dirty_received_ratchets.remove(hash);
+            }
+            if !expired.is_empty() {
+                let removed = expired.len();
+                self.pending_expired_received_ratchets.extend(expired);
+                tracing::debug!(removed, "ratchet cleanup pass: expired in-memory entries");
             }
             self.last_ratchet_clean = now;
         }

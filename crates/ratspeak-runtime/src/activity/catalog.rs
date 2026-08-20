@@ -638,10 +638,10 @@ pub fn rns_announce_activity(
 ) -> Result<ActivityDraft, ActivityRejectReason> {
     let (kind, severity, direction, outcome, coalescing) = match input.transition {
         RnsAnnounceTransition::Queued { .. } => (
-            kinds::RNS_ANNOUNCE_SENT,
+            kinds::RNS_ANNOUNCE_QUEUED,
             ActivitySeverity::Info,
             ActivityDirection::Outbound,
-            ActivityOutcome::Progress,
+            ActivityOutcome::Success,
             CoalescingPolicy::Never,
         ),
         RnsAnnounceTransition::Failed { .. } => (
