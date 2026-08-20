@@ -519,10 +519,14 @@ pub fn rns_path_requested(input: RnsPathRequested) -> Result<ActivityDraft, Acti
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AnnounceMethod {
     InterfaceOnline,
-    LxmfDelivery,
-    LxstService,
+    IdentityChanged,
     Manual,
+    Opportunistic,
+    Periodic,
+    ProfileChanged,
+    PropagationChanged,
     Startup,
+    Coordinated,
     Transport,
 }
 
@@ -530,11 +534,34 @@ impl AnnounceMethod {
     const fn code(self) -> &'static str {
         match self {
             Self::InterfaceOnline => "interface_online",
-            Self::LxmfDelivery => "lxmf_delivery",
-            Self::LxstService => "lxst_service",
+            Self::IdentityChanged => "identity_changed",
             Self::Manual => "manual",
+            Self::Opportunistic => "opportunistic",
+            Self::Periodic => "periodic",
+            Self::ProfileChanged => "profile_changed",
+            Self::PropagationChanged => "propagation_changed",
             Self::Startup => "startup",
+            Self::Coordinated => "coordinated",
             Self::Transport => "transport",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnnounceComponents {
+    LxmfDelivery,
+    LxmfDeliveryAndLxst,
+    LxmfDeliveryAndPropagation,
+    LxmfDeliveryPropagationAndLxst,
+}
+
+impl AnnounceComponents {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::LxmfDelivery => "lxmf_delivery",
+            Self::LxmfDeliveryAndLxst => "lxmf_delivery_lxst",
+            Self::LxmfDeliveryAndPropagation => "lxmf_delivery_propagation",
+            Self::LxmfDeliveryPropagationAndLxst => "lxmf_delivery_propagation_lxst",
         }
     }
 }
@@ -576,8 +603,11 @@ impl AnnounceSuppressionReason {
 }
 
 pub enum RnsAnnounceTransition {
-    Sent {
+    Queued {
         method: AnnounceMethod,
+        components: AnnounceComponents,
+        count: u64,
+        correlation_id: CorrelationId,
     },
     Failed {
         method: AnnounceMethod,
@@ -607,11 +637,11 @@ pub fn rns_announce_activity(
     input: RnsAnnounceActivity,
 ) -> Result<ActivityDraft, ActivityRejectReason> {
     let (kind, severity, direction, outcome, coalescing) = match input.transition {
-        RnsAnnounceTransition::Sent { .. } => (
+        RnsAnnounceTransition::Queued { .. } => (
             kinds::RNS_ANNOUNCE_SENT,
             ActivitySeverity::Info,
             ActivityDirection::Outbound,
-            ActivityOutcome::Success,
+            ActivityOutcome::Progress,
             CoalescingPolicy::Never,
         ),
         RnsAnnounceTransition::Failed { .. } => (
@@ -667,8 +697,17 @@ pub fn rns_announce_activity(
         coalescing,
     );
     match input.transition {
-        RnsAnnounceTransition::Sent { method } => {
-            draft = draft.operational_code(ActivityAttributeKey::Method, method.code())?;
+        RnsAnnounceTransition::Queued {
+            method,
+            components,
+            count,
+            correlation_id,
+        } => {
+            draft = draft
+                .operational_code(ActivityAttributeKey::Method, method.code())?
+                .operational_code(ActivityAttributeKey::State, components.code())?
+                .exact(ActivityAttributeKey::Count, ExactValue::Unsigned(count))
+                .with_correlation(correlation_id);
         }
         RnsAnnounceTransition::Failed { method, reason } => {
             draft = draft

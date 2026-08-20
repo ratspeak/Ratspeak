@@ -10,17 +10,17 @@ use super::catalog;
 use super::classified::{ActivityDraft, ActivityRejectReason};
 
 pub use super::catalog::{
-    AnnounceFailureReason, AnnounceMethod, AnnounceSuppressionReason, AppRuntimeTransition,
-    ChannelEnvelopeKind, ChannelJoinEvidence, ChannelMessageToken, ChannelNegotiatedCapabilities,
-    ChannelNegotiatedLimits, ChannelRoomFailureReason, ChannelRoomToken, ChannelRoomTransition,
-    ChannelSessionCloseReason, ChannelSessionFailureReason, ChannelSessionTransition,
-    DeliveryFailureReason, DestinationHash, HubModerationAction, HubServiceDegradation,
-    HubSessionCloseReason, HubSessionRejection, HubTransition, HubTrustChange, IdentityHash,
-    InboundLxmfMethod, InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason,
-    InterfaceRollback, InterfaceTimeoutReason, InterfaceTransition, LinkId, LxmfDeliveryMethod,
-    LxmfDeliveryState, LxmfInboundRejectionReason, LxmfProgressStep, LxmfSubmissionFailureReason,
-    LxstCallReason, LxstTransition, MessageId, PathEvidence, PathRequestMethod, SourceValidation,
-    TcpEndpoint,
+    AnnounceComponents, AnnounceFailureReason, AnnounceMethod, AnnounceSuppressionReason,
+    AppRuntimeTransition, ChannelEnvelopeKind, ChannelJoinEvidence, ChannelMessageToken,
+    ChannelNegotiatedCapabilities, ChannelNegotiatedLimits, ChannelRoomFailureReason,
+    ChannelRoomToken, ChannelRoomTransition, ChannelSessionCloseReason,
+    ChannelSessionFailureReason, ChannelSessionTransition, DeliveryFailureReason, DestinationHash,
+    HubModerationAction, HubServiceDegradation, HubSessionCloseReason, HubSessionRejection,
+    HubTransition, HubTrustChange, IdentityHash, InboundLxmfMethod, InterfaceClass,
+    InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback, InterfaceTimeoutReason,
+    InterfaceTransition, LinkId, LxmfDeliveryMethod, LxmfDeliveryState, LxmfInboundRejectionReason,
+    LxmfProgressStep, LxmfSubmissionFailureReason, LxstCallReason, LxstTransition, MessageId,
+    PathEvidence, PathRequestMethod, SourceValidation, TcpEndpoint,
 };
 
 /// Opaque timeless event accepted by [`super::ActivityRecorder::record_event`].
@@ -269,8 +269,11 @@ pub fn rns_path_observed(input: RnsPathDiscovered) -> ProducerEvent {
 }
 
 pub enum RnsAnnounceTransition {
-    Sent {
+    Queued {
         method: AnnounceMethod,
+        components: AnnounceComponents,
+        count: u64,
+        correlation_id: super::CorrelationId,
     },
     Failed {
         method: AnnounceMethod,
@@ -297,7 +300,17 @@ pub struct RnsAnnounceActivity {
 
 pub fn rns_announce_activity(input: RnsAnnounceActivity) -> ProducerEvent {
     let transition = match input.transition {
-        RnsAnnounceTransition::Sent { method } => catalog::RnsAnnounceTransition::Sent { method },
+        RnsAnnounceTransition::Queued {
+            method,
+            components,
+            count,
+            correlation_id,
+        } => catalog::RnsAnnounceTransition::Queued {
+            method,
+            components,
+            count,
+            correlation_id,
+        },
         RnsAnnounceTransition::Failed { method, reason } => {
             catalog::RnsAnnounceTransition::Failed { method, reason }
         }

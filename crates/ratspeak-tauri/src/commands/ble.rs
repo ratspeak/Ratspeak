@@ -25,7 +25,7 @@ use rns_interface::rnode::RNodeStartupOptions;
 
 use crate::commands::interface_activity::record_interface_event as record_interface_activity;
 #[cfg(any(feature = "ble", test))]
-use crate::commands::rnode_readiness::RnodeReadinessFailure;
+use crate::commands::rnode_readiness::{RnodeReadinessFailure, RnodeReadyStatsPublicationFailure};
 #[cfg(feature = "ble")]
 use crate::commands::rnode_readiness::{await_spawned_rnode_ready, teardown_spawned_rnode_exact};
 #[cfg(feature = "ble")]
@@ -131,6 +131,27 @@ fn ble_rnode_readiness_failure_feedback(
         RnodeReadinessFailure::CapabilityAdmissionRejected(_) => (
             "RNode did not become ready. Try connecting again.",
             "readiness_failed",
+            BleRnodeActivityOutcome::RuntimeFailed,
+        ),
+        RnodeReadinessFailure::ReadyStatsPublication(
+            RnodeReadyStatsPublicationFailure::Timeout,
+        ) => (
+            "RNode became ready, but its interface status timed out. Try connecting again.",
+            "ready_stats_timeout",
+            BleRnodeActivityOutcome::RuntimeFailed,
+        ),
+        RnodeReadinessFailure::ReadyStatsPublication(
+            RnodeReadyStatsPublicationFailure::ObservationLost,
+        ) => (
+            "RNode disconnected before setup completed. Try connecting again.",
+            "ready_observation_lost",
+            BleRnodeActivityOutcome::RuntimeFailed,
+        ),
+        RnodeReadinessFailure::ReadyStatsPublication(
+            RnodeReadyStatsPublicationFailure::SessionReplaced,
+        ) => (
+            "RNode setup was replaced before it completed. Try connecting again.",
+            "ready_session_replaced",
             BleRnodeActivityOutcome::RuntimeFailed,
         ),
         RnodeReadinessFailure::ShuttingDown
@@ -1830,12 +1851,27 @@ pub async fn apply_ble_rnode_bridge_ready(
                                             &activity_operation,
                                         )
                                 {
-                                    let operation_failure =
-                                        if failure == RnodeReadinessFailure::Timeout {
+                                    let operation_failure = match failure {
+                                        RnodeReadinessFailure::Timeout => {
                                             crate::state::BleRnodeOperationFailure::StartupTimeout
-                                        } else {
-                                            crate::state::BleRnodeOperationFailure::Readiness
-                                        };
+                                        }
+                                        RnodeReadinessFailure::ReadyStatsPublication(
+                                            RnodeReadyStatsPublicationFailure::Timeout,
+                                        ) => {
+                                            crate::state::BleRnodeOperationFailure::ReadyStatsTimeout
+                                        }
+                                        RnodeReadinessFailure::ReadyStatsPublication(
+                                            RnodeReadyStatsPublicationFailure::ObservationLost,
+                                        ) => {
+                                            crate::state::BleRnodeOperationFailure::ReadyObservationLost
+                                        }
+                                        RnodeReadinessFailure::ReadyStatsPublication(
+                                            RnodeReadyStatsPublicationFailure::SessionReplaced,
+                                        ) => {
+                                            crate::state::BleRnodeOperationFailure::ReadySessionReplaced
+                                        }
+                                        _ => crate::state::BleRnodeOperationFailure::Readiness,
+                                    };
                                     if !complete_waiting_ble_rnode_operation(
                                         completion,
                                         crate::state::BleRnodeOperationResult::Failed(
@@ -2503,6 +2539,36 @@ mod tests {
             let (status, code, outcome) = ble_rnode_readiness_failure_feedback(failure);
             assert_eq!(status, "RNode did not become ready. Try connecting again.");
             assert_eq!(code, "readiness_failed");
+            assert!(matches!(outcome, BleRnodeActivityOutcome::RuntimeFailed));
+        }
+
+        for (failure, status, code) in [
+            (
+                RnodeReadinessFailure::ReadyStatsPublication(
+                    RnodeReadyStatsPublicationFailure::Timeout,
+                ),
+                "RNode became ready, but its interface status timed out. Try connecting again.",
+                "ready_stats_timeout",
+            ),
+            (
+                RnodeReadinessFailure::ReadyStatsPublication(
+                    RnodeReadyStatsPublicationFailure::ObservationLost,
+                ),
+                "RNode disconnected before setup completed. Try connecting again.",
+                "ready_observation_lost",
+            ),
+            (
+                RnodeReadinessFailure::ReadyStatsPublication(
+                    RnodeReadyStatsPublicationFailure::SessionReplaced,
+                ),
+                "RNode setup was replaced before it completed. Try connecting again.",
+                "ready_session_replaced",
+            ),
+        ] {
+            let (actual_status, actual_code, outcome) =
+                ble_rnode_readiness_failure_feedback(failure);
+            assert_eq!(actual_status, status);
+            assert_eq!(actual_code, code);
             assert!(matches!(outcome, BleRnodeActivityOutcome::RuntimeFailed));
         }
     }

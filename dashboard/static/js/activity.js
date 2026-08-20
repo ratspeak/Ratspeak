@@ -1538,6 +1538,7 @@ function activityEventSummary(event) {
         'storage.db.failed': 'Local storage unavailable',
         'ipc.failed': 'App event delivery failed',
         'rns.security.dropped': 'Network input rejected',
+        'rns.announce.sent': 'Presence queued',
         'rns.announce.ingress_burst_started': 'High announce traffic detected',
         'rns.announce.ingress_burst_cleared': 'Announce traffic returned to normal',
         'lxmf.propagation.started': 'Storing message in Offline Inbox',

@@ -397,6 +397,17 @@ async fn run_ready_rnode_activity_monitor(
             Some(snapshot) => reducer.observe(snapshot.as_ref().into()),
             None => reducer.publisher_closed(),
         };
+        if product_ready
+            && signals
+                .iter()
+                .any(|signal| *signal == RNodeActivitySignal::Online)
+            && state.owns_rnode_activity_observation(interface_id, origin)
+        {
+            // Keep reconnect semantics in the same revision stream as first
+            // Ready publication. A coalesced Ready-generation change still
+            // produces exactly one Online signal and therefore one bump.
+            state.bump_announce_interface_revision();
+        }
         if !emit_signals_if_current(&state, origin, interface_id, signals) || publisher_closed {
             return;
         }
@@ -779,13 +790,16 @@ mod tests {
         assert!(first_context.origin() == first_origin);
         assert!(state.cover_rnode_activity_interface(71, first_origin));
         assert!(state.set_rnode_product_readiness(71, first_origin, true));
-        assert!(state.effective_interface_online(71, false));
+        assert!(!state.effective_interface_online(71, false));
+        assert!(state.effective_interface_online(71, true));
+        state.set_last_stats(serde_json::json!({"session": "first"}));
 
         let old = state.rns.write().unwrap().take().unwrap();
         old.shutdown().await;
         let second = manager(&root.join("second")).await;
         let second_origin = state.set_rns(second).unwrap();
         assert!(first_origin != second_origin);
+        assert!(state.last_stats.read().unwrap().is_none());
         assert!(!state.effective_interface_online(71, false));
         assert!(!state.set_rnode_product_readiness(71, first_origin, true));
         assert!(!state.cover_rnode_activity_interface(72, first_origin));

@@ -19,6 +19,19 @@ use crate::state::AppState;
 /// readiness. The observer uses one absolute deadline across reconnects.
 pub(crate) const RNODE_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// A Ready observer is already registered with transport, so this is only a
+/// short publication barrier. It prevents the operation's terminal event from
+/// racing ahead of the first authoritative stats row without extending the
+/// device/pairing timeout materially.
+pub(crate) const RNODE_READY_STATS_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RnodeReadyStatsPublicationFailure {
+    Timeout,
+    ObservationLost,
+    SessionReplaced,
+}
+
 /// Privacy-safe terminal classification for a bounded readiness wait.
 ///
 /// The upstream error carries a last-known snapshot. Command callers should
@@ -32,6 +45,7 @@ pub(crate) enum RnodeReadinessFailure {
     ShuttingDown,
     Stopped,
     ObservationClosed,
+    ReadyStatsPublication(RnodeReadyStatsPublicationFailure),
     /// The driver terminally rejected the device's capability admission; the
     /// class identifies why, when the driver published one.
     CapabilityAdmissionRejected(Option<RNodeCapabilityAdmissionFailureClass>),
@@ -46,6 +60,15 @@ impl fmt::Display for RnodeReadinessFailure {
             Self::ShuttingDown => "RNode began shutting down before becoming ready",
             Self::Stopped => "RNode stopped before becoming ready",
             Self::ObservationClosed => "RNode readiness observation closed",
+            Self::ReadyStatsPublication(RnodeReadyStatsPublicationFailure::Timeout) => {
+                "RNode ready stats publication timed out"
+            }
+            Self::ReadyStatsPublication(RnodeReadyStatsPublicationFailure::ObservationLost) => {
+                "RNode left Ready before stats publication"
+            }
+            Self::ReadyStatsPublication(RnodeReadyStatsPublicationFailure::SessionReplaced) => {
+                "RNode session was replaced before stats publication"
+            }
             Self::CapabilityAdmissionRejected(_) => "RNode capability admission was rejected",
             Self::Unclassified => "RNode readiness failed",
         })
@@ -79,8 +102,9 @@ pub(crate) fn classify_rnode_readiness_error(error: &RNodeReadinessError) -> Rno
 /// Wait for complete protocol readiness on the observer returned atomically
 /// with this exact runtime registration.
 ///
-/// This intentionally never reads `SpawnedRNodeRuntime::online`, which is a
-/// legacy enabled/connect flag rather than authoritative readiness.
+/// This intentionally never substitutes `SpawnedRNodeRuntime::online` for the
+/// exact observer: serial/TCP currently project Ready through that shared flag,
+/// but not every RNode transport guarantees identical semantics.
 pub(crate) async fn await_spawned_rnode_ready(
     state: &AppState,
     spawned: &SpawnedRNodeRuntime,
@@ -96,12 +120,141 @@ pub(crate) async fn await_spawned_rnode_ready(
         .await_ready(RNODE_READINESS_TIMEOUT)
         .await
         .map_err(|error| classify_rnode_readiness_error(&error))?;
-    if covered {
-        state.set_rnode_product_readiness(spawned.interface_id, origin, true);
+    if !covered {
+        return Err(RnodeReadinessFailure::ReadyStatsPublication(
+            RnodeReadyStatsPublicationFailure::SessionReplaced,
+        ));
     }
-    Ok(covered.then(|| {
-        PendingRNodeActivityMonitor::new(spawned.observer.clone(), ready_snapshot, origin)
-    }))
+    if !state.set_rnode_product_readiness(spawned.interface_id, origin, true) {
+        return Err(RnodeReadinessFailure::ReadyStatsPublication(
+            RnodeReadyStatsPublicationFailure::SessionReplaced,
+        ));
+    }
+    // The stats publication is the first frame that exposes exact Ready
+    // to the product. Revision it synchronously so a manual announce from
+    // that frame includes the interface transition's semantic change.
+    state.bump_announce_interface_revision();
+    // Retain the exact observer before attempting the presentation barrier.
+    // Stats publication is deliberately not a device-lifecycle authority: a
+    // slow query or a reconnect immediately after first Ready must not tear
+    // down the healthy runtime or discard its monitor.
+    let pending_monitor =
+        PendingRNodeActivityMonitor::new(spawned.observer.clone(), ready_snapshot, origin);
+    match publish_exact_ready_stats(state, spawned, origin).await {
+        Ok(()) => {}
+        Err(RnodeReadinessFailure::ReadyStatsPublication(
+            RnodeReadyStatsPublicationFailure::Timeout,
+        )) => {
+            tracing::warn!(
+                interface_id = spawned.interface_id,
+                "RNode reached Ready before its eager stats publication completed"
+            );
+        }
+        Err(RnodeReadinessFailure::ReadyStatsPublication(
+            RnodeReadyStatsPublicationFailure::ObservationLost,
+        )) => {
+            tracing::info!(
+                interface_id = spawned.interface_id,
+                "RNode entered reconnect after first Ready; regular stats publication will resume"
+            );
+        }
+        Err(failure) => return Err(failure),
+    }
+    Ok(Some(pending_monitor))
+}
+
+/// Force and await the first normal stats publication for the exact Ready
+/// registration. The authoritative row comes from Reticulum transport; the
+/// runtime state applies its exact product-readiness overlay and emits the same
+/// `stats_update` payload used by the regular poll loop.
+async fn publish_exact_ready_stats(
+    state: &AppState,
+    spawned: &SpawnedRNodeRuntime,
+    origin: RNodeActivityOrigin,
+) -> Result<(), RnodeReadinessFailure> {
+    let Some(handle) = state.rnode_activity_handle_for_origin(spawned.interface_id, origin) else {
+        return ready_stats_publication_failure(
+            state,
+            spawned.interface_id,
+            origin,
+            RnodeReadyStatsPublicationFailure::SessionReplaced,
+        );
+    };
+    let deadline = tokio::time::Instant::now() + RNODE_READY_STATS_TIMEOUT;
+
+    loop {
+        if spawned.observer.snapshot().phase != rns_interface::rnode::RNodeRuntimePhase::Ready {
+            return ready_stats_publication_failure(
+                state,
+                spawned.interface_id,
+                origin,
+                RnodeReadyStatsPublicationFailure::ObservationLost,
+            );
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return ready_stats_publication_failure(
+                state,
+                spawned.interface_id,
+                origin,
+                RnodeReadyStatsPublicationFailure::Timeout,
+            );
+        }
+        let response = tokio::time::timeout(
+            remaining,
+            handle.query_control(rns_transport::messages::TransportQuery::GetInterfaceStats),
+        )
+        .await
+        .map_err(|_| {
+            RnodeReadinessFailure::ReadyStatsPublication(RnodeReadyStatsPublicationFailure::Timeout)
+        })?;
+        // `query_control` may outlive this exact protocol generation. Never
+        // overlay the product-ready bit onto a row after the observer has
+        // left Ready, even when the transport query itself completed.
+        if spawned.observer.snapshot().phase != rns_interface::rnode::RNodeRuntimePhase::Ready {
+            return ready_stats_publication_failure(
+                state,
+                spawned.interface_id,
+                origin,
+                RnodeReadyStatsPublicationFailure::ObservationLost,
+            );
+        }
+        if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
+            response
+            && state.publish_ready_rnode_interface_stats(
+                spawned.interface_id,
+                origin,
+                handle.instance_mode,
+                &stats,
+            )
+        {
+            return Ok(());
+        }
+
+        if state
+            .rnode_activity_handle_for_origin(spawned.interface_id, origin)
+            .is_none()
+        {
+            return ready_stats_publication_failure(
+                state,
+                spawned.interface_id,
+                origin,
+                RnodeReadyStatsPublicationFailure::SessionReplaced,
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn ready_stats_publication_failure(
+    state: &AppState,
+    interface_id: rns_interface::traits::InterfaceId,
+    origin: RNodeActivityOrigin,
+    failure: RnodeReadyStatsPublicationFailure,
+) -> Result<(), RnodeReadinessFailure> {
+    let _ = state.set_rnode_product_readiness(interface_id, origin, false);
+    Err(RnodeReadinessFailure::ReadyStatsPublication(failure))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,6 +344,27 @@ mod tests {
             "RNode readiness observation closed"
         );
         assert_eq!(
+            RnodeReadinessFailure::ReadyStatsPublication(
+                RnodeReadyStatsPublicationFailure::Timeout
+            )
+            .to_string(),
+            "RNode ready stats publication timed out"
+        );
+        assert_eq!(
+            RnodeReadinessFailure::ReadyStatsPublication(
+                RnodeReadyStatsPublicationFailure::ObservationLost
+            )
+            .to_string(),
+            "RNode left Ready before stats publication"
+        );
+        assert_eq!(
+            RnodeReadinessFailure::ReadyStatsPublication(
+                RnodeReadyStatsPublicationFailure::SessionReplaced
+            )
+            .to_string(),
+            "RNode session was replaced before stats publication"
+        );
+        assert_eq!(
             RnodeReadinessFailure::CapabilityAdmissionRejected(None).to_string(),
             "RNode capability admission was rejected"
         );
@@ -198,6 +372,12 @@ mod tests {
             RnodeReadinessFailure::Unclassified.to_string(),
             "RNode readiness failed"
         );
+    }
+
+    #[test]
+    fn ready_stats_publication_timeout_is_short_and_bounded() {
+        assert_eq!(RNODE_READY_STATS_TIMEOUT, Duration::from_secs(3));
+        assert!(RNODE_READY_STATS_TIMEOUT < RNODE_READINESS_TIMEOUT);
     }
 
     #[test]

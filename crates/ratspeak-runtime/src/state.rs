@@ -315,6 +315,9 @@ pub enum BleRnodeOperationFailure {
     Connect,
     StartupTimeout,
     Readiness,
+    ReadyStatsTimeout,
+    ReadyObservationLost,
+    ReadySessionReplaced,
     Runtime,
     Cancelled,
 }
@@ -2505,6 +2508,9 @@ impl AppState {
             if let Ok(mut readiness) = self.rnode_product_readiness.write() {
                 readiness.clear();
             }
+            if let Ok(mut stats) = self.last_stats.write() {
+                *stats = None;
+            }
             *r = Some(rns);
             self.request_poll_now();
             Some(origin)
@@ -2567,24 +2573,45 @@ impl AppState {
         origin: RNodeActivityOrigin,
         ready: bool,
     ) -> bool {
-        if !self.owns_rnode_activity_observation(interface_id, origin) {
+        if self.current_identity_session_generation() != origin.identity_generation() {
             return false;
         }
-        let changed = self
-            .rnode_product_readiness
-            .write()
-            .ok()
-            .map(|mut readiness| readiness.insert(interface_id, ready) != Some(ready))
-            .unwrap_or(false);
+        // Keep the exact RNS session read-locked through the readiness write.
+        // `set_rns` takes these locks in the same order, so a replacement
+        // cannot clear the map and then be repopulated by an old observer.
+        let Ok(rns) = self.rns.read() else {
+            return false;
+        };
+        if self.current_identity_session_generation() != origin.identity_generation()
+            || !rns.as_ref().is_some_and(|rns| {
+                rns.owns_rnode_activity_session(origin)
+                    && rns.is_rnode_activity_interface_covered(
+                        interface_id,
+                        origin.identity_generation(),
+                    )
+            })
+        {
+            return false;
+        }
+        let Ok(mut readiness) = self.rnode_product_readiness.write() else {
+            return false;
+        };
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return false;
+        }
+        let changed = readiness.insert(interface_id, ready) != Some(ready);
+        drop(readiness);
+        drop(rns);
         if changed {
             self.request_poll_now();
         }
         true
     }
 
-    /// Overlay the generic transport flag with exact protocol readiness when
-    /// this interface is an observed RNode. Non-RNode interfaces retain their
-    /// original transport-owned value.
+    /// Require both driver health and exact protocol readiness for an observed
+    /// RNode. Product readiness is a veto, never a substitute for a carrier
+    /// that the transport has already marked offline. Non-RNode interfaces
+    /// retain their original transport-owned value.
     pub fn effective_interface_online(
         &self,
         interface_id: rns_interface::traits::InterfaceId,
@@ -2594,7 +2621,189 @@ impl AppState {
             .read()
             .ok()
             .and_then(|readiness| readiness.get(&interface_id).copied())
+            .map(|product_ready| transport_online && product_ready)
             .unwrap_or(transport_online)
+    }
+
+    /// Return the handle for the exact installed RNS session that owns one
+    /// covered RNode observation. This is narrower than reading `rns`
+    /// directly: a stale Ready observer cannot publish through a replacement
+    /// session, even if that replacement reuses the same interface ID.
+    pub fn rnode_activity_handle_for_origin(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+        origin: RNodeActivityOrigin,
+    ) -> Option<rns_runtime::reticulum::ReticulumHandle> {
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return None;
+        }
+        let rns = self.rns.read().ok()?;
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return None;
+        }
+        let rns = rns.as_ref()?;
+        (rns.owns_rnode_activity_session(origin)
+            && rns.is_rnode_activity_interface_covered(interface_id, origin.identity_generation()))
+        .then(|| rns.handle.clone())
+    }
+
+    /// Project authoritative transport entries into the canonical dashboard
+    /// interface-stats shape, applying the exact RNode product-readiness
+    /// overlay in one shared place.
+    pub fn interface_stats_payload(
+        &self,
+        stats: &[rns_transport::messages::InterfaceStatRpcEntry],
+    ) -> serde_json::Value {
+        let readiness = self.rnode_product_readiness.read().ok();
+        Self::interface_stats_payload_with_readiness(stats, readiness.as_deref())
+    }
+
+    fn interface_stats_payload_with_readiness(
+        stats: &[rns_transport::messages::InterfaceStatRpcEntry],
+        readiness: Option<&HashMap<rns_interface::traits::InterfaceId, bool>>,
+    ) -> serde_json::Value {
+        let interfaces = stats
+            .iter()
+            .map(|entry| {
+                let online = readiness
+                    .and_then(|readiness| readiness.get(&entry.id).copied())
+                    .map(|product_ready| entry.online && product_ready)
+                    .unwrap_or(entry.online);
+                serde_json::json!({
+                    "name": entry.name,
+                    "rxb": entry.rx_bytes,
+                    "txb": entry.tx_bytes,
+                    "online": online,
+                    "bitrate": entry.bitrate,
+                    "mtu": entry.mtu,
+                    "mode": entry.mode,
+                    "role": entry.role,
+                    "announce_queue": entry.announce_queue,
+                    "held_announces": entry.held_announces,
+                    "incoming_announce_frequency": entry.incoming_announce_frequency,
+                    "outgoing_announce_frequency": entry.outgoing_announce_frequency,
+                    "incoming_pr_frequency": entry.incoming_pr_frequency,
+                    "outgoing_pr_frequency": entry.outgoing_pr_frequency,
+                    "burst_active": entry.burst_active,
+                    "burst_activated": entry.burst_activated,
+                    "pr_burst_active": entry.pr_burst_active,
+                    "pr_burst_activated": entry.pr_burst_activated,
+                    "announce_rate_target": entry.announce_rate_target,
+                    "announce_rate_grace": entry.announce_rate_grace,
+                    "announce_rate_penalty": entry.announce_rate_penalty,
+                    "announce_cap": entry.announce_cap,
+                    "ifac_size": entry.ifac_size,
+                    "tx_drops": entry.tx_drops,
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({ "interfaces": interfaces })
+    }
+
+    /// Publish one authoritative interface-stats query after an exact RNode
+    /// has reached product readiness.
+    ///
+    /// The transport query remains the sole source of interface rows and byte
+    /// counters. This method only applies the existing exact-ID product-ready
+    /// overlay, updates the canonical cached stats snapshot, and emits the
+    /// normal `stats_update` event. It deliberately does not create a second
+    /// WebView-side readiness signal.
+    pub fn publish_ready_rnode_interface_stats(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+        origin: RNodeActivityOrigin,
+        mode: rns_runtime::reticulum::InstanceMode,
+        stats: &[rns_transport::messages::InterfaceStatRpcEntry],
+    ) -> bool {
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return false;
+        }
+        // Hold exact session ownership across the readiness projection and
+        // cache write. This shares `set_rns`'s rns -> readiness -> cache lock
+        // order and prevents a stale same-ID observer from refilling a
+        // replacement session's cache.
+        let Ok(rns) = self.rns.read() else {
+            return false;
+        };
+        if self.current_identity_session_generation() != origin.identity_generation()
+            || !rns.as_ref().is_some_and(|rns| {
+                rns.owns_rnode_activity_session(origin)
+                    && rns.is_rnode_activity_interface_covered(
+                        interface_id,
+                        origin.identity_generation(),
+                    )
+            })
+        {
+            return false;
+        }
+        let Ok(readiness) = self.rnode_product_readiness.read() else {
+            return false;
+        };
+        if readiness.get(&interface_id).copied() != Some(true)
+            || !stats
+                .iter()
+                .any(|entry| entry.id == interface_id && entry.online)
+        {
+            return false;
+        }
+
+        let interface_stats = Self::interface_stats_payload_with_readiness(stats, Some(&readiness));
+
+        let any_online = interface_stats["interfaces"]
+            .as_array()
+            .is_some_and(|interfaces| {
+                interfaces.iter().any(|entry| {
+                    entry
+                        .get("online")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+                })
+            });
+        let connected = any_online
+            && matches!(
+                mode,
+                rns_runtime::reticulum::InstanceMode::Client
+                    | rns_runtime::reticulum::InstanceMode::Shared
+            );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return false;
+        }
+        let Ok(mut cached) = self.last_stats.write() else {
+            return false;
+        };
+        let snapshot = cached.get_or_insert_with(|| {
+            serde_json::json!({
+                "path_table": [],
+                "path_index": {},
+                "path_table_total": 0,
+                "path_table_truncated": false,
+                "rate_table": [],
+                "link_count": 0,
+            })
+        });
+        if !snapshot.is_object() {
+            *snapshot = serde_json::json!({
+                "path_table": [],
+                "path_index": {},
+                "path_table_total": 0,
+                "path_table_truncated": false,
+                "rate_table": [],
+                "link_count": 0,
+            });
+        }
+        snapshot["timestamp"] = serde_json::json!(now);
+        snapshot["connected"] = serde_json::json!(connected);
+        snapshot["interface_stats"] = interface_stats;
+        let snapshot = snapshot.clone();
+        drop(cached);
+        drop(readiness);
+        drop(rns);
+        self.emit_to_all("stats_update", snapshot);
+        true
     }
 
     pub(crate) fn owns_rnode_activity_observation(
@@ -2869,6 +3078,73 @@ mod tests {
 
     fn make_state() -> AppState {
         make_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    fn interface_stat(
+        id: rns_interface::traits::InterfaceId,
+        name: &str,
+        online: bool,
+    ) -> rns_transport::messages::InterfaceStatRpcEntry {
+        rns_transport::messages::InterfaceStatRpcEntry {
+            id,
+            name: name.to_string(),
+            rx_bytes: 0,
+            tx_bytes: 0,
+            rx_rate: 0,
+            tx_rate: 0,
+            online,
+            bitrate: 115_200,
+            mtu: 500,
+            mode: "Full".to_string(),
+            role: "normal".to_string(),
+            announce_queue: Some(0),
+            held_announces: 0,
+            incoming_announce_frequency: 0.0,
+            outgoing_announce_frequency: 0.0,
+            incoming_pr_frequency: 0.0,
+            outgoing_pr_frequency: 0.0,
+            burst_active: false,
+            burst_activated: 0.0,
+            pr_burst_active: false,
+            pr_burst_activated: 0.0,
+            clients: None,
+            blocked_ips: None,
+            announce_rate_target: None,
+            announce_rate_grace: None,
+            announce_rate_penalty: None,
+            announce_cap: 0.02,
+            ifac_size: 0,
+            tx_drops: 0,
+        }
+    }
+
+    #[test]
+    fn interface_stats_payload_requires_transport_and_product_ready_at_zero_bytes() {
+        let state = make_state();
+        state
+            .rnode_product_readiness
+            .write()
+            .unwrap()
+            .insert(73, true);
+
+        let payload = state.interface_stats_payload(&[
+            interface_stat(73, "Offline Radio", false),
+            interface_stat(74, "Online Radio", true),
+        ]);
+        let row = &payload["interfaces"][0];
+        assert_eq!(row["name"], "Offline Radio");
+        assert_eq!(row["online"], false);
+        assert_eq!(row["rxb"], 0);
+        assert_eq!(row["txb"], 0);
+        assert_eq!(payload["interfaces"][1]["online"], true);
+
+        state
+            .rnode_product_readiness
+            .write()
+            .unwrap()
+            .insert(74, false);
+        let payload = state.interface_stats_payload(&[interface_stat(74, "Online Radio", true)]);
+        assert_eq!(payload["interfaces"][0]["online"], false);
     }
 
     #[tokio::test]

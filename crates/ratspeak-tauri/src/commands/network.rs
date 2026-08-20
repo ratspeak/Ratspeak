@@ -1086,52 +1086,6 @@ pub async fn get_propagation_status(state: State<'_, Arc<AppState>>) -> AppResul
     Ok(crate::propagation::get_status_payload(&state))
 }
 
-async fn any_live_egress_online(state: &Arc<AppState>) -> Option<bool> {
-    let handle = {
-        let rns = state.rns.read().ok()?;
-        rns.as_ref().map(|mgr| mgr.handle.clone())?
-    };
-    match handle
-        .query_control(rns_transport::messages::TransportQuery::GetInterfaceStats)
-        .await
-    {
-        Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) => {
-            Some(stats.iter().any(|interface| {
-                state.effective_interface_online(interface.id, interface.online)
-                    && !matches!(interface.role.as_str(), "shared_server" | "local_client")
-            }))
-        }
-        _ => None,
-    }
-}
-
-fn record_manual_announce_outcome(
-    state: &AppState,
-    fence: crate::state::ActivityRequestFence,
-    failure: Option<producer::AnnounceFailureReason>,
-) {
-    state.activity.record_event_fenced(
-        || state.is_current_activity_origin_fence(fence),
-        || {
-            let transition = match failure {
-                Some(reason) => producer::RnsAnnounceTransition::Failed {
-                    method: producer::AnnounceMethod::Manual,
-                    reason,
-                },
-                None => producer::RnsAnnounceTransition::Sent {
-                    method: producer::AnnounceMethod::Manual,
-                },
-            };
-            Ok(producer::rns_announce_activity(
-                producer::RnsAnnounceActivity {
-                    transition,
-                    interface: None,
-                },
-            ))
-        },
-    );
-}
-
 #[tauri::command]
 pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let activity_fence = state.activity_request_fence();
@@ -1141,23 +1095,7 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         .ok()
         .and_then(|r| r.as_ref().map(|_| ()))
         .is_some();
-    let lxmf_ready = rns_ready
-        && state
-            .lxmf
-            .lock()
-            .ok()
-            .and_then(|l| l.as_ref().map(|_| ()))
-            .is_some();
-    if !rns_ready || !lxmf_ready {
-        record_manual_announce_outcome(
-            &state,
-            activity_fence,
-            Some(if rns_ready {
-                producer::AnnounceFailureReason::NotReady
-            } else {
-                producer::AnnounceFailureReason::TransportUnavailable
-            }),
-        );
+    if !rns_ready {
         return Ok(json!({
             "success": false,
             "error": "not_ready",
@@ -1165,70 +1103,29 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         }));
     }
 
-    let online = any_live_egress_online(&state)
-        .await
-        .or_else(|| crate::any_interface_online_cached(&state));
+    let online = crate::any_interface_online_cached(&state);
     if matches!(online, Some(false)) {
         tracing::warn!("manual announce skipped: no interfaces online");
-        record_manual_announce_outcome(
-            &state,
-            activity_fence,
-            Some(producer::AnnounceFailureReason::NoInterfaceTransmission),
-        );
         return Ok(json!({ "success": false, "error": "no_interfaces" }));
     }
 
-    // Reticulum owns announce-cap scheduling and may intentionally hold a
-    // packet for longer than an IPC request can remain open. Queue exactly
-    // once; a short fixed TX-byte deadline would reject healthy low-bitrate
-    // interfaces and duplicate the announce while it was still pending.
+    // This admits one intent; the presence coordinator is the sole async owner
+    // of packet construction, component queueing and semantic follow-ups.
     let report = crate::send_manual_announce_from_origin(&state, activity_fence).await;
 
-    if matches!(
-        report.disposition,
-        crate::AnnounceSendDisposition::AlreadyQueued | crate::AnnounceSendDisposition::Deferred
-    ) {
-        record_manual_announce_outcome(&state, activity_fence, None);
-        let disposition = if matches!(
-            report.disposition,
-            crate::AnnounceSendDisposition::AlreadyQueued
-        ) {
-            "already_queued"
-        } else {
-            "deferred"
-        };
-        return Ok(json!({
-            "success": true,
-            "queued": 0,
-            "packets": 0,
-            "disposition": disposition,
-            "correlation_id": report.correlation_id.to_string(),
-        }));
-    }
-
-    if report.queued == 0 {
-        let failure = if report.failed > 0 {
-            producer::AnnounceFailureReason::QueueFailed
-        } else if report.packets == 0 {
-            producer::AnnounceFailureReason::NotReady
-        } else {
-            producer::AnnounceFailureReason::TransportUnavailable
-        };
-        record_manual_announce_outcome(&state, activity_fence, Some(failure));
-        let error = if report.failed > 0 {
-            "busy"
-        } else {
-            "not_ready"
-        };
-        return Ok(json!({ "success": false, "error": error }));
-    }
-
-    record_manual_announce_outcome(&state, activity_fence, None);
+    let disposition = match report.disposition {
+        crate::AnnounceSendDisposition::Queued => "queued",
+        crate::AnnounceSendDisposition::AlreadyQueued => "already_queued",
+        crate::AnnounceSendDisposition::Deferred => "deferred",
+        crate::AnnounceSendDisposition::Failed => {
+            return Ok(json!({ "success": false, "error": "busy" }));
+        }
+    };
     Ok(json!({
         "success": true,
-        "queued": report.queued,
-        "packets": report.packets,
-        "disposition": "queued",
+        "queued": 0,
+        "packets": 0,
+        "disposition": disposition,
         "correlation_id": report.correlation_id.to_string(),
     }))
 }

@@ -69,7 +69,10 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
+// Presence construction no longer runs on the requesting IPC future, but every
+// stage remains short and bounded so coordinator leadership cannot be stranded.
 const ANNOUNCE_LXMF_LOCK_WAIT: Duration = Duration::from_millis(500);
+const ANNOUNCE_QUEUE_ADMISSION_WAIT: Duration = Duration::from_secs(1);
 
 #[cfg(all(feature = "ble", target_os = "android"))]
 fn interface_mode_name(mode: rns_interface::traits::InterfaceMode) -> &'static str {
@@ -3030,34 +3033,37 @@ pub struct AnnounceSendReport {
     pub failed: usize,
     pub disposition: AnnounceSendDisposition,
     pub correlation_id: u64,
+    lxmf_delivery_queued: bool,
+    propagation_queued: bool,
+    lxst_queued: bool,
 }
 
-pub async fn send_announce_from_state(state: &AppState) -> AnnounceSendReport {
+pub async fn send_announce_from_state(state: &Arc<AppState>) -> AnnounceSendReport {
     let activity_origin = state.activity_request_fence();
     submit_announce_intent(state, AnnounceOrigin::Periodic, true, activity_origin).await
 }
 
-pub async fn send_manual_announce_from_state(state: &AppState) -> AnnounceSendReport {
+pub async fn send_manual_announce_from_state(state: &Arc<AppState>) -> AnnounceSendReport {
     let activity_origin = state.activity_request_fence();
     submit_announce_intent(state, AnnounceOrigin::Manual, false, activity_origin).await
 }
 
 pub async fn send_manual_announce_from_origin(
-    state: &AppState,
+    state: &Arc<AppState>,
     activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
     submit_announce_intent(state, AnnounceOrigin::Manual, false, activity_origin).await
 }
 
 pub async fn send_announce_from_origin(
-    state: &AppState,
+    state: &Arc<AppState>,
     activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
     submit_announce_intent(state, AnnounceOrigin::Periodic, true, activity_origin).await
 }
 
 pub async fn send_typed_announce_from_origin(
-    state: &AppState,
+    state: &Arc<AppState>,
     origin: AnnounceOrigin,
     activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
@@ -3065,7 +3071,7 @@ pub async fn send_typed_announce_from_origin(
 }
 
 pub async fn maybe_opportunistic_announce_before_user_send(
-    state: &AppState,
+    state: &Arc<AppState>,
     dest_hash: &str,
 ) -> AnnounceSendReport {
     let activity_origin = state.activity_request_fence();
@@ -3074,7 +3080,7 @@ pub async fn maybe_opportunistic_announce_before_user_send(
 }
 
 pub async fn maybe_opportunistic_announce_before_user_send_from_origin(
-    state: &AppState,
+    state: &Arc<AppState>,
     dest_hash: &str,
     activity_origin: ActivityRequestFence,
 ) -> AnnounceSendReport {
@@ -3102,16 +3108,6 @@ pub async fn maybe_opportunistic_announce_before_user_send_from_origin(
     if !rns_ready {
         return report;
     }
-    let lxmf_ready = state
-        .lxmf
-        .lock()
-        .ok()
-        .and_then(|lxmf| lxmf.as_ref().map(|_| ()))
-        .is_some();
-    if !lxmf_ready {
-        return report;
-    }
-
     let hash_for_db = dest_hash.to_string();
     let first_seen = db::spawn_db(state.db.clone(), move |p| {
         db::get_identity_activity_first_seen(&p, &hash_for_db)
@@ -3207,22 +3203,11 @@ fn schedule_startup_auto_announce(state: Arc<AppState>) {
                     activity_origin,
                 )
                 .await;
-                if report.queued > 0 {
-                    record_activity_if_current(&state, activity_origin, || {
-                        Ok(producer::rns_announce_activity(
-                            producer::RnsAnnounceActivity {
-                                transition: producer::RnsAnnounceTransition::Sent {
-                                    method: producer::AnnounceMethod::Startup,
-                                },
-                                interface: None,
-                            },
-                        ))
-                    });
+                if !matches!(report.disposition, AnnounceSendDisposition::Failed) {
                     tracing::info!(
-                        packets = report.packets,
-                        queued = report.queued,
-                        failed = report.failed,
-                        "startup auto-announce queued"
+                        correlation_id = report.correlation_id,
+                        disposition = ?report.disposition,
+                        "startup auto-announce admitted"
                     );
                 }
                 return;
@@ -3239,7 +3224,7 @@ fn schedule_startup_auto_announce(state: Arc<AppState>) {
 }
 
 async fn submit_announce_intent(
-    state: &AppState,
+    state: &Arc<AppState>,
     origin: AnnounceOrigin,
     require_cached_online: bool,
     activity_origin: ActivityRequestFence,
@@ -3287,9 +3272,35 @@ async fn submit_announce_intent(
         AnnounceAdmission::Lead { correlation_id } => correlation_id,
     };
 
+    // Admission is the synchronous boundary. Packet construction, transport
+    // queueing, semantic follow-ups and Activity all belong to this one
+    // background lifecycle owner; an IPC caller must never wait for LXMF.
+    let lifecycle_state = Arc::clone(state);
+    tokio::spawn(async move {
+        run_announce_lifecycle(
+            lifecycle_state,
+            correlation_id,
+            require_cached_online,
+            activity_origin,
+        )
+        .await;
+    });
+
+    AnnounceSendReport {
+        disposition: AnnounceSendDisposition::Queued,
+        correlation_id,
+        ..AnnounceSendReport::default()
+    }
+}
+
+async fn run_announce_lifecycle(
+    state: Arc<AppState>,
+    correlation_id: u64,
+    require_cached_online: bool,
+    activity_origin: ActivityRequestFence,
+) {
     let mut current_correlation_id = correlation_id;
     let mut current_activity_origin = activity_origin;
-    let mut first_report = None;
     loop {
         let leadership = state
             .announce_coordinator
@@ -3297,24 +3308,17 @@ async fn submit_announce_intent(
             .ok()
             .and_then(|coordinator| coordinator.leadership(current_correlation_id));
         let Some(leadership) = leadership else {
-            return first_report.unwrap_or(AnnounceSendReport {
-                failed: 1,
-                disposition: AnnounceSendDisposition::Failed,
-                correlation_id: current_correlation_id,
-                ..AnnounceSendReport::default()
-            });
+            tracing::warn!(
+                correlation_id = current_correlation_id,
+                "presence announce lifecycle lost coordinator leadership"
+            );
+            return;
         };
 
         let report = if state.is_current_activity_origin_fence(current_activity_origin)
             && leadership.revisions.identity == state.current_identity_session_generation()
         {
-            execute_announce_burst(
-                state,
-                require_cached_online,
-                current_activity_origin,
-                &leadership,
-            )
-            .await
+            execute_announce_burst(&state, require_cached_online, &leadership).await
         } else {
             tracing::info!(
                 correlation_id = leadership.correlation_id,
@@ -3326,7 +3330,20 @@ async fn submit_announce_intent(
                 ..AnnounceSendReport::default()
             }
         };
-        first_report.get_or_insert(report);
+        // Capture origins merged while the builder/transport work was in
+        // progress before recording the lifecycle's single public entry.
+        let completed_leadership = state
+            .announce_coordinator
+            .lock()
+            .ok()
+            .and_then(|coordinator| coordinator.leadership(leadership.correlation_id))
+            .unwrap_or(leadership);
+        record_presence_lifecycle_activity(
+            &state,
+            current_activity_origin,
+            &completed_leadership,
+            &report,
+        );
 
         let success = matches!(
             report.disposition,
@@ -3337,7 +3354,7 @@ async fn submit_announce_intent(
             .lock()
             .ok()
             .and_then(|mut coordinator| {
-                coordinator.finish(leadership.correlation_id, success, Instant::now())
+                coordinator.finish(completed_leadership.correlation_id, success, Instant::now())
             });
         let Some(follow_up) = follow_up else {
             break;
@@ -3350,8 +3367,70 @@ async fn submit_announce_intent(
         current_correlation_id = follow_up.correlation_id;
         current_activity_origin = state.activity_request_fence();
     }
+}
 
-    first_report.expect("leader always executes at least one presence burst")
+fn announce_activity_method(origins: &[AnnounceOrigin]) -> producer::AnnounceMethod {
+    if origins.len() != 1 {
+        return producer::AnnounceMethod::Coordinated;
+    }
+    match origins[0] {
+        AnnounceOrigin::Manual => producer::AnnounceMethod::Manual,
+        AnnounceOrigin::Startup => producer::AnnounceMethod::Startup,
+        AnnounceOrigin::Periodic => producer::AnnounceMethod::Periodic,
+        AnnounceOrigin::InterfaceOnline => producer::AnnounceMethod::InterfaceOnline,
+        AnnounceOrigin::Opportunistic => producer::AnnounceMethod::Opportunistic,
+        AnnounceOrigin::IdentityChanged => producer::AnnounceMethod::IdentityChanged,
+        AnnounceOrigin::ProfileChanged => producer::AnnounceMethod::ProfileChanged,
+        AnnounceOrigin::PropagationChanged => producer::AnnounceMethod::PropagationChanged,
+    }
+}
+
+fn announce_activity_components(report: &AnnounceSendReport) -> producer::AnnounceComponents {
+    match (report.propagation_queued, report.lxst_queued) {
+        (false, false) => producer::AnnounceComponents::LxmfDelivery,
+        (false, true) => producer::AnnounceComponents::LxmfDeliveryAndLxst,
+        (true, false) => producer::AnnounceComponents::LxmfDeliveryAndPropagation,
+        (true, true) => producer::AnnounceComponents::LxmfDeliveryPropagationAndLxst,
+    }
+}
+
+fn record_presence_lifecycle_activity(
+    state: &AppState,
+    activity_origin: ActivityRequestFence,
+    leadership: &AnnounceLeadership,
+    report: &AnnounceSendReport,
+) {
+    if report.disposition == AnnounceSendDisposition::AlreadyQueued {
+        return;
+    }
+    let transition = if report.disposition == AnnounceSendDisposition::Queued
+        && report.lxmf_delivery_queued
+        && report.failed == 0
+    {
+        producer::RnsAnnounceTransition::Queued {
+            method: announce_activity_method(&leadership.origins),
+            components: announce_activity_components(report),
+            count: report.queued as u64,
+            correlation_id: leadership.activity_correlation_id,
+        }
+    } else {
+        producer::RnsAnnounceTransition::Failed {
+            method: announce_activity_method(&leadership.origins),
+            reason: if report.failed > 0 {
+                producer::AnnounceFailureReason::QueueFailed
+            } else {
+                producer::AnnounceFailureReason::NotReady
+            },
+        }
+    };
+    record_activity_if_current(state, activity_origin, || {
+        Ok(producer::rns_announce_activity(
+            producer::RnsAnnounceActivity {
+                transition,
+                interface: None,
+            },
+        ))
+    });
 }
 
 type PresenceAnnouncePacket = ([u8; 16], Vec<u8>, bool);
@@ -3433,7 +3512,6 @@ fn try_build_presence_announce_packets(
 async fn execute_announce_burst(
     state: &AppState,
     require_cached_online: bool,
-    activity_origin: ActivityRequestFence,
     leadership: &AnnounceLeadership,
 ) -> AnnounceSendReport {
     let mut report = AnnounceSendReport {
@@ -3456,6 +3534,8 @@ async fn execute_announce_burst(
     );
     if require_cached_online && matches!(any_interface_online_cached(state), Some(false)) {
         tracing::warn!("announce skipped: no interfaces online");
+        report.failed = 1;
+        report.disposition = AnnounceSendDisposition::Failed;
         return report;
     }
     let transport_tx = state
@@ -3466,17 +3546,6 @@ async fn execute_announce_burst(
     let Some(tx) = transport_tx else {
         report.failed = 1;
         report.disposition = AnnounceSendDisposition::Failed;
-        record_activity_if_current(state, activity_origin, || {
-            Ok(producer::rns_announce_activity(
-                producer::RnsAnnounceActivity {
-                    transition: producer::RnsAnnounceTransition::Failed {
-                        method: producer::AnnounceMethod::Transport,
-                        reason: producer::AnnounceFailureReason::TransportUnavailable,
-                    },
-                    interface: None,
-                },
-            ))
-        });
         return report;
     };
 
@@ -3523,30 +3592,29 @@ async fn execute_announce_burst(
         return report;
     }
 
-    #[cfg(feature = "lxst-voice")]
-    let mut delivery_queued = false;
     for (destination_hash, raw, is_lxmf_delivery) in packets {
         let packet_len = raw.len();
         let fingerprint = hex::encode(&rns_crypto::sha::sha256(&raw)[..6]);
-        match tx
-            .send(rns_transport::messages::TransportMessage::Outbound(
+        match tokio::time::timeout(
+            ANNOUNCE_QUEUE_ADMISSION_WAIT,
+            tx.send(rns_transport::messages::TransportMessage::Outbound(
                 rns_transport::messages::OutboundRequest {
                     raw: Bytes::from(raw),
                     destination_hash,
                 },
-            ))
-            .await
+            )),
+        )
+        .await
         {
-            Ok(_) => {
+            Ok(Ok(())) => {
                 report.queued += 1;
                 if is_lxmf_delivery {
-                    #[cfg(feature = "lxst-voice")]
-                    {
-                        delivery_queued = true;
-                    }
+                    report.lxmf_delivery_queued = true;
                     state
                         .last_lxmf_delivery_announce_at_ms
                         .store(unix_now_ms(), Ordering::Relaxed);
+                } else {
+                    report.propagation_queued = true;
                 }
                 tracing::info!(
                     correlation_id = leadership.correlation_id,
@@ -3555,22 +3623,8 @@ async fn execute_announce_burst(
                     packet_fingerprint = %fingerprint,
                     "announce accepted by Reticulum transport channel"
                 );
-                record_activity_if_current(state, activity_origin, || {
-                    Ok(producer::rns_announce_activity(
-                        producer::RnsAnnounceActivity {
-                            transition: producer::RnsAnnounceTransition::Sent {
-                                method: if is_lxmf_delivery {
-                                    producer::AnnounceMethod::LxmfDelivery
-                                } else {
-                                    producer::AnnounceMethod::Transport
-                                },
-                            },
-                            interface: None,
-                        },
-                    ))
-                });
             }
-            Err(_) => {
+            Ok(Err(_)) | Err(_) => {
                 report.failed += 1;
                 tracing::warn!(
                     correlation_id = leadership.correlation_id,
@@ -3580,21 +3634,6 @@ async fn execute_announce_burst(
                     packet_fingerprint = %fingerprint,
                     "Failed to submit announce to Reticulum transport channel"
                 );
-                record_activity_if_current(state, activity_origin, || {
-                    Ok(producer::rns_announce_activity(
-                        producer::RnsAnnounceActivity {
-                            transition: producer::RnsAnnounceTransition::Failed {
-                                method: if is_lxmf_delivery {
-                                    producer::AnnounceMethod::LxmfDelivery
-                                } else {
-                                    producer::AnnounceMethod::Transport
-                                },
-                                reason: producer::AnnounceFailureReason::QueueFailed,
-                            },
-                            interface: None,
-                        },
-                    ))
-                });
                 if is_lxmf_delivery {
                     // No sibling presence component may be admitted without
                     // the delivery component that binds it to this identity.
@@ -3605,44 +3644,29 @@ async fn execute_announce_burst(
     }
 
     #[cfg(feature = "lxst-voice")]
-    if delivery_queued {
-        match voice::announce_if_running(state).await {
-            Ok(true) => {
+    if report.lxmf_delivery_queued {
+        match tokio::time::timeout(
+            ANNOUNCE_QUEUE_ADMISSION_WAIT,
+            voice::announce_if_running(state),
+        )
+        .await
+        {
+            Ok(Ok(true)) => {
                 report.packets += 1;
                 report.queued += 1;
+                report.lxst_queued = true;
                 tracing::info!("LXST telephony announce queued");
-                record_activity_if_current(state, activity_origin, || {
-                    Ok(producer::rns_announce_activity(
-                        producer::RnsAnnounceActivity {
-                            transition: producer::RnsAnnounceTransition::Sent {
-                                method: producer::AnnounceMethod::LxstService,
-                            },
-                            interface: None,
-                        },
-                    ))
-                });
             }
-            Ok(false) => {
+            Ok(Ok(false)) => {
                 tracing::debug!("LXST telephony announce skipped: voice service is not running");
             }
-            Err(_) => {
+            Ok(Err(_)) | Err(_) => {
                 report.packets += 1;
                 report.failed += 1;
                 tracing::warn!(
                     reason = "queue_failed",
                     "Failed to queue LXST telephony announce"
                 );
-                record_activity_if_current(state, activity_origin, || {
-                    Ok(producer::rns_announce_activity(
-                        producer::RnsAnnounceActivity {
-                            transition: producer::RnsAnnounceTransition::Failed {
-                                method: producer::AnnounceMethod::LxstService,
-                                reason: producer::AnnounceFailureReason::QueueFailed,
-                            },
-                            interface: None,
-                        },
-                    ))
-                });
             }
         }
     } else {
@@ -4900,34 +4924,7 @@ async fn push_stats_once(state: &AppState) {
 
     let iface_stats = match iface_result {
         Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(s)) => {
-            let interfaces: Vec<serde_json::Value> = s
-                .iter()
-                .map(|e| {
-                    let online = state.effective_interface_online(e.id, e.online);
-                    json!({
-                        "name": e.name, "rxb": e.rx_bytes, "txb": e.tx_bytes,
-                        "online": online, "bitrate": e.bitrate, "mtu": e.mtu, "mode": e.mode,
-                        "role": e.role,
-                        "announce_queue": e.announce_queue,
-                        "held_announces": e.held_announces,
-                        "incoming_announce_frequency": e.incoming_announce_frequency,
-                        "outgoing_announce_frequency": e.outgoing_announce_frequency,
-                        "incoming_pr_frequency": e.incoming_pr_frequency,
-                        "outgoing_pr_frequency": e.outgoing_pr_frequency,
-                        "burst_active": e.burst_active,
-                        "burst_activated": e.burst_activated,
-                        "pr_burst_active": e.pr_burst_active,
-                        "pr_burst_activated": e.pr_burst_activated,
-                        "announce_rate_target": e.announce_rate_target,
-                        "announce_rate_grace": e.announce_rate_grace,
-                        "announce_rate_penalty": e.announce_rate_penalty,
-                        "announce_cap": e.announce_cap,
-                        "ifac_size": e.ifac_size,
-                        "tx_drops": e.tx_drops,
-                    })
-                })
-                .collect();
-            json!({ "interfaces": interfaces })
+            state.interface_stats_payload(&s)
         }
         _ => json!({ "interfaces": [] }),
     };
@@ -5218,11 +5215,13 @@ async fn poll_stats_loop(
                         let burst_active = iface.burst_active;
                         let held_announces = iface.held_announces;
                         let key = iface.id;
+                        let rnode_activity_covered =
+                            state.is_rnode_activity_interface_covered(iface.id);
                         let (state_changed, emit_generic_state) = observe_polled_interface_state(
                             &mut prev_online,
                             key,
                             online,
-                            state.is_rnode_activity_interface_covered(iface.id),
+                            rnode_activity_covered,
                         );
                         if state_changed {
                             if emit_generic_state {
@@ -5248,33 +5247,23 @@ async fn poll_stats_loop(
                                 last_interface_announce.elapsed() >= Duration::from_secs(30),
                             ) {
                                 last_interface_announce = std::time::Instant::now();
+                                // RNode readiness advances this revision at its
+                                // exact Ready boundary before publishing stats.
+                                // Generic interfaces have no narrower signal,
+                                // so their first online observation owns it.
+                                if !rnode_activity_covered {
+                                    state.bump_announce_interface_revision();
+                                }
                                 let announce_state = state.clone();
                                 let announce_activity_origin = poll_activity_origin;
                                 tokio::spawn(async move {
                                     tokio::time::sleep(Duration::from_secs(2)).await;
-                                    announce_state.bump_announce_interface_revision();
-                                    let report = send_typed_announce_from_origin(
+                                    let _ = send_typed_announce_from_origin(
                                         &announce_state,
                                         AnnounceOrigin::InterfaceOnline,
                                         announce_activity_origin,
                                     )
                                     .await;
-                                    if report.queued > 0 {
-                                        record_activity_if_current(
-                                            &announce_state,
-                                            announce_activity_origin,
-                                            || {
-                                                Ok(producer::rns_announce_activity(
-                                                    producer::RnsAnnounceActivity {
-                                                        transition: producer::RnsAnnounceTransition::Sent {
-                                                            method: producer::AnnounceMethod::InterfaceOnline,
-                                                        },
-                                                        interface: None,
-                                                    },
-                                                ))
-                                            },
-                                        );
-                                    }
                                 });
                             }
                         }
@@ -5296,31 +5285,7 @@ async fn poll_stats_loop(
                         prev_held_announces.insert(key, held_announces);
                     }
 
-                    let interfaces: Vec<serde_json::Value> = s.iter().map(|e| {
-                        let online = state.effective_interface_online(e.id, e.online);
-                        json!({
-                            "name": e.name, "rxb": e.rx_bytes, "txb": e.tx_bytes,
-                            "online": online, "bitrate": e.bitrate, "mtu": e.mtu, "mode": e.mode,
-                            "role": e.role,
-                            "announce_queue": e.announce_queue,
-                            "held_announces": e.held_announces,
-                            "incoming_announce_frequency": e.incoming_announce_frequency,
-                            "outgoing_announce_frequency": e.outgoing_announce_frequency,
-                            "incoming_pr_frequency": e.incoming_pr_frequency,
-                            "outgoing_pr_frequency": e.outgoing_pr_frequency,
-                            "burst_active": e.burst_active,
-                            "burst_activated": e.burst_activated,
-                            "pr_burst_active": e.pr_burst_active,
-                            "pr_burst_activated": e.pr_burst_activated,
-                            "announce_rate_target": e.announce_rate_target,
-                            "announce_rate_grace": e.announce_rate_grace,
-                            "announce_rate_penalty": e.announce_rate_penalty,
-                            "announce_cap": e.announce_cap,
-                            "ifac_size": e.ifac_size,
-                            "tx_drops": e.tx_drops,
-                        })
-                    }).collect();
-                    json!({ "interfaces": interfaces })
+                    state.interface_stats_payload(&s)
                 }
                 _ => json!({ "interfaces": [] }),
             };

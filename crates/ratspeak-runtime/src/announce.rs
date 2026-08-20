@@ -7,6 +7,8 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use crate::activity::CorrelationId;
+
 const RECENT_BURST_WINDOW: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -72,9 +74,10 @@ pub struct AnnounceIntent {
     pub revisions: AnnounceSemanticRevision,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AnnounceLeadership {
     pub correlation_id: u64,
+    pub activity_correlation_id: CorrelationId,
     pub revisions: AnnounceSemanticRevision,
     pub origins: Vec<AnnounceOrigin>,
 }
@@ -86,9 +89,10 @@ pub enum AnnounceAdmission {
     Deferred { correlation_id: u64 },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct PendingBurst {
     correlation_id: u64,
+    activity_correlation_id: CorrelationId,
     revisions: AnnounceSemanticRevision,
     origins: HashSet<AnnounceOrigin>,
 }
@@ -99,6 +103,7 @@ impl PendingBurst {
         origins.sort_by_key(|origin| origin.as_str());
         AnnounceLeadership {
             correlation_id: self.correlation_id,
+            activity_correlation_id: self.activity_correlation_id,
             revisions: self.revisions,
             origins,
         }
@@ -110,7 +115,7 @@ impl PendingBurst {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct RecentBurst {
     correlation_id: u64,
     revisions: AnnounceSemanticRevision,
@@ -134,6 +139,7 @@ impl AnnounceCoordinator {
     fn new_burst(&mut self, intent: AnnounceIntent) -> PendingBurst {
         PendingBurst {
             correlation_id: self.next_correlation_id(),
+            activity_correlation_id: CorrelationId::random(),
             revisions: intent.revisions,
             origins: HashSet::from([intent.origin]),
         }
@@ -307,5 +313,46 @@ mod tests {
             coordinator.admit(intent(AnnounceOrigin::Manual, 1, 1), now),
             AnnounceAdmission::Lead { .. }
         ));
+    }
+
+    #[test]
+    fn delayed_interface_intent_is_covered_when_manual_sampled_its_ready_revision() {
+        let now = Instant::now();
+        let mut coordinator = AnnounceCoordinator::default();
+        let AnnounceAdmission::Lead { correlation_id } =
+            coordinator.admit(intent(AnnounceOrigin::Manual, 2, 4), now)
+        else {
+            panic!("manual request must lead");
+        };
+        assert!(coordinator.finish(correlation_id, true, now).is_none());
+
+        assert_eq!(
+            coordinator.admit(intent(AnnounceOrigin::InterfaceOnline, 2, 4), now),
+            AnnounceAdmission::AlreadyQueued { correlation_id }
+        );
+    }
+
+    #[test]
+    fn genuinely_uncovered_interface_revision_gets_one_follow_up() {
+        let now = Instant::now();
+        let mut coordinator = AnnounceCoordinator::default();
+        let AnnounceAdmission::Lead { correlation_id } =
+            coordinator.admit(intent(AnnounceOrigin::Manual, 2, 4), now)
+        else {
+            panic!("manual request must lead");
+        };
+        let AnnounceAdmission::Deferred {
+            correlation_id: follow_up_id,
+        } = coordinator.admit(intent(AnnounceOrigin::InterfaceOnline, 2, 5), now)
+        else {
+            panic!("new interface revision must defer exactly one follow-up");
+        };
+
+        let promoted = coordinator
+            .finish(correlation_id, true, now)
+            .expect("uncovered interface must be promoted");
+        assert_eq!(promoted.correlation_id, follow_up_id);
+        assert_eq!(promoted.revisions.interface, 5);
+        assert!(coordinator.finish(follow_up_id, true, now).is_none());
     }
 }

@@ -1445,6 +1445,8 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
         .expect("RNode Activity monitor");
     let runtime_state =
         read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let runtime_lib =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime poll loop");
 
     let pending_declaration = runtime_monitor
         .find("pub struct PendingRNodeActivityMonitor")
@@ -1476,14 +1478,63 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
         .find(".await_ready(RNODE_READINESS_TIMEOUT)")
         .expect("exact observer readiness wait");
     assert!(cover < readiness_wait, "coverage must precede readiness");
-    assert!(shared_wait.contains("covered.then(||"));
+    assert!(shared_wait.contains("if !covered"));
+    assert!(shared_wait.contains("RnodeReadyStatsPublicationFailure::SessionReplaced"));
     assert!(
         shared_wait
             .contains("state.set_rnode_product_readiness(spawned.interface_id, origin, true)")
     );
-    assert!(shared_wait.contains(
-        "PendingRNodeActivityMonitor::new(spawned.observer.clone(), ready_snapshot, origin)"
-    ));
+    assert!(shared_wait.contains("PendingRNodeActivityMonitor::new"));
+    let ready_set = shared_wait
+        .find("state.set_rnode_product_readiness(spawned.interface_id, origin, true)")
+        .expect("exact product-ready publication");
+    let semantic_revision = shared_wait
+        .find("state.bump_announce_interface_revision()")
+        .expect("Ready semantic revision");
+    let stats_barrier = shared_wait
+        .find("publish_exact_ready_stats(state, spawned, origin).await")
+        .expect("best-effort authoritative Ready stats barrier");
+    let monitor_seed = shared_wait
+        .find("PendingRNodeActivityMonitor::new")
+        .expect("pre-publication monitor seed");
+    assert!(
+        readiness_wait < ready_set
+            && ready_set < semantic_revision
+            && semantic_revision < monitor_seed
+            && monitor_seed < stats_barrier,
+        "Ready must retain its exact monitor before the best-effort stats barrier"
+    );
+    assert!(shared_wait.contains("Err(failure) => return Err(failure)"));
+
+    let stats_wait = rust_function_block(&readiness, "publish_exact_ready_stats");
+    assert!(stats_wait.contains("TransportQuery::GetInterfaceStats"));
+    assert!(stats_wait.contains("handle.query_control("));
+    assert!(stats_wait.contains("state.publish_ready_rnode_interface_stats("));
+    assert!(readiness.contains("RnodeReadyStatsPublicationFailure::Timeout"));
+    assert!(readiness.contains("RnodeReadyStatsPublicationFailure::ObservationLost"));
+    assert!(readiness.contains("RnodeReadyStatsPublicationFailure::SessionReplaced"));
+
+    let stats_projection =
+        rust_function_block(&runtime_state, "interface_stats_payload_with_readiness");
+    assert!(stats_projection.contains("entry.online && product_ready"));
+    assert!(stats_projection.contains("\"rxb\": entry.rx_bytes"));
+    assert!(stats_projection.contains("\"txb\": entry.tx_bytes"));
+    assert_eq!(
+        runtime_lib
+            .matches("state.interface_stats_payload(&s)")
+            .count(),
+        2,
+        "eager and periodic stats must share the AppState projection"
+    );
+    assert!(!runtime_lib.contains("\"rxb\": e.rx_bytes"));
+    let stats_publish = rust_function_block(&runtime_state, "publish_ready_rnode_interface_stats");
+    assert!(stats_publish.contains("entry.id == interface_id && entry.online"));
+    assert!(stats_publish.contains("Self::interface_stats_payload_with_readiness"));
+    assert!(stats_publish.contains("self.emit_to_all(\"stats_update\", snapshot)"));
+
+    let monitor_loop = rust_function_block(&runtime_monitor, "run_ready_rnode_activity_monitor");
+    assert!(monitor_loop.contains("RNodeActivitySignal::Online"));
+    assert!(monitor_loop.contains("state.bump_announce_interface_revision()"));
 
     let owned_wait = rust_function_block(&interfaces, "await_owned_rnode_ready");
     assert!(owned_wait.contains("origin: RNodeActivityOrigin"));
@@ -3558,7 +3609,7 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
             "settings interface actions must not swallow IPC/backend failures"
         );
     }
-    assert!(settings_js.contains("Announce queued for transmission"));
+    assert!(settings_js.contains("Presence queued"));
     assert!(settings_js.contains("var _announcePending = false;"));
     let pending_guard = settings_js
         .find("_announcePending = true;")
@@ -3571,7 +3622,7 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
         "manual announce ownership must be claimed before IPC"
     );
     assert!(settings_js.contains("_announcePending = false;"));
-    assert!(settings_js.contains("Announce already queued"));
+    assert!(settings_js.contains("Presence already queued"));
     assert!(settings_js.contains("function handleManualAnnounceResult(data)"));
     assert!(settings_js.contains("RS.invoke('trigger_announce').then(function(data)"));
     assert!(!settings_js.contains("RS.listen('announce_triggered'"));
@@ -3605,14 +3656,32 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let network_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
         .expect("network command source");
     assert!(network_rs.contains("send_manual_announce_from_origin"));
+    let trigger_announce = rust_function_block(&network_rs, "trigger_announce");
+    assert!(!trigger_announce.contains("state.lxmf.try_lock()"));
+    assert!(!trigger_announce.contains("state.lxmf.lock()"));
+    assert!(trigger_announce.contains("any_interface_online_cached"));
+    assert!(!trigger_announce.contains("TransportQuery::GetInterfaceStats"));
     assert!(!network_rs.contains("\"announce_triggered\""));
     assert!(!network_rs.contains("\"not_sent\""));
     assert!(!network_rs.contains("Duration::from_millis(450)"));
-    assert!(network_rs.contains("\"shared_server\" | \"local_client\""));
 
     let runtime_rs =
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime source");
     assert!(runtime_rs.contains("match state.lxmf.try_lock()"));
+    assert!(
+        runtime_rs.contains("const ANNOUNCE_LXMF_LOCK_WAIT: Duration = Duration::from_millis(500)")
+    );
+    assert!(runtime_rs.contains("ANNOUNCE_QUEUE_ADMISSION_WAIT"));
+    assert_eq!(
+        runtime_rs
+            .matches("state.interface_stats_payload(&s)")
+            .count(),
+        2,
+        "eager and polling stats must share the canonical row projection"
+    );
+    let submit = rust_function_block(&runtime_rs, "submit_announce_intent");
+    assert!(submit.contains("tokio::spawn(async move"));
+    assert!(submit.contains("run_announce_lifecycle("));
     assert!(!runtime_rs.contains("announce waited on lxmf manager lock"));
 }
 
@@ -4786,8 +4855,8 @@ fn voice_and_capture_paths_preflight_media_permissions() {
 
     let runtime_rs =
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
-    assert!(runtime_rs.contains("voice::announce_if_running(state).await"));
-    assert!(runtime_rs.contains("producer::AnnounceMethod::LxstService"));
+    assert!(runtime_rs.contains("voice::announce_if_running(state),"));
+    assert!(runtime_rs.contains("report.lxst_queued = true"));
     assert!(runtime_rs.contains("voice::shutdown_voice_service_for_runtime_teardown(state).await"));
     let presence_burst = rust_function_block(&runtime_rs, "execute_announce_burst");
     let presence_build = rust_function_block(&runtime_rs, "try_build_presence_announce_packets");
@@ -4801,8 +4870,12 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         propagation_build < delivery_build,
         "a failed sibling build must not consume the delivery ratchet"
     );
-    assert!(presence_burst.contains("let mut delivery_queued = false;"));
-    assert!(presence_burst.contains("if delivery_queued"));
+    assert!(presence_burst.contains("if report.lxmf_delivery_queued"));
+    assert_eq!(
+        presence_burst.matches("tokio::time::timeout(").count(),
+        2,
+        "transport and LXST queue admission must both remain bounded"
+    );
     assert!(
         presence_burst
             .contains("LXST telephony announce suppressed because delivery was not admitted")
@@ -7239,21 +7312,18 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
     let startup_send = startup_announce
         .find("send_typed_announce_from_origin(")
         .unwrap();
-    let startup_success = startup_announce.find("if report.queued > 0").unwrap();
-    let startup_fenced = startup_announce
-        .find("record_activity_if_current(&state, activity_origin, ||")
-        .unwrap();
-    let startup_aggregate = startup_announce
-        .find("method: producer::AnnounceMethod::Startup")
+    let startup_admitted = startup_announce
+        .find("if !matches!(report.disposition, AnnounceSendDisposition::Failed)")
         .unwrap();
     assert!(
         startup_wait < startup_origin
             && startup_origin < startup_shutdown
             && startup_shutdown < startup_send
-            && startup_send < startup_success
-            && startup_success < startup_fenced
-            && startup_fenced < startup_aggregate
+            && startup_send < startup_admitted
     );
+    assert!(!startup_announce.contains("record_activity_if_current"));
+    let lifecycle = rust_function_block(&runtime, "run_announce_lifecycle");
+    assert!(lifecycle.contains("record_presence_lifecycle_activity("));
 
     let periodic_announce = runtime
         .split("// Auto-announce loop; wakes on timer or interval change.")
@@ -7784,8 +7854,10 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
     );
 
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
-    assert!(runtime.contains("\"held_announces\": e.held_announces"));
-    assert!(runtime.contains("\"burst_active\": e.burst_active"));
+    let runtime_state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    assert!(runtime_state.contains("\"held_announces\": entry.held_announces"));
+    assert!(runtime_state.contains("\"burst_active\": entry.burst_active"));
     assert!(runtime.contains("PollActivityObservation::AnnounceIngressBurst"));
     assert!(runtime.contains("PollActivityObservation::AnnouncesHeld"));
     assert!(runtime.contains("for observation in activity_observations"));

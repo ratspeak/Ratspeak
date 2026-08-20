@@ -2820,6 +2820,21 @@ impl OwnedRnodeReadinessError {
     fn is_timeout(self) -> bool {
         matches!(self, Self::Readiness(RnodeReadinessFailure::Timeout))
     }
+
+    fn ready_stats_failure_code(self) -> Option<&'static str> {
+        match self {
+            Self::Readiness(RnodeReadinessFailure::ReadyStatsPublication(
+                crate::commands::rnode_readiness::RnodeReadyStatsPublicationFailure::Timeout,
+            )) => Some("ready_stats_timeout"),
+            Self::Readiness(RnodeReadinessFailure::ReadyStatsPublication(
+                crate::commands::rnode_readiness::RnodeReadyStatsPublicationFailure::ObservationLost,
+            )) => Some("ready_observation_lost"),
+            Self::Readiness(RnodeReadinessFailure::ReadyStatsPublication(
+                crate::commands::rnode_readiness::RnodeReadyStatsPublicationFailure::SessionReplaced,
+            )) => Some("ready_session_replaced"),
+            _ => None,
+        }
+    }
 }
 
 /// Wait for the exact runtime returned by one product operation. A replacement
@@ -3623,6 +3638,15 @@ async fn spawn_editable_interface(
                                 }
                                 crate::state::BleRnodeOperationFailure::Readiness => {
                                     "RNode did not become ready"
+                                }
+                                crate::state::BleRnodeOperationFailure::ReadyStatsTimeout => {
+                                    "RNode became ready, but interface status publication timed out"
+                                }
+                                crate::state::BleRnodeOperationFailure::ReadyObservationLost => {
+                                    "RNode disconnected before setup completed"
+                                }
+                                crate::state::BleRnodeOperationFailure::ReadySessionReplaced => {
+                                    "RNode setup was replaced before it completed"
                                 }
                                 crate::state::BleRnodeOperationFailure::Runtime => {
                                     "RNode runtime was unavailable"
@@ -5329,6 +5353,8 @@ pub async fn add_lora_interface(
                                         format!(
                                             "BLE pairing timed out for '{name_for_status}'. Check that the RNode is in pairing mode and retry."
                                         )
+                                    } else if error.ready_stats_failure_code().is_some() {
+                                        error.to_string()
                                     } else {
                                         "BLE radio did not become ready".to_string()
                                     };
@@ -5338,11 +5364,13 @@ pub async fn add_lora_interface(
                                         "hub",
                                         &step,
                                         true,
-                                        Some(if error.is_timeout() {
-                                            "pairing_timeout"
-                                        } else {
-                                            "startup_failed"
-                                        }),
+                                        Some(error.ready_stats_failure_code().unwrap_or(
+                                            if error.is_timeout() {
+                                                "pairing_timeout"
+                                            } else {
+                                                "startup_failed"
+                                            },
+                                        )),
                                     );
                                     record_interface_activity(
                                         &st,
@@ -5605,21 +5633,26 @@ pub async fn add_lora_interface(
                             }
                             Err(OwnedRnodeReadinessError::Superseded) => return,
                             Err(error) => {
+                                let terminal_step = if error.ready_stats_failure_code().is_some() {
+                                    error.to_string()
+                                } else if is_tcp {
+                                    "RNode TCP did not become ready".to_string()
+                                } else {
+                                    "RNode did not become ready".to_string()
+                                };
                                 emit_op_status_broadcast(
                                     &st,
                                     "add_lora",
                                     "hub",
-                                    if is_tcp {
-                                        "RNode TCP did not become ready"
-                                    } else {
-                                        "RNode did not become ready"
-                                    },
+                                    &terminal_step,
                                     true,
-                                    Some(if error.is_timeout() {
-                                        "startup_timeout"
-                                    } else {
-                                        "startup_failed"
-                                    }),
+                                    Some(error.ready_stats_failure_code().unwrap_or(
+                                        if error.is_timeout() {
+                                            "startup_timeout"
+                                        } else {
+                                            "startup_failed"
+                                        },
+                                    )),
                                 );
                                 record_interface_activity(
                                     &st,

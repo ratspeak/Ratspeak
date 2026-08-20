@@ -1968,7 +1968,7 @@ function setAnnounceLabel(btn, text) {
 // Returns true if IPC fired, false if rate-limited or no online interface.
 function tryTriggerAnnounce() {
     if (_announcePending) {
-        showToast('Announce already queued', 'toast-info', 2500);
+        showToast('Presence already queued', 'toast-info', 2500);
         return false;
     }
     if (Date.now() - _lastAnnounceTime < ANNOUNCE_COOLDOWN) {
@@ -2013,17 +2013,17 @@ function handleManualAnnounceResult(data) {
         var alreadyQueued = data.disposition === 'already_queued' || data.disposition === 'deferred';
         if (typeof haptic === 'function') haptic(alreadyQueued ? 'light' : 'success');
         showToast(
-            alreadyQueued ? 'Announce already queued' : 'Announce queued for transmission',
+            alreadyQueued ? 'Presence already queued' : 'Presence queued',
             alreadyQueued ? 'toast-info' : 'toast-success',
             4000
         );
-        // Burst is gated on backend queue acceptance. Reticulum owns the
-        // interface-specific announce-cap delay and physical transmission.
+        // The request is admitted by the presence coordinator. Component
+        // queueing and interface-specific transmission continue asynchronously.
         if (!alreadyQueued && origin && typeof showAnnounceAnimation === 'function') {
             showAnnounceAnimation(origin.el, origin.cx, origin.cy);
         }
         if (networkBtn) {
-            setAnnounceLabel(networkBtn, alreadyQueued ? 'Already queued' : 'Queued!');
+            setAnnounceLabel(networkBtn, alreadyQueued ? 'Already queued' : 'Queued');
             networkBtn.classList.add('is-success');
             setTimeout(function() {
                 setAnnounceLabel(networkBtn, 'Announce');
