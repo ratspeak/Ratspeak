@@ -947,6 +947,22 @@ function _mobileRnodeHealth(port, mobileHardware) {
     return null;
 }
 
+function _configuredInterfaceFallback(record, mobileHardware) {
+    var iface = record && record.iface ? record.iface : {};
+    var enabled = isInterfaceConfigEnabled(iface);
+    var port = String(iface.port || '');
+    var waitingForDevice = enabled && port.indexOf('androidusb://') === 0;
+    var mobileHealth = enabled
+        ? _mobileRnodeHealth(port, mobileHardware)
+        : null;
+    return {
+        paused: !enabled,
+        waitingForDevice: waitingForDevice,
+        mobileHealth: mobileHealth,
+        connecting: enabled && record.ifaceType === 'rnode' && !waitingForDevice && !mobileHealth,
+    };
+}
+
 function _interfaceConfigByName(ifaces) {
     var byName = {};
     (ifaces.rnode || []).forEach(function(i) { byName[i.name] = { iface: i, ifaceType: 'rnode' }; });
@@ -1060,22 +1076,21 @@ function _renderConnectionsFromCache() {
             if (matchedConfigNames[cn]) return;
             var record = configByName[cn];
             if (!record || !record.iface) return;
-            var enabled = isInterfaceConfigEnabled(record.iface);
-            var port = String(record.iface.port || '');
-            var waitingForAndroidUsb = enabled && port.indexOf('androidusb://') === 0;
-            var mobileHealth = enabled
-                ? _mobileRnodeHealth(port, ifaces.mobile_hardware)
-                : null;
-            if (enabled && !waitingForAndroidUsb && !mobileHealth) return;
             var section = interfaceSectionForConfigType(record.ifaceType);
             if (!section) return;
+            // Configuration is authoritative for row existence. A newly added
+            // interface can precede its first live-statistics snapshot; hiding
+            // it until traffic (for example, the first announce) makes a
+            // successful add look as if it was discarded.
+            var fallback = _configuredInterfaceFallback(record, ifaces.mobile_hardware);
             allIfaces.push({
                 iface: record.iface,
                 section: section,
                 ifaceType: record.ifaceType,
-                paused: !enabled,
-                waitingForDevice: waitingForAndroidUsb,
-                mobileHealth: mobileHealth,
+                paused: fallback.paused,
+                waitingForDevice: fallback.waitingForDevice,
+                mobileHealth: fallback.mobileHealth,
+                connecting: fallback.connecting,
             });
         });
 
@@ -1128,6 +1143,7 @@ function _renderConnectionsFromCache() {
                 var ifaceType = item.ifaceType;
                 var paused = !!item.paused;
                 var waitingForDevice = !!item.waitingForDevice;
+                var connecting = !!item.connecting;
                 var name = iface.name || 'unknown';
                 var typeName = iface.type || '';
                 var mobileHealth = item.mobileHealth || _mobileRnodeHealth(
@@ -1188,6 +1204,8 @@ function _renderConnectionsFromCache() {
                         escapeHtml(mobileHealth.label) + '</span>';
                 } else if (waitingForDevice) {
                     statusHtml += '<span class="conn-iface-status-text is-warning" role="status">Waiting for USB</span>';
+                } else if (connecting) {
+                    statusHtml += '<span class="conn-iface-status-text is-warning" role="status">Connecting</span>';
                 }
 
                 // Augment label with non-default group ID (matches Python rnsd).

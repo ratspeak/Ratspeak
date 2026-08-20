@@ -13,7 +13,9 @@ var source = fs.readFileSync(
 var start = source.indexOf('function _mobileRnodeHealth');
 var end = source.indexOf('\nfunction _interfaceConfigByName', start);
 assert(start >= 0 && end > start, 'mobile hardware health reducer must exist');
-var context = {};
+var context = {
+    isInterfaceConfigEnabled: function(iface) { return iface.enabled !== false; }
+};
 vm.runInNewContext(source.slice(start, end), context, { filename: 'mobile-hardware-health.js' });
 
 assert.deepStrictEqual(
@@ -40,6 +42,26 @@ assert.strictEqual(
     }),
     null,
     'healthy BLE must not retain a warning pill'
+);
+assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(context._configuredInterfaceFallback({
+        ifaceType: 'rnode',
+        iface: { port: '/dev/cu.usbserial-0001', enabled: true }
+    }, {}))),
+    {
+        paused: false, waitingForDevice: false, mobileHealth: null, connecting: true
+    },
+    'a configured serial radio must render as connecting before live stats arrive'
+);
+assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(context._configuredInterfaceFallback({
+        ifaceType: 'rnode',
+        iface: { port: '/dev/cu.usbserial-0001', enabled: false }
+    }, {}))),
+    {
+        paused: true, waitingForDevice: false, mobileHealth: null, connecting: false
+    },
+    'a paused configured radio must remain visible without live stats'
 );
 assert(source.includes('if (online) mobileHealth = null;'),
     'ambient USB/BLE state must never override exact online transport evidence');
