@@ -605,6 +605,11 @@ pub struct AppState {
     pub foreground_changed: Arc<tokio::sync::Notify>,
     pub propagation_node: Mutex<Option<Arc<Mutex<lxmf_core::propagation_node::PropagationNode>>>>,
     pub last_stats: RwLock<Option<serde_json::Value>>,
+    /// Product readiness for exact runtime-owned RNodes, keyed by the
+    /// runtime-local interface ID. Generic transport `online` is only an
+    /// enabled/connected flag; the UI, announce gate, and interface-up policy
+    /// all project this stricter protocol-ready state instead.
+    rnode_product_readiness: RwLock<HashMap<rns_interface::traits::InterfaceId, bool>>,
     pub last_hub_interfaces: RwLock<Option<serde_json::Value>>,
     /// Latest closed native hardware state, retained across WebView reloads.
     /// Native callbacks must pass their generation/sequence fences before
@@ -844,6 +849,7 @@ impl AppState {
             foreground_changed: Arc::new(tokio::sync::Notify::new()),
             propagation_node: Mutex::new(None),
             last_stats: RwLock::new(None),
+            rnode_product_readiness: RwLock::new(HashMap::new()),
             last_hub_interfaces: RwLock::new(None),
             mobile_hardware_state: RwLock::new(std::collections::BTreeMap::new()),
             lxmf_notify: Arc::new(tokio::sync::Notify::new()),
@@ -2422,6 +2428,9 @@ impl AppState {
         if let Ok(mut stats) = self.last_stats.write() {
             *stats = None;
         }
+        if let Ok(mut readiness) = self.rnode_product_readiness.write() {
+            readiness.clear();
+        }
         if let Ok(mut hub) = self.last_hub_interfaces.write() {
             *hub = None;
         }
@@ -2493,7 +2502,11 @@ impl AppState {
         );
         rns.bind_rnode_activity_session(origin);
         if let Ok(mut r) = self.rns.write() {
+            if let Ok(mut readiness) = self.rnode_product_readiness.write() {
+                readiness.clear();
+            }
             *r = Some(rns);
+            self.request_poll_now();
             Some(origin)
         } else {
             None
@@ -2536,8 +2549,52 @@ impl AppState {
         if self.current_identity_session_generation() != origin.identity_generation() {
             return false;
         }
-        rns.as_mut()
-            .is_some_and(|rns| rns.cover_rnode_activity_interface(interface_id, origin))
+        let covered = rns
+            .as_mut()
+            .is_some_and(|rns| rns.cover_rnode_activity_interface(interface_id, origin));
+        drop(rns);
+        if covered {
+            self.set_rnode_product_readiness(interface_id, origin, false);
+        }
+        covered
+    }
+
+    /// Publish exact RNode protocol readiness for the currently installed RNS
+    /// session. Stale observers cannot mutate a replacement session.
+    pub fn set_rnode_product_readiness(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+        origin: RNodeActivityOrigin,
+        ready: bool,
+    ) -> bool {
+        if !self.owns_rnode_activity_observation(interface_id, origin) {
+            return false;
+        }
+        let changed = self
+            .rnode_product_readiness
+            .write()
+            .ok()
+            .map(|mut readiness| readiness.insert(interface_id, ready) != Some(ready))
+            .unwrap_or(false);
+        if changed {
+            self.request_poll_now();
+        }
+        true
+    }
+
+    /// Overlay the generic transport flag with exact protocol readiness when
+    /// this interface is an observed RNode. Non-RNode interfaces retain their
+    /// original transport-owned value.
+    pub fn effective_interface_online(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+        transport_online: bool,
+    ) -> bool {
+        self.rnode_product_readiness
+            .read()
+            .ok()
+            .and_then(|readiness| readiness.get(&interface_id).copied())
+            .unwrap_or(transport_online)
     }
 
     pub(crate) fn owns_rnode_activity_observation(

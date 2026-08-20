@@ -54,4 +54,18 @@ assert(html.includes('aria-describedby="rnode-interface-mode-hint"'),
 assert(html.includes('Show advanced interface controls and developer settings when available.'),
     'Developer Mode settings copy must explain that it reveals interface controls');
 
+var nameStart = modalSource.indexOf('function _rnodeDefaultInterfaceName');
+var nameEnd = modalSource.indexOf('\nfunction rnodeUpdateNextBtn', nameStart);
+assert(nameStart >= 0 && nameEnd > nameStart, 'missing RNode default-name normalizer');
+var nameContext = { String: String };
+vm.runInNewContext(modalSource.slice(nameStart, nameEnd), nameContext, {
+    filename: 'rnode-default-name.js'
+});
+assert.strictEqual(nameContext._rnodeDefaultInterfaceName('RNode a8eb'), 'RNode_A8EB',
+    'advertised BLE identifiers must use the product default interface shape');
+assert.strictEqual(nameContext._rnodeDefaultInterfaceName('RNode_0010'), 'RNode_0010',
+    'validated serial-derived names must remain stable');
+assert(modalSource.includes("RS.invoke('api_rnode_default_name', { port: val })"),
+    'desktop serial selection must resolve the provisioned RNode identifier');
+
 console.log('RNode interface mode tests passed');

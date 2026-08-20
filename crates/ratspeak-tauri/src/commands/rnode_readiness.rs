@@ -96,6 +96,9 @@ pub(crate) async fn await_spawned_rnode_ready(
         .await_ready(RNODE_READINESS_TIMEOUT)
         .await
         .map_err(|error| classify_rnode_readiness_error(&error))?;
+    if covered {
+        state.set_rnode_product_readiness(spawned.interface_id, origin, true);
+    }
     Ok(covered.then(|| {
         PendingRNodeActivityMonitor::new(spawned.observer.clone(), ready_snapshot, origin)
     }))

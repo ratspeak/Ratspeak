@@ -1132,17 +1132,6 @@ RS.listen('identity_error', function(data) {
     });
 });
 
-RS.listen('announce_triggered', function(data) {
-    if (!data || data.success) return;
-    // settings.js owns the manual announce UX and gives context-specific errors.
-    if (data.error === 'no_interfaces' || data.error === 'not_ready') {
-        return;
-    }
-    if (typeof showToast === 'function') {
-        showToast('Could not send the announce: ' + (data.error || 'unknown error'), 'toast-error');
-    }
-});
-
 document.addEventListener('DOMContentLoaded', function() {
     initConnections();
 });

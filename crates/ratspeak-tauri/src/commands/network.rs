@@ -1097,7 +1097,7 @@ async fn any_live_egress_online(state: &Arc<AppState>) -> Option<bool> {
     {
         Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) => {
             Some(stats.iter().any(|interface| {
-                interface.online
+                state.effective_interface_online(interface.id, interface.online)
                     && !matches!(interface.role.as_str(), "shared_server" | "local_client")
             }))
         }
@@ -1158,11 +1158,11 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
                 producer::AnnounceFailureReason::TransportUnavailable
             }),
         );
-        state.emit_to_all(
-            "announce_triggered",
-            json!({ "success": false, "error": "RNS or LXMF not initialized" }),
-        );
-        return Err(AppError::service_unavailable("RNS or LXMF not initialized"));
+        return Ok(json!({
+            "success": false,
+            "error": "not_ready",
+            "message": "Ratspeak is still starting",
+        }));
     }
 
     let online = any_live_egress_online(&state)
@@ -1175,11 +1175,7 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             activity_fence,
             Some(producer::AnnounceFailureReason::NoInterfaceTransmission),
         );
-        state.emit_to_all(
-            "announce_triggered",
-            json!({ "success": false, "error": "no_interfaces" }),
-        );
-        return Ok(json!(null));
+        return Ok(json!({ "success": false, "error": "no_interfaces" }));
     }
 
     // Reticulum owns announce-cap scheduling and may intentionally hold a
@@ -1201,16 +1197,6 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         } else {
             "deferred"
         };
-        state.emit_to_all(
-            "announce_triggered",
-            json!({
-                "success": true,
-                "queued": 0,
-                "packets": 0,
-                "disposition": disposition,
-                "correlation_id": report.correlation_id.to_string(),
-            }),
-        );
         return Ok(json!({
             "success": true,
             "queued": 0,
@@ -1221,32 +1207,23 @@ pub async fn trigger_announce(state: State<'_, Arc<AppState>>) -> AppResult<Valu
     }
 
     if report.queued == 0 {
-        let failure = if report.packets == 0 {
-            producer::AnnounceFailureReason::NotReady
-        } else if report.failed > 0 {
+        let failure = if report.failed > 0 {
             producer::AnnounceFailureReason::QueueFailed
+        } else if report.packets == 0 {
+            producer::AnnounceFailureReason::NotReady
         } else {
             producer::AnnounceFailureReason::TransportUnavailable
         };
         record_manual_announce_outcome(&state, activity_fence, Some(failure));
-        state.emit_to_all(
-            "announce_triggered",
-            json!({ "success": false, "error": "not_ready" }),
-        );
-        return Ok(json!({ "success": false, "error": "not_ready" }));
+        let error = if report.failed > 0 {
+            "busy"
+        } else {
+            "not_ready"
+        };
+        return Ok(json!({ "success": false, "error": error }));
     }
 
     record_manual_announce_outcome(&state, activity_fence, None);
-    state.emit_to_all(
-        "announce_triggered",
-        json!({
-            "success": true,
-            "queued": report.queued,
-            "packets": report.packets,
-            "disposition": "queued",
-            "correlation_id": report.correlation_id.to_string(),
-        }),
-    );
     Ok(json!({
         "success": true,
         "queued": report.queued,

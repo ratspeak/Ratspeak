@@ -791,8 +791,8 @@ function initMobileSidebar() {
 
 var _bbDidLongPress = false;
 
-// Set by long-press completion; settings.js's `announce_triggered` listener
-// reads it to render the burst centered on where the gesture happened.
+// Set by long-press completion; settings.js's authoritative IPC completion
+// handler reads it to render the burst where the gesture happened.
 var _pendingAnnounceOrigin = null;
 
 function initBottomBar() {
@@ -1652,7 +1652,8 @@ function scheduleFirstRunTooltip(delayMs) {
 function bindFirstRunAnnounceListener() {
     if (_firstRunAnnounceListenerBound) return;
     _firstRunAnnounceListenerBound = true;
-    RS.listen('announce_triggered', function(data) {
+    window.addEventListener('ratspeak-manual-announce-result', function(event) {
+        var data = event && event.detail;
         if (!data || !data.success || _firstRunHintDone()) return;
         _setFirstRunHintDone();
         if (_firstRunDismiss) _firstRunDismiss();

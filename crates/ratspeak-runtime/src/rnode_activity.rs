@@ -368,6 +368,9 @@ async fn run_ready_rnode_activity_monitor(
     if !await_identity_lifecycle_release(&state, &shutdown, origin.identity_generation()).await {
         return;
     }
+    if !state.set_rnode_product_readiness(interface_id, origin, true) {
+        return;
+    }
     if !emit_signals_if_current(
         &state,
         origin,
@@ -384,6 +387,12 @@ async fn run_ready_rnode_activity_monitor(
             changed = observer.changed() => changed,
         };
         let publisher_closed = changed.is_none();
+        let product_ready = changed
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.phase == RNodeRuntimePhase::Ready);
+        if !state.set_rnode_product_readiness(interface_id, origin, product_ready) {
+            return;
+        }
         let signals = match changed.as_ref() {
             Some(snapshot) => reducer.observe(snapshot.as_ref().into()),
             None => reducer.publisher_closed(),
@@ -769,12 +778,16 @@ mod tests {
             .unwrap();
         assert!(first_context.origin() == first_origin);
         assert!(state.cover_rnode_activity_interface(71, first_origin));
+        assert!(state.set_rnode_product_readiness(71, first_origin, true));
+        assert!(state.effective_interface_online(71, false));
 
         let old = state.rns.write().unwrap().take().unwrap();
         old.shutdown().await;
         let second = manager(&root.join("second")).await;
         let second_origin = state.set_rns(second).unwrap();
         assert!(first_origin != second_origin);
+        assert!(!state.effective_interface_online(71, false));
+        assert!(!state.set_rnode_product_readiness(71, first_origin, true));
         assert!(!state.cover_rnode_activity_interface(72, first_origin));
         assert!(state.cover_rnode_activity_interface(72, second_origin));
 

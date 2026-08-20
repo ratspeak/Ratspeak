@@ -1982,14 +1982,23 @@ function tryTriggerAnnounce() {
     // Set the shared guard before IPC. Every manual entry point calls this
     // function, so two UI surfaces cannot cross the native boundary together.
     _announcePending = true;
-    RS.invoke('trigger_announce').catch(function(err) {
-        _announcePending = false;
-        showToast((err && err.message) || 'Could not send the announce', 'toast-error', 8000);
+    RS.invoke('trigger_announce').then(function(data) {
+        handleManualAnnounceResult(data || { success: false, error: 'invalid_response' });
+    }).catch(function(err) {
+        handleManualAnnounceResult({
+            success: false,
+            error: 'ipc_error',
+            message: (err && err.message) || 'Could not send the announce'
+        });
     });
     return true;
 }
 
-RS.listen('announce_triggered', function(data) {
+// The originating IPC response is the single completion owner. A WebView can
+// miss a broadcast while suspending; tying this guard to a second event left
+// the visible button reset while `_announcePending` remained stuck forever.
+function handleManualAnnounceResult(data) {
+    data = data || { success: false, error: 'invalid_response' };
     _announcePending = false;
     var networkBtn = document.getElementById('network-announce-btn');
     if (networkBtn && networkBtn.dataset) delete networkBtn.dataset.announcePending;
@@ -2000,6 +2009,7 @@ RS.listen('announce_triggered', function(data) {
 
     if (data.success) {
         _lastAnnounceTime = Date.now();
+        window.dispatchEvent(new CustomEvent('ratspeak-manual-announce-result', { detail: data }));
         var alreadyQueued = data.disposition === 'already_queued' || data.disposition === 'deferred';
         if (typeof haptic === 'function') haptic(alreadyQueued ? 'light' : 'success');
         showToast(
@@ -2039,7 +2049,7 @@ RS.listen('announce_triggered', function(data) {
             setAnnounceLabel(networkBtn, 'Announce');
             networkBtn.disabled = false;
         }
-    } else {
+    } else if (data.error === 'not_ready') {
         if (typeof haptic === 'function') haptic('error');
         showToast('Ratspeak is still starting. Try Announce again.', 'toast-warning', 4000);
         if (origin && typeof showAnnounceFailAnimation === 'function') {
@@ -2049,8 +2059,21 @@ RS.listen('announce_triggered', function(data) {
             setAnnounceLabel(networkBtn, 'Announce');
             networkBtn.disabled = false;
         }
+    } else {
+        if (typeof haptic === 'function') haptic('error');
+        var failureMessage = data.error === 'busy'
+            ? 'Ratspeak is busy. Try Announce again in a moment.'
+            : (data.message || 'Could not send the announce');
+        showToast(failureMessage, data.error === 'busy' ? 'toast-warning' : 'toast-error', 5000);
+        if (origin && typeof showAnnounceFailAnimation === 'function') {
+            showAnnounceFailAnimation(origin.el, origin.cx, origin.cy);
+        }
+        if (networkBtn) {
+            setAnnounceLabel(networkBtn, 'Announce');
+            networkBtn.disabled = false;
+        }
     }
-});
+}
 
 function confirmDangerAction(action, onClose) {
     function _close() { if (typeof onClose === 'function') try { onClose(); } catch (_) {} }

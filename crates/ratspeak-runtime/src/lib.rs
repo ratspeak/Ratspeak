@@ -69,6 +69,7 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
+const ANNOUNCE_LXMF_LOCK_WAIT: Duration = Duration::from_millis(500);
 
 #[cfg(all(feature = "ble", target_os = "android"))]
 fn interface_mode_name(mode: rns_interface::traits::InterfaceMode) -> &'static str {
@@ -2200,6 +2201,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             let rnode_activity_origin = state.set_rns(rns_mgr);
             if let Some(origin) = rnode_activity_origin {
                 for runtime in startup_rnode_activity {
+                    if !state.cover_rnode_activity_interface(runtime.interface_id, origin) {
+                        continue;
+                    }
                     rnode_activity::spawn_startup_rnode_activity_monitor(
                         state.clone(),
                         runtime.observer,
@@ -3350,6 +3354,82 @@ async fn submit_announce_intent(
     first_report.expect("leader always executes at least one presence burst")
 }
 
+type PresenceAnnouncePacket = ([u8; 16], Vec<u8>, bool);
+
+enum PresencePacketBuildAttempt {
+    Built {
+        packets: Vec<PresenceAnnouncePacket>,
+        delivery_coalesced: bool,
+        delivery_failed: bool,
+    },
+    Busy,
+    Poisoned,
+}
+
+fn try_build_presence_announce_packets(
+    state: &AppState,
+    correlation_id: u64,
+) -> PresencePacketBuildAttempt {
+    let mut lxmf = match state.lxmf.try_lock() {
+        Ok(lxmf) => lxmf,
+        Err(std::sync::TryLockError::WouldBlock) => return PresencePacketBuildAttempt::Busy,
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            return PresencePacketBuildAttempt::Poisoned;
+        }
+    };
+    let mut packets = Vec::new();
+    let mut delivery_coalesced = false;
+    let mut delivery_failed = false;
+    if let Some(mgr) = lxmf.as_mut() {
+        let propagation_packet = if state
+            .propagation_node_hosting_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            match mgr.create_propagation_announce_packet() {
+                Ok(raw) => Some((mgr.propagation_dest_hash, raw, false)),
+                Err(error) => {
+                    delivery_failed = true;
+                    tracing::warn!(
+                        correlation_id,
+                        %error,
+                        "propagation announce component build failed"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // Build the delivery component last because its ratchet owns
+        // wall-clock coalescing state. A failed sibling build must not consume
+        // that ratchet when no bundle can be admitted.
+        if !delivery_failed {
+            match mgr.create_coordinated_announce_packet() {
+                Ok(raw) => {
+                    packets.push((mgr.lxmf_dest_hash, raw, true));
+                    packets.extend(propagation_packet);
+                }
+                Err(lxmf::CoordinatedDeliveryAnnounceError::Coalesced) => {
+                    delivery_coalesced = true;
+                }
+                Err(lxmf::CoordinatedDeliveryAnnounceError::Failed(error)) => {
+                    delivery_failed = true;
+                    tracing::warn!(
+                        correlation_id,
+                        %error,
+                        "LXMF delivery announce component build failed"
+                    );
+                }
+            }
+        }
+    }
+    PresencePacketBuildAttempt::Built {
+        packets,
+        delivery_coalesced,
+        delivery_failed,
+    }
+}
+
 async fn execute_announce_burst(
     state: &AppState,
     require_cached_online: bool,
@@ -3400,64 +3480,32 @@ async fn execute_announce_burst(
         return report;
     };
 
-    let (packets, delivery_coalesced, delivery_failed) = {
-        let mut packets: Vec<([u8; 16], Vec<u8>, bool)> = Vec::new();
-        let mut delivery_coalesced = false;
-        let mut delivery_failed = false;
-        let lock_wait_started = std::time::Instant::now();
-        if let Ok(mut lxmf) = state.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                let waited = lock_wait_started.elapsed();
-                if waited > Duration::from_secs(1) {
-                    tracing::warn!(
-                        waited_ms = waited.as_millis() as u64,
-                        "announce waited on lxmf manager lock"
-                    );
-                }
-                let propagation_packet = if state
-                    .propagation_node_hosting_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    match mgr.create_propagation_announce_packet() {
-                        Ok(raw) => Some((mgr.propagation_dest_hash, raw, false)),
-                        Err(error) => {
-                            delivery_failed = true;
-                            tracing::warn!(
-                                correlation_id = leadership.correlation_id,
-                                %error,
-                                "propagation announce component build failed"
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-                // Build the delivery component last because its ratchet owns
-                // wall-clock coalescing state. A failed sibling build must not
-                // consume that ratchet when no bundle can be admitted.
-                if !delivery_failed {
-                    match mgr.create_coordinated_announce_packet() {
-                        Ok(raw) => {
-                            packets.push((mgr.lxmf_dest_hash, raw, true));
-                            packets.extend(propagation_packet);
-                        }
-                        Err(lxmf::CoordinatedDeliveryAnnounceError::Coalesced) => {
-                            delivery_coalesced = true;
-                        }
-                        Err(lxmf::CoordinatedDeliveryAnnounceError::Failed(error)) => {
-                            delivery_failed = true;
-                            tracing::warn!(
-                                correlation_id = leadership.correlation_id,
-                                %error,
-                                "LXMF delivery announce component build failed"
-                            );
-                        }
-                    }
-                }
+    let lock_deadline = std::time::Instant::now() + ANNOUNCE_LXMF_LOCK_WAIT;
+    let (packets, delivery_coalesced, delivery_failed) = loop {
+        match try_build_presence_announce_packets(state, leadership.correlation_id) {
+            PresencePacketBuildAttempt::Built {
+                packets,
+                delivery_coalesced,
+                delivery_failed,
+            } => break (packets, delivery_coalesced, delivery_failed),
+            PresencePacketBuildAttempt::Busy if std::time::Instant::now() < lock_deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            PresencePacketBuildAttempt::Busy => {
+                tracing::info!(
+                    correlation_id = leadership.correlation_id,
+                    "presence announce not admitted because the LXMF manager is busy"
+                );
+                break (Vec::new(), false, true);
+            }
+            PresencePacketBuildAttempt::Poisoned => {
+                tracing::warn!(
+                    correlation_id = leadership.correlation_id,
+                    "presence announce failed because the LXMF manager lock is unavailable"
+                );
+                break (Vec::new(), false, true);
             }
         }
-        (packets, delivery_coalesced, delivery_failed)
     };
     report.packets = packets.len();
 
@@ -4855,9 +4903,10 @@ async fn push_stats_once(state: &AppState) {
             let interfaces: Vec<serde_json::Value> = s
                 .iter()
                 .map(|e| {
+                    let online = state.effective_interface_online(e.id, e.online);
                     json!({
                         "name": e.name, "rxb": e.rx_bytes, "txb": e.tx_bytes,
-                        "online": e.online, "bitrate": e.bitrate, "mtu": e.mtu, "mode": e.mode,
+                        "online": online, "bitrate": e.bitrate, "mtu": e.mtu, "mode": e.mode,
                         "role": e.role,
                         "announce_queue": e.announce_queue,
                         "held_announces": e.held_announces,
@@ -5165,7 +5214,7 @@ async fn poll_stats_loop(
                 Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(s)) => {
                     for iface in &s {
                         let name = iface.name.as_str();
-                        let online = iface.online;
+                        let online = state.effective_interface_online(iface.id, iface.online);
                         let burst_active = iface.burst_active;
                         let held_announces = iface.held_announces;
                         let key = iface.id;
@@ -5248,9 +5297,10 @@ async fn poll_stats_loop(
                     }
 
                     let interfaces: Vec<serde_json::Value> = s.iter().map(|e| {
+                        let online = state.effective_interface_online(e.id, e.online);
                         json!({
                             "name": e.name, "rxb": e.rx_bytes, "txb": e.tx_bytes,
-                            "online": e.online, "bitrate": e.bitrate, "mtu": e.mtu, "mode": e.mode,
+                            "online": online, "bitrate": e.bitrate, "mtu": e.mtu, "mode": e.mode,
                             "role": e.role,
                             "announce_queue": e.announce_queue,
                             "held_announces": e.held_announces,

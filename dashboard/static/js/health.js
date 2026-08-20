@@ -1474,12 +1474,6 @@ if (networkAnnounceBtn) {
         networkAnnounceBtn.disabled = true;
         if (networkAnnounceBtn.dataset) networkAnnounceBtn.dataset.announcePending = '1';
         networkAnnounceLabel.textContent = 'Announcing...';
-        setTimeout(function() {
-            if (networkAnnounceBtn.dataset && networkAnnounceBtn.dataset.announcePending !== '1') return;
-            if (networkAnnounceBtn.dataset) delete networkAnnounceBtn.dataset.announcePending;
-            networkAnnounceBtn.disabled = false;
-            networkAnnounceLabel.textContent = 'Announce';
-        }, 10000);
     });
 }
 

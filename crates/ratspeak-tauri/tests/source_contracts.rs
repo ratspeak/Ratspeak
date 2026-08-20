@@ -1455,6 +1455,9 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
         .expect("pending monitor attributes");
     assert!(!pending_attributes.contains("#[derive"));
     assert!(runtime_monitor.contains("origin: RNodeActivityOrigin"));
+    assert!(runtime_monitor.contains("state.set_rnode_product_readiness"));
+    assert!(runtime_state.contains("rnode_product_readiness:"));
+    assert!(runtime_state.contains("pub fn effective_interface_online("));
     let runtime_activation = rust_function_block(&runtime_monitor, "activate");
     assert!(runtime_activation.contains("self.origin"));
     assert!(
@@ -1474,6 +1477,10 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
         .expect("exact observer readiness wait");
     assert!(cover < readiness_wait, "coverage must precede readiness");
     assert!(shared_wait.contains("covered.then(||"));
+    assert!(
+        shared_wait
+            .contains("state.set_rnode_product_readiness(spawned.interface_id, origin, true)")
+    );
     assert!(shared_wait.contains(
         "PendingRNodeActivityMonitor::new(spawned.observer.clone(), ready_snapshot, origin)"
     ));
@@ -3565,6 +3572,9 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     );
     assert!(settings_js.contains("_announcePending = false;"));
     assert!(settings_js.contains("Announce already queued"));
+    assert!(settings_js.contains("function handleManualAnnounceResult(data)"));
+    assert!(settings_js.contains("RS.invoke('trigger_announce').then(function(data)"));
+    assert!(!settings_js.contains("RS.listen('announce_triggered'"));
     assert!(!settings_js.contains("data.error === 'not_sent'"));
     assert!(settings_js.contains("delete networkBtn.dataset.announcePending"));
     assert!(
@@ -3574,7 +3584,7 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
 
     let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
     assert!(health_js.contains("networkAnnounceBtn.dataset.announcePending = '1'"));
-    assert!(health_js.contains("networkAnnounceBtn.dataset.announcePending !== '1'"));
+    assert!(!health_js.contains("networkAnnounceBtn.dataset.announcePending !== '1'"));
     assert!(health_js.contains("function interfaceStatsWithoutAutoPeerDoubleCount"));
     assert!(health_js.contains("AutoInterfacePeer["));
 
@@ -3595,9 +3605,15 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let network_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
         .expect("network command source");
     assert!(network_rs.contains("send_manual_announce_from_origin"));
+    assert!(!network_rs.contains("\"announce_triggered\""));
     assert!(!network_rs.contains("\"not_sent\""));
     assert!(!network_rs.contains("Duration::from_millis(450)"));
     assert!(network_rs.contains("\"shared_server\" | \"local_client\""));
+
+    let runtime_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime source");
+    assert!(runtime_rs.contains("match state.lxmf.try_lock()"));
+    assert!(!runtime_rs.contains("announce waited on lxmf manager lock"));
 }
 
 #[test]
@@ -4774,10 +4790,11 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(runtime_rs.contains("producer::AnnounceMethod::LxstService"));
     assert!(runtime_rs.contains("voice::shutdown_voice_service_for_runtime_teardown(state).await"));
     let presence_burst = rust_function_block(&runtime_rs, "execute_announce_burst");
-    let propagation_build = presence_burst
+    let presence_build = rust_function_block(&runtime_rs, "try_build_presence_announce_packets");
+    let propagation_build = presence_build
         .find("create_propagation_announce_packet()")
         .expect("propagation component build");
-    let delivery_build = presence_burst
+    let delivery_build = presence_build
         .find("create_coordinated_announce_packet()")
         .expect("delivery component build");
     assert!(
