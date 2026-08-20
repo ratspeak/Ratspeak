@@ -36,6 +36,19 @@ impl AnnounceOrigin {
             Self::PropagationChanged => "propagation_changed",
         }
     }
+
+    /// One-shot semantic triggers must survive a covered lead that later
+    /// fails. Manual/repeating triggers can report that terminal failure to
+    /// their caller or be submitted again by their normal scheduler.
+    const fn retries_after_covered_failure(self) -> bool {
+        matches!(
+            self,
+            Self::InterfaceOnline
+                | Self::IdentityChanged
+                | Self::ProfileChanged
+                | Self::PropagationChanged
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -113,6 +126,11 @@ impl PendingBurst {
         self.revisions = self.revisions.merge(intent.revisions);
         self.origins.insert(intent.origin);
     }
+
+    fn merge_burst(&mut self, other: PendingBurst) {
+        self.revisions = self.revisions.merge(other.revisions);
+        self.origins.extend(other.origins);
+    }
 }
 
 #[derive(Clone)]
@@ -127,6 +145,7 @@ pub struct AnnounceCoordinator {
     next_correlation_id: u64,
     in_flight: Option<PendingBurst>,
     follow_up: Option<PendingBurst>,
+    retry_after_failure: Option<PendingBurst>,
     recent: Option<RecentBurst>,
 }
 
@@ -146,14 +165,33 @@ impl AnnounceCoordinator {
     }
 
     pub fn admit(&mut self, intent: AnnounceIntent, now: Instant) -> AnnounceAdmission {
-        if let Some(in_flight) = self.in_flight.as_mut() {
-            if in_flight.revisions.covers(intent.revisions) {
-                in_flight.origins.insert(intent.origin);
-                return AnnounceAdmission::AlreadyQueued {
-                    correlation_id: in_flight.correlation_id,
-                };
+        if self
+            .in_flight
+            .as_ref()
+            .is_some_and(|burst| burst.revisions.covers(intent.revisions))
+        {
+            let correlation_id = self
+                .in_flight
+                .as_ref()
+                .expect("covered in-flight burst checked above")
+                .correlation_id;
+            self.in_flight
+                .as_mut()
+                .expect("covered in-flight burst checked above")
+                .origins
+                .insert(intent.origin);
+            if intent.origin.retries_after_covered_failure() {
+                if let Some(retry) = self.retry_after_failure.as_mut() {
+                    retry.merge(intent);
+                } else {
+                    let retry = self.new_burst(intent);
+                    self.retry_after_failure = Some(retry);
+                }
             }
+            return AnnounceAdmission::AlreadyQueued { correlation_id };
+        }
 
+        if self.in_flight.is_some() {
             if let Some(follow_up) = self.follow_up.as_mut() {
                 follow_up.merge(intent);
             } else {
@@ -170,8 +208,15 @@ impl AnnounceCoordinator {
         }
 
         if let Some(recent) = self.recent.as_ref() {
-            if now.saturating_duration_since(recent.completed_at) < RECENT_BURST_WINDOW
-                && recent.revisions.covers(intent.revisions)
+            let revisions_covered = recent.revisions.covers(intent.revisions);
+            let within_repeat_window =
+                now.saturating_duration_since(recent.completed_at) < RECENT_BURST_WINDOW;
+            // Interface-online work is semantic, not periodic. A successful
+            // burst that already covered this exact interface revision remains
+            // authoritative even if a delayed stats poll submits the automatic
+            // intent after the short repeat-tap window has elapsed.
+            if revisions_covered
+                && (within_repeat_window || intent.origin == AnnounceOrigin::InterfaceOnline)
             {
                 return AnnounceAdmission::AlreadyQueued {
                     correlation_id: recent.correlation_id,
@@ -211,6 +256,13 @@ impl AnnounceCoordinator {
                 revisions: completed.revisions,
                 completed_at: now,
             });
+            self.retry_after_failure = None;
+        } else if let Some(retry) = self.retry_after_failure.take() {
+            if let Some(follow_up) = self.follow_up.as_mut() {
+                follow_up.merge_burst(retry);
+            } else {
+                self.follow_up = Some(retry);
+            }
         }
         if let Some(follow_up) = self.follow_up.take() {
             let leadership = follow_up.leadership();
@@ -316,6 +368,74 @@ mod tests {
     }
 
     #[test]
+    fn unaccepted_delivery_build_cannot_cover_delayed_interface_intent() {
+        let now = Instant::now();
+        let mut coordinator = AnnounceCoordinator::default();
+        let AnnounceAdmission::Lead { correlation_id } =
+            coordinator.admit(intent(AnnounceOrigin::Manual, 2, 4), now)
+        else {
+            panic!("manual request must lead");
+        };
+        // Models ratchet construction followed by stale/offline/channel
+        // rejection: without actual transport acceptance this is terminally
+        // unsuccessful and must not create semantic coverage.
+        assert!(coordinator.finish(correlation_id, false, now).is_none());
+        assert!(matches!(
+            coordinator.admit(
+                intent(AnnounceOrigin::InterfaceOnline, 2, 4),
+                now + RECENT_BURST_WINDOW + Duration::from_secs(7),
+            ),
+            AnnounceAdmission::Lead { .. }
+        ));
+    }
+
+    #[test]
+    fn covered_interface_intent_is_retried_once_when_lead_fails() {
+        let now = Instant::now();
+        let mut coordinator = AnnounceCoordinator::default();
+        let AnnounceAdmission::Lead { correlation_id } =
+            coordinator.admit(intent(AnnounceOrigin::Manual, 2, 4), now)
+        else {
+            panic!("manual request must lead");
+        };
+        assert_eq!(
+            coordinator.admit(intent(AnnounceOrigin::InterfaceOnline, 2, 4), now),
+            AnnounceAdmission::AlreadyQueued { correlation_id }
+        );
+
+        let retry = coordinator
+            .finish(correlation_id, false, now)
+            .expect("covered one-shot interface intent must survive lead failure");
+        assert_ne!(retry.correlation_id, correlation_id);
+        assert_eq!(
+            retry.revisions,
+            intent(AnnounceOrigin::Manual, 2, 4).revisions
+        );
+        assert_eq!(retry.origins, vec![AnnounceOrigin::InterfaceOnline]);
+        assert!(
+            coordinator
+                .finish(retry.correlation_id, true, now)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn covered_interface_intent_is_discarded_when_lead_succeeds() {
+        let now = Instant::now();
+        let mut coordinator = AnnounceCoordinator::default();
+        let AnnounceAdmission::Lead { correlation_id } =
+            coordinator.admit(intent(AnnounceOrigin::Manual, 2, 4), now)
+        else {
+            panic!("manual request must lead");
+        };
+        assert_eq!(
+            coordinator.admit(intent(AnnounceOrigin::InterfaceOnline, 2, 4), now),
+            AnnounceAdmission::AlreadyQueued { correlation_id }
+        );
+        assert!(coordinator.finish(correlation_id, true, now).is_none());
+    }
+
+    #[test]
     fn delayed_interface_intent_is_covered_when_manual_sampled_its_ready_revision() {
         let now = Instant::now();
         let mut coordinator = AnnounceCoordinator::default();
@@ -327,7 +447,10 @@ mod tests {
         assert!(coordinator.finish(correlation_id, true, now).is_none());
 
         assert_eq!(
-            coordinator.admit(intent(AnnounceOrigin::InterfaceOnline, 2, 4), now),
+            coordinator.admit(
+                intent(AnnounceOrigin::InterfaceOnline, 2, 4),
+                now + RECENT_BURST_WINDOW + Duration::from_secs(7),
+            ),
             AnnounceAdmission::AlreadyQueued { correlation_id }
         );
     }

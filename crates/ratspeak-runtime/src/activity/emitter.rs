@@ -166,7 +166,7 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         "rns.path.discovered" => "Path discovered",
         "rns.path.observed" => "Path observed",
         "rns.path.timed_out" => "Path request timed out",
-        "rns.announce.sent" => "Presence queued",
+        "rns.announce.sent" => "Announce queued",
         "rns.announce.failed" => "Announce failed",
         "rns.announce.held" => "Announce queued",
         "rns.announce.observed" => "Announce observed",
@@ -1582,7 +1582,7 @@ mod tests {
                 Normal,
                 [Method, State, Count, InterfaceClass],
                 "announce",
-                "Presence queued",
+                "Announce queued",
                 "standard"
             ),
             projection_case!(
@@ -1601,7 +1601,7 @@ mod tests {
                 Normal,
                 [Method, State, Count],
                 "announce",
-                "Presence queued",
+                "Announce queued",
                 "standard"
             ),
             projection_case!(

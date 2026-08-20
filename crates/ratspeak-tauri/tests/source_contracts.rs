@@ -3609,7 +3609,7 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
             "settings interface actions must not swallow IPC/backend failures"
         );
     }
-    assert!(settings_js.contains("Presence queued"));
+    assert!(settings_js.contains("Announce queued"));
     assert!(settings_js.contains("var _announcePending = false;"));
     let pending_guard = settings_js
         .find("_announcePending = true;")
@@ -3622,7 +3622,7 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
         "manual announce ownership must be claimed before IPC"
     );
     assert!(settings_js.contains("_announcePending = false;"));
-    assert!(settings_js.contains("Presence already queued"));
+    assert!(settings_js.contains("Announce already queued"));
     assert!(settings_js.contains("function handleManualAnnounceResult(data)"));
     assert!(settings_js.contains("RS.invoke('trigger_announce').then(function(data)"));
     assert!(!settings_js.contains("RS.listen('announce_triggered'"));
@@ -3669,8 +3669,12 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime source");
     assert!(runtime_rs.contains("match state.lxmf.try_lock()"));
     assert!(
-        runtime_rs.contains("const ANNOUNCE_LXMF_LOCK_WAIT: Duration = Duration::from_millis(500)")
+        runtime_rs
+            .contains("const ANNOUNCE_LXMF_BUILD_RETRY_WINDOW: Duration = Duration::from_secs(30)")
     );
+    assert!(runtime_rs.contains("ANNOUNCE_LXMF_BUILD_RETRY_INTERVAL"));
+    assert!(runtime_rs.contains("leadership.revisions.identity"));
+    assert!(runtime_rs.contains("current_identity_session_generation()"));
     assert!(runtime_rs.contains("ANNOUNCE_QUEUE_ADMISSION_WAIT"));
     assert_eq!(
         runtime_rs
@@ -3682,6 +3686,27 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     let submit = rust_function_block(&runtime_rs, "submit_announce_intent");
     assert!(submit.contains("tokio::spawn(async move"));
     assert!(submit.contains("run_announce_lifecycle("));
+    let lifecycle = rust_function_block(&runtime_rs, "run_announce_lifecycle");
+    assert!(
+        lifecycle.contains(
+            "let success = matches!(report.disposition, AnnounceSendDisposition::Queued)"
+        )
+    );
+    let burst = rust_function_block(&runtime_rs, "execute_announce_burst");
+    let packet_build = burst
+        .find("try_build_presence_announce_packets")
+        .expect("cooperative LXMF packet build");
+    let transport_capture = burst
+        .find("mgr.handle.transport_tx.clone()")
+        .expect("post-build current transport capture");
+    assert!(packet_build < transport_capture);
+    assert!(burst.contains("state.is_current_activity_origin_fence(activity_origin)"));
+    assert!(burst.contains("state.identity_switch_lock.lock().await"));
+    assert!(
+        burst.contains("is_current_activity_request_fence_after_identity_lock(activity_origin)")
+    );
+    assert!(burst.contains("any_interface_online_cached(state)"));
+    assert!(!burst.contains("report.disposition = AnnounceSendDisposition::AlreadyQueued"));
     assert!(!runtime_rs.contains("announce waited on lxmf manager lock"));
 }
 

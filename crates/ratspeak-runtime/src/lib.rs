@@ -69,9 +69,11 @@ const CHANNEL_BUFFER_SIZE: usize = 64;
 const ANNOUNCE_HISTORY_CAP: usize = 5_000;
 const AUTO_INBOX_READY_RETRY_SECS: f64 = 30.0;
 const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
-// Presence construction no longer runs on the requesting IPC future, but every
-// stage remains short and bounded so coordinator leadership cannot be stranded.
-const ANNOUNCE_LXMF_LOCK_WAIT: Duration = Duration::from_millis(500);
+// Presence construction no longer runs on the requesting IPC future. A queued
+// lifecycle may wait cooperatively for a busy LXMF tick, but it never holds the
+// manager lock while waiting and still has one bounded terminal deadline.
+const ANNOUNCE_LXMF_BUILD_RETRY_WINDOW: Duration = Duration::from_secs(30);
+const ANNOUNCE_LXMF_BUILD_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const ANNOUNCE_QUEUE_ADMISSION_WAIT: Duration = Duration::from_secs(1);
 
 #[cfg(all(feature = "ble", target_os = "android"))]
@@ -3038,6 +3040,11 @@ pub struct AnnounceSendReport {
     lxst_queued: bool,
 }
 
+struct AnnounceBurstExecution {
+    report: AnnounceSendReport,
+    activity_recorded: bool,
+}
+
 pub async fn send_announce_from_state(state: &Arc<AppState>) -> AnnounceSendReport {
     let activity_origin = state.activity_request_fence();
     submit_announce_intent(state, AnnounceOrigin::Periodic, true, activity_origin).await
@@ -3315,21 +3322,31 @@ async fn run_announce_lifecycle(
             return;
         };
 
-        let report = if state.is_current_activity_origin_fence(current_activity_origin)
+        let execution = if state.is_current_activity_origin_fence(current_activity_origin)
             && leadership.revisions.identity == state.current_identity_session_generation()
         {
-            execute_announce_burst(&state, require_cached_online, &leadership).await
+            execute_announce_burst(
+                &state,
+                require_cached_online,
+                current_activity_origin,
+                &leadership,
+            )
+            .await
         } else {
             tracing::info!(
                 correlation_id = leadership.correlation_id,
                 "stale presence announce suppressed"
             );
-            AnnounceSendReport {
-                disposition: AnnounceSendDisposition::Failed,
-                correlation_id: leadership.correlation_id,
-                ..AnnounceSendReport::default()
+            AnnounceBurstExecution {
+                report: AnnounceSendReport {
+                    disposition: AnnounceSendDisposition::Failed,
+                    correlation_id: leadership.correlation_id,
+                    ..AnnounceSendReport::default()
+                },
+                activity_recorded: false,
             }
         };
+        let report = execution.report;
         // Capture origins merged while the builder/transport work was in
         // progress before recording the lifecycle's single public entry.
         let completed_leadership = state
@@ -3338,17 +3355,16 @@ async fn run_announce_lifecycle(
             .ok()
             .and_then(|coordinator| coordinator.leadership(leadership.correlation_id))
             .unwrap_or(leadership);
-        record_presence_lifecycle_activity(
-            &state,
-            current_activity_origin,
-            &completed_leadership,
-            &report,
-        );
+        if !execution.activity_recorded {
+            record_presence_lifecycle_activity(
+                &state,
+                current_activity_origin,
+                &completed_leadership,
+                &report,
+            );
+        }
 
-        let success = matches!(
-            report.disposition,
-            AnnounceSendDisposition::Queued | AnnounceSendDisposition::AlreadyQueued
-        );
+        let success = matches!(report.disposition, AnnounceSendDisposition::Queued);
         let follow_up = state
             .announce_coordinator
             .lock()
@@ -3400,8 +3416,56 @@ fn record_presence_lifecycle_activity(
     leadership: &AnnounceLeadership,
     report: &AnnounceSendReport,
 ) {
-    if report.disposition == AnnounceSendDisposition::AlreadyQueued {
+    let Some(event) = presence_lifecycle_activity_event(leadership, report) else {
         return;
+    };
+    record_activity_if_current(state, activity_origin, || Ok(event));
+}
+
+/// Record while `identity_switch_lock` is held. This is the final wire-send
+/// ownership seam: the same fence that authorizes transport admission also
+/// authorizes the one correlated Activity result before the lock is released.
+fn record_presence_lifecycle_activity_after_identity_lock(
+    state: &AppState,
+    activity_origin: ActivityRequestFence,
+    leadership: &AnnounceLeadership,
+    report: &AnnounceSendReport,
+) {
+    let Some(event) = presence_lifecycle_activity_event(leadership, report) else {
+        return;
+    };
+    let _ = state.activity.record_event_fenced(
+        || state.is_current_activity_request_fence_after_identity_lock(activity_origin),
+        || Ok(event),
+    );
+}
+
+fn record_current_presence_lifecycle_activity_after_identity_lock(
+    state: &AppState,
+    activity_origin: ActivityRequestFence,
+    leadership: &AnnounceLeadership,
+    report: &AnnounceSendReport,
+) {
+    let completed_leadership = state
+        .announce_coordinator
+        .lock()
+        .ok()
+        .and_then(|coordinator| coordinator.leadership(leadership.correlation_id))
+        .unwrap_or_else(|| leadership.clone());
+    record_presence_lifecycle_activity_after_identity_lock(
+        state,
+        activity_origin,
+        &completed_leadership,
+        report,
+    );
+}
+
+fn presence_lifecycle_activity_event(
+    leadership: &AnnounceLeadership,
+    report: &AnnounceSendReport,
+) -> Option<ProducerEvent> {
+    if report.disposition == AnnounceSendDisposition::AlreadyQueued {
+        return None;
     }
     let transition = if report.disposition == AnnounceSendDisposition::Queued
         && report.lxmf_delivery_queued
@@ -3423,14 +3487,12 @@ fn record_presence_lifecycle_activity(
             },
         }
     };
-    record_activity_if_current(state, activity_origin, || {
-        Ok(producer::rns_announce_activity(
-            producer::RnsAnnounceActivity {
-                transition,
-                interface: None,
-            },
-        ))
-    });
+    Some(producer::rns_announce_activity(
+        producer::RnsAnnounceActivity {
+            transition,
+            interface: None,
+        },
+    ))
 }
 
 type PresenceAnnouncePacket = ([u8; 16], Vec<u8>, bool);
@@ -3512,8 +3574,9 @@ fn try_build_presence_announce_packets(
 async fn execute_announce_burst(
     state: &AppState,
     require_cached_online: bool,
+    activity_origin: ActivityRequestFence,
     leadership: &AnnounceLeadership,
-) -> AnnounceSendReport {
+) -> AnnounceBurstExecution {
     let mut report = AnnounceSendReport {
         correlation_id: leadership.correlation_id,
         ..AnnounceSendReport::default()
@@ -3536,7 +3599,110 @@ async fn execute_announce_burst(
         tracing::warn!("announce skipped: no interfaces online");
         report.failed = 1;
         report.disposition = AnnounceSendDisposition::Failed;
-        return report;
+        return AnnounceBurstExecution {
+            report,
+            activity_recorded: false,
+        };
+    }
+    let lock_deadline = std::time::Instant::now() + ANNOUNCE_LXMF_BUILD_RETRY_WINDOW;
+    let (packets, delivery_failed) = loop {
+        if !state.is_current_activity_origin_fence(activity_origin) {
+            tracing::info!(
+                correlation_id = leadership.correlation_id,
+                "stale presence announce suppressed while waiting for LXMF"
+            );
+            break (Vec::new(), true);
+        }
+        match try_build_presence_announce_packets(state, leadership.correlation_id) {
+            PresencePacketBuildAttempt::Built {
+                packets,
+                delivery_coalesced: false,
+                delivery_failed,
+            } => break (packets, delivery_failed),
+            PresencePacketBuildAttempt::Built {
+                delivery_coalesced: true,
+                ..
+            } if std::time::Instant::now() < lock_deadline => {
+                // The delivery ratchet commits before returning packet bytes.
+                // Coalescing therefore proves only a same-second build, never
+                // prior transport acceptance. Retry into the next wall-clock
+                // interval instead of promoting it to false success.
+                tokio::time::sleep(ANNOUNCE_LXMF_BUILD_RETRY_INTERVAL).await;
+            }
+            PresencePacketBuildAttempt::Built {
+                delivery_coalesced: true,
+                ..
+            } => {
+                tracing::warn!(
+                    correlation_id = leadership.correlation_id,
+                    "presence announce retry window expired on delivery ratchet coalescing"
+                );
+                break (Vec::new(), true);
+            }
+            PresencePacketBuildAttempt::Busy if std::time::Instant::now() < lock_deadline => {
+                tokio::time::sleep(ANNOUNCE_LXMF_BUILD_RETRY_INTERVAL).await;
+            }
+            PresencePacketBuildAttempt::Busy => {
+                tracing::warn!(
+                    correlation_id = leadership.correlation_id,
+                    "presence announce retry window expired while the LXMF manager was busy"
+                );
+                break (Vec::new(), true);
+            }
+            PresencePacketBuildAttempt::Poisoned => {
+                tracing::warn!(
+                    correlation_id = leadership.correlation_id,
+                    "presence announce failed because the LXMF manager lock is unavailable"
+                );
+                break (Vec::new(), true);
+            }
+        }
+    };
+    report.packets = packets.len();
+
+    if delivery_failed || !packets.iter().any(|(_, _, is_delivery)| *is_delivery) {
+        report.failed = 1;
+        report.disposition = AnnounceSendDisposition::Failed;
+        return AnnounceBurstExecution {
+            report,
+            activity_recorded: false,
+        };
+    }
+
+    // Bind the prepared bytes and their final transport admission to the same
+    // exact identity/runtime lifecycle span. This covers same-identity RNS
+    // replacement as well as identity switches, and the guard remains held
+    // through the bounded channel admissions and correlated Activity record.
+    let _identity_lifecycle = state.identity_switch_lock.lock().await;
+    if !state.is_current_activity_request_fence_after_identity_lock(activity_origin) {
+        tracing::info!(
+            correlation_id = leadership.correlation_id,
+            "stale presence announce suppressed before transport admission"
+        );
+        report.failed = 1;
+        report.disposition = AnnounceSendDisposition::Failed;
+        return AnnounceBurstExecution {
+            report,
+            activity_recorded: false,
+        };
+    }
+    if matches!(any_interface_online_cached(state), Some(false)) {
+        tracing::warn!(
+            correlation_id = leadership.correlation_id,
+            "announce skipped after retry because no interface remains online"
+        );
+        report.failed = 1;
+        report.disposition = AnnounceSendDisposition::Failed;
+        record_current_presence_lifecycle_activity_after_identity_lock(
+            state,
+            activity_origin,
+            leadership,
+            &report,
+        );
+        return AnnounceBurstExecution {
+            report,
+            activity_recorded: true,
+        };
     }
     let transport_tx = state
         .rns
@@ -3546,51 +3712,17 @@ async fn execute_announce_burst(
     let Some(tx) = transport_tx else {
         report.failed = 1;
         report.disposition = AnnounceSendDisposition::Failed;
-        return report;
-    };
-
-    let lock_deadline = std::time::Instant::now() + ANNOUNCE_LXMF_LOCK_WAIT;
-    let (packets, delivery_coalesced, delivery_failed) = loop {
-        match try_build_presence_announce_packets(state, leadership.correlation_id) {
-            PresencePacketBuildAttempt::Built {
-                packets,
-                delivery_coalesced,
-                delivery_failed,
-            } => break (packets, delivery_coalesced, delivery_failed),
-            PresencePacketBuildAttempt::Busy if std::time::Instant::now() < lock_deadline => {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            PresencePacketBuildAttempt::Busy => {
-                tracing::info!(
-                    correlation_id = leadership.correlation_id,
-                    "presence announce not admitted because the LXMF manager is busy"
-                );
-                break (Vec::new(), false, true);
-            }
-            PresencePacketBuildAttempt::Poisoned => {
-                tracing::warn!(
-                    correlation_id = leadership.correlation_id,
-                    "presence announce failed because the LXMF manager lock is unavailable"
-                );
-                break (Vec::new(), false, true);
-            }
-        }
-    };
-    report.packets = packets.len();
-
-    if delivery_coalesced {
-        report.disposition = AnnounceSendDisposition::AlreadyQueued;
-        tracing::info!(
-            correlation_id = leadership.correlation_id,
-            "complete presence burst coalesced by LXMF delivery ratchet"
+        record_current_presence_lifecycle_activity_after_identity_lock(
+            state,
+            activity_origin,
+            leadership,
+            &report,
         );
-        return report;
-    }
-    if delivery_failed || !packets.iter().any(|(_, _, is_delivery)| *is_delivery) {
-        report.failed = 1;
-        report.disposition = AnnounceSendDisposition::Failed;
-        return report;
-    }
+        return AnnounceBurstExecution {
+            report,
+            activity_recorded: true,
+        };
+    };
 
     for (destination_hash, raw, is_lxmf_delivery) in packets {
         let packet_len = raw.len();
@@ -3689,7 +3821,16 @@ async fn execute_announce_burst(
         disposition = ?report.disposition,
         "presence announce burst completed"
     );
-    report
+    record_current_presence_lifecycle_activity_after_identity_lock(
+        state,
+        activity_origin,
+        leadership,
+        &report,
+    );
+    AnnounceBurstExecution {
+        report,
+        activity_recorded: true,
+    }
 }
 
 // FIELD_FILE_ATTACHMENTS 0x05 = msgpack `[[filename, bytes], …]`.

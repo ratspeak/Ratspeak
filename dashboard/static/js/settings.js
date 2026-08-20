@@ -1968,7 +1968,7 @@ function setAnnounceLabel(btn, text) {
 // Returns true if IPC fired, false if rate-limited or no online interface.
 function tryTriggerAnnounce() {
     if (_announcePending) {
-        showToast('Presence already queued', 'toast-info', 2500);
+        showToast('Announce already queued', 'toast-info', 2500);
         return false;
     }
     if (Date.now() - _lastAnnounceTime < ANNOUNCE_COOLDOWN) {
@@ -2013,7 +2013,7 @@ function handleManualAnnounceResult(data) {
         var alreadyQueued = data.disposition === 'already_queued' || data.disposition === 'deferred';
         if (typeof haptic === 'function') haptic(alreadyQueued ? 'light' : 'success');
         showToast(
-            alreadyQueued ? 'Presence already queued' : 'Presence queued',
+            alreadyQueued ? 'Announce already queued' : 'Announce queued',
             alreadyQueued ? 'toast-info' : 'toast-success',
             4000
         );

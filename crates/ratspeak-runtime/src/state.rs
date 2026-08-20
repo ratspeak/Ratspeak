@@ -3604,6 +3604,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_announce_retry_cannot_cross_runtime_or_identity_replacement() {
+        let state = make_state();
+
+        let same_identity_retry = state.activity_request_fence();
+        assert!(state.is_current_activity_origin_fence(same_identity_retry));
+        state.bump_activity_boundary_generation();
+        assert!(!state.is_current_activity_origin_fence(same_identity_retry));
+        let runtime_admission = state.identity_switch_lock.lock().await;
+        assert!(
+            !state.is_current_activity_request_fence_after_identity_lock(same_identity_retry),
+            "a busy announce prepared before same-identity RNS replacement must not reach egress"
+        );
+        drop(runtime_admission);
+
+        let identity_retry = state.activity_request_fence();
+        assert!(state.is_current_activity_origin_fence(identity_retry));
+        state.bump_identity_session_generation();
+        assert!(!state.is_current_activity_origin_fence(identity_retry));
+        let identity_admission = state.identity_switch_lock.lock().await;
+        assert!(
+            !state.is_current_activity_request_fence_after_identity_lock(identity_retry),
+            "a busy announce prepared before identity replacement must not reach egress"
+        );
+        drop(identity_admission);
+    }
+
+    #[tokio::test]
     async fn request_born_during_identity_lock_span_is_rejected_afterward() {
         let state = make_state();
         let transition = state.identity_switch_lock.lock().await;
