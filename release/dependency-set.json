@@ -9,8 +9,8 @@
       "x86_64"
     ],
     "platformBuilds": {
-      "androidVersionCode": 1000043,
-      "iosBundleVersion": "1000043"
+      "androidVersionCode": 1000044,
+      "iosBundleVersion": "1000044"
     },
     "predecessor": {
       "displayVersion": "1.0.27",
@@ -36,7 +36,7 @@
       "name": "rsReticulum",
       "repository": "https://github.com/ratspeak/rsReticulum.git",
       "path": "../rsReticulum",
-      "commit": "b4c0358beb7a3720f230fc1f0ca65b21e15947bc",
+      "commit": "8b7e20d5bfc379d24aeab2ab8e03edecc5c20430",
       "version": "1.2.0",
       "integrationTag": null
     },
