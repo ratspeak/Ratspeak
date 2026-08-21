@@ -366,11 +366,11 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Condvar, Mutex};
 
-    fn make_state() -> (tempfile::TempDir, Arc<AppState>) {
+    fn make_state_with_pool_size(max_size: u32) -> (tempfile::TempDir, Arc<AppState>) {
         let temp = tempfile::TempDir::new().unwrap();
         let config = DashboardConfig::from_env_and_defaults(temp.path().to_path_buf());
         let pool = r2d2::Pool::builder()
-            .max_size(2)
+            .max_size(max_size)
             .build(SqliteConnectionManager::memory())
             .unwrap();
         db::init_schema(&pool).unwrap();
@@ -384,6 +384,10 @@ mod tests {
             LxmfManager::load_or_create(temp.path(), None, None).expect("temporary LXMF manager"),
         );
         (temp, state)
+    }
+
+    fn make_state() -> (tempfile::TempDir, Arc<AppState>) {
+        make_state_with_pool_size(2)
     }
 
     #[tokio::test]
@@ -525,10 +529,12 @@ mod tests {
         );
     }
 
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn manager_acquired_during_snapshot_io_cannot_block_db_commit() {
-        let (_temp, state) = make_state();
+        // A single connection makes the observation deterministic: the query
+        // cannot see the old snapshot while the prune transaction is active;
+        // it can acquire the connection only after DELETE + COMMIT completes.
+        let (_temp, state) = make_state_with_pool_size(1);
         let victim = "88".repeat(16);
         state
             .lxmf
@@ -572,22 +578,40 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        let manager = state.lxmf.lock().unwrap();
-        let (lock, wake) = &*release;
-        *lock.lock().unwrap() = true;
-        wake.notify_all();
-        let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while db::get_identity_activity_first_seen(&state.db, &victim).is_some()
-            && std::time::Instant::now() < deadline
-        {
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(
-            db::get_identity_activity_first_seen(&state.db, &victim),
-            None,
-            "DB commit must not wait on the manager after snapshot capture"
-        );
-        drop(manager);
+        // Keep the deliberately blocking manager guard off the async executor.
+        // If the prune task resumes first after its DB transaction commits, it
+        // takes the same manager lock to report its retained count. Holding the
+        // guard in this async task would then deadlock a single-thread Tokio
+        // runtime before this task could observe the commit and release it.
+        let observer_state = Arc::clone(&state);
+        let observer_release = Arc::clone(&release);
+        let observer_victim = victim.clone();
+        tokio::task::spawn_blocking(move || {
+            let manager = observer_state.lxmf.lock().unwrap();
+            let (lock, wake) = &*observer_release;
+            *lock.lock().unwrap() = true;
+            wake.notify_all();
+
+            // A separate thread waits for the sole DB connection. The holder
+            // can still release the manager on timeout, so a regression cannot
+            // hang the entire test process.
+            let observer_db = observer_state.db.clone();
+            let (observed_tx, observed_rx) = std::sync::mpsc::sync_channel(1);
+            let query = std::thread::spawn(move || {
+                let observed = db::get_identity_activity_first_seen(&observer_db, &observer_victim);
+                let _ = observed_tx.send(observed);
+            });
+            let observed = observed_rx.recv_timeout(Duration::from_secs(2));
+            drop(manager);
+            query.join().unwrap();
+            assert_eq!(
+                observed,
+                Ok(None),
+                "DB commit must not wait on the manager after snapshot capture"
+            );
+        })
+        .await
+        .unwrap();
         assert_eq!(task.await.unwrap(), (1, 0));
     }
 }

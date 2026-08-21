@@ -5753,6 +5753,17 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         let workflow = read_source(root.join(workflow_path)).expect("release workflow");
         assert!(workflow.contains(r#""$(basename "$artifact")""#));
     }
+    for workflow_path in [
+        ".github/workflows/release-desktop.yml",
+        ".github/workflows/release-windows.yml",
+        ".github/workflows/release-macos.yml",
+    ] {
+        let workflow = read_source(root.join(workflow_path)).expect("desktop release workflow");
+        assert!(
+            workflow.contains("- name: Run tests\n        timeout-minutes: 20"),
+            "{workflow_path} must fail a hung test step before the platform build budget expires"
+        );
+    }
     let windows =
         read_source(root.join(".github/workflows/release-windows.yml")).expect("Windows release");
     assert!(windows.contains("git config --global core.autocrlf false"));
