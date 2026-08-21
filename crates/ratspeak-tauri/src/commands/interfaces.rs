@@ -316,85 +316,6 @@ pub async fn api_serial_ports() -> AppResult<Value> {
     Ok(json!([]))
 }
 
-/// Resolve the user-facing four-hex RNode suffix from a provisioned device's
-/// validated EEPROM serial. Host USB bridge serials are not suitable here:
-/// common CP2102-based boards often ship with the same factory value.
-#[tauri::command]
-pub async fn api_rnode_default_name(port: String) -> AppResult<Value> {
-    #[cfg(feature = "serial")]
-    {
-        let port = normalise_rnode_port(&sanitize_text(&port, 256))?;
-        if port.starts_with("ble://")
-            || port.starts_with("androidusb://")
-            || is_rnode_tcp_port(&port)
-        {
-            return Ok(json!({ "name": null }));
-        }
-        let name = tokio::task::spawn_blocking(move || probe_serial_rnode_default_name(&port))
-            .await
-            .map_err(|_| AppError::internal("RNode name probe task panicked"))?;
-        return Ok(json!({ "name": name }));
-    }
-    #[cfg(not(feature = "serial"))]
-    {
-        let _ = port;
-        Ok(json!({ "name": null }))
-    }
-}
-
-#[cfg(feature = "serial")]
-fn probe_serial_rnode_default_name(port_name: &str) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::time::{Duration, Instant};
-
-    let mut port = serialport::new(port_name, 115_200)
-        .timeout(Duration::from_millis(100))
-        .open()
-        .ok()?;
-    let _ = port.clear(serialport::ClearBuffer::Input);
-    let request =
-        rns_interface::rnode_admin::encode_frame(rns_interface::rnode::CMD_ROM_READ, &[0]);
-    port.write_all(&request).ok()?;
-    port.flush().ok()?;
-
-    let deadline = Instant::now() + Duration::from_millis(1_500);
-    let mut deframer = rns_interface::kiss::RawKissDeframer::new();
-    let mut buffer = [0_u8; 512];
-    while Instant::now() < deadline {
-        match port.read(&mut buffer) {
-            Ok(0) => {}
-            Ok(count) => {
-                for (command, payload) in deframer.feed(&buffer[..count]) {
-                    if command != rns_interface::rnode::CMD_ROM_READ {
-                        continue;
-                    }
-                    return default_name_from_rnode_eeprom(&payload);
-                }
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted
-                ) => {}
-            Err(_) => return None,
-        }
-    }
-    None
-}
-
-#[cfg(feature = "serial")]
-fn default_name_from_rnode_eeprom(payload: &[u8]) -> Option<String> {
-    if !matches!(
-        rns_interface::rnode_capabilities::classify_rnode_eeprom_image(payload).ok()?,
-        rns_interface::rnode_capabilities::RNodeEepromImage::Provisioned(_)
-    ) || payload.len() < 7
-    {
-        return None;
-    }
-    let serial = u32::from_be_bytes(payload[3..7].try_into().ok()?);
-    Some(format!("RNode_{:04X}", serial & 0xFFFF))
-}
-
 #[tauri::command]
 pub async fn api_ble_available() -> AppResult<Value> {
     // Android: bridge BLE is always present; no probe.
@@ -7893,31 +7814,6 @@ pub async fn remove_backbone_server(
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))
-}
-
-#[cfg(all(test, feature = "serial"))]
-mod rnode_default_name_tests {
-    use super::*;
-
-    #[test]
-    fn validated_eeprom_serial_produces_four_hex_default_name() {
-        let mut eeprom = vec![0xFF; 1024];
-        eeprom[..11].copy_from_slice(&[
-            0x03, 0xCA, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
-        ]);
-        eeprom[11..27].copy_from_slice(&[
-            0xAA, 0x65, 0x6D, 0x49, 0x6C, 0xD1, 0x46, 0xC9, 0x2D, 0x68, 0xDF, 0x6E, 0x6E, 0xC6,
-            0x82, 0x3A,
-        ]);
-        eeprom[0x9B] = 0x73;
-
-        assert_eq!(
-            default_name_from_rnode_eeprom(&eeprom).as_deref(),
-            Some("RNode_0405")
-        );
-        eeprom[11] ^= 1;
-        assert_eq!(default_name_from_rnode_eeprom(&eeprom), None);
-    }
 }
 
 #[cfg(test)]

@@ -1073,7 +1073,6 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::remove_backbone_server,
             ratspeak_tauri::commands::interfaces::api_rnode_presets,
             ratspeak_tauri::commands::interfaces::api_serial_ports,
-            ratspeak_tauri::commands::interfaces::api_rnode_default_name,
             ratspeak_tauri::commands::interfaces::api_ble_available,
             ratspeak_tauri::commands::interfaces::api_ble_scan,
             ratspeak_tauri::commands::interfaces::api_ble_peer_available,

@@ -1050,7 +1050,6 @@ function openRnodeModal(mode, editIface) {
     _rnodeResetPublicMap();
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
-    _serialNameProbePending = false;
 
     var bleList = document.getElementById('ble-device-list');
     if (bleList) bleList.innerHTML = '<div class="ble-scan-placeholder">Click "Scan" to find nearby RNode devices.</div>';
@@ -1149,7 +1148,6 @@ function closeRnodeModal() {
     RS.ui.closeExistingSheet('rnode-modal', 'rnode-modal-overlay');
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
-    _serialNameProbePending = false;
     _androidUsbSelectedDevice = null;
     _rnodeEditContext = null;
     _rnodeResetPublicMap();
@@ -1182,7 +1180,6 @@ function setRnodeConnectionType(type) {
 
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
-    _serialNameProbePending = false;
     _androidUsbSelectedDevice = null;
 
     if (type === 'serial') {
@@ -1215,13 +1212,12 @@ function updateRnodeHandoffHints() {
 }
 
 var _selectedSerialPort = null;
-var _serialNameProbePending = false;
 
 function _rnodeDefaultInterfaceName(deviceName) {
     var value = String(deviceName || '').trim();
     var match = value.match(/^RNode[\s_-]*([0-9a-f]{4})$/i);
     if (match) return 'RNode_' + match[1].toUpperCase();
-    return value || 'RNode';
+    return 'RNode';
 }
 
 function rnodeUpdateNextBtn() {
@@ -1236,7 +1232,7 @@ function rnodeUpdateNextBtn() {
         var tcpInput = document.getElementById('rnode-tcp-endpoint');
         hasDevice = !!(tcpInput && _normaliseRnodeTcpEndpoint(tcpInput.value).port);
     } else {
-        hasDevice = !!_selectedSerialPort && !_serialNameProbePending;
+        hasDevice = !!_selectedSerialPort;
     }
     btn.disabled = !hasDevice;
 }
@@ -1266,7 +1262,10 @@ function rnodeWizardNext() {
         if (!nameInput.value.trim()) nameInput.value = 'LoRa Radio';
     } else if (_selectedSerialPort) {
         if (!nameInput.value.trim()) {
-            nameInput.value = _selectedSerialPort.suggestedName || 'RNode';
+            // RNode_Firmware's advertised four-hex identifier is derived from
+            // Bluetooth hardware state and is not exposed by the serial KISS
+            // protocol. Do not substitute the unrelated EEPROM serial here.
+            nameInput.value = 'RNode';
         }
     }
 
@@ -2863,25 +2862,9 @@ document.getElementById('rnode-port').addEventListener('change', function() {
     var val = this.value;
     if (val) {
         var opt = this.options[this.selectedIndex];
-        var selected = { device: val, description: opt ? opt.textContent : val, suggestedName: null };
-        _selectedSerialPort = selected;
-        _serialNameProbePending = true;
-        RS.invoke('api_rnode_default_name', { port: val }).then(function(result) {
-            if (_selectedSerialPort !== selected) return;
-            var suggested = result && typeof result.name === 'string' ? result.name : 'RNode';
-            selected.suggestedName = _rnodeDefaultInterfaceName(suggested);
-            var nameInput = document.getElementById('rnode-iface-name');
-            if (nameInput && !nameInput.value.trim()) nameInput.value = selected.suggestedName;
-        }).catch(function() {
-            if (_selectedSerialPort === selected) selected.suggestedName = 'RNode';
-        }).then(function() {
-            if (_selectedSerialPort !== selected) return;
-            _serialNameProbePending = false;
-            rnodeUpdateNextBtn();
-        });
+        _selectedSerialPort = { device: val, description: opt ? opt.textContent : val };
     } else {
         _selectedSerialPort = null;
-        _serialNameProbePending = false;
     }
     rnodeUpdateNextBtn();
 });

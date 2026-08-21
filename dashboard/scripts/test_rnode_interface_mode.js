@@ -63,9 +63,13 @@ vm.runInNewContext(modalSource.slice(nameStart, nameEnd), nameContext, {
 });
 assert.strictEqual(nameContext._rnodeDefaultInterfaceName('RNode a8eb'), 'RNode_A8EB',
     'advertised BLE identifiers must use the product default interface shape');
-assert.strictEqual(nameContext._rnodeDefaultInterfaceName('RNode_0010'), 'RNode_0010',
-    'validated serial-derived names must remain stable');
-assert(modalSource.includes("RS.invoke('api_rnode_default_name', { port: val })"),
-    'desktop serial selection must resolve the provisioned RNode identifier');
+assert.strictEqual(nameContext._rnodeDefaultInterfaceName('RNode BFC5'), 'RNode_BFC5',
+    'the observed firmware advertisement must remain the canonical product identifier');
+assert.strictEqual(nameContext._rnodeDefaultInterfaceName('Unknown device'), 'RNode',
+    'unexpected local names must not become product identifiers');
+assert(!modalSource.includes("RS.invoke('api_rnode_default_name'"),
+    'serial setup must not substitute the unrelated provisioning serial');
+assert(modalSource.includes("nameInput.value = 'RNode';"),
+    'USB-only setup must use an honest editable fallback when no advertisement is observable');
 
 console.log('RNode interface mode tests passed');
