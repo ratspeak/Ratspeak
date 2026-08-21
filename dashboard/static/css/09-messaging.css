@@ -338,6 +338,10 @@
 }
 .lxmf-msg-content {
     word-break: break-word;
+    cursor: text;
+    user-select: text;
+    -webkit-user-select: text;
+    -webkit-touch-callout: default;
 }
 .rs-message-link {
     color: var(--accent);

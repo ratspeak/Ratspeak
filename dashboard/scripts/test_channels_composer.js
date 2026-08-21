@@ -12,6 +12,8 @@ var channelsPath = path.join(__dirname, '..', 'static', 'js', 'channels.js');
 var channelsSource = fs.readFileSync(channelsPath, 'utf8');
 var lxmfPath = path.join(__dirname, '..', 'static', 'js', 'lxmf.js');
 var lxmfSource = fs.readFileSync(lxmfPath, 'utf8');
+var uiSharedPath = path.join(__dirname, '..', 'static', 'js', 'ui_shared.js');
+var uiSharedSource = fs.readFileSync(uiSharedPath, 'utf8');
 
 function sourceFunctionFrom(source, name, nextName) {
     var start = source.indexOf('function ' + name);
@@ -39,10 +41,10 @@ function namedFunctionSource(source, name) {
     throw new Error('unterminated function ' + name);
 }
 
-var policySource = sourceFunction(
-    '_channelsApplyComposerTypingPolicy',
-    'channelsSelectRoom'
-);
+var policyStart = uiSharedSource.indexOf('RS.composer.usesNativeTypingDefaults =');
+var policyEnd = uiSharedSource.indexOf('RS.text.utf8Length =', policyStart);
+assert(policyStart !== -1 && policyEnd !== -1, 'shared composer typing policy must exist');
+var policySource = uiSharedSource.slice(policyStart, policyEnd);
 var insertionSource = sourceFunction('_channelsCanCompose', '_channelsDurableRoom');
 var sendSource = sourceFunction('channelsSendMessage', '_channelsBindUI');
 var renderRoomSource = sourceFunction('_channelsRenderRoom', '_channelsTimelineEntries');
@@ -163,17 +165,25 @@ function fakeInput(attributes) {
     };
 }
 
-var policyContext = {};
+var mobileTypingPlatform = false;
+var policyContext = {
+    window: {},
+    isTauriMobile: function() { return mobileTypingPlatform; },
+    isIOS: function() { return false; },
+    isAndroid: function() { return false; }
+};
+policyContext.window.RS = { composer: {} };
+policyContext.RS = policyContext.window.RS;
 vm.runInNewContext(
     policySource +
-        '\nthis.applyPolicy = _channelsApplyComposerTypingPolicy;' +
-        '\nthis.handleBeforeInput = _channelsHandleComposerBeforeInput;',
+        '\nthis.applyPolicy = RS.composer.applyTypingPolicy;' +
+        '\nthis.handleBeforeInput = RS.composer.handleBeforeInput;',
     policyContext,
     { filename: 'channels-composer-policy.js' }
 );
 
 var desktopInput = fakeInput();
-policyContext.applyPolicy(desktopInput, false);
+policyContext.applyPolicy(desktopInput);
 assert.strictEqual(desktopInput.getAttribute('autocomplete'), 'off');
 assert.strictEqual(desktopInput.getAttribute('autocorrect'), 'off');
 assert.strictEqual(desktopInput.getAttribute('autocapitalize'), 'off');
@@ -187,7 +197,8 @@ var mobileInput = fakeInput({
     spellcheck: 'false',
     writingsuggestions: 'false'
 });
-policyContext.applyPolicy(mobileInput, true);
+mobileTypingPlatform = true;
+policyContext.applyPolicy(mobileInput);
 ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck', 'writingsuggestions']
     .forEach(function(attribute) {
         assert.strictEqual(mobileInput.hasAttribute(attribute), false);
@@ -206,6 +217,13 @@ policyContext.handleBeforeInput({
     preventDefault: function() { replacementPrevented = true; }
 }, true);
 assert.strictEqual(replacementPrevented, false);
+
+assert(channelsSource.includes('RS.composer.bindTypingPolicy(input);'),
+    'Channels must bind the shared typing policy');
+assert(lxmfSource.includes('RS.composer.bindTypingPolicy(textarea);'),
+    'Direct Messages must bind the shared typing policy');
+assert(!channelsSource.includes('function _channelsApplyComposerTypingPolicy'),
+    'Channels must not duplicate the shared typing policy');
 
 var insertionInput = fakeInput();
 var insertionContext = {

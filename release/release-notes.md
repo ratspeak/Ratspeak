@@ -4,4 +4,5 @@
 - Moved LXMF identity, ratchet, and router persistence off the protocol lock and made pruning incremental, durable, and safe under concurrent activity.
 - Aligned LXMF first-hop establishment timing with Reticulum so slower radio links are not failed prematurely.
 - Clarified pending-message cancellation as stopping local retries without promising that a copy already handed to the network can be recalled.
+- Enabled native selection and copying of sent and received message text, and applied the same desktop typing-assistance policy to Direct Messages and Channels.
 - Added an exact dependency manifest and coordinated annotated sibling tags for reproducible v1.0.29 builds without date-based revision guessing.

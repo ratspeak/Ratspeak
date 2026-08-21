@@ -24,6 +24,9 @@ changes that materially affect how an artifact is reproduced.
   links are not failed prematurely.
 - Clarified pending-message cancellation as stopping local retries without
   promising that a copy already handed to the network can be recalled.
+- Enabled native selection and copying of sent and received message text, and
+  applied the same desktop typing-assistance policy to Direct Messages and
+  Channels.
 
 ### Changed
 

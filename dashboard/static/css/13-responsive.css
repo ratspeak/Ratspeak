@@ -565,6 +565,7 @@
     .lxmf-msg-content {
         -webkit-user-select: text;
         user-select: text;
+        -webkit-touch-callout: default;
     }
 
     /* Hash displays: select-all so one tap copies the whole value. */

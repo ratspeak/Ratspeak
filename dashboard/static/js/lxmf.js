@@ -3545,12 +3545,20 @@ function renderConversation(options) {
             var detachLongPress = RS.gestures.attachLongPress(bubble, {
                 duration: 500,
                 moveCancelPx: 12,
+                excludeZone: function(touch) {
+                    return _messageTouchTargetsSelectableText(touch, bubble);
+                },
                 hapticStages: [{ at: 0.55, level: 'light' }],
                 // Keep the gesture start passive. The transcript's delegated
                 // touch handler already preserves composer focus, while
                 // cancelling touchstart here prevents Android WebView from
                 // handing the same gesture to native vertical scrolling.
                 onFire: function(touch) {
+                    // Native selection owns long-presses that start on text.
+                    // Message actions remain available from bubble chrome,
+                    // media, metadata, and the desktop context menu.
+                    if (_messageTouchTargetsSelectableText(touch, bubble) ||
+                            _messageSelectionIntersectsBubble(bubble)) return;
                     var msgId = bubble.getAttribute('data-msg-id');
                     if (!msgId) return;
                     var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
@@ -3563,6 +3571,12 @@ function renderConversation(options) {
             if (typeof detachLongPress === 'function') _messageLongPressDetachFns.push(detachLongPress);
         }
         bubble.addEventListener('contextmenu', function(e) {
+            var target = e.target;
+            var selectableText = target && target.closest && target.closest('.lxmf-msg-content');
+            var touchModality = document.documentElement.dataset.inputModality === 'touch';
+            if (selectableText && (touchModality || _messageSelectionIntersectsBubble(this))) {
+                return;
+            }
             e.preventDefault();
             if (Date.now() < _suppressNextContextMenuUntil) return;
             var msgId = this.getAttribute('data-msg-id');
@@ -4468,6 +4482,25 @@ function _messageActionIcon(name) {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
     }
     return '';
+}
+
+function _messageSelectionIntersectsBubble(bubble) {
+    if (!bubble || !window.getSelection) return false;
+    var selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount < 1) return false;
+    var range = selection.getRangeAt(0);
+    if (range && typeof range.intersectsNode === 'function') {
+        try { return range.intersectsNode(bubble); }
+        catch (_) {}
+    }
+    var ancestor = range && range.commonAncestorContainer;
+    return !!ancestor && bubble.contains(ancestor);
+}
+
+function _messageTouchTargetsSelectableText(touch, bubble) {
+    var target = touch && touch.target;
+    if (!target || !target.closest || !bubble || !bubble.contains(target)) return false;
+    return !!target.closest('.lxmf-msg-content');
 }
 
 function _ownReactionSender() {
@@ -5914,6 +5947,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Desktop: Enter sends, Shift+Enter inserts newline.
     var textarea = document.getElementById('lxmf-input');
     if (textarea) {
+        RS.composer.bindTypingPolicy(textarea);
         textarea.removeAttribute('maxlength');
         textarea.addEventListener('keydown', function(e) {
             if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isMobile()) {

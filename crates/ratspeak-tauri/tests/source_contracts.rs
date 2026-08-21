@@ -107,6 +107,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
         read_source(root.join("dashboard/static/js/channels.js")).expect("channels js");
     let channels_css =
         read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
+    let ui_shared =
+        read_source(root.join("dashboard/static/js/ui_shared.js")).expect("shared ui js");
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
@@ -258,12 +260,11 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("Load earlier"));
     assert!(!channels_js.contains("localStorage.setItem"));
     assert!(channels_js.contains("function _channelsRenderMemberDetail"));
-    assert!(channels_js.contains("function _channelsApplyComposerTypingPolicy"));
-    assert!(channels_js.contains("function _channelsHandleComposerBeforeInput"));
-    assert!(channels_js.contains("event.inputType !== 'insertReplacementText'"));
-    assert!(
-        channels_js.contains("_channelsApplyComposerTypingPolicy(input, useMobileTypingDefaults)")
-    );
+    assert!(ui_shared.contains("RS.composer.applyTypingPolicy = function(input)"));
+    assert!(ui_shared.contains("RS.composer.bindTypingPolicy = function(input)"));
+    assert!(ui_shared.contains("event.inputType !== 'insertReplacementText'"));
+    assert!(channels_js.contains("RS.composer.bindTypingPolicy(input);"));
+    assert!(!channels_js.contains("function _channelsApplyComposerTypingPolicy"));
     assert!(channels_js.contains("PeersCache.enriched()"));
     assert!(channels_js.contains("services.indexOf('lxmf.delivery')"));
     assert!(channels_js.contains("disableAutoCorrect(roomInput)"));
@@ -4538,6 +4539,9 @@ fn message_composer_send_preserves_preexisting_focus_state() {
     assert!(ui_shared.contains("RS.composer.consumeFocus = function(input)"));
     assert!(ui_shared.contains("RS.composer.focusWithoutScroll = function(input)"));
     assert!(ui_shared.contains("RS.composer.bindTapToSend = function(button, input, onSend)"));
+    assert!(ui_shared.contains("RS.composer.bindTypingPolicy = function(input)"));
+    assert!(lxmf.contains("RS.composer.bindTypingPolicy(textarea);"));
+    assert!(channels.contains("RS.composer.bindTypingPolicy(input);"));
     assert!(channels.contains("RS.composer.bindTapToSend(send, input, channelsSendMessage)"));
     assert!(channels.contains("var shouldRestoreComposerFocus = RS.composer"));
     assert!(channels.contains("RS.composer.consumeFocus(input)"));
@@ -5516,6 +5520,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         "Moved LXMF identity, ratchet, and router persistence off the protocol lock",
         "Aligned LXMF first-hop establishment timing with Reticulum",
         "Clarified pending-message cancellation",
+        "Enabled native selection and copying of sent and received message text",
         "coordinated annotated sibling tags",
     ];
 
@@ -6902,6 +6907,8 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("messaging css");
+    let responsive_css =
+        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
     let gestures = read_source(root.join("dashboard/static/js/gestures.js")).expect("gestures js");
     let emoji_picker =
@@ -6914,6 +6921,12 @@ fn message_actions_use_mobile_long_press_and_action_state() {
         .expect("messaging command");
 
     assert!(lxmf.contains("RS.gestures.attachLongPress(bubble"));
+    assert!(lxmf.contains("function _messageSelectionIntersectsBubble(bubble)"));
+    assert!(lxmf.contains("function _messageTouchTargetsSelectableText(touch, bubble)"));
+    assert!(lxmf.contains("excludeZone: function(touch)"));
+    assert!(lxmf.contains("hapticStages: [{ at: 0.55, level: 'light' }]"));
+    assert!(lxmf.contains("_messageTouchTargetsSelectableText(touch, bubble) ||"));
+    assert!(lxmf.contains("touchModality || _messageSelectionIntersectsBubble(this)"));
     assert!(!lxmf.contains("preventDefaultOnStart: function()"));
     assert!(lxmf.contains("container.addEventListener('touchstart', function()"));
     assert!(lxmf.contains("state.settleToken++;"));
@@ -6969,6 +6982,9 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(emoji_picker.contains("btn.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });"));
     assert!(messaging_css.contains(".lxmf-messages.msg-action-mode .msg-row"));
     assert!(messaging_css.contains(".msg-row.msg-action-selected .lxmf-msg"));
+    assert!(messaging_css.contains(".lxmf-msg-content {"));
+    assert!(messaging_css.contains("-webkit-touch-callout: default;"));
+    assert!(responsive_css.contains(".lxmf-msg-content {"));
     assert!(messaging_css.contains("position: fixed; z-index: calc(var(--z-modal) + 3);"));
     assert!(nav.contains("RS.closeMessageActionMenu()"));
 

@@ -3862,39 +3862,6 @@ function _channelsUpdateComposer() {
     input.disabled = !room || room.phase !== 'joined' || channelsSnapshot.phase !== 'active';
 }
 
-function _channelsUsesNativeMobileTyping() {
-    if (typeof isTauriMobile === 'function' && isTauriMobile()) return true;
-    if (typeof isIOS === 'function' && isIOS()) return true;
-    return typeof isAndroid === 'function' && isAndroid();
-}
-
-function _channelsApplyComposerTypingPolicy(input, useMobileDefaults) {
-    if (!input) return;
-    var assistanceAttributes = [
-        'autocomplete',
-        'autocorrect',
-        'autocapitalize',
-        'spellcheck',
-        'writingsuggestions'
-    ];
-    if (useMobileDefaults) {
-        assistanceAttributes.forEach(function(attribute) {
-            input.removeAttribute(attribute);
-        });
-        return;
-    }
-    input.setAttribute('autocomplete', 'off');
-    input.setAttribute('autocorrect', 'off');
-    input.setAttribute('autocapitalize', 'off');
-    input.setAttribute('spellcheck', 'false');
-    input.setAttribute('writingsuggestions', 'false');
-}
-
-function _channelsHandleComposerBeforeInput(event, useMobileDefaults) {
-    if (useMobileDefaults || !event || event.inputType !== 'insertReplacementText') return;
-    event.preventDefault();
-}
-
 function channelsSelectRoom(roomName) {
     var room = _channelsRoomByName(roomName);
     if (!room) return;
@@ -5938,11 +5905,7 @@ function _channelsBindUI() {
     var input = _channelsEl('channel-message-input');
     if (input) {
         var channelGrowRaf = null;
-        var useMobileTypingDefaults = _channelsUsesNativeMobileTyping();
-        _channelsApplyComposerTypingPolicy(input, useMobileTypingDefaults);
-        input.addEventListener('beforeinput', function(event) {
-            _channelsHandleComposerBeforeInput(event, useMobileTypingDefaults);
-        });
+        RS.composer.bindTypingPolicy(input);
         input.addEventListener('input', function() {
             var previousHeight = input.style.height;
             if (typeof RS !== 'undefined' && RS.composer && typeof RS.composer.resize === 'function') RS.composer.resize(input);

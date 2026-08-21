@@ -116,6 +116,53 @@
         input.scrollTop = 0;
     };
 
+    // Keep chat typing assistance identical between Direct Messages and
+    // Channels. Desktop WebViews disable replacements and writing assistance;
+    // native mobile keyboards retain their platform defaults.
+    RS.composer.usesNativeTypingDefaults = function() {
+        if (typeof isTauriMobile === 'function' && isTauriMobile()) return true;
+        if (typeof isIOS === 'function' && isIOS()) return true;
+        return typeof isAndroid === 'function' && isAndroid();
+    };
+
+    RS.composer.applyTypingPolicy = function(input) {
+        if (!input) return false;
+        var useNativeDefaults = RS.composer.usesNativeTypingDefaults();
+        var assistanceAttributes = [
+            'autocomplete',
+            'autocorrect',
+            'autocapitalize',
+            'spellcheck',
+            'writingsuggestions'
+        ];
+        if (useNativeDefaults) {
+            assistanceAttributes.forEach(function(attribute) {
+                input.removeAttribute(attribute);
+            });
+            return true;
+        }
+        input.setAttribute('autocomplete', 'off');
+        input.setAttribute('autocorrect', 'off');
+        input.setAttribute('autocapitalize', 'off');
+        input.setAttribute('spellcheck', 'false');
+        input.setAttribute('writingsuggestions', 'false');
+        return false;
+    };
+
+    RS.composer.handleBeforeInput = function(event, useNativeDefaults) {
+        if (useNativeDefaults || !event || event.inputType !== 'insertReplacementText') return;
+        event.preventDefault();
+    };
+
+    RS.composer.bindTypingPolicy = function(input) {
+        if (!input || input._rsTypingPolicyBound) return;
+        input._rsTypingPolicyBound = true;
+        var useNativeDefaults = RS.composer.applyTypingPolicy(input);
+        input.addEventListener('beforeinput', function(event) {
+            RS.composer.handleBeforeInput(event, useNativeDefaults);
+        });
+    };
+
     RS.text.utf8Length = function(value) {
         var text = String(value == null ? '' : value);
         if (window.TextEncoder) return new TextEncoder().encode(text).length;
