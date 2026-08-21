@@ -80,6 +80,33 @@ fn diagnostics_enabled() -> bool {
     env_flag("RATSPEAK_DIAGNOSTICS")
 }
 
+fn process_diagnostics_enabled() -> bool {
+    process_diagnostics_enabled_for_build(
+        env_flag("RATSPEAK_DIAGNOSTICS"),
+        cfg!(all(target_os = "ios", debug_assertions)),
+    )
+}
+
+const fn process_diagnostics_enabled_for_build(
+    explicit_opt_in: bool,
+    ios_debug_build: bool,
+) -> bool {
+    explicit_opt_in || ios_debug_build
+}
+
+#[cfg(test)]
+mod process_diagnostics_tests {
+    use super::process_diagnostics_enabled_for_build;
+
+    #[test]
+    fn only_explicit_opt_in_or_an_ios_debug_build_enables_process_logs() {
+        assert!(!process_diagnostics_enabled_for_build(false, false));
+        assert!(process_diagnostics_enabled_for_build(true, false));
+        assert!(process_diagnostics_enabled_for_build(false, true));
+        assert!(process_diagnostics_enabled_for_build(true, true));
+    }
+}
+
 fn diagnostic_metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool {
     ratspeak_tauri::diagnostics::metadata_allowed(metadata)
 }
@@ -763,13 +790,16 @@ impl TracingGuard {
     }
 }
 
-// Silent by default. Source/dev support diagnostics require
-// RATSPEAK_DIAGNOSTICS=1, and desktop file logs additionally require
-// RATSPEAK_DIAGNOSTIC_FILE=1. RUST_LOG only selects the filter after opt-in.
+// Silent in production by default. Source/dev support diagnostics require
+// RATSPEAK_DIAGNOSTICS=1, except local iOS debug builds where reviewed unified
+// logging is enabled at compile time because a manually launched installed app
+// does not inherit the host shell environment. Desktop file logs additionally
+// require RATSPEAK_DIAGNOSTIC_FILE=1. RUST_LOG only selects the filter after
+// opt-in.
 fn init_tracing() -> TracingGuard {
     #[allow(unused_mut)]
     let mut tracing_guard = TracingGuard::default();
-    if !diagnostics_enabled() {
+    if !process_diagnostics_enabled() {
         return tracing_guard;
     }
 

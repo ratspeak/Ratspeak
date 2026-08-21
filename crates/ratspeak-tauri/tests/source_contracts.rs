@@ -2558,7 +2558,11 @@ fn process_diagnostics_are_explicit_opt_in() {
 
     assert!(source.contains("fn diagnostics_enabled()"));
     assert!(source.contains("env_flag(\"RATSPEAK_DIAGNOSTICS\")"));
-    assert!(source.contains("if !diagnostics_enabled()"));
+    assert!(source.contains("fn process_diagnostics_enabled()"));
+    assert!(source.contains("fn process_diagnostics_enabled_for_build("));
+    assert!(source.contains("cfg!(all(target_os = \"ios\", debug_assertions))"));
+    assert!(source.contains("explicit_opt_in || ios_debug_build"));
+    assert!(source.contains("if !process_diagnostics_enabled()"));
     assert!(source.contains("fn diagnostic_file_enabled()"));
     assert!(source.contains("RATSPEAK_DIAGNOSTIC_FILE"));
     assert!(!source.contains("const DEFAULT_FILTER"));
@@ -2573,6 +2577,11 @@ fn process_diagnostics_are_explicit_opt_in() {
     assert!(policy.contains("pub fn target_allowed(target: &str) -> bool"));
     assert!(policy.contains("pub fn metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool"));
     assert!(policy.contains("PROHIBITED_FIELD_NAMES"));
+    assert!(policy.contains(
+        "const SAFE_BLE_LIFECYCLE_TARGET: &str = \"rns_interface::ble_rnode::lifecycle\""
+    ));
+    assert!(policy.contains("const SAFE_BLE_LIFECYCLE_FIELDS: &[&str]"));
+    assert!(policy.contains("fn safe_ble_lifecycle_metadata("));
     for denied in ["rns_interface", "lxmf_core::router", "ble_diag"] {
         assert!(policy.contains(denied));
     }
@@ -2580,6 +2589,48 @@ fn process_diagnostics_are_explicit_opt_in() {
     assert!(!core.contains("spawn_ble_diag_broadcaster"));
     assert!(!ble.contains("subscribe_ble_diag"));
     assert!(!events.contains("RS.listen('ble_diag'"));
+}
+
+#[test]
+fn rsreticulum_ble_lifecycle_diagnostics_use_one_closed_privacy_safe_callsite() {
+    let root = repo_root();
+    let policy = read_source(root.join("crates/ratspeak-tauri/src/diagnostics.rs"))
+        .expect("diagnostics target policy");
+    let ble = read_source(root.join("../rsReticulum/crates/rns-interface/src/ble_rnode.rs"))
+        .expect("rsReticulum BLE RNode source");
+    let helper = rust_function_block(&ble, "trace_ble_lifecycle");
+
+    assert!(policy.contains("rns_interface::ble_rnode::lifecycle"));
+    assert_eq!(
+        ble.matches("target: BLE_LIFECYCLE_TRACE_TARGET").count(),
+        1,
+        "the reviewed target must have one structured emission callsite"
+    );
+    assert!(helper.contains("stage: &'static str"));
+    assert!(helper.contains("result_class: &'static str"));
+    assert!(helper.contains("tx_read: Option<bool>"));
+    assert!(helper.contains("tx_notify: Option<bool>"));
+    assert!(helper.contains("\"BLE RNode generation lifecycle\""));
+    assert!(helper.contains("tracing::info!("));
+    for prohibited in [
+        "address",
+        "device",
+        "error",
+        "name",
+        "packet",
+        "passkey",
+        "payload",
+        "peripheral",
+        "pin",
+        "uri",
+        "uuid",
+        "value",
+    ] {
+        assert!(
+            !helper.contains(prohibited),
+            "privacy-safe BLE lifecycle helper must not accept {prohibited}"
+        );
+    }
 }
 
 #[test]

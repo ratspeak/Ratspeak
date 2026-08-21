@@ -16,6 +16,23 @@ const ALLOWED_TARGET_ROOTS: &[&str] = &[
 
 const ALLOWED_EXPLICIT_TARGETS: &[&str] = &["events", "lrgp_trace", "ttt_trace"];
 
+/// Exact lower-layer target whose schema is intentionally safe for local
+/// qualification logs. Raw `ble_diag` remains excluded: it can contain a
+/// peripheral identifier, display name, URI, or platform error text.
+const SAFE_BLE_LIFECYCLE_TARGET: &str = "rns_interface::ble_rnode::lifecycle";
+
+/// Immutable field schema for [`SAFE_BLE_LIFECYCLE_TARGET`]. Values are
+/// emitted by rsReticulum from closed enums/static tokens, one
+/// process-ephemeral generation number, and characteristic-property booleans.
+const SAFE_BLE_LIFECYCLE_FIELDS: &[&str] = &[
+    "message",
+    "generation",
+    "stage",
+    "result_class",
+    "tx_read",
+    "tx_notify",
+];
+
 // Metadata-level defense in depth. Values for these field names are never
 // visited by a diagnostics subscriber, even if a future callsite is added
 // under an otherwise allowed Ratspeak target.
@@ -55,7 +72,8 @@ const PROHIBITED_FIELD_NAMES: &[&str] = &[
 /// Whether a tracing event or span target may reach Ratspeak's process-wide
 /// diagnostics subscriber.
 pub fn target_allowed(target: &str) -> bool {
-    ALLOWED_EXPLICIT_TARGETS.contains(&target)
+    target == SAFE_BLE_LIFECYCLE_TARGET
+        || ALLOWED_EXPLICIT_TARGETS.contains(&target)
         || ALLOWED_TARGET_ROOTS.iter().any(|root| {
             target == *root
                 || target
@@ -64,10 +82,28 @@ pub fn target_allowed(target: &str) -> bool {
         })
 }
 
+fn safe_ble_lifecycle_metadata(metadata: &tracing::Metadata<'_>) -> bool {
+    if metadata.target() != SAFE_BLE_LIFECYCLE_TARGET {
+        return false;
+    }
+
+    let fields = metadata.fields();
+    fields.len() == SAFE_BLE_LIFECYCLE_FIELDS.len()
+        && fields
+            .iter()
+            .all(|field| SAFE_BLE_LIFECYCLE_FIELDS.contains(&field.name()))
+}
+
 /// Apply both the immutable target boundary and the structured-field privacy
 /// boundary before a subscriber is allowed to record an event or span.
 pub fn metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool {
-    target_allowed(metadata.target())
+    let target_is_allowed = if metadata.target() == SAFE_BLE_LIFECYCLE_TARGET {
+        safe_ble_lifecycle_metadata(metadata)
+    } else {
+        target_allowed(metadata.target())
+    };
+
+    target_is_allowed
         && metadata
             .fields()
             .iter()
@@ -113,6 +149,7 @@ mod tests {
             "events",
             "lrgp_trace",
             "ttt_trace",
+            "rns_interface::ble_rnode::lifecycle",
         ] {
             assert!(target_allowed(target), "expected {target} to be allowed");
         }
@@ -123,6 +160,7 @@ mod tests {
         for target in [
             "rns_interface",
             "rns_interface::ble_rnode",
+            "rns_interface::ble_rnode::lifecycle::nested",
             "rns_transport",
             "lxmf_core::router",
             "lxst_telephony",
@@ -135,6 +173,60 @@ mod tests {
         ] {
             assert!(!target_allowed(target), "expected {target} to be rejected");
         }
+    }
+
+    #[test]
+    fn ble_lifecycle_target_requires_the_exact_reviewed_field_schema() {
+        use tracing_subscriber::filter::filter_fn;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let writer = SharedWriter::default();
+        let captured = Arc::clone(&writer.0);
+        let subscriber = tracing_subscriber::registry()
+            .with(filter_fn(metadata_allowed))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_target(true)
+                    .with_writer(move || writer.clone()),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "rns_interface::ble_rnode::lifecycle",
+                generation = 2_u64,
+                stage = "subscribe",
+                result_class = "target_disconnected",
+                tx_read = false,
+                tx_notify = true,
+                "BLE RNode generation lifecycle"
+            );
+            tracing::info!(
+                target: "rns_interface::ble_rnode::lifecycle",
+                generation = 2_u64,
+                stage = "subscribe",
+                result_class = "stage_failed",
+                tx_read = false,
+                tx_notify = true,
+                peripheral_id = "identifier-canary",
+                "hostile schema extension"
+            );
+            tracing::info!(
+                target: "rns_interface::ble_rnode::lifecycle",
+                generation = 2_u64,
+                stage = "subscribe",
+                result_class = "stage_failed",
+                tx_read = false,
+                "incomplete schema"
+            );
+        });
+
+        let output = String::from_utf8(captured.lock().expect("captured output").clone())
+            .expect("UTF-8 diagnostics output");
+        assert!(output.contains("target_disconnected"));
+        assert!(!output.contains("identifier-canary"));
+        assert!(!output.contains("hostile schema extension"));
+        assert!(!output.contains("incomplete schema"));
     }
 
     #[test]
