@@ -2,6 +2,7 @@ package org.ratspeak.android
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -113,6 +114,8 @@ class RatspeakBleGatt(
     private val descriptorStatus = AtomicBoolean(false)
     private val writeStatus = AtomicBoolean(false)
     private var bondReceiver: BroadcastReceiver? = null
+    private var adapterReceiver: BroadcastReceiver? = null
+    private val adapterUnavailable = AtomicBoolean(false)
     private val lastGattStatus = AtomicInteger(BluetoothGatt.GATT_SUCCESS)
     private val bleWriteLock = Object()
     private val cleanupLock = Object()
@@ -142,6 +145,8 @@ class RatspeakBleGatt(
             Log.i(TAG, "=== BLE CONNECT START === address=$address")
             rustDetachObserved.set(false)
             detachFrameMatch = 0
+            adapterUnavailable.set(false)
+            registerAdapterReceiver()
             emitProgress("starting")
 
             val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
@@ -232,6 +237,10 @@ class RatspeakBleGatt(
                 val prefix = if (alreadyBonded && authenticationRejected) "$ERR_STALE_BOND " else ""
                 return err(prefix + gattError)
             }
+            if (adapterUnavailable.get()) {
+                cleanup()
+                return err("Bluetooth is turned off")
+            }
 
             // The process supervisor owns the stable TCP listener. This
             // physical generation owns only GATT and the exact accepted client.
@@ -248,6 +257,7 @@ class RatspeakBleGatt(
 
     @SuppressLint("MissingPermission")
     private fun openGattBridge(device: BluetoothDevice, attempt: Int, attempts: Int): String? {
+        if (adapterUnavailable.get()) return "Bluetooth is turned off"
         negotiatedMtu = MTU_FALLBACK_PAYLOAD
         rxChar = null
         txChar = null
@@ -277,6 +287,7 @@ class RatspeakBleGatt(
         if (!connectLatch!!.await(GATT_TIMEOUT_SEC, TimeUnit.SECONDS)) {
             return "GATT connection timed out"
         }
+        if (adapterUnavailable.get()) return "Bluetooth is turned off"
         if (!connectStatus.get()) {
             val status = lastGattStatus.get()
             return if (status == BluetoothGatt.GATT_SUCCESS || status == -1) {
@@ -296,12 +307,14 @@ class RatspeakBleGatt(
             negotiatedMtu = MTU_FALLBACK_PAYLOAD
             Log.w(TAG, "MTU negotiation timed out - using fallback payload=$MTU_FALLBACK_PAYLOAD")
         }
+        if (adapterUnavailable.get()) return "Bluetooth is turned off"
         Log.i(TAG, "Phase 2 COMPLETE: MTU payload=$negotiatedMtu")
 
         // Phase 3: Service discovery.
         emitProgress("discovering")
         Log.i(TAG, "Phase 3: Discovering services...")
         if (!discoverServicesWithLatch(15)) {
+            if (adapterUnavailable.get()) return "Bluetooth is turned off"
             gatt?.let { refreshGattCache(it) }
             return "Service discovery failed"
         }
@@ -345,6 +358,7 @@ class RatspeakBleGatt(
         if (!descriptorLatch!!.await(10, TimeUnit.SECONDS)) {
             return "TX notification subscribe timed out"
         }
+        if (adapterUnavailable.get()) return "Bluetooth is turned off"
         if (!descriptorStatus.get()) return "TX notification subscribe failed"
         Log.i(TAG, "Phase 5 COMPLETE: TX notifications enabled")
         return null
@@ -548,6 +562,7 @@ class RatspeakBleGatt(
             Log.i(TAG, "cleanup()")
             running.set(false)
             unregisterBondReceiver()
+            unregisterAdapterReceiver()
             closeBridgeClient()
             val fwd = forwardThread
             if (fwd != null && fwd !== Thread.currentThread()) {
@@ -665,6 +680,65 @@ class RatspeakBleGatt(
         } else {
             context.registerReceiver(bondReceiver, filter)
         }
+    }
+
+    /**
+     * Android does not guarantee a useful GATT disconnect callback when the
+     * Bluetooth service itself is powered down. Observe adapter loss directly
+     * so the active physical generation releases its local bridge; the process
+     * supervisor keeps the stable listener and owns the reconnect policy.
+     */
+    private fun registerAdapterReceiver() {
+        if (adapterReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                if (state == BluetoothAdapter.STATE_TURNING_OFF || state == BluetoothAdapter.STATE_OFF) {
+                    onAdapterUnavailable(state)
+                }
+            }
+        }
+        try {
+            ContextCompat.registerReceiver(
+                context,
+                receiver,
+                IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+                // Bluetooth is a protected framework broadcast, but vendor
+                // Bluetooth services may run in a separate privileged package.
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+            adapterReceiver = receiver
+        } catch (error: Throwable) {
+            Log.w(TAG, "Bluetooth adapter observer unavailable: ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun onAdapterUnavailable(state: Int) {
+        if (!adapterUnavailable.compareAndSet(false, true)) return
+        Log.i(TAG, "Bluetooth adapter unavailable state=$state — ending physical generation")
+        lastGattStatus.set(-1)
+        connectStatus.set(false)
+        servicesStatus.set(false)
+        descriptorStatus.set(false)
+        writeStatus.set(false)
+        connectLatch?.countDown()
+        mtuLatch?.countDown()
+        servicesLatch?.countDown()
+        descriptorLatch?.countDown()
+        writeLatch?.countDown()
+        running.set(false)
+        closeBridgeClient()
+    }
+
+    private fun unregisterAdapterReceiver() {
+        adapterReceiver?.let {
+            try { context.unregisterReceiver(it) }
+            catch (error: Throwable) {
+                Log.d(TAG, "cleanup(unregister adapter observer): ${error.javaClass.simpleName}")
+            }
+        }
+        adapterReceiver = null
     }
 
     private fun unregisterBondReceiver() {

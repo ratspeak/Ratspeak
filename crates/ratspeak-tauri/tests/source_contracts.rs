@@ -1179,14 +1179,28 @@ fn android_ble_rnode_auto_resume_is_persisted_adapter_aware_and_single_owned() {
     let kotlin_root = root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android");
     let supervisor = read_source(kotlin_root.join("RatspeakBleRnodeSupervisor.kt"))
         .expect("BLE RNode supervisor");
+    let gatt =
+        read_source(kotlin_root.join("RatspeakBleGatt.kt")).expect("BLE RNode physical generation");
     let native_bridge =
         read_source(kotlin_root.join("RatspeakNativeBridge.kt")).expect("Android native bridge");
 
+    let general_panel = index
+        .split("id=\"panel-settings-general\"")
+        .nth(1)
+        .and_then(|tail| tail.split("id=\"panel-settings-channels\"").next())
+        .expect("General settings panel");
+    let privacy_panel = index
+        .split("id=\"panel-settings-privacy\"")
+        .nth(1)
+        .and_then(|tail| tail.split("id=\"panel-settings-network\"").next())
+        .expect("Privacy settings panel");
     assert!(
-        index.contains("id=\"settings-row-android-rnode-auto-resume\" style=\"display:none;\"")
+        privacy_panel
+            .contains("id=\"settings-row-android-rnode-auto-resume\" style=\"display:none;\"")
     );
-    assert!(index.contains("Reconnect RNodes automatically"));
-    assert!(index.contains("the radio keeps running"));
+    assert!(!general_panel.contains("settings-row-android-rnode-auto-resume"));
+    assert!(privacy_panel.contains("Auto-reconnect radios"));
+    assert!(privacy_panel.contains("Reconnect Bluetooth RNodes automatically."));
     assert!(
         settings.contains("androidRnodeAutoResumeRow.style.display = isAndroid() ? '' : 'none'")
     );
@@ -1207,7 +1221,12 @@ fn android_ble_rnode_auto_resume_is_persisted_adapter_aware_and_single_owned() {
     assert!(supervisor.contains("bluetoothEnabled(entry.context) == false"));
     assert!(supervisor.contains("finishTerminal(entry, FAILURE_AUTO_RESUME_DISABLED)"));
     assert!(supervisor.contains("physical.disconnect(graceful = false)"));
+    assert!(!supervisor.contains("BluetoothAdapter.ACTION_STATE_CHANGED"));
     assert!(!supervisor.contains("Thread.sleep(slice)"));
+    assert!(gatt.contains("BluetoothAdapter.ACTION_STATE_CHANGED"));
+    assert!(gatt.contains("onAdapterUnavailable(state)"));
+    assert!(gatt.contains("running.set(false)"));
+    assert!(gatt.contains("closeBridgeClient()"));
 }
 
 #[test]
