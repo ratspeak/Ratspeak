@@ -72,6 +72,12 @@ object RatspeakNativeBridge {
     }
 
     @JvmStatic
+    fun setBleRnodeAutoResume(enabled: Boolean): Boolean {
+        RatspeakBleRnodeSupervisor.setAutoResume(enabled)
+        return true
+    }
+
+    @JvmStatic
     fun saveStoredFile(
         privatePath: String,
         fileName: String,

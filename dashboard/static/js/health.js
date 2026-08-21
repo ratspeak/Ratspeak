@@ -931,6 +931,7 @@ function _mobileRnodeHealth(port, mobileHardware) {
             stale_bond: 'Pair again',
             bridge_unavailable: 'Radio service unavailable',
             radio_disconnected: 'Reconnecting',
+            auto_resume_disabled: 'Reconnect paused',
             connect_failed: 'Connection failed',
             multiple_configured_radios: 'Radio conflict',
         };

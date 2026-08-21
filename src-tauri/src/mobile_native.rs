@@ -84,7 +84,11 @@ pub(crate) fn install(state: &Arc<AppState>) {
 
     #[cfg(target_os = "android")]
     {
-        state.install_mobile_platform_bridge(Arc::new(AndroidPlatformBridge));
+        let bridge: Arc<dyn MobilePlatformBridge> = Arc::new(AndroidPlatformBridge);
+        let _ = bridge.set_android_ble_rnode_auto_resume(
+            state.android_ble_rnode_auto_resume_enabled(),
+        );
+        state.install_mobile_platform_bridge(bridge);
         state.mobile_platform_bridge().replay_platform_state();
     }
 }
@@ -150,6 +154,20 @@ impl MobilePlatformBridge for AndroidPlatformBridge {
             }
         }
         disconnected
+    }
+
+    fn set_android_ble_rnode_auto_resume(&self, enabled: bool) -> bool {
+        with_android_bridge(|env, class| {
+            use jni::objects::JValue;
+            env.call_static_method(
+                class,
+                "setBleRnodeAutoResume",
+                "(Z)Z",
+                &[JValue::Bool(u8::from(enabled))],
+            )?
+            .z()
+        })
+        .unwrap_or(false)
     }
 
     fn replay_platform_state(&self) {
@@ -501,6 +519,7 @@ fn native_ble_hardware_reason(code: &str) -> &'static str {
         "stale_bond" => "stale_bond",
         "bridge_unavailable" => "bridge_unavailable",
         "radio_disconnected" => "radio_disconnected",
+        "auto_resume_disabled" => "auto_resume_disabled",
         _ => "connect_failed",
     }
 }
@@ -597,6 +616,7 @@ pub extern "system" fn Java_org_ratspeak_android_RatspeakNativeBridge_nativeBleR
                             | "bridge_unavailable"
                             | "connect_failed"
                             | "radio_disconnected"
+                            | "auto_resume_disabled"
                     )
                 })
                 .unwrap_or_else(|| "connect_failed".to_string());

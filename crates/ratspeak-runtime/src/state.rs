@@ -637,6 +637,10 @@ pub struct AppState {
     announce_interface_revision: AtomicU64,
     /// If true, delivery announces include Ratspeak capability metadata.
     pub announce_ratspeak_usage: AtomicBool,
+    /// Android-only recovery policy for saved BLE RNodes. When disabled,
+    /// unexpected transport loss waits for an explicit Resume Interface while
+    /// leaving the physical RNode's LoRa session untouched.
+    android_ble_rnode_auto_resume: AtomicBool,
     /// Eager-wake for the stats poll loop; loop has 750ms debounce cooldown.
     pub poll_now: Arc<tokio::sync::Notify>,
     /// Live BLE-peer count, driven by `BlePeerEvent::Connected/Disconnected`.
@@ -760,6 +764,9 @@ impl AppState {
                 .and_then(|v| v.parse::<u8>().ok())
                 .map(|v| v != 0)
                 .unwrap_or(true);
+        let initial_android_ble_rnode_auto_resume =
+            crate::db::get_setting(&db, "android_ble_rnode_auto_resume")
+                .is_none_or(|value| value != "false");
 
         let initial_enforce_stamps = crate::db::get_setting(&db, "enforce_stamps")
             .and_then(|v| v.parse::<u8>().ok())
@@ -870,6 +877,7 @@ impl AppState {
             announce_content_revision: AtomicU64::new(0),
             announce_interface_revision: AtomicU64::new(0),
             announce_ratspeak_usage: AtomicBool::new(initial_announce_ratspeak_usage),
+            android_ble_rnode_auto_resume: AtomicBool::new(initial_android_ble_rnode_auto_resume),
             poll_now: Arc::new(tokio::sync::Notify::new()),
             ble_peer_count: AtomicUsize::new(0),
             ble_peers: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -1040,6 +1048,15 @@ impl AppState {
     pub fn set_announce_ratspeak_usage_enabled(&self, enabled: bool) {
         self.announce_ratspeak_usage
             .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn android_ble_rnode_auto_resume_enabled(&self) -> bool {
+        self.android_ble_rnode_auto_resume.load(Ordering::Acquire)
+    }
+
+    pub fn set_android_ble_rnode_auto_resume_enabled(&self, enabled: bool) {
+        self.android_ble_rnode_auto_resume
+            .store(enabled, Ordering::Release);
     }
 
     pub fn bump_identity_session_generation(&self) -> u64 {
@@ -3083,6 +3100,16 @@ mod tests {
 
     fn make_state() -> AppState {
         make_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    #[test]
+    fn android_ble_rnode_auto_resume_defaults_on_and_updates_atomically() {
+        let state = make_state();
+        assert!(state.android_ble_rnode_auto_resume_enabled());
+        state.set_android_ble_rnode_auto_resume_enabled(false);
+        assert!(!state.android_ble_rnode_auto_resume_enabled());
+        state.set_android_ble_rnode_auto_resume_enabled(true);
+        assert!(state.android_ble_rnode_auto_resume_enabled());
     }
 
     fn interface_stat(

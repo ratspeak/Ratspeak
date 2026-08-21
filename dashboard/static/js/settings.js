@@ -1579,6 +1579,10 @@ function applyAppSettingsPayload(data) {
     if (usageToggle && data.announce_ratspeak_usage !== undefined) {
         usageToggle.checked = !!data.announce_ratspeak_usage;
     }
+    var androidRnodeAutoResumeToggle = document.getElementById('android-rnode-auto-resume-toggle');
+    if (androidRnodeAutoResumeToggle && data.android_ble_rnode_auto_resume !== undefined) {
+        androidRnodeAutoResumeToggle.checked = !!data.android_ble_rnode_auto_resume;
+    }
     if (data.activity_identity_protection !== undefined) {
         adoptActivityIdentityProtectionFromBackend(data.activity_identity_protection);
     }
@@ -1673,7 +1677,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
 (function() {
     var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
+    var androidRnodeAutoResumeRow = document.getElementById('settings-row-android-rnode-auto-resume');
+    var androidRnodeAutoResumeToggle = document.getElementById('android-rnode-auto-resume-toggle');
     var lxmfLimitToggle = document.getElementById('lxmf-limit-1mb-toggle');
+    if (androidRnodeAutoResumeRow) {
+        androidRnodeAutoResumeRow.style.display = isAndroid() ? '' : 'none';
+    }
     initActivityIdentityProtectionToggle();
     initHideKnownSpamPeersToggle();
     RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {});
@@ -1685,6 +1694,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 .catch(function(error) {
                     lxmfLimitToggle.checked = !enabled;
                     showToast((error && error.message) || 'Could not update the message limit', 'toast-error', 8000);
+                });
+        });
+    }
+    if (androidRnodeAutoResumeToggle) {
+        androidRnodeAutoResumeToggle.addEventListener('change', function() {
+            var enabled = !!androidRnodeAutoResumeToggle.checked;
+            RS.invoke('set_android_ble_rnode_auto_resume', { enabled: enabled })
+                .then(applyAppSettingsPayload)
+                .catch(function(error) {
+                    androidRnodeAutoResumeToggle.checked = !enabled;
+                    showToast((error && error.message) || 'Could not update RNode reconnect behavior', 'toast-error', 8000);
                 });
         });
     }

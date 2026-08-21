@@ -1115,6 +1115,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
         "announce_ratspeak_usage": state.announce_ratspeak_usage_enabled(),
+        "android_ble_rnode_auto_resume": state.android_ble_rnode_auto_resume_enabled(),
         "peers_sort": persisted_peers_sort(&state),
         "hardware_session_timeout": hw_timeout,
         "developer_mode": developer_mode,
@@ -1461,6 +1462,51 @@ pub async fn set_announce_ratspeak_usage(
     )
     .await;
     Ok(json!({ "enabled": enabled }))
+}
+
+#[tauri::command]
+pub async fn set_android_ble_rnode_auto_resume(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> AppResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (state, enabled);
+        return Err(AppError::bad_request(
+            "Bluetooth RNode auto-resume is available only on Android",
+        ));
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let previous = state.android_ble_rnode_auto_resume_enabled();
+        let bridge = state.mobile_platform_bridge();
+        if !bridge.set_android_ble_rnode_auto_resume(enabled) {
+            return Err(AppError::internal(
+                "Android Bluetooth recovery policy is unavailable",
+            ));
+        }
+
+        let persisted = if enabled { "true" } else { "false" };
+        let saved = db::spawn_db(state.db.clone(), move |p| {
+            db::try_set_setting(&p, "android_ble_rnode_auto_resume", persisted)
+        })
+        .await
+        .map_err(|_| AppError::internal("Android auto-resume db task panicked"))?;
+        if let Err(error) = saved {
+            let _ = bridge.set_android_ble_rnode_auto_resume(previous);
+            return Err(AppError::database_unavailable(format!(
+                "Failed to save Bluetooth recovery setting: {error}"
+            )));
+        }
+
+        state.set_android_ble_rnode_auto_resume_enabled(enabled);
+        state.emit_to_all(
+            "app_settings_updated",
+            json!({ "android_ble_rnode_auto_resume": enabled }),
+        );
+        Ok(json!({ "android_ble_rnode_auto_resume": enabled }))
+    }
 }
 
 #[tauri::command]

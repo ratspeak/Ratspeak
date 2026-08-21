@@ -1070,6 +1070,7 @@ pub fn run() {
             ratspeak_tauri::commands::interfaces::set_hardware_lock_timeout,
             ratspeak_tauri::commands::interfaces::set_developer_mode,
             ratspeak_tauri::commands::interfaces::set_announce_ratspeak_usage,
+            ratspeak_tauri::commands::interfaces::set_android_ble_rnode_auto_resume,
             ratspeak_tauri::commands::interfaces::set_activity_identity_protection,
             ratspeak_tauri::commands::interfaces::set_hide_known_spam_peers,
             ratspeak_tauri::commands::interfaces::set_lxmf_limit_1mb,

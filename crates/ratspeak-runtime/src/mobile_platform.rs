@@ -41,6 +41,13 @@ pub trait MobilePlatformBridge: Send + Sync {
         false
     }
 
+    /// Apply the Android-only policy for recovering an unexpected BLE RNode
+    /// transport loss. Explicit Pause/Resume remains owned by the interface
+    /// lifecycle and is never inferred from this preference.
+    fn set_android_ble_rnode_auto_resume(&self, _enabled: bool) -> bool {
+        false
+    }
+
     fn request_android_usb_permission(
         &self,
         _vendor_id: u16,

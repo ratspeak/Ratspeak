@@ -1164,6 +1164,53 @@ fn privacy_announce_usage_setting_is_wired() {
 }
 
 #[test]
+fn android_ble_rnode_auto_resume_is_persisted_adapter_aware_and_single_owned() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interface commands");
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let platform = read_source(root.join("crates/ratspeak-runtime/src/mobile_platform.rs"))
+        .expect("mobile platform");
+    let native = read_source(root.join("src-tauri/src/mobile_native.rs")).expect("native bridge");
+    let kotlin_root = root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android");
+    let supervisor = read_source(kotlin_root.join("RatspeakBleRnodeSupervisor.kt"))
+        .expect("BLE RNode supervisor");
+    let native_bridge =
+        read_source(kotlin_root.join("RatspeakNativeBridge.kt")).expect("Android native bridge");
+
+    assert!(
+        index.contains("id=\"settings-row-android-rnode-auto-resume\" style=\"display:none;\"")
+    );
+    assert!(index.contains("Reconnect RNodes automatically"));
+    assert!(index.contains("the radio keeps running"));
+    assert!(
+        settings.contains("androidRnodeAutoResumeRow.style.display = isAndroid() ? '' : 'none'")
+    );
+    assert!(settings.contains("set_android_ble_rnode_auto_resume"));
+    assert!(health.contains("auto_resume_disabled: 'Reconnect paused'"));
+
+    assert!(interfaces.contains("pub async fn set_android_ble_rnode_auto_resume"));
+    assert!(interfaces.contains("db::try_set_setting(&p, \"android_ble_rnode_auto_resume\""));
+    assert!(interfaces.contains("bridge.set_android_ble_rnode_auto_resume(enabled)"));
+    assert!(state.contains(".unwrap_or(true);"));
+    assert!(state.contains("android_ble_rnode_auto_resume: AtomicBool"));
+    assert!(platform.contains("fn set_android_ble_rnode_auto_resume(&self, _enabled: bool)"));
+    assert!(native.contains("fn set_android_ble_rnode_auto_resume(&self, enabled: bool)"));
+    assert!(native_bridge.contains("fun setBleRnodeAutoResume(enabled: Boolean)"));
+
+    assert!(supervisor.contains("private val autoResume = AtomicBoolean(true)"));
+    assert!(supervisor.contains("private fun waitForBluetooth(entry: Entry)"));
+    assert!(supervisor.contains("bluetoothEnabled(entry.context) == false"));
+    assert!(supervisor.contains("finishTerminal(entry, FAILURE_AUTO_RESUME_DISABLED)"));
+    assert!(supervisor.contains("physical.disconnect(graceful = false)"));
+    assert!(!supervisor.contains("Thread.sleep(slice)"));
+}
+
+#[test]
 fn incoming_lxmf_limit_setting_is_normal_default_on_and_backend_authoritative() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");

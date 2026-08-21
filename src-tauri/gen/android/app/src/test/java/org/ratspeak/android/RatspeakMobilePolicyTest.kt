@@ -29,10 +29,15 @@ class RatspeakMobilePolicyTest {
 
     @Test
     fun reconnectIsFastThenBoundedLowDuty() {
-        val delays = (0..12).map { RatspeakMobilePolicy.bleReconnectDelayMs(it, 7) }
+        val delays = (0..24).map { RatspeakMobilePolicy.bleReconnectDelayMs(it, 7) }
         assertTrue(delays.zipWithNext().all { (a, b) -> b >= a })
         assertTrue(delays.first() in 2_000L..2_200L)
-        assertTrue(delays.last() in 900_000L..990_000L)
+        assertTrue(delays[5] in 60_000L..66_000L)
+        assertTrue(delays[12] in 60_000L..66_000L)
+        assertTrue(delays[13] in 120_000L..132_000L)
+        assertTrue(delays[17] in 120_000L..132_000L)
+        assertTrue(delays[18] in 600_000L..660_000L)
+        assertTrue(delays.last() in 600_000L..660_000L)
     }
 
     @Test
@@ -43,6 +48,28 @@ class RatspeakMobilePolicyTest {
         // Android GATT 133 is normalized to the closed transient code before
         // policy; arbitrary/raw text can never alter retry behavior.
         assertFalse(RatspeakMobilePolicy.shouldRetryBle("gatt_133"))
+    }
+
+    @Test
+    fun androidBleAutoResumeIsExplicitPolicyOverRetryableLoss() {
+        assertTrue(
+            RatspeakMobilePolicy.shouldAutoResumeBle(
+                RatspeakBleGatt.FAILURE_BLUETOOTH_OFF,
+                true,
+            ),
+        )
+        assertFalse(
+            RatspeakMobilePolicy.shouldAutoResumeBle(
+                RatspeakBleGatt.FAILURE_BLUETOOTH_OFF,
+                false,
+            ),
+        )
+        assertFalse(
+            RatspeakMobilePolicy.shouldAutoResumeBle(
+                RatspeakBleGatt.FAILURE_STALE_BOND,
+                true,
+            ),
+        )
     }
 
     @Test

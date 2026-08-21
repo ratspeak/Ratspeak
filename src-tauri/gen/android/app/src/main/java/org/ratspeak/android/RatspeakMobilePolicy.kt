@@ -31,8 +31,17 @@ object RatspeakMobilePolicy {
      * lockstep without making tests or user-visible timing nondeterministic.
      */
     fun bleReconnectDelayMs(attempt: Int, stableSeed: Int): Long {
-        val delays = longArrayOf(2_000, 5_000, 10_000, 20_000, 30_000, 60_000, 300_000, 900_000)
-        val base = delays[attempt.coerceAtLeast(0).coerceAtMost(delays.lastIndex)]
+        val normalizedAttempt = attempt.coerceAtLeast(0)
+        val base = when (normalizedAttempt) {
+            0 -> 2_000L
+            1 -> 5_000L
+            2 -> 10_000L
+            3 -> 20_000L
+            4 -> 30_000L
+            in 5..12 -> 60_000L
+            in 13..17 -> 120_000L
+            else -> 600_000L
+        }
         val jitterRange = (base / 10L).coerceAtLeast(1L)
         val jitter = stableSeed.toLong().absoluteValue % jitterRange
         return base + jitter
@@ -48,6 +57,10 @@ object RatspeakMobilePolicy {
             RatspeakBleGatt.FAILURE_STALE_BOND -> false
             else -> false
         }
+    }
+
+    fun shouldAutoResumeBle(failureCode: String, enabled: Boolean): Boolean {
+        return enabled && shouldRetryBle(failureCode)
     }
 
     data class UsbIdentity(

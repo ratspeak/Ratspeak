@@ -1,6 +1,7 @@
 package org.ratspeak.android
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -21,7 +22,23 @@ object RatspeakBleRnodeSupervisor {
     private val addressRegex = Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
     private val lock = Any()
     private val replacementLock = Any()
+    private val retryWake = Object()
+    private val autoResume = AtomicBoolean(true)
     private var current: Entry? = null
+
+    const val FAILURE_AUTO_RESUME_DISABLED = "auto_resume_disabled"
+
+    private enum class RetryWaitOutcome {
+        ELAPSED,
+        ADAPTER_RECOVERED,
+        STOPPED,
+    }
+
+    @JvmStatic
+    fun setAutoResume(enabled: Boolean) {
+        autoResume.set(enabled)
+        synchronized(retryWake) { retryWake.notifyAll() }
+    }
 
     private class Entry(
         val context: Context,
@@ -175,8 +192,28 @@ object RatspeakBleRnodeSupervisor {
                     finishTerminal(entry, error.code)
                     break
                 }
+                if (!RatspeakMobilePolicy.shouldAutoResumeBle(error.code, autoResume.get())) {
+                    finishTerminal(entry, FAILURE_AUTO_RESUME_DISABLED)
+                    break
+                }
                 publishRetry(entry, error.code)
-                if (!waitForRetry(entry, retry++)) break
+                val retryOutcome = if (
+                    error.code == RatspeakBleGatt.FAILURE_BLUETOOTH_OFF ||
+                    bluetoothEnabled(entry.context) == false
+                ) {
+                    if (waitForBluetooth(entry)) {
+                        RetryWaitOutcome.ADAPTER_RECOVERED
+                    } else {
+                        RetryWaitOutcome.STOPPED
+                    }
+                } else {
+                    waitForRetry(entry, retry)
+                }
+                if (retryOutcome == RetryWaitOutcome.STOPPED) {
+                    finishManualHoldIfNeeded(entry)
+                    break
+                }
+                retry = if (retryOutcome == RetryWaitOutcome.ADAPTER_RECOVERED) 0 else retry + 1
                 continue
             }
 
@@ -191,8 +228,25 @@ object RatspeakBleRnodeSupervisor {
             entry.physical = null
             physical.disconnect(graceful = false)
             if (!isCurrent(entry)) break
+            if (!autoResume.get()) {
+                finishTerminal(entry, FAILURE_AUTO_RESUME_DISABLED)
+                break
+            }
             publishRetry(entry, "radio_disconnected")
-            if (!waitForRetry(entry, retry++)) break
+            val retryOutcome = if (bluetoothEnabled(entry.context) == false) {
+                if (waitForBluetooth(entry)) {
+                    RetryWaitOutcome.ADAPTER_RECOVERED
+                } else {
+                    RetryWaitOutcome.STOPPED
+                }
+            } else {
+                waitForRetry(entry, retry)
+            }
+            if (retryOutcome == RetryWaitOutcome.STOPPED) {
+                finishManualHoldIfNeeded(entry)
+                break
+            }
+            retry = if (retryOutcome == RetryWaitOutcome.ADAPTER_RECOVERED) 0 else retry + 1
         }
         entry.physical = null
         try { entry.listener.close() } catch (_: Throwable) {}
@@ -279,19 +333,68 @@ object RatspeakBleRnodeSupervisor {
             "radio_disconnected",
             RatspeakBleGatt.FAILURE_BLUETOOTH_OFF,
             RatspeakBleGatt.FAILURE_PERMISSION,
-            RatspeakBleGatt.FAILURE_CONNECT -> reason
+            RatspeakBleGatt.FAILURE_CONNECT,
+            FAILURE_AUTO_RESUME_DISABLED -> reason
             else -> RatspeakBleGatt.FAILURE_CONNECT
         }
     }
 
-    private fun waitForRetry(entry: Entry, attempt: Int): Boolean {
+    private fun waitForRetry(entry: Entry, attempt: Int): RetryWaitOutcome {
         var remaining = RatspeakMobilePolicy.bleReconnectDelayMs(attempt, entry.token.hashCode())
-        while (remaining > 0 && isCurrent(entry)) {
+        while (remaining > 0 && isCurrent(entry) && autoResume.get()) {
+            if (bluetoothEnabled(entry.context) == false) {
+                return if (waitForBluetooth(entry)) {
+                    RetryWaitOutcome.ADAPTER_RECOVERED
+                } else {
+                    RetryWaitOutcome.STOPPED
+                }
+            }
             val slice = minOf(remaining, 250L)
-            try { Thread.sleep(slice) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return false }
+            try {
+                synchronized(retryWake) { retryWake.wait(slice) }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return RetryWaitOutcome.STOPPED
+            }
             remaining -= slice
         }
-        return isCurrent(entry)
+        return if (isCurrent(entry) && autoResume.get()) {
+            RetryWaitOutcome.ELAPSED
+        } else {
+            RetryWaitOutcome.STOPPED
+        }
+    }
+
+    /**
+     * Adapter-off is a state wait, not a failed connection attempt. Polling at
+     * a low fixed cadence also covers vendor builds that suppress the adapter
+     * state broadcast; policy changes wake it immediately.
+     */
+    private fun waitForBluetooth(entry: Entry): Boolean {
+        while (isCurrent(entry) && autoResume.get()) {
+            if (bluetoothEnabled(entry.context) != false) return true
+            try {
+                synchronized(retryWake) { retryWake.wait(250L) }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+        return false
+    }
+
+    private fun bluetoothEnabled(context: Context): Boolean? {
+        return try {
+            context.getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled
+        } catch (_: SecurityException) {
+            null
+        }
+    }
+
+    private fun finishManualHoldIfNeeded(entry: Entry) {
+        if (isCurrent(entry) && !autoResume.get()) {
+            finishTerminal(entry, FAILURE_AUTO_RESUME_DISABLED)
+        }
     }
 
     private fun isCurrent(entry: Entry): Boolean {
@@ -307,5 +410,6 @@ object RatspeakBleRnodeSupervisor {
         try { entry.physical?.disconnect(graceful = true) } catch (_: Throwable) {}
         try { entry.listener.close() } catch (_: Throwable) {}
         entry.worker?.interrupt()
+        synchronized(retryWake) { retryWake.notifyAll() }
     }
 }
