@@ -208,9 +208,11 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         })
         .unwrap_or((false, false, false));
     if identity_changed || ratchet_changed || router_changed {
-        let ratchet_hashes = ratchet_changed
-            .then(|| vec![hash_hex.clone()])
-            .unwrap_or_default();
+        let ratchet_hashes = if ratchet_changed {
+            vec![hash_hex.clone()]
+        } else {
+            Vec::new()
+        };
         if let Err(error) = crate::lxmf_persistence::persist_current_delta(
             state,
             identity_changed,
@@ -406,9 +408,11 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         })
         .unwrap_or((false, false, false));
     if identity_changed || ratchet_changed || router_changed {
-        let ratchet_hashes = ratchet_changed
-            .then(|| vec![hash_hex.clone()])
-            .unwrap_or_default();
+        let ratchet_hashes = if ratchet_changed {
+            vec![hash_hex.clone()]
+        } else {
+            Vec::new()
+        };
         if let Err(error) = crate::lxmf_persistence::persist_current_delta(
             state,
             identity_changed,

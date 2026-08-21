@@ -221,14 +221,15 @@ async fn publish_exact_ready_stats(
         }
         if let Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) =
             response
-            && state.publish_ready_rnode_interface_stats(
+        {
+            if state.publish_ready_rnode_interface_stats(
                 spawned.interface_id,
                 origin,
                 handle.instance_mode,
                 &stats,
-            )
-        {
-            return Ok(());
+            ) {
+                return Ok(());
+            }
         }
 
         if state

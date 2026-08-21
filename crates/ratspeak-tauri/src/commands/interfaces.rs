@@ -1472,9 +1472,9 @@ pub async fn set_android_ble_rnode_auto_resume(
     #[cfg(not(target_os = "android"))]
     {
         let _ = (state, enabled);
-        return Err(AppError::bad_request(
+        Err(AppError::bad_request(
             "Bluetooth RNode auto-resume is available only on Android",
-        ));
+        ))
     }
 
     #[cfg(target_os = "android")]

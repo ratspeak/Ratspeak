@@ -215,11 +215,12 @@ where
     .await;
     let deleted = match deleted_result {
         Ok(Ok(deleted)) => {
-            if let Some(snapshot) = persisted_snapshot.lock().unwrap().take()
-                && let Ok(mut manager) = state.lxmf.try_lock()
-                && let Some(manager) = manager.as_mut()
-            {
-                manager.acknowledge_known_identities_snapshot(&snapshot);
+            if let Some(snapshot) = persisted_snapshot.lock().unwrap().take() {
+                if let Ok(mut manager) = state.lxmf.try_lock() {
+                    if let Some(manager) = manager.as_mut() {
+                        manager.acknowledge_known_identities_snapshot(&snapshot);
+                    }
+                }
             }
             deleted
         }
@@ -477,6 +478,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn busy_manager_causes_prompt_prune_rollback_without_disk_or_db_mutation() {
         let (_temp, state) = make_state();
@@ -523,6 +525,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn manager_acquired_during_snapshot_io_cannot_block_db_commit() {
         let (_temp, state) = make_state();

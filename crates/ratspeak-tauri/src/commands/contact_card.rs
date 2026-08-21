@@ -254,8 +254,8 @@ pub async fn import_contact_card(
             })
         })
         .unwrap_or(false);
-    if identity_changed
-        && let Err(error) = ratspeak_runtime::lxmf_persistence::persist_current_delta(
+    if identity_changed {
+        if let Err(error) = ratspeak_runtime::lxmf_persistence::persist_current_delta(
             &state,
             true,
             &[],
@@ -263,8 +263,9 @@ pub async fn import_contact_card(
             "contact_import",
         )
         .await
-    {
-        tracing::warn!(%error, "contact-card identity persistence failed");
+        {
+            tracing::warn!(%error, "contact-card identity persistence failed");
+        }
     }
 
     state.emit_to_all("contacts_update", json!(contacts_list));

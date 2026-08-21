@@ -398,9 +398,7 @@ async fn run_ready_rnode_activity_monitor(
             None => reducer.publisher_closed(),
         };
         if product_ready
-            && signals
-                .iter()
-                .any(|signal| *signal == RNodeActivitySignal::Online)
+            && signals.contains(&RNodeActivitySignal::Online)
             && state.owns_rnode_activity_observation(interface_id, origin)
         {
             // Keep reconnect semantics in the same revision stream as first

@@ -97,10 +97,10 @@ where
         Ok(snapshot)
     })
     .await?;
-    if let Ok(mut manager) = state.lxmf.lock()
-        && let Some(manager) = manager.as_mut()
-    {
-        manager.acknowledge_persistence_delta(&persisted);
+    if let Ok(mut manager) = state.lxmf.lock() {
+        if let Some(manager) = manager.as_mut() {
+            manager.acknowledge_persistence_delta(&persisted);
+        }
     }
     Ok(true)
 }
@@ -146,10 +146,10 @@ async fn persist_current_dirty_received_ratchets(
         Ok(snapshot)
     })
     .await?;
-    if let Ok(mut manager) = state.lxmf.lock()
-        && let Some(manager) = manager.as_mut()
-    {
-        manager.acknowledge_persistence_delta(&persisted);
+    if let Ok(mut manager) = state.lxmf.lock() {
+        if let Some(manager) = manager.as_mut() {
+            manager.acknowledge_persistence_delta(&persisted);
+        }
     }
     Ok(true)
 }
@@ -208,12 +208,14 @@ pub async fn delete_expired_received_ratchets(
         Ok((removed, failed))
     })
     .await?;
-    if !failed.is_empty()
-        && let Ok(mut manager) = state.lxmf.lock()
-        && let Some(manager) = manager.as_mut()
-        && manager.identity_hash == identity_hash
-    {
-        manager.requeue_expired_received_ratchets(failed);
+    if !failed.is_empty() {
+        if let Ok(mut manager) = state.lxmf.lock() {
+            if let Some(manager) = manager.as_mut() {
+                if manager.identity_hash == identity_hash {
+                    manager.requeue_expired_received_ratchets(failed);
+                }
+            }
+        }
     }
     Ok(removed)
 }
@@ -249,10 +251,53 @@ where
         Ok(snapshot)
     })
     .await?;
-    if let Ok(mut manager) = state.lxmf.lock()
-        && let Some(manager) = manager.as_mut()
-    {
-        manager.acknowledge_checkpoint_snapshot(&persisted);
+    if let Ok(mut manager) = state.lxmf.lock() {
+        if let Some(manager) = manager.as_mut() {
+            manager.acknowledge_checkpoint_snapshot(&persisted);
+        }
+    }
+    Ok(true)
+}
+
+/// Persist a known-identities snapshot while the caller owns the serialized
+/// persistence turn. Used by pruning so its memory mutation, durable artifact,
+/// and conditional DB cleanup cannot be interleaved with another snapshot.
+pub async fn persist_known_identities_under_owner(
+    _owner: &tokio::sync::MutexGuard<'_, ()>,
+    snapshot: KnownIdentitiesSnapshot,
+    reason: &'static str,
+) -> io::Result<KnownIdentitiesSnapshot> {
+    let count = snapshot.count;
+    tracing::debug!(
+        reason,
+        identities = count,
+        "LXMF identity snapshot captured"
+    );
+    run_blocking(reason, 1, move || {
+        snapshot.persist()?;
+        Ok(snapshot)
+    })
+    .await
+}
+
+pub async fn persist_current_known_identities_under_owner(
+    state: &AppState,
+    owner: &tokio::sync::MutexGuard<'_, ()>,
+    reason: &'static str,
+) -> io::Result<bool> {
+    let snapshot = state.lxmf.lock().ok().and_then(|manager| {
+        manager
+            .as_ref()
+            .map(|manager| manager.known_identities_snapshot())
+    });
+    let Some(snapshot) = snapshot else {
+        return Ok(false);
+    };
+    let persisted = persist_known_identities_under_owner(owner, snapshot, reason).await?;
+    if let Ok(mut manager) = state.lxmf.lock() {
+        if let Some(manager) = manager.as_mut() {
+            manager.acknowledge_known_identities_snapshot(&persisted);
+        }
     }
     Ok(true)
 }
@@ -313,7 +358,7 @@ mod tests {
         let (lock, wake) = &*release;
         *lock.lock().unwrap() = true;
         wake.notify_all();
-        assert_eq!(task.await.unwrap().unwrap(), true);
+        assert!(task.await.unwrap().unwrap());
     }
 
     #[tokio::test]
@@ -404,7 +449,7 @@ mod tests {
         let (lock, wake) = &*release;
         *lock.lock().unwrap() = true;
         wake.notify_all();
-        assert_eq!(task.await.unwrap().unwrap(), true);
+        assert!(task.await.unwrap().unwrap());
 
         let newer_is_dirty = state
             .lxmf
@@ -499,47 +544,4 @@ mod tests {
             vec![hash]
         );
     }
-}
-
-/// Persist a known-identities snapshot while the caller owns the serialized
-/// persistence turn. Used by pruning so its memory mutation, durable artifact,
-/// and conditional DB cleanup cannot be interleaved with another snapshot.
-pub async fn persist_known_identities_under_owner(
-    _owner: &tokio::sync::MutexGuard<'_, ()>,
-    snapshot: KnownIdentitiesSnapshot,
-    reason: &'static str,
-) -> io::Result<KnownIdentitiesSnapshot> {
-    let count = snapshot.count;
-    tracing::debug!(
-        reason,
-        identities = count,
-        "LXMF identity snapshot captured"
-    );
-    run_blocking(reason, 1, move || {
-        snapshot.persist()?;
-        Ok(snapshot)
-    })
-    .await
-}
-
-pub async fn persist_current_known_identities_under_owner(
-    state: &AppState,
-    owner: &tokio::sync::MutexGuard<'_, ()>,
-    reason: &'static str,
-) -> io::Result<bool> {
-    let snapshot = state.lxmf.lock().ok().and_then(|manager| {
-        manager
-            .as_ref()
-            .map(|manager| manager.known_identities_snapshot())
-    });
-    let Some(snapshot) = snapshot else {
-        return Ok(false);
-    };
-    let persisted = persist_known_identities_under_owner(owner, snapshot, reason).await?;
-    if let Ok(mut manager) = state.lxmf.lock()
-        && let Some(manager) = manager.as_mut()
-    {
-        manager.acknowledge_known_identities_snapshot(&persisted);
-    }
-    Ok(true)
 }
